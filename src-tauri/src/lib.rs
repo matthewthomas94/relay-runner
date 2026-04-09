@@ -1,0 +1,404 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::os::unix::net::UnixDatagram;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::sync::Mutex;
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
+    tray::TrayIconBuilder,
+    AppHandle, Manager, State,
+};
+
+// ---------------------------------------------------------------------------
+// Config types — mirrors config.toml
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub stt: SttConfig,
+    pub tts: TtsConfig,
+    pub controls: ControlsConfig,
+    pub general: GeneralConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SttConfig {
+    pub model: String,
+    pub input_device: String,
+    pub input_mode: String,
+    pub push_to_talk_key: String,
+    pub vad_sensitivity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsConfig {
+    pub engine: String,
+    pub voice: String,
+    pub rate: u32,
+    pub chime: String,
+    pub show_notification: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlsConfig {
+    pub play_pause_key: String,
+    pub skip_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneralConfig {
+    pub command: String,
+    pub auto_start: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            stt: SttConfig {
+                model: "base.en".into(),
+                input_device: "default".into(),
+                input_mode: "always_on".into(),
+                push_to_talk_key: String::new(),
+                vad_sensitivity: "medium".into(),
+            },
+            tts: TtsConfig {
+                engine: "say".into(),
+                voice: "Samantha".into(),
+                rate: 185,
+                chime: "Tink".into(),
+                show_notification: true,
+            },
+            controls: ControlsConfig {
+                play_pause_key: "F5".into(),
+                skip_key: "Shift+F5".into(),
+            },
+            general: GeneralConfig {
+                command: "claude".into(),
+                auto_start: false,
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config file I/O
+// ---------------------------------------------------------------------------
+
+fn config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("voice-terminal")
+}
+
+fn config_path() -> PathBuf {
+    config_dir().join("config.toml")
+}
+
+fn load_config() -> Config {
+    let path = config_path();
+    if path.exists() {
+        let content = fs::read_to_string(&path).unwrap_or_default();
+        toml::from_str(&content).unwrap_or_default()
+    } else {
+        Config::default()
+    }
+}
+
+fn save_config_to_disk(config: &Config) -> Result<(), String> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {e}"))?;
+    let content = toml::to_string_pretty(config).map_err(|e| format!("Failed to serialize config: {e}"))?;
+    fs::write(config_path(), content).map_err(|e| format!("Failed to write config: {e}"))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Process manager
+// ---------------------------------------------------------------------------
+
+pub struct ProcessManager {
+    children: Vec<(&'static str, Child)>,
+    services_dir: PathBuf,
+}
+
+impl ProcessManager {
+    fn new(services_dir: PathBuf) -> Self {
+        ProcessManager {
+            children: Vec::new(),
+            services_dir,
+        }
+    }
+
+    fn start_services(&mut self, _config: &Config) {
+        self.stop_services();
+
+        let config_path_str = config_path().to_string_lossy().to_string();
+
+        // Start voice_listen.py
+        if let Ok(child) = Command::new("python3")
+            .arg(self.services_dir.join("voice_listen.py"))
+            .arg("--config")
+            .arg(&config_path_str)
+            .spawn()
+        {
+            self.children.push(("voice_listen", child));
+        }
+
+        // Start tts_worker.py (standalone mode)
+        if let Ok(child) = Command::new("python3")
+            .arg(self.services_dir.join("tts_worker.py"))
+            .arg("--config")
+            .arg(&config_path_str)
+            .spawn()
+        {
+            self.children.push(("tts_worker", child));
+        }
+    }
+
+    fn stop_services(&mut self) {
+        for (name, child) in self.children.iter_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+            eprintln!("[process_manager] Stopped {name}");
+        }
+        self.children.clear();
+
+        // Clean up IPC files
+        let _ = fs::remove_file("/tmp/voice_in.fifo");
+        let _ = fs::remove_file("/tmp/tts_control.sock");
+    }
+
+    fn is_running(&self) -> bool {
+        !self.children.is_empty()
+    }
+}
+
+impl Drop for ProcessManager {
+    fn drop(&mut self) {
+        self.stop_services();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// App state
+// ---------------------------------------------------------------------------
+
+pub struct AppState {
+    config: Mutex<Config>,
+    process_manager: Mutex<ProcessManager>,
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands (called from React frontend)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn get_config(state: State<AppState>) -> Config {
+    state.config.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn save_config(state: State<AppState>, config: Config) -> Result<(), String> {
+    save_config_to_disk(&config)?;
+
+    let mut current = state.config.lock().unwrap();
+    *current = config.clone();
+
+    // Restart services with new config if they were running
+    let mut pm = state.process_manager.lock().unwrap();
+    if pm.is_running() {
+        pm.start_services(&config);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn start_services(state: State<AppState>) -> Result<(), String> {
+    let config = state.config.lock().unwrap().clone();
+    let mut pm = state.process_manager.lock().unwrap();
+    pm.start_services(&config);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_services(state: State<AppState>) -> Result<(), String> {
+    let mut pm = state.process_manager.lock().unwrap();
+    pm.stop_services();
+    Ok(())
+}
+
+#[tauri::command]
+fn services_running(state: State<AppState>) -> bool {
+    state.process_manager.lock().unwrap().is_running()
+}
+
+#[tauri::command]
+fn tts_command(cmd: String) -> Result<(), String> {
+    let sock_path = "/tmp/tts_control.sock";
+    let sock = UnixDatagram::unbound().map_err(|e| format!("Socket error: {e}"))?;
+    sock.send_to(cmd.as_bytes(), sock_path)
+        .map_err(|e| format!("Send error: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_voices() -> Vec<String> {
+    // Parse output of `say -v ?` to get available voices
+    if let Ok(output) = Command::new("say").arg("-v").arg("?").output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.lines()
+            .filter_map(|line| {
+                let name = line.split_whitespace().next()?;
+                Some(name.to_string())
+            })
+            .collect()
+    } else {
+        vec!["Samantha".into(), "Alex".into(), "Victoria".into(), "Daniel".into()]
+    }
+}
+
+#[tauri::command]
+fn list_chimes() -> Vec<String> {
+    let sounds_dir = PathBuf::from("/System/Library/Sounds");
+    if let Ok(entries) = fs::read_dir(&sounds_dir) {
+        entries
+            .filter_map(|e| {
+                let e = e.ok()?;
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.ends_with(".aiff") {
+                    Some(name.trim_end_matches(".aiff").to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        vec!["Tink".into(), "Glass".into(), "Ping".into(), "Pop".into()]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// App setup
+// ---------------------------------------------------------------------------
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let config = load_config();
+
+    // Resolve services directory (bundled or development)
+    let services_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("../Resources/services")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("services")
+        });
+
+    let auto_start = config.general.auto_start;
+    let config_clone = config.clone();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(AppState {
+            config: Mutex::new(config),
+            process_manager: Mutex::new(ProcessManager::new(services_dir)),
+        })
+        .setup(move |app| {
+            // Build tray menu
+            let status = MenuItemBuilder::with_id("status", "Idle")
+                .enabled(false)
+                .build(app)?;
+            let play = MenuItemBuilder::with_id("play", "Play / Pause").build(app)?;
+            let skip = MenuItemBuilder::with_id("skip", "Skip").build(app)?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let start = MenuItemBuilder::with_id("start", "Start Services").build(app)?;
+            let stop = MenuItemBuilder::with_id("stop", "Stop Services").build(app)?;
+            let settings = MenuItemBuilder::with_id("settings", "Settings\u{2026}").build(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit Voice Terminal").build(app)?;
+
+            let menu = MenuBuilder::new(app)
+                .item(&status)
+                .item(&play)
+                .item(&skip)
+                .item(&sep1)
+                .item(&start)
+                .item(&stop)
+                .item(&settings)
+                .item(&sep2)
+                .item(&quit)
+                .build()?;
+
+            let _tray = TrayIconBuilder::with_id("main-tray")
+                .menu(&menu)
+                .show_menu_on_left_click(true)
+                .tooltip("Voice Terminal")
+                .on_menu_event(move |app_handle: &AppHandle, event| {
+                    match event.id().as_ref() {
+                        "play" => {
+                            let _ = tts_control_send("toggle");
+                        }
+                        "skip" => {
+                            let _ = tts_control_send("skip");
+                        }
+                        "start" => {
+                            let state = app_handle.state::<AppState>();
+                            let config = state.config.lock().unwrap().clone();
+                            let mut pm = state.process_manager.lock().unwrap();
+                            pm.start_services(&config);
+                        }
+                        "stop" => {
+                            let state = app_handle.state::<AppState>();
+                            let mut pm = state.process_manager.lock().unwrap();
+                            pm.stop_services();
+                        }
+                        "settings" => {
+                            if let Some(window) = app_handle.get_webview_window("settings") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            let state = app_handle.state::<AppState>();
+                            let mut pm = state.process_manager.lock().unwrap();
+                            pm.stop_services();
+                            app_handle.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+
+            // Auto-start services if configured
+            if auto_start {
+                let state = app.state::<AppState>();
+                let mut pm = state.process_manager.lock().unwrap();
+                pm.start_services(&config_clone);
+            }
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_config,
+            save_config,
+            start_services,
+            stop_services,
+            services_running,
+            tts_command,
+            list_voices,
+            list_chimes,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+fn tts_control_send(cmd: &str) -> Result<(), String> {
+    let sock = UnixDatagram::unbound().map_err(|e| format!("{e}"))?;
+    sock.send_to(cmd.as_bytes(), "/tmp/tts_control.sock")
+        .map_err(|e| format!("{e}"))?;
+    Ok(())
+}

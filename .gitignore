@@ -1,2 +1,16 @@
 __pycache__/
 *.pyc
+
+# Node
+node_modules/
+dist/
+
+# Rust / Tauri
+src-tauri/target/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

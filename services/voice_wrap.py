@@ -11,9 +11,11 @@ import sys
 import termios
 import tty
 
+from config import load_config
 from tts_filter import TTSFilter
 from tts_worker import TTSWorker
 
+_cfg = load_config()
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 CHUNK_TIMEOUT = float(os.environ.get("CHUNK_TIMEOUT", "0.4"))
 
@@ -51,7 +53,8 @@ def open_fifo(path):
 
 
 def main():
-    cmd = sys.argv[1:] if len(sys.argv) > 1 else ["claude"]
+    default_cmd = _cfg["general"].get("command", "claude")
+    cmd = sys.argv[1:] if len(sys.argv) > 1 else [default_cmd]
 
     # Save original terminal settings
     stdin_fd = sys.stdin.fileno()

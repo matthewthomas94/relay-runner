@@ -8,10 +8,19 @@ import subprocess
 import sys
 import threading
 
-TTS_ENGINE = os.environ.get("TTS_ENGINE", "say")
-TTS_VOICE = os.environ.get("TTS_VOICE", "Samantha")
-TTS_RATE = os.environ.get("TTS_RATE", "185")
-TTS_CHIME = os.environ.get("TTS_CHIME", "/System/Library/Sounds/Tink.aiff")
+from config import load_config
+
+_cfg = load_config()
+_tts = _cfg["tts"]
+
+TTS_ENGINE = _tts["engine"]
+TTS_VOICE = _tts["voice"]
+TTS_RATE = str(_tts["rate"])
+_chime_name = _tts["chime"]
+TTS_CHIME = (
+    _chime_name if os.path.isabs(_chime_name)
+    else f"/System/Library/Sounds/{_chime_name}.aiff"
+)
 TTS_CONTROL_SOCK = os.environ.get("TTS_CONTROL_SOCK", "/tmp/tts_control.sock")
 
 

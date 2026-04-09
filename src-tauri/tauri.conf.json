@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegui-org/nicegui/refs/heads/main/tauri/tauri.conf.json",
+  "productName": "Voice Terminal",
+  "version": "0.1.0",
+  "identifier": "com.voiceterminal.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Voice Terminal — Settings",
+        "label": "settings",
+        "width": 480,
+        "height": 560,
+        "resizable": false,
+        "visible": false,
+        "center": true,
+        "decorations": true
+      }
+    ],
+    "trayIcon": {
+      "id": "main-tray",
+      "iconPath": "icons/tray-icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "resources": [
+      "../services/*"
+    ]
+  },
+  "plugins": {
+    "global-shortcut": {}
+  }
+}

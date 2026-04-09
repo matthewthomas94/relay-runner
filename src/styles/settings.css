@@ -1,0 +1,212 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #1e1e1e;
+  color: #e0e0e0;
+  font-size: 13px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.app {
+  padding: 16px;
+  min-height: 100vh;
+}
+
+.settings h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: #fff;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 16px;
+  background: #2a2a2a;
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.tabs button {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: #888;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.tabs button:hover {
+  color: #ccc;
+}
+
+.tabs button.active {
+  background: #3a3a3a;
+  color: #fff;
+}
+
+/* Fields */
+.tab-content section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field label {
+  font-size: 12px;
+  color: #999;
+  font-weight: 500;
+}
+
+.field select,
+.field input[type="text"] {
+  padding: 8px 10px;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.field select:focus,
+.field input[type="text"]:focus {
+  border-color: #5a7fff;
+}
+
+.field input[type="range"] {
+  width: 100%;
+  accent-color: #5a7fff;
+}
+
+/* Checkbox */
+.field.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.field.checkbox input[type="checkbox"] {
+  accent-color: #5a7fff;
+  width: 16px;
+  height: 16px;
+}
+
+.field.checkbox label {
+  color: #e0e0e0;
+  font-size: 13px;
+}
+
+/* Toggle group */
+.toggle-group {
+  display: flex;
+  gap: 2px;
+  background: #2a2a2a;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.toggle-group button {
+  flex: 1;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: #888;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.toggle-group button.active {
+  background: #5a7fff;
+  color: #fff;
+}
+
+/* Key capture */
+.key-capture {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.key-capture label {
+  font-size: 12px;
+  color: #999;
+  font-weight: 500;
+}
+
+.key-capture-btn {
+  padding: 8px 12px;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 13px;
+  font-family: monospace;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.key-capture-btn:hover {
+  border-color: #555;
+}
+
+.key-capture-btn.capturing {
+  border-color: #5a7fff;
+  color: #5a7fff;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Actions */
+.actions {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.save-btn {
+  padding: 8px 24px;
+  background: #5a7fff;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.save-btn:hover:not(:disabled) {
+  background: #4a6fee;
+}
+
+.save-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
