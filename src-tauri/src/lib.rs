@@ -130,12 +130,17 @@ impl ProcessManager {
         }
     }
 
-    fn start_services(&mut self, _config: &Config) {
+    fn start_services(&mut self, config: &Config) {
         self.stop_services();
+
+        // Create FIFO before services start
+        let _ = std::process::Command::new("mkfifo")
+            .arg("/tmp/voice_in.fifo")
+            .output();
 
         let config_path_str = config_path().to_string_lossy().to_string();
 
-        // Start voice_listen.py
+        // Start voice_listen.py (headless — no TTY needed)
         if let Ok(child) = Command::new("python3")
             .arg(self.services_dir.join("voice_listen.py"))
             .arg("--config")
@@ -145,7 +150,7 @@ impl ProcessManager {
             self.children.push(("voice_listen", child));
         }
 
-        // Start tts_worker.py (standalone mode)
+        // Start tts_worker.py (headless — no TTY needed)
         if let Ok(child) = Command::new("python3")
             .arg(self.services_dir.join("tts_worker.py"))
             .arg("--config")
@@ -154,15 +159,56 @@ impl ProcessManager {
         {
             self.children.push(("tts_worker", child));
         }
+
+        // Launch voice_wrap.py in Terminal.app (needs a real TTY for PTY multiplexing).
+        // On macOS, use osascript to open a terminal window running the wrapper.
+        // On Linux, fall back to spawning in the current terminal context.
+        let wrap_script = self.services_dir.join("voice_wrap.py");
+        let target_cmd = &config.general.command;
+        #[cfg(target_os = "macos")]
+        {
+            let apple_script = format!(
+                r#"tell application "Terminal"
+                    activate
+                    do script "python3 '{}' --config '{}' {}"
+                end tell"#,
+                wrap_script.display(),
+                config_path_str,
+                target_cmd,
+            );
+            let _ = Command::new("osascript")
+                .arg("-e")
+                .arg(&apple_script)
+                .spawn();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // On Linux, try xterm or the default terminal emulator
+            let _ = Command::new("x-terminal-emulator")
+                .arg("-e")
+                .arg(format!(
+                    "python3 '{}' --config '{}' {}",
+                    wrap_script.display(),
+                    config_path_str,
+                    target_cmd,
+                ))
+                .spawn();
+        }
     }
 
     fn stop_services(&mut self) {
+        // Kill managed child processes (voice_listen, tts_worker)
         for (name, child) in self.children.iter_mut() {
             let _ = child.kill();
             let _ = child.wait();
             eprintln!("[process_manager] Stopped {name}");
         }
         self.children.clear();
+
+        // Kill any voice_wrap.py processes (spawned in Terminal.app, not tracked as Child)
+        let _ = Command::new("pkill")
+            .args(["-f", "voice_wrap.py"])
+            .output();
 
         // Clean up IPC files
         let _ = fs::remove_file("/tmp/voice_in.fifo");
