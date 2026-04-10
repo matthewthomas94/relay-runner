@@ -73,6 +73,12 @@ export default function Settings({ config, voices, chimes, saving, onSave }: Set
               <label>Input Mode</label>
               <div className="toggle-group">
                 <button
+                  className={draft.stt.input_mode === "caps_lock_toggle" ? "active" : ""}
+                  onClick={() => updateSTT("input_mode", "caps_lock_toggle")}
+                >
+                  Caps Lock
+                </button>
+                <button
                   className={draft.stt.input_mode === "always_on" ? "active" : ""}
                   onClick={() => updateSTT("input_mode", "always_on")}
                 >
@@ -182,6 +188,17 @@ export default function Settings({ config, voices, chimes, saving, onSave }: Set
                 onChange={(e) => updateGeneral("command", e.target.value)}
                 placeholder="claude"
               />
+            </div>
+
+            <div className="field">
+              <label>Terminal App</label>
+              <select value={draft.general.terminal} onChange={(e) => updateGeneral("terminal", e.target.value)}>
+                <option value="warp">Warp</option>
+                <option value="terminal">Terminal.app</option>
+                <option value="iterm2">iTerm2</option>
+                <option value="kitty">Kitty</option>
+                <option value="alacritty">Alacritty</option>
+              </select>
             </div>
 
             <div className="field checkbox">

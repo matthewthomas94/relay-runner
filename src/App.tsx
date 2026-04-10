@@ -23,6 +23,7 @@ export interface Config {
   };
   general: {
     command: string;
+    terminal: string;
     auto_start: boolean;
   };
 }
@@ -48,6 +49,7 @@ const defaultConfig: Config = {
   },
   general: {
     command: "claude",
+    terminal: "warp",
     auto_start: false,
   },
 };

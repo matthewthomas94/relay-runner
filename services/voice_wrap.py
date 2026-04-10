@@ -53,8 +53,23 @@ def open_fifo(path):
 
 
 def main():
+    import shutil
     default_cmd = _cfg["general"].get("command", "claude")
-    cmd = sys.argv[1:] if len(sys.argv) > 1 else [default_cmd]
+
+    # Parse out --config arg, leaving only the target command
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--config" and i + 1 < len(args):
+            i += 2  # skip --config and its value
+            continue
+        break
+    cmd = args[i:] if i < len(args) else [default_cmd]
+
+    # Resolve the command to a full path so exec works even with a minimal PATH
+    resolved = shutil.which(cmd[0])
+    if resolved:
+        cmd[0] = resolved
 
     # Save original terminal settings
     stdin_fd = sys.stdin.fileno()
@@ -95,6 +110,7 @@ def main():
     set_nonblock(master_fd)
 
     fifo_buf = b""
+    tts_active = False  # only feed TTS after first user message
 
     try:
         import select as sel
@@ -126,7 +142,8 @@ def main():
                     if not data:
                         break
                     os.write(sys.stdout.fileno(), data)
-                    tts_filter.feed(data)
+                    if tts_active:
+                        tts_filter.feed(data)
                 except OSError as e:
                     if e.errno == errno.EIO:
                         # Child exited
@@ -145,7 +162,9 @@ def main():
                             text = line.strip()
                             if text:
                                 # Write to child as if typed, then press Enter
-                                os.write(master_fd, text + b"\n")
+                                # In raw PTY mode, Enter = \r (carriage return)
+                                os.write(master_fd, text + b"\r")
+                                tts_active = True
                     else:
                         # Writer closed FIFO — reopen to wait for next writer
                         os.close(fifo_fd)

@@ -46,13 +46,22 @@ class TTSWorker:
         self._control.start()
 
     def _collect_loop(self):
-        """Continuously drain input_queue, concatenating into pending message."""
+        """Continuously drain input_queue, auto-playing after a quiet period."""
+        idle_ticks = 0  # count consecutive empty polls (0.2s each)
         while not self._shutdown:
             try:
                 chunk = self.input_queue.get(timeout=0.2)
             except queue.Empty:
+                # No new text — if we have pending text and enough quiet time, auto-play
+                idle_ticks += 1
+                with self._lock:
+                    has_text = bool(self._pending_text.strip())
+                if has_text and idle_ticks >= 5 and not self._playing:
+                    # ~1 second of silence after last chunk — auto-play
+                    self.play()
                 continue
 
+            idle_ticks = 0
             with self._lock:
                 was_empty = not self._pending_text.strip()
                 if self._pending_text:

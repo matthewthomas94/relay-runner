@@ -47,7 +47,5 @@
       "../services/*"
     ]
   },
-  "plugins": {
-    "global-shortcut": {}
-  }
+  "plugins": {}
 }

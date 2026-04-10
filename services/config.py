@@ -1,5 +1,7 @@
 """Shared config loader for Python services. Reads config.toml with env var fallbacks."""
 
+from __future__ import annotations
+
 import os
 import sys
 
@@ -85,7 +87,7 @@ def load_config(config_path: str | None = None) -> dict:
         "stt": {
             "model": "base.en",
             "input_device": "default",
-            "input_mode": "always_on",
+            "input_mode": "caps_lock_toggle",
             "push_to_talk_key": "",
             "vad_sensitivity": "medium",
         },
@@ -102,6 +104,7 @@ def load_config(config_path: str | None = None) -> dict:
         },
         "general": {
             "command": "claude",
+            "terminal": "warp",
             "auto_start": False,
         },
     }

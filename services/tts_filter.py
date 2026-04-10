@@ -7,11 +7,42 @@ import threading
 import time
 
 
-# ANSI escape sequence pattern
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\(B|\x1b\[[\?0-9;]*[hlm]")
+# ANSI cursor-movement sequences — replace with space to preserve word boundaries
+_ANSI_CURSOR_RE = re.compile(
+    r"\x1b\[[0-9;]*[ABCDGHJ]"      # Cursor movement (up/down/fwd/back/pos)
+    r"|\x1b\[[0-9;]*[fH]"          # Cursor position
+    r"|\r"                          # Carriage return
+)
+
+# ANSI escape sequences — strip completely
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;]*[A-Za-z]"       # CSI sequences
+    r"|\x1b\].*?\x07"              # OSC sequences
+    r"|\x1b\(B"                    # Character set
+    r"|\x1b\[[\?0-9;]*[hlm]"      # Mode set/reset
+    r"|\x1b\[[<>=?]?[0-9;]*[a-zA-Z]"  # Extended CSI (kitty etc.)
+    r"|\[<u\[>[0-9;]*[a-zA-Z]*"   # Kitty progressive enhancement
+    r"|\[>[0-9;]*[a-zA-Z]"        # DA2 responses
+)
+
+# Claude Code spinner/status characters
+_CLAUDE_SPINNER_CHARS = set("✽✻✶✳✢·⏺●◐◑◒◓")
 
 # Spinner / progress characters
 _SPINNER_RE = re.compile(r"^[\s]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷|/\\-]+[\s]*$")
+
+# Claude Code status words — strip regardless of prefix. Claude cycles through
+# many creative words as spinner text; match broadly with a trailing ellipsis.
+_CLAUDE_STATUS_RE_LINE = re.compile(r"^.*\w+…\s*$")
+_CLAUDE_STATUS_WORDS = [
+    "Composing", "Actualizing", "Thinking", "Generating", "Streaming",
+    "Processing", "Compiling", "Building", "Running", "Installing",
+    "Reading", "Editing", "Writing", "Searching", "Fetching",
+    "Honking", "Pondering", "Reasoning", "Analyzing", "Computing",
+    "Crafting", "Preparing", "Loading", "Parsing", "Resolving",
+    "Imagining", "Considering", "Deliberating", "Evaluating",
+    "Formulating", "Synthesizing", "Deciphering", "Interpreting",
+]
 
 # Shell prompt patterns
 _PROMPT_RE = re.compile(r"^[\s]*([\$#>%]|\w+@\w+[:\$#]|❯|➜|\(.*\)[\s]*[\$#>])")
@@ -20,11 +51,27 @@ _PROMPT_RE = re.compile(r"^[\s]*([\$#>%]|\w+@\w+[:\$#]|❯|➜|\(.*\)[\s]*[\$#>]
 _TOOL_MARKERS = [
     "⏺", "●", "◐", "◑", "◒", "◓",  # Activity indicators
     "Read(", "Edit(", "Write(", "Bash(", "Glob(", "Grep(",  # Tool calls
+    "Agent(", "Search(", "WebFetch(", "WebSearch(",  # More tool calls
     "⎿",  # Tool result prefix
+    "Thinking", "thinking",  # Thinking indicators
 ]
+
+# Claude Code status/UI lines to skip entirely
+_STATUS_RE = re.compile(
+    r"^[\s]*(Thinking|thinking|Generating|Streaming|Processing|Compiling|Building|Running|Installing"
+    r"|Reading|Editing|Writing|Searching|Fetching"
+    r"|[\d]+%|[\d]+/[\d]+"  # Progress indicators
+    r"|\.{2,}"  # Ellipsis lines
+    r"|[-=]{3,}"  # Horizontal rules
+    r"|[*_]{1,3}\S)"  # Markdown emphasis at start of line
+)
 
 # Inline code pattern (backtick-wrapped)
 _INLINE_CODE_RE = re.compile(r"`[^`]+`")
+
+# Markdown emphasis (bold, italic) — strip markers, keep text
+_MD_EMPHASIS_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
+_MD_UNDERSCORE_RE = re.compile(r"_{1,3}([^_]+)_{1,3}")
 
 # Lines that look like file paths or code
 _CODE_LINE_RE = re.compile(
@@ -87,10 +134,20 @@ class TTSFilter:
             line, self._buffer = self._buffer.split("\n", 1)
             self._process_line(line)
 
+    _log = open("/tmp/tts_debug.log", "a")
+
+    def _log_line(self, tag: str, text: str):
+        self._log.write(f"[tts_filter] {tag}: {text[:120]}\n")
+        self._log.flush()
+
     def _process_line(self, raw_line: str):
         """Run a single line through the state machine."""
-        # Strip ANSI escapes for analysis
-        clean = _ANSI_RE.sub("", raw_line).rstrip()
+        # Replace cursor-movement sequences with spaces (preserves word boundaries)
+        spaced = _ANSI_CURSOR_RE.sub(" ", raw_line)
+        # Then strip remaining ANSI escapes
+        clean = _ANSI_RE.sub("", spaced)
+        # Collapse multiple spaces
+        clean = re.sub(r"  +", " ", clean).rstrip()
 
         # Fence code block transitions
         if clean.lstrip().startswith("```"):
@@ -98,51 +155,83 @@ class TTSFilter:
                 self._state = self.NORMAL
             else:
                 self._state = self.FENCE
+            self._log_line("SKIP fence", clean)
             return
 
         if self._state == self.FENCE:
+            self._log_line("SKIP in-fence", clean)
             return  # Skip everything inside fenced blocks
 
         # Tool use detection
         if any(clean.lstrip().startswith(m) for m in _TOOL_MARKERS):
             self._state = self.TOOL
+            self._log_line("SKIP tool-start", clean)
             return
 
         # Blank line resets tool state
         if not clean.strip():
             if self._state == self.TOOL:
                 self._state = self.NORMAL
-            # Blank lines can also delimit paragraphs — flush pending
             self._flush_pending()
             return
 
         if self._state == self.TOOL:
+            self._log_line("SKIP tool-body", clean)
             return  # Skip tool output lines
 
         # Filter out non-natural-language lines
         if self._should_strip(clean):
+            self._log_line("SKIP strip", clean)
             return
 
-        # This line is natural language — collect it
-        # Remove inline code for TTS readability
-        spoken = _INLINE_CODE_RE.sub("", clean).strip()
-        if spoken:
+        # This line is natural language — clean it up for TTS
+        spoken = _INLINE_CODE_RE.sub("", clean)
+        spoken = _MD_EMPHASIS_RE.sub(r"\1", spoken)
+        spoken = _MD_UNDERSCORE_RE.sub(r"\1", spoken)
+        # Remove spinner characters
+        spoken = "".join(c for c in spoken if c not in _CLAUDE_SPINNER_CHARS)
+        # Remove any trailing "Word…" status pattern (catches all spinner words)
+        spoken = re.sub(r"\s*\w+…\s*$", "", spoken)
+        spoken = spoken.strip()
+        if len(spoken) > 4:
+            self._log_line("SPEAK", spoken)
             self._pending_lines.append(spoken)
 
     def _should_strip(self, line: str) -> bool:
         """Return True if this line should be stripped (not natural language)."""
+        stripped = line.strip()
+        # Strip spinner-char prefix for analysis
+        core = stripped.lstrip("".join(_CLAUDE_SPINNER_CHARS)).strip()
+        # Very short fragments — streaming artifacts (individual chars/pairs)
+        if len(stripped) <= 4:
+            return True
+        # Claude Code status words (with any spinner prefix)
+        for word in _CLAUDE_STATUS_WORDS:
+            if core.startswith(word):
+                return True
+        # Horizontal rules and box-drawing characters
+        if all(c in "─═━—–-=_│|┌┐└┘├┤┬┴┼ " for c in stripped):
+            return True
+        # Claude Code status bar patterns
+        if "context)" in stripped or "│" in stripped:
+            return True
+        # Model identifiers
+        if core.startswith("Opus") or core.startswith("Sonnet") or core.startswith("Haiku"):
+            return True
+        # MCP / remote-control status
+        if "MCP" in stripped or "remote-control" in stripped or "session_" in stripped:
+            return True
+        # Claude Code status/UI lines
+        if _STATUS_RE.match(stripped):
+            return True
         # Spinner/progress
-        if _SPINNER_RE.match(line):
+        if _SPINNER_RE.match(stripped):
             return True
         # Shell prompt
-        if _PROMPT_RE.match(line):
+        if _PROMPT_RE.match(stripped):
             return True
         # Code-like lines
-        if _CODE_LINE_RE.match(line):
-            return True
-        # Very short lines that look like symbols/artifacts
-        stripped = line.strip()
-        if len(stripped) <= 2 and not stripped[-1:].isalpha():
+        if _CODE_LINE_RE.match(stripped):
             return True
         return False
 

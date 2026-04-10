@@ -6,7 +6,6 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
-    tray::TrayIconBuilder,
     AppHandle, Manager, State,
 };
 
@@ -31,6 +30,7 @@ pub struct SttConfig {
     pub vad_sensitivity: String,
 }
 
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TtsConfig {
     pub engine: String,
@@ -49,7 +49,13 @@ pub struct ControlsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralConfig {
     pub command: String,
+    #[serde(default = "default_terminal")]
+    pub terminal: String,
     pub auto_start: bool,
+}
+
+fn default_terminal() -> String {
+    "warp".into()
 }
 
 impl Default for Config {
@@ -75,6 +81,7 @@ impl Default for Config {
             },
             general: GeneralConfig {
                 command: "claude".into(),
+                terminal: "warp".into(),
                 auto_start: false,
             },
         }
@@ -150,48 +157,80 @@ impl ProcessManager {
             self.children.push(("voice_listen", child));
         }
 
-        // Start tts_worker.py (headless — no TTY needed)
-        if let Ok(child) = Command::new("python3")
-            .arg(self.services_dir.join("tts_worker.py"))
-            .arg("--config")
-            .arg(&config_path_str)
-            .spawn()
-        {
-            self.children.push(("tts_worker", child));
-        }
+        // Launch voice_bridge.py in the user's preferred terminal.
+        // Shows the conversation visually and handles TTS via clean JSON API.
+        let bridge_script = self.services_dir.join("voice_bridge.py");
+        let shell_cmd = format!(
+            "python3 '{}' --config '{}'",
+            bridge_script.display(),
+            config_path_str,
+        );
 
-        // Launch voice_wrap.py in Terminal.app (needs a real TTY for PTY multiplexing).
-        // On macOS, use osascript to open a terminal window running the wrapper.
-        // On Linux, fall back to spawning in the current terminal context.
-        let wrap_script = self.services_dir.join("voice_wrap.py");
-        let target_cmd = &config.general.command;
         #[cfg(target_os = "macos")]
         {
-            let apple_script = format!(
-                r#"tell application "Terminal"
-                    activate
-                    do script "python3 '{}' --config '{}' {}"
-                end tell"#,
-                wrap_script.display(),
-                config_path_str,
-                target_cmd,
+            let terminal = config.general.terminal.to_lowercase();
+            let launcher = "/tmp/voice_bridge_launch.sh";
+            let _ = std::fs::write(
+                launcher,
+                format!("#!/bin/bash\nexec {}\n", shell_cmd),
             );
-            let _ = Command::new("osascript")
-                .arg("-e")
-                .arg(&apple_script)
-                .spawn();
+            let _ = Command::new("chmod").arg("+x").arg(launcher).output();
+
+            match terminal.as_str() {
+                "warp" => {
+                    let apple_script = format!(
+                        "tell application \"Warp\" to activate\n\
+                         delay 0.5\n\
+                         tell application \"System Events\"\n\
+                           tell process \"Warp\"\n\
+                             keystroke \"t\" using command down\n\
+                             delay 0.3\n\
+                             keystroke \"bash {}\"\n\
+                             keystroke return\n\
+                           end tell\n\
+                         end tell",
+                        launcher,
+                    );
+                    let _ = Command::new("osascript")
+                        .arg("-e")
+                        .arg(&apple_script)
+                        .spawn();
+                }
+                "iterm2" | "iterm" => {
+                    let apple_script = format!(
+                        r#"tell application "iTerm2"
+                            activate
+                            tell current window
+                                create tab with default profile command "bash {}"
+                            end tell
+                        end tell"#,
+                        launcher,
+                    );
+                    let _ = Command::new("osascript")
+                        .arg("-e")
+                        .arg(&apple_script)
+                        .spawn();
+                }
+                _ => {
+                    let apple_script = format!(
+                        r#"tell application "Terminal"
+                            activate
+                            do script "bash {}"
+                        end tell"#,
+                        launcher,
+                    );
+                    let _ = Command::new("osascript")
+                        .arg("-e")
+                        .arg(&apple_script)
+                        .spawn();
+                }
+            }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            // On Linux, try xterm or the default terminal emulator
             let _ = Command::new("x-terminal-emulator")
                 .arg("-e")
-                .arg(format!(
-                    "python3 '{}' --config '{}' {}",
-                    wrap_script.display(),
-                    config_path_str,
-                    target_cmd,
-                ))
+                .arg(&shell_cmd)
                 .spawn();
         }
     }
@@ -338,11 +377,20 @@ pub fn run() {
         .ok()
         .and_then(|exe| exe.parent().map(|p| p.join("../Resources/services")))
         .filter(|p| p.exists())
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join("services")
-        });
+        .or_else(|| {
+            // Dev mode: services/ is at the project root, one level up from src-tauri/
+            let cwd = std::env::current_dir().ok()?;
+            let candidate = cwd.join("services");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            let candidate = cwd.join("../services");
+            if candidate.exists() {
+                return Some(candidate.canonicalize().ok()?);
+            }
+            None
+        })
+        .unwrap_or_else(|| PathBuf::from("services"));
 
     let auto_start = config.general.auto_start;
     let config_clone = config.clone();
@@ -379,45 +427,45 @@ pub fn run() {
                 .item(&quit)
                 .build()?;
 
-            let _tray = TrayIconBuilder::with_id("main-tray")
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .tooltip("Voice Terminal")
-                .on_menu_event(move |app_handle: &AppHandle, event| {
-                    match event.id().as_ref() {
-                        "play" => {
-                            let _ = tts_control_send("toggle");
-                        }
-                        "skip" => {
-                            let _ = tts_control_send("skip");
-                        }
-                        "start" => {
-                            let state = app_handle.state::<AppState>();
-                            let config = state.config.lock().unwrap().clone();
-                            let mut pm = state.process_manager.lock().unwrap();
-                            pm.start_services(&config);
-                        }
-                        "stop" => {
-                            let state = app_handle.state::<AppState>();
-                            let mut pm = state.process_manager.lock().unwrap();
-                            pm.stop_services();
-                        }
-                        "settings" => {
-                            if let Some(window) = app_handle.get_webview_window("settings") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                        "quit" => {
-                            let state = app_handle.state::<AppState>();
-                            let mut pm = state.process_manager.lock().unwrap();
-                            pm.stop_services();
-                            app_handle.exit(0);
-                        }
-                        _ => {}
+            let tray = app.tray_by_id("main-tray")
+                .expect("tray icon 'main-tray' not found — check tauri.conf.json");
+            tray.set_menu(Some(menu))?;
+            tray.set_show_menu_on_left_click(true)?;
+            tray.set_tooltip(Some("Voice Terminal"))?;
+            tray.on_menu_event(move |app_handle: &AppHandle, event| {
+                match event.id().as_ref() {
+                    "play" => {
+                        let _ = tts_control_send("toggle");
                     }
-                })
-                .build(app)?;
+                    "skip" => {
+                        let _ = tts_control_send("skip");
+                    }
+                    "start" => {
+                        let state = app_handle.state::<AppState>();
+                        let config = state.config.lock().unwrap().clone();
+                        let mut pm = state.process_manager.lock().unwrap();
+                        pm.start_services(&config);
+                    }
+                    "stop" => {
+                        let state = app_handle.state::<AppState>();
+                        let mut pm = state.process_manager.lock().unwrap();
+                        pm.stop_services();
+                    }
+                    "settings" => {
+                        if let Some(window) = app_handle.get_webview_window("settings") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        let state = app_handle.state::<AppState>();
+                        let mut pm = state.process_manager.lock().unwrap();
+                        pm.stop_services();
+                        app_handle.exit(0);
+                    }
+                    _ => {}
+                }
+            });
 
             // Auto-start services if configured
             if auto_start {
