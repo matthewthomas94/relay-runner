@@ -85,16 +85,17 @@ def load_config(config_path: str | None = None) -> dict:
     # Apply defaults
     defaults = {
         "stt": {
-            "model": "base.en",
+            "model": "parakeet-tdt-v2",
             "input_device": "default",
             "input_mode": "caps_lock_toggle",
             "push_to_talk_key": "",
             "vad_sensitivity": "medium",
         },
         "tts": {
-            "engine": "say",
-            "voice": "Samantha",
-            "rate": 185,
+            "engine": "kokoro",
+            "voice": "af_bella",
+            "rate": 1.0,
+            "auto_play": True,
             "chime": "Tink",
             "show_notification": True,
         },
@@ -127,4 +128,29 @@ def load_config(config_path: str | None = None) -> dict:
                 else:
                     config[section][key] = default
 
+    _migrate_config(config)
     return config
+
+
+def _migrate_config(config: dict):
+    """Migrate legacy config values in-place."""
+    tts = config.get("tts", {})
+
+    # Migrate say/piper -> kokoro
+    if tts.get("engine") in ("say", "piper"):
+        tts["engine"] = "kokoro"
+        # Map old Piper voice names to Kokoro equivalents
+        voice_map = {"Amy": "bf_emma", "Libritts": "af_bella", "Glow-TTS": "af_sarah"}
+        tts["voice"] = voice_map.get(tts.get("voice", ""), "af_bella")
+
+    # Migrate WPM rate (int > 10) to speed multiplier (0.5-2.0)
+    rate = tts.get("rate", 1.0)
+    if isinstance(rate, int) and rate > 10:
+        tts["rate"] = round(max(0.5, min(2.0, 2.0 - (rate - 100) * 1.5 / 200)), 1)
+
+    # Migrate old Whisper STT models to Parakeet
+    stt = config.get("stt", {})
+    if stt.get("model") in ("tiny.en", "base.en", "small.en", "medium.en"):
+        stt["model"] = "parakeet-tdt-v2"
+    elif stt.get("model") in ("large", "large-v3"):
+        stt["model"] = "parakeet-tdt-v3"

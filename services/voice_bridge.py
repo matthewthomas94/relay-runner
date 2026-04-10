@@ -62,7 +62,7 @@ class VoiceBridge:
         print("\033[2m  thinking...\033[0m", end="", flush=True)
 
         # Build command
-        cmd = [self.claude_bin, "-p", "--output-format", "json"]
+        cmd = [self.claude_bin, "-p", "--output-format", "json", "--dangerously-skip-permissions"]
         if self.session_id:
             cmd.extend(["--resume", self.session_id])
 
@@ -195,6 +195,20 @@ def main():
                 if text == "__INTERRUPT__":
                     bridge.interrupt()
                     tts_worker.skip()
+                    continue
+
+                if text == "__PLAY__":
+                    tts_worker.play()
+                    continue
+
+                if text == "__REPLAY__":
+                    tts_worker.replay()
+                    continue
+
+                if text.startswith("__STATUS__:"):
+                    status_msg = text[len("__STATUS__:"):]
+                    print(f"\033[2m  [{status_msg}]\033[0m")
+                    sys.stdout.flush()
                     continue
 
                 # Convert "slash <command>" to "/<command>"

@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""TTS playback worker — queues natural language chunks, plays on demand."""
+"""TTS playback worker — queues natural language chunks, plays via Kokoro-onnx."""
+
+from __future__ import annotations
 
 import os
 import queue
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
+import wave
+
+import numpy as np
 
 from config import load_config
 
 _cfg = load_config()
 _tts = _cfg["tts"]
 
-TTS_ENGINE = _tts["engine"]
 TTS_VOICE = _tts["voice"]
-TTS_RATE = str(_tts["rate"])
+TTS_RATE = float(_tts["rate"])
 _chime_name = _tts["chime"]
 TTS_CHIME = (
     _chime_name if os.path.isabs(_chime_name)
@@ -23,9 +28,66 @@ TTS_CHIME = (
 )
 TTS_CONTROL_SOCK = os.environ.get("TTS_CONTROL_SOCK", "/tmp/tts_control.sock")
 
+# Kokoro voice list (prefix: a=American, b=British; f=female, m=male)
+KOKORO_VOICES = [
+    "af_bella", "af_sarah", "af_nicole", "af_sky", "af_heart",
+    "am_adam", "am_michael",
+    "bf_emma", "bf_isabella",
+    "bm_george", "bm_lewis",
+]
+
+# Search paths for Kokoro model files
+_bundled_kokoro = os.path.join(os.environ.get("VOICE_MODELS_DIR", ""), "kokoro")
+KOKORO_MODEL_DIRS = [
+    d for d in [
+        _bundled_kokoro if os.environ.get("VOICE_MODELS_DIR") else None,
+        os.path.expanduser("~/.local/share/kokoro"),
+    ] if d
+]
+
+KOKORO_MODEL_FILE = "kokoro-v1.0.onnx"
+KOKORO_VOICES_FILE = "voices-v1.0.bin"
+
+
+def _find_kokoro_model() -> tuple[str, str] | None:
+    """Find kokoro model and voices files in search paths."""
+    for d in KOKORO_MODEL_DIRS:
+        model = os.path.join(d, KOKORO_MODEL_FILE)
+        voices = os.path.join(d, KOKORO_VOICES_FILE)
+        if os.path.isfile(model) and os.path.isfile(voices):
+            return model, voices
+    return None
+
+
+def _download_kokoro_model() -> tuple[str, str] | None:
+    """Download Kokoro model files from HuggingFace."""
+    download_dir = os.path.expanduser("~/.local/share/kokoro")
+    os.makedirs(download_dir, exist_ok=True)
+
+    try:
+        from huggingface_hub import hf_hub_download
+        print("[tts_worker] Downloading Kokoro model...", file=sys.stderr)
+
+        for filename in [KOKORO_MODEL_FILE, KOKORO_VOICES_FILE]:
+            hf_hub_download(
+                repo_id="fastrtc/kokoro-onnx",
+                filename=filename,
+                local_dir=download_dir,
+                local_dir_use_symlinks=False,
+            )
+
+        model = os.path.join(download_dir, KOKORO_MODEL_FILE)
+        voices = os.path.join(download_dir, KOKORO_VOICES_FILE)
+        if os.path.isfile(model) and os.path.isfile(voices):
+            print(f"[tts_worker] Model downloaded: {download_dir}", file=sys.stderr)
+            return model, voices
+    except Exception as e:
+        print(f"[tts_worker] Failed to download model: {e}", file=sys.stderr)
+    return None
+
 
 class TTSWorker:
-    """Manages a queue of text chunks and plays them via TTS on command."""
+    """Manages a queue of text chunks and plays them via Kokoro TTS."""
 
     def __init__(self, input_queue: queue.Queue):
         self.input_queue = input_queue
@@ -33,9 +95,14 @@ class TTSWorker:
         self._lock = threading.Lock()
         self._playing = False
         self._paused = False
-        self._current_proc = None
+        self._current_proc: subprocess.Popen | None = None
         self._shutdown = False
-        self._had_empty_queue = True  # Start as empty
+        self._last_wav: str | None = None  # Path to last played WAV for replay
+        self._auto_play: bool = _tts.get("auto_play", True)
+
+        # Load Kokoro model
+        self._kokoro = None
+        self._load_voice()
 
         # Collector thread — drains input_queue into _pending_text
         self._collector = threading.Thread(target=self._collect_loop, daemon=True)
@@ -45,20 +112,43 @@ class TTSWorker:
         self._control = threading.Thread(target=self._control_loop, daemon=True)
         self._control.start()
 
+    def _load_voice(self):
+        """Load Kokoro model, downloading if needed."""
+        paths = _find_kokoro_model()
+        if not paths:
+            paths = _download_kokoro_model()
+
+        if not paths:
+            print("[tts_worker] Warning: could not find or download Kokoro model", file=sys.stderr)
+            return
+
+        try:
+            from kokoro_onnx import Kokoro
+            model_path, voices_path = paths
+            self._kokoro = Kokoro(model_path, voices_path)
+            print(f"[tts_worker] Loaded Kokoro model: {model_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"[tts_worker] Failed to load Kokoro: {e}", file=sys.stderr)
+
     def _collect_loop(self):
-        """Continuously drain input_queue, auto-playing after a quiet period."""
-        idle_ticks = 0  # count consecutive empty polls (0.2s each)
+        """Continuously drain input_queue. Auto-plays or queues based on config."""
+        idle_ticks = 0
         while not self._shutdown:
+            # Re-read auto_play so settings changes take effect
+            try:
+                self._auto_play = load_config()["tts"].get("auto_play", True)
+            except Exception:
+                pass
+
             try:
                 chunk = self.input_queue.get(timeout=0.2)
             except queue.Empty:
-                # No new text — if we have pending text and enough quiet time, auto-play
                 idle_ticks += 1
-                with self._lock:
-                    has_text = bool(self._pending_text.strip())
-                if has_text and idle_ticks >= 5 and not self._playing:
-                    # ~1 second of silence after last chunk — auto-play
-                    self.play()
+                if self._auto_play:
+                    with self._lock:
+                        has_text = bool(self._pending_text.strip())
+                    if has_text and idle_ticks >= 5 and not self._playing:
+                        self.play()
                 continue
 
             idle_ticks = 0
@@ -69,13 +159,11 @@ class TTSWorker:
                 else:
                     self._pending_text = chunk
 
-                # Chime when queue transitions from empty to non-empty
                 if was_empty and self._pending_text.strip():
                     self._play_chime()
 
     def _control_loop(self):
         """Listen on Unix socket for play/pause/skip commands."""
-        # Remove stale socket
         try:
             os.unlink(TTS_CONTROL_SOCK)
         except OSError:
@@ -101,13 +189,14 @@ class TTSWorker:
                 pass
 
     def _handle_command(self, cmd: str):
-        """Process a control command."""
         if cmd == "play":
             self.play()
         elif cmd == "pause":
             self.pause()
         elif cmd == "skip":
             self.skip()
+        elif cmd == "replay":
+            self.replay()
         elif cmd == "toggle":
             if self._playing and not self._paused:
                 self.pause()
@@ -115,30 +204,27 @@ class TTSWorker:
                 self.play()
 
     def play(self):
-        """Play the current pending message."""
         with self._lock:
             text = self._pending_text.strip()
             self._pending_text = ""
 
         if not text:
+            self.replay()
             return
 
         self._playing = True
         self._paused = False
 
-        # Speak in a thread so control socket stays responsive
         t = threading.Thread(target=self._speak, args=(text,), daemon=True)
         t.start()
 
     def pause(self):
-        """Pause current playback."""
         self._paused = True
         proc = self._current_proc
         if proc and proc.poll() is None:
             proc.terminate()
 
     def skip(self):
-        """Skip current playback and clear pending text."""
         proc = self._current_proc
         if proc and proc.poll() is None:
             proc.terminate()
@@ -147,38 +233,83 @@ class TTSWorker:
         self._playing = False
         self._paused = False
 
-    def _speak(self, text: str):
-        """Run TTS engine to speak the text."""
+    def replay(self):
+        """Replay the last spoken audio."""
+        wav = self._last_wav
+        if not wav or not os.path.isfile(wav):
+            print("[tts_worker] Nothing to replay", file=sys.stderr)
+            return
+        self._playing = True
+        self._paused = False
+        t = threading.Thread(target=self._play_wav, args=(wav,), daemon=True)
+        t.start()
+
+    def _play_wav(self, wav_path: str):
+        """Play a WAV file with afplay."""
         try:
-            if TTS_ENGINE == "say":
-                self._current_proc = subprocess.Popen(
-                    ["say", "-v", TTS_VOICE, "-r", TTS_RATE, text],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                self._current_proc.wait()
-            elif TTS_ENGINE == "piper":
-                self._current_proc = subprocess.Popen(
-                    ["piper", "--output_raw"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                )
-                # Pipe text to piper, pipe audio to aplay
-                audio_data, _ = self._current_proc.communicate(input=text.encode())
-                if audio_data:
-                    aplay = subprocess.Popen(
-                        ["aplay", "-r", "22050", "-f", "S16_LE", "-c", "1"],
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    aplay.communicate(input=audio_data)
-            elif TTS_ENGINE == "none":
-                # Silent mode — just print what would be spoken
-                print(f"\n[tts] {text}", file=sys.stderr)
-        except FileNotFoundError:
-            print(f"[tts_worker] TTS engine '{TTS_ENGINE}' not found", file=sys.stderr)
+            self._current_proc = subprocess.Popen(
+                ["afplay", wav_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._current_proc.wait()
+        except Exception as e:
+            print(f"[tts_worker] Replay error: {e}", file=sys.stderr)
+        finally:
+            self._playing = False
+            self._current_proc = None
+
+    def _speak(self, text: str):
+        """Synthesize and play speech using Kokoro."""
+        if not self._kokoro:
+            print(f"[tts_worker] Kokoro not loaded, skipping: {text[:80]}", file=sys.stderr)
+            self._playing = False
+            return
+
+        # Re-read speed from config so settings changes take effect immediately
+        try:
+            speed = float(load_config()["tts"].get("rate", 1.0))
+        except Exception:
+            speed = 1.0
+
+        wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(wav_fd)
+
+        try:
+            samples, sample_rate = self._kokoro.create(
+                text, voice=TTS_VOICE, speed=speed, lang="en-us"
+            )
+
+            if samples is None or len(samples) == 0:
+                return
+
+            # Convert float32 [-1,1] to int16
+            int16_audio = (np.asarray(samples) * 32767).astype(np.int16)
+
+            # Write WAV file
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(sample_rate)
+                wf.writeframes(int16_audio.tobytes())
+
+            # Keep previous WAV for replay, clean up the one before
+            old_wav = self._last_wav
+            self._last_wav = wav_path
+
+            if old_wav and old_wav != wav_path:
+                try:
+                    os.remove(old_wav)
+                except OSError:
+                    pass
+
+            # Play with afplay (macOS)
+            self._current_proc = subprocess.Popen(
+                ["afplay", wav_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._current_proc.wait()
         except Exception as e:
             print(f"[tts_worker] TTS error: {e}", file=sys.stderr)
         finally:
@@ -186,7 +317,6 @@ class TTSWorker:
             self._current_proc = None
 
     def _play_chime(self):
-        """Play notification chime."""
         if not os.path.exists(TTS_CHIME):
             return
         try:
@@ -196,30 +326,19 @@ class TTSWorker:
                 stderr=subprocess.DEVNULL,
             )
         except FileNotFoundError:
-            # afplay is macOS-only; on Linux try paplay or aplay
-            for player in ["paplay", "aplay"]:
-                try:
-                    subprocess.Popen(
-                        [player, TTS_CHIME],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    break
-                except FileNotFoundError:
-                    continue
+            pass
 
     def shutdown(self):
-        """Stop the worker."""
         self._shutdown = True
         self.skip()
 
 
 def main():
-    """Standalone mode — read lines from stdin, queue for TTS."""
-    q = queue.Queue()
+    """Standalone mode -- read lines from stdin, queue for TTS."""
+    q: queue.Queue = queue.Queue()
     worker = TTSWorker(q)
-    print(f"[tts_worker] Listening on {TTS_CONTROL_SOCK}", file=sys.stderr)
-    print(f"[tts_worker] Engine: {TTS_ENGINE}, Voice: {TTS_VOICE}, Rate: {TTS_RATE}", file=sys.stderr)
+    print(f"[tts_worker] Voice: {TTS_VOICE}, Rate: {TTS_RATE}", file=sys.stderr)
+    print(f"[tts_worker] Control: {TTS_CONTROL_SOCK}", file=sys.stderr)
 
     try:
         for line in sys.stdin:

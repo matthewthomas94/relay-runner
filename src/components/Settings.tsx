@@ -54,11 +54,10 @@ export default function Settings({ config, voices, chimes, saving, onSave }: Set
         {activeTab === "stt" && (
           <section>
             <div className="field">
-              <label>Whisper Model</label>
+              <label>STT Model</label>
               <select value={draft.stt.model} onChange={(e) => updateSTT("model", e.target.value)}>
-                <option value="tiny.en">tiny.en (~75MB, fastest)</option>
-                <option value="base.en">base.en (~150MB, balanced)</option>
-                <option value="small.en">small.en (~500MB, best accuracy)</option>
+                <option value="parakeet-tdt-v2">Parakeet v2 (recommended)</option>
+                <option value="parakeet-tdt-v3">Parakeet v3 (most accurate, larger)</option>
               </select>
             </div>
 
@@ -115,30 +114,48 @@ export default function Settings({ config, voices, chimes, saving, onSave }: Set
         {activeTab === "tts" && (
           <section>
             <div className="field">
-              <label>TTS Engine</label>
-              <select value={draft.tts.engine} onChange={(e) => updateTTS("engine", e.target.value)}>
-                <option value="say">macOS Say</option>
-                <option value="piper">Piper</option>
-              </select>
-            </div>
-
-            <div className="field">
               <label>Voice</label>
               <select value={draft.tts.voice} onChange={(e) => updateTTS("voice", e.target.value)}>
-                {voices.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
+                {voices.map((v) => {
+                  const parts = v.split("_");
+                  if (parts.length === 2) {
+                    const accent = parts[0][0] === "a" ? "American" : "British";
+                    const gender = parts[0][1] === "f" ? "Female" : "Male";
+                    const name = parts[1].charAt(0).toUpperCase() + parts[1].slice(1);
+                    return <option key={v} value={v}>{name} ({accent} {gender})</option>;
+                  }
+                  return <option key={v} value={v}>{v}</option>;
+                })}
               </select>
             </div>
 
             <div className="field">
-              <label>Speech Rate: {draft.tts.rate} WPM</label>
+              <label>Playback Mode</label>
+              <div className="toggle-group">
+                <button
+                  className={draft.tts.auto_play ? "active" : ""}
+                  onClick={() => updateTTS("auto_play", true)}
+                >
+                  Auto-play
+                </button>
+                <button
+                  className={!draft.tts.auto_play ? "active" : ""}
+                  onClick={() => updateTTS("auto_play", false)}
+                >
+                  Queue
+                </button>
+              </div>
+            </div>
+
+            <div className="field">
+              <label>Speech Speed: {draft.tts.rate.toFixed(1)}x</label>
               <input
                 type="range"
-                min={100}
-                max={300}
+                min={0.5}
+                max={2.0}
+                step={0.1}
                 value={draft.tts.rate}
-                onChange={(e) => updateTTS("rate", parseInt(e.target.value))}
+                onChange={(e) => updateTTS("rate", parseFloat(e.target.value))}
               />
             </div>
 

@@ -8,6 +8,13 @@ dist/
 # Rust / Tauri
 src-tauri/target/
 
+# Swift / STT sidecar
+stt-sidecar/.build/
+stt-sidecar/.swiftpm/
+
+# Models (downloaded at build time, too large for git)
+models/
+
 # macOS
 .DS_Store
 

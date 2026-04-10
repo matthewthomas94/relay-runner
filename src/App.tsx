@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Settings from "./components/Settings";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 export interface Config {
   stt: {
@@ -14,6 +15,7 @@ export interface Config {
     engine: string;
     voice: string;
     rate: number;
+    auto_play: boolean;
     chime: string;
     show_notification: boolean;
   };
@@ -30,16 +32,17 @@ export interface Config {
 
 const defaultConfig: Config = {
   stt: {
-    model: "base.en",
+    model: "parakeet-tdt-v2",
     input_device: "default",
     input_mode: "always_on",
     push_to_talk_key: "",
     vad_sensitivity: "medium",
   },
   tts: {
-    engine: "say",
-    voice: "Samantha",
-    rate: 185,
+    engine: "kokoro",
+    voice: "af_bella",
+    rate: 1.0,
+    auto_play: true,
     chime: "Tink",
     show_notification: true,
   },
@@ -66,7 +69,7 @@ function App() {
       .catch(() => {});
     invoke<string[]>("list_voices")
       .then(setVoices)
-      .catch(() => setVoices(["Samantha", "Alex", "Victoria", "Daniel"]));
+      .catch(() => setVoices(["af_bella", "af_sarah", "am_adam", "bf_emma"]));
     invoke<string[]>("list_chimes")
       .then(setChimes)
       .catch(() => setChimes(["Tink", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine"]));
@@ -85,15 +88,17 @@ function App() {
   };
 
   return (
-    <div className="app">
-      <Settings
-        config={config}
-        voices={voices}
-        chimes={chimes}
-        saving={saving}
-        onSave={handleSave}
-      />
-    </div>
+    <ErrorBoundary>
+      <div className="app">
+        <Settings
+          config={config}
+          voices={voices}
+          chimes={chimes}
+          saving={saving}
+          onSave={handleSave}
+        />
+      </div>
+    </ErrorBoundary>
   );
 }
 

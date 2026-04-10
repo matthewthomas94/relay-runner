@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && cd stt-sidecar && swift build -c release"
   },
   "app": {
     "withGlobalTauri": true,
@@ -41,10 +41,11 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "14.0"
     },
     "resources": [
-      "../services/*"
+      "../services/*",
+      "../models/"
     ]
   },
   "plugins": {}

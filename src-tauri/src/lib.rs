@@ -9,6 +9,31 @@ use tauri::{
     AppHandle, Manager, State,
 };
 
+// Custom deserializer: accept both TOML integer and float for the rate field
+fn deserialize_rate<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    struct RateVisitor;
+    impl<'de> de::Visitor<'de> for RateVisitor {
+        type Value = f64;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "a number (integer or float)")
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<f64, E> {
+            Ok(v)
+        }
+    }
+    deserializer.deserialize_any(RateVisitor)
+}
+
 // ---------------------------------------------------------------------------
 // Config types — mirrors config.toml
 // ---------------------------------------------------------------------------
@@ -35,9 +60,16 @@ pub struct SttConfig {
 pub struct TtsConfig {
     pub engine: String,
     pub voice: String,
-    pub rate: u32,
+    #[serde(deserialize_with = "deserialize_rate")]
+    pub rate: f64,
+    #[serde(default = "default_true")]
+    pub auto_play: bool,
     pub chime: String,
     pub show_notification: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,16 +94,17 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             stt: SttConfig {
-                model: "base.en".into(),
+                model: "parakeet-tdt-v2".into(),
                 input_device: "default".into(),
                 input_mode: "always_on".into(),
                 push_to_talk_key: String::new(),
                 vad_sensitivity: "medium".into(),
             },
             tts: TtsConfig {
-                engine: "say".into(),
-                voice: "Samantha".into(),
-                rate: 185,
+                engine: "kokoro".into(),
+                voice: "af_bella".into(),
+                rate: 1.0,
+                auto_play: true,
                 chime: "Tink".into(),
                 show_notification: true,
             },
@@ -104,11 +137,45 @@ fn config_path() -> PathBuf {
 
 fn load_config() -> Config {
     let path = config_path();
-    if path.exists() {
+    let mut config = if path.exists() {
         let content = fs::read_to_string(&path).unwrap_or_default();
         toml::from_str(&content).unwrap_or_default()
     } else {
         Config::default()
+    };
+    migrate_config(&mut config);
+    config
+}
+
+fn migrate_config(config: &mut Config) {
+    // Migrate old Whisper STT models to Parakeet
+    match config.stt.model.as_str() {
+        "tiny.en" | "base.en" | "small.en" | "medium.en" => {
+            config.stt.model = "parakeet-tdt-v2".into();
+        }
+        "large" | "large-v3" => {
+            config.stt.model = "parakeet-tdt-v3".into();
+        }
+        _ => {}
+    }
+    // Migrate old TTS engines (say/piper -> kokoro)
+    if config.tts.engine == "say" || config.tts.engine == "piper" {
+        let voice_map: &[(&str, &str)] = &[
+            ("Amy", "bf_emma"),
+            ("Libritts", "af_bella"),
+            ("Glow-TTS", "af_sarah"),
+        ];
+        let new_voice = voice_map
+            .iter()
+            .find(|(old, _)| *old == config.tts.voice)
+            .map(|(_, new)| *new)
+            .unwrap_or("af_bella");
+        config.tts.engine = "kokoro".into();
+        config.tts.voice = new_voice.into();
+    }
+    // Migrate old WPM rate (int > 10) to length-scale (0.5-2.0)
+    if config.tts.rate > 10.0 {
+        config.tts.rate = (2.0 - (config.tts.rate - 100.0) * 1.5 / 200.0).clamp(0.5, 2.0);
     }
 }
 
@@ -127,13 +194,17 @@ fn save_config_to_disk(config: &Config) -> Result<(), String> {
 pub struct ProcessManager {
     children: Vec<(&'static str, Child)>,
     services_dir: PathBuf,
+    models_dir: PathBuf,
+    sidecar_bin: PathBuf,
 }
 
 impl ProcessManager {
-    fn new(services_dir: PathBuf) -> Self {
+    fn new(services_dir: PathBuf, models_dir: PathBuf, sidecar_bin: PathBuf) -> Self {
         ProcessManager {
             children: Vec::new(),
             services_dir,
+            models_dir,
+            sidecar_bin,
         }
     }
 
@@ -146,12 +217,17 @@ impl ProcessManager {
             .output();
 
         let config_path_str = config_path().to_string_lossy().to_string();
+        let models_dir_str = self.models_dir.to_string_lossy().to_string();
 
-        // Start voice_listen.py (headless — no TTY needed)
-        if let Ok(child) = Command::new("python3")
-            .arg(self.services_dir.join("voice_listen.py"))
-            .arg("--config")
-            .arg(&config_path_str)
+        // Start voice-listen sidecar (FluidAudio/Parakeet STT on Neural Engine)
+        if let Ok(child) = Command::new(&self.sidecar_bin)
+            .arg("--model")
+            .arg(&config.stt.model)
+            .arg("--input-mode")
+            .arg(&config.stt.input_mode)
+            .arg("--vad-sensitivity")
+            .arg(&config.stt.vad_sensitivity)
+            .env("VOICE_MODELS_DIR", &models_dir_str)
             .spawn()
         {
             self.children.push(("voice_listen", child));
@@ -160,19 +236,27 @@ impl ProcessManager {
         // Launch voice_bridge.py in the user's preferred terminal.
         // Shows the conversation visually and handles TTS via clean JSON API.
         let bridge_script = self.services_dir.join("voice_bridge.py");
-        let shell_cmd = format!(
-            "python3 '{}' --config '{}'",
-            bridge_script.display(),
-            config_path_str,
-        );
 
         #[cfg(target_os = "macos")]
         {
             let terminal = config.general.terminal.to_lowercase();
             let launcher = "/tmp/voice_bridge_launch.sh";
+            // Use venv Python if available, otherwise fall back to system python3
+            let venv_python = self.services_dir.join(".venv/bin/python3");
+            let python_bin = if venv_python.exists() {
+                venv_python.to_string_lossy().to_string()
+            } else {
+                "python3".to_string()
+            };
             let _ = std::fs::write(
                 launcher,
-                format!("#!/bin/bash\nexec {}\n", shell_cmd),
+                format!(
+                    "#!/bin/bash\nexport VOICE_MODELS_DIR='{}'\nexec '{}' '{}' --config '{}'\n",
+                    models_dir_str,
+                    python_bin,
+                    bridge_script.display(),
+                    config_path_str,
+                ),
             );
             let _ = Command::new("chmod").arg("+x").arg(launcher).output();
 
@@ -228,6 +312,12 @@ impl ProcessManager {
         }
         #[cfg(not(target_os = "macos"))]
         {
+            let shell_cmd = format!(
+                "VOICE_MODELS_DIR='{}' python3 '{}' --config '{}'",
+                models_dir_str,
+                bridge_script.display(),
+                config_path_str,
+            );
             let _ = Command::new("x-terminal-emulator")
                 .arg("-e")
                 .arg(&shell_cmd)
@@ -244,9 +334,9 @@ impl ProcessManager {
         }
         self.children.clear();
 
-        // Kill any voice_wrap.py processes (spawned in Terminal.app, not tracked as Child)
+        // Kill any voice_bridge.py processes (spawned in terminal, not tracked as Child)
         let _ = Command::new("pkill")
-            .args(["-f", "voice_wrap.py"])
+            .args(["-f", "voice_bridge.py"])
             .output();
 
         // Clean up IPC files
@@ -280,7 +370,10 @@ pub struct AppState {
 
 #[tauri::command]
 fn get_config(state: State<AppState>) -> Config {
-    state.config.lock().unwrap().clone()
+    eprintln!("[tauri] get_config called");
+    let cfg = state.config.lock().unwrap().clone();
+    eprintln!("[tauri] get_config returning rate={}", cfg.tts.rate);
+    cfg
 }
 
 #[tauri::command]
@@ -330,18 +423,13 @@ fn tts_command(cmd: String) -> Result<(), String> {
 
 #[tauri::command]
 fn list_voices() -> Vec<String> {
-    // Parse output of `say -v ?` to get available voices
-    if let Ok(output) = Command::new("say").arg("-v").arg("?").output() {
-        let text = String::from_utf8_lossy(&output.stdout);
-        text.lines()
-            .filter_map(|line| {
-                let name = line.split_whitespace().next()?;
-                Some(name.to_string())
-            })
-            .collect()
-    } else {
-        vec!["Samantha".into(), "Alex".into(), "Victoria".into(), "Daniel".into()]
-    }
+    vec![
+        "af_bella".into(), "af_sarah".into(), "af_nicole".into(),
+        "af_sky".into(), "af_heart".into(),
+        "am_adam".into(), "am_michael".into(),
+        "bf_emma".into(), "bf_isabella".into(),
+        "bm_george".into(), "bm_lewis".into(),
+    ]
 }
 
 #[tauri::command]
@@ -368,29 +456,56 @@ fn list_chimes() -> Vec<String> {
 // App setup
 // ---------------------------------------------------------------------------
 
+fn resolve_resource_dirs() -> (PathBuf, PathBuf, PathBuf) {
+    // Bundled app: resources are in ../Resources/ relative to the binary
+    if let Some(resources) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("../Resources")))
+        .filter(|p| p.join("services").exists())
+    {
+        return (
+            resources.join("services"),
+            resources.join("models"),
+            resources.join("voice-listen"),
+        );
+    }
+
+    // Dev mode: services/ and models/ at the project root, sidecar in stt-sidecar/
+    for base in [
+        std::env::current_dir().ok(),
+        std::env::current_dir().ok().and_then(|cwd| cwd.join("..").canonicalize().ok()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if base.join("services").exists() {
+            // Prefer release build, fall back to debug
+            let sidecar = if base.join("stt-sidecar/.build/release/voice-listen").exists() {
+                base.join("stt-sidecar/.build/release/voice-listen")
+            } else {
+                base.join("stt-sidecar/.build/debug/voice-listen")
+            };
+            return (
+                base.join("services"),
+                base.join("models"),
+                sidecar,
+            );
+        }
+    }
+
+    (
+        PathBuf::from("services"),
+        PathBuf::from("models"),
+        PathBuf::from("voice-listen"),
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = load_config();
 
-    // Resolve services directory (bundled or development)
-    let services_dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|p| p.join("../Resources/services")))
-        .filter(|p| p.exists())
-        .or_else(|| {
-            // Dev mode: services/ is at the project root, one level up from src-tauri/
-            let cwd = std::env::current_dir().ok()?;
-            let candidate = cwd.join("services");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-            let candidate = cwd.join("../services");
-            if candidate.exists() {
-                return Some(candidate.canonicalize().ok()?);
-            }
-            None
-        })
-        .unwrap_or_else(|| PathBuf::from("services"));
+    // Resolve services, models, and sidecar binary (bundled or development)
+    let (services_dir, models_dir, sidecar_bin) = resolve_resource_dirs();
 
     let auto_start = config.general.auto_start;
     let config_clone = config.clone();
@@ -399,7 +514,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState {
             config: Mutex::new(config),
-            process_manager: Mutex::new(ProcessManager::new(services_dir)),
+            process_manager: Mutex::new(ProcessManager::new(services_dir, models_dir, sidecar_bin)),
         })
         .setup(move |app| {
             // Build tray menu
@@ -407,6 +522,7 @@ pub fn run() {
                 .enabled(false)
                 .build(app)?;
             let play = MenuItemBuilder::with_id("play", "Play / Pause").build(app)?;
+            let replay = MenuItemBuilder::with_id("replay", "Replay").build(app)?;
             let skip = MenuItemBuilder::with_id("skip", "Skip").build(app)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let start = MenuItemBuilder::with_id("start", "Start Services").build(app)?;
@@ -418,6 +534,7 @@ pub fn run() {
             let menu = MenuBuilder::new(app)
                 .item(&status)
                 .item(&play)
+                .item(&replay)
                 .item(&skip)
                 .item(&sep1)
                 .item(&start)
@@ -437,6 +554,9 @@ pub fn run() {
                     "play" => {
                         let _ = tts_control_send("toggle");
                     }
+                    "replay" => {
+                        let _ = tts_control_send("replay");
+                    }
                     "skip" => {
                         let _ = tts_control_send("skip");
                     }
@@ -452,9 +572,14 @@ pub fn run() {
                         pm.stop_services();
                     }
                     "settings" => {
+                        eprintln!("[tauri] Settings menu clicked");
                         if let Some(window) = app_handle.get_webview_window("settings") {
+                            eprintln!("[tauri] Showing settings window");
                             let _ = window.show();
                             let _ = window.set_focus();
+                            eprintln!("[tauri] Settings window shown");
+                        } else {
+                            eprintln!("[tauri] Settings window not found!");
                         }
                     }
                     "quit" => {
