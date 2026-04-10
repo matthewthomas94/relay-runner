@@ -9,6 +9,8 @@ import queue
 import re
 import select
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -17,6 +19,7 @@ from config import load_config
 from tts_worker import TTSWorker
 
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
+BRIDGE_CONTROL_SOCK = os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock")
 
 
 def open_fifo(path: str) -> int | None:
@@ -34,10 +37,10 @@ def open_fifo(path: str) -> int | None:
 
 
 class VoiceBridge:
-    def __init__(self, claude_bin: str, tts_queue: queue.Queue):
+    def __init__(self, claude_bin: str, tts_queue: queue.Queue, session_id: str | None = None):
         self.claude_bin = claude_bin
         self.tts_queue = tts_queue
-        self.session_id: str | None = None
+        self.session_id: str | None = session_id
         self._claude_proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
 
@@ -113,22 +116,244 @@ class VoiceBridge:
             self.tts_queue.put(response_text)
 
 
+VOICE_CMD_FILE = "/tmp/voice_cmd_ready"
+TTS_IN_FIFO = "/tmp/tts_in.fifo"
+
+
+def _parse_args() -> dict:
+    """Parse CLI args: --config <path>, --session <id>, --relay."""
+    args = sys.argv[1:]
+    result: dict = {}
+    for i, arg in enumerate(args):
+        if arg == "--session" and i + 1 < len(args):
+            result["session"] = args[i + 1]
+        elif arg == "--relay":
+            result["relay"] = True
+    return result
+
+
+def _start_control_socket(tts_worker: TTSWorker, shutdown_event: threading.Event):
+    """Listen on Unix socket for reload/shutdown commands from Tauri or relay-bridge."""
+    try:
+        os.unlink(BRIDGE_CONTROL_SOCK)
+    except OSError:
+        pass
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    sock.bind(BRIDGE_CONTROL_SOCK)
+    sock.settimeout(0.5)
+
+    try:
+        while not shutdown_event.is_set():
+            try:
+                data, _ = sock.recvfrom(256)
+                cmd = data.decode("utf-8", errors="replace").strip()
+                cmd_lower = cmd.lower()
+                if cmd_lower == "reload":
+                    print("[voice_bridge] Reloading config...", file=sys.stderr)
+                    tts_worker.reload_config()
+                elif cmd_lower == "shutdown":
+                    print("[voice_bridge] Shutdown requested.", file=sys.stderr)
+                    shutdown_event.set()
+                elif cmd_lower == "ping":
+                    pass  # Liveness probe — socket exists = alive
+            except socket.timeout:
+                continue
+    finally:
+        sock.close()
+        try:
+            os.unlink(BRIDGE_CONTROL_SOCK)
+        except OSError:
+            pass
+
+
+def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
+    """Read text from TTS input FIFO and put on TTS queue (relay mode only)."""
+    while not shutdown_event.is_set():
+        try:
+            with open(TTS_IN_FIFO, "r") as f:
+                for line in f:
+                    if shutdown_event.is_set():
+                        break
+                    text = line.strip()
+                    if text:
+                        tts_queue.put(text)
+        except OSError:
+            if not shutdown_event.is_set():
+                import time
+                time.sleep(0.2)
+
+
+def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
+    """Relay mode: read voice FIFO, write commands to file for Claude, read TTS from FIFO."""
+    # Create TTS input FIFO
+    for path in [TTS_IN_FIFO, VOICE_CMD_FILE]:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    try:
+        os.mkfifo(TTS_IN_FIFO)
+    except OSError:
+        pass
+
+    # Start TTS input reader thread
+    tts_reader = threading.Thread(
+        target=_tts_fifo_reader,
+        args=(tts_worker.input_queue, shutdown_event),
+        daemon=True,
+    )
+    tts_reader.start()
+
+    if not os.path.exists(VOICE_FIFO):
+        os.mkfifo(VOICE_FIFO)
+
+    print("[voice_bridge] Relay mode — waiting for voice input...", file=sys.stderr)
+    print(f"[voice_bridge] Voice commands → {VOICE_CMD_FILE}", file=sys.stderr)
+    print(f"[voice_bridge] TTS input ← {TTS_IN_FIFO}", file=sys.stderr)
+
+    fifo_fd = open_fifo(VOICE_FIFO)
+    if fifo_fd is None:
+        return
+
+    fifo_buf = b""
+    try:
+        while not shutdown_event.is_set():
+            try:
+                readable, _, _ = select.select([fifo_fd], [], [], 0.2)
+            except (OSError, ValueError):
+                try:
+                    os.close(fifo_fd)
+                except OSError:
+                    pass
+                fifo_fd = open_fifo(VOICE_FIFO)
+                if fifo_fd is None:
+                    break
+                continue
+
+            if fifo_fd not in readable:
+                continue
+
+            try:
+                data = os.read(fifo_fd, 4096)
+            except BlockingIOError:
+                continue
+            except OSError:
+                os.close(fifo_fd)
+                fifo_fd = open_fifo(VOICE_FIFO)
+                if fifo_fd is None:
+                    break
+                continue
+
+            if not data:
+                os.close(fifo_fd)
+                fifo_fd = open_fifo(VOICE_FIFO)
+                if fifo_fd is None:
+                    break
+                continue
+
+            fifo_buf += data
+            while b"\n" in fifo_buf:
+                line, fifo_buf = fifo_buf.split(b"\n", 1)
+                text = line.decode("utf-8", errors="replace").strip()
+                if not text:
+                    continue
+
+                # Handle control messages internally
+                if text == "__INTERRUPT__":
+                    tts_worker.skip()
+                    # Signal Claude to stop by writing interrupt marker
+                    _write_cmd_file("__INTERRUPT__")
+                    continue
+
+                if text == "__PLAY__":
+                    tts_worker.play()
+                    continue
+
+                if text == "__REPLAY__":
+                    tts_worker.replay()
+                    continue
+
+                if text.startswith("__STATUS__:"):
+                    continue
+
+                # Convert "slash <command>" to "/<command>"
+                slash_match = re.match(r"^(?:slash|forward slash)\s+(.+)$", text, re.IGNORECASE)
+                if slash_match:
+                    text = "/" + slash_match.group(1).replace(" ", "-")
+
+                # Skip TTS for new voice input, write command for Claude
+                tts_worker.skip()
+                _write_cmd_file(text)
+                print(f"[voice_bridge] Voice command ready: {text}", file=sys.stderr)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if fifo_fd is not None:
+            try:
+                os.close(fifo_fd)
+            except OSError:
+                pass
+        for path in [TTS_IN_FIFO, VOICE_CMD_FILE]:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def _write_cmd_file(text: str):
+    """Atomically write a voice command to the ready file."""
+    tmp = VOICE_CMD_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.rename(tmp, VOICE_CMD_FILE)
+
+
 def main():
     cfg = load_config()
+    cli = _parse_args()
+    relay_mode = cli.get("relay", False)
 
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
-        print("[voice_bridge] Error: claude not found on PATH", file=sys.stderr)
-        sys.exit(1)
+    if not relay_mode:
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            print("[voice_bridge] Error: claude not found on PATH", file=sys.stderr)
+            sys.exit(1)
 
     if not os.path.exists(VOICE_FIFO):
         os.mkfifo(VOICE_FIFO)
 
     tts_queue: queue.Queue = queue.Queue()
     tts_worker = TTSWorker(tts_queue)
-    bridge = VoiceBridge(claude_bin, tts_queue)
+
+    shutdown_event = threading.Event()
+
+    # Control socket for reload/shutdown from Tauri app
+    control_thread = threading.Thread(
+        target=_start_control_socket, args=(tts_worker, shutdown_event), daemon=True
+    )
+    control_thread.start()
+
+    # Relay mode: daemon for Claude Code slash command
+    if relay_mode:
+        try:
+            _run_relay(tts_worker, shutdown_event)
+        finally:
+            shutdown_event.set()
+            tts_worker.shutdown()
+            try:
+                os.unlink(BRIDGE_CONTROL_SOCK)
+            except OSError:
+                pass
+        return
+
+    bridge = VoiceBridge(claude_bin, tts_queue, session_id=cli.get("session"))
 
     print("\033[1mVoice Terminal\033[0m — Caps Lock to speak, Caps Lock again to interrupt")
+    if bridge.session_id:
+        print(f"\033[2mResuming session: {bridge.session_id}\033[0m")
     print(f"\033[2mlistening on {VOICE_FIFO}\033[0m\n")
     sys.stdout.flush()
 
@@ -151,7 +376,7 @@ def main():
 
     fifo_buf = b""
     try:
-        while True:
+        while not shutdown_event.is_set():
             try:
                 readable, _, _ = select.select([fifo_fd], [], [], 0.2)
             except (OSError, ValueError):
@@ -224,6 +449,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        shutdown_event.set()
         request_queue.put(None)  # Signal worker to exit
         tts_worker.shutdown()
         if fifo_fd is not None:
@@ -231,6 +457,10 @@ def main():
                 os.close(fifo_fd)
             except OSError:
                 pass
+        try:
+            os.unlink(BRIDGE_CONTROL_SOCK)
+        except OSError:
+            pass
         print("\n\033[2mSession ended.\033[0m")
 
 

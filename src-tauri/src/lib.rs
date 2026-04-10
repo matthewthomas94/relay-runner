@@ -188,11 +188,35 @@ fn save_config_to_disk(config: &Config) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Bridge control (send commands to voice_bridge via Unix socket)
+// ---------------------------------------------------------------------------
+
+const BRIDGE_CONTROL_SOCK: &str = "/tmp/voice_bridge.sock";
+
+fn bridge_alive() -> bool {
+    if !std::path::Path::new(BRIDGE_CONTROL_SOCK).exists() {
+        return false;
+    }
+    // Verify the process is actually running (socket file can be stale)
+    match Command::new("pgrep").args(["-f", "voice_bridge.py"]).output() {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
+fn bridge_send(cmd: &str) -> Result<(), String> {
+    let sock = UnixDatagram::unbound().map_err(|e| format!("{e}"))?;
+    sock.send_to(cmd.as_bytes(), BRIDGE_CONTROL_SOCK)
+        .map_err(|e| format!("{e}"))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Process manager
 // ---------------------------------------------------------------------------
 
 pub struct ProcessManager {
-    children: Vec<(&'static str, Child)>,
+    sidecar_child: Option<Child>,
     services_dir: PathBuf,
     models_dir: PathBuf,
     sidecar_bin: PathBuf,
@@ -201,25 +225,24 @@ pub struct ProcessManager {
 impl ProcessManager {
     fn new(services_dir: PathBuf, models_dir: PathBuf, sidecar_bin: PathBuf) -> Self {
         ProcessManager {
-            children: Vec::new(),
+            sidecar_child: None,
             services_dir,
             models_dir,
             sidecar_bin,
         }
     }
 
-    fn start_services(&mut self, config: &Config) {
-        self.stop_services();
+    /// Start (or restart) the STT sidecar only.
+    fn start_sidecar(&mut self, config: &Config) {
+        self.stop_sidecar();
 
-        // Create FIFO before services start
+        // Create FIFO before sidecar starts
         let _ = std::process::Command::new("mkfifo")
             .arg("/tmp/voice_in.fifo")
             .output();
 
-        let config_path_str = config_path().to_string_lossy().to_string();
         let models_dir_str = self.models_dir.to_string_lossy().to_string();
 
-        // Start voice-listen sidecar (FluidAudio/Parakeet STT on Neural Engine)
         if let Ok(child) = Command::new(&self.sidecar_bin)
             .arg("--model")
             .arg(&config.stt.model)
@@ -230,18 +253,31 @@ impl ProcessManager {
             .env("VOICE_MODELS_DIR", &models_dir_str)
             .spawn()
         {
-            self.children.push(("voice_listen", child));
+            eprintln!("[process_manager] STT sidecar started");
+            self.sidecar_child = Some(child);
         }
+    }
 
-        // Launch voice_bridge.py in the user's preferred terminal.
-        // Shows the conversation visually and handles TTS via clean JSON API.
+    fn stop_sidecar(&mut self) {
+        if let Some(ref mut child) = self.sidecar_child {
+            let _ = child.kill();
+            let _ = child.wait();
+            eprintln!("[process_manager] STT sidecar stopped");
+        }
+        self.sidecar_child = None;
+    }
+
+    /// Launch voice_bridge.py in a new terminal tab.
+    /// Only called for "New Terminal" flow — relay-bridge users skip this.
+    fn launch_bridge_terminal(&self, config: &Config) {
+        let config_path_str = config_path().to_string_lossy().to_string();
+        let models_dir_str = self.models_dir.to_string_lossy().to_string();
         let bridge_script = self.services_dir.join("voice_bridge.py");
 
         #[cfg(target_os = "macos")]
         {
             let terminal = config.general.terminal.to_lowercase();
             let launcher = "/tmp/voice_bridge_launch.sh";
-            // Use venv Python if available, otherwise fall back to system python3
             let venv_python = self.services_dir.join(".venv/bin/python3");
             let python_bin = if venv_python.exists() {
                 venv_python.to_string_lossy().to_string()
@@ -325,27 +361,60 @@ impl ProcessManager {
         }
     }
 
-    fn stop_services(&mut self) {
-        // Kill managed child processes (voice_listen, tts_worker)
-        for (name, child) in self.children.iter_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
-            eprintln!("[process_manager] Stopped {name}");
-        }
-        self.children.clear();
+    /// Full start: sidecar + bridge terminal (only opens terminal if bridge isn't already running).
+    fn start_services(&mut self, config: &Config) {
+        self.start_sidecar(config);
 
-        // Kill any voice_bridge.py processes (spawned in terminal, not tracked as Child)
-        let _ = Command::new("pkill")
-            .args(["-f", "voice_bridge.py"])
-            .output();
+        if bridge_alive() {
+            eprintln!("[process_manager] Bridge already running (relay-bridge), skipping terminal launch");
+        } else {
+            self.launch_bridge_terminal(config);
+        }
+    }
+
+    /// Full stop: sidecar + bridge.
+    fn stop_services(&mut self) {
+        self.stop_sidecar();
+
+        // Ask bridge to shut down gracefully via control socket
+        if bridge_alive() {
+            let _ = bridge_send("shutdown");
+            // Give it a moment, then force-kill if still around
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        // Fallback: kill any bridge processes not started via relay-bridge
+        if bridge_alive() {
+            let _ = Command::new("pkill")
+                .args(["-f", "voice_bridge.py"])
+                .output();
+        }
 
         // Clean up IPC files
         let _ = fs::remove_file("/tmp/voice_in.fifo");
         let _ = fs::remove_file("/tmp/tts_control.sock");
+        let _ = fs::remove_file(BRIDGE_CONTROL_SOCK);
+    }
+
+    /// Tell bridge to reload config (TTS settings). Restart sidecar if STT changed.
+    fn reload_config(&mut self, old_config: &Config, new_config: &Config) {
+        // Always tell bridge/tts_worker to reload (voice, rate, chime, auto_play)
+        if bridge_alive() {
+            let _ = bridge_send("reload");
+        }
+
+        // Only restart sidecar if STT settings actually changed
+        let stt_changed = old_config.stt.model != new_config.stt.model
+            || old_config.stt.input_mode != new_config.stt.input_mode
+            || old_config.stt.vad_sensitivity != new_config.stt.vad_sensitivity;
+
+        if stt_changed && self.sidecar_child.is_some() {
+            eprintln!("[process_manager] STT settings changed, restarting sidecar");
+            self.start_sidecar(new_config);
+        }
     }
 
     fn is_running(&self) -> bool {
-        !self.children.is_empty()
+        self.sidecar_child.is_some() || bridge_alive()
     }
 }
 
@@ -381,12 +450,13 @@ fn save_config(state: State<AppState>, config: Config) -> Result<(), String> {
     save_config_to_disk(&config)?;
 
     let mut current = state.config.lock().unwrap();
+    let old_config = current.clone();
     *current = config.clone();
 
-    // Restart services with new config if they were running
+    // Hot-reload: tell bridge to re-read config, restart sidecar only if STT changed
     let mut pm = state.process_manager.lock().unwrap();
     if pm.is_running() {
-        pm.start_services(&config);
+        pm.reload_config(&old_config, &config);
     }
 
     Ok(())

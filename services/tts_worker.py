@@ -16,17 +16,13 @@ import numpy as np
 
 from config import load_config
 
-_cfg = load_config()
-_tts = _cfg["tts"]
-
-TTS_VOICE = _tts["voice"]
-TTS_RATE = float(_tts["rate"])
-_chime_name = _tts["chime"]
-TTS_CHIME = (
-    _chime_name if os.path.isabs(_chime_name)
-    else f"/System/Library/Sounds/{_chime_name}.aiff"
-)
 TTS_CONTROL_SOCK = os.environ.get("TTS_CONTROL_SOCK", "/tmp/tts_control.sock")
+
+
+def _resolve_chime(name: str) -> str:
+    if os.path.isabs(name):
+        return name
+    return f"/System/Library/Sounds/{name}.aiff"
 
 # Kokoro voice list (prefix: a=American, b=British; f=female, m=male)
 KOKORO_VOICES = [
@@ -98,7 +94,13 @@ class TTSWorker:
         self._current_proc: subprocess.Popen | None = None
         self._shutdown = False
         self._last_wav: str | None = None  # Path to last played WAV for replay
-        self._auto_play: bool = _tts.get("auto_play", True)
+
+        # Read initial config
+        cfg = load_config()["tts"]
+        self._voice: str = cfg.get("voice", "af_bella")
+        self._rate: float = float(cfg.get("rate", 1.0))
+        self._chime: str = _resolve_chime(cfg.get("chime", "Tink"))
+        self._auto_play: bool = cfg.get("auto_play", True)
 
         # Load Kokoro model
         self._kokoro = None
@@ -130,16 +132,22 @@ class TTSWorker:
         except Exception as e:
             print(f"[tts_worker] Failed to load Kokoro: {e}", file=sys.stderr)
 
+    def reload_config(self):
+        """Re-read config.toml and update voice, chime, rate, auto_play."""
+        try:
+            cfg = load_config()["tts"]
+            self._voice = cfg.get("voice", self._voice)
+            self._rate = float(cfg.get("rate", self._rate))
+            self._chime = _resolve_chime(cfg.get("chime", "Tink"))
+            self._auto_play = cfg.get("auto_play", True)
+            print(f"[tts_worker] Config reloaded: voice={self._voice}, rate={self._rate}", file=sys.stderr)
+        except Exception as e:
+            print(f"[tts_worker] Config reload failed: {e}", file=sys.stderr)
+
     def _collect_loop(self):
         """Continuously drain input_queue. Auto-plays or queues based on config."""
         idle_ticks = 0
         while not self._shutdown:
-            # Re-read auto_play so settings changes take effect
-            try:
-                self._auto_play = load_config()["tts"].get("auto_play", True)
-            except Exception:
-                pass
-
             try:
                 chunk = self.input_queue.get(timeout=0.2)
             except queue.Empty:
@@ -266,18 +274,14 @@ class TTSWorker:
             self._playing = False
             return
 
-        # Re-read speed from config so settings changes take effect immediately
-        try:
-            speed = float(load_config()["tts"].get("rate", 1.0))
-        except Exception:
-            speed = 1.0
+        speed = self._rate
 
         wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
         os.close(wav_fd)
 
         try:
             samples, sample_rate = self._kokoro.create(
-                text, voice=TTS_VOICE, speed=speed, lang="en-us"
+                text, voice=self._voice, speed=speed, lang="en-us"
             )
 
             if samples is None or len(samples) == 0:
@@ -317,11 +321,11 @@ class TTSWorker:
             self._current_proc = None
 
     def _play_chime(self):
-        if not os.path.exists(TTS_CHIME):
+        if not os.path.exists(self._chime):
             return
         try:
             subprocess.Popen(
-                ["afplay", TTS_CHIME],
+                ["afplay", self._chime],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -337,7 +341,7 @@ def main():
     """Standalone mode -- read lines from stdin, queue for TTS."""
     q: queue.Queue = queue.Queue()
     worker = TTSWorker(q)
-    print(f"[tts_worker] Voice: {TTS_VOICE}, Rate: {TTS_RATE}", file=sys.stderr)
+    print(f"[tts_worker] Voice: {worker._voice}, Rate: {worker._rate}", file=sys.stderr)
     print(f"[tts_worker] Control: {TTS_CONTROL_SOCK}", file=sys.stderr)
 
     try:
