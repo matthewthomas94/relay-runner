@@ -174,7 +174,11 @@ final class CapsLockGesture {
             }
         }
 
-        customKeyDown = event.type == .keyDown
+        // Toggle on each keyDown (ignore keyUp and auto-repeat) to match
+        // Caps Lock's toggle-on-press behaviour.
+        if event.type == .keyDown && !event.isARepeat {
+            customKeyDown.toggle()
+        }
     }
 
     private func stopKeyMonitor() {
