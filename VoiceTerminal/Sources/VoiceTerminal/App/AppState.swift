@@ -118,6 +118,10 @@ final class AppState {
         SocketClient.ttsSend(cmd)
     }
 
+    func toggleRecording() {
+        sttEngine?.toggleRecording()
+    }
+
     // MARK: - Overlay management
 
     private func startOverlay() {

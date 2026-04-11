@@ -5,22 +5,16 @@ struct MenuBarView: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        Text(appState.statusText)
-
-        Divider()
-
-        Button("Play / Pause") { appState.ttsCommand("toggle") }
-            .keyboardShortcut("p")
-        Button("Replay") { appState.ttsCommand("replay") }
-        Button("Skip") { appState.ttsCommand("skip") }
-
-        Divider()
-
-        Button("New Session\u{2026}") { appState.newSession() }
+        Button("Start Session\u{2026}") { appState.newSession() }
 
         if appState.isRunning {
-            Button("Stop") { appState.stopServices() }
+            Button("Stop Session") { appState.stopServices() }
         }
+
+        Divider()
+
+        Button("Record") { appState.toggleRecording() }
+        Button("Replay") { appState.ttsCommand("replay") }
 
         Divider()
 

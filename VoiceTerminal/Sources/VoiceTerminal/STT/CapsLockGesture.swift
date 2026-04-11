@@ -36,6 +36,9 @@ final class CapsLockGesture {
     private var customKeyDown = false
     private var keyMonitors: [Any] = []
 
+    // Menu-driven activation override (nil = use hardware state)
+    private var manualKeyDown: Bool?
+
     init(activationKey: String = "") {
         let isCapsLock = activationKey.isEmpty
             || activationKey.lowercased() == "caps lock"
@@ -64,7 +67,19 @@ final class CapsLockGesture {
     }
 
     private var isKeyOn: Bool {
-        useCapsLock ? Self.isCapsLockOn() : customKeyDown
+        if let manual = manualKeyDown { return manual }
+        return useCapsLock ? Self.isCapsLockOn() : customKeyDown
+    }
+
+    /// Toggle recording from the menu button. First call overrides to the
+    /// opposite of the current hardware state; second call clears the override.
+    func toggleActivation() {
+        if manualKeyDown != nil {
+            manualKeyDown = nil
+        } else {
+            let current = useCapsLock ? Self.isCapsLockOn() : customKeyDown
+            manualKeyDown = !current
+        }
     }
 
     /// Poll the activation key state and return any gesture event detected.
@@ -156,6 +171,8 @@ final class CapsLockGesture {
     }
 
     private func handleKeyEvent(_ event: NSEvent) {
+        manualKeyDown = nil  // Hardware key overrides menu toggle
+
         if event.type == .flagsChanged {
             // Modifier key used as activation key (e.g. Fn, Ctrl alone)
             guard event.keyCode == targetKeyCode else { return }

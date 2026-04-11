@@ -125,6 +125,10 @@ final class STTEngine: @unchecked Sendable {
         }
     }
 
+    func toggleRecording() {
+        gesture.toggleActivation()
+    }
+
     func stop() {
         processingTask?.cancel()
         processingTask = nil
