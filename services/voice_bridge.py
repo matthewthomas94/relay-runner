@@ -276,6 +276,13 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                     continue
 
                 # Handle control messages internally
+                if text == "__TTS_STOP__":
+                    # Kill TTS playback only — don't clear pending text or
+                    # write to command file (preserves double-tap play and
+                    # allows queued TTS to be synthesized)
+                    tts_worker.stop_playback()
+                    continue
+
                 if text == "__INTERRUPT__":
                     tts_worker.skip()
                     # Signal Claude to stop by writing interrupt marker
@@ -431,6 +438,10 @@ def main():
                 line, fifo_buf = fifo_buf.split(b"\n", 1)
                 text = line.decode("utf-8", errors="replace").strip()
                 if not text:
+                    continue
+
+                if text == "__TTS_STOP__":
+                    tts_worker.skip()
                     continue
 
                 if text == "__INTERRUPT__":

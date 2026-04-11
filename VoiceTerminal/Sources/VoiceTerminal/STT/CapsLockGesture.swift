@@ -19,7 +19,7 @@ final class CapsLockGesture {
     }
 
     /// Threshold before a held key counts as "recording" (not a tap)
-    private let recordThresholdSec: Double = 0.3
+    private let recordThresholdSec: Double = 0.5
     /// Maximum gap between taps in a multi-tap gesture
     private let tapWindowSec: Double = 0.6
     /// Wait after last transition before firing gesture

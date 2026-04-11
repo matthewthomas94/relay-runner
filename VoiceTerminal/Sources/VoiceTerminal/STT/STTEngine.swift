@@ -27,7 +27,7 @@ final class STTEngine: @unchecked Sendable {
     private let keepSamples: Int     // 200ms overlap
     private let pollMs = 50
 
-    private let vadThresholds: [String: Float] = ["low": 0.02, "medium": 0.008, "high": 0.003]
+    private let vadThresholds: [String: Float] = ["low": 0.01, "medium": 0.004, "high": 0.001]
     private var vadThreshold: Float { vadThresholds[vadSensitivity] ?? 0.008 }
 
     private let hallucinations: Set<String> = [
@@ -180,6 +180,9 @@ final class STTEngine: @unchecked Sendable {
         var transcribeCounter = 0
         var mediaSettleDeadline: Date?
 
+        // Don't accumulate audio while idle — saves memory over long sessions
+        audioBuffer.accepting = false
+
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
 
@@ -187,6 +190,10 @@ final class STTEngine: @unchecked Sendable {
             if let event = gesture.poll(currentSegment: currentSegment) {
                 switch event {
                 case .startRecording:
+                    // Kill TTS playback immediately (but don't notify Claude yet —
+                    // that waits until after settle to avoid breaking double-tap play)
+                    FIFOWriter.write("__TTS_STOP__")
+                    audioBuffer.accepting = true
                     audioBuffer.clear()
                     currentSegment = ""
                     mediaSettleDeadline = Date().addingTimeInterval(Double(mediaSettleMs) / 1000)
@@ -200,6 +207,7 @@ final class STTEngine: @unchecked Sendable {
                         NSLog("[STTEngine] >> \(text)")
                     }
                     currentSegment = ""
+                    audioBuffer.accepting = false
                     audioBuffer.clear()
                     isRecording = false
                     partialTranscription = ""
@@ -209,6 +217,7 @@ final class STTEngine: @unchecked Sendable {
                     FIFOWriter.write("__INTERRUPT__")
                     NSLog("[STTEngine] >> __INTERRUPT__")
                     currentSegment = ""
+                    audioBuffer.accepting = false
                     audioBuffer.clear()
                     isRecording = false
                     partialTranscription = ""
@@ -227,7 +236,14 @@ final class STTEngine: @unchecked Sendable {
                     audioBuffer.clear()
                     mediaSettleDeadline = nil
                     partialTranscription = ""
-                    NSLog("[STTEngine] Recording (settled)")
+                    // Only interrupt downstream if the user is actually recording,
+                    // not doing a double-tap play gesture.
+                    if gesture.isRecording {
+                        FIFOWriter.write("__INTERRUPT__")
+                        NSLog("[STTEngine] Recording (settled, interrupted downstream)")
+                    } else {
+                        NSLog("[STTEngine] Settle expired (awaiting gesture)")
+                    }
                     FIFOWriter.write("__STATUS__:recording...")
                 }
                 continue  // Skip transcription during settle period
@@ -254,11 +270,7 @@ final class STTEngine: @unchecked Sendable {
             let audio = audioBuffer.get()
             guard audio.count >= minSamples else { continue }
 
-            // VAD gate
-            let rms = sqrt(audio.map { $0 * $0 }.reduce(0, +) / Float(audio.count))
-            guard rms >= vadThreshold else { continue }
-
-            // Transcribe
+            // Transcribe (no VAD gate — user explicitly activated recording)
             guard let manager = asrManager else { continue }
             let result = try await manager.transcribe(audio, source: .microphone)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)

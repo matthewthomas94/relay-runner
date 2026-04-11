@@ -248,14 +248,20 @@ class TTSWorker:
         if proc and proc.poll() is None:
             proc.terminate()
 
-    def skip(self):
+    def stop_playback(self):
+        """Stop current audio playback without clearing pending text.
+        Used by __TTS_STOP__ to kill audio while preserving queued TTS."""
         proc = self._current_proc
         if proc and proc.poll() is None:
             proc.terminate()
-        with self._lock:
-            self._pending_text = ""
         self._playing = False
         self._paused = False
+
+    def skip(self):
+        """Stop playback AND discard pending text."""
+        self.stop_playback()
+        with self._lock:
+            self._pending_text = ""
         _notify_state("idle")
 
     def replay(self):

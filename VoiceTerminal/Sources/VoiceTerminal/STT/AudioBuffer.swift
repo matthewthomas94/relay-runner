@@ -5,9 +5,21 @@ final class AudioBuffer: @unchecked Sendable {
     private var samples: [Float] = []
     private let lock = NSLock()
 
+    /// Maximum buffer size (30s at 16kHz). Prevents unbounded growth when
+    /// the audio tap runs between recording sessions.
+    private let maxSamples = 16000 * 30
+
+    /// When false, `append` is a no-op. Set by STTEngine to avoid
+    /// accumulating audio while idle in caps-lock-toggle mode.
+    var accepting = true
+
     func append(_ newSamples: [Float]) {
         lock.lock()
+        guard accepting else { lock.unlock(); return }
         samples.append(contentsOf: newSamples)
+        if samples.count > maxSamples {
+            samples = Array(samples.suffix(maxSamples))
+        }
         lock.unlock()
     }
 
