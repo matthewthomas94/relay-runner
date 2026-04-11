@@ -5,7 +5,6 @@ import Foundation
 struct AppConfig: Codable, Equatable {
     var stt = SttConfig()
     var tts = TtsConfig()
-    var controls = ControlsConfig()
     var general = GeneralConfig()
     var awareness = AwarenessConfig()
 }
@@ -25,11 +24,6 @@ struct TtsConfig: Codable, Equatable {
     var auto_play: Bool = true
     var chime: String = "Tink"
     var show_notification: Bool = true
-}
-
-struct ControlsConfig: Codable, Equatable {
-    var play_pause_key: String = "F5"
-    var skip_key: String = "Shift+F5"
 }
 
 struct GeneralConfig: Codable, Equatable {

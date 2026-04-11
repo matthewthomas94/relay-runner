@@ -22,10 +22,7 @@ struct SettingsWindow: View {
                 TTSSettingsTab(config: $draft.tts)
                     .tabItem { Label("Text-to-Speech", systemImage: "speaker.wave.2") }
 
-                ControlsSettingsTab(config: $draft.controls)
-                    .tabItem { Label("Controls", systemImage: "keyboard") }
-
-                GeneralSettingsTab(config: $draft.general)
+GeneralSettingsTab(config: $draft.general)
                     .tabItem { Label("General", systemImage: "gear") }
 
                 AwarenessSettingsTab(config: $draft.awareness)

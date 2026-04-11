@@ -49,12 +49,6 @@ final class ConfigManager {
             if let v = tomlBool(tts, "show_notification") { config.tts.show_notification = v }
         }
 
-        // Controls
-        if let controls = table["controls"]?.tomlValue.table {
-            if let v = tomlString(controls, "play_pause_key") { config.controls.play_pause_key = v }
-            if let v = tomlString(controls, "skip_key") { config.controls.skip_key = v }
-        }
-
         // General
         if let general = table["general"]?.tomlValue.table {
             if let v = tomlString(general, "command") { config.general.command = v }
@@ -102,11 +96,6 @@ final class ConfigManager {
         lines.append("auto_play = \(c.tts.auto_play)")
         lines.append("chime = \"\(c.tts.chime)\"")
         lines.append("show_notification = \(c.tts.show_notification)")
-        lines.append("")
-
-        lines.append("[controls]")
-        lines.append("play_pause_key = \"\(c.controls.play_pause_key)\"")
-        lines.append("skip_key = \"\(c.controls.skip_key)\"")
         lines.append("")
 
         lines.append("[general]")

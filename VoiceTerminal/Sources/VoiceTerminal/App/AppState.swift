@@ -11,7 +11,6 @@ final class AppState {
 
     let configManager = ConfigManager.shared
     let processManager = ProcessManager()
-    let hotkeyManager = HotkeyManager()
 
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
@@ -21,7 +20,6 @@ final class AppState {
 
     init() {
         self.config = ConfigManager.shared.load()
-        registerHotkeys()
 
         // Auto-start STT + overlay after app finishes launching so relay mode
         // works without requiring the user to click "Start Listening" first.
@@ -73,11 +71,6 @@ final class AppState {
 
         // Always tell bridge to reload TTS settings
         SocketClient.bridgeSend("reload")
-
-        // Re-register hotkeys if controls changed
-        if oldConfig.controls != newConfig.controls {
-            registerHotkeys()
-        }
 
         // Update overlay config
         if oldConfig.awareness != newConfig.awareness {
@@ -163,13 +156,4 @@ final class AppState {
         stateMachine.reset()
     }
 
-    // MARK: - Hotkeys
-
-    private func registerHotkeys() {
-        hotkeyManager.register(
-            config: config.controls,
-            onPlayPause: { [weak self] in self?.ttsCommand("toggle") },
-            onSkip: { [weak self] in self?.ttsCommand("skip") }
-        )
-    }
 }
