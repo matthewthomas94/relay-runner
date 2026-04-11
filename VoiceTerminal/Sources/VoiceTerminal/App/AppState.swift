@@ -13,6 +13,12 @@ final class AppState {
     let processManager = ProcessManager()
     let hotkeyManager = HotkeyManager()
 
+    // Phase 2: Awareness overlay
+    let stateMachine = StateMachine()
+    private var overlayController: OverlayController?
+    private var eventBus: StateEventBus?
+    private var sttPollTimer: Timer?
+
     init() {
         self.config = ConfigManager.shared.load()
         registerHotkeys()
@@ -32,10 +38,13 @@ final class AppState {
         }
         isRunning = true
         statusText = "Listening"
+
+        startOverlay()
     }
 
     func stopServices() {
         guard isRunning else { return }
+        stopOverlay()
         sttEngine?.stop()
         sttEngine = nil
         processManager.stopServices()
@@ -62,6 +71,11 @@ final class AppState {
         // Re-register hotkeys if controls changed
         if oldConfig.controls != newConfig.controls {
             registerHotkeys()
+        }
+
+        // Update overlay config
+        if oldConfig.awareness != newConfig.awareness {
+            overlayController?.updateConfig(newConfig.awareness)
         }
 
         // Restart STT if settings changed
@@ -96,11 +110,54 @@ final class AppState {
         processManager.launchNewSession(config: config)
         isRunning = true
         statusText = "Session"
+
+        // Ensure overlay is running
+        if overlayController == nil { startOverlay() }
     }
 
     func ttsCommand(_ cmd: String) {
         SocketClient.ttsSend(cmd)
     }
+
+    // MARK: - Overlay management
+
+    private func startOverlay() {
+        // State event bus (listens for Python service state)
+        let bus = StateEventBus(stateMachine: stateMachine)
+        eventBus = bus
+        Task { await bus.start() }
+
+        // Overlay controller (panel + glow + pill)
+        let oc = OverlayController(config: config.awareness)
+        oc.start(stateMachine: stateMachine)
+        overlayController = oc
+
+        // Poll STT engine state → state machine (STT is in-process, no socket needed)
+        sttPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
+            guard let self, let engine = self.sttEngine else { return }
+            if engine.isRecording {
+                self.stateMachine.updateSTT(isRecording: true, partial: engine.partialTranscription)
+            } else {
+                self.stateMachine.updateSTT(isRecording: false, partial: "")
+                self.stateMachine.setListening()
+            }
+        }
+    }
+
+    private func stopOverlay() {
+        sttPollTimer?.invalidate()
+        sttPollTimer = nil
+
+        overlayController?.stop()
+        overlayController = nil
+
+        Task { await eventBus?.stop() }
+        eventBus = nil
+
+        stateMachine.reset()
+    }
+
+    // MARK: - Hotkeys
 
     private func registerHotkeys() {
         hotkeyManager.register(

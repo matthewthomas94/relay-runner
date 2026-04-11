@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import socket
@@ -17,6 +18,19 @@ import numpy as np
 from config import load_config
 
 TTS_CONTROL_SOCK = os.environ.get("TTS_CONTROL_SOCK", "/tmp/tts_control.sock")
+VOICE_STATE_SOCK = "/tmp/voice_state.sock"
+
+
+def _notify_state(state: str, **kwargs):
+    """Send a state update to the overlay app via Unix datagram socket.
+    Silently fails if the socket doesn't exist (overlay not running)."""
+    msg = {"source": "tts", "state": state, **kwargs}
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        s.sendto(json.dumps(msg).encode(), VOICE_STATE_SOCK)
+        s.close()
+    except (OSError, ConnectionRefusedError):
+        pass
 
 
 def _resolve_chime(name: str) -> str:
@@ -169,6 +183,7 @@ class TTSWorker:
 
                 if was_empty and self._pending_text.strip():
                     self._play_chime()
+                    _notify_state("message_waiting", text=self._pending_text.strip()[:200])
 
     def _control_loop(self):
         """Listen on Unix socket for play/pause/skip commands."""
@@ -222,6 +237,7 @@ class TTSWorker:
 
         self._playing = True
         self._paused = False
+        _notify_state("preparing")
 
         t = threading.Thread(target=self._speak, args=(text,), daemon=True)
         t.start()
@@ -240,6 +256,7 @@ class TTSWorker:
             self._pending_text = ""
         self._playing = False
         self._paused = False
+        _notify_state("idle")
 
     def replay(self):
         """Replay the last spoken audio."""
@@ -255,6 +272,7 @@ class TTSWorker:
     def _play_wav(self, wav_path: str):
         """Play a WAV file with afplay."""
         try:
+            _notify_state("speaking")
             cmd = ["afplay", wav_path]
             if self._rate != 1.0:
                 cmd.extend(["-r", str(self._rate)])
@@ -269,6 +287,7 @@ class TTSWorker:
         finally:
             self._playing = False
             self._current_proc = None
+            _notify_state("idle")
 
     def _speak(self, text: str):
         """Synthesize and play speech using Kokoro."""
@@ -312,6 +331,7 @@ class TTSWorker:
                     pass
 
             # Play with afplay, using -r for playback rate (1.0 = normal, 2.0 = 2x)
+            _notify_state("speaking")
             cmd = ["afplay", wav_path]
             if self._rate != 1.0:
                 cmd.extend(["-r", str(self._rate)])
@@ -326,6 +346,7 @@ class TTSWorker:
         finally:
             self._playing = False
             self._current_proc = None
+            _notify_state("idle")
 
     def _play_chime(self):
         if not os.path.exists(self._chime):

@@ -20,6 +20,18 @@ from tts_worker import TTSWorker
 
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 BRIDGE_CONTROL_SOCK = os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock")
+VOICE_STATE_SOCK = "/tmp/voice_state.sock"
+
+
+def _notify_state(state: str, **kwargs):
+    """Send a state update to the overlay app via Unix datagram socket."""
+    msg = {"source": "bridge", "state": state, **kwargs}
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        s.sendto(json.dumps(msg).encode(), VOICE_STATE_SOCK)
+        s.close()
+    except (OSError, ConnectionRefusedError):
+        pass
 
 
 def open_fifo(path: str) -> int | None:
@@ -63,6 +75,7 @@ class VoiceBridge:
         # Display prompt
         print(f"\n\033[1;36m❯ {text}\033[0m")
         print("\033[2m  thinking...\033[0m", end="", flush=True)
+        _notify_state("processing", prompt=text[:200])
 
         # Build command
         cmd = [self.claude_bin, "-p", "--output-format", "json", "--dangerously-skip-permissions"]
@@ -109,6 +122,8 @@ class VoiceBridge:
         response_text = resp.get("result", "")
         if not self.session_id:
             self.session_id = resp.get("session_id")
+
+        _notify_state("idle")
 
         if response_text:
             print(f"\r\033[2K\n{response_text}\n")
@@ -285,6 +300,7 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
 
                 # Skip TTS for new voice input, write command for Claude
                 tts_worker.skip()
+                _notify_state("processing", prompt=text[:200])
                 _write_cmd_file(text)
                 print(f"[voice_bridge] Voice command ready: {text}", file=sys.stderr)
 
