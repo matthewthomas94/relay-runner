@@ -1,51 +1,29 @@
 import AppKit
+import ApplicationServices
 
 /// Pauses/resumes system media playback during voice interaction.
-/// Tries MediaRemote.framework first (separate pause/play commands),
-/// falls back to simulating the media play/pause key via CGEvent.
+/// Simulates the media play/pause key via CGEvent (works with all apps
+/// including browser media like YouTube).
 final class MediaController {
 
-    private typealias MRSendCommand = @convention(c) (Int, AnyObject?) -> Bool
-    private let sendCommand: MRSendCommand?
-
     private var didPauseMedia = false
-    private var useKeySimulation: Bool
 
     init() {
-        let url = NSURL(fileURLWithPath: "/System/Library/PrivateFrameworks/MediaRemote.framework")
-        guard let bundle = CFBundleCreate(kCFAllocatorDefault, url),
-              CFBundleLoadExecutable(bundle),
-              let ptr = CFBundleGetFunctionPointerForName(bundle, "MRMediaRemoteSendCommand" as CFString)
-        else {
-            NSLog("[MediaController] MediaRemote unavailable, using key simulation")
-            sendCommand = nil
-            useKeySimulation = true
-            return
-        }
+        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        let trusted = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
 
-        sendCommand = unsafeBitCast(ptr, to: MRSendCommand.self)
-        useKeySimulation = false
-        NSLog("[MediaController] Using MediaRemote")
+        if trusted {
+            NSLog("[MediaController] Ready")
+        } else {
+            NSLog("[MediaController] Accessibility NOT granted — add VoiceTerminal to System Settings > Privacy & Security > Accessibility")
+        }
     }
 
     // MARK: - Public
 
     func pauseIfPlaying() {
-        guard !didPauseMedia else { return }
-
-        if useKeySimulation {
-            postMediaKey()
-        } else if let sendCommand {
-            let result = sendCommand(1, nil)   // kMRMediaRemoteCommandPause
-            NSLog("[MediaController] MR pause result=\(result)")
-            // If MediaRemote reports failure, try key simulation next time
-            if !result {
-                NSLog("[MediaController] MR failed, switching to key simulation")
-                useKeySimulation = true
-                postMediaKey()
-            }
-        }
-
+        guard !didPauseMedia, AXIsProcessTrusted() else { return }
+        postMediaKey()
         didPauseMedia = true
         NSLog("[MediaController] Paused")
     }
@@ -53,13 +31,8 @@ final class MediaController {
     func resumeIfWePaused() {
         guard didPauseMedia else { return }
         didPauseMedia = false
-
-        if useKeySimulation {
-            postMediaKey()
-        } else {
-            _ = sendCommand?(0, nil)   // kMRMediaRemoteCommandPlay
-        }
-
+        guard AXIsProcessTrusted() else { return }
+        postMediaKey()
         NSLog("[MediaController] Resumed")
     }
 
