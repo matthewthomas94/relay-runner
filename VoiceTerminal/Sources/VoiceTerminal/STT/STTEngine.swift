@@ -41,7 +41,7 @@ final class STTEngine: @unchecked Sendable {
     private let audioBuffer = AudioBuffer()
     private var asrManager: AsrManager?
     private var processingTask: Task<Void, Error>?
-    private let gesture = CapsLockGesture()
+    private let gesture: CapsLockGesture
 
     // MARK: - Init
 
@@ -49,6 +49,7 @@ final class STTEngine: @unchecked Sendable {
         self.modelName = config.model
         self.inputMode = config.input_mode
         self.vadSensitivity = config.vad_sensitivity
+        self.gesture = CapsLockGesture(activationKey: config.activation_key)
         self.minSamples = sampleRate      // 1 second
         self.keepSamples = sampleRate * 200 / 1000  // 200ms
     }

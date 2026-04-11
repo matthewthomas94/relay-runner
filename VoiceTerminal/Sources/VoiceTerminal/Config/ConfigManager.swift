@@ -36,6 +36,7 @@ final class ConfigManager {
             if let v = tomlString(stt, "input_device") { config.stt.input_device = v }
             if let v = tomlString(stt, "input_mode") { config.stt.input_mode = v }
             if let v = tomlString(stt, "push_to_talk_key") { config.stt.push_to_talk_key = v }
+            if let v = tomlString(stt, "activation_key") { config.stt.activation_key = v }
             if let v = tomlString(stt, "vad_sensitivity") { config.stt.vad_sensitivity = v }
         }
 
@@ -86,6 +87,7 @@ final class ConfigManager {
         lines.append("input_device = \"\(c.stt.input_device)\"")
         lines.append("input_mode = \"\(c.stt.input_mode)\"")
         lines.append("push_to_talk_key = \"\(c.stt.push_to_talk_key)\"")
+        lines.append("activation_key = \"\(c.stt.activation_key)\"")
         lines.append("vad_sensitivity = \"\(c.stt.vad_sensitivity)\"")
         lines.append("")
 

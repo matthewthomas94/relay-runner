@@ -25,6 +25,11 @@ struct STTSettingsTab: View {
                 KeyCaptureView(label: "Push-to-talk Key", value: $config.push_to_talk_key)
             }
 
+            if config.input_mode == "caps_lock_toggle" {
+                KeyCaptureView(label: "Activation Key", value: $config.activation_key)
+                    .help("Leave empty for Caps Lock (default)")
+            }
+
             Picker("VAD Sensitivity", selection: $config.vad_sensitivity) {
                 Text("Low").tag("low")
                 Text("Medium").tag("medium")
