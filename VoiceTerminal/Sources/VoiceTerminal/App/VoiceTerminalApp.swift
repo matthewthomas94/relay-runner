@@ -13,8 +13,4 @@ struct VoiceTerminalApp: App {
             SettingsWindow(appState: appState)
         }
     }
-
-    init() {
-        appState.startListening()
-    }
 }

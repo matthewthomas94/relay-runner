@@ -22,6 +22,12 @@ final class AppState {
     init() {
         self.config = ConfigManager.shared.load()
         registerHotkeys()
+
+        // Auto-start STT + overlay after app finishes launching so relay mode
+        // works without requiring the user to click "Start Listening" first.
+        DispatchQueue.main.async { [weak self] in
+            self?.startListening()
+        }
     }
 
     func startListening() {

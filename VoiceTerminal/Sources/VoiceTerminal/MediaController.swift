@@ -2,37 +2,98 @@ import AppKit
 import ApplicationServices
 
 /// Pauses/resumes system media playback during voice interaction.
-/// Simulates the media play/pause key via CGEvent (works with all apps
-/// including browser media like YouTube).
+/// Uses MRMediaRemoteSendCommand for directed pause/play (idempotent —
+/// sending "pause" to already-paused media is a no-op).
+/// Uses MRMediaRemoteGetNowPlayingApplicationIsPlaying to decide whether
+/// to resume — only resumes if media was detected as playing before pause.
+/// Note: some apps (e.g. Arc browser) misreport their playing state,
+/// in which case media will pause correctly but won't auto-resume.
 final class MediaController {
 
+    private typealias MRSendCommandFn = @convention(c) (Int, AnyObject?) -> Bool
+    private typealias MRIsPlayingFn = @convention(c) (
+        DispatchQueue, @escaping @convention(block) (Bool) -> Void
+    ) -> Void
+
+    private let sendCommand: MRSendCommandFn?
+    private let isPlayingFn: MRIsPlayingFn?
     private var didPauseMedia = false
 
     init() {
+        let url = NSURL(fileURLWithPath: "/System/Library/PrivateFrameworks/MediaRemote.framework")
+        var cmd: MRSendCommandFn? = nil
+        var isPlay: MRIsPlayingFn? = nil
+
+        if let bundle = CFBundleCreate(kCFAllocatorDefault, url),
+           CFBundleLoadExecutable(bundle) {
+            if let ptr = CFBundleGetFunctionPointerForName(
+                bundle, "MRMediaRemoteSendCommand" as CFString
+            ) {
+                cmd = unsafeBitCast(ptr, to: MRSendCommandFn.self)
+            }
+            if let ptr = CFBundleGetFunctionPointerForName(
+                bundle, "MRMediaRemoteGetNowPlayingApplicationIsPlaying" as CFString
+            ) {
+                isPlay = unsafeBitCast(ptr, to: MRIsPlayingFn.self)
+            }
+        }
+
+        sendCommand = cmd
+        isPlayingFn = isPlay
+
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let trusted = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
 
-        if trusted {
-            NSLog("[MediaController] Ready")
-        } else {
-            NSLog("[MediaController] Accessibility NOT granted — add VoiceTerminal to System Settings > Privacy & Security > Accessibility")
-        }
+        NSLog("[MediaController] Ready (MR commands: \(cmd != nil), state: \(isPlay != nil), accessibility: \(trusted))")
     }
 
     // MARK: - Public
 
     func pauseIfPlaying() {
-        guard !didPauseMedia, AXIsProcessTrusted() else { return }
-        postMediaKey()
-        didPauseMedia = true
-        NSLog("[MediaController] Paused")
+        guard !didPauseMedia else { return }
+
+        // Always send directed pause — idempotent, safe for already-paused media
+        if let sendCommand {
+            _ = sendCommand(1, nil)   // kMRMediaRemoteCommandPause
+        } else if AXIsProcessTrusted() {
+            // No MR commands — can't safely toggle without state detection
+            guard let isPlayingFn else { return }
+            isPlayingFn(DispatchQueue.main) { [weak self] isPlaying in
+                guard let self, !self.didPauseMedia, isPlaying else { return }
+                self.postMediaKey()
+                self.didPauseMedia = true
+                NSLog("[MediaController] Paused via toggle")
+            }
+            return
+        } else {
+            return
+        }
+
+        // Only set didPauseMedia if we can confirm media was actually playing.
+        // This prevents auto-resume from unpausing manually-paused media.
+        if let isPlayingFn {
+            isPlayingFn(DispatchQueue.main) { [weak self] isPlaying in
+                guard let self else { return }
+                self.didPauseMedia = isPlaying
+                NSLog("[MediaController] Paused (isPlaying=\(isPlaying), willResume=\(isPlaying))")
+            }
+        } else {
+            // No state detection — assume we paused something
+            didPauseMedia = true
+            NSLog("[MediaController] Paused (no state detection, willResume=true)")
+        }
     }
 
     func resumeIfWePaused() {
         guard didPauseMedia else { return }
         didPauseMedia = false
-        guard AXIsProcessTrusted() else { return }
-        postMediaKey()
+
+        if let sendCommand {
+            _ = sendCommand(0, nil)   // kMRMediaRemoteCommandPlay
+        } else if AXIsProcessTrusted() {
+            postMediaKey()
+        }
+
         NSLog("[MediaController] Resumed")
     }
 
