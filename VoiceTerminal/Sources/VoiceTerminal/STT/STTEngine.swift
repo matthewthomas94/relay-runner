@@ -170,9 +170,14 @@ final class STTEngine: @unchecked Sendable {
 
     // MARK: - Caps Lock toggle mode
 
+    /// Brief delay before capturing speech, so media has time to pause
+    /// and any bleed-through audio is discarded.
+    private let mediaSettleMs = 500
+
     private func runCapsLockMode() async throws {
         var currentSegment = ""
         var transcribeCounter = 0
+        var mediaSettleDeadline: Date?
 
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
@@ -183,6 +188,11 @@ final class STTEngine: @unchecked Sendable {
                 case .startRecording:
                     audioBuffer.clear()
                     currentSegment = ""
+                    mediaSettleDeadline = Date().addingTimeInterval(Double(mediaSettleMs) / 1000)
+                    isRecording = true
+                    partialTranscription = "Preparing\u{2026}"
+                    NSLog("[STTEngine] Settling (\(mediaSettleMs)ms for media pause)")
+                    FIFOWriter.write("__STATUS__:preparing...")
 
                 case .stopRecording(let text):
                     if FIFOWriter.write(text) {
@@ -192,6 +202,7 @@ final class STTEngine: @unchecked Sendable {
                     audioBuffer.clear()
                     isRecording = false
                     partialTranscription = ""
+                    mediaSettleDeadline = nil
 
                 case .interrupt:
                     FIFOWriter.write("__INTERRUPT__")
@@ -200,12 +211,25 @@ final class STTEngine: @unchecked Sendable {
                     audioBuffer.clear()
                     isRecording = false
                     partialTranscription = ""
+                    mediaSettleDeadline = nil
 
                 case .play:
                     FIFOWriter.write("__PLAY__")
                     NSLog("[STTEngine] >> __PLAY__ (double-tap)")
                     continue
                 }
+            }
+
+            // Media settle: wait for audio bleed-through to clear before recording
+            if let deadline = mediaSettleDeadline {
+                if Date() >= deadline {
+                    audioBuffer.clear()
+                    mediaSettleDeadline = nil
+                    partialTranscription = ""
+                    NSLog("[STTEngine] Recording (settled)")
+                    FIFOWriter.write("__STATUS__:recording...")
+                }
+                continue  // Skip transcription during settle period
             }
 
             // Update published recording state
