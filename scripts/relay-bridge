@@ -16,8 +16,6 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # -- Paths --
 SERVICES_DIR="$PROJECT_ROOT/services"
-SIDECAR_REL="$PROJECT_ROOT/stt-sidecar/.build/release/voice-listen"
-SIDECAR_DBG="$PROJECT_ROOT/stt-sidecar/.build/debug/voice-listen"
 VOICE_FIFO="/tmp/voice_in.fifo"
 BRIDGE_SOCK="/tmp/voice_bridge.sock"
 
@@ -34,27 +32,24 @@ CONFIG_PATH="$CONFIG_DIR/voice-terminal/config.toml"
 # Export PROJECT_ROOT so the slash command can find us
 export PROJECT_ROOT
 
-# -- Check for existing bridge (verify it's actually alive, not a stale socket) --
+# -- Kill any existing bridge (only one voice session at a time) --
 if [ -S "$BRIDGE_SOCK" ]; then
     if pgrep -f 'voice_bridge.py' > /dev/null 2>&1; then
-        echo "[relay-bridge] Voice bridge is already running."
-        echo "[relay-bridge] Stop the existing bridge first, or use the Tauri app."
-        exit 1
-    else
-        echo "[relay-bridge] Cleaning up stale socket..."
-        rm -f "$BRIDGE_SOCK"
+        echo "[relay-bridge] Stopping previous voice session..."
+        # Try graceful shutdown first
+        python3 -c "
+import socket, os
+s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+try: s.sendto(b'shutdown', '$BRIDGE_SOCK')
+except: pass
+s.close()
+" 2>/dev/null
+        sleep 0.5
+        # Force kill if still alive
+        pkill -f 'voice_bridge.py' 2>/dev/null || true
+        sleep 0.3
     fi
-fi
-
-# -- Find sidecar binary --
-SIDECAR=""
-if [ -x "$SIDECAR_REL" ]; then
-    SIDECAR="$SIDECAR_REL"
-elif [ -x "$SIDECAR_DBG" ]; then
-    SIDECAR="$SIDECAR_DBG"
-else
-    echo "[relay-bridge] Warning: STT sidecar not found. Voice input will not work."
-    echo "[relay-bridge] Build it with: cd stt-sidecar && swift build -c release"
+    rm -f "$BRIDGE_SOCK"
 fi
 
 # -- Find Python (prefer venv) --
@@ -63,42 +58,16 @@ if [ ! -x "$PYTHON" ]; then
     PYTHON="python3"
 fi
 
-# -- Read STT config (simple grep parsing) --
-STT_MODEL="parakeet-tdt-v2"
-STT_INPUT_MODE="caps_lock_toggle"
-STT_VAD="medium"
-
-if [ -f "$CONFIG_PATH" ]; then
-    _val() { grep -E "^\s*$1\s*=" "$CONFIG_PATH" 2>/dev/null | head -1 | sed 's/.*=\s*"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' '; }
-    v=$(_val model);           [ -n "$v" ] && STT_MODEL="$v"
-    v=$(_val input_mode);      [ -n "$v" ] && STT_INPUT_MODE="$v"
-    v=$(_val vad_sensitivity); [ -n "$v" ] && STT_VAD="$v"
-fi
-
 # -- Create FIFO --
 [ -p "$VOICE_FIFO" ] || mkfifo "$VOICE_FIFO" 2>/dev/null || true
 
-# -- Cleanup on exit --
-SIDECAR_PID=""
-cleanup() {
-    if [ -n "$SIDECAR_PID" ]; then
-        kill "$SIDECAR_PID" 2>/dev/null || true
-        wait "$SIDECAR_PID" 2>/dev/null || true
-    fi
-    rm -f "$VOICE_FIFO" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
-
-# -- Start STT sidecar in background --
-if [ -n "$SIDECAR" ]; then
-    "$SIDECAR" \
-        --model "$STT_MODEL" \
-        --input-mode "$STT_INPUT_MODE" \
-        --vad-sensitivity "$STT_VAD" &
-    SIDECAR_PID=$!
-    echo "[relay-bridge] STT sidecar started (PID $SIDECAR_PID)"
+# -- Note: STT is now handled by the Voice Terminal menu bar app --
+# -- This script only starts the Python voice bridge in relay mode --
+if ! pgrep -f 'VoiceTerminal' > /dev/null 2>&1; then
+    echo "[relay-bridge] Warning: Voice Terminal app is not running. STT will not be available."
+    echo "[relay-bridge] Start the Voice Terminal menu bar app for speech-to-text."
 fi
 
 # -- Start voice bridge --
 echo "[relay-bridge] Starting voice bridge..."
-exec "$PYTHON" "$SERVICES_DIR/voice_bridge.py" --config "$CONFIG_PATH" "$@"
+exec "$PYTHON" "$SERVICES_DIR/voice_bridge.py" --config "$CONFIG_PATH" --relay "$@"

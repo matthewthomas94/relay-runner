@@ -8,9 +8,11 @@ dist/
 # Rust / Tauri
 src-tauri/target/
 
-# Swift / STT sidecar
+# Swift
 stt-sidecar/.build/
 stt-sidecar/.swiftpm/
+VoiceTerminal/.build/
+VoiceTerminal/.swiftpm/
 
 # Models (downloaded at build time, too large for git)
 models/

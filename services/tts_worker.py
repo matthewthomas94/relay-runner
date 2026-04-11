@@ -255,8 +255,11 @@ class TTSWorker:
     def _play_wav(self, wav_path: str):
         """Play a WAV file with afplay."""
         try:
+            cmd = ["afplay", wav_path]
+            if self._rate != 1.0:
+                cmd.extend(["-r", str(self._rate)])
             self._current_proc = subprocess.Popen(
-                ["afplay", wav_path],
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -274,14 +277,15 @@ class TTSWorker:
             self._playing = False
             return
 
-        speed = self._rate
-
         wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
         os.close(wav_fd)
 
         try:
+            # Synthesize at speed=1.0 to avoid kokoro_onnx int32 truncation bug
+            # (newer ONNX exports cast speed to int32, so 1.2 → 1, 1.8 → 1, etc.)
+            # Playback rate is applied via afplay -r instead for smooth control.
             samples, sample_rate = self._kokoro.create(
-                text, voice=self._voice, speed=speed, lang="en-us"
+                text, voice=self._voice, speed=1.0, lang="en-us"
             )
 
             if samples is None or len(samples) == 0:
@@ -307,9 +311,12 @@ class TTSWorker:
                 except OSError:
                     pass
 
-            # Play with afplay (macOS)
+            # Play with afplay, using -r for playback rate (1.0 = normal, 2.0 = 2x)
+            cmd = ["afplay", wav_path]
+            if self._rate != 1.0:
+                cmd.extend(["-r", str(self._rate)])
             self._current_proc = subprocess.Popen(
-                ["afplay", wav_path],
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
