@@ -14,7 +14,7 @@ struct SttConfig: Codable, Equatable {
     var input_device: String = "default"
     var input_mode: String = "always_on"
     var push_to_talk_key: String = ""
-    var activation_key: String = ""     // Empty = Caps Lock (default)
+    var activation_key: String = "Caps Lock"
     var vad_sensitivity: String = "medium"
 }
 

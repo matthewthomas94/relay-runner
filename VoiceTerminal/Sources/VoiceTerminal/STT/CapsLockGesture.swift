@@ -37,7 +37,10 @@ final class CapsLockGesture {
     private var keyMonitors: [Any] = []
 
     init(activationKey: String = "") {
-        if activationKey.isEmpty {
+        let isCapsLock = activationKey.isEmpty
+            || activationKey.lowercased() == "caps lock"
+            || activationKey.lowercased() == "capslock"
+        if isCapsLock {
             useCapsLock = true
             targetKeyCode = 0
             targetModifiers = []

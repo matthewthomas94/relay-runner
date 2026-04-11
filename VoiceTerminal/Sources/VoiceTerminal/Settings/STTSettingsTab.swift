@@ -27,7 +27,6 @@ struct STTSettingsTab: View {
 
             if config.input_mode == "caps_lock_toggle" {
                 KeyCaptureView(label: "Activation Key", value: $config.activation_key)
-                    .help("Leave empty for Caps Lock (default)")
             }
 
             Picker("VAD Sensitivity", selection: $config.vad_sensitivity) {
