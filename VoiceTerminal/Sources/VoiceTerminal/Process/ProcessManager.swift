@@ -165,37 +165,39 @@ final class ProcessManager {
     }
 
     private func launchInTerminal(config: AppConfig, command: String) {
-        let terminal = config.general.terminal.lowercased()
+        let resolved = GeneralConfig.resolveTerminalPath(config.general.terminal)
+        let appName = config.general.terminalAppName
+        let bundleID = (Bundle(path: resolved)?.bundleIdentifier ?? "").lowercased()
         let appleScript: String
 
-        switch terminal {
-        case "warp":
+        if bundleID.contains("iterm") {
             appleScript = """
-            tell application "Warp" to activate
-            delay 0.5
-            tell application "System Events"
-              tell process "Warp"
-                keystroke "t" using command down
-                delay 0.3
-                keystroke "\(command)"
-                keystroke return
-              end tell
-            end tell
-            """
-        case "iterm2", "iterm":
-            appleScript = """
-            tell application "iTerm2"
+            tell application "\(appName)"
                 activate
                 tell current window
                     create tab with default profile command "\(command)"
                 end tell
             end tell
             """
-        default:
+        } else if bundleID == "com.apple.terminal" {
             appleScript = """
-            tell application "Terminal"
+            tell application "\(appName)"
                 activate
                 do script "\(command)"
+            end tell
+            """
+        } else {
+            // Generic: activate app, new tab via Cmd+T, type command
+            appleScript = """
+            tell application "\(appName)" to activate
+            delay 0.5
+            tell application "System Events"
+              tell process "\(appName)"
+                keystroke "t" using command down
+                delay 0.3
+                keystroke "\(command)"
+                keystroke return
+              end tell
             end tell
             """
         }

@@ -9,6 +9,7 @@ final class OverlayController {
     private var panel: OverlayPanel?
     private let glowRenderer = GlowRenderer()
     private let pill = TranscriptionPill(frame: .zero)
+    private let mediaController = MediaController()
     private var displayTracker: Any?  // global mouse monitor
     private var stateObservation: Any?
 
@@ -117,10 +118,14 @@ final class OverlayController {
             }
         }
 
-        // Pill: show transcription during recording, preparing status, or message preview
-        if case .recording = state, config.live_transcription {
-            if partial != lastPartial {
-                pill.update(text: partial.isEmpty ? nil : partial)
+        // Pill: show "I'm listening" at start of recording, then live transcription
+        if case .recording = state {
+            if partial.isEmpty {
+                if state != lastAppliedState || !lastPartial.isEmpty {
+                    pill.update(text: "I\u{2019}m listening\u{2026}")
+                }
+            } else if config.live_transcription, partial != lastPartial {
+                pill.update(text: partial)
             }
         } else if case .preparing = state {
             if state != lastAppliedState {
@@ -136,8 +141,28 @@ final class OverlayController {
             }
         }
 
+        // Media control: pause during recording/speaking, resume after
+        let wasActive = Self.isVoiceActive(lastAppliedState)
+        let isActive = Self.isVoiceActive(state)
+        if !wasActive && isActive {
+            NSLog("[OverlayController] Voice active → pausing media (state=\(state))")
+            mediaController.pauseIfPlaying()
+        } else if wasActive && !isActive {
+            NSLog("[OverlayController] Voice inactive → resuming media (state=\(state))")
+            mediaController.resumeIfWePaused()
+        }
+
         lastAppliedState = state
         lastPartial = partial
         lastPreview = preview
+    }
+
+    private static func isVoiceActive(_ state: OverlayState) -> Bool {
+        switch state {
+        case .recording, .speaking:
+            return true
+        default:
+            return false
+        }
     }
 }

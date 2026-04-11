@@ -36,6 +36,29 @@ struct GeneralConfig: Codable, Equatable {
     var command: String = "claude"
     var terminal: String = "warp"
     var auto_start: Bool = false
+
+    /// Resolve legacy terminal short names to full app paths.
+    static func resolveTerminalPath(_ terminal: String) -> String {
+        if terminal.hasPrefix("/") { return terminal }
+        switch terminal.lowercased() {
+        case "warp":            return "/Applications/Warp.app"
+        case "iterm2", "iterm": return "/Applications/iTerm.app"
+        case "terminal":        return "/Applications/Utilities/Terminal.app"
+        case "kitty":           return "/Applications/kitty.app"
+        case "alacritty":       return "/Applications/Alacritty.app"
+        default:                return "/Applications/\(terminal).app"
+        }
+    }
+
+    /// App name for AppleScript addressing, from the bundle's CFBundleName.
+    var terminalAppName: String {
+        let resolved = Self.resolveTerminalPath(terminal)
+        if let bundle = Bundle(path: resolved),
+           let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String {
+            return name
+        }
+        return URL(fileURLWithPath: resolved).deletingPathExtension().lastPathComponent
+    }
 }
 
 struct AwarenessConfig: Codable, Equatable {
