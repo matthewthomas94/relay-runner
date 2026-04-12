@@ -53,12 +53,12 @@ def _parse_toml_simple(text: str) -> dict:
 
 
 def _default_config_path() -> str:
-    """Default config path: ~/Library/Application Support/voice-terminal/config.toml on macOS."""
+    """Default config path: ~/Library/Application Support/relay-runner/config.toml on macOS."""
     if sys.platform == "darwin":
         base = os.path.expanduser("~/Library/Application Support")
     else:
         base = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
-    return os.path.join(base, "voice-terminal", "config.toml")
+    return os.path.join(base, "relay-runner", "config.toml")
 
 
 def load_config(config_path: str | None = None) -> dict:

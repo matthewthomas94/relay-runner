@@ -1,21 +1,15 @@
 __pycache__/
 *.pyc
 
-# Node
-node_modules/
-dist/
-
-# Rust / Tauri
-src-tauri/target/
-
 # Swift
-stt-sidecar/.build/
-stt-sidecar/.swiftpm/
-VoiceTerminal/.build/
-VoiceTerminal/.swiftpm/
+.build/
+.swiftpm/
 
 # Models (downloaded at build time, too large for git)
 models/
+
+# Build output
+dist/
 
 # macOS
 .DS_Store

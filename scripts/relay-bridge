@@ -27,7 +27,7 @@ if [ -z "$CONFIG_DIR" ]; then
         CONFIG_DIR="$HOME/.config"
     fi
 fi
-CONFIG_PATH="$CONFIG_DIR/voice-terminal/config.toml"
+CONFIG_PATH="$CONFIG_DIR/relay-runner/config.toml"
 
 # Export PROJECT_ROOT so the slash command can find us
 export PROJECT_ROOT
@@ -52,20 +52,39 @@ s.close()
     rm -f "$BRIDGE_SOCK"
 fi
 
-# -- Find Python (prefer venv) --
+# -- Ensure Python venv with dependencies --
 PYTHON="$SERVICES_DIR/.venv/bin/python3"
 if [ ! -x "$PYTHON" ]; then
-    PYTHON="python3"
+    echo ''
+    echo '╔══════════════════════════════════════════╗'
+    echo '║  Relay Runner — First-time setup         ║'
+    echo '║  Installing Python dependencies...       ║'
+    echo '╚══════════════════════════════════════════╝'
+    echo ''
+    VENV_PYTHON=python3
+    for p in /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+        if [ -x "$p" ] && "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+            VENV_PYTHON="$p"
+            break
+        fi
+    done
+    echo "Using $("$VENV_PYTHON" --version)"
+    "$VENV_PYTHON" -m venv "$SERVICES_DIR/.venv" && \
+    "$SERVICES_DIR/.venv/bin/python3" -m pip install --upgrade pip && \
+    "$SERVICES_DIR/.venv/bin/pip" install -r "$SERVICES_DIR/requirements.txt" && \
+    echo '' && echo '[Relay Runner] Setup complete.' || \
+    { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
+    echo ''
 fi
 
 # -- Create FIFO --
 [ -p "$VOICE_FIFO" ] || mkfifo "$VOICE_FIFO" 2>/dev/null || true
 
-# -- Note: STT is now handled by the Voice Terminal menu bar app --
+# -- Note: STT is now handled by the Relay Runner menu bar app --
 # -- This script only starts the Python voice bridge in relay mode --
-if ! pgrep -f 'VoiceTerminal' > /dev/null 2>&1; then
-    echo "[relay-bridge] Warning: Voice Terminal app is not running. STT will not be available."
-    echo "[relay-bridge] Start the Voice Terminal menu bar app for speech-to-text."
+if ! pgrep -f 'relay-runner' > /dev/null 2>&1; then
+    echo "[relay-bridge] Warning: Relay Runner app is not running. STT will not be available."
+    echo "[relay-bridge] Start the Relay Runner menu bar app for speech-to-text."
 fi
 
 # -- Start voice bridge --

@@ -374,7 +374,7 @@ def main():
 
     bridge = VoiceBridge(claude_bin, tts_queue, session_id=cli.get("session"))
 
-    print("\033[1mVoice Terminal\033[0m — Caps Lock to speak, Caps Lock again to interrupt")
+    print("\033[1mRelay Runner\033[0m — Caps Lock to speak, Caps Lock again to interrupt")
     if bridge.session_id:
         print(f"\033[2mResuming session: {bridge.session_id}\033[0m")
     print(f"\033[2mlistening on {VOICE_FIFO}\033[0m\n")
@@ -441,12 +441,12 @@ def main():
                     continue
 
                 if text == "__TTS_STOP__":
-                    tts_worker.skip()
+                    tts_worker.stop_playback()
                     continue
 
                 if text == "__INTERRUPT__":
                     bridge.interrupt()
-                    tts_worker.skip()
+                    tts_worker.stop_playback()
                     continue
 
                 if text == "__PLAY__":
@@ -468,9 +468,10 @@ def main():
                 if slash_match:
                     text = "/" + slash_match.group(1).replace(" ", "-")
 
-                # Interrupt any in-progress work, then queue new request
+                # Interrupt any in-progress Claude request, stop TTS audio
+                # (but don't discard pending text — user may still want to play it)
                 bridge.interrupt()
-                tts_worker.skip()
+                tts_worker.stop_playback()
                 request_queue.put(text)
 
     except KeyboardInterrupt:
