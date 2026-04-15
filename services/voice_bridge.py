@@ -284,8 +284,12 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                     continue
 
                 if text == "__INTERRUPT__":
+                    tts_worker.stop_playback()
+                    _write_cmd_file("__INTERRUPT__")
+                    continue
+
+                if text == "__CANCEL__":
                     tts_worker.skip()
-                    # Signal Claude to stop by writing interrupt marker
                     _write_cmd_file("__INTERRUPT__")
                     continue
 
@@ -447,6 +451,11 @@ def main():
                 if text == "__INTERRUPT__":
                     bridge.interrupt()
                     tts_worker.stop_playback()
+                    continue
+
+                if text == "__CANCEL__":
+                    bridge.interrupt()
+                    tts_worker.skip()  # Clear pending text so next message gets fresh notification
                     continue
 
                 if text == "__PLAY__":

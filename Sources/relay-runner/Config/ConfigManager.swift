@@ -55,6 +55,7 @@ final class ConfigManager {
             if let v = tomlString(general, "command") { config.general.command = v }
             if let v = tomlString(general, "terminal") { config.general.terminal = v }
             if let v = tomlBool(general, "auto_start") { config.general.auto_start = v }
+            if let v = tomlString(general, "working_directory") { config.general.working_directory = v }
         }
 
         // Awareness
@@ -104,6 +105,7 @@ final class ConfigManager {
         lines.append("command = \"\(c.general.command)\"")
         lines.append("terminal = \"\(c.general.terminal)\"")
         lines.append("auto_start = \(c.general.auto_start)")
+        lines.append("working_directory = \"\(c.general.working_directory)\"")
         lines.append("")
 
         lines.append("[awareness]")

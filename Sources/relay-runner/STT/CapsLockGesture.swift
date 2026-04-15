@@ -37,6 +37,10 @@ final class CapsLockGesture {
     // Menu-driven activation override (nil = use hardware state)
     private var manualKeyDown: Bool?
 
+    /// After an external `reset()` while the key is held, suppress all events
+    /// until the key is physically released and pressed again.
+    private var suppressed = false
+
     // Modifier double-tap tracking
     private var optionTaps: [Date] = []
     private var optionWasDown = false
@@ -103,6 +107,15 @@ final class CapsLockGesture {
 
         let keyOn = isKeyOn
 
+        // After an external reset while the key was held, wait for release
+        if suppressed {
+            if !keyOn {
+                suppressed = false
+                prevKeyOn = false
+            }
+            return nil
+        }
+
         // Detect state transition
         if keyOn != prevKeyOn {
             // Key just activated — start recording
@@ -150,6 +163,8 @@ final class CapsLockGesture {
         recording = false
         transitions.removeAll()
         prevKeyOn = isKeyOn
+        // If the key is still physically held, suppress until released
+        suppressed = isKeyOn
     }
 
     // MARK: - Modifier double-tap monitoring (Option = play, Control = cancel)

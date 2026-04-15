@@ -41,10 +41,6 @@ final class OverlayController {
             self?.pill.updateBackdrop(with: cgImage, particleFrame: frameInView)
         }
 
-        pill.onFrameChanged = { [weak self] frame in
-            self?.particleField.setExclusionRect(frame)
-        }
-
         // Attach pill
         contentView.addSubview(pill)
 
@@ -112,6 +108,13 @@ final class OverlayController {
                 sentTimestamp = nil
                 sm.dismissSent()
             }
+        case .sessionPrompt:
+            if sentTimestamp == nil {
+                sentTimestamp = Date()
+            } else if let ts = sentTimestamp, Date().timeIntervalSince(ts) >= 5.0 {
+                sentTimestamp = nil
+                sm.dismissSessionPrompt()
+            }
         default:
             sentTimestamp = nil
         }
@@ -143,16 +146,16 @@ final class OverlayController {
         switch state {
         case .listening:
             if state != lastAppliedState {
-                pill.showCompact(title: "Listening\u{2026}", theme: .stt)
+                pill.showCompact(title: "Listening...", theme: .stt)
             }
 
         case .recording:
-            if partial.isEmpty {
-                if state != lastAppliedState || !lastPartial.isEmpty {
-                    pill.showCompact(title: "Recording\u{2026}", theme: .stt)
-                }
-            } else if config.live_transcription, partial != lastPartial {
-                pill.showFull(title: "Recording", body: partial, theme: .stt)
+            if state != lastAppliedState {
+                // Always start with compact pill on recording entry
+                pill.showCompact(title: "Recording...", theme: .stt)
+            } else if !partial.isEmpty, config.live_transcription, partial != lastPartial {
+                // Only expand to full once transcription arrives
+                pill.showFull(title: "Recording \u{2014} Press Caps Lock to stop and send", body: partial, theme: .stt)
             }
 
         case .sent:
@@ -162,35 +165,48 @@ final class OverlayController {
 
         case .cancelled(let source):
             if state != lastAppliedState {
-                pill.showCompact(title: "Cancelled", theme: source == .tts ? .tts : .stt)
+                if source == .stt {
+                    pill.showCompact(title: "Recording cancelled", theme: .stt)
+                } else {
+                    pill.showCompact(title: "Playback cancelled", theme: .tts)
+                }
             }
 
         case .processing:
             if state != lastAppliedState {
-                pill.showCompact(title: "Processing\u{2026}", theme: .tts)
+                pill.showCompact(title: "Processing...", theme: .tts)
             }
 
         case .preparing:
             if state != lastAppliedState {
-                pill.showCompact(title: "Preparing\u{2026}", theme: .tts)
+                pill.showCompact(title: "Preparing...", theme: .tts)
             }
 
         case .messageWaiting:
             if config.message_preview, let preview {
                 if preview != lastPreview || state != lastAppliedState {
-                    pill.showFull(title: "Response", body: preview, theme: .tts)
+                    pill.showFull(title: "Message Queued \u{2014} Double tap Option to play", body: preview, theme: .tts)
                 }
             } else if state != lastAppliedState {
-                pill.showCompact(title: "Response ready", theme: .tts)
+                pill.showCompact(title: "Message Queued...", theme: .tts)
             }
 
         case .speaking:
             if config.message_preview, let preview {
                 if state != lastAppliedState || preview != lastPreview {
-                    pill.showFull(title: "Speaking", body: preview, theme: .tts)
+                    pill.showFull(title: "Message Playing \u{2014} Double tap Control to cancel", body: preview, theme: .tts)
                 }
             } else if state != lastAppliedState {
-                pill.showCompact(title: "Speaking\u{2026}", theme: .tts)
+                pill.showCompact(title: "Message Playing...", theme: .tts)
+            }
+
+        case .sessionPrompt:
+            if state != lastAppliedState {
+                pill.showFull(
+                    title: "No session running",
+                    body: "Double tap Option to start a new session\nPress Caps Lock to dismiss",
+                    theme: .stt
+                )
             }
 
         default:

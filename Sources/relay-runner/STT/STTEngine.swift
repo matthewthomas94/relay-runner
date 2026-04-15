@@ -11,6 +11,7 @@ final class STTEngine: @unchecked Sendable {
 
     var isRecording = false
     var wasCancelled = false
+    var playRequested = false
     var partialTranscription = ""
     var statusMessage = ""
 
@@ -146,6 +147,16 @@ final class STTEngine: @unchecked Sendable {
         gesture.toggleActivation()
     }
 
+    /// Cancel an in-progress recording externally (e.g. no session to send to).
+    func cancelRecording() {
+        guard isRecording else { return }
+        gesture.reset()
+        audioBuffer.accepting = false
+        audioBuffer.clear()
+        isRecording = false
+        partialTranscription = ""
+    }
+
     func stop() {
         processingTask?.cancel()
         processingTask = nil
@@ -235,8 +246,7 @@ final class STTEngine: @unchecked Sendable {
                     mediaSettleDeadline = nil
 
                 case .cancel:
-                    FIFOWriter.write("__TTS_STOP__")
-                    FIFOWriter.write("__INTERRUPT__")
+                    FIFOWriter.write("__CANCEL__")
                     NSLog("[STTEngine] Cancelled (2x Ctrl)")
                     currentSegment = ""
                     audioBuffer.accepting = false
@@ -257,6 +267,7 @@ final class STTEngine: @unchecked Sendable {
                     mediaSettleDeadline = nil
 
                 case .play:
+                    playRequested = true
                     FIFOWriter.write("__PLAY__")
                     NSLog("[STTEngine] >> __PLAY__ (double-tap)")
                     continue

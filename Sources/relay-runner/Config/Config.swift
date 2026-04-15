@@ -31,6 +31,7 @@ struct GeneralConfig: Codable, Equatable {
     var command: String = "claude"
     var terminal: String = "warp"
     var auto_start: Bool = false
+    var working_directory: String = ""
 
     /// Resolve legacy terminal short names to full app paths.
     static func resolveTerminalPath(_ terminal: String) -> String {

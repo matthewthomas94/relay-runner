@@ -13,7 +13,7 @@ final class ParticleFieldRenderer {
 
         var baseHue: CGFloat {
             switch self {
-            case .stt: return 0.06    // blood orange
+            case .stt: return 0.04    // deeper blood orange
             case .tts: return 0.68    // blue-purple
             }
         }
@@ -43,28 +43,8 @@ final class ParticleFieldRenderer {
     private var currentTheme: Theme?
     private var intensityMultiplier: Double = 0.6
 
-    private var exclusionRect: CGRect = .zero
-
-    func setExclusionRect(_ rect: CGRect) {
-        exclusionRect = rect
-        updateMask()
-    }
-
-    private func updateMask() {
-        if exclusionRect.isEmpty {
-            particleLayer.mask = nil
-            return
-        }
-        
-        let path = CGMutablePath()
-        path.addRect(particleLayer.bounds)
-        path.addRoundedRect(in: exclusionRect, cornerWidth: 16, cornerHeight: 16)
-        
-        let maskLayer = CAShapeLayer()
-        maskLayer.path = path
-        maskLayer.fillRule = .evenOdd
-        particleLayer.mask = maskLayer
-    }
+    // Particles render continuously behind the pill — the pill's glass
+    // blur handles the visual layering, no exclusion mask needed.
 
     private var animationTimer: Timer?
     private var startTime: CFTimeInterval = 0
@@ -83,9 +63,9 @@ final class ParticleFieldRenderer {
     }
     private var dots: [Theme: [Dot]] = [:]
 
-    private let spacing: CGFloat = 12
-    private let maxDotRadius: CGFloat = 4.5
-    private let minDotRadius: CGFloat = 0.4
+    private let spacing: CGFloat = 8
+    private let maxDotRadius: CGFloat = 3.0
+    private let minDotRadius: CGFloat = 0.3
 
     init() {
         // Dark gradient behind particles: transparent at top, dark at bottom
@@ -128,8 +108,6 @@ final class ParticleFieldRenderer {
             rebuildContext()
             dots.removeAll()
         }
-        
-        updateMask()
     }
 
     func setIntensity(_ value: Double) {

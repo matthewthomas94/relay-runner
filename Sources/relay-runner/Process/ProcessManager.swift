@@ -115,10 +115,12 @@ final class ProcessManager {
 
         let launcher = "/tmp/voice_bridge_launch.command"
         let sdir = servicesDir.path
+        let cdLine = Self.cdLine(config.general.working_directory)
         let script = """
         #!/bin/bash
         \(Self.shellProfileSource())
         \(Self.venvSetupScript(servicesDir: sdir))
+        \(cdLine)
         exec '\(Self.venvPython(servicesDir: sdir))' '\(bridgeScript)' --config '\(configPath)'
         """
         try? script.write(toFile: launcher, atomically: true, encoding: .utf8)
@@ -133,6 +135,108 @@ final class ProcessManager {
         ensureFifo()
 
         launchInTerminal(command: launcher)
+    }
+
+    // MARK: - Claude Code skill install
+
+    private static let skillDir: URL = {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/commands")
+    }()
+
+    private static let skillPath: URL = skillDir.appendingPathComponent("relay-bridge.md")
+
+    var isSkillInstalled: Bool {
+        FileManager.default.fileExists(atPath: Self.skillPath.path)
+    }
+
+    @discardableResult
+    func installSkill() -> Bool {
+        let content = """
+        Connect voice I/O to this Claude session. You become a voice-interactive assistant: listen for spoken input, respond, and speak the response aloud via TTS.
+
+        ## Setup
+
+        1. Verify the Relay Runner app is running:
+
+        ```bash
+        pgrep -f 'relay-runner' > /dev/null 2>&1 && echo "app: ok" || echo "app: NOT RUNNING"
+        ```
+
+        If not running, tell the user to start the Relay Runner menu bar app, then try `/relay-bridge` again. Do not proceed.
+
+        2. Kill any existing voice bridge session (the app will auto-restart it in relay mode):
+
+        ```bash
+        pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready
+        ```
+
+        3. Wait for the relay bridge to come back (the app restarts it automatically):
+
+        ```bash
+        for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && break; sleep 0.5; done; [ -S /tmp/voice_bridge.sock ] || echo "bridge: FAILED"
+        ```
+
+        If the bridge failed to start, tell the user to check the Relay Runner app and stop here.
+
+        ## Voice Interaction Loop
+
+        Now enter a continuous loop. Repeat these steps until the user says "stop listening" or you receive `__INTERRUPT__`:
+
+        ### Step 1: Wait for voice input
+
+        ```bash
+        while [ ! -f /tmp/voice_cmd_ready ]; do sleep 0.2; [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }; done; cat /tmp/voice_cmd_ready; rm -f /tmp/voice_cmd_ready
+        ```
+
+        This blocks until the user speaks via Caps Lock. If the voice bridge is killed (e.g. a new session was started), the loop exits.
+
+        ### Step 2: Process the input
+
+        - If the text is `__BRIDGE_DIED__`, the voice session was ended (another session was started, or the bridge was stopped). Say "Voice session ended." and stop the loop — do NOT go back to Step 1. Clean up and return to normal operation.
+        - If the text is `__INTERRUPT__`, acknowledge briefly and go back to Step 1.
+        - Otherwise, treat the text as a normal user message. Respond naturally and helpfully, as you would to any typed message.
+
+        ### Step 3: Speak your response
+
+        After generating your response, send it to TTS for spoken playback. Keep the TTS text concise and conversational (strip markdown formatting, code blocks, and verbose explanations — speak the key points):
+
+        ```bash
+        echo 'YOUR_SPOKEN_RESPONSE' > /tmp/tts_in.fifo
+        ```
+
+        Important: Use single quotes and escape any single quotes in your response (`'` becomes `'\\''`). Only send the spoken summary, not the full detailed response.
+
+        ### Step 4: Loop
+
+        Go back to Step 1 and wait for the next voice command.
+
+        ## Cleanup
+
+        When the session ends (user says "stop listening", "exit voice", or similar), clean up:
+
+        ```bash
+        rm -f /tmp/voice_cmd_ready
+        ```
+
+        The Relay Runner app manages the voice bridge daemon — do not kill it.
+
+        ## Important Notes
+
+        - You are in a normal Claude session with full tool access. Voice input is just another way for the user to send messages.
+        - Speak concisely. TTS responses should be 1-3 sentences summarizing what you did or what you found. The user can read the full detail in the conversation.
+        - If the user asks you to run commands, edit files, or do anything you'd normally do, do it. Then speak a brief summary of what happened.
+        - The relay daemon handles Caps Lock detection, STT, and TTS playback. You just read commands and write responses.
+        """
+        do {
+            try FileManager.default.createDirectory(at: Self.skillDir, withIntermediateDirectories: true)
+            try content.write(to: Self.skillPath, atomically: true, encoding: .utf8)
+            NSLog("[ProcessManager] Installed Claude Code skill at \(Self.skillPath.path)")
+            return true
+        } catch {
+            NSLog("[ProcessManager] Failed to install skill: \(error)")
+            return false
+        }
     }
 
     // MARK: - Terminal launch
@@ -197,6 +301,13 @@ final class ProcessManager {
             echo ''
         fi
         """
+    }
+
+    /// Returns a `cd` line for the launcher script, or a comment if empty.
+    private static func cdLine(_ workingDirectory: String) -> String {
+        let trimmed = workingDirectory.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return "# no working directory configured" }
+        return "cd '\(trimmed)'"
     }
 
     /// Returns shell commands to source the user's profile so PATH includes

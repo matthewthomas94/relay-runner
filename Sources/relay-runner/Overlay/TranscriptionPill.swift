@@ -3,8 +3,13 @@ import CoreImage
 
 /// Bottom-center pill showing state info, live transcription, or message preview.
 /// Liquid glass style: within-window blur refracts particles, specular border, themed glow shadow.
-/// Two modes: compact (single title) and full (title + body text).
-/// Two themes: STT (blood orange glow) and TTS (purple glow).
+///
+/// Animation contract:
+///   - Entrance: slide up from below screen + Gaussian blur 64→0
+///   - Exit: slide down below screen + Gaussian blur 0→64
+///   - State transitions (while visible): blur out → update content → blur in
+///   - Content updates within same state: smooth in-place resize
+///   - All movement is purely vertical (Y-axis only)
 final class TranscriptionPill: NSView {
 
     enum Theme {
@@ -26,37 +31,45 @@ final class TranscriptionPill: NSView {
         }
     }
 
-    // Callback when pill frame updates so particle mask can hole-punch it
+    // Unused — kept for API compat; particles render behind the pill unmasked
     var onFrameChanged: ((CGRect) -> Void)?
 
-    private let secondaryShadowLayer = CALayer()
-    
     private let backgroundBlurView = NSVisualEffectView()
     private let glassContainerView = NSView()
-    
-    // Glass blur properties as per Figma specification
+
+    // Glass layers
     private let solidFillLayer = CALayer()
     private let backdropLayer = CALayer()
     private let gradientFillLayer = CAGradientLayer()
-    
     private let specularLayer = CAGradientLayer()
     private let borderGradientLayer = CAGradientLayer()
     private let borderMaskLayer = CAShapeLayer()
+
     private let titleLabel: NSTextField
     private let bodyLabel: NSTextField
 
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private let blurFilter = CIFilter(name: "CIGaussianBlur")!
 
-    private let maxWidth: CGFloat = 380
+    private let maxWidth: CGFloat = 460
     private let pillPadH: CGFloat = 24
-    private let pillPadV: CGFloat = 16
+    private let pillPadV: CGFloat = 18
     private let textGap: CGFloat = 12
     private let cr: CGFloat = 16
+    private let bottomOffset: CGFloat = 56
 
     private let textColor = NSColor(red: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 1)
 
     private var isCompact = true
+    private var isTransitioning = false
+    private var currentTheme: Theme?
+
+    // Spring-damped timing for Apple-like feel
+    private let springTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
+    private let entranceDuration: CFTimeInterval = 0.5
+    private let exitDuration: CFTimeInterval = 0.3
+    private let transitionBlurDuration: CFTimeInterval = 0.12
+    private let transitionUnblurDuration: CFTimeInterval = 0.4
 
     override init(frame: NSRect) {
         titleLabel = NSTextField(labelWithString: "")
@@ -65,19 +78,20 @@ final class TranscriptionPill: NSView {
         super.init(frame: frame)
 
         wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.isOpaque = false
         alphaValue = 0
 
-        // Secondary shadow (smaller, lighter glow)
-        secondaryShadowLayer.shadowOffset = CGSize(width: 0, height: -8)
-        secondaryShadowLayer.shadowRadius = 12
-        secondaryShadowLayer.shadowOpacity = 0.1
-        secondaryShadowLayer.backgroundColor = NSColor.clear.cgColor
-        layer?.addSublayer(secondaryShadowLayer)
-
-        // Primary shadow
-        layer?.shadowOffset = CGSize(width: 0, height: -8)
-        layer?.shadowRadius = 24
+        // Primary shadow on root layer
+        layer?.shadowOffset = CGSize(width: 0, height: -6)
+        layer?.shadowRadius = 20
         layer?.shadowOpacity = 0
+
+        // Blur filter for entrance/exit transitions
+        let motionBlur = CIFilter(name: "CIGaussianBlur")!
+        motionBlur.name = "motionBlur"
+        motionBlur.setValue(0, forKey: kCIInputRadiusKey)
+        layer?.filters = [motionBlur]
 
         // Background blur for external apps behind the overlay window
         backgroundBlurView.blendingMode = .behindWindow
@@ -89,23 +103,23 @@ final class TranscriptionPill: NSView {
         backgroundBlurView.layer?.masksToBounds = true
         addSubview(backgroundBlurView)
 
-        // Glass container setup (Custom particles and fills)
+        // Glass container (clips all internal layers)
         glassContainerView.wantsLayer = true
         glassContainerView.layer?.cornerRadius = cr
         glassContainerView.layer?.masksToBounds = true
         addSubview(glassContainerView)
-        
-        // 1. Dark base to emulate local dark gradient drop-off + Figma 20% spec
+
+        // Dark base fill
         solidFillLayer.backgroundColor = NSColor(white: 0.0, alpha: 0.45).cgColor
         glassContainerView.layer?.addSublayer(solidFillLayer)
 
-        // 2. The blurred background dots layered on top
+        // Blurred particle backdrop
         glassContainerView.layer?.addSublayer(backdropLayer)
-        
-        // 3. Precise Figma Spec: Linear Gradient 10% Opacity (Black to F8FAFC)
+
+        // Gradient overlay
         gradientFillLayer.colors = [
             NSColor(white: 0.0, alpha: 0.10).cgColor,
-            NSColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 0.10).cgColor
+            NSColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 0.10).cgColor,
         ]
         gradientFillLayer.startPoint = CGPoint(x: 0.5, y: 1.0)
         gradientFillLayer.endPoint = CGPoint(x: 0.5, y: 0.0)
@@ -120,15 +134,15 @@ final class TranscriptionPill: NSView {
         specularLayer.endPoint = CGPoint(x: 0.5, y: 1)
         glassContainerView.layer?.addSublayer(specularLayer)
 
-        // Glass border stroke (Gradient at bottom edge)
+        // Border stroke
         borderMaskLayer.fillColor = nil
-        borderMaskLayer.strokeColor = NSColor.white.cgColor // Mask works on alpha
+        borderMaskLayer.strokeColor = NSColor.white.cgColor
         borderMaskLayer.lineWidth = 1.0
 
         borderGradientLayer.colors = [
             NSColor(white: 1, alpha: 0.0).cgColor,
             NSColor(white: 1, alpha: 0.0).cgColor,
-            NSColor(white: 1, alpha: 0.1).cgColor
+            NSColor(white: 1, alpha: 0.1).cgColor,
         ]
         borderGradientLayer.locations = [0.0, 0.1, 1]
         borderGradientLayer.startPoint = CGPoint(x: 0.5, y: 1.0)
@@ -136,22 +150,23 @@ final class TranscriptionPill: NSView {
         borderGradientLayer.mask = borderMaskLayer
         glassContainerView.layer?.addSublayer(borderGradientLayer)
 
-        // Title (semibold, 12px)
-        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        // Title label
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = textColor
         titleLabel.maximumNumberOfLines = 1
         titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.alignment = .left
+        titleLabel.alignment = .center
         addSubview(titleLabel)
 
-        // Body (regular, 14px)
+        // Body label
         bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
         bodyLabel.textColor = textColor
-        bodyLabel.maximumNumberOfLines = 2
-        bodyLabel.lineBreakMode = .byTruncatingTail
+        bodyLabel.maximumNumberOfLines = 0
+        bodyLabel.lineBreakMode = .byWordWrapping
         bodyLabel.alignment = .left
         bodyLabel.cell?.truncatesLastVisibleLine = true
         bodyLabel.isHidden = true
+        bodyLabel.alphaValue = 0
         addSubview(bodyLabel)
     }
 
@@ -161,91 +176,131 @@ final class TranscriptionPill: NSView {
     // MARK: - Public API
 
     func showCompact(title: String, theme: Theme, animated: Bool = true) {
+        let wasVisible = alphaValue > 0.01
+        let wasCompact = isCompact
+        let themeChanged = currentTheme.map { type(of: $0) != type(of: theme) } ?? true
+
         applyTheme(theme)
         titleLabel.stringValue = title
-        bodyLabel.isHidden = true
+        titleLabel.alignment = .center
         isCompact = true
 
-        let titleSize = titleLabel.sizeThatFits(NSSize(width: maxWidth - pillPadH * 2, height: 20))
-        let pillWidth = min(maxWidth, titleSize.width + pillPadH * 2)
-        let pillHeight = titleSize.height + pillPadV * 2
+        titleLabel.sizeToFit()
+        let titleSize = titleLabel.frame.size
+        let pillWidth = ceil(titleSize.width) + pillPadH * 2 + 8  // 8px buffer prevents truncation
+        let pillHeight = ceil(titleSize.height) + pillPadV * 2
 
-        layoutPill(width: pillWidth, height: pillHeight, bottomOffset: 68, animated: animated)
-        show(animated: animated)
+        if wasVisible && animated && (!wasCompact || themeChanged) {
+            // State-to-state transition: blur out → update → blur in
+            transitionContent(width: pillWidth, height: pillHeight)
+        } else if wasVisible {
+            // Same-state update: smooth resize
+            applyLayout(width: pillWidth, height: pillHeight, animated: animated)
+        } else {
+            // Fresh entrance
+            applyLayout(width: pillWidth, height: pillHeight, animated: false)
+            slideIn(animated: animated)
+        }
     }
 
     func showFull(title: String, body: String, theme: Theme, animated: Bool = true) {
+        let wasVisible = alphaValue > 0.01
+        let wasCompact = isCompact
+
         applyTheme(theme)
         titleLabel.stringValue = title
+        titleLabel.alignment = .left
         bodyLabel.stringValue = body
-        bodyLabel.isHidden = false
         isCompact = false
 
         let contentWidth = maxWidth - pillPadH * 2
-        let titleSize = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: 20))
-        let bodySize = bodyLabel.sizeThatFits(NSSize(width: contentWidth, height: 48))
+        let titleSize = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude))
+        let bodySize = bodyLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude))
         let pillHeight = pillPadV + titleSize.height + textGap + bodySize.height + pillPadV
 
-        layoutPill(width: maxWidth, height: pillHeight, bottomOffset: 46, animated: animated)
-        show(animated: animated)
+        if wasVisible && animated && wasCompact {
+            // Compact → Full transition: blur out → update → blur in
+            transitionContent(width: maxWidth, height: pillHeight)
+        } else if wasVisible {
+            // Same-state content update: smooth resize
+            applyLayout(width: maxWidth, height: pillHeight, animated: animated)
+            if bodyLabel.isHidden {
+                bodyLabel.frame = bodyLabel.frame
+                bodyLabel.isHidden = false
+            }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.25
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                bodyLabel.animator().alphaValue = 1
+            }
+        } else {
+            // Fresh entrance
+            bodyLabel.isHidden = false
+            bodyLabel.alphaValue = 1
+            applyLayout(width: maxWidth, height: pillHeight, animated: false)
+            slideIn(animated: animated)
+        }
     }
 
     func hide(animated: Bool = true) {
-        guard alphaValue > 0 else { return }
-        onFrameChanged?(.zero)
+        guard alphaValue > 0.01 else { return }
+
+
         if animated {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.3
+            // Blur out + slide down
+            animateBlur(from: 0, to: 48, duration: exitDuration)
+
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = exitDuration
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                animator().alphaValue = 0
-                // Slide down below the screen edge
                 var exitFrame = frame
-                exitFrame.origin.y = -frame.height
+                exitFrame.origin.y = -frame.height - 20
                 animator().frame = exitFrame
-            }
+                animator().alphaValue = 0
+            }, completionHandler: { [weak self] in
+                self?.resetBlurFilter()
+                self?.bodyLabel.isHidden = true
+                self?.bodyLabel.alphaValue = 0
+            })
         } else {
             alphaValue = 0
+            bodyLabel.isHidden = true
+            bodyLabel.alphaValue = 0
         }
     }
 
     func updateBackdrop(with particlesImage: CGImage, particleFrame: CGRect) {
-        // Run independently of alpha so fade-in animation has rich backing data
-        
-        // Read model frame directly instead of relying on layer constraints
         let targetFrame = self.frame
         let intersection = targetFrame.intersection(particleFrame)
         guard intersection.width > 0 && intersection.height > 0 else { return }
 
         let scale = CGFloat(particlesImage.width) / particleFrame.width
-        
         let cropRect = CGRect(
             x: (intersection.minX - particleFrame.minX) * scale,
             y: (intersection.minY - particleFrame.minY) * scale,
             width: intersection.width * scale,
             height: intersection.height * scale
         )
-        
+
         let ciImage = CIImage(cgImage: particlesImage).cropped(to: cropRect)
         blurFilter.setValue(ciImage, forKey: kCIInputImageKey)
         blurFilter.setValue(8.0 * scale, forKey: kCIInputRadiusKey)
-        
+
         guard let blurredCI = blurFilter.outputImage else { return }
-        
-        // Emulate vibrant particle depth passing cleanly through glass
+
         let boostFilter = CIFilter(name: "CIColorControls")!
         boostFilter.setValue(blurredCI, forKey: kCIInputImageKey)
-        boostFilter.setValue(1.6, forKey: kCIInputSaturationKey)
-        boostFilter.setValue(1.3, forKey: kCIInputContrastKey)
-        boostFilter.setValue(0.05, forKey: kCIInputBrightnessKey)
-        
+        boostFilter.setValue(1.1, forKey: kCIInputSaturationKey)
+        boostFilter.setValue(1.1, forKey: kCIInputContrastKey)
+        boostFilter.setValue(0.02, forKey: kCIInputBrightnessKey)
+
         guard let output = boostFilter.outputImage else { return }
         let finalCI = output.cropped(to: cropRect)
-        
+
         if let blurredImage = ciContext.createCGImage(finalCI, from: cropRect) {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             backdropLayer.contents = blurredImage
-            
             let backdropOriginX = intersection.minX - targetFrame.minX
             let backdropOriginY = intersection.minY - targetFrame.minY
             backdropLayer.frame = CGRect(
@@ -256,114 +311,210 @@ final class TranscriptionPill: NSView {
         }
     }
 
-    // MARK: - Private
+    // MARK: - Animation: Entrance
 
-    private func applyTheme(_ theme: Theme) {
-        layer?.shadowColor = theme.primaryShadowColor
-        layer?.shadowOpacity = 0.25
-        secondaryShadowLayer.shadowColor = theme.secondaryShadowColor
+    private func slideIn(animated: Bool) {
+        guard animated else {
+            alphaValue = 1
+            return
+        }
+
+        // Start below the screen edge — no particle hole until pill arrives
+        let targetFrame = frame
+        var startFrame = targetFrame
+        startFrame.origin.y = -targetFrame.height - 20
+        frame = startFrame
+        alphaValue = 1
+
+
+        // Blur entrance: 64 → 0
+        animateBlur(from: 64, to: 0, duration: entranceDuration)
+
+        // Slide up with spring timing
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = entranceDuration
+            ctx.timingFunction = springTiming
+            animator().frame = targetFrame
+        })
     }
 
-    private func layoutPill(width: CGFloat, height: CGFloat, bottomOffset: CGFloat, animated: Bool) {
+    // MARK: - Animation: State-to-state transition
+
+    /// Blur out current content, apply layout changes, blur back in.
+    /// Content changes are masked by the peak blur so the user never
+    /// sees an abrupt visual switch.
+    private func transitionContent(width: CGFloat, height: CGFloat) {
+        guard !isTransitioning else {
+            // If already transitioning, just update layout immediately
+            applyLayout(width: width, height: height, animated: false)
+            return
+        }
+        isTransitioning = true
+
+        // Phase 1: Blur out (quick)
+        animateBlur(from: 0, to: 40, duration: transitionBlurDuration)
+
+        // Phase 2: At peak blur, update layout and blur back in
+        DispatchQueue.main.asyncAfter(deadline: .now() + transitionBlurDuration * 0.8) { [weak self] in
+            guard let self else { return }
+
+            // Update layout at peak blur (content change is invisible)
+            self.applyLayout(width: width, height: height, animated: true, duration: self.transitionUnblurDuration)
+
+            // Show body if full mode
+            if !self.isCompact {
+                if self.bodyLabel.isHidden {
+                    self.bodyLabel.isHidden = false
+                }
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = self.transitionUnblurDuration
+                    self.bodyLabel.animator().alphaValue = 1
+                }
+            }
+
+            // Phase 3: Blur back in
+            self.animateBlur(from: 40, to: 0, duration: self.transitionUnblurDuration)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.transitionUnblurDuration) {
+                self.isTransitioning = false
+            }
+        }
+    }
+
+    // MARK: - Animation: Blur filter
+
+    private func animateBlur(from fromValue: CGFloat, to toValue: CGFloat, duration: CFTimeInterval) {
+        let anim = CABasicAnimation(keyPath: "filters.motionBlur.inputRadius")
+        anim.fromValue = fromValue
+        anim.toValue = toValue
+        anim.duration = duration
+        anim.timingFunction = springTiming
+        anim.fillMode = .forwards
+        anim.isRemovedOnCompletion = false
+        layer?.add(anim, forKey: "motionBlurAnim")
+    }
+
+    private func resetBlurFilter() {
+        layer?.removeAnimation(forKey: "motionBlurAnim")
+        if let filter = layer?.filters?.first as? CIFilter {
+            filter.setValue(0, forKey: kCIInputRadiusKey)
+        }
+    }
+
+    // MARK: - Layout
+
+    private func applyTheme(_ theme: Theme) {
+        currentTheme = theme
+        layer?.shadowColor = theme.primaryShadowColor
+        layer?.shadowOpacity = 0.2
+    }
+
+    private func applyLayout(width: CGFloat, height: CGFloat, animated: Bool, duration: CFTimeInterval = 0.4) {
         guard let superview = superview else { return }
 
         let x = (superview.bounds.width - width) / 2
         let targetFrame = NSRect(x: x, y: bottomOffset, width: width, height: height)
         let targetBounds = NSRect(x: 0, y: 0, width: width, height: height)
-        
+
         let inset = targetBounds.insetBy(dx: 0.5, dy: 0.5)
         let crPath = CGPath(roundedRect: inset, cornerWidth: cr, cornerHeight: cr, transform: nil)
-        let boundsPath = CGPath(roundedRect: targetBounds, cornerWidth: cr, cornerHeight: cr, transform: nil)
 
-        if animated && alphaValue > 0 {
+        if animated && alphaValue > 0.01 {
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.25
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                
+                ctx.duration = duration
+                ctx.timingFunction = springTiming
                 animator().frame = targetFrame
-                
                 backgroundBlurView.animator().frame = targetBounds
                 glassContainerView.animator().frame = targetBounds
-                
-                solidFillLayer.frame = targetBounds
-                gradientFillLayer.frame = targetBounds
-                specularLayer.frame = CGRect(x: 0, y: targetBounds.height - 1, width: targetBounds.width, height: 1)
-                
-                borderGradientLayer.frame = targetBounds
-                borderMaskLayer.path = crPath
-                borderMaskLayer.frame = targetBounds
-                
-                secondaryShadowLayer.frame = targetBounds
-                secondaryShadowLayer.shadowPath = boundsPath
-                layer?.shadowPath = boundsPath
             }
+            // Animate CALayer frames in sync
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(duration)
+            CATransaction.setAnimationTimingFunction(springTiming)
+            applyInternalLayerFrames(targetBounds, borderPath: crPath)
+            CATransaction.commit()
         } else {
             frame = targetFrame
-            
             backgroundBlurView.frame = targetBounds
             glassContainerView.frame = targetBounds
-            
-            solidFillLayer.frame = targetBounds
-            gradientFillLayer.frame = targetBounds
-            specularLayer.frame = CGRect(x: 0, y: targetBounds.height - 1, width: targetBounds.width, height: 1)
-            
-            borderGradientLayer.frame = targetBounds
-            borderMaskLayer.path = crPath
-            borderMaskLayer.frame = targetBounds
-            
-            secondaryShadowLayer.frame = targetBounds
-            secondaryShadowLayer.shadowPath = boundsPath
-            layer?.shadowPath = boundsPath
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            applyInternalLayerFrames(targetBounds, borderPath: crPath)
+            CATransaction.commit()
         }
 
-        layoutLabels(targetBounds: targetBounds, animated: animated && alphaValue > 0)
-        onFrameChanged?(targetFrame)
+        layoutLabels(targetBounds: targetBounds, animated: animated, duration: duration)
     }
 
-    private func layoutLabels(targetBounds: NSRect, animated: Bool) {
-        let contentWidth = targetBounds.width - pillPadH * 2
-        let titleHeight = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: 20)).height
+    /// Set all internal CALayer frames — called inside a CATransaction.
+    private func applyInternalLayerFrames(_ bounds: NSRect, borderPath: CGPath) {
+        solidFillLayer.frame = bounds
+        gradientFillLayer.frame = bounds
+        specularLayer.frame = CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1)
+        borderGradientLayer.frame = bounds
+        borderMaskLayer.path = borderPath
+        borderMaskLayer.frame = bounds
+    }
 
-        if bodyLabel.isHidden {
-            let trPill = NSRect(x: pillPadH, y: (targetBounds.height - titleHeight) / 2, width: contentWidth, height: titleHeight)
-            if animated { titleLabel.animator().frame = trPill } else { titleLabel.frame = trPill }
+    private func layoutLabels(targetBounds: NSRect, animated: Bool, duration: CFTimeInterval = 0.4) {
+        let contentWidth = targetBounds.width - pillPadH * 2
+        let titleHeight = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude)).height
+
+        if isCompact {
+            let titleFrame = NSRect(
+                x: pillPadH,
+                y: (targetBounds.height - titleHeight) / 2,
+                width: contentWidth,
+                height: titleHeight
+            )
+            if animated {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = duration
+                    ctx.timingFunction = springTiming
+                    titleLabel.animator().frame = titleFrame
+                    bodyLabel.animator().alphaValue = 0
+                }
+            } else {
+                titleLabel.frame = titleFrame
+                bodyLabel.alphaValue = 0
+                bodyLabel.isHidden = true
+            }
         } else {
-            let bodyHeight = bodyLabel.sizeThatFits(NSSize(width: contentWidth, height: 48)).height
+            let bodyHeight = bodyLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude)).height
             let totalContent = titleHeight + textGap + bodyHeight
             let startY = (targetBounds.height - totalContent) / 2
 
-            let trBody = NSRect(x: pillPadH, y: startY, width: contentWidth, height: bodyHeight)
-            let trTitle = NSRect(x: pillPadH, y: startY + bodyHeight + textGap, width: contentWidth, height: titleHeight)
-            
+            let bodyFrame = NSRect(x: pillPadH, y: startY, width: contentWidth, height: bodyHeight)
+            let titleFrame = NSRect(x: pillPadH, y: startY + bodyHeight + textGap, width: contentWidth, height: titleHeight)
+
+            if bodyLabel.isHidden {
+                bodyLabel.frame = bodyFrame
+                bodyLabel.isHidden = false
+            }
+
             if animated {
-                bodyLabel.animator().frame = trBody
-                titleLabel.animator().frame = trTitle
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = duration
+                    ctx.timingFunction = springTiming
+                    bodyLabel.animator().frame = bodyFrame
+                    bodyLabel.animator().alphaValue = 1
+                    titleLabel.animator().frame = titleFrame
+                }
             } else {
-                bodyLabel.frame = trBody
-                titleLabel.frame = trTitle
+                bodyLabel.frame = bodyFrame
+                bodyLabel.alphaValue = 1
+                titleLabel.frame = titleFrame
             }
         }
     }
 
-    private func show(animated: Bool) {
-        let isHidden = alphaValue < 0.01
-        if isHidden && animated {
-            // Start below screen edge, then animate up
-            let targetFrame = frame
-            var startFrame = targetFrame
-            startFrame.origin.y = -targetFrame.height
-            frame = startFrame
-            onFrameChanged?(targetFrame)
+    // MARK: - Show helper (for theme comparison)
 
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.35
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                animator().frame = targetFrame
-                animator().alphaValue = 1
-            }
-        } else if isHidden {
-            alphaValue = 1
-            onFrameChanged?(self.frame)
+    private func themeMatches(_ theme: Theme) -> Bool {
+        guard let current = currentTheme else { return false }
+        switch (current, theme) {
+        case (.stt, .stt), (.tts, .tts): return true
+        default: return false
         }
     }
 }

@@ -17,6 +17,12 @@ final class AppState {
     private var overlayController: OverlayController?
     private var eventBus: StateEventBus?
     private var sttPollTimer: Timer?
+    private var bridgeWatchdog: Timer?
+    /// True while a direct-mode terminal session owns the bridge.
+    private var directSessionActive = false
+    /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
+    private var bridgeAliveCache = false
+    private var wasRecording = false
 
     init() {
         self.config = ConfigManager.shared.load()
@@ -37,11 +43,19 @@ final class AppState {
         isRunning = true
         statusText = "Listening"
 
+        // Start relay bridge daemon + watchdog so /relay-bridge is always available
+        processManager.startServices(config: config)
+        startBridgeWatchdog()
+        // Bridge is launching — assume alive until watchdog says otherwise
+        bridgeAliveCache = true
+
         startOverlay()
     }
 
     func stopServices() {
         guard isRunning else { return }
+        stopBridgeWatchdog()
+        directSessionActive = false
         stopOverlay()
         sttEngine?.stop()
         sttEngine = nil
@@ -89,6 +103,9 @@ final class AppState {
     func newSession() {
         // Kill any existing voice bridge so only one session is active
         processManager.killBridge()
+        directSessionActive = true
+        // Bridge is about to launch — assume alive until watchdog says otherwise
+        bridgeAliveCache = true
 
         // Start STT if not already running
         if sttEngine == nil {
@@ -116,6 +133,38 @@ final class AppState {
         sttEngine?.toggleRecording()
     }
 
+    // MARK: - Bridge watchdog
+
+    private func startBridgeWatchdog() {
+        stopBridgeWatchdog()
+        bridgeAliveCache = processManager.bridgeAlive()
+        bridgeWatchdog = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            guard let self, self.isRunning else { return }
+            let alive = self.processManager.bridgeAlive()
+            self.bridgeAliveCache = alive
+            if self.directSessionActive {
+                // Direct-mode session owns the bridge — if it died, revert to relay mode
+                if !alive {
+                    NSLog("[AppState] Direct session bridge died, reverting to relay mode")
+                    self.directSessionActive = false
+                    self.processManager.startServices(config: self.config)
+                    self.statusText = "Listening"
+                }
+            } else {
+                // Relay mode — restart if it died (e.g. killed by /relay-bridge skill)
+                if !alive {
+                    NSLog("[AppState] Relay bridge died, restarting")
+                    self.processManager.startServices(config: self.config)
+                }
+            }
+        }
+    }
+
+    private func stopBridgeWatchdog() {
+        bridgeWatchdog?.invalidate()
+        bridgeWatchdog = nil
+    }
+
     // MARK: - Overlay management
 
     private func startOverlay() {
@@ -132,12 +181,44 @@ final class AppState {
         // Poll STT engine state → state machine (STT is in-process, no socket needed)
         sttPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
             guard let self, let engine = self.sttEngine else { return }
+
+            let nowRecording = engine.isRecording
+            let justStartedRecording = nowRecording && !self.wasRecording
+
+            // Session prompt: handle responses
+            if case .sessionPrompt = self.stateMachine.state {
+                if engine.playRequested {
+                    // Double-tap Alt → start new session
+                    engine.playRequested = false
+                    self.stateMachine.dismissSessionPrompt()
+                    self.newSession()
+                } else if justStartedRecording {
+                    // Caps Lock again → dismiss prompt
+                    engine.cancelRecording()
+                    self.stateMachine.dismissSessionPrompt()
+                }
+                self.wasRecording = nowRecording
+                return
+            }
+
+            // No bridge alive: intercept recording and show prompt
+            if justStartedRecording && !self.bridgeAliveCache {
+                engine.cancelRecording()
+                self.stateMachine.showSessionPrompt()
+                self.wasRecording = false
+                return
+            }
+
+            // Clear stale play requests
+            if engine.playRequested { engine.playRequested = false }
+
             if engine.wasCancelled {
                 engine.wasCancelled = false
                 self.stateMachine.setCancelled()
             } else {
-                self.stateMachine.updateSTT(isRecording: engine.isRecording, partial: engine.partialTranscription)
+                self.stateMachine.updateSTT(isRecording: nowRecording, partial: engine.partialTranscription)
             }
+            self.wasRecording = nowRecording
         }
     }
 

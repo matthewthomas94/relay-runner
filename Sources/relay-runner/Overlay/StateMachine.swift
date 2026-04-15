@@ -17,11 +17,12 @@ enum OverlayState: Equatable {
     case preparing
     case speaking
     case paused
+    case sessionPrompt   // No session running — prompt user to start one
 
     /// Which particle field theme to show (nil = hidden).
     var particleTheme: ParticleFieldRenderer.Theme? {
         switch self {
-        case .idle, .paused, .sent, .cancelled(_):
+        case .idle, .paused, .sent, .cancelled(_), .sessionPrompt:
             return nil
         case .listening, .recording:
             return .stt
@@ -54,6 +55,9 @@ final class StateMachine: @unchecked Sendable {
     private(set) var partialTranscription: String = ""
     private(set) var messagePreview: String?
 
+    private var stateBeforeIdle: OverlayState = .idle
+    private var lastIdleTransitionTime: Date = .distantPast
+
     /// Called by AppState when STT engine state changes.
     func updateSTT(isRecording: Bool, partial: String) {
         partialTranscription = partial
@@ -83,6 +87,8 @@ final class StateMachine: @unchecked Sendable {
         case ("tts", "idle"):
             switch state {
             case .speaking, .preparing, .messageWaiting:
+                stateBeforeIdle = state
+                lastIdleTransitionTime = Date()
                 state = .idle
                 messagePreview = nil
             default:
@@ -99,6 +105,8 @@ final class StateMachine: @unchecked Sendable {
 
         case ("bridge", "idle"):
             if case .processing = state {
+                stateBeforeIdle = state
+                lastIdleTransitionTime = Date()
                 state = .idle
             }
 
@@ -119,9 +127,20 @@ final class StateMachine: @unchecked Sendable {
 
     /// User cancelled the current recording or TTS.
     func setCancelled() {
+        let referenceState: OverlayState
+        if state == .idle {
+            if Date().timeIntervalSince(lastIdleTransitionTime) < 0.5 {
+                referenceState = stateBeforeIdle
+            } else {
+                return // Purely idle, do not pop a cancelled pill
+            }
+        } else {
+            referenceState = state
+        }
+
         // Determine source based on what state we're cancelling from
         let source: OverlayState.CancelSource
-        switch state {
+        switch referenceState {
         case .recording:
             source = .stt
         case .processing, .messageWaiting, .preparing, .speaking:
@@ -131,6 +150,17 @@ final class StateMachine: @unchecked Sendable {
         }
         state = .cancelled(source)
         partialTranscription = ""
+    }
+
+    func showSessionPrompt() {
+        state = .sessionPrompt
+        partialTranscription = ""
+    }
+
+    func dismissSessionPrompt() {
+        if case .sessionPrompt = state {
+            state = .idle
+        }
     }
 
     /// Reset to idle (services stopped).
