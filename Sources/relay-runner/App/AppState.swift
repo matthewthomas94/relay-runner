@@ -23,12 +23,23 @@ final class AppState {
     /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
     private var bridgeAliveCache = false
     private var wasRecording = false
+    /// Grace period: don't let the watchdog revert a session before the bridge has time to start.
+    private var sessionStartTime: Date = .distantPast
+
+    /// Whether a direct-mode session is active (for menu bar UI).
+    var hasActiveSession: Bool { directSessionActive }
 
     init() {
         self.config = ConfigManager.shared.load()
+        // Start awareness on next run loop tick (after app finishes launching)
+        DispatchQueue.main.async { [weak self] in
+            self?.startAwareness()
+        }
     }
 
-    func startListening() {
+    /// Start STT + overlay for gesture detection. No bridge — user must
+    /// start a session or run /relay-bridge manually.
+    private func startAwareness() {
         guard sttEngine == nil else { return }
 
         let engine = STTEngine(config: config.stt)
@@ -41,17 +52,23 @@ final class AppState {
             }
         }
         isRunning = true
-        statusText = "Listening"
+        statusText = "Ready"
 
-        // Start relay bridge daemon + watchdog so /relay-bridge is always available
-        processManager.startServices(config: config)
         startBridgeWatchdog()
-        // Bridge is launching — assume alive until watchdog says otherwise
-        bridgeAliveCache = true
+        bridgeAliveCache = false
 
         startOverlay()
     }
 
+    /// End the active direct session and revert to awareness mode.
+    func endSession() {
+        processManager.killBridge()
+        directSessionActive = false
+        bridgeAliveCache = false
+        statusText = "Ready"
+    }
+
+    /// Full shutdown (for app quit).
     func stopServices() {
         guard isRunning else { return }
         stopBridgeWatchdog()
@@ -104,6 +121,7 @@ final class AppState {
         // Kill any existing voice bridge so only one session is active
         processManager.killBridge()
         directSessionActive = true
+        sessionStartTime = Date()
         // Bridge is about to launch — assume alive until watchdog says otherwise
         bridgeAliveCache = true
 
@@ -142,19 +160,13 @@ final class AppState {
             guard let self, self.isRunning else { return }
             let alive = self.processManager.bridgeAlive()
             self.bridgeAliveCache = alive
-            if self.directSessionActive {
-                // Direct-mode session owns the bridge — if it died, revert to relay mode
-                if !alive {
-                    NSLog("[AppState] Direct session bridge died, reverting to relay mode")
+            if self.directSessionActive && !alive {
+                // Give the bridge 15s to start before declaring it dead
+                let elapsed = Date().timeIntervalSince(self.sessionStartTime)
+                if elapsed > 15 {
+                    NSLog("[AppState] Direct session bridge died, reverting to awareness")
                     self.directSessionActive = false
-                    self.processManager.startServices(config: self.config)
-                    self.statusText = "Listening"
-                }
-            } else {
-                // Relay mode — restart if it died (e.g. killed by /relay-bridge skill)
-                if !alive {
-                    NSLog("[AppState] Relay bridge died, restarting")
-                    self.processManager.startServices(config: self.config)
+                    self.statusText = "Ready"
                 }
             }
         }

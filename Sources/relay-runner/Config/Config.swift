@@ -22,7 +22,7 @@ struct TtsConfig: Codable, Equatable {
     var engine: String = "kokoro"
     var voice: String = "af_bella"
     var rate: Double = 1.0
-    var auto_play: Bool = true
+    var auto_play: Bool = false
     var chime: String = "Tink"
     var show_notification: Bool = true
 }

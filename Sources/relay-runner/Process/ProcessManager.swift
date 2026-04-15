@@ -152,6 +152,10 @@ final class ProcessManager {
 
     @discardableResult
     func installSkill() -> Bool {
+        let bridgeScript = servicesDir.appendingPathComponent("voice_bridge.py").path
+        let configPath = ConfigManager.shared.configPath.path
+        let python = Self.venvPython(servicesDir: servicesDir.path)
+
         let content = """
         Connect voice I/O to this Claude session. You become a voice-interactive assistant: listen for spoken input, respond, and speak the response aloud via TTS.
 
@@ -165,19 +169,20 @@ final class ProcessManager {
 
         If not running, tell the user to start the Relay Runner menu bar app, then try `/relay-bridge` again. Do not proceed.
 
-        2. Kill any existing voice bridge session (the app will auto-restart it in relay mode):
+        2. Kill any existing voice bridge and start a new one in relay mode:
 
         ```bash
         pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready
+        nohup '\(python)' '\(bridgeScript)' --config '\(configPath)' --relay > /tmp/voice_bridge.log 2>&1 &
         ```
 
-        3. Wait for the relay bridge to come back (the app restarts it automatically):
+        3. Wait for the relay bridge to come up:
 
         ```bash
         for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && break; sleep 0.5; done; [ -S /tmp/voice_bridge.sock ] || echo "bridge: FAILED"
         ```
 
-        If the bridge failed to start, tell the user to check the Relay Runner app and stop here.
+        If the bridge failed to start, tell the user to check `/tmp/voice_bridge.log` and stop here.
 
         ## Voice Interaction Loop
 
@@ -216,10 +221,8 @@ final class ProcessManager {
         When the session ends (user says "stop listening", "exit voice", or similar), clean up:
 
         ```bash
-        rm -f /tmp/voice_cmd_ready
+        pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready
         ```
-
-        The Relay Runner app manages the voice bridge daemon — do not kill it.
 
         ## Important Notes
 

@@ -4,19 +4,29 @@ struct MenuBarView: View {
     @Bindable var appState: AppState
     @Environment(\.openSettings) private var openSettings
 
+    private var statusLabel: String {
+        if appState.hasActiveSession {
+            return "\u{25CF} Session Active"
+        } else {
+            return "\u{25CB} \(appState.statusText)"
+        }
+    }
+
     var body: some View {
+        Text(statusLabel)
+
+        Divider()
+
         Button("Start Session\u{2026}") { appState.newSession() }
 
-        if appState.isRunning {
-            Button("Stop Session") { appState.stopServices() }
+        if appState.hasActiveSession {
+            Button("End Session") { appState.endSession() }
         }
 
         Divider()
 
-        if appState.isRunning {
-            Button("Record") { appState.toggleRecording() }
-            Button("Replay") { appState.ttsCommand("replay") }
-        }
+        Button("Record") { appState.toggleRecording() }
+        Button("Replay") { appState.ttsCommand("replay") }
 
         Divider()
 

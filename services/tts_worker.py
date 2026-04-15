@@ -114,7 +114,7 @@ class TTSWorker:
         self._voice: str = cfg.get("voice", "af_bella")
         self._rate: float = float(cfg.get("rate", 1.0))
         self._chime: str = _resolve_chime(cfg.get("chime", "Tink"))
-        self._auto_play: bool = cfg.get("auto_play", True)
+        self._auto_play: bool = cfg.get("auto_play", False)
 
         # Load Kokoro model
         self._kokoro = None
