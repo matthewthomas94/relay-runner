@@ -23,6 +23,8 @@ final class AppState {
     /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
     private var bridgeAliveCache = false
     private var wasRecording = false
+    /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
+    private var sessionPromptCapsState = false
     /// Grace period: don't let the watchdog revert a session before the bridge has time to start.
     private var sessionStartTime: Date = .distantPast
 
@@ -159,7 +161,24 @@ final class AppState {
         bridgeWatchdog = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             guard let self, self.isRunning else { return }
             let alive = self.processManager.bridgeAlive()
+            let wasAlive = self.bridgeAliveCache
             self.bridgeAliveCache = alive
+
+            // Track externally-started bridges (e.g. /relay-bridge)
+            if alive && !self.directSessionActive && self.statusText != "Session" {
+                self.statusText = "Session"
+            }
+
+            // Detect orphaned relay bridge (process alive but consumer dead)
+            if alive && !self.directSessionActive && !self.processManager.bridgeConsumerAlive() {
+                NSLog("[AppState] Relay bridge orphaned (consumer heartbeat stale), killing")
+                self.processManager.killBridge()
+                self.bridgeAliveCache = false
+                self.statusText = "Ready"
+                self.stateMachine.showSessionPrompt()
+                return
+            }
+
             if self.directSessionActive && !alive {
                 // Give the bridge 15s to start before declaring it dead
                 let elapsed = Date().timeIntervalSince(self.sessionStartTime)
@@ -167,7 +186,13 @@ final class AppState {
                     NSLog("[AppState] Direct session bridge died, reverting to awareness")
                     self.directSessionActive = false
                     self.statusText = "Ready"
+                    self.stateMachine.showSessionPrompt()
                 }
+            } else if wasAlive && !alive && !self.directSessionActive {
+                // Relay-bridge session ended externally
+                NSLog("[AppState] Relay bridge died, reverting to awareness")
+                self.statusText = "Ready"
+                self.stateMachine.showSessionPrompt()
             }
         }
     }
@@ -204,21 +229,33 @@ final class AppState {
                     engine.playRequested = false
                     self.stateMachine.dismissSessionPrompt()
                     self.newSession()
-                } else if justStartedRecording {
-                    // Caps Lock again → dismiss prompt
-                    engine.cancelRecording()
+                } else if CapsLockGesture.isCapsLockOn() != self.sessionPromptCapsState {
+                    // Any Caps Lock toggle → dismiss prompt immediately
+                    if engine.isRecording { engine.cancelRecording() }
                     self.stateMachine.dismissSessionPrompt()
                 }
                 self.wasRecording = nowRecording
                 return
             }
 
-            // No bridge alive: intercept recording and show prompt
-            if justStartedRecording && !self.bridgeAliveCache {
-                engine.cancelRecording()
-                self.stateMachine.showSessionPrompt()
-                self.wasRecording = false
-                return
+            // No bridge alive: intercept recording and show prompt.
+            // Real-time check on each recording start — the cached value
+            // can be stale for up to 3s after a bridge dies.
+            // Also detect orphaned relay bridges (process alive but no consumer).
+            if justStartedRecording {
+                let bridgeProcessUp = self.processManager.bridgeAlive()
+                let bridgeUp = bridgeProcessUp && (self.directSessionActive || self.processManager.bridgeConsumerAlive())
+                self.bridgeAliveCache = bridgeUp
+                if !bridgeUp {
+                    if bridgeProcessUp {
+                        self.processManager.killBridge()
+                    }
+                    engine.cancelRecording()
+                    self.sessionPromptCapsState = CapsLockGesture.isCapsLockOn()
+                    self.stateMachine.showSessionPrompt()
+                    self.wasRecording = false
+                    return
+                }
             }
 
             // Clear stale play requests

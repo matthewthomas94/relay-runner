@@ -61,6 +61,30 @@ final class ProcessManager {
         }
     }
 
+    /// Check if the relay consumer (Claude's bash polling loop) is alive.
+    /// Uses two signals: stale heartbeat file and unconsumed voice command.
+    func bridgeConsumerAlive() -> Bool {
+        let fm = FileManager.default
+
+        // Fast check: if a voice command has been pending for >10s, consumer is dead
+        // (in normal flow, Claude reads voice_cmd_ready within ~1s)
+        if fm.fileExists(atPath: "/tmp/voice_cmd_ready"),
+           let attrs = try? fm.attributesOfItem(atPath: "/tmp/voice_cmd_ready"),
+           let modified = attrs[.modificationDate] as? Date,
+           Date().timeIntervalSince(modified) > 10 {
+            return false
+        }
+
+        // Slow check: if heartbeat is stale for >30s, consumer is likely dead
+        // (the bash polling loop touches this file every 200ms; it goes stale
+        // during normal Claude processing, so we use a generous threshold)
+        let heartbeatPath = "/tmp/voice_bridge_heartbeat"
+        guard fm.fileExists(atPath: heartbeatPath) else { return true } // no file = old skill version, benefit of doubt
+        guard let attrs = try? fm.attributesOfItem(atPath: heartbeatPath),
+              let modified = attrs[.modificationDate] as? Date else { return true }
+        return Date().timeIntervalSince(modified) < 30
+    }
+
     /// Kill any running voice_bridge process (but leave the terminal window open).
     func killBridge() {
         if bridgeAlive() {
@@ -74,8 +98,10 @@ final class ProcessManager {
             try? proc.run()
             proc.waitUntilExit()
         }
-        // Clean up bridge socket so the next session can bind it
-        try? FileManager.default.removeItem(atPath: "/tmp/voice_bridge.sock")
+        // Clean up all IPC files so the next session starts fresh
+        for path in ["/tmp/voice_bridge.sock", "/tmp/voice_cmd_ready", "/tmp/tts_in.fifo", "/tmp/voice_bridge_heartbeat"] {
+            try? FileManager.default.removeItem(atPath: path)
+        }
     }
 
     func startServices(config: AppConfig) {
@@ -116,12 +142,15 @@ final class ProcessManager {
         let launcher = "/tmp/voice_bridge_launch.command"
         let sdir = servicesDir.path
         let cdLine = Self.cdLine(config.general.working_directory)
+        let python = Self.venvPython(servicesDir: sdir)
         let script = """
         #!/bin/bash
         \(Self.shellProfileSource())
         \(Self.venvSetupScript(servicesDir: sdir))
         \(cdLine)
-        exec '\(Self.venvPython(servicesDir: sdir))' '\(bridgeScript)' --config '\(configPath)'
+        '\(python)' '\(bridgeScript)' --config '\(configPath)'
+        echo ''
+        echo '[Relay Runner] Session ended.'
         """
         try? script.write(toFile: launcher, atomically: true, encoding: .utf8)
 
@@ -152,9 +181,11 @@ final class ProcessManager {
 
     @discardableResult
     func installSkill() -> Bool {
+        let sdir = servicesDir.path
         let bridgeScript = servicesDir.appendingPathComponent("voice_bridge.py").path
         let configPath = ConfigManager.shared.configPath.path
-        let python = Self.venvPython(servicesDir: servicesDir.path)
+        let python = Self.venvPython(servicesDir: sdir)
+        let reqs = servicesDir.appendingPathComponent("requirements.txt").path
 
         let content = """
         Connect voice I/O to this Claude session. You become a voice-interactive assistant: listen for spoken input, respond, and speak the response aloud via TTS.
@@ -172,8 +203,20 @@ final class ProcessManager {
         2. Kill any existing voice bridge and start a new one in relay mode:
 
         ```bash
-        pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready
-        nohup '\(python)' '\(bridgeScript)' --config '\(configPath)' --relay > /tmp/voice_bridge.log 2>&1 &
+        pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat
+        RELAY_PYTHON='\(python)'
+        if [ ! -x "$RELAY_PYTHON" ]; then
+            echo "venv: creating..."
+            VENV_PYTHON=python3
+            for p in /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+                if [ -x "$p" ] && "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+                    VENV_PYTHON="$p"
+                    break
+                fi
+            done
+            "$VENV_PYTHON" -m venv '\(sdir)/.venv' && '\(sdir)/.venv/bin/pip' install --quiet -r '\(reqs)' && echo "venv: ok" || { echo "venv: FAILED"; exit 1; }
+        fi
+        nohup "$RELAY_PYTHON" '\(bridgeScript)' --config '\(configPath)' --relay > /tmp/voice_bridge.log 2>&1 &
         ```
 
         3. Wait for the relay bridge to come up:
@@ -191,7 +234,7 @@ final class ProcessManager {
         ### Step 1: Wait for voice input
 
         ```bash
-        while [ ! -f /tmp/voice_cmd_ready ]; do sleep 0.2; [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }; done; cat /tmp/voice_cmd_ready; rm -f /tmp/voice_cmd_ready
+        while [ ! -f /tmp/voice_cmd_ready ]; do sleep 0.2; touch /tmp/voice_bridge_heartbeat; [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }; done; cat /tmp/voice_cmd_ready; rm -f /tmp/voice_cmd_ready
         ```
 
         This blocks until the user speaks via Caps Lock. If the voice bridge is killed (e.g. a new session was started), the loop exits.
@@ -204,7 +247,18 @@ final class ProcessManager {
 
         ### Step 3: Speak your response
 
-        After generating your response, send it to TTS for spoken playback. Keep the TTS text concise and conversational (strip markdown formatting, code blocks, and verbose explanations — speak the key points):
+        After generating your response, ensure the bridge is still alive (the app's watchdog may have killed an orphaned bridge during long processing). If it died, restart it so the user still receives your response:
+
+        ```bash
+        touch /tmp/voice_bridge_heartbeat
+        if ! pgrep -f 'voice_bridge.py' > /dev/null 2>&1; then
+            rm -f /tmp/voice_bridge.sock
+            nohup '\(python)' '\(bridgeScript)' --config '\(configPath)' --relay > /tmp/voice_bridge.log 2>&1 &
+            for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
+        fi
+        ```
+
+        Then send the TTS response. Keep it concise and conversational (strip markdown formatting, code blocks, and verbose explanations — speak the key points):
 
         ```bash
         echo 'YOUR_SPOKEN_RESPONSE' > /tmp/tts_in.fifo
@@ -221,7 +275,7 @@ final class ProcessManager {
         When the session ends (user says "stop listening", "exit voice", or similar), clean up:
 
         ```bash
-        pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready
+        pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat
         ```
 
         ## Important Notes
