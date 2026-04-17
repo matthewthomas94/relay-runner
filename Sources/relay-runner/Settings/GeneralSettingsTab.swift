@@ -21,8 +21,8 @@ struct GeneralSettingsTab: View {
 
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Claude Code Skill")
-                    Text("Adds the /relay-bridge command to Claude Code")
+                    Text("Claude Code Skills")
+                    Text("Adds the /relay-bridge and /relay-stop commands to Claude Code")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -39,11 +39,11 @@ struct GeneralSettingsTab: View {
                     }
                 }
             }
-            .alert("Overwrite existing skill?", isPresented: $showOverwriteAlert) {
+            .alert("Overwrite existing skills?", isPresented: $showOverwriteAlert) {
                 Button("Overwrite", role: .destructive) { doInstallSkill() }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("This will replace ~/.claude/commands/relay-bridge.md with the default version.")
+                Text("This will replace ~/.claude/commands/relay-bridge.md and ~/.claude/commands/relay-stop.md with the default versions.")
             }
         }
     }

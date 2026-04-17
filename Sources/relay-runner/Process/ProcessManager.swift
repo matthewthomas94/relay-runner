@@ -173,10 +173,12 @@ final class ProcessManager {
             .appendingPathComponent(".claude/commands")
     }()
 
-    private static let skillPath: URL = skillDir.appendingPathComponent("relay-bridge.md")
+    private static let bridgeSkillPath: URL = skillDir.appendingPathComponent("relay-bridge.md")
+    private static let stopSkillPath: URL = skillDir.appendingPathComponent("relay-stop.md")
 
     var isSkillInstalled: Bool {
-        FileManager.default.fileExists(atPath: Self.skillPath.path)
+        FileManager.default.fileExists(atPath: Self.bridgeSkillPath.path)
+            && FileManager.default.fileExists(atPath: Self.stopSkillPath.path)
     }
 
     @discardableResult
@@ -285,10 +287,38 @@ final class ProcessManager {
         - If the user asks you to run commands, edit files, or do anything you'd normally do, do it. Then speak a brief summary of what happened.
         - The relay daemon handles Caps Lock detection, STT, and TTS playback. You just read commands and write responses.
         """
+
+        let stopContent = """
+        Stop the voice I/O bridge for this Claude session. Use this to end a `/relay-bridge` voice session cleanly without exiting Claude Code.
+
+        ## Steps
+
+        1. Kill the voice bridge process and remove its runtime files:
+
+        ```bash
+        pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat
+        ```
+
+        2. Confirm it's stopped:
+
+        ```bash
+        pgrep -f 'voice_bridge.py' > /dev/null 2>&1 && echo "bridge: STILL RUNNING" || echo "bridge: stopped"
+        ```
+
+        If the bridge is still running, tell the user to check `/tmp/voice_bridge.log` and try again. Otherwise, tell the user the voice session has ended.
+
+        ## Notes
+
+        - This only stops the voice bridge. The Relay Runner menu bar app keeps running.
+        - Any active `/relay-bridge` voice loop in another Claude session will detect the dead socket on its next heartbeat and exit on its own.
+        - To start voice again, run `/relay-bridge`.
+        """
+
         do {
             try FileManager.default.createDirectory(at: Self.skillDir, withIntermediateDirectories: true)
-            try content.write(to: Self.skillPath, atomically: true, encoding: .utf8)
-            NSLog("[ProcessManager] Installed Claude Code skill at \(Self.skillPath.path)")
+            try content.write(to: Self.bridgeSkillPath, atomically: true, encoding: .utf8)
+            try stopContent.write(to: Self.stopSkillPath, atomically: true, encoding: .utf8)
+            NSLog("[ProcessManager] Installed Claude Code skills at \(Self.bridgeSkillPath.path) and \(Self.stopSkillPath.path)")
             return true
         } catch {
             NSLog("[ProcessManager] Failed to install skill: \(error)")
