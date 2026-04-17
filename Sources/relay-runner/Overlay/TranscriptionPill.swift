@@ -210,6 +210,10 @@ final class TranscriptionPill: NSView {
         applyTheme(theme)
         if suppressShadow {
             layer?.shadowOpacity = 0
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            backdropLayer.contents = nil
+            CATransaction.commit()
         }
         titleLabel.stringValue = title
         titleLabel.alignment = .left
