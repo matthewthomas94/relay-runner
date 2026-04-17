@@ -205,7 +205,8 @@ final class OverlayController {
                 pill.showFull(
                     title: "No session running",
                     body: "Double tap Option to start a new session\nPress Caps Lock to dismiss",
-                    theme: .stt
+                    theme: .stt,
+                    suppressShadow: true
                 )
             }
 

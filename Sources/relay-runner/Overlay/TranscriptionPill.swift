@@ -203,11 +203,14 @@ final class TranscriptionPill: NSView {
         }
     }
 
-    func showFull(title: String, body: String, theme: Theme, animated: Bool = true) {
+    func showFull(title: String, body: String, theme: Theme, animated: Bool = true, suppressShadow: Bool = false) {
         let wasVisible = alphaValue > 0.01
         let wasCompact = isCompact
 
         applyTheme(theme)
+        if suppressShadow {
+            layer?.shadowOpacity = 0
+        }
         titleLabel.stringValue = title
         titleLabel.alignment = .left
         bodyLabel.stringValue = body

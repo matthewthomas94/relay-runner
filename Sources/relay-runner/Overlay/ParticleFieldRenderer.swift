@@ -20,8 +20,8 @@ final class ParticleFieldRenderer {
 
         var baseSaturation: CGFloat {
             switch self {
-            case .stt: return 0.85
-            case .tts: return 0.55
+            case .stt: return 0.95
+            case .tts: return 0.80
             }
         }
 
@@ -30,6 +30,16 @@ final class ParticleFieldRenderer {
             switch self {
             case .stt: return 0.32
             case .tts: return 0.44
+            }
+        }
+
+        /// RGB tint blended into dots at the base of the field. Sampled from
+        /// the Figma mocks — STT base dots are nearly white (faintest warm
+        /// tint), TTS base dots are #FDEADB cream.
+        var baseHighlight: (r: CGFloat, g: CGFloat, b: CGFloat) {
+            switch self {
+            case .stt: return (1.000, 0.965, 0.900)
+            case .tts: return (0.992, 0.918, 0.859)
             }
         }
     }
@@ -276,10 +286,21 @@ final class ParticleFieldRenderer {
                 var cr: CGFloat = 0, cg: CGFloat = 0, cb: CGFloat = 0, ca: CGFloat = 0
                 c.usingColorSpace(.sRGB)?.getRed(&cr, green: &cg, blue: &cb, alpha: &ca)
 
+                // Lift toward the theme highlight at the base of the field.
+                // row 0 sits at the visible bottom (CG bitmap origin), so low
+                // verticalT receives the most lift. Steep curve keeps the
+                // mid-field theme-saturated while the bottom strip pushes
+                // hard toward the highlight — giving vertical contrast.
+                let liftWeight = pow(1.0 - verticalT, 3.0) * 0.70
+                let h = theme.baseHighlight
+                let fr = cr * (1 - liftWeight) + h.r * liftWeight
+                let fg = cg * (1 - liftWeight) + h.g * liftWeight
+                let fb = cb * (1 - liftWeight) + h.b * liftWeight
+
                 result.append(Dot(
                     x: x, y: y,
                     baseRadius: dotRadius, baseAlpha: dotAlpha,
-                    r: cr, g: cg, b: cb))
+                    r: fr, g: fg, b: fb))
             }
         }
 
