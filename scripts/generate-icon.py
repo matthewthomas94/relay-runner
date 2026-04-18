@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """Slice the master Relay Runner icon into the macOS appiconset + iconset.
 
-Source: assets/RR - App Icon.png (square master, ideally ≥1024 px).
-Outputs:
-  - Sources/relay-runner/Resources/Assets.xcassets/AppIcon.appiconset/
-  - assets/AppIcon.iconset/
-
-Applies the macOS Big Sur rounded-square mask before sub-sampling so every
-emitted size has the standard corner radius.
+Source: assets/RR - App Icon.png — used as-is. The master is resampled to each
+target size and written to both output directories. No masking, recoloring, or
+drawing of any kind.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "assets/RR - App Icon.png"
@@ -34,8 +30,6 @@ SIZES = [
     ("icon_512x512@2x.png", 1024),
 ]
 
-CORNER_RADIUS_FRAC = 0.2237  # macOS Big Sur full-bleed icon ratio
-
 CONTENTS_JSON = """{
   "images" : [
     { "filename" : "icon_16x16.png",      "idiom" : "mac", "scale" : "1x", "size" : "16x16" },
@@ -54,31 +48,6 @@ CONTENTS_JSON = """{
 """
 
 
-def center_crop_square(img: Image.Image) -> Image.Image:
-    w, h = img.size
-    if w == h:
-        return img
-    side = min(w, h)
-    left = (w - side) // 2
-    top = (h - side) // 2
-    return img.crop((left, top, left + side, top + side))
-
-
-def rounded_mask(size: int, radius: int) -> Image.Image:
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
-    return mask
-
-
-def apply_rounded_mask(img: Image.Image) -> Image.Image:
-    size = img.size[0]
-    radius = int(round(size * CORNER_RADIUS_FRAC))
-    mask = rounded_mask(size, radius)
-    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    out.paste(img.convert("RGBA"), (0, 0), mask=mask)
-    return out
-
-
 def main() -> None:
     if not SOURCE.exists():
         raise SystemExit(f"Source image not found: {SOURCE}")
@@ -87,16 +56,12 @@ def main() -> None:
     ICONSET.mkdir(parents=True, exist_ok=True)
 
     src = Image.open(SOURCE).convert("RGBA")
-    src = center_crop_square(src)
     print(f"Source: {SOURCE.name} {src.size[0]}x{src.size[1]}")
-
-    # Mask the master once at full resolution, then resample for each target size.
-    masked_master = apply_rounded_mask(src)
 
     cache: dict[int, Image.Image] = {}
     for filename, px in SIZES:
         if px not in cache:
-            cache[px] = masked_master.resize((px, px), Image.LANCZOS)
+            cache[px] = src.resize((px, px), Image.LANCZOS)
         out = cache[px]
         for outdir in (ASSETS, ICONSET):
             out.save(outdir / filename)
