@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Slice the master Relay Runner icon into the macOS appiconset + iconset.
 
-Source: assets/RR - App Icon.png — used as-is. The master is resampled to each
-target size and written to both output directories. No masking, recoloring, or
-drawing of any kind.
+Source: assets/RR - App Icon.png. The master ships with its rounded-square
+shape drawn on an opaque black square; we resample to each target size and then
+knock out the corners with a rounded-rect alpha mask matching the macOS Big Sur
+radius. The visible artwork inside the rounded shape is left untouched.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "assets/RR - App Icon.png"
@@ -30,6 +31,8 @@ SIZES = [
     ("icon_512x512@2x.png", 1024),
 ]
 
+CORNER_RADIUS_FRAC = 0.2237  # macOS Big Sur full-bleed icon ratio
+
 CONTENTS_JSON = """{
   "images" : [
     { "filename" : "icon_16x16.png",      "idiom" : "mac", "scale" : "1x", "size" : "16x16" },
@@ -48,6 +51,17 @@ CONTENTS_JSON = """{
 """
 
 
+def round_corners(img: Image.Image) -> Image.Image:
+    """Knock out the corners with a Big Sur rounded-rect alpha mask."""
+    size = img.size[0]
+    radius = int(round(size * CORNER_RADIUS_FRAC))
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(img, (0, 0), mask=mask)
+    return out
+
+
 def main() -> None:
     if not SOURCE.exists():
         raise SystemExit(f"Source image not found: {SOURCE}")
@@ -61,7 +75,8 @@ def main() -> None:
     cache: dict[int, Image.Image] = {}
     for filename, px in SIZES:
         if px not in cache:
-            cache[px] = src.resize((px, px), Image.LANCZOS)
+            resized = src.resize((px, px), Image.LANCZOS)
+            cache[px] = round_corners(resized)
         out = cache[px]
         for outdir in (ASSETS, ICONSET):
             out.save(outdir / filename)
