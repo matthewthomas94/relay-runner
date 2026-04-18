@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Slice the master Relay Runner icon into the macOS appiconset + iconset.
 
-Source: assets/RR - App Icon.png (square master, ideally ≥1024 px).
-Outputs:
-  - Sources/relay-runner/Resources/Assets.xcassets/AppIcon.appiconset/
-  - assets/AppIcon.iconset/
-
-Applies the macOS Big Sur rounded-square mask before sub-sampling so every
-emitted size has the standard corner radius.
+Source: assets/RR - App Icon.png. The master ships with its rounded-square
+shape drawn on an opaque black square; we resample to each target size and then
+knock out the corners with a rounded-rect alpha mask matching the macOS Big Sur
+radius. The visible artwork inside the rounded shape is left untouched.
 """
 
 from __future__ import annotations
@@ -54,28 +51,14 @@ CONTENTS_JSON = """{
 """
 
 
-def center_crop_square(img: Image.Image) -> Image.Image:
-    w, h = img.size
-    if w == h:
-        return img
-    side = min(w, h)
-    left = (w - side) // 2
-    top = (h - side) // 2
-    return img.crop((left, top, left + side, top + side))
-
-
-def rounded_mask(size: int, radius: int) -> Image.Image:
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
-    return mask
-
-
-def apply_rounded_mask(img: Image.Image) -> Image.Image:
+def round_corners(img: Image.Image) -> Image.Image:
+    """Knock out the corners with a Big Sur rounded-rect alpha mask."""
     size = img.size[0]
     radius = int(round(size * CORNER_RADIUS_FRAC))
-    mask = rounded_mask(size, radius)
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
     out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    out.paste(img.convert("RGBA"), (0, 0), mask=mask)
+    out.paste(img, (0, 0), mask=mask)
     return out
 
 
@@ -87,16 +70,13 @@ def main() -> None:
     ICONSET.mkdir(parents=True, exist_ok=True)
 
     src = Image.open(SOURCE).convert("RGBA")
-    src = center_crop_square(src)
     print(f"Source: {SOURCE.name} {src.size[0]}x{src.size[1]}")
-
-    # Mask the master once at full resolution, then resample for each target size.
-    masked_master = apply_rounded_mask(src)
 
     cache: dict[int, Image.Image] = {}
     for filename, px in SIZES:
         if px not in cache:
-            cache[px] = masked_master.resize((px, px), Image.LANCZOS)
+            resized = src.resize((px, px), Image.LANCZOS)
+            cache[px] = round_corners(resized)
         out = cache[px]
         for outdir in (ASSETS, ICONSET):
             out.save(outdir / filename)
