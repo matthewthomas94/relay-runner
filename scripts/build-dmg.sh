@@ -37,6 +37,15 @@ mkdir -p "$APP_DIR/Contents/SharedSupport/scripts"
 # Binary
 cp "$BUILD_DIR/relay-runner" "$APP_DIR/Contents/MacOS/relay-runner"
 
+# App icon: compile AppIcon.iconset into AppIcon.icns via macOS iconutil.
+ICONSET_SRC="$PROJECT_ROOT/assets/AppIcon.iconset"
+if [ -d "$ICONSET_SRC" ]; then
+    echo "==> Building AppIcon.icns..."
+    iconutil -c icns "$ICONSET_SRC" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
+else
+    echo "warning: $ICONSET_SRC not found; app will have no icon"
+fi
+
 # Info.plist
 cp "$PROJECT_ROOT/Info.plist" "$APP_DIR/Contents/Info.plist"
 
