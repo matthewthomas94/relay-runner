@@ -1,12 +1,28 @@
 {
   "images": [
     {
-      "filename": "tray-icon.png",
+      "filename": "tray-icon-light.png",
       "idiom": "mac",
       "scale": "1x"
     },
     {
-      "filename": "tray-icon@2x.png",
+      "filename": "tray-icon-light@2x.png",
+      "idiom": "mac",
+      "scale": "2x"
+    },
+    {
+      "appearances": [
+        { "appearance": "luminosity", "value": "dark" }
+      ],
+      "filename": "tray-icon-dark.png",
+      "idiom": "mac",
+      "scale": "1x"
+    },
+    {
+      "appearances": [
+        { "appearance": "luminosity", "value": "dark" }
+      ],
+      "filename": "tray-icon-dark@2x.png",
       "idiom": "mac",
       "scale": "2x"
     }
@@ -14,8 +30,5 @@
   "info": {
     "author": "xcode",
     "version": 1
-  },
-  "properties": {
-    "template-rendering-intent": "template"
   }
 }
