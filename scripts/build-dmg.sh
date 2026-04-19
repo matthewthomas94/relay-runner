@@ -58,6 +58,20 @@ fi
 RESOURCE_BUNDLE="$BUILD_DIR/relay-runner_relay-runner.bundle"
 if [ -d "$RESOURCE_BUNDLE" ]; then
     cp -R "$RESOURCE_BUNDLE" "$APP_DIR/Contents/Resources/"
+
+    # SPM doesn't compile .xcassets — run actool so Image("TrayIcon") etc. resolve at runtime.
+    COPIED_BUNDLE="$APP_DIR/Contents/Resources/relay-runner_relay-runner.bundle"
+    XCASSETS="$COPIED_BUNDLE/Assets.xcassets"
+    if [ -d "$XCASSETS" ]; then
+        echo "==> Compiling Assets.xcassets..."
+        xcrun actool "$XCASSETS" \
+            --compile "$COPIED_BUNDLE" \
+            --platform macosx \
+            --minimum-deployment-target 13.0 \
+            --output-partial-info-plist /tmp/relay-runner-actool.plist \
+            > /dev/null
+        rm -rf "$XCASSETS"
+    fi
 fi
 
 # Python services

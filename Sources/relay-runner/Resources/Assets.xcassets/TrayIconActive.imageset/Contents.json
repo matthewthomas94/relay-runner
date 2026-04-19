@@ -1,0 +1,18 @@
+{
+  "images": [
+    {
+      "filename": "tray-icon-active.png",
+      "idiom": "mac",
+      "scale": "1x"
+    },
+    {
+      "filename": "tray-icon-active@2x.png",
+      "idiom": "mac",
+      "scale": "2x"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}
