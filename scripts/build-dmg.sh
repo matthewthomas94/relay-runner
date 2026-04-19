@@ -112,6 +112,16 @@ hdiutil create \
 
 rm -rf "$DMG_STAGING"
 
+# If the app is already installed under /Applications, refresh it so this
+# rebuild is what Spotlight, the Dock and Cmd-Tab actually see.
+INSTALLED="/Applications/$APP_NAME.app"
+if [ -d "$INSTALLED" ]; then
+    echo "==> Updating installed copy at $INSTALLED..."
+    rm -rf "$INSTALLED"
+    cp -R "$APP_DIR" "$INSTALLED"
+    mdimport "$INSTALLED"
+fi
+
 echo ""
 echo "==> Done!"
 echo "    App:  $APP_DIR"
