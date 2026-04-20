@@ -81,21 +81,43 @@ if [ ! -x "$PYTHON" ]; then
         done
         return 1
     }
-    VENV_PYTHON="$(find_python || true)"
-    if [ -z "$VENV_PYTHON" ]; then
-        # Auto-install python@3.13 via Homebrew if available.
-        BREW=""
+    find_brew() {
         for b in brew /opt/homebrew/bin/brew /usr/local/bin/brew; do
             if command -v "$b" >/dev/null 2>&1; then
-                BREW="$b"
-                break
+                echo "$b"
+                return 0
             fi
         done
+        return 1
+    }
+    install_homebrew() {
+        if ! command -v curl >/dev/null 2>&1; then
+            echo "[Relay Runner] curl not available — cannot bootstrap Homebrew."
+            return 1
+        fi
+        echo "[Relay Runner] Homebrew not found. Installing Homebrew..."
+        echo "(This may prompt for your macOS password.)"
+        NONINTERACTIVE=1 /bin/bash -c \
+            "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || return 1
+        # Bring brew onto PATH for the rest of this shell.
+        for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            if [ -x "$b" ]; then
+                eval "$("$b" shellenv)"
+                return 0
+            fi
+        done
+        return 1
+    }
+    VENV_PYTHON="$(find_python || true)"
+    if [ -z "$VENV_PYTHON" ]; then
+        BREW="$(find_brew || true)"
         if [ -z "$BREW" ]; then
-            echo "[Relay Runner] No compatible Python found (need 3.10+)."
-            echo "Homebrew is also not installed — install it from https://brew.sh"
-            echo "then re-run, or install Python 3.13 manually."
-            exit 1
+            if ! install_homebrew; then
+                echo "[Relay Runner] Could not install Homebrew automatically."
+                echo "Install it from https://brew.sh then re-run."
+                exit 1
+            fi
+            BREW="$(find_brew || true)"
         fi
         echo "[Relay Runner] No Python 3.10+ found. Installing python@3.13 via Homebrew..."
         echo "(This can take a few minutes on first run.)"
