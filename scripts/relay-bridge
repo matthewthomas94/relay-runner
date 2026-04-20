@@ -67,22 +67,48 @@ if [ ! -x "$PYTHON" ]; then
     # (e.g. 3.14) where some transitive wheels are still missing — so
     # we prefer 3.13/3.12/3.11 when they're installed, but fall back
     # to any Python >= 3.10 rather than rejecting the machine outright.
-    VENV_PYTHON=""
-    for p in \
-        /opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13 \
-        /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 python3.12 \
-        /opt/homebrew/bin/python3.11 /usr/local/bin/python3.11 python3.11 \
-        /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
-        if command -v "$p" >/dev/null 2>&1 && \
-           "$p" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3,10) else 1)' 2>/dev/null; then
-            VENV_PYTHON="$p"
-            break
-        fi
-    done
+    find_python() {
+        for p in \
+            /opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13 \
+            /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 python3.12 \
+            /opt/homebrew/bin/python3.11 /usr/local/bin/python3.11 python3.11 \
+            /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+            if command -v "$p" >/dev/null 2>&1 && \
+               "$p" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3,10) else 1)' 2>/dev/null; then
+                echo "$p"
+                return 0
+            fi
+        done
+        return 1
+    }
+    VENV_PYTHON="$(find_python || true)"
     if [ -z "$VENV_PYTHON" ]; then
-        echo "[Relay Runner] No compatible Python found (need 3.10+)."
-        echo "Install with: brew install python@3.13"
-        exit 1
+        # Auto-install python@3.13 via Homebrew if available.
+        BREW=""
+        for b in brew /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            if command -v "$b" >/dev/null 2>&1; then
+                BREW="$b"
+                break
+            fi
+        done
+        if [ -z "$BREW" ]; then
+            echo "[Relay Runner] No compatible Python found (need 3.10+)."
+            echo "Homebrew is also not installed — install it from https://brew.sh"
+            echo "then re-run, or install Python 3.13 manually."
+            exit 1
+        fi
+        echo "[Relay Runner] No Python 3.10+ found. Installing python@3.13 via Homebrew..."
+        echo "(This can take a few minutes on first run.)"
+        if ! "$BREW" install python@3.13; then
+            echo "[Relay Runner] brew install python@3.13 failed. See errors above."
+            exit 1
+        fi
+        VENV_PYTHON="$(find_python || true)"
+        if [ -z "$VENV_PYTHON" ]; then
+            echo "[Relay Runner] python@3.13 installed but not found on disk."
+            echo "Try opening a new terminal and re-running."
+            exit 1
+        fi
     fi
     echo "Using $("$VENV_PYTHON" --version) at $VENV_PYTHON"
     "$VENV_PYTHON" -m venv "$SERVICES_DIR/.venv" && \
