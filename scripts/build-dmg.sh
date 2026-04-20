@@ -152,7 +152,12 @@ for _ in $(seq 1 20); do
     sleep 0.5
 done
 
-osascript <<APPLESCRIPT
+# Finder AppleScript requires a UI session and Apple Events / Accessibility
+# permissions. On GitHub-hosted runners those TCC grants aren't present, so
+# `tell application "Finder"` fails. Skip styling on CI and keep a plain DMG —
+# still installs correctly, just without the window positioning + background.
+if [ -z "${CI:-}" ]; then
+    osascript <<APPLESCRIPT || echo "warning: Finder customization failed, continuing with unstyled DMG"
 tell application "Finder"
     tell disk "$APP_NAME"
         open
@@ -174,6 +179,9 @@ tell application "Finder"
     end tell
 end tell
 APPLESCRIPT
+else
+    echo "==> CI detected, skipping Finder window customization"
+fi
 
 sync
 hdiutil detach "$MOUNT_POINT" >/dev/null
