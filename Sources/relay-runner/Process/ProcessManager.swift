@@ -375,11 +375,9 @@ final class ProcessManager {
             echo '║  Installing Python dependencies...       ║'
             echo '╚══════════════════════════════════════════╝'
             echo ''
-            # Prefer a pinned minor version with broad wheel coverage
-            # for kokoro-onnx and its transitive deps. Bare `python3`
-            # may be 3.14+, where some transitive wheels are still
-            # missing; fall back to it only if no 3.11 – 3.13 is
-            # installed, rather than refusing to run.
+            # kokoro-onnx caps at Python <3.14, so the bare `python3`
+            # on newer Homebrew (→ 3.14) is *not* acceptable here —
+            # we'd rather fall through and auto-install python@3.13.
             find_python() {
                 for p in \\
                     /opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13 \\
@@ -387,7 +385,7 @@ final class ProcessManager {
                     /opt/homebrew/bin/python3.11 /usr/local/bin/python3.11 python3.11 \\
                     /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
                     if command -v "$p" >/dev/null 2>&1 && \\
-                       "$p" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3,10) else 1)' 2>/dev/null; then
+                       "$p" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
                         echo "$p"
                         return 0
                     fi
@@ -420,6 +418,15 @@ final class ProcessManager {
                 done
                 return 1
             }
+            # If an existing venv was built with an out-of-range Python
+            # (e.g. 3.14, which kokoro-onnx doesn't support), wipe it so
+            # the block below creates a fresh venv with a supported
+            # interpreter.
+            if [ -x '\(venv)/bin/python3' ] && \\
+               ! '\(venv)/bin/python3' -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
+                echo "[Relay Runner] Existing venv uses $('\(venv)/bin/python3' -c 'import sys; print(\".\".join(map(str, sys.version_info[:2])))'), which kokoro-onnx doesn't support. Recreating with a 3.10–3.13 interpreter."
+                rm -rf '\(venv)'
+            fi
             # Only create a new venv if one isn't already on disk; if the
             # venv exists but deps are missing, we fall through to reinstall
             # into the existing interpreter.
