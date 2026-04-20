@@ -23,7 +23,18 @@ jobs:
       - name: Select Xcode version
         # FluidAudio >= 0.9.0 ships a swift-tools-version:6.0 manifest,
         # so we need an Xcode that bundles Swift 6 (Xcode 16+).
-        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+        # GitHub's macos-15 image uses versioned names (e.g. Xcode_16.4.app);
+        # pick the highest installed Xcode 16.x and verify the toolchain.
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "No Xcode 16.x found in /Applications:"
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          echo "Selecting $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          swift --version
 
       - name: Resolve Swift dependencies
         run: swift package resolve
