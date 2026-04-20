@@ -27,6 +27,9 @@ final class AppState {
     private var sessionPromptCapsState = false
     /// Grace period: don't let the watchdog revert a session before the bridge has time to start.
     private var sessionStartTime: Date = .distantPast
+    /// Has the bridge for the current direct session been observed alive at least once?
+    /// Used to distinguish "still starting up" from "came up and then died".
+    private var sessionBridgeSeen = false
 
     /// Whether a direct-mode session is active (for menu bar UI).
     var hasActiveSession: Bool { directSessionActive }
@@ -124,6 +127,7 @@ final class AppState {
         processManager.killBridge()
         directSessionActive = true
         sessionStartTime = Date()
+        sessionBridgeSeen = false
         // Bridge is about to launch — assume alive until watchdog says otherwise
         bridgeAliveCache = true
 
@@ -179,12 +183,20 @@ final class AppState {
                 return
             }
 
+            if self.directSessionActive && alive {
+                self.sessionBridgeSeen = true
+            }
+
             if self.directSessionActive && !alive {
-                // Give the bridge 15s to start before declaring it dead
+                // Only declare dead once we've actually seen the bridge alive
+                // (real death), or after a generous absolute timeout (true
+                // launch failure — covers cold starts where Kokoro load +
+                // venv setup can easily exceed the old 15s grace).
                 let elapsed = Date().timeIntervalSince(self.sessionStartTime)
-                if elapsed > 15 {
+                if self.sessionBridgeSeen || elapsed > 90 {
                     NSLog("[AppState] Direct session bridge died, reverting to awareness")
                     self.directSessionActive = false
+                    self.sessionBridgeSeen = false
                     self.statusText = "Ready"
                     self.stateMachine.showSessionPrompt()
                 }
