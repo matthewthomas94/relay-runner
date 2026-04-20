@@ -32,7 +32,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select Xcode version
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+        # FluidAudio's Package.swift declares swift-tools-version: 6.0, so we
+        # need a Swift 6 toolchain to resolve packages. Xcode 16.2 ships with
+        # Swift 6 and is preinstalled on the macos-14 runner image.
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
 
       - name: Cache Swift packages
         uses: actions/cache@v4
