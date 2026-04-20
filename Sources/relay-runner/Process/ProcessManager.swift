@@ -365,7 +365,10 @@ final class ProcessManager {
         let venv = "\(servicesDir)/.venv"
         let reqs = "\(servicesDir)/requirements.txt"
         return """
-        if [ ! -x '\(venv)/bin/python3' ]; then
+        # Re-run setup if the venv is missing OR if a prior setup left the
+        # venv in place but failed to install deps — otherwise we'd exec a
+        # venv python with no numpy/kokoro_onnx and crash at import time.
+        if ! '\(venv)/bin/python3' -c 'import numpy, kokoro_onnx' >/dev/null 2>&1; then
             echo ''
             echo '╔══════════════════════════════════════════╗'
             echo '║  Relay Runner — First-time setup         ║'
@@ -417,32 +420,42 @@ final class ProcessManager {
                 done
                 return 1
             }
-            VENV_PYTHON="$(find_python || true)"
-            if [ -z "$VENV_PYTHON" ]; then
-                BREW="$(find_brew || true)"
-                if [ -z "$BREW" ]; then
-                    if ! install_homebrew; then
-                        echo "[Relay Runner] Could not install Homebrew automatically."
-                        echo "Install it from https://brew.sh then re-run."
-                        exit 1
-                    fi
-                    BREW="$(find_brew || true)"
-                fi
-                echo "[Relay Runner] No Python 3.10+ found. Installing python@3.13 via Homebrew..."
-                echo "(This can take a few minutes on first run.)"
-                if ! "$BREW" install python@3.13; then
-                    echo "[Relay Runner] brew install python@3.13 failed. See errors above."
-                    exit 1
-                fi
+            # Only create a new venv if one isn't already on disk; if the
+            # venv exists but deps are missing, we fall through to reinstall
+            # into the existing interpreter.
+            if [ ! -x '\(venv)/bin/python3' ]; then
                 VENV_PYTHON="$(find_python || true)"
                 if [ -z "$VENV_PYTHON" ]; then
-                    echo "[Relay Runner] python@3.13 installed but not found on disk."
-                    echo "Try opening a new terminal and re-running."
-                    exit 1
+                    BREW="$(find_brew || true)"
+                    if [ -z "$BREW" ]; then
+                        if ! install_homebrew; then
+                            echo "[Relay Runner] Could not install Homebrew automatically."
+                            echo "Install it from https://brew.sh then re-run."
+                            exit 1
+                        fi
+                        BREW="$(find_brew || true)"
+                    fi
+                    echo "[Relay Runner] No Python 3.10+ found. Installing python@3.13 via Homebrew..."
+                    echo "(This can take a few minutes on first run.)"
+                    if ! "$BREW" install python@3.13; then
+                        echo "[Relay Runner] brew install python@3.13 failed. See errors above."
+                        exit 1
+                    fi
+                    VENV_PYTHON="$(find_python || true)"
+                    if [ -z "$VENV_PYTHON" ]; then
+                        echo "[Relay Runner] python@3.13 installed but not found on disk."
+                        echo "Try opening a new terminal and re-running."
+                        exit 1
+                    fi
                 fi
+                echo "Using $("$VENV_PYTHON" --version) at $VENV_PYTHON"
+                "$VENV_PYTHON" -m venv '\(venv)' || {
+                    echo "[Relay Runner] Failed to create venv at \(venv)."
+                    exit 1
+                }
+            else
+                echo "[Relay Runner] Venv present but deps incomplete — reinstalling."
             fi
-            echo "Using $("$VENV_PYTHON" --version) at $VENV_PYTHON"
-            "$VENV_PYTHON" -m venv '\(venv)' && \\
             '\(venv)/bin/python3' -m pip install --upgrade pip && \\
             '\(venv)/bin/pip' install -r '\(reqs)' && \\
             echo '' && echo '[Relay Runner] Setup complete.' || \\
