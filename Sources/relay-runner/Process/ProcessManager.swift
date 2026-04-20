@@ -372,14 +372,28 @@ final class ProcessManager {
             echo '║  Installing Python dependencies...       ║'
             echo '╚══════════════════════════════════════════╝'
             echo ''
-            VENV_PYTHON=python3
-            for p in /opt/homebrew/bin/python3 /usr/local/bin/python3; do
-                if [ -x "$p" ] && "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+            # Prefer a pinned minor version with broad wheel coverage
+            # for kokoro-onnx and its transitive deps. Bare `python3`
+            # may be 3.14+, for which some transitive wheels are
+            # missing — triggering pip `ResolutionImpossible`.
+            VENV_PYTHON=""
+            for p in \\
+                /opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13 \\
+                /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 python3.12 \\
+                /opt/homebrew/bin/python3.11 /usr/local/bin/python3.11 python3.11 \\
+                /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+                if command -v "$p" >/dev/null 2>&1 && \\
+                   "$p" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
                     VENV_PYTHON="$p"
                     break
                 fi
             done
-            echo "Using $("$VENV_PYTHON" --version)"
+            if [ -z "$VENV_PYTHON" ]; then
+                echo "[Relay Runner] No compatible Python found (need 3.10 – 3.13)."
+                echo "Install with: brew install python@3.13"
+                exit 1
+            fi
+            echo "Using $("$VENV_PYTHON" --version) at $VENV_PYTHON"
             "$VENV_PYTHON" -m venv '\(venv)' && \\
             '\(venv)/bin/python3' -m pip install --upgrade pip && \\
             '\(venv)/bin/pip' install -r '\(reqs)' && \\
