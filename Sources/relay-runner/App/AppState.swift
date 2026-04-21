@@ -11,6 +11,7 @@ final class AppState {
 
     let configManager = ConfigManager.shared
     let processManager = ProcessManager()
+    let permissions = PermissionsManager()
 
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
@@ -36,6 +37,9 @@ final class AppState {
 
     init() {
         self.config = ConfigManager.shared.load()
+        // Watch privacy permissions continuously — macOS doesn't notify us
+        // when the user grants/revokes in Settings, so we poll.
+        permissions.startMonitoring()
         // Start awareness on next run loop tick (after app finishes launching)
         DispatchQueue.main.async { [weak self] in
             self?.startAwareness()
