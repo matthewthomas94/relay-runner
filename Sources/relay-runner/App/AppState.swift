@@ -12,6 +12,11 @@ final class AppState {
     let configManager = ConfigManager.shared
     let processManager = ProcessManager()
     let permissions = PermissionsManager()
+    // @ObservationIgnored: @Observable's macro expansion doesn't compose with
+    // `lazy`. The controller is stateless from the UI's perspective — views
+    // observe PermissionsManager directly — so hiding it from observation
+    // costs nothing.
+    @ObservationIgnored lazy var onboarding = OnboardingController(permissions: permissions)
 
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
@@ -42,7 +47,11 @@ final class AppState {
         permissions.startMonitoring()
         // Start awareness on next run loop tick (after app finishes launching)
         DispatchQueue.main.async { [weak self] in
-            self?.startAwareness()
+            guard let self else { return }
+            // Services start regardless — STTEngine etc. handle denied perms
+            // gracefully so the app is still usable while onboarding runs.
+            self.startAwareness()
+            self.onboarding.showIfNeeded()
         }
     }
 
