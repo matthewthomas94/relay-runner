@@ -49,12 +49,40 @@ final class PermissionsManager {
     private(set) var accessibility: PermissionStatus = .notDetermined
     private(set) var inputMonitoring: PermissionStatus = .notDetermined
 
+    /// Permissions that appear to be blocked by a device policy (MDM).
+    /// Inferred from the system API (microphone has a real `.restricted`
+    /// status) or from a heuristic (Accessibility / Input Monitoring don't
+    /// expose a restricted status — if the user clicks Grant and the
+    /// permission stays denied for several polling cycles, it's almost
+    /// certainly a policy lock rather than the user forgetting to flip
+    /// the toggle).
+    private(set) var likelyRestricted: Set<PermissionKind> = []
+
     /// Called from the main thread whenever any permission transitions between
     /// statuses (e.g. denied → granted). Used by side-effect observers like
     /// the notifier or STT auto-recovery — UI should observe the published
     /// properties above instead.
     @ObservationIgnored
     var onChange: ((PermissionKind, PermissionStatus, PermissionStatus) -> Void)?
+
+    /// Kinds for which the user has asked the system to grant access (either
+    /// via the system prompt or by opening System Settings). Used to gate
+    /// the MDM-restriction heuristic — denials before any attempt don't
+    /// count because the user simply hasn't addressed them yet.
+    @ObservationIgnored
+    private var attemptedGrants: Set<PermissionKind> = []
+
+    /// How many refresh cycles each kind has been observed denied since the
+    /// user last attempted to grant it. Flips `likelyRestricted` once the
+    /// count crosses `restrictionThreshold` (~10s of polling).
+    @ObservationIgnored
+    private var denialsSinceAttempt: [PermissionKind: Int] = [:]
+
+    /// How many consecutive denied polls after an attempt qualify as
+    /// "almost certainly restricted by policy". Tuned against the 2s
+    /// poll interval — ~10s gives the user a chance to actually find
+    /// and flip the Settings toggle before we claim MDM.
+    private let restrictionThreshold = 5
 
     private var pollTimer: Timer?
 
@@ -90,7 +118,8 @@ final class PermissionsManager {
     // MARK: - Refresh
 
     /// Re-read all permission statuses. Publishes updates only on change so
-    /// observers don't churn on every tick.
+    /// observers don't churn on every tick. Also updates the
+    /// `likelyRestricted` set based on persistence-since-attempt.
     func refresh() {
         let mic = Self.checkMicrophone()
         let ax = Self.checkAccessibility()
@@ -106,6 +135,45 @@ final class PermissionsManager {
         if im != inputMonitoring {
             let old = inputMonitoring; inputMonitoring = im
             onChange?(.inputMonitoring, old, im)
+        }
+        updateRestrictionHeuristic()
+    }
+
+    // MARK: - MDM-restriction heuristic
+
+    /// The user clicked "Grant" or "Open Settings" for this permission.
+    /// Call this from the onboarding UI (or any other grant affordance).
+    func markAttemptedGrant(_ kind: PermissionKind) {
+        attemptedGrants.insert(kind)
+        denialsSinceAttempt[kind] = 0
+        // Clear any stale restriction verdict — the user's about to try again
+        if likelyRestricted.contains(kind) {
+            likelyRestricted.remove(kind)
+        }
+    }
+
+    private func updateRestrictionHeuristic() {
+        // Microphone: the system tells us directly.
+        if microphone == .restricted {
+            likelyRestricted.insert(.microphone)
+        } else if likelyRestricted.contains(.microphone) && microphone == .granted {
+            likelyRestricted.remove(.microphone)
+        }
+
+        // Accessibility / Input Monitoring: no API for restricted. Use the
+        // attempted-but-still-denied-over-time heuristic.
+        for kind in [PermissionKind.accessibility, .inputMonitoring] {
+            if status(for: kind) == .granted {
+                likelyRestricted.remove(kind)
+                denialsSinceAttempt[kind] = 0
+                continue
+            }
+            guard attemptedGrants.contains(kind) else { continue }
+            let count = (denialsSinceAttempt[kind] ?? 0) + 1
+            denialsSinceAttempt[kind] = count
+            if count >= restrictionThreshold {
+                likelyRestricted.insert(kind)
+            }
         }
     }
 

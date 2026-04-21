@@ -124,6 +124,7 @@ struct OnboardingView: View {
 
     private func permissionView(for kind: PermissionKind) -> some View {
         let status = permissions.status(for: kind)
+        let restricted = permissions.likelyRestricted.contains(kind)
         return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
                 statusBadge(for: status)
@@ -145,8 +146,48 @@ struct OnboardingView: View {
                             .stroke(Color.secondary.opacity(0.25))
                     )
             }
+            if restricted {
+                mdmRestrictionBox(for: kind)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Yellow warning box shown when the MDM-restriction heuristic fires —
+    /// communicates what the user should do next and what still works.
+    private func mdmRestrictionBox(for kind: PermissionKind) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "lock.shield")
+                .foregroundStyle(.orange)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("This Mac may be blocking \(kind.displayName).")
+                    .font(.callout).bold()
+                Text(mdmBody(for: kind))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.orange.opacity(0.35))
+        )
+    }
+
+    private func mdmBody(for kind: PermissionKind) -> String {
+        switch kind {
+        case .microphone:
+            return "Your organisation's security policy appears to be blocking microphone access. You'll need your IT team to allow Relay Runner — voice input isn't available until they do."
+        case .accessibility:
+            return "Your organisation's security policy appears to be blocking Accessibility access. You'll need your IT team to allow Relay Runner. Voice input still works via the menu-bar Record button — only auto-pause of media during recording is affected."
+        case .inputMonitoring:
+            return "Your organisation's security policy appears to be blocking keyboard capture. You'll need your IT team to allow Relay Runner. Voice still works via the menu-bar Record button or always-on mode in Settings — only the global trigger key is affected."
+        }
     }
 
     private var readyView: some View {
@@ -184,6 +225,7 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
                 Button("Grant Microphone Access") {
+                    permissions.markAttemptedGrant(.microphone)
                     permissions.requestMicrophone { _ in }
                 }.keyboardShortcut(.defaultAction)
             }
@@ -192,6 +234,7 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
                 Button("Open System Settings") {
+                    permissions.markAttemptedGrant(.accessibility)
                     permissions.promptAccessibility()
                     permissions.openSettings(for: .accessibility)
                 }.keyboardShortcut(.defaultAction)
@@ -201,6 +244,7 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
                 Button("Open System Settings") {
+                    permissions.markAttemptedGrant(.inputMonitoring)
                     permissions.promptInputMonitoring()
                     permissions.openSettings(for: .inputMonitoring)
                 }.keyboardShortcut(.defaultAction)
