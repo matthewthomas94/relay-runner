@@ -16,13 +16,16 @@ struct SettingsWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             TabView {
+                StatusSettingsTab(appState: appState)
+                    .tabItem { Label("Status", systemImage: "checkmark.shield") }
+
                 STTSettingsTab(config: $draft.stt)
                     .tabItem { Label("Speech-to-Text", systemImage: "mic") }
 
                 TTSSettingsTab(config: $draft.tts)
                     .tabItem { Label("Text-to-Speech", systemImage: "speaker.wave.2") }
 
-GeneralSettingsTab(config: $draft.general)
+                GeneralSettingsTab(config: $draft.general)
                     .tabItem { Label("General", systemImage: "gear") }
 
                 AwarenessSettingsTab(config: $draft.awareness)
