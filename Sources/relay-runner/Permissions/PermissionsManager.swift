@@ -49,6 +49,13 @@ final class PermissionsManager {
     private(set) var accessibility: PermissionStatus = .notDetermined
     private(set) var inputMonitoring: PermissionStatus = .notDetermined
 
+    /// Called from the main thread whenever any permission transitions between
+    /// statuses (e.g. denied → granted). Used by side-effect observers like
+    /// the notifier or STT auto-recovery — UI should observe the published
+    /// properties above instead.
+    @ObservationIgnored
+    var onChange: ((PermissionKind, PermissionStatus, PermissionStatus) -> Void)?
+
     private var pollTimer: Timer?
 
     init() {
@@ -88,9 +95,18 @@ final class PermissionsManager {
         let mic = Self.checkMicrophone()
         let ax = Self.checkAccessibility()
         let im = Self.checkInputMonitoring()
-        if mic != microphone { microphone = mic }
-        if ax != accessibility { accessibility = ax }
-        if im != inputMonitoring { inputMonitoring = im }
+        if mic != microphone {
+            let old = microphone; microphone = mic
+            onChange?(.microphone, old, mic)
+        }
+        if ax != accessibility {
+            let old = accessibility; accessibility = ax
+            onChange?(.accessibility, old, ax)
+        }
+        if im != inputMonitoring {
+            let old = inputMonitoring; inputMonitoring = im
+            onChange?(.inputMonitoring, old, im)
+        }
     }
 
     /// Start periodic re-check. Cheap — all underlying APIs are local syscalls.

@@ -17,6 +17,7 @@ final class AppState {
     // observe PermissionsManager directly — so hiding it from observation
     // costs nothing.
     @ObservationIgnored lazy var onboarding = OnboardingController(permissions: permissions)
+    @ObservationIgnored private let permissionNotifier = PermissionNotifier()
 
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
@@ -45,6 +46,19 @@ final class AppState {
         // Watch privacy permissions continuously — macOS doesn't notify us
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
+        // Hook permission transitions: notify on revoke, auto-recover STT
+        // when mic/input-monitoring comes back (the STT engine binds to the
+        // mic + installs NSEvent monitors at start, so neither recovers
+        // without a restart).
+        permissions.onChange = { [weak self] kind, old, new in
+            guard let self else { return }
+            self.permissionNotifier.recordChange(kind, from: old, to: new)
+            if new == .granted && old != .granted {
+                if kind == .microphone || kind == .inputMonitoring {
+                    self.restartSTTForRecovery()
+                }
+            }
+        }
         // Start awareness on next run loop tick (after app finishes launching)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -52,6 +66,24 @@ final class AppState {
             // gracefully so the app is still usable while onboarding runs.
             self.startAwareness()
             self.onboarding.showIfNeeded()
+        }
+    }
+
+    /// Recreate the STT engine so it re-binds to the microphone and reinstalls
+    /// global key monitors. Called from `permissions.onChange` when a
+    /// previously-denied permission gets granted.
+    private func restartSTTForRecovery() {
+        guard isRunning else { return }
+        NSLog("[AppState] Permission restored — restarting STT for recovery")
+        sttEngine?.stop()
+        let engine = STTEngine(config: config.stt)
+        sttEngine = engine
+        Task {
+            do {
+                try await engine.start()
+            } catch {
+                NSLog("[AppState] STT engine restart failed: \(error)")
+            }
         }
     }
 
