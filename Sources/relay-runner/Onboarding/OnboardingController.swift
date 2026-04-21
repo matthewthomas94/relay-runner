@@ -16,6 +16,9 @@ final class OnboardingController {
 
     private var windowController: NSWindowController?
     private let permissions: PermissionsManager
+    /// Closure the Ready step calls to render live setup progress
+    /// (e.g. "Loading speech model…") — nil means "finished".
+    private let setupStatus: () -> String?
 
     /// Persists across launches — a zero-byte sentinel next to the config file.
     private static let flagURL: URL = {
@@ -27,8 +30,10 @@ final class OnboardingController {
         return support.appendingPathComponent(".onboarded")
     }()
 
-    init(permissions: PermissionsManager) {
+    init(permissions: PermissionsManager,
+         setupStatus: @escaping () -> String? = { nil }) {
         self.permissions = permissions
+        self.setupStatus = setupStatus
     }
 
     /// True iff the user has completed (or skipped past) onboarding before.
@@ -59,6 +64,7 @@ final class OnboardingController {
         let view = OnboardingView(
             permissions: permissions,
             simplified: simplified,
+            setupStatus: setupStatus,
             onFinish: { [weak self] in self?.finish() }
         )
 

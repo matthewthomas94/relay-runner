@@ -9,6 +9,26 @@ final class AppState {
 
     private(set) var sttEngine: STTEngine?
 
+    /// Populated when STTEngine.start() throws — surfaces a human-readable
+    /// failure in the menu bar with a Retry Setup action. Nil when STT is
+    /// healthy or still loading.
+    private(set) var sttEngineError: String?
+
+    /// Non-nil while STT is still preparing (loading model, compiling, etc.).
+    /// The onboarding Ready step and menu bar both show this in place of
+    /// "Ready" so the user knows the app isn't actually idle.
+    var setupStatusMessage: String? {
+        guard let engine = sttEngine else { return nil }
+        let msg = engine.statusMessage
+        if msg.isEmpty || msg == "Listening" { return nil }
+        return msg
+    }
+
+    /// Translated version of `sttEngineError`, suitable for direct display.
+    var sttEngineErrorTranslation: ErrorTranslator.Translation? {
+        sttEngineError.map { ErrorTranslator.translate($0) }
+    }
+
     let configManager = ConfigManager.shared
     let processManager = ProcessManager()
     let permissions = PermissionsManager()
@@ -16,7 +36,10 @@ final class AppState {
     // `lazy`. The controller is stateless from the UI's perspective — views
     // observe PermissionsManager directly — so hiding it from observation
     // costs nothing.
-    @ObservationIgnored lazy var onboarding = OnboardingController(permissions: permissions)
+    @ObservationIgnored lazy var onboarding: OnboardingController = {
+        OnboardingController(permissions: permissions,
+                             setupStatus: { [weak self] in self?.setupStatusMessage })
+    }()
     @ObservationIgnored private let permissionNotifier = PermissionNotifier()
 
     // Phase 2: Awareness overlay
@@ -75,14 +98,30 @@ final class AppState {
     private func restartSTTForRecovery() {
         guard isRunning else { return }
         NSLog("[AppState] Permission restored — restarting STT for recovery")
+        restartSTT(reason: "permission-recovery")
+    }
+
+    /// User-facing retry, e.g. from the menu's "Retry Setup" item after
+    /// setupStatusFailed fired. Clears the prior error and recreates the
+    /// engine so the statusMessage pipeline re-runs from scratch.
+    func retrySTTSetup() {
+        sttEngineError = nil
+        restartSTT(reason: "user-retry")
+    }
+
+    private func restartSTT(reason: String) {
         sttEngine?.stop()
         let engine = STTEngine(config: config.stt)
         sttEngine = engine
-        Task {
+        Task { [weak self] in
             do {
                 try await engine.start()
+                await MainActor.run { [weak self] in self?.sttEngineError = nil }
             } catch {
-                NSLog("[AppState] STT engine restart failed: \(error)")
+                await MainActor.run { [weak self] in
+                    self?.sttEngineError = "\(error)"
+                }
+                NSLog("[AppState] STT restart (\(reason)) failed: \(error)")
             }
         }
     }
@@ -94,10 +133,14 @@ final class AppState {
 
         let engine = STTEngine(config: config.stt)
         sttEngine = engine
-        Task {
+        Task { [weak self] in
             do {
                 try await engine.start()
+                await MainActor.run { [weak self] in self?.sttEngineError = nil }
             } catch {
+                await MainActor.run { [weak self] in
+                    self?.sttEngineError = "\(error)"
+                }
                 NSLog("[AppState] STT engine failed to start: \(error)")
             }
         }

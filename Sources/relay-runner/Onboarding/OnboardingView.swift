@@ -7,15 +7,21 @@ struct OnboardingView: View {
 
     @Bindable var permissions: PermissionsManager
     let simplified: Bool
+    /// Optional setup-progress string (e.g. "Loading speech model…"). When
+    /// non-nil on the Ready step, shown in place of "all set" so the user
+    /// knows the app isn't fully ready yet.
+    let setupStatus: () -> String?
     let onFinish: () -> Void
 
     @State private var step: Step
 
     init(permissions: PermissionsManager,
          simplified: Bool,
+         setupStatus: @escaping () -> String? = { nil },
          onFinish: @escaping () -> Void) {
         self.permissions = permissions
         self.simplified = simplified
+        self.setupStatus = setupStatus
         self.onFinish = onFinish
         // Simplified flow (re-prompt after initial onboarding): jump to the
         // first missing permission. Full flow starts at the welcome screen.
@@ -191,15 +197,26 @@ struct OnboardingView: View {
     }
 
     private var readyView: some View {
-        VStack(spacing: 20) {
+        let status = setupStatus()
+        return VStack(spacing: 20) {
             Spacer()
-            Image(systemName: permissions.allGranted ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                .font(.system(size: 56))
-                .foregroundStyle(permissions.allGranted ? .green : .orange)
-            Text("You're all set.")
+            if status != nil {
+                ProgressView()
+                    .controlSize(.large)
+            } else {
+                Image(systemName: permissions.allGranted ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 56))
+                    .foregroundStyle(permissions.allGranted ? .green : .orange)
+            }
+            Text(status != nil ? "Almost ready\u{2026}" : "You're all set.")
                 .font(.title2).bold()
             VStack(spacing: 6) {
-                Text("Relay Runner is running in your menu bar.")
+                if let status {
+                    Text(status)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Relay Runner is running in your menu bar.")
+                }
                 if !permissions.allGranted {
                     Text("Some features are disabled until missing permissions are granted — open Relay Runner's menu to fix them later.")
                         .foregroundStyle(.secondary)
