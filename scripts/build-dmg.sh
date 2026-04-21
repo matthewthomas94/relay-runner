@@ -4,6 +4,19 @@
 # Usage:
 #   ./scripts/build-dmg.sh              # Release build + DMG
 #   ./scripts/build-dmg.sh --debug      # Debug build + DMG
+#
+# Signing & notarisation are opt-in via environment variables so local
+# dev builds don't fail when no cert is installed:
+#
+#   SIGN_IDENTITY    Developer ID Application identity (e.g. "Developer ID
+#                    Application: Jane Doe (TEAMID)"). Unset → ad-hoc sign,
+#                    which is fine for local testing but will not run
+#                    unquarantined on another Mac.
+#
+#   NOTARY_PROFILE   notarytool keychain profile name (created once with
+#                    `xcrun notarytool store-credentials <name>`). When set
+#                    together with SIGN_IDENTITY, the final DMG is
+#                    submitted for notarisation and stapled.
 
 set -euo pipefail
 
@@ -103,9 +116,45 @@ echo "[Relay Runner] Setup complete."
 SETUP_EOF
 chmod +x "$APP_DIR/Contents/SharedSupport/setup-venv.sh"
 
-# Ad-hoc code sign
 echo "==> Code signing..."
-codesign --force --deep --sign - "$APP_DIR"
+
+ENTITLEMENTS="$PROJECT_ROOT/scripts/relay-runner.entitlements"
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+
+if [ -n "$SIGN_IDENTITY" ]; then
+    if [ ! -f "$ENTITLEMENTS" ]; then
+        echo "error: SIGN_IDENTITY set but $ENTITLEMENTS not found" >&2
+        exit 1
+    fi
+    # Sign nested Mach-O content first (inside-out is required by codesign).
+    # The bundled Python services are .py text files — those don't need
+    # signing. The only executables are the main binary and the relay-bridge
+    # shell script, plus any dylibs / frameworks SPM dropped into the bundle.
+    echo "  identity: $SIGN_IDENTITY"
+    # Any embedded frameworks / dylibs (FluidAudio ships .dylibs via SPM plugins).
+    find "$APP_DIR/Contents" \( -name "*.dylib" -o -name "*.framework" \) -print0 \
+        | while IFS= read -r -d '' f; do
+            codesign --force --timestamp --options runtime \
+                --sign "$SIGN_IDENTITY" "$f"
+          done
+    # Main executable last, with entitlements + hardened runtime.
+    codesign --force --timestamp --options runtime \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-runner"
+    # Outer bundle seal — must be signed after everything nested is signed.
+    codesign --force --timestamp --options runtime \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR"
+    # Verify. `--deep --strict` catches unsigned nested components that
+    # would otherwise be rejected at notarisation / Gatekeeper time.
+    codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+else
+    echo "  (no SIGN_IDENTITY set — ad-hoc sign only; this build cannot be"
+    echo "   distributed outside this Mac)"
+    codesign --force --deep --sign - "$APP_DIR"
+fi
 
 echo "==> Creating DMG..."
 rm -f "$DIST_DIR/$DMG_NAME.dmg"
@@ -187,6 +236,25 @@ hdiutil convert "$DMG_TMP" \
 
 rm -f "$DMG_TMP"
 rm -rf "$DMG_STAGING"
+
+# Notarisation: Apple needs to scan the signed DMG before macOS will run
+# it without Gatekeeper prompts on other machines. We skip when there's
+# no signing identity (ad-hoc builds aren't notarisable) or no notarytool
+# profile.
+NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+if [ -n "$SIGN_IDENTITY" ] && [ -n "$NOTARY_PROFILE" ]; then
+    echo "==> Submitting DMG for notarisation (profile: $NOTARY_PROFILE)..."
+    xcrun notarytool submit "$DIST_DIR/$DMG_NAME.dmg" \
+        --keychain-profile "$NOTARY_PROFILE" \
+        --wait
+    echo "==> Stapling ticket..."
+    xcrun stapler staple "$DIST_DIR/$DMG_NAME.dmg"
+    # Verify so a broken staple fails the build here, not on a user's Mac.
+    xcrun stapler validate "$DIST_DIR/$DMG_NAME.dmg"
+elif [ -n "$SIGN_IDENTITY" ]; then
+    echo "  (SIGN_IDENTITY set but NOTARY_PROFILE unset — skipping notarisation."
+    echo "   The DMG is signed but not notarised, so Gatekeeper will warn users.)"
+fi
 
 # If the app is already installed under /Applications, refresh it so this
 # rebuild is what Spotlight, the Dock and Cmd-Tab actually see.

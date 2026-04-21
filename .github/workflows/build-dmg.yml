@@ -39,7 +39,51 @@ jobs:
       - name: Resolve Swift dependencies
         run: swift package resolve
 
+      # Import the Developer ID Application certificate into a temporary
+      # keychain so codesign can use it. All four secrets must be set for
+      # a signed build; if any are missing the build falls through to an
+      # ad-hoc sign via build-dmg.sh (useful for PR builds before secrets
+      # have been added to the repo).
+      - name: Import signing certificate
+        if: ${{ secrets.SIGN_CERT_P12 != '' }}
+        env:
+          SIGN_CERT_P12: ${{ secrets.SIGN_CERT_P12 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$SIGN_CERT_P12" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN" \
+            -P "$SIGN_CERT_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          rm -f "$CERT_PATH"
+
+      # Store notarytool credentials under a keychain profile that
+      # build-dmg.sh references via NOTARY_PROFILE.
+      - name: Store notarisation credentials
+        if: ${{ secrets.NOTARY_APPLE_ID != '' }}
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials "relay-runner-notary" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD"
+
       - name: Build and package DMG
+        env:
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          NOTARY_PROFILE: ${{ secrets.NOTARY_APPLE_ID != '' && 'relay-runner-notary' || '' }}
         run: ./scripts/build-dmg.sh
 
       - name: Upload DMG as artifact
