@@ -40,17 +40,22 @@ jobs:
         run: swift package resolve
 
       # Import the Developer ID Application certificate into a temporary
-      # keychain so codesign can use it. All four secrets must be set for
-      # a signed build; if any are missing the build falls through to an
-      # ad-hoc sign via build-dmg.sh (useful for PR builds before secrets
-      # have been added to the repo).
+      # keychain so codesign can use it. GitHub Actions doesn't expose
+      # `secrets` to step-level `if:` conditions (it errors with
+      # "Unrecognized named-value: 'secrets'"), so the presence-check
+      # happens inside the script body. When the secret is absent,
+      # build-dmg.sh falls through to ad-hoc signing — useful for PR
+      # builds before secrets have been added to the repo.
       - name: Import signing certificate
-        if: ${{ secrets.SIGN_CERT_P12 != '' }}
         env:
           SIGN_CERT_P12: ${{ secrets.SIGN_CERT_P12 }}
           SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
+          if [ -z "$SIGN_CERT_P12" ]; then
+            echo "SIGN_CERT_P12 secret not set; skipping cert import (will ad-hoc sign)."
+            exit 0
+          fi
           KEYCHAIN=build.keychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
@@ -69,12 +74,15 @@ jobs:
       # Store notarytool credentials under a keychain profile that
       # build-dmg.sh references via NOTARY_PROFILE.
       - name: Store notarisation credentials
-        if: ${{ secrets.NOTARY_APPLE_ID != '' }}
         env:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
         run: |
+          if [ -z "$NOTARY_APPLE_ID" ]; then
+            echo "NOTARY_APPLE_ID secret not set; skipping notary creds (notarisation will be skipped)."
+            exit 0
+          fi
           xcrun notarytool store-credentials "relay-runner-notary" \
             --apple-id "$NOTARY_APPLE_ID" \
             --team-id "$NOTARY_TEAM_ID" \
