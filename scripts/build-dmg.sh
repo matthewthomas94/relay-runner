@@ -262,16 +262,25 @@ fi
 # it without Gatekeeper prompts on other machines. We skip when there's
 # no signing identity (ad-hoc builds aren't notarisable) or no notarytool
 # profile.
+#
+# We submit and return immediately (no `--wait`, no `stapler staple`).
+# Apple's notary queue can take hours-to-days for fresh team IDs, and
+# blocking CI on it doesn't change the outcome. The DMG ships signed but
+# unstapled; Gatekeeper does an online notarisation check on first launch
+# (slower cold start but works once Apple processes the submission).
+# Once the submission shows "Accepted" in
+# `xcrun notarytool history --keychain-profile <profile>`, run
+# `xcrun stapler staple` against the DMG and redistribute for a faster
+# offline-friendly UX.
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 if [ -n "$SIGN_IDENTITY" ] && [ -n "$NOTARY_PROFILE" ]; then
     echo "==> Submitting DMG for notarisation (profile: $NOTARY_PROFILE)..."
     xcrun notarytool submit "$DIST_DIR/$DMG_NAME.dmg" \
-        --keychain-profile "$NOTARY_PROFILE" \
-        --wait
-    echo "==> Stapling ticket..."
-    xcrun stapler staple "$DIST_DIR/$DMG_NAME.dmg"
-    # Verify so a broken staple fails the build here, not on a user's Mac.
-    xcrun stapler validate "$DIST_DIR/$DMG_NAME.dmg"
+        --keychain-profile "$NOTARY_PROFILE"
+    echo "==> Submission queued. Track status with:"
+    echo "      xcrun notarytool history --keychain-profile $NOTARY_PROFILE"
+    echo "    Once 'Accepted', staple with:"
+    echo "      xcrun stapler staple \"$DIST_DIR/$DMG_NAME.dmg\""
 elif [ -n "$SIGN_IDENTITY" ]; then
     echo "  (SIGN_IDENTITY set but NOTARY_PROFILE unset — skipping notarisation."
     echo "   The DMG is signed but not notarised, so Gatekeeper will warn users.)"
