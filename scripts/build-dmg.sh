@@ -201,6 +201,14 @@ for _ in $(seq 1 20); do
     sleep 0.5
 done
 
+# Wait for Finder to register the volume (not just the kernel mount)
+for _ in $(seq 1 20); do
+    if [ "$(osascript -e "tell application \"Finder\" to exists disk \"$APP_NAME\"" 2>/dev/null)" = "true" ]; then break; fi
+    sleep 0.5
+done
+# Nudge Finder to enumerate disks so the subsequent `tell disk` resolves
+osascript -e 'tell application "Finder" to name of every disk' >/dev/null 2>&1 || true
+
 osascript <<APPLESCRIPT
 tell application "Finder"
     tell disk "$APP_NAME"
@@ -236,6 +244,19 @@ hdiutil convert "$DMG_TMP" \
 
 rm -f "$DMG_TMP"
 rm -rf "$DMG_STAGING"
+
+# Sign the DMG itself. Apple accepts unsigned DMGs into notarisation so this
+# isn't strictly required, but a signed DMG passes Gatekeeper assessment
+# directly (`spctl -a -t open --context context:primary-signature`) and
+# survives renames + re-distribution without breaking the trust chain.
+# Ad-hoc builds skip this — there's no identity to sign with.
+if [ -n "$SIGN_IDENTITY" ]; then
+    echo "==> Signing DMG..."
+    codesign --force --timestamp \
+        --sign "$SIGN_IDENTITY" \
+        "$DIST_DIR/$DMG_NAME.dmg"
+    codesign --verify --verbose=2 "$DIST_DIR/$DMG_NAME.dmg"
+fi
 
 # Notarisation: Apple needs to scan the signed DMG before macOS will run
 # it without Gatekeeper prompts on other machines. We skip when there's
