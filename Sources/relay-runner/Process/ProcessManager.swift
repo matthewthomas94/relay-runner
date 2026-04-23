@@ -367,8 +367,11 @@ final class ProcessManager {
         return """
         # Re-run setup if the venv is missing OR if a prior setup left the
         # venv in place but failed to install deps — otherwise we'd exec a
-        # venv python with no numpy/kokoro_onnx and crash at import time.
-        if ! '\(venv)/bin/python3' -c 'import numpy, kokoro_onnx' >/dev/null 2>&1; then
+        # venv python with no numpy/kokoro_onnx/huggingface_hub and crash
+        # at import or first model-download time. huggingface_hub must be
+        # verified explicitly: kokoro-onnx imports cleanly without it, then
+        # fails when tts_worker tries to download models.
+        if ! '\(venv)/bin/python3' -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; then
             echo ''
             echo '╔══════════════════════════════════════════╗'
             echo '║  Relay Runner — First-time setup         ║'

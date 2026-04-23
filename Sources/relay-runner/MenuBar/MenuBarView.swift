@@ -15,6 +15,37 @@ struct MenuBarView: View {
     var body: some View {
         Text(statusLabel)
 
+        // Setup progress / error — shown while STT is still warming up, or
+        // when it failed to start. Presented as plain items (not buttons) so
+        // the user can see the raw status without it feeling nag-like.
+        if let status = appState.setupStatusMessage {
+            Divider()
+            Text("Setup: \(status)")
+        }
+        if let translation = appState.sttEngineErrorTranslation {
+            Divider()
+            Text("\u{26A0} \(translation.headline)")
+            if let action = translation.action {
+                Text(action)
+            }
+            Button("Retry Setup") { appState.retrySTTSetup() }
+        }
+
+        // Permission warnings surface here as plain menu items with a "Fix"
+        // button. Kept above the session controls so the user notices before
+        // they try to start a session that won't work.
+        if !appState.permissions.missing.isEmpty {
+            Divider()
+            ForEach(appState.permissions.missing) { kind in
+                Button("\u{26A0} Fix \(kind.displayName) permission") {
+                    appState.permissions.openSettings(for: kind)
+                }
+            }
+            Button("Re-run Setup Walkthrough\u{2026}") {
+                appState.onboarding.showAlways()
+            }
+        }
+
         Divider()
 
         Button("Start Session\u{2026}") { appState.newSession() }
