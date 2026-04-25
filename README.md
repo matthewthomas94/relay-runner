@@ -113,7 +113,13 @@ All settings live in the Settings window. Config is persisted to:
 
 ## Permissions
 
-Relay Runner only requests **Microphone** access. It does **not** require Accessibility or Input Monitoring — hotkey handling uses standard `NSEvent` global monitors.
+Relay Runner uses up to three macOS privacy permissions, all optional with graceful fallback:
+
+- **Microphone** — required to capture speech.
+- **Accessibility** — used to pause currently-playing media when you start recording. The app still works without it; you'll just have audio playing over your voice.
+- **Input Monitoring** — required only when your activation key is *not* a modifier (Caps Lock / Option / etc.). Caps Lock-based triggering reads `NSEvent` modifier flags directly and doesn't need this permission. If you set the activation key to e.g. `F19`, macOS will ask for Input Monitoring at that point.
+
+First-launch onboarding walks through the ones that are needed and bootstraps the bundled Python environment so voice replies work immediately. If TCC ever resets the grants (a macOS update or app reinstall can do this), the Settings → Status tab surfaces a banner explaining what happened.
 
 ---
 

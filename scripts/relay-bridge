@@ -5,6 +5,7 @@
 #   relay-bridge                     # Normal mode: full voice terminal
 #   relay-bridge --session <id>      # Resume a specific Claude session
 #   relay-bridge --relay             # Relay mode: daemon for /relay-bridge slash command
+#   relay-bridge --venv-only         # Run venv bootstrap and exit 0 (used by onboarding)
 #
 # In relay mode, voice commands are written to /tmp/voice_cmd_ready for Claude
 # to pick up, and TTS input is read from /tmp/tts_in.fifo.
@@ -32,8 +33,28 @@ CONFIG_PATH="$CONFIG_DIR/relay-runner/config.toml"
 # Export PROJECT_ROOT so the slash command can find us
 export PROJECT_ROOT
 
+# -- Parse our own flags before passing the rest to voice_bridge.py --
+# --venv-only: run only the venv bootstrap below, then exit. Used by
+# the app's onboarding flow so it can call into the same battle-tested
+# Python setup that interactive /relay-bridge sessions use, with output
+# streamed back to the SwiftUI progress view.
+VENV_ONLY=false
+__rb_args=()
+for arg in "$@"; do
+    case "$arg" in
+        --venv-only) VENV_ONLY=true ;;
+        *) __rb_args+=("$arg") ;;
+    esac
+done
+# Re-bind $@ to the filtered list so the final exec sees only flags
+# voice_bridge.py understands. The +/expansion guards against `set -u`
+# when no args remain (bash 3.2 compatibility).
+set -- "${__rb_args[@]+"${__rb_args[@]}"}"
+
 # -- Kill any existing bridge (only one voice session at a time) --
-if [ -S "$BRIDGE_SOCK" ]; then
+# Skipped under --venv-only so onboarding doesn't tear down a running
+# session just to install dependencies in the background.
+if ! $VENV_ONLY && [ -S "$BRIDGE_SOCK" ]; then
     if pgrep -f 'voice_bridge.py' > /dev/null 2>&1; then
         echo "[relay-bridge] Stopping previous voice session..."
         # Try graceful shutdown first
@@ -162,6 +183,12 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
     echo '' && echo '[Relay Runner] Setup complete.' || \
     { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
     echo ''
+fi
+
+# -- Onboarding short-circuit: bootstrap is done, no voice bridge needed --
+if $VENV_ONLY; then
+    echo '[relay-bridge] Venv ready (--venv-only).'
+    exit 0
 fi
 
 # -- Create FIFO --
