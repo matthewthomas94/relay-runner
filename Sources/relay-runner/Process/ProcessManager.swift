@@ -162,11 +162,19 @@ final class ProcessManager {
         let script = """
         #!/bin/bash
         \(Self.shellProfileSource())
-        # Ensure venv + deps + speech-model files are installed. relay-bridge
-        # short-circuits in well under a second when everything's already in
-        # place; on first run it does the full no-admin install. Either way,
-        # the user sees its progress in the Terminal that just opened.
+        # Ensure venv + deps + speech-model + Claude CLI are installed.
+        # relay-bridge short-circuits in well under a second when everything's
+        # already in place; on first run it does the full no-admin install.
+        # Either way, the user sees its progress in the Terminal that just
+        # opened.
         '\(relayBridge)' --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }
+        # claude.ai/install.sh symlinks the Claude Code binary at
+        # ~/.local/bin/claude. Make sure that's on PATH for python's
+        # shutil.which("claude") lookup downstream — the user's shell
+        # profile sourced above usually adds it, but on fresh installs
+        # the relay-bridge install just dropped the binary moments ago
+        # and the profile isn't aware of it yet.
+        export PATH="$HOME/.local/bin:$PATH"
         \(cdLine)
         '\(python)' '\(bridgeScript)' --config '\(configPath)'
         echo ''
