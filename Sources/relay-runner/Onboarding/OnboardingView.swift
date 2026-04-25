@@ -19,6 +19,11 @@ struct OnboardingView: View {
     /// soon as onboarding opens (welcome step) and is usually finished
     /// by the time the user reaches its dedicated step.
     @State private var venvInstaller = VenvInstaller()
+    /// Cached "is the Claude Code CLI signed in" state. Polled by a
+    /// 1-second timer while on the claudeLogin step so we can auto-
+    /// advance the moment the keychain entry appears (i.e., the user
+    /// has finished `claude /login` in the Terminal we spawned).
+    @State private var claudeSignedIn: Bool = ClaudeAuth.isAuthenticated
 
     init(permissions: PermissionsManager,
          simplified: Bool,
@@ -45,6 +50,7 @@ struct OnboardingView: View {
         case accessibility
         case inputMonitoring
         case pythonSetup
+        case claudeLogin
         case ready
 
         var kind: PermissionKind? {
@@ -93,6 +99,19 @@ struct OnboardingView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
             }
         }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            // Poll only while we're on the claudeLogin step — the
+            // keychain check is cheap, but there's no reason to
+            // run it forever. When the entry appears, mirror the
+            // permission auto-advance pattern.
+            guard step == .claudeLogin else { return }
+            let now = ClaudeAuth.isAuthenticated
+            guard now != claudeSignedIn else { return }
+            claudeSignedIn = now
+            if now {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
+            }
+        }
     }
 
     // MARK: - Sections
@@ -120,6 +139,7 @@ struct OnboardingView: View {
         case .accessibility:    permissionView(for: .accessibility)
         case .inputMonitoring:  permissionView(for: .inputMonitoring)
         case .pythonSetup:      pythonSetupView
+        case .claudeLogin:      claudeLoginView
         case .ready:            readyView
         }
     }
@@ -312,6 +332,44 @@ struct OnboardingView: View {
         }
     }
 
+    private var claudeLoginView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                if claudeSignedIn {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.title3)
+                } else {
+                    Image(systemName: "circle")
+                        .foregroundStyle(.secondary)
+                        .font(.title3)
+                }
+                Text("Sign in to Claude")
+                    .font(.title3).bold()
+            }
+            Text("Relay Runner uses Claude Code for the conversation. Sign in to your Anthropic account so voice sessions can connect to Claude — without this, every session would fail with an authentication error the moment you started speaking.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if claudeSignedIn {
+                Text("Signed in — you're ready to go.")
+                    .font(.callout)
+                    .foregroundStyle(.green)
+            } else {
+                Text("Click the button below. A Terminal window will open and prompt you to sign in to Anthropic. This window will update automatically when you're done.")
+                    .font(.callout)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.25))
+                    )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var readyView: some View {
         let status = setupStatus()
         let isLoading = status != nil
@@ -448,6 +506,14 @@ struct OnboardingView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(true)
             }
+        case .claudeLogin:
+            if claudeSignedIn {
+                Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
+            } else {
+                Button("Sign in to Claude") {
+                    ClaudeAuth.openLoginInTerminal()
+                }.keyboardShortcut(.defaultAction)
+            }
         case .ready:
             Button("Done") { onFinish() }
                 .keyboardShortcut(.defaultAction)
@@ -482,9 +548,9 @@ struct OnboardingView: View {
     }
 
     /// The next step (after `from`) that still needs the user's attention —
-    /// either a permission that isn't granted, or pythonSetup if the venv
-    /// hasn't been bootstrapped yet. Used by the simplified re-prompt flow
-    /// to skip already-done items.
+    /// a permission not yet granted, pythonSetup if the venv hasn't been
+    /// bootstrapped, or claudeLogin if the Claude CLI isn't signed in.
+    /// Used by the simplified re-prompt flow to skip already-done items.
     private func nextMissingStep(after from: Step) -> Step? {
         let remaining = Step.allCases.filter {
             $0.rawValue > from.rawValue
@@ -494,6 +560,9 @@ struct OnboardingView: View {
                 return candidate
             }
             if candidate == .pythonSetup, !VenvInstaller.alreadyInstalled {
+                return candidate
+            }
+            if candidate == .claudeLogin, !ClaudeAuth.isAuthenticated {
                 return candidate
             }
         }
@@ -509,29 +578,31 @@ struct OnboardingView: View {
         case .accessibility:    return "Accessibility"
         case .inputMonitoring:  return "Input Monitoring"
         case .pythonSetup:      return "Python Environment"
+        case .claudeLogin:      return "Claude Account"
         case .ready:            return "Setup Complete"
         }
     }
 
     private var progressLabel: String? {
         guard let index = visibleIndex else { return nil }
-        // Full flow always visits 3 permissions + pythonSetup (the latter
-        // briefly auto-advances when the venv is already healthy, but it
-        // still gets a slot in the count). Simplified flow only counts
-        // steps that actually need attention.
+        // Full flow always visits 3 permissions + pythonSetup + claudeLogin
+        // (the last two briefly auto-advance when their state is already
+        // ready, but they still get slots in the count). Simplified flow
+        // only counts steps that actually need attention.
         let count: Int
         if simplified {
             count = simplifiedTotalSteps
         } else {
-            count = 4
+            count = 5
         }
         return "\(index) of \(count)"
     }
 
     /// Number of steps the simplified re-prompt flow will visit — the
     /// permissions still missing plus pythonSetup if the venv isn't
-    /// healthy. Used so the "X of N" label reflects actual remaining
-    /// work, not the full onboarding length.
+    /// healthy plus claudeLogin if the CLI isn't signed in. Used so
+    /// the "X of N" label reflects actual remaining work, not the full
+    /// onboarding length.
     private var simplifiedTotalSteps: Int {
         var count = 0
         for s in Step.allCases {
@@ -539,6 +610,9 @@ struct OnboardingView: View {
                 count += 1
             }
             if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
+                count += 1
+            }
+            if s == .claudeLogin, !ClaudeAuth.isAuthenticated {
                 count += 1
             }
         }
@@ -552,6 +626,7 @@ struct OnboardingView: View {
         case .accessibility:   return 2
         case .inputMonitoring: return 3
         case .pythonSetup:     return 4
+        case .claudeLogin:     return 5
         }
     }
 
@@ -613,6 +688,9 @@ struct OnboardingView: View {
                 return s
             }
             if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
+                return s
+            }
+            if s == .claudeLogin, !ClaudeAuth.isAuthenticated {
                 return s
             }
         }
