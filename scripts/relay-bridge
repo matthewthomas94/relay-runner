@@ -16,7 +16,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # -- Paths --
-SERVICES_DIR="$PROJECT_ROOT/services"
+# Read-only services bundled inside the .app (or repo, for dev): the
+# Python source files and requirements.txt that ship with each release.
+SERVICES_BUNDLE="$PROJECT_ROOT/services"
+# Writable runtime data — venv + downloaded Python live here so the
+# install path works for non-admin users with no Homebrew or system
+# Python. Admin is required to install Homebrew or run macOS package
+# installers, but ~/Library is always user-writable.
+USER_DATA_DIR="$HOME/Library/Application Support/relay-runner"
+SERVICES_DIR="$USER_DATA_DIR/services"
+RELOCATABLE_PYTHON_DIR="$USER_DATA_DIR/python"
+RELOCATABLE_PYTHON="$RELOCATABLE_PYTHON_DIR/bin/python3"
+mkdir -p "$SERVICES_DIR"
 VOICE_FIFO="/tmp/voice_in.fifo"
 BRIDGE_SOCK="/tmp/voice_bridge.sock"
 
@@ -47,8 +58,13 @@ VENV_ONLY=false
 # the SwiftUI side strips the `RELAY_PROGRESS:` prefix and treats the
 # rest as structured. Keep labels short — they show up under a progress
 # bar with limited horizontal space.
+#
+# Writes to stderr so it doesn't contaminate functions whose stdout
+# the caller captures (e.g. `find_python`, `ensure_relocatable_python`).
+# The SwiftUI parser merges stdout + stderr into one pipe, so it still
+# sees these lines.
 emit_progress() {
-    echo "RELAY_PROGRESS:$1:$2"
+    echo "RELAY_PROGRESS:$1:$2" >&2
 }
 __rb_args=()
 for arg in "$@"; do
@@ -119,33 +135,138 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
         done
         return 1
     }
-    find_brew() {
-        for b in brew /opt/homebrew/bin/brew /usr/local/bin/brew; do
-            if command -v "$b" >/dev/null 2>&1; then
-                echo "$b"
-                return 0
-            fi
-        done
-        return 1
-    }
-    install_homebrew() {
+    # Download a relocatable Python 3.13 build into RELOCATABLE_PYTHON_DIR
+    # and echo the interpreter path. Used when no system Python in the
+    # 3.10–3.13 range exists. python-build-standalone is the same
+    # distribution uv / Rye / pyodide use; it's PSF-licensed (with
+    # statically-linked OpenSSL etc.), extracts cleanly into any user-
+    # writable directory, and crucially does NOT require admin (the
+    # previous Homebrew-bootstrap path did, which broke for non-admin
+    # users). Idempotent: skips the download if a usable interpreter
+    # already lives at RELOCATABLE_PYTHON.
+    ensure_relocatable_python() {
+        if [ -x "$RELOCATABLE_PYTHON" ] && \
+           "$RELOCATABLE_PYTHON" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
+            echo "$RELOCATABLE_PYTHON"
+            return 0
+        fi
         if ! command -v curl >/dev/null 2>&1; then
-            echo "[Relay Runner] curl not available — cannot bootstrap Homebrew."
+            echo "[Relay Runner] curl not available — cannot download Python." >&2
             return 1
         fi
-        emit_progress 15 "Installing Homebrew (may take several minutes)..."
-        echo "[Relay Runner] Homebrew not found. Installing Homebrew..."
-        echo "(This may prompt for your macOS password.)"
-        NONINTERACTIVE=1 /bin/bash -c \
-            "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || return 1
-        # Bring brew onto PATH for the rest of this shell.
-        for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-            if [ -x "$b" ]; then
-                eval "$("$b" shellenv)"
-                return 0
+        local arch
+        case "$(uname -m)" in
+            arm64)  arch="aarch64-apple-darwin" ;;
+            x86_64) arch="x86_64-apple-darwin" ;;
+            *)
+                echo "[Relay Runner] Unsupported architecture: $(uname -m)" >&2
+                return 1
+                ;;
+        esac
+        emit_progress 25 "Downloading Python 3.13 (~18MB, no admin required)..."
+        # Stderr only — function's stdout is captured by the caller as
+        # the path to the interpreter, so anything else printed there
+        # gets concatenated into $VENV_PYTHON and breaks downstream.
+        echo "[Relay Runner] No system Python 3.10–3.13 found — downloading" >&2
+        echo "[Relay Runner] a standalone Python 3.13 build (no admin required)." >&2
+
+        # Find the latest 3.13 install_only asset URL via GitHub's API.
+        # Asset name pattern (literal `+`, URL-encoded as %2B in JSON):
+        #   cpython-3.13.X+YYYYMMDD-<arch>-install_only.tar.gz
+        # `install_only` is the slimmer embedding-friendly variant;
+        # `freethreaded` is the GIL-less PEP 703 build, not what we want.
+        # `|| true` guards against pipefail when grep finds nothing.
+        local api_url="https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"
+        local asset_url
+        asset_url=$(curl -fsSL "$api_url" 2>/dev/null \
+            | grep -oE '"browser_download_url": "[^"]*'"$arch"'-install_only\.tar\.gz"' \
+            | grep -E 'cpython-3\.13\.' \
+            | grep -v 'freethreaded' \
+            | head -1 \
+            | sed -E 's/.*"([^"]+)"/\1/' || true)
+        if [ -z "$asset_url" ]; then
+            echo "[Relay Runner] Couldn't locate a python-build-standalone 3.13 release for $arch." >&2
+            echo "[Relay Runner] Check internet connectivity, or rate-limit on api.github.com." >&2
+            return 1
+        fi
+        # SHA256SUMS file lives at the same release base path; the file
+        # lists the literal asset name, but the URL we got back from the
+        # API has `%2B` for `+` — decode for the lookup.
+        local checksums_url="${asset_url%/*}/SHA256SUMS"
+        local asset_name="${asset_url##*/}"
+        asset_name="${asset_name//%2B/+}"
+
+        # Stage download + extract inside USER_DATA_DIR so the final mv
+        # is a same-filesystem rename (atomic). mktemp -d ensures we
+        # never collide with a parallel install.
+        mkdir -p "$USER_DATA_DIR"
+        local stage
+        stage=$(mktemp -d "$USER_DATA_DIR/.python-stage.XXXXXX") || return 1
+
+        local tmp_tar="$stage/python.tar.gz"
+        if ! curl -fsSL "$asset_url" -o "$tmp_tar"; then
+            rm -rf "$stage"
+            echo "[Relay Runner] Python download failed." >&2
+            return 1
+        fi
+
+        # Verify SHA256 against the release's SHA256SUMS file. Refuse
+        # to install if the checksum is missing or mismatched — better
+        # to fail loudly than silently install a corrupted interpreter.
+        local expected_sha
+        expected_sha=$(curl -fsSL "$checksums_url" 2>/dev/null \
+            | awk -v name="$asset_name" '$2 == name { print $1; exit }' || true)
+        if [ -z "$expected_sha" ]; then
+            rm -rf "$stage"
+            echo "[Relay Runner] Couldn't fetch SHA256 checksum for verification." >&2
+            return 1
+        fi
+        local actual_sha
+        actual_sha=$(shasum -a 256 "$tmp_tar" | awk '{print $1}')
+        if [ "$expected_sha" != "$actual_sha" ]; then
+            rm -rf "$stage"
+            echo "[Relay Runner] Python checksum mismatch — refusing to install." >&2
+            echo "  Expected: $expected_sha" >&2
+            echo "  Got:      $actual_sha" >&2
+            return 1
+        fi
+
+        emit_progress 40 "Extracting Python..."
+        if ! tar -xzf "$tmp_tar" -C "$stage"; then
+            rm -rf "$stage"
+            echo "[Relay Runner] Failed to extract Python tarball." >&2
+            return 1
+        fi
+        # Tarball unpacks into a top-level "python/" directory.
+        if [ ! -x "$stage/python/bin/python3" ]; then
+            rm -rf "$stage"
+            echo "[Relay Runner] Extracted Python missing expected interpreter." >&2
+            return 1
+        fi
+
+        # Atomically replace any existing install. Move the old aside
+        # so we can restore on failure rather than leaving the user
+        # with no Python at all.
+        if [ -e "$RELOCATABLE_PYTHON_DIR" ]; then
+            rm -rf "$RELOCATABLE_PYTHON_DIR.old"
+            mv "$RELOCATABLE_PYTHON_DIR" "$RELOCATABLE_PYTHON_DIR.old"
+        fi
+        if ! mv "$stage/python" "$RELOCATABLE_PYTHON_DIR"; then
+            if [ -e "$RELOCATABLE_PYTHON_DIR.old" ]; then
+                mv "$RELOCATABLE_PYTHON_DIR.old" "$RELOCATABLE_PYTHON_DIR" 2>/dev/null || true
             fi
-        done
-        return 1
+            rm -rf "$stage"
+            echo "[Relay Runner] Failed to install downloaded Python." >&2
+            return 1
+        fi
+        rm -rf "$RELOCATABLE_PYTHON_DIR.old" "$stage"
+
+        if [ ! -x "$RELOCATABLE_PYTHON" ]; then
+            echo "[Relay Runner] Python install completed but interpreter missing at $RELOCATABLE_PYTHON" >&2
+            return 1
+        fi
+
+        echo "$RELOCATABLE_PYTHON"
     }
     # If an existing venv was built with an out-of-range Python (e.g.
     # 3.14, which kokoro-onnx doesn't support), wipe it so the block
@@ -159,28 +280,20 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
     # exists but deps are missing, we fall through to reinstall into the
     # existing interpreter.
     if [ ! -x "$PYTHON" ]; then
-        VENV_PYTHON="$(find_python || true)"
-        if [ -z "$VENV_PYTHON" ]; then
-            BREW="$(find_brew || true)"
-            if [ -z "$BREW" ]; then
-                if ! install_homebrew; then
-                    echo "[Relay Runner] Could not install Homebrew automatically."
-                    echo "Install it from https://brew.sh then re-run."
-                    exit 1
-                fi
-                BREW="$(find_brew || true)"
-            fi
-            emit_progress 30 "Installing Python 3.13 via Homebrew..."
-            echo "[Relay Runner] No Python 3.10+ found. Installing python@3.13 via Homebrew..."
-            echo "(This can take a few minutes on first run.)"
-            if ! "$BREW" install python@3.13; then
-                echo "[Relay Runner] brew install python@3.13 failed. See errors above."
-                exit 1
-            fi
+        # Test override — flip to force the relocatable-Python path even
+        # on a machine that has a system Python in our range, so we can
+        # exercise the no-admin install end-to-end without uninstalling
+        # the system interpreter.
+        if [ -n "${RELAY_FORCE_RELOCATABLE_PYTHON:-}" ]; then
+            VENV_PYTHON=""
+        else
             VENV_PYTHON="$(find_python || true)"
+        fi
+        if [ -z "$VENV_PYTHON" ]; then
+            VENV_PYTHON="$(ensure_relocatable_python || true)"
             if [ -z "$VENV_PYTHON" ]; then
-                echo "[Relay Runner] python@3.13 installed but not found on disk."
-                echo "Try opening a new terminal and re-running."
+                echo "[Relay Runner] Could not obtain a usable Python 3.10–3.13 interpreter."
+                echo "[Relay Runner] See errors above; fix and re-launch Relay Runner."
                 exit 1
             fi
         fi
@@ -201,7 +314,7 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
     # the 65–95% band each time it sees one — that's where the perceived
     # hang lives, so the sub-progress is what makes the bar feel alive.
     emit_progress 65 "Installing numpy, onnxruntime, kokoro-onnx, huggingface_hub..."
-    "$SERVICES_DIR/.venv/bin/pip" install -r "$SERVICES_DIR/requirements.txt" || \
+    "$SERVICES_DIR/.venv/bin/pip" install -r "$SERVICES_BUNDLE/requirements.txt" || \
         { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
     emit_progress 100 "Setup complete."
     echo ''
@@ -231,4 +344,4 @@ fi
 
 # -- Start voice bridge --
 echo "[relay-bridge] Starting voice bridge..."
-exec "$PYTHON" "$SERVICES_DIR/voice_bridge.py" --config "$CONFIG_PATH" --relay "$@"
+exec "$PYTHON" "$SERVICES_BUNDLE/voice_bridge.py" --config "$CONFIG_PATH" --relay "$@"
