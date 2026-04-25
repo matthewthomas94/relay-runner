@@ -303,35 +303,80 @@ struct OnboardingView: View {
 
     private var readyView: some View {
         let status = setupStatus()
-        return VStack(spacing: 20) {
-            Spacer()
-            if status != nil {
+        let isLoading = status != nil
+        let allGranted = permissions.allGranted
+        return VStack(spacing: 16) {
+            Spacer(minLength: 8)
+            if isLoading {
                 ProgressView()
                     .controlSize(.large)
             } else {
-                Image(systemName: permissions.allGranted ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 56))
-                    .foregroundStyle(permissions.allGranted ? .green : .orange)
+                Image(systemName: allGranted ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(allGranted ? .green : .orange)
             }
-            Text(status != nil ? "Almost ready\u{2026}" : "You're all set.")
+            Text(isLoading ? "Almost ready\u{2026}" : "You're all set.")
                 .font(.title2).bold()
-            VStack(spacing: 6) {
-                if let status {
-                    Text(status)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Relay Runner is running in your menu bar.")
+            if isLoading, let status {
+                Text(status)
+                    .foregroundStyle(.secondary)
+            } else if !allGranted {
+                Text("Some features are disabled until missing permissions are granted — open Relay Runner's menu to fix them later.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Two ways to start a voice session:")
+                    .foregroundStyle(.secondary)
+                VStack(spacing: 10) {
+                    sessionMethodRow(
+                        icon: "menubar.rectangle",
+                        title: "From the menu bar",
+                        detail: "Click the Relay Runner icon in your menu bar, then choose \u{201C}Start Session\u{2026}\u{201D}. A terminal opens with Claude Code already listening."
+                    )
+                    sessionMethodRow(
+                        icon: "terminal",
+                        title: "From Claude Code",
+                        detail: "Run \u{2018}claude\u{2019} in any terminal and type /relay-bridge. Install the slash command from Settings \u{2192} General if you haven\u{2019}t yet."
+                    )
                 }
-                if !permissions.allGranted {
-                    Text("Some features are disabled until missing permissions are granted — open Relay Runner's menu to fix them later.")
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text("Tap Caps Lock to start and stop recording in either mode.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
             }
-            Spacer()
+            Spacer(minLength: 8)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// One row in the "how to start a session" summary on the Ready step.
+    /// Icon + title + an explanatory line, laid out so the title aligns
+    /// with the top of the icon for scannability.
+    private func sessionMethodRow(icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(.tint)
+                .font(.title3)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.callout).bold()
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.25))
+        )
     }
 
     // MARK: - Button
