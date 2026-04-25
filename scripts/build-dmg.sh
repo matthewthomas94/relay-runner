@@ -201,15 +201,19 @@ for _ in $(seq 1 20); do
     sleep 0.5
 done
 
-# Wait for Finder to register the volume (not just the kernel mount)
-for _ in $(seq 1 20); do
-    if [ "$(osascript -e "tell application \"Finder\" to exists disk \"$APP_NAME\"" 2>/dev/null)" = "true" ]; then break; fi
-    sleep 0.5
-done
-# Nudge Finder to enumerate disks so the subsequent `tell disk` resolves
-osascript -e 'tell application "Finder" to name of every disk' >/dev/null 2>&1 || true
+# Finder customisation needs Apple Events / Accessibility TCC grants that
+# GitHub-hosted runners don't provide. Skip styling on CI and ship a plain
+# (but functional) DMG — local builds still get the full window layout.
+if [ -z "${CI:-}" ]; then
+    # Wait for Finder to register the volume (not just the kernel mount)
+    for _ in $(seq 1 20); do
+        if [ "$(osascript -e "tell application \"Finder\" to exists disk \"$APP_NAME\"" 2>/dev/null)" = "true" ]; then break; fi
+        sleep 0.5
+    done
+    # Nudge Finder to enumerate disks so the subsequent `tell disk` resolves
+    osascript -e 'tell application "Finder" to name of every disk' >/dev/null 2>&1 || true
 
-osascript <<APPLESCRIPT
+    osascript <<APPLESCRIPT || echo "warning: Finder customisation failed, continuing with unstyled DMG"
 tell application "Finder"
     tell disk "$APP_NAME"
         open
@@ -231,6 +235,9 @@ tell application "Finder"
     end tell
 end tell
 APPLESCRIPT
+else
+    echo "==> CI detected, skipping Finder window customisation"
+fi
 
 sync
 hdiutil detach "$MOUNT_POINT" >/dev/null
