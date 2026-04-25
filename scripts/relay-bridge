@@ -120,8 +120,17 @@ PYTHON_DEPS_OK=false
 "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1 && PYTHON_DEPS_OK=true
 KOKORO_MODELS_OK=false
 [ -f "$KOKORO_MODEL_FILE" ] && [ -f "$KOKORO_VOICES_FILE" ] && KOKORO_MODELS_OK=true
+# voice_bridge.py spawns the Claude Code CLI when started without --relay
+# (each spoken turn shells out to `claude -p ...`). If the binary isn't
+# present a session falls over with "claude not found on PATH" the
+# moment the user clicks Start Session — no visible progress bar, just a
+# dead terminal. claude.ai/install.sh symlinks the binary to
+# ~/.local/bin/claude (~/.local/share/claude/versions/X.Y.Z is the real
+# binary), so check both PATH and that canonical fallback location.
+CLAUDE_CLI_OK=false
+{ command -v claude >/dev/null 2>&1 || [ -x "$HOME/.local/bin/claude" ]; } && CLAUDE_CLI_OK=true
 
-if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK; then
+if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $CLAUDE_CLI_OK; then
     echo ''
     echo '╔══════════════════════════════════════════╗'
     echo '║  Relay Runner — First-time setup         ║'
@@ -370,6 +379,30 @@ PYEOF
             echo ''
             echo "[Relay Runner] Failed to download speech model files."
             echo "[Relay Runner] Check internet connectivity and retry."
+            exit 1
+        fi
+    fi
+
+    if ! $CLAUDE_CLI_OK; then
+        # voice_bridge.py spawns `claude -p ...` per spoken turn in the
+        # default (non-relay) session mode, so a missing CLI dead-ends
+        # the very first session. Anthropic ships a native installer at
+        # claude.ai/install.sh that drops a binary at ~/.local/bin/claude
+        # — no Node, no admin, no PATH gymnastics for non-admin users.
+        # ProcessManager prepends ~/.local/bin to the launcher's PATH so
+        # the just-installed binary is on PATH for python's
+        # shutil.which("claude") lookup downstream.
+        emit_progress 95 "Installing Claude Code CLI..."
+        echo "[Relay Runner] Installing Claude Code CLI from claude.ai/install.sh..."
+        if ! curl -fsSL https://claude.ai/install.sh | bash; then
+            echo ''
+            echo "[Relay Runner] Claude Code CLI install failed."
+            echo "[Relay Runner] Check internet connectivity and retry, or install manually:"
+            echo "    curl -fsSL https://claude.ai/install.sh | bash"
+            exit 1
+        fi
+        if [ ! -x "$HOME/.local/bin/claude" ]; then
+            echo "[Relay Runner] Claude Code installer ran but $HOME/.local/bin/claude is not executable."
             exit 1
         fi
     fi

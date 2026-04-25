@@ -52,17 +52,19 @@ final class VenvInstaller {
     private let collectingTickPercent: Double = 0.02
     private let collectingCapPercent: Double = 0.78
 
-    /// True when both the venv interpreter AND the Kokoro speech-model
-    /// files are on disk. relay-bridge runs the install path if either
-    /// is missing, so the SwiftUI must check the same union — otherwise
-    /// onboarding's pythonSetup would short-circuit to .succeeded while
-    /// the model download still needed to run, and the user would hit
-    /// silent / failing TTS on the very first session.
+    /// True when every runtime dependency a session needs is on disk:
+    /// the venv interpreter, the Kokoro speech-model files, AND the
+    /// Claude Code CLI. relay-bridge runs the install path if any one
+    /// is missing, so the SwiftUI must check the same union —
+    /// otherwise onboarding's pythonSetup would short-circuit to
+    /// .succeeded while a missing piece still needed installing, and
+    /// the user would discover it only when starting a session.
     static var alreadyInstalled: Bool {
         let fm = FileManager.default
         return fm.isExecutableFile(atPath: userVenvPython)
             && fm.fileExists(atPath: kokoroModelPath)
             && fm.fileExists(atPath: kokoroVoicesPath)
+            && fm.isExecutableFile(atPath: claudeCLIPath)
     }
 
     /// Match what tts_worker.py:_find_kokoro_model() looks for and what
@@ -74,6 +76,12 @@ final class VenvInstaller {
     private static var kokoroVoicesPath: String {
         (NSHomeDirectory() as NSString)
             .appendingPathComponent(".local/share/kokoro/voices-v1.0.bin")
+    }
+    /// claude.ai/install.sh symlinks the Claude Code binary here. Match
+    /// the same path relay-bridge's CLAUDE_CLI_OK gate inspects.
+    private static var claudeCLIPath: String {
+        (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".local/bin/claude")
     }
 
     /// Begin the bootstrap if it isn't already running. Idempotent —
