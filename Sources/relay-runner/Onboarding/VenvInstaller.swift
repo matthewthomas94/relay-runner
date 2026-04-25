@@ -15,7 +15,10 @@ final class VenvInstaller {
         case idle
         /// Installer is running. `message` is the most recent line
         /// emitted by relay-bridge; surface it as live status text.
-        case running(message: String)
+        /// `progress` is 0.0–1.0 when relay-bridge has emitted a
+        /// `RELAY_PROGRESS:` marker, or nil if the bar should stay
+        /// indeterminate (we haven't seen one yet).
+        case running(message: String, progress: Double?)
         /// Bootstrap finished cleanly; venv exists and deps import.
         case succeeded
         /// Bootstrap exited non-zero or failed to launch. The message
@@ -32,6 +35,21 @@ final class VenvInstaller {
     @ObservationIgnored
     private var outputPipe: Pipe?
 
+    /// Last progress fraction we surfaced to the UI. Tracked separately
+    /// from `status` so out-of-order or repeated pip "Collecting" lines
+    /// can never make the bar go backwards (jittery progress is worse
+    /// than no progress).
+    @ObservationIgnored
+    private var lastProgress: Double = 0
+
+    /// Each pip "Collecting <pkg>" line during the dep install phase
+    /// bumps the bar by this much, capped at `collectingCapPercent`.
+    /// That's where the perceived "hang" lives — pip goes silent for
+    /// 5–15s per wheel download, so making the bar tick per package
+    /// is what keeps the install feeling alive.
+    private let collectingTickPercent: Double = 0.025
+    private let collectingCapPercent: Double = 0.93
+
     /// True when a venv exists at the canonical bundled path with deps
     /// installed. Cheap filesystem check — same logic relay-bridge uses
     /// to decide whether to skip its own bootstrap. Used to short-circuit
@@ -45,6 +63,18 @@ final class VenvInstaller {
     /// and forward across the step.
     func install() {
         if case .running = status { return }
+        if case .succeeded = status { return }
+        // Venv is already healthy — short-circuit to succeeded so the
+        // onboarding step's `onChange(of: status)` handler fires the
+        // auto-advance, instead of leaving the UI parked on the idle
+        // "Preparing…" spinner forever (the original bug: install() was
+        // gated by the same alreadyInstalled check on the caller side,
+        // so on a re-run with a healthy venv nothing ever advanced
+        // status off .idle and the screen sat stuck).
+        if Self.alreadyInstalled {
+            status = .succeeded
+            return
+        }
         guard let scriptPath = relayBridgeScriptPath() else {
             status = .failed(message: "Couldn't locate relay-bridge in the app bundle.")
             return
@@ -67,19 +97,18 @@ final class VenvInstaller {
             guard !data.isEmpty,
                   let chunk = String(data: data, encoding: .utf8) else { return }
             // relay-bridge can emit multi-line bursts (e.g. pip output).
-            // Show the most recent non-empty line as the live message —
-            // the full transcript still goes to Console via the inherited
-            // stdout/stderr fds when the user runs from a terminal.
-            let lastLine = chunk
+            // Walk every line in order so structured `RELAY_PROGRESS:`
+            // markers and informational lines both update state, then
+            // pick the most recent non-empty informational line as the
+            // visible message. The full transcript still goes to Console
+            // via the inherited stdout/stderr fds when run from a terminal.
+            let lines = chunk
                 .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
                 .map { $0.trimmingCharacters(in: .whitespaces) }
-                .last(where: { !$0.isEmpty }) ?? ""
-            guard !lastLine.isEmpty else { return }
+                .filter { !$0.isEmpty }
+            guard !lines.isEmpty else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if case .running = self.status {
-                    self.status = .running(message: lastLine)
-                }
+                self?.consume(lines: lines)
             }
         }
 
@@ -100,7 +129,10 @@ final class VenvInstaller {
         }
 
         process = proc
-        status = .running(message: "Starting setup…")
+        // Retry must start from 0% even if a prior attempt got partway
+        // through — reset before kicking off the new subprocess.
+        lastProgress = 0
+        status = .running(message: "Starting setup…", progress: nil)
 
         do {
             try proc.run()
@@ -110,6 +142,56 @@ final class VenvInstaller {
             self.outputPipe = nil
             status = .failed(message: "Couldn't launch setup: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Output parsing
+
+    /// Apply a batch of output lines to `status`. Must run on the main
+    /// queue — caller dispatches.
+    ///
+    /// Two kinds of lines drive the bar:
+    ///   1. `RELAY_PROGRESS:<percent>:<label>` — explicit phase markers
+    ///      emitted by relay-bridge. Set the bar to that percent (clamped
+    ///      monotonic) and adopt the label as the visible message.
+    ///   2. `Collecting <pkg>` — pip download phase signal. Each one
+    ///      bumps the bar by `collectingTickPercent` so the user sees
+    ///      motion during the otherwise-silent download. Capped so we
+    ///      never overshoot the next phase marker.
+    /// Anything else updates the visible message only.
+    private func consume(lines: [String]) {
+        guard case .running(let currentMessage, _) = status else { return }
+        var message = currentMessage
+        for line in lines {
+            if let marker = parseProgressMarker(line) {
+                lastProgress = max(lastProgress, marker.percent / 100.0)
+                message = marker.label
+            } else if line.hasPrefix("Collecting ") {
+                let next = min(
+                    collectingCapPercent,
+                    lastProgress + collectingTickPercent
+                )
+                lastProgress = max(lastProgress, next)
+                message = line
+            } else {
+                message = line
+            }
+        }
+        status = .running(message: message, progress: lastProgress > 0 ? lastProgress : nil)
+    }
+
+    /// Parse a `RELAY_PROGRESS:<percent>:<label>` marker, or nil if the
+    /// line isn't one. Tolerant of malformed percent values (clamped
+    /// 0–100) so a typo in the bash script can't crash the installer.
+    private func parseProgressMarker(_ line: String) -> (percent: Double, label: String)? {
+        let prefix = "RELAY_PROGRESS:"
+        guard line.hasPrefix(prefix) else { return nil }
+        let rest = line.dropFirst(prefix.count)
+        guard let colon = rest.firstIndex(of: ":") else { return nil }
+        let percentStr = String(rest[..<colon])
+        let label = String(rest[rest.index(after: colon)...])
+        guard let raw = Double(percentStr) else { return nil }
+        let clamped = min(100, max(0, raw))
+        return (clamped, label)
     }
 
     // MARK: - Path resolution
