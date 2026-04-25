@@ -50,12 +50,12 @@ final class VenvInstaller {
     private let collectingTickPercent: Double = 0.025
     private let collectingCapPercent: Double = 0.93
 
-    /// True when a venv exists at the canonical bundled path with deps
-    /// installed. Cheap filesystem check — same logic relay-bridge uses
-    /// to decide whether to skip its own bootstrap. Used to short-circuit
+    /// True when the venv exists at its canonical user-data path with
+    /// deps installed. Cheap filesystem check — same logic relay-bridge
+    /// uses to decide whether to skip its own bootstrap. Short-circuits
     /// the onboarding step on second-run-with-already-set-up.
     static var alreadyInstalled: Bool {
-        FileManager.default.isExecutableFile(atPath: bundledVenvPython)
+        FileManager.default.isExecutableFile(atPath: userVenvPython)
     }
 
     /// Begin the bootstrap if it isn't already running. Idempotent —
@@ -196,10 +196,17 @@ final class VenvInstaller {
 
     // MARK: - Path resolution
 
-    /// Bundled venv interpreter path (Contents/SharedSupport/services/.venv).
-    private static var bundledVenvPython: String {
-        Bundle.main.bundleURL
-            .appendingPathComponent("Contents/SharedSupport/services/.venv/bin/python3")
+    /// Path the venv-managed Python interpreter is expected to live at,
+    /// kept in sync with `relay-bridge`'s `$SERVICES_DIR/.venv/bin/python3`.
+    /// Lives under `~/Library/Application Support/relay-runner` (not in
+    /// the .app bundle) so non-admin users — who can't write to a
+    /// /Applications-installed bundle owned by root — can still get a
+    /// working venv.
+    private static var userVenvPython: String {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("relay-runner/services/.venv/bin/python3")
             .path
     }
 
