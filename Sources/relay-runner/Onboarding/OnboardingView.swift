@@ -72,11 +72,10 @@ struct OnboardingView: View {
         .onAppear {
             // Kick the Python bootstrap off as soon as the window opens
             // so it has a head start while the user grants permissions.
-            // No-op if the venv is already healthy, or if a previous
-            // onAppear already started it.
-            if !VenvInstaller.alreadyInstalled {
-                venvInstaller.install()
-            }
+            // install() short-circuits to .succeeded if the venv is
+            // already healthy, or no-ops if a previous onAppear already
+            // started it — safe to call unconditionally.
+            venvInstaller.install()
         }
         .onChange(of: permissions.microphone) { _, new in
             autoAdvance(for: .microphone, status: new)
@@ -265,13 +264,25 @@ struct OnboardingView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-        case .running(let message):
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
+        case .running(let message, let progress):
+            VStack(alignment: .leading, spacing: 8) {
+                // Determinate bar once relay-bridge has emitted at least
+                // one phase marker; falls back to indeterminate spinner
+                // so the very first moments of "Starting setup…" still
+                // signal activity. `.animation` smooths the per-package
+                // ticks so the bar doesn't visibly jump.
+                if let progress {
+                    ProgressView(value: progress, total: 1.0)
+                        .progressViewStyle(.linear)
+                        .animation(.easeOut(duration: 0.25), value: progress)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
                 Text(message)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .succeeded:
             Text("Done — Python environment ready.")
@@ -504,10 +515,34 @@ struct OnboardingView: View {
 
     private var progressLabel: String? {
         guard let index = visibleIndex else { return nil }
-        // 3 permissions + (pythonSetup if it's actually going to be visited).
-        var count = 3
-        if !VenvInstaller.alreadyInstalled { count += 1 }
+        // Full flow always visits 3 permissions + pythonSetup (the latter
+        // briefly auto-advances when the venv is already healthy, but it
+        // still gets a slot in the count). Simplified flow only counts
+        // steps that actually need attention.
+        let count: Int
+        if simplified {
+            count = simplifiedTotalSteps
+        } else {
+            count = 4
+        }
         return "\(index) of \(count)"
+    }
+
+    /// Number of steps the simplified re-prompt flow will visit — the
+    /// permissions still missing plus pythonSetup if the venv isn't
+    /// healthy. Used so the "X of N" label reflects actual remaining
+    /// work, not the full onboarding length.
+    private var simplifiedTotalSteps: Int {
+        var count = 0
+        for s in Step.allCases {
+            if let kind = s.kind, permissions.status(for: kind) != .granted {
+                count += 1
+            }
+            if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
+                count += 1
+            }
+        }
+        return count
     }
 
     private var visibleIndex: Int? {

@@ -39,6 +39,17 @@ export PROJECT_ROOT
 # Python setup that interactive /relay-bridge sessions use, with output
 # streamed back to the SwiftUI progress view.
 VENV_ONLY=false
+
+# Emit a progress marker the SwiftUI installer can parse to drive a
+# determinate progress bar. Format: `RELAY_PROGRESS:<percent>:<label>`.
+# Percent is 0–100, label is a short human-readable description of the
+# current phase. Interactive callers see the same line as plain output;
+# the SwiftUI side strips the `RELAY_PROGRESS:` prefix and treats the
+# rest as structured. Keep labels short — they show up under a progress
+# bar with limited horizontal space.
+emit_progress() {
+    echo "RELAY_PROGRESS:$1:$2"
+}
 __rb_args=()
 for arg in "$@"; do
     case "$arg" in
@@ -88,6 +99,7 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
     echo '║  Installing Python dependencies...       ║'
     echo '╚══════════════════════════════════════════╝'
     echo ''
+    emit_progress 5 "Locating Python..."
     # Prefer a specific minor version with broad wheel coverage for our
     # deps (kokoro-onnx + transitive phonemizer/espeakng/onnxruntime).
     # kokoro-onnx caps at Python <3.14, so the bare `python3` on newer
@@ -121,6 +133,7 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
             echo "[Relay Runner] curl not available — cannot bootstrap Homebrew."
             return 1
         fi
+        emit_progress 15 "Installing Homebrew (may take several minutes)..."
         echo "[Relay Runner] Homebrew not found. Installing Homebrew..."
         echo "(This may prompt for your macOS password.)"
         NONINTERACTIVE=1 /bin/bash -c \
@@ -157,6 +170,7 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
                 fi
                 BREW="$(find_brew || true)"
             fi
+            emit_progress 30 "Installing Python 3.13 via Homebrew..."
             echo "[Relay Runner] No Python 3.10+ found. Installing python@3.13 via Homebrew..."
             echo "(This can take a few minutes on first run.)"
             if ! "$BREW" install python@3.13; then
@@ -170,6 +184,7 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
                 exit 1
             fi
         fi
+        emit_progress 50 "Creating virtual environment..."
         echo "Using $("$VENV_PYTHON" --version) at $VENV_PYTHON"
         "$VENV_PYTHON" -m venv "$SERVICES_DIR/.venv" || {
             echo "[Relay Runner] Failed to create venv."
@@ -178,15 +193,28 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
     else
         echo "[Relay Runner] Venv present but deps incomplete — reinstalling."
     fi
-    "$SERVICES_DIR/.venv/bin/python3" -m pip install --upgrade pip && \
-    "$SERVICES_DIR/.venv/bin/pip" install -r "$SERVICES_DIR/requirements.txt" && \
-    echo '' && echo '[Relay Runner] Setup complete.' || \
-    { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
+    emit_progress 60 "Upgrading pip..."
+    "$SERVICES_DIR/.venv/bin/python3" -m pip install --upgrade pip || \
+        { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
+    # Pip emits one "Collecting <pkg>" line per (transitive) dep before
+    # the silent download phase. The Swift parser ticks the bar within
+    # the 65–95% band each time it sees one — that's where the perceived
+    # hang lives, so the sub-progress is what makes the bar feel alive.
+    emit_progress 65 "Installing numpy, onnxruntime, kokoro-onnx, huggingface_hub..."
+    "$SERVICES_DIR/.venv/bin/pip" install -r "$SERVICES_DIR/requirements.txt" || \
+        { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
+    emit_progress 100 "Setup complete."
+    echo ''
+    echo '[Relay Runner] Setup complete.'
     echo ''
 fi
 
 # -- Onboarding short-circuit: bootstrap is done, no voice bridge needed --
 if $VENV_ONLY; then
+    # Emit a terminal 100% marker so the SwiftUI bar fills regardless of
+    # whether the install block above ran or was short-circuited (venv
+    # already healthy on a re-run).
+    emit_progress 100 "Ready."
     echo '[relay-bridge] Venv ready (--venv-only).'
     exit 0
 fi
