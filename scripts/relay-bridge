@@ -100,15 +100,28 @@ s.close()
     rm -f "$BRIDGE_SOCK"
 fi
 
-# -- Ensure Python venv with dependencies --
+# -- Ensure Python venv with dependencies AND speech-model files --
+# Two separate things have to be true for the voice bridge to work:
+#   1. Python venv exists with numpy / kokoro_onnx / huggingface_hub
+#   2. Kokoro speech-model files (~350 MB) are on disk
+# Old code only checked (1), so the user could finish onboarding and then
+# discover the first session was silent because tts_worker.py was lazy-
+# downloading models — and would simply fail if the network was flaky
+# at that moment. We now check both up front and pre-download the
+# models as part of the install, so a successful onboarding means the
+# session works immediately, fully offline.
 PYTHON="$SERVICES_DIR/.venv/bin/python3"
-# Re-run setup if the venv is missing OR if a prior setup left the venv
-# in place but failed to install deps — otherwise we'd exec a venv python
-# with no numpy/kokoro_onnx/huggingface_hub and crash at import or first
-# model-download time. huggingface_hub must be verified explicitly:
-# kokoro-onnx imports cleanly without it, then fails when tts_worker
-# tries to download models.
-if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; then
+# Match what tts_worker.py:_find_kokoro_model() looks for.
+KOKORO_DIR="$HOME/.local/share/kokoro"
+KOKORO_MODEL_FILE="$KOKORO_DIR/kokoro-v1.0.onnx"
+KOKORO_VOICES_FILE="$KOKORO_DIR/voices-v1.0.bin"
+
+PYTHON_DEPS_OK=false
+"$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1 && PYTHON_DEPS_OK=true
+KOKORO_MODELS_OK=false
+[ -f "$KOKORO_MODEL_FILE" ] && [ -f "$KOKORO_VOICES_FILE" ] && KOKORO_MODELS_OK=true
+
+if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK; then
     echo ''
     echo '╔══════════════════════════════════════════╗'
     echo '║  Relay Runner — First-time setup         ║'
@@ -268,54 +281,99 @@ if ! "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; 
 
         echo "$RELOCATABLE_PYTHON"
     }
-    # If an existing venv was built with an out-of-range Python (e.g.
-    # 3.14, which kokoro-onnx doesn't support), wipe it so the block
-    # below creates a fresh venv with a supported interpreter.
-    if [ -x "$PYTHON" ] && \
-       ! "$PYTHON" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
-        echo "[Relay Runner] Existing venv uses $("$PYTHON" -c 'import sys; print(".".join(map(str, sys.version_info[:2])))'), which kokoro-onnx doesn't support. Recreating with a 3.10–3.13 interpreter."
-        rm -rf "$SERVICES_DIR/.venv"
-    fi
-    # Only create a new venv if one isn't already on disk; if the venv
-    # exists but deps are missing, we fall through to reinstall into the
-    # existing interpreter.
-    if [ ! -x "$PYTHON" ]; then
-        # Test override — flip to force the relocatable-Python path even
-        # on a machine that has a system Python in our range, so we can
-        # exercise the no-admin install end-to-end without uninstalling
-        # the system interpreter.
-        if [ -n "${RELAY_FORCE_RELOCATABLE_PYTHON:-}" ]; then
-            VENV_PYTHON=""
-        else
-            VENV_PYTHON="$(find_python || true)"
+    if ! $PYTHON_DEPS_OK; then
+        # If an existing venv was built with an out-of-range Python (e.g.
+        # 3.14, which kokoro-onnx doesn't support), wipe it so the block
+        # below creates a fresh venv with a supported interpreter.
+        if [ -x "$PYTHON" ] && \
+           ! "$PYTHON" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
+            echo "[Relay Runner] Existing venv uses $("$PYTHON" -c 'import sys; print(".".join(map(str, sys.version_info[:2])))'), which kokoro-onnx doesn't support. Recreating with a 3.10–3.13 interpreter."
+            rm -rf "$SERVICES_DIR/.venv"
         fi
-        if [ -z "$VENV_PYTHON" ]; then
-            VENV_PYTHON="$(ensure_relocatable_python || true)"
-            if [ -z "$VENV_PYTHON" ]; then
-                echo "[Relay Runner] Could not obtain a usable Python 3.10–3.13 interpreter."
-                echo "[Relay Runner] See errors above; fix and re-launch Relay Runner."
-                exit 1
+        # Only create a new venv if one isn't already on disk; if the venv
+        # exists but deps are missing, we fall through to reinstall into the
+        # existing interpreter.
+        if [ ! -x "$PYTHON" ]; then
+            # Test override — flip to force the relocatable-Python path even
+            # on a machine that has a system Python in our range, so we can
+            # exercise the no-admin install end-to-end without uninstalling
+            # the system interpreter.
+            if [ -n "${RELAY_FORCE_RELOCATABLE_PYTHON:-}" ]; then
+                VENV_PYTHON=""
+            else
+                VENV_PYTHON="$(find_python || true)"
             fi
+            if [ -z "$VENV_PYTHON" ]; then
+                VENV_PYTHON="$(ensure_relocatable_python || true)"
+                if [ -z "$VENV_PYTHON" ]; then
+                    echo "[Relay Runner] Could not obtain a usable Python 3.10–3.13 interpreter."
+                    echo "[Relay Runner] See errors above; fix and re-launch Relay Runner."
+                    exit 1
+                fi
+            fi
+            emit_progress 50 "Creating virtual environment..."
+            echo "Using $("$VENV_PYTHON" --version) at $VENV_PYTHON"
+            "$VENV_PYTHON" -m venv "$SERVICES_DIR/.venv" || {
+                echo "[Relay Runner] Failed to create venv."
+                exit 1
+            }
+        else
+            echo "[Relay Runner] Venv present but deps incomplete — reinstalling."
         fi
-        emit_progress 50 "Creating virtual environment..."
-        echo "Using $("$VENV_PYTHON" --version) at $VENV_PYTHON"
-        "$VENV_PYTHON" -m venv "$SERVICES_DIR/.venv" || {
-            echo "[Relay Runner] Failed to create venv."
-            exit 1
-        }
-    else
-        echo "[Relay Runner] Venv present but deps incomplete — reinstalling."
+        emit_progress 60 "Upgrading pip..."
+        "$SERVICES_DIR/.venv/bin/python3" -m pip install --upgrade pip || \
+            { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
+        # Pip emits one "Collecting <pkg>" line per (transitive) dep before
+        # the silent download phase. The Swift parser ticks the bar within
+        # the dep-install band each time it sees one — that's where the
+        # perceived "hang" lives, so the sub-progress is what makes the
+        # bar feel alive.
+        emit_progress 65 "Installing numpy, onnxruntime, kokoro-onnx, huggingface_hub..."
+        "$SERVICES_DIR/.venv/bin/pip" install -r "$SERVICES_BUNDLE/requirements.txt" || \
+            { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
     fi
-    emit_progress 60 "Upgrading pip..."
-    "$SERVICES_DIR/.venv/bin/python3" -m pip install --upgrade pip || \
-        { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
-    # Pip emits one "Collecting <pkg>" line per (transitive) dep before
-    # the silent download phase. The Swift parser ticks the bar within
-    # the 65–95% band each time it sees one — that's where the perceived
-    # hang lives, so the sub-progress is what makes the bar feel alive.
-    emit_progress 65 "Installing numpy, onnxruntime, kokoro-onnx, huggingface_hub..."
-    "$SERVICES_DIR/.venv/bin/pip" install -r "$SERVICES_BUNDLE/requirements.txt" || \
-        { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
+
+    if ! $KOKORO_MODELS_OK; then
+        # Pre-download the Kokoro speech model + voices (~350 MB) so the
+        # first session works immediately. tts_worker.py:_load_voice
+        # has lazy-download fallback logic, but a pre-downloaded model
+        # means the user never sees TTS silently fail or hang on first
+        # use because of a bad network moment. Heredoc uses single-
+        # quoted PYEOF so $vars inside Python aren't expanded by the
+        # shell.
+        emit_progress 80 "Downloading speech model (~350 MB, may take 1–2 minutes)..."
+        if ! "$SERVICES_DIR/.venv/bin/python3" - <<'PYEOF'
+import sys
+from pathlib import Path
+download_dir = Path.home() / ".local" / "share" / "kokoro"
+download_dir.mkdir(parents=True, exist_ok=True)
+files = ["kokoro-v1.0.onnx", "voices-v1.0.bin"]
+needed = [f for f in files if not (download_dir / f).is_file()]
+if not needed:
+    print("[Relay Runner] Speech model files already present.")
+    sys.exit(0)
+print(f"[Relay Runner] Downloading {len(needed)} model file(s) to {download_dir}", file=sys.stderr)
+try:
+    from huggingface_hub import hf_hub_download
+    for filename in needed:
+        hf_hub_download(
+            repo_id="fastrtc/kokoro-onnx",
+            filename=filename,
+            local_dir=str(download_dir),
+        )
+    print("[Relay Runner] Speech model download complete.", file=sys.stderr)
+except Exception as e:
+    print(f"[Relay Runner] Speech model download failed: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+        then
+            echo ''
+            echo "[Relay Runner] Failed to download speech model files."
+            echo "[Relay Runner] Check internet connectivity and retry."
+            exit 1
+        fi
+    fi
+
     emit_progress 100 "Setup complete."
     echo ''
     echo '[Relay Runner] Setup complete.'
