@@ -159,98 +159,42 @@ fi
 echo "==> Creating DMG..."
 rm -f "$DIST_DIR/$DMG_NAME.dmg"
 
-# Stage the contents of the DMG: the app, an Applications symlink for the
-# drag target, and a hidden .background folder holding the installer artwork.
-DMG_STAGING="$DIST_DIR/dmg-staging"
-rm -rf "$DMG_STAGING"
-mkdir -p "$DMG_STAGING/.background"
-cp -R "$APP_DIR" "$DMG_STAGING/"
-ln -s /Applications "$DMG_STAGING/Applications"
-
 DMG_BG_SRC="$PROJECT_ROOT/assets/dmg-background.tiff"
 if [ ! -f "$DMG_BG_SRC" ]; then
     echo "==> Generating DMG background..."
     python3 "$PROJECT_ROOT/scripts/generate-dmg-background.py"
 fi
-cp "$DMG_BG_SRC" "$DMG_STAGING/.background/background.tiff"
 
-# Build a writable DMG so we can script Finder before locking it down.
-DMG_TMP="$DIST_DIR/$DMG_NAME-tmp.dmg"
-rm -f "$DMG_TMP"
-hdiutil create \
-    -volname "$APP_NAME" \
-    -srcfolder "$DMG_STAGING" \
-    -ov \
-    -fs HFS+ \
-    -format UDRW \
-    "$DMG_TMP"
-
-echo "==> Customizing DMG window..."
-MOUNT_POINT="/Volumes/$APP_NAME"
-
-# A leftover mount from a previous failed run will block reattach — eject it.
-if [ -d "$MOUNT_POINT" ]; then
-    hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
-fi
-
-hdiutil attach "$DMG_TMP" -readwrite -noautoopen -noverify >/dev/null
-
-# Wait for Finder to register the volume — polling beats a fixed sleep.
-for _ in $(seq 1 20); do
-    if [ -d "$MOUNT_POINT" ]; then break; fi
-    sleep 0.5
+# dmgbuild writes the styled .DS_Store layout (background, icon
+# positions, Applications drag target, window dimensions) directly via
+# the `ds_store` Python library — no Finder, no AppleScript, no Apple
+# Events / TCC grants needed. Same output locally and on CI.
+#
+# Apple's Xcode-bundled `/usr/bin/python3` ships with a too-old pip
+# that can't install dmgbuild, so users typically have it on a
+# Homebrew or python.org interpreter. Probe common locations until we
+# find one with the module importable.
+DMGBUILD_PYTHON=""
+for __py in python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 python; do
+    if command -v "$__py" >/dev/null 2>&1 && \
+       "$__py" -c 'import dmgbuild' >/dev/null 2>&1; then
+        DMGBUILD_PYTHON="$__py"
+        break
+    fi
 done
-
-# Finder customisation needs Apple Events / Accessibility TCC grants that
-# GitHub-hosted runners don't provide. Skip styling on CI and ship a plain
-# (but functional) DMG — local builds still get the full window layout.
-if [ -z "${CI:-}" ]; then
-    # Wait for Finder to register the volume (not just the kernel mount)
-    for _ in $(seq 1 20); do
-        if [ "$(osascript -e "tell application \"Finder\" to exists disk \"$APP_NAME\"" 2>/dev/null)" = "true" ]; then break; fi
-        sleep 0.5
-    done
-    # Nudge Finder to enumerate disks so the subsequent `tell disk` resolves
-    osascript -e 'tell application "Finder" to name of every disk' >/dev/null 2>&1 || true
-
-    osascript <<APPLESCRIPT || echo "warning: Finder customisation failed, continuing with unstyled DMG"
-tell application "Finder"
-    tell disk "$APP_NAME"
-        open
-        set current view of container window to icon view
-        set toolbar visible of container window to false
-        set statusbar visible of container window to false
-        set sidebar width of container window to 0
-        set the bounds of container window to {200, 120, 840, 540}
-        set theViewOptions to the icon view options of container window
-        set arrangement of theViewOptions to not arranged
-        set icon size of theViewOptions to 128
-        set text size of theViewOptions to 13
-        set background picture of theViewOptions to file ".background:background.tiff"
-        set position of item "$APP_NAME.app" of container window to {160, 210}
-        set position of item "Applications" of container window to {480, 210}
-        update without registering applications
-        delay 1
-        close
-    end tell
-end tell
-APPLESCRIPT
-else
-    echo "==> CI detected, skipping Finder window customisation"
+if [ -z "$DMGBUILD_PYTHON" ]; then
+    echo "error: dmgbuild not installed on any python found on PATH." >&2
+    echo "Install it with one of:" >&2
+    echo "    pip3 install --user --break-system-packages dmgbuild" >&2
+    echo "    /opt/homebrew/bin/python3 -m pip install --user --break-system-packages dmgbuild" >&2
+    echo "    brew install pipx && pipx install dmgbuild" >&2
+    exit 1
 fi
 
-sync
-hdiutil detach "$MOUNT_POINT" >/dev/null
-
-echo "==> Compressing DMG..."
-hdiutil convert "$DMG_TMP" \
-    -format UDZO \
-    -imagekey zlib-level=9 \
-    -ov \
-    -o "$DIST_DIR/$DMG_NAME.dmg" >/dev/null
-
-rm -f "$DMG_TMP"
-rm -rf "$DMG_STAGING"
+RELAY_PROJECT_ROOT="$PROJECT_ROOT" "$DMGBUILD_PYTHON" -m dmgbuild \
+    -s "$PROJECT_ROOT/scripts/dmgbuild-settings.py" \
+    "$APP_NAME" \
+    "$DIST_DIR/$DMG_NAME.dmg"
 
 # Sign the DMG itself. Apple accepts unsigned DMGs into notarisation so this
 # isn't strictly required, but a signed DMG passes Gatekeeper assessment
