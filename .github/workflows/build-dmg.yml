@@ -60,6 +60,15 @@ jobs:
       - name: Resolve Swift dependencies
         run: swift package resolve
 
+      # dmgbuild produces the styled installer DMG without Apple Events /
+      # Finder. Installed to user site-packages — `python3 -m dmgbuild`
+      # picks it up regardless of PATH (which is what build-dmg.sh uses).
+      # `--break-system-packages` is needed because macOS's bundled Python
+      # is PEP-668-marked; using a venv would also work but adds an extra
+      # PATH dance for the build script.
+      - name: Install dmgbuild
+        run: python3 -m pip install --user --break-system-packages dmgbuild
+
       # Import the Developer ID Application certificate into a temporary
       # keychain so codesign can use it. GitHub Actions doesn't expose
       # `secrets` to step-level `if:` conditions (it errors with
