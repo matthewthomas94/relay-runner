@@ -14,6 +14,11 @@ struct OnboardingView: View {
     let onFinish: () -> Void
 
     @State private var step: Step
+    /// Drives the Python venv bootstrap on the pythonSetup step. Held
+    /// at view scope so the install can start in the background as
+    /// soon as onboarding opens (welcome step) and is usually finished
+    /// by the time the user reaches its dedicated step.
+    @State private var venvInstaller = VenvInstaller()
 
     init(permissions: PermissionsManager,
          simplified: Bool,
@@ -39,6 +44,7 @@ struct OnboardingView: View {
         case microphone
         case accessibility
         case inputMonitoring
+        case pythonSetup
         case ready
 
         var kind: PermissionKind? {
@@ -63,6 +69,15 @@ struct OnboardingView: View {
             footer
         }
         .frame(minWidth: 520, minHeight: 420)
+        .onAppear {
+            // Kick the Python bootstrap off as soon as the window opens
+            // so it has a head start while the user grants permissions.
+            // No-op if the venv is already healthy, or if a previous
+            // onAppear already started it.
+            if !VenvInstaller.alreadyInstalled {
+                venvInstaller.install()
+            }
+        }
         .onChange(of: permissions.microphone) { _, new in
             autoAdvance(for: .microphone, status: new)
         }
@@ -71,6 +86,13 @@ struct OnboardingView: View {
         }
         .onChange(of: permissions.inputMonitoring) { _, new in
             autoAdvance(for: .inputMonitoring, status: new)
+        }
+        .onChange(of: venvInstaller.status) { _, new in
+            // Auto-advance off pythonSetup as soon as the bootstrap
+            // succeeds so the user doesn't have to click through.
+            if step == .pythonSetup, case .succeeded = new {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
+            }
         }
     }
 
@@ -98,6 +120,7 @@ struct OnboardingView: View {
         case .microphone:       permissionView(for: .microphone)
         case .accessibility:    permissionView(for: .accessibility)
         case .inputMonitoring:  permissionView(for: .inputMonitoring)
+        case .pythonSetup:      pythonSetupView
         case .ready:            readyView
         }
     }
@@ -196,6 +219,84 @@ struct OnboardingView: View {
         }
     }
 
+    private var pythonSetupView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                pythonStatusBadge
+                Text("Python environment")
+                    .font(.title3).bold()
+            }
+            Text("Relay Runner uses a small Python helper for text-to-speech and the voice bridge. Setting up the environment takes about 30 seconds and only happens once per install.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            pythonStatusDetail
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var pythonStatusBadge: some View {
+        switch venvInstaller.status {
+        case .succeeded:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.title3)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.title3)
+        case .idle, .running:
+            ProgressView().controlSize(.small)
+        }
+    }
+
+    @ViewBuilder
+    private var pythonStatusDetail: some View {
+        switch venvInstaller.status {
+        case .idle:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Preparing…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        case .running(let message):
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        case .succeeded:
+            Text("Done — Python environment ready.")
+                .font(.callout)
+                .foregroundStyle(.green)
+        case .failed(let message):
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Setup failed.")
+                    .font(.callout).bold()
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("You can retry now, or skip this step — Relay Runner will retry on the first voice session, but voice replies won't work until it succeeds.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.orange.opacity(0.35))
+            )
+        }
+    }
+
     private var readyView: some View {
         let status = setupStatus()
         return VStack(spacing: 20) {
@@ -242,7 +343,6 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
                 Button("Grant Microphone Access") {
-                    permissions.markAttemptedGrant(.microphone)
                     permissions.requestMicrophone { _ in }
                 }.keyboardShortcut(.defaultAction)
             }
@@ -251,7 +351,6 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
                 Button("Open System Settings") {
-                    permissions.markAttemptedGrant(.accessibility)
                     permissions.promptAccessibility()
                     permissions.openSettings(for: .accessibility)
                 }.keyboardShortcut(.defaultAction)
@@ -261,10 +360,22 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
                 Button("Open System Settings") {
-                    permissions.markAttemptedGrant(.inputMonitoring)
                     permissions.promptInputMonitoring()
                     permissions.openSettings(for: .inputMonitoring)
                 }.keyboardShortcut(.defaultAction)
+            }
+        case .pythonSetup:
+            switch venvInstaller.status {
+            case .succeeded:
+                Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
+            case .failed:
+                Button("Retry") { venvInstaller.install() }.keyboardShortcut(.defaultAction)
+            case .idle, .running:
+                // Disabled while the install is in flight — auto-advance
+                // fires on success. Footer Skip remains available.
+                Button("Continue") { advance() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(true)
             }
         case .ready:
             Button("Done") { onFinish() }
@@ -299,14 +410,19 @@ struct OnboardingView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
     }
 
-    /// The next step (after `from`) whose permission is still not granted.
-    /// Used by the simplified re-prompt flow to skip already-granted items.
+    /// The next step (after `from`) that still needs the user's attention —
+    /// either a permission that isn't granted, or pythonSetup if the venv
+    /// hasn't been bootstrapped yet. Used by the simplified re-prompt flow
+    /// to skip already-done items.
     private func nextMissingStep(after from: Step) -> Step? {
         let remaining = Step.allCases.filter {
             $0.rawValue > from.rawValue
         }
         for candidate in remaining {
             if let kind = candidate.kind, permissions.status(for: kind) != .granted {
+                return candidate
+            }
+            if candidate == .pythonSetup, !VenvInstaller.alreadyInstalled {
                 return candidate
             }
         }
@@ -321,13 +437,16 @@ struct OnboardingView: View {
         case .microphone:       return "Microphone"
         case .accessibility:    return "Accessibility"
         case .inputMonitoring:  return "Input Monitoring"
+        case .pythonSetup:      return "Python Environment"
         case .ready:            return "Setup Complete"
         }
     }
 
     private var progressLabel: String? {
-        let count = simplified ? Step.allCases.filter { $0.kind != nil }.count : Step.allCases.count - 2
         guard let index = visibleIndex else { return nil }
+        // 3 permissions + (pythonSetup if it's actually going to be visited).
+        var count = 3
+        if !VenvInstaller.alreadyInstalled { count += 1 }
         return "\(index) of \(count)"
     }
 
@@ -337,6 +456,7 @@ struct OnboardingView: View {
         case .microphone:      return 1
         case .accessibility:   return 2
         case .inputMonitoring: return 3
+        case .pythonSetup:     return 4
         }
     }
 
@@ -391,8 +511,11 @@ struct OnboardingView: View {
     }
 
     private static func firstMissing(permissions: PermissionsManager) -> Step? {
-        for s in Step.allCases where s.kind != nil {
+        for s in Step.allCases {
             if let kind = s.kind, permissions.status(for: kind) != .granted {
+                return s
+            }
+            if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
                 return s
             }
         }

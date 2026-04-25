@@ -9,15 +9,21 @@ struct StatusSettingsTab: View {
 
     @State private var venvPresent: Bool = false
     @State private var bridgeAlive: Bool = false
-    /// Nudged every 2s so we re-read state that isn't observable on its own
+    /// Nudged every 1s so we re-read state that isn't observable on its own
     /// (venv files on disk, bridge process). Cheap — both checks are one
-    /// stat + one pgrep.
+    /// stat + one pgrep. Faster cadence keeps the tab feeling live when
+    /// the user is actively flipping toggles in System Settings.
     @State private var refreshTrigger = UUID()
 
-    private let refreshTimer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
+    private let refreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Form {
+            if !appState.permissions.resetSinceLastRun.isEmpty {
+                Section {
+                    staleGrantBanner
+                }
+            }
             Section("Privacy Permissions") {
                 permissionRow(.microphone)
                 permissionRow(.accessibility)
@@ -39,6 +45,39 @@ struct StatusSettingsTab: View {
         .formStyle(.grouped)
         .onAppear { refresh() }
         .onReceive(refreshTimer) { _ in refresh() }
+    }
+
+    // MARK: - Stale-grant banner
+
+    /// One-time notice shown when permissions that were granted on a
+    /// previous run appear denied now. Dismissable; also clears
+    /// automatically when the user re-grants.
+    @ViewBuilder
+    private var staleGrantBanner: some View {
+        let names = appState.permissions.resetSinceLastRun
+            .map { $0.displayName }
+            .sorted()
+            .joined(separator: ", ")
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+                .foregroundStyle(.orange)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Permissions were reset")
+                    .font(.subheadline).bold()
+                Text("\(names) showed as granted on a previous run but appear denied now. macOS sometimes resets permissions after an OS update or app reinstall — re-grant below to continue using the affected features.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("Dismiss") {
+                for kind in appState.permissions.resetSinceLastRun {
+                    appState.permissions.acknowledgeReset(kind)
+                }
+            }
+            .buttonStyle(.borderless)
+        }
     }
 
     // MARK: - Rows
@@ -182,7 +221,6 @@ struct StatusSettingsTab: View {
                                   status: PermissionStatus) -> RowAction? {
         guard status != .granted else { return nil }
         return RowAction(title: "Open Settings") {
-            appState.permissions.markAttemptedGrant(kind)
             switch kind {
             case .accessibility:   appState.permissions.promptAccessibility()
             case .inputMonitoring: appState.permissions.promptInputMonitoring()
