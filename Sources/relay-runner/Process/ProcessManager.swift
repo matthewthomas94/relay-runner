@@ -4,15 +4,18 @@ final class ProcessManager {
 
     private var bridgeProcess: Process?
 
-    // Paths resolved relative to the app bundle or dev environment
-    private var servicesDir: URL {
-        // App bundle: Contents/SharedSupport/services
-        let bundledServices = Bundle.main.bundleURL
+    /// The read-only services directory that ships in the .app bundle (or
+    /// repo, for dev). Holds voice_bridge.py, tts_worker.py, requirements.txt,
+    /// etc. Crucially does NOT hold the venv anymore — the venv lives at a
+    /// user-writable path so non-admin users (or admin-installed bundles
+    /// owned by root) can write to it. Match SERVICES_BUNDLE in
+    /// scripts/relay-bridge.
+    private var bundledServicesDir: URL {
+        let bundled = Bundle.main.bundleURL
             .appendingPathComponent("Contents/SharedSupport/services")
-        if FileManager.default.fileExists(atPath: bundledServices.path) {
-            return bundledServices
+        if FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled
         }
-
         // Dev mode: look for services/ relative to the working directory or project root
         for base in [URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
                      Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent()] {
@@ -21,7 +24,6 @@ final class ProcessManager {
                 return candidate
             }
         }
-        // Walk up from the executable location
         if let exe = Bundle.main.executableURL {
             var dir = exe.deletingLastPathComponent()
             for _ in 0..<5 {
@@ -35,12 +37,31 @@ final class ProcessManager {
         return URL(fileURLWithPath: "services")
     }
 
-    private var pythonBin: String {
-        let venvPython = servicesDir.appendingPathComponent(".venv/bin/python3").path
-        if FileManager.default.isExecutableFile(atPath: venvPython) {
-            return venvPython
+    /// Path to the venv python the install creates. Match SERVICES_DIR/.venv
+    /// in scripts/relay-bridge and `userVenvPython` in VenvInstaller.swift —
+    /// all three must agree or the SwiftUI thinks setup is incomplete while
+    /// the bash side has actually finished it.
+    private static var userVenvPython: String {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("relay-runner/services/.venv/bin/python3")
+            .path
+    }
+
+    /// Path to the bundled relay-bridge script — the single source of truth
+    /// for venv install + voice-bridge launch logic. ProcessManager defers
+    /// to it instead of duplicating the install bash inline.
+    private var bundledRelayBridge: URL {
+        let bundled = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/SharedSupport/scripts/relay-bridge")
+        if FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled
         }
-        return "python3"
+        // Dev mode: relay-bridge in repo's scripts/
+        let repoLocal = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("scripts/relay-bridge")
+        return repoLocal
     }
 
     // MARK: - Bridge lifecycle
@@ -104,15 +125,6 @@ final class ProcessManager {
         }
     }
 
-    func startServices(config: AppConfig) {
-        // Start bridge if not already running (relay-bridge may have started it)
-        if !bridgeAlive() {
-            launchBridgeTerminal(config: config)
-        } else {
-            NSLog("[ProcessManager] Bridge already running, skipping terminal launch")
-        }
-    }
-
     func stopServices() {
         // Ask bridge to shut down gracefully
         if bridgeAlive() {
@@ -134,25 +146,33 @@ final class ProcessManager {
     }
 
     /// Launch voice_bridge.py in direct mode (its own Claude session) in a new terminal tab.
+    /// The launcher script defers to the bundled `relay-bridge` for the venv
+    /// install (single source of truth — relay-bridge handles relocatable
+    /// Python download, pip deps, and Kokoro model pre-download), then
+    /// exec's voice_bridge.py against the user-Library venv it set up.
     func launchNewSession(config: AppConfig) {
         let configPath = ConfigManager.shared.configPath.path
-        let bridgeScript = servicesDir.appendingPathComponent("voice_bridge.py").path
-        NSLog("[ProcessManager] launchNewSession: servicesDir=\(servicesDir.path) bridgeScript=\(bridgeScript) configPath=\(configPath)")
+        let bridgeScript = bundledServicesDir.appendingPathComponent("voice_bridge.py").path
+        let relayBridge = bundledRelayBridge.path
+        let python = Self.userVenvPython
+        NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) bridgeScript=\(bridgeScript) configPath=\(configPath)")
 
         let launcher = "/tmp/voice_bridge_launch.command"
-        let sdir = servicesDir.path
         let cdLine = Self.cdLine(config.general.working_directory)
-        let python = Self.venvPython(servicesDir: sdir)
         let script = """
         #!/bin/bash
         \(Self.shellProfileSource())
-        \(Self.venvSetupScript(servicesDir: sdir))
+        # Ensure venv + deps + speech-model files are installed. relay-bridge
+        # short-circuits in well under a second when everything's already in
+        # place; on first run it does the full no-admin install. Either way,
+        # the user sees its progress in the Terminal that just opened.
+        '\(relayBridge)' --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }
         \(cdLine)
         '\(python)' '\(bridgeScript)' --config '\(configPath)'
         echo ''
         echo '[Relay Runner] Session ended.'
         """
-        try? script.write(toFile: launcher, atomically: true, encoding: .utf8)
+        try? script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
         let chmod = Process()
         chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
@@ -183,11 +203,7 @@ final class ProcessManager {
 
     @discardableResult
     func installSkill() -> Bool {
-        let sdir = servicesDir.path
-        let bridgeScript = servicesDir.appendingPathComponent("voice_bridge.py").path
-        let configPath = ConfigManager.shared.configPath.path
-        let python = Self.venvPython(servicesDir: sdir)
-        let reqs = servicesDir.appendingPathComponent("requirements.txt").path
+        let relayBridge = bundledRelayBridge.path
 
         let content = """
         Connect voice I/O to this Claude session. You become a voice-interactive assistant: listen for spoken input, respond, and speak the response aloud via TTS.
@@ -202,29 +218,17 @@ final class ProcessManager {
 
         If not running, tell the user to start the Relay Runner menu bar app, then try `/relay-bridge` again. Do not proceed.
 
-        2. Kill any existing voice bridge and start a new one in relay mode:
+        2. Kill any existing voice bridge and start a new one in relay mode. The bundled `relay-bridge` script handles its own venv install (relocatable Python, pip deps, Kokoro speech model) and short-circuits when everything's already set up; on first run it may take a couple of minutes downloading deps:
 
         ```bash
         pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat
-        RELAY_PYTHON='\(python)'
-        if [ ! -x "$RELAY_PYTHON" ]; then
-            echo "venv: creating..."
-            VENV_PYTHON=python3
-            for p in /opt/homebrew/bin/python3 /usr/local/bin/python3; do
-                if [ -x "$p" ] && "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
-                    VENV_PYTHON="$p"
-                    break
-                fi
-            done
-            "$VENV_PYTHON" -m venv '\(sdir)/.venv' && '\(sdir)/.venv/bin/pip' install --quiet -r '\(reqs)' && echo "venv: ok" || { echo "venv: FAILED"; exit 1; }
-        fi
-        nohup "$RELAY_PYTHON" '\(bridgeScript)' --config '\(configPath)' --relay > /tmp/voice_bridge.log 2>&1 &
+        nohup '\(relayBridge)' --relay > /tmp/voice_bridge.log 2>&1 &
         ```
 
-        3. Wait for the relay bridge to come up:
+        3. Wait for the relay bridge to come up. The 60-iteration cap is generous on purpose: the very first invocation may need to download a Python interpreter (~18 MB) and the Kokoro speech model (~350 MB) before the bridge can listen, so allow ~30 seconds:
 
         ```bash
-        for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && break; sleep 0.5; done; [ -S /tmp/voice_bridge.sock ] || echo "bridge: FAILED"
+        for i in $(seq 1 60); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && break; sleep 0.5; done; [ -S /tmp/voice_bridge.sock ] || echo "bridge: FAILED"
         ```
 
         If the bridge failed to start, tell the user to check `/tmp/voice_bridge.log` and stop here.
@@ -249,13 +253,13 @@ final class ProcessManager {
 
         ### Step 3: Speak your response
 
-        After generating your response, ensure the bridge is still alive (the app's watchdog may have killed an orphaned bridge during long processing). If it died, restart it so the user still receives your response:
+        After generating your response, ensure the bridge is still alive (the app's watchdog may have killed an orphaned bridge during long processing). If it died, restart it via the bundled relay-bridge so the user still receives your response:
 
         ```bash
         touch /tmp/voice_bridge_heartbeat
         if ! pgrep -f 'voice_bridge.py' > /dev/null 2>&1; then
             rm -f /tmp/voice_bridge.sock
-            nohup '\(python)' '\(bridgeScript)' --config '\(configPath)' --relay > /tmp/voice_bridge.log 2>&1 &
+            nohup '\(relayBridge)' --relay > /tmp/voice_bridge.log 2>&1 &
             for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
         fi
         ```
@@ -324,155 +328,6 @@ final class ProcessManager {
             NSLog("[ProcessManager] Failed to install skill: \(error)")
             return false
         }
-    }
-
-    // MARK: - Terminal launch
-
-    private func launchBridgeTerminal(config: AppConfig) {
-        let configPath = ConfigManager.shared.configPath.path
-        let bridgeScript = servicesDir.appendingPathComponent("voice_bridge.py").path
-
-        // Create launcher script — relay mode (connects to existing Claude session)
-        let launcher = "/tmp/voice_bridge_launch.command"
-        let sdir = servicesDir.path
-        let script = """
-        #!/bin/bash
-        \(Self.shellProfileSource())
-        \(Self.venvSetupScript(servicesDir: sdir))
-        exec '\(Self.venvPython(servicesDir: sdir))' '\(bridgeScript)' --config '\(configPath)' --relay
-        """
-        try? script.write(toFile: launcher, atomically: true, encoding: .utf8)
-
-        let chmod = Process()
-        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
-        chmod.arguments = ["+x", launcher]
-        try? chmod.run()
-        chmod.waitUntilExit()
-
-        // Create FIFO before bridge starts
-        ensureFifo()
-
-        launchInTerminal(command: launcher)
-    }
-
-    /// Returns the venv python path for a services directory.
-    private static func venvPython(servicesDir: String) -> String {
-        "\(servicesDir)/.venv/bin/python3"
-    }
-
-    /// Returns shell commands to create a venv and install dependencies if missing.
-    private static func venvSetupScript(servicesDir: String) -> String {
-        let venv = "\(servicesDir)/.venv"
-        let reqs = "\(servicesDir)/requirements.txt"
-        return """
-        # Re-run setup if the venv is missing OR if a prior setup left the
-        # venv in place but failed to install deps — otherwise we'd exec a
-        # venv python with no numpy/kokoro_onnx/huggingface_hub and crash
-        # at import or first model-download time. huggingface_hub must be
-        # verified explicitly: kokoro-onnx imports cleanly without it, then
-        # fails when tts_worker tries to download models.
-        if ! '\(venv)/bin/python3' -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1; then
-            echo ''
-            echo '╔══════════════════════════════════════════╗'
-            echo '║  Relay Runner — First-time setup         ║'
-            echo '║  Installing Python dependencies...       ║'
-            echo '╚══════════════════════════════════════════╝'
-            echo ''
-            # kokoro-onnx caps at Python <3.14, so the bare `python3`
-            # on newer Homebrew (→ 3.14) is *not* acceptable here —
-            # we'd rather fall through and auto-install python@3.13.
-            find_python() {
-                for p in \\
-                    /opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13 \\
-                    /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 python3.12 \\
-                    /opt/homebrew/bin/python3.11 /usr/local/bin/python3.11 python3.11 \\
-                    /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
-                    if command -v "$p" >/dev/null 2>&1 && \\
-                       "$p" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
-                        echo "$p"
-                        return 0
-                    fi
-                done
-                return 1
-            }
-            find_brew() {
-                for b in brew /opt/homebrew/bin/brew /usr/local/bin/brew; do
-                    if command -v "$b" >/dev/null 2>&1; then
-                        echo "$b"
-                        return 0
-                    fi
-                done
-                return 1
-            }
-            install_homebrew() {
-                if ! command -v curl >/dev/null 2>&1; then
-                    echo "[Relay Runner] curl not available — cannot bootstrap Homebrew."
-                    return 1
-                fi
-                echo "[Relay Runner] Homebrew not found. Installing Homebrew..."
-                echo "(This may prompt for your macOS password.)"
-                NONINTERACTIVE=1 /bin/bash -c \\
-                    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || return 1
-                for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-                    if [ -x "$b" ]; then
-                        eval "$("$b" shellenv)"
-                        return 0
-                    fi
-                done
-                return 1
-            }
-            # If an existing venv was built with an out-of-range Python
-            # (e.g. 3.14, which kokoro-onnx doesn't support), wipe it so
-            # the block below creates a fresh venv with a supported
-            # interpreter.
-            if [ -x '\(venv)/bin/python3' ] && \\
-               ! '\(venv)/bin/python3' -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
-                echo "[Relay Runner] Existing venv uses $('\(venv)/bin/python3' -c 'import sys; print(\".\".join(map(str, sys.version_info[:2])))'), which kokoro-onnx doesn't support. Recreating with a 3.10–3.13 interpreter."
-                rm -rf '\(venv)'
-            fi
-            # Only create a new venv if one isn't already on disk; if the
-            # venv exists but deps are missing, we fall through to reinstall
-            # into the existing interpreter.
-            if [ ! -x '\(venv)/bin/python3' ]; then
-                VENV_PYTHON="$(find_python || true)"
-                if [ -z "$VENV_PYTHON" ]; then
-                    BREW="$(find_brew || true)"
-                    if [ -z "$BREW" ]; then
-                        if ! install_homebrew; then
-                            echo "[Relay Runner] Could not install Homebrew automatically."
-                            echo "Install it from https://brew.sh then re-run."
-                            exit 1
-                        fi
-                        BREW="$(find_brew || true)"
-                    fi
-                    echo "[Relay Runner] No Python 3.10+ found. Installing python@3.13 via Homebrew..."
-                    echo "(This can take a few minutes on first run.)"
-                    if ! "$BREW" install python@3.13; then
-                        echo "[Relay Runner] brew install python@3.13 failed. See errors above."
-                        exit 1
-                    fi
-                    VENV_PYTHON="$(find_python || true)"
-                    if [ -z "$VENV_PYTHON" ]; then
-                        echo "[Relay Runner] python@3.13 installed but not found on disk."
-                        echo "Try opening a new terminal and re-running."
-                        exit 1
-                    fi
-                fi
-                echo "Using $("$VENV_PYTHON" --version) at $VENV_PYTHON"
-                "$VENV_PYTHON" -m venv '\(venv)' || {
-                    echo "[Relay Runner] Failed to create venv at \(venv)."
-                    exit 1
-                }
-            else
-                echo "[Relay Runner] Venv present but deps incomplete — reinstalling."
-            fi
-            '\(venv)/bin/python3' -m pip install --upgrade pip && \\
-            '\(venv)/bin/pip' install -r '\(reqs)' && \\
-            echo '' && echo '[Relay Runner] Setup complete.' || \\
-            { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
-            echo ''
-        fi
-        """
     }
 
     /// Returns a `cd` line for the launcher script, or a comment if empty.

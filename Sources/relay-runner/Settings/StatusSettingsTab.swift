@@ -98,7 +98,7 @@ struct StatusSettingsTab: View {
             label: "Python environment",
             state: venvPresent ? .ok : .warning,
             detail: venvPresent
-                ? "Installed at services/.venv"
+                ? "Installed in Application Support"
                 : "Not yet installed — will be created on first session",
             action: nil
         )
@@ -239,17 +239,11 @@ struct StatusSettingsTab: View {
     }
 
     private static func venvExists() -> Bool {
-        // The canonical venv python path ProcessManager also uses. Cheap
-        // filesystem check — no need to shell out for a proper import test
-        // here; the Python env row is an "is it roughly installed" hint,
-        // and the STT-model row below surfaces the real failure if deps
-        // are missing.
-        let fm = FileManager.default
-        let candidates = [
-            Bundle.main.bundleURL
-                .appendingPathComponent("Contents/SharedSupport/services/.venv/bin/python3").path,
-            FileManager.default.currentDirectoryPath + "/services/.venv/bin/python3",
-        ]
-        return candidates.contains { fm.isExecutableFile(atPath: $0) }
+        // Defer to VenvInstaller.alreadyInstalled — it's the single source
+        // of truth for "is the install fully done", and checks both the
+        // venv interpreter AND the Kokoro speech-model files. If either is
+        // missing, the relay-bridge bash side will run the install, so the
+        // Settings row should reflect that the install isn't really done.
+        VenvInstaller.alreadyInstalled
     }
 }
