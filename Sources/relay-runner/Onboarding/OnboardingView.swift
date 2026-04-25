@@ -163,8 +163,12 @@ struct OnboardingView: View {
             Text(permissionExplanation(for: kind))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if kind != .microphone {
-                Text(permissionInstruction(for: kind))
+            // The instruction box explains "find me in the list and toggle
+            // me on". Skip it for fresh microphone (.notDetermined) where
+            // the system prompt handles the grant directly — but show it
+            // for .denied/.restricted, where the only path is Settings.
+            if kind != .microphone || status == .denied || status == .restricted {
+                Text(permissionInstruction(for: kind, status: status))
                     .font(.callout)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -339,11 +343,22 @@ struct OnboardingView: View {
             Button("Get Started") { advance() }
                 .keyboardShortcut(.defaultAction)
         case .microphone:
-            if permissions.microphone == .granted {
+            switch permissions.microphone {
+            case .granted:
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
-            } else {
+            case .notDetermined:
+                // First-ever ask: AVCaptureDevice.requestAccess shows the
+                // standard system prompt.
                 Button("Grant Microphone Access") {
                     permissions.requestMicrophone { _ in }
+                }.keyboardShortcut(.defaultAction)
+            case .denied, .restricted:
+                // Once macOS has heard a "No" (or a previous Allow that's
+                // since been revoked), requestAccess is a no-op — the
+                // system won't re-prompt. The only way back is to flip
+                // the toggle in System Settings.
+                Button("Open System Settings") {
+                    permissions.openSettings(for: .microphone)
                 }.keyboardShortcut(.defaultAction)
             }
         case .accessibility:
@@ -479,10 +494,12 @@ struct OnboardingView: View {
         }
     }
 
-    private func permissionInstruction(for kind: PermissionKind) -> String {
+    private func permissionInstruction(for kind: PermissionKind, status: PermissionStatus) -> String {
         switch kind {
         case .microphone:
-            return ""
+            // Only reached for .denied / .restricted — the .notDetermined
+            // path uses the system prompt and skips the instruction box.
+            return "Click the button below. In System Settings, find Relay Runner under Microphone and switch it on. This window will update automatically when you're done."
         case .accessibility:
             return "Click the button below. In System Settings, find Relay Runner in the list and switch it on. This window will update automatically when you're done."
         case .inputMonitoring:
