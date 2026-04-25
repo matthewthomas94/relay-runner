@@ -46,16 +46,34 @@ final class VenvInstaller {
     /// bumps the bar by this much, capped at `collectingCapPercent`.
     /// That's where the perceived "hang" lives — pip goes silent for
     /// 5–15s per wheel download, so making the bar tick per package
-    /// is what keeps the install feeling alive.
-    private let collectingTickPercent: Double = 0.025
-    private let collectingCapPercent: Double = 0.93
+    /// is what keeps the install feeling alive. Cap stops short of
+    /// the 80% phase marker for the speech-model download so the bar
+    /// has somewhere to go when that next phase starts.
+    private let collectingTickPercent: Double = 0.02
+    private let collectingCapPercent: Double = 0.78
 
-    /// True when the venv exists at its canonical user-data path with
-    /// deps installed. Cheap filesystem check — same logic relay-bridge
-    /// uses to decide whether to skip its own bootstrap. Short-circuits
-    /// the onboarding step on second-run-with-already-set-up.
+    /// True when both the venv interpreter AND the Kokoro speech-model
+    /// files are on disk. relay-bridge runs the install path if either
+    /// is missing, so the SwiftUI must check the same union — otherwise
+    /// onboarding's pythonSetup would short-circuit to .succeeded while
+    /// the model download still needed to run, and the user would hit
+    /// silent / failing TTS on the very first session.
     static var alreadyInstalled: Bool {
-        FileManager.default.isExecutableFile(atPath: userVenvPython)
+        let fm = FileManager.default
+        return fm.isExecutableFile(atPath: userVenvPython)
+            && fm.fileExists(atPath: kokoroModelPath)
+            && fm.fileExists(atPath: kokoroVoicesPath)
+    }
+
+    /// Match what tts_worker.py:_find_kokoro_model() looks for and what
+    /// relay-bridge writes into during the install.
+    private static var kokoroModelPath: String {
+        (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".local/share/kokoro/kokoro-v1.0.onnx")
+    }
+    private static var kokoroVoicesPath: String {
+        (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".local/share/kokoro/voices-v1.0.bin")
     }
 
     /// Begin the bootstrap if it isn't already running. Idempotent —
