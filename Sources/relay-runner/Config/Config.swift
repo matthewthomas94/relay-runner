@@ -20,8 +20,8 @@ struct SttConfig: Codable, Equatable {
 
 struct TtsConfig: Codable, Equatable {
     var engine: String = "kokoro"
-    var voice: String = "af_bella"
-    var rate: Double = 1.0
+    var voice: String = "bm_lewis"
+    var rate: Double = 1.1
     var auto_play: Bool = false
     var chime: String = "Tink"
     var show_notification: Bool = true

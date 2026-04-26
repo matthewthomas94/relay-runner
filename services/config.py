@@ -93,8 +93,8 @@ def load_config(config_path: str | None = None) -> dict:
         },
         "tts": {
             "engine": "kokoro",
-            "voice": "af_bella",
-            "rate": 1.0,
+            "voice": "bm_lewis",
+            "rate": 1.1,
             "auto_play": False,
             "chime": "Tink",
             "show_notification": True,
