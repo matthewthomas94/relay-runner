@@ -182,6 +182,21 @@ def _start_control_socket(tts_worker: TTSWorker, shutdown_event: threading.Event
             pass
 
 
+# Strip markdown formatting before TTS so Kokoro doesn't pronounce literal
+# *, _, ` as "asterisk", "underscore", "backtick". The skill prompt asks
+# Claude to send plain prose, but it routinely returns **bold**, `code`, and
+# blockquotes anyway — handle it server-side so the voice always sounds clean.
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_MD_LINE_PREFIX_RE = re.compile(r"^\s*(?:>+|#+|[-+*]|\d+\.)\s+")
+
+
+def _strip_markdown_for_tts(text: str) -> str:
+    """Strip markdown so Kokoro doesn't pronounce */_/` aloud."""
+    text = _MD_LINK_RE.sub(r"\1", text)        # [label](url) → label
+    text = _MD_LINE_PREFIX_RE.sub("", text)    # leading >, #, -, *, 1. → drop
+    return re.sub(r"[*_`]", "", text)          # any remaining markers
+
+
 def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
     """Read text from TTS input FIFO and put on TTS queue (relay mode only)."""
     while not shutdown_event.is_set():
@@ -190,7 +205,7 @@ def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
                 for line in f:
                     if shutdown_event.is_set():
                         break
-                    text = line.strip()
+                    text = _strip_markdown_for_tts(line.strip()).strip()
                     if text:
                         tts_queue.put(text)
         except OSError:
