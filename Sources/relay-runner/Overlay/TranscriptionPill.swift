@@ -75,6 +75,11 @@ final class TranscriptionPill: NSView {
     /// Active body-scroll animation timer. Replaced/cancelled when state
     /// changes or the pill hides.
     private var bodyScrollTimer: Timer?
+    /// Body text the active scroll is animating through. When showFull is
+    /// re-invoked with the same body (e.g. messageWaiting → speaking flips
+    /// the title but keeps the preview), we keep the existing scroll going
+    /// instead of snapping back to the top.
+    private var scrolledBodyText: String?
 
     // Spring-damped timing for Apple-like feel
     private let springTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
@@ -524,7 +529,14 @@ final class TranscriptionPill: NSView {
             // (visible - content), which is ≤ 0 whenever we're overflowing.
             // We later animate this y upward toward 0 to reveal the rest.
             let initialLabelY = bodyVisibleHeight - bodyContentHeight
-            let labelFrame = NSRect(x: 0, y: initialLabelY, width: contentWidth, height: bodyContentHeight)
+
+            // If the body text is the same one the scroll is currently
+            // animating, preserve its current y so the user doesn't see
+            // the text snap back to the top on every state transition.
+            // Otherwise (new content / fresh entrance) start at top.
+            let scrollContinues = bodyLabel.stringValue == scrolledBodyText && bodyScrollTimer != nil
+            let preservedY = scrollContinues ? bodyLabel.frame.origin.y : initialLabelY
+            let labelFrame = NSRect(x: 0, y: preservedY, width: contentWidth, height: bodyContentHeight)
 
             if bodyContainer.isHidden {
                 bodyContainer.frame = containerFrame
@@ -552,8 +564,12 @@ final class TranscriptionPill: NSView {
             }
 
             // Trigger or cancel the teleprompter scroll based on overflow.
+            // If scrollContinues, the existing timer is still running for the
+            // same text — leave it alone.
             if bodyContentHeight > maxBodyHeight {
-                startBodyScroll(targetY: 0)
+                if !scrollContinues {
+                    startBodyScroll(targetY: 0)
+                }
             } else {
                 cancelBodyScroll()
             }
@@ -565,13 +581,13 @@ final class TranscriptionPill: NSView {
     /// Linearly translate bodyLabel upward inside bodyContainer so the user
     /// can read text that overflows the visible window. Uses a 1-second
     /// pause at the start (so the user has time to read the first lines)
-    /// and a fixed 50 px/sec scroll speed — matches a comfortable reading
-    /// pace. One-pass, no looping; if TTS keeps going past the end, the
-    /// label just rests at the bottom-aligned position.
+    /// and a fixed 25 px/sec scroll speed — slow enough to read comfortably
+    /// alongside TTS narration. One-pass, no looping; if TTS keeps going
+    /// past the end, the label just rests at the bottom-aligned position.
     private func startBodyScroll(targetY: CGFloat) {
         cancelBodyScroll()
 
-        let scrollSpeed: CGFloat = 50  // px/sec
+        let scrollSpeed: CGFloat = 25  // px/sec
         let pauseSeconds: TimeInterval = 1.0
         let tickInterval: TimeInterval = 1.0 / 60
         let pixelsPerTick = scrollSpeed * CGFloat(tickInterval)
@@ -579,28 +595,40 @@ final class TranscriptionPill: NSView {
         let initialY = bodyLabel.frame.origin.y
         guard initialY < targetY else { return }
 
+        // Mark which body text the active scroll is animating, so a re-layout
+        // for the same text can detect that the scroll is still valid and
+        // preserve position instead of restarting from the top.
+        scrolledBodyText = bodyLabel.stringValue
+
         DispatchQueue.main.asyncAfter(deadline: .now() + pauseSeconds) { [weak self] in
             guard let self else { return }
             // The state may have changed during the pause; bail if so.
             guard !self.bodyContainer.isHidden, self.bodyContainer.alphaValue > 0.01 else { return }
-            self.bodyScrollTimer = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { [weak self] timer in
+            // Use .common runloop mode so the timer keeps firing during
+            // NSAnimationContext-driven layout passes (which run on the
+            // default mode and would otherwise stall the scroll).
+            let timer = Timer(timeInterval: tickInterval, repeats: true) { [weak self] timer in
                 guard let self else { timer.invalidate(); return }
                 let currentY = self.bodyLabel.frame.origin.y
                 if currentY >= targetY {
                     timer.invalidate()
                     self.bodyScrollTimer = nil
+                    self.scrolledBodyText = nil
                     return
                 }
                 var newFrame = self.bodyLabel.frame
                 newFrame.origin.y = min(currentY + pixelsPerTick, targetY)
                 self.bodyLabel.frame = newFrame
             }
+            RunLoop.main.add(timer, forMode: .common)
+            self.bodyScrollTimer = timer
         }
     }
 
     private func cancelBodyScroll() {
         bodyScrollTimer?.invalidate()
         bodyScrollTimer = nil
+        scrolledBodyText = nil
     }
 
     // MARK: - Show helper (for theme comparison)
