@@ -183,7 +183,11 @@ class TTSWorker:
 
                 if was_empty and self._pending_text.strip():
                     self._play_chime()
-                    _notify_state("message_waiting", text=self._pending_text.strip()[:200])
+                    # Send the full text (capped generously) — the overlay
+                    # pill grows vertically to fit it, so cropping here just
+                    # hides the tail of long responses for no reason. 2000 is
+                    # a soft safety net for pathological inputs.
+                    _notify_state("message_waiting", text=self._pending_text.strip()[:2000])
 
     def _control_loop(self):
         """Listen on Unix socket for play/pause/skip commands."""
