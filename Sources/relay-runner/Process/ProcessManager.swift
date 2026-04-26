@@ -237,6 +237,44 @@ final class ProcessManager {
         }
     }
 
+    // MARK: - Voice preview
+
+    /// Run a one-shot voice preview using the bundled preview_voice.py.
+    /// Blocks until afplay returns or the script exits with an error. Throws
+    /// if the venv or model isn't ready (caller surfaces that to the user).
+    func previewVoice(name: String, text: String) throws {
+        let python = Self.userVenvPython
+        let script = bundledServicesDir.appendingPathComponent("preview_voice.py").path
+
+        guard FileManager.default.isExecutableFile(atPath: python) else {
+            throw NSError(domain: "ProcessManager.previewVoice", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Voice preview unavailable — finish onboarding to install Python first."
+            ])
+        }
+        guard FileManager.default.fileExists(atPath: script) else {
+            throw NSError(domain: "ProcessManager.previewVoice", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Voice preview script not found in app bundle."
+            ])
+        }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: python)
+        proc.arguments = [script, "--voice", name, "--text", text]
+        proc.standardOutput = FileHandle.nullDevice
+        let errPipe = Pipe()
+        proc.standardError = errPipe
+        try proc.run()
+        proc.waitUntilExit()
+
+        if proc.terminationStatus != 0 {
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8) ?? "(no stderr)"
+            throw NSError(domain: "ProcessManager.previewVoice", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Voice preview failed: \(errStr.trimmingCharacters(in: .whitespacesAndNewlines))"
+            ])
+        }
+    }
+
     /// Returns a `cd` line for the launcher script, or a comment if empty.
     private static func cdLine(_ workingDirectory: String) -> String {
         let trimmed = workingDirectory.trimmingCharacters(in: .whitespaces)

@@ -88,7 +88,7 @@ if [ -d "$RESOURCE_BUNDLE" ]; then
 fi
 
 # Python services
-for f in voice_bridge.py tts_worker.py tts_filter.py config.py voice_wrap.py requirements.txt; do
+for f in voice_bridge.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py requirements.txt; do
     if [ -f "$PROJECT_ROOT/services/$f" ]; then
         cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"
     fi

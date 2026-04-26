@@ -10,14 +10,39 @@ struct TTSSettingsTab: View {
         "bm_george", "bm_lewis",
     ]
 
+    /// Sample sentence for the preview button. A pangram covers most phonemes
+    /// so the user gets a realistic sense of each voice's character.
+    private let previewText = "The quick brown fox jumps over the lazy dog."
+
     @State private var chimes: [String] = []
+    @State private var isPreviewing = false
+    @State private var previewError: String?
 
     var body: some View {
         Form {
-            Picker("Voice", selection: $config.voice) {
-                ForEach(voices, id: \.self) { voice in
-                    Text(formatVoiceName(voice)).tag(voice)
+            HStack {
+                Picker("Voice", selection: $config.voice) {
+                    ForEach(voices, id: \.self) { voice in
+                        Text(formatVoiceName(voice)).tag(voice)
+                    }
                 }
+                Button(action: previewSelectedVoice) {
+                    if isPreviewing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "play.circle.fill")
+                            .font(.title3)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(isPreviewing)
+                .help("Preview this voice")
+            }
+            if let previewError {
+                Text(previewError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Picker("Playback Mode", selection: $config.auto_play) {
@@ -62,5 +87,27 @@ struct TTSSettingsTab: View {
         let gender = prefix.last == "f" ? "Female" : "Male"
         let name = parts[1].prefix(1).uppercased() + parts[1].dropFirst()
         return "\(name) (\(accent) \(gender))"
+    }
+
+    private func previewSelectedVoice() {
+        let voice = config.voice
+        let text = previewText
+        isPreviewing = true
+        previewError = nil
+        Task.detached(priority: .userInitiated) {
+            let result: Result<Void, Error>
+            do {
+                try ProcessManager().previewVoice(name: voice, text: text)
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+            await MainActor.run {
+                isPreviewing = false
+                if case .failure(let err) = result {
+                    previewError = err.localizedDescription
+                }
+            }
+        }
     }
 }
