@@ -48,10 +48,10 @@ struct MenuBarView: View {
 
         Divider()
 
-        Button("Start Session\u{2026}") { appState.newSession() }
-
         if appState.hasActiveSession {
             Button("End Session") { appState.endSession() }
+        } else {
+            Button("Start Session\u{2026}") { appState.newSession() }
         }
 
         Divider()

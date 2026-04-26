@@ -71,8 +71,12 @@ final class AppState {
     /// Used to distinguish "still starting up" from "came up and then died".
     private var sessionBridgeSeen = false
 
-    /// Whether a direct-mode session is active (for menu bar UI).
-    var hasActiveSession: Bool { directSessionActive }
+    /// Whether any voice session is active (for menu bar UI). Covers both
+    /// direct-mode (menu's Start Session) and externally-started bridges
+    /// (the /relay-bridge slash command). The watchdog flips bridgeAliveCache
+    /// within ~3 seconds of an external bridge coming up, so /relay-bridge
+    /// users see the menu reflect their session promptly.
+    var hasActiveSession: Bool { directSessionActive || bridgeAliveCache }
 
     init() {
         self.config = ConfigManager.shared.load()
