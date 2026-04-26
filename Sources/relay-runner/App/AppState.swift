@@ -83,6 +83,11 @@ final class AppState {
         // Watch privacy permissions continuously — macOS doesn't notify us
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
+        // Pre-register for Input Monitoring TCC so the app appears in the
+        // System Settings list with a toggle when the user lands on that
+        // onboarding step — instead of forcing them through the "+" button
+        // + Finder dialog. Cheap to call on every launch.
+        permissions.registerForInputMonitoringList()
         // Hook permission transitions: notify on revoke, auto-recover STT
         // when mic/input-monitoring comes back (the STT engine binds to the
         // mic + installs NSEvent monitors at start, so neither recovers
@@ -293,13 +298,15 @@ final class AppState {
                 self.onboarding.markSessionRun()
             }
 
-            // Detect orphaned relay bridge (process alive but consumer dead)
+            // Detect orphaned relay bridge (process alive but consumer dead).
+            // Reap the orphan but don't pop the session-prompt overlay — the
+            // user gets the prompt when they actually press Caps Lock with no
+            // session, not while Claude is mid-processing on a long task.
             if alive && !self.directSessionActive && !self.processManager.bridgeConsumerAlive() {
                 NSLog("[AppState] Relay bridge orphaned (consumer heartbeat stale), killing")
                 self.processManager.killBridge()
                 self.bridgeAliveCache = false
                 self.statusText = "Ready"
-                self.stateMachine.showSessionPrompt()
                 return
             }
 
@@ -318,13 +325,15 @@ final class AppState {
                     self.directSessionActive = false
                     self.sessionBridgeSeen = false
                     self.statusText = "Ready"
-                    self.stateMachine.showSessionPrompt()
+                    // Don't auto-show the session prompt overlay — wait until
+                    // the user actually tries to record (Caps Lock path in
+                    // sttPollTimer fires it then).
                 }
             } else if wasAlive && !alive && !self.directSessionActive {
-                // Relay-bridge session ended externally
+                // Relay-bridge session ended externally — same idea: update
+                // status quietly, let the prompt fire on next Caps Lock.
                 NSLog("[AppState] Relay bridge died, reverting to awareness")
                 self.statusText = "Ready"
-                self.stateMachine.showSessionPrompt()
             }
         }
     }

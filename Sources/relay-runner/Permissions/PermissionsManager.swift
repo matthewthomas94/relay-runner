@@ -233,6 +233,29 @@ final class PermissionsManager {
         _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
     }
 
+    /// Force this app to appear in System Settings → Privacy & Security →
+    /// Input Monitoring on a clean install. macOS only registers an app's
+    /// cdhash for kTCCServiceListenEvent when something actually attempts to
+    /// install a global event monitor — IOHIDRequestAccess alone is unreliable
+    /// for this on ad-hoc-signed builds. Without this nudge, the user
+    /// reaching the Input Monitoring onboarding step has to click "+" in
+    /// System Settings and pick Relay Runner from a Finder dialog, while
+    /// every other permission step lets them flip a toggle in place.
+    ///
+    /// Install + immediately remove a no-op global key monitor at launch so
+    /// the cdhash is registered before the user clicks Open Settings. If the
+    /// app was already registered, this is a quick no-op. If permission
+    /// hasn't been granted yet, `addGlobalMonitorForEvents` returns nil and
+    /// no events are observed — TCC still sees the attempt, which is enough.
+    /// Must be called on the main thread (NSEvent monitor lifecycle is
+    /// main-thread-only).
+    func registerForInputMonitoringList() {
+        guard let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown], handler: { _ in }) else {
+            return
+        }
+        NSEvent.removeMonitor(monitor)
+    }
+
     /// Open the appropriate Privacy & Security pane in System Settings.
     /// URL scheme is stable across macOS 13 / 14 / 15.
     func openSettings(for kind: PermissionKind) {
