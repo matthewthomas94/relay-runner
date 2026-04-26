@@ -11,6 +11,17 @@ struct OnboardingView: View {
     /// non-nil on the Ready step, shown in place of "all set" so the user
     /// knows the app isn't fully ready yet.
     let setupStatus: () -> String?
+    /// Currently-configured working directory at the moment the window
+    /// opens. Used to preload the Ready-step path picker so a returning
+    /// user sees their last choice.
+    let initialWorkingDirectory: String
+    /// Persists the user's working-directory pick to AppConfig. Called
+    /// from the Ready step's Done button.
+    let onSetWorkingDirectory: (String) -> Void
+    /// Starts a voice session immediately. Wired to `AppState.newSession`.
+    /// Used by the Start Session CTA on the Ready step so the user can
+    /// kick off a session without going back to the menu bar.
+    let onStartSession: () -> Void
     let onFinish: () -> Void
 
     @State private var step: Step
@@ -24,14 +35,39 @@ struct OnboardingView: View {
     /// advance the moment the keychain entry appears (i.e., the user
     /// has finished `claude /login` in the Terminal we spawned).
     @State private var claudeSignedIn: Bool = ClaudeAuth.isAuthenticated
+    /// Whether we've already invoked the Accessibility prompt this session.
+    /// AXIsProcessTrustedWithOptions reliably shows a system dialog on the
+    /// first call (with its own "Open System Settings" button), then macOS
+    /// suppresses repeats — so the first click delegates navigation to the
+    /// dialog, and subsequent clicks fall through to a Settings deep-link.
+    /// Input Monitoring doesn't get this treatment because IOHIDRequestAccess
+    /// only shows a dialog for .notDetermined status (the AX dialog fires for
+    /// .denied too), and we can't tell the cases apart at click time.
+    @State private var hasPromptedAccessibility = false
+    /// Working directory the user picks on the Ready step. Initialized
+    /// from `initialWorkingDirectory` so a returning user sees their
+    /// previous choice; an empty string means "use the home folder."
+    @State private var workingDirectory: String
+    /// True once the user has actively chosen a working directory on
+    /// this opening of the onboarding window — by clicking Browse… or
+    /// Use Home Folder. The Done button stays disabled until then so we
+    /// can guarantee an explicit pick rather than silently inheriting
+    /// whatever was already in config.
+    @State private var hasConfirmedWorkingDirectory: Bool = false
 
     init(permissions: PermissionsManager,
          simplified: Bool,
          setupStatus: @escaping () -> String? = { nil },
+         initialWorkingDirectory: String = "",
+         onSetWorkingDirectory: @escaping (String) -> Void = { _ in },
+         onStartSession: @escaping () -> Void = {},
          onFinish: @escaping () -> Void) {
         self.permissions = permissions
         self.simplified = simplified
         self.setupStatus = setupStatus
+        self.initialWorkingDirectory = initialWorkingDirectory
+        self.onSetWorkingDirectory = onSetWorkingDirectory
+        self.onStartSession = onStartSession
         self.onFinish = onFinish
         // Simplified flow (re-prompt after initial onboarding): jump to the
         // first missing permission. Full flow starts at the welcome screen.
@@ -42,6 +78,7 @@ struct OnboardingView: View {
             initial = .welcome
         }
         _step = State(initialValue: initial)
+        _workingDirectory = State(initialValue: initialWorkingDirectory)
     }
 
     enum Step: Int, CaseIterable {
@@ -74,7 +111,7 @@ struct OnboardingView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 520, minHeight: 420)
+        .frame(minWidth: 520, minHeight: 640)
         .onAppear {
             // Kick the Python bootstrap off as soon as the window opens
             // so it has a head start while the user grants permissions.
@@ -89,9 +126,13 @@ struct OnboardingView: View {
         .onChange(of: permissions.accessibility) { _, new in
             autoAdvance(for: .accessibility, status: new)
         }
-        .onChange(of: permissions.inputMonitoring) { _, new in
-            autoAdvance(for: .inputMonitoring, status: new)
-        }
+        // No auto-advance for inputMonitoring. IOHIDCheckAccess can return
+        // kIOHIDAccessTypeGranted from leftover TCC state (especially on
+        // ad-hoc-signed reinstalls) and can transition spuriously after
+        // the user opens System Settings — both of which would race the
+        // user past this step before they've actually granted. The
+        // primary button below shows Continue once the API reads granted,
+        // so the user advances on an explicit click instead.
         .onChange(of: venvInstaller.status) { _, new in
             // Auto-advance off pythonSetup as soon as the bootstrap
             // succeeds so the user doesn't have to click through.
@@ -375,13 +416,13 @@ struct OnboardingView: View {
         let isLoading = status != nil
         let allGranted = permissions.allGranted
         return VStack(spacing: 16) {
-            Spacer(minLength: 8)
+            Spacer(minLength: 4)
             if isLoading {
                 ProgressView()
                     .controlSize(.large)
             } else {
                 Image(systemName: allGranted ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 48))
+                    .font(.system(size: 44))
                     .foregroundStyle(allGranted ? .green : .orange)
             }
             Text(isLoading ? "Almost ready\u{2026}" : "You're all set.")
@@ -395,28 +436,112 @@ struct OnboardingView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
+                workingDirectoryPicker
                 Text("Two ways to start a voice session:")
                     .foregroundStyle(.secondary)
-                VStack(spacing: 10) {
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(spacing: 8) {
                     sessionMethodRow(
                         icon: "menubar.rectangle",
                         title: "From the menu bar",
-                        detail: "Click the Relay Runner icon in your menu bar, then choose \u{201C}Start Session\u{2026}\u{201D}. A terminal opens with Claude Code already listening."
+                        detail: "Click the Relay Runner icon, then choose \u{201C}Start Session\u{2026}\u{201D}. A terminal opens with Claude Code already listening."
                     )
                     sessionMethodRow(
                         icon: "terminal",
                         title: "From Claude Code",
-                        detail: "Run \u{2018}claude\u{2019} in any terminal and type /relay-bridge. Install the slash command from Settings \u{2192} General if you haven\u{2019}t yet."
+                        detail: "Run \u{2018}claude\u{2019} in any terminal and type /relay-bridge. Install the slash command from Settings \u{2192} General if needed."
                     )
                 }
                 Text("Tap Caps Lock to start and stop recording in either mode.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .padding(.top, 4)
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: 4)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// Path picker on the Ready step. The user must actively click
+    /// Browse… or Use Home Folder before the Done button enables —
+    /// the requirement is that every session start has a deliberate
+    /// directory choice, not silently inherit whatever was last in
+    /// config. An empty `workingDirectory` string maps to "home" and
+    /// is what `ProcessManager` already treats as the default.
+    private var workingDirectoryPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Where should Claude run from?")
+                    .font(.callout).bold()
+                if !hasConfirmedWorkingDirectory {
+                    Text("(required)")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Text("New voice sessions start in this folder. You can change it later in Settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .foregroundStyle(.secondary)
+                Text(workingDirectoryDisplay)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .foregroundStyle(hasConfirmedWorkingDirectory ? .primary : .secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(hasConfirmedWorkingDirectory
+                            ? Color.secondary.opacity(0.25)
+                            : Color.orange.opacity(0.45))
+            )
+            HStack(spacing: 8) {
+                Button("Choose Folder\u{2026}") { pickWorkingDirectory() }
+                Button("Use Home Folder") { useHomeWorkingDirectory() }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Human-readable label for the path field. "(none chosen)" when
+    /// the user hasn't actively confirmed yet — the orange copy that
+    /// goes with it is what tells them they need to click one of the
+    /// buttons below.
+    private var workingDirectoryDisplay: String {
+        if !hasConfirmedWorkingDirectory {
+            return "(none chosen)"
+        }
+        if workingDirectory.isEmpty {
+            return "Home folder (~)"
+        }
+        return workingDirectory
+    }
+
+    private func pickWorkingDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose where Claude should run from"
+        if panel.runModal() == .OK, let url = panel.url {
+            workingDirectory = url.path
+            hasConfirmedWorkingDirectory = true
+        }
+    }
+
+    private func useHomeWorkingDirectory() {
+        // Empty string is the existing "default to home" sentinel
+        // ProcessManager and config use — keep it consistent so the
+        // Settings UI keeps showing the "~ (home)" placeholder rather
+        // than a literal `/Users/<name>` path.
+        workingDirectory = ""
+        hasConfirmedWorkingDirectory = true
     }
 
     /// One row in the "how to start a session" summary on the Ready step.
@@ -480,11 +605,31 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
                 Button("Open System Settings") {
-                    permissions.promptAccessibility()
-                    permissions.openSettings(for: .accessibility)
+                    if !hasPromptedAccessibility {
+                        // First click: AXIsProcessTrustedWithOptions shows
+                        // its own system dialog with an "Open System Settings"
+                        // button. Letting that handle the navigation avoids
+                        // the focus race we'd get by also opening Settings
+                        // ourselves at the same instant.
+                        hasPromptedAccessibility = true
+                        permissions.promptAccessibility()
+                    } else {
+                        // Subsequent clicks: macOS suppresses the AX dialog
+                        // after the first call per launch, so the button
+                        // would otherwise do nothing visible. Deep-link to
+                        // Settings as the fallback.
+                        permissions.openSettings(for: .accessibility)
+                    }
                 }.keyboardShortcut(.defaultAction)
             }
         case .inputMonitoring:
+            // Continue is only the primary action when the API reads
+            // granted. We removed auto-advance for this step (see body
+            // above) because IOHIDCheckAccess can lie, so the user
+            // explicitly clicking Continue is what advances. When not
+            // granted, the primary button opens System Settings;
+            // IOHIDRequestAccess is also called so Relay Runner appears
+            // in the Input Monitoring list on a fresh install.
             if permissions.inputMonitoring == .granted {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
@@ -515,8 +660,45 @@ struct OnboardingView: View {
                 }.keyboardShortcut(.defaultAction)
             }
         case .ready:
-            Button("Done") { onFinish() }
-                .keyboardShortcut(.defaultAction)
+            // The picker is only shown when setup is finished and every
+            // permission is granted. In that branch we offer two CTAs —
+            // Dismiss (closes the window without launching anything) and
+            // Start Session (saves the path and kicks off the voice
+            // session immediately). The "Almost ready…" loading state
+            // and the "permissions missing" warning state fall back to
+            // a single Done button.
+            //
+            // The two CTAs are wrapped in an explicit HStack rather than
+            // emitted as siblings into the @ViewBuilder. Multi-view
+            // conditional branches inside @ViewBuilder occasionally
+            // misrender on macOS — being explicit about the container
+            // sidesteps that.
+            let pickerVisible = setupStatus() == nil && permissions.allGranted
+            if pickerVisible {
+                HStack(spacing: 8) {
+                    // Dismiss is always enabled — the user can defer
+                    // their first session indefinitely. If they picked
+                    // a path before dismissing, persist it so the
+                    // choice doesn't go to waste.
+                    Button("Dismiss") {
+                        if hasConfirmedWorkingDirectory {
+                            onSetWorkingDirectory(workingDirectory)
+                        }
+                        onFinish()
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    Button("Start Session") {
+                        onSetWorkingDirectory(workingDirectory)
+                        onStartSession()
+                        onFinish()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!hasConfirmedWorkingDirectory)
+                }
+            } else {
+                Button("Done") { onFinish() }
+                    .keyboardShortcut(.defaultAction)
+            }
         }
     }
 
@@ -565,6 +747,14 @@ struct OnboardingView: View {
             if candidate == .claudeLogin, !ClaudeAuth.isAuthenticated {
                 return candidate
             }
+        }
+        // Always end on Ready (not directly via onFinish) so the user
+        // sees the All Set summary and explicitly picks a working
+        // directory. Without this, the simplified flow's `advance()`
+        // would call onFinish() the moment all other gates pass —
+        // silently skipping the Ready step the user hasn't visited yet.
+        if from != .ready {
+            return .ready
         }
         return nil
     }

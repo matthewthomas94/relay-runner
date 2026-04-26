@@ -95,7 +95,7 @@ def load_config(config_path: str | None = None) -> dict:
             "engine": "kokoro",
             "voice": "af_bella",
             "rate": 1.0,
-            "auto_play": True,
+            "auto_play": False,
             "chime": "Tink",
             "show_notification": True,
         },

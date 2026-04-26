@@ -18,7 +18,15 @@ final class ConfigManager {
 
     func load() -> AppConfig {
         guard FileManager.default.fileExists(atPath: configPath.path) else {
-            return AppConfig()
+            // First-launch bootstrap: persist Swift's defaults to disk so the
+            // Python services (voice_bridge, tts_worker) read the same values.
+            // Without this, Python falls back to its own defaults — which
+            // diverged from Swift's intent (e.g. auto_play=True in Python vs
+            // False in Swift) and caused TTS to fire on the very first session
+            // before the user had a chance to configure anything.
+            let defaults = AppConfig()
+            try? save(defaults)
+            return defaults
         }
         guard let raw = try? String(contentsOf: configPath, encoding: .utf8) else {
             return AppConfig()

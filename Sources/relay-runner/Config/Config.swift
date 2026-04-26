@@ -12,7 +12,7 @@ struct AppConfig: Codable, Equatable {
 struct SttConfig: Codable, Equatable {
     var model: String = "parakeet-tdt-v2"
     var input_device: String = "default"
-    var input_mode: String = "always_on"
+    var input_mode: String = "caps_lock_toggle"
     var push_to_talk_key: String = ""
     var activation_key: String = "Caps Lock"
     var vad_sensitivity: String = "medium"

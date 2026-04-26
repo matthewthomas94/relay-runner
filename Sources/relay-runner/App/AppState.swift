@@ -37,8 +37,18 @@ final class AppState {
     // observe PermissionsManager directly — so hiding it from observation
     // costs nothing.
     @ObservationIgnored lazy var onboarding: OnboardingController = {
-        OnboardingController(permissions: permissions,
-                             setupStatus: { [weak self] in self?.setupStatusMessage })
+        OnboardingController(
+            permissions: permissions,
+            setupStatus: { [weak self] in self?.setupStatusMessage },
+            getWorkingDirectory: { [weak self] in self?.config.general.working_directory ?? "" },
+            setWorkingDirectory: { [weak self] path in
+                guard let self else { return }
+                var newConfig = self.config
+                newConfig.general.working_directory = path
+                self.saveConfig(newConfig)
+            },
+            startSession: { [weak self] in self?.newSession() }
+        )
     }()
     @ObservationIgnored private let permissionNotifier = PermissionNotifier()
 
@@ -159,6 +169,12 @@ final class AppState {
         directSessionActive = false
         bridgeAliveCache = false
         statusText = "Ready"
+        // Bridge events (processing/speaking/messageWaiting) are sticky on the
+        // state machine — without an explicit reset, killing the bridge mid-
+        // response leaves the overlay parked on the last state forever.
+        // Cancel any in-flight recording too, so the mic indicator clears.
+        sttEngine?.cancelRecording()
+        stateMachine.reset()
     }
 
     /// Full shutdown (for app quit).
@@ -211,6 +227,13 @@ final class AppState {
     }
 
     func newSession() {
+        // Mark first-session-run before we do anything else — the
+        // onboarding controller uses this flag to decide whether to
+        // re-show the All Set screen on next launch. Marking on
+        // attempt is fine: if the launch fails the user still
+        // initiated a session, and the kill-bridge step below cleans
+        // up so they can retry without onboarding nagging them again.
+        onboarding.markSessionRun()
         // Kill any existing voice bridge so only one session is active
         processManager.killBridge()
         directSessionActive = true
@@ -259,6 +282,11 @@ final class AppState {
             // Track externally-started bridges (e.g. /relay-bridge)
             if alive && !self.directSessionActive && self.statusText != "Session" {
                 self.statusText = "Session"
+                // External /relay-bridge counts as the first session run
+                // for onboarding purposes — same as the menu Start Session
+                // path. Without this, a user who only ever uses the slash
+                // command would keep seeing the All Set re-prompt.
+                self.onboarding.markSessionRun()
             }
 
             // Detect orphaned relay bridge (process alive but consumer dead)

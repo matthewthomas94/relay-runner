@@ -153,7 +153,7 @@ class TTSWorker:
             self._voice = cfg.get("voice", self._voice)
             self._rate = float(cfg.get("rate", self._rate))
             self._chime = _resolve_chime(cfg.get("chime", "Tink"))
-            self._auto_play = cfg.get("auto_play", True)
+            self._auto_play = cfg.get("auto_play", False)
             print(f"[tts_worker] Config reloaded: voice={self._voice}, rate={self._rate}", file=sys.stderr)
         except Exception as e:
             print(f"[tts_worker] Config reload failed: {e}", file=sys.stderr)
