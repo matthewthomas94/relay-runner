@@ -47,11 +47,19 @@ final class TranscriptionPill: NSView {
 
     private let titleLabel: NSTextField
     private let bodyLabel: NSTextField
+    /// Clips bodyLabel to maxBodyHeight so long TTS responses don't grow the
+    /// pill into a wall of text. When the label exceeds the container, the
+    /// label is animated upward inside the container (teleprompter-style).
+    private let bodyContainer = NSView()
 
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private let blurFilter = CIFilter(name: "CIGaussianBlur")!
 
     private let maxWidth: CGFloat = 460
+    /// Cap for the visible body region. Around 4 lines at 14pt — matches the
+    /// natural footprint of the legacy 200-char preview, so the pill stays
+    /// unobtrusive even for long responses. Anything taller scrolls.
+    private let maxBodyHeight: CGFloat = 96
     private let pillPadH: CGFloat = 24
     private let pillPadV: CGFloat = 18
     private let textGap: CGFloat = 12
@@ -63,6 +71,10 @@ final class TranscriptionPill: NSView {
     private var isCompact = true
     private var isTransitioning = false
     private var currentTheme: Theme?
+
+    /// Active body-scroll animation timer. Replaced/cancelled when state
+    /// changes or the pill hides.
+    private var bodyScrollTimer: Timer?
 
     // Spring-damped timing for Apple-like feel
     private let springTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
@@ -158,16 +170,23 @@ final class TranscriptionPill: NSView {
         titleLabel.alignment = .center
         addSubview(titleLabel)
 
-        // Body label
+        // Body container — clips bodyLabel to maxBodyHeight so overflowing
+        // text scrolls inside the visible window instead of resizing the pill.
+        bodyContainer.wantsLayer = true
+        bodyContainer.layer?.masksToBounds = true
+        bodyContainer.isHidden = true
+        bodyContainer.alphaValue = 0
+        addSubview(bodyContainer)
+
+        // Body label — sized to full content height even when overflowing
+        // bodyContainer; the container does the clipping.
         bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
         bodyLabel.textColor = textColor
         bodyLabel.maximumNumberOfLines = 0
         bodyLabel.lineBreakMode = .byWordWrapping
         bodyLabel.alignment = .left
-        bodyLabel.cell?.truncatesLastVisibleLine = true
-        bodyLabel.isHidden = true
-        bodyLabel.alphaValue = 0
-        addSubview(bodyLabel)
+        bodyLabel.cell?.truncatesLastVisibleLine = false
+        bodyContainer.addSubview(bodyLabel)
     }
 
     @available(*, unavailable)
@@ -223,7 +242,9 @@ final class TranscriptionPill: NSView {
         let contentWidth = maxWidth - pillPadH * 2
         let titleSize = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude))
         let bodySize = bodyLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude))
-        let pillHeight = pillPadV + titleSize.height + textGap + bodySize.height + pillPadV
+        // Cap body region — long responses scroll inside the container.
+        let bodyVisibleHeight = min(bodySize.height, maxBodyHeight)
+        let pillHeight = pillPadV + titleSize.height + textGap + bodyVisibleHeight + pillPadV
 
         if wasVisible && animated && wasCompact {
             // Compact → Full transition: blur out → update → blur in
@@ -231,19 +252,18 @@ final class TranscriptionPill: NSView {
         } else if wasVisible {
             // Same-state content update: smooth resize
             applyLayout(width: maxWidth, height: pillHeight, animated: animated)
-            if bodyLabel.isHidden {
-                bodyLabel.frame = bodyLabel.frame
-                bodyLabel.isHidden = false
+            if bodyContainer.isHidden {
+                bodyContainer.isHidden = false
             }
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.25
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                bodyLabel.animator().alphaValue = 1
+                bodyContainer.animator().alphaValue = 1
             }
         } else {
             // Fresh entrance
-            bodyLabel.isHidden = false
-            bodyLabel.alphaValue = 1
+            bodyContainer.isHidden = false
+            bodyContainer.alphaValue = 1
             applyLayout(width: maxWidth, height: pillHeight, animated: false)
             slideIn(animated: animated)
         }
@@ -252,6 +272,7 @@ final class TranscriptionPill: NSView {
     func hide(animated: Bool = true) {
         guard alphaValue > 0.01 else { return }
 
+        cancelBodyScroll()
 
         if animated {
             // Blur out + slide down
@@ -266,13 +287,13 @@ final class TranscriptionPill: NSView {
                 animator().alphaValue = 0
             }, completionHandler: { [weak self] in
                 self?.resetBlurFilter()
-                self?.bodyLabel.isHidden = true
-                self?.bodyLabel.alphaValue = 0
+                self?.bodyContainer.isHidden = true
+                self?.bodyContainer.alphaValue = 0
             })
         } else {
             alphaValue = 0
-            bodyLabel.isHidden = true
-            bodyLabel.alphaValue = 0
+            bodyContainer.isHidden = true
+            bodyContainer.alphaValue = 0
         }
     }
 
@@ -370,12 +391,12 @@ final class TranscriptionPill: NSView {
 
             // Show body if full mode
             if !self.isCompact {
-                if self.bodyLabel.isHidden {
-                    self.bodyLabel.isHidden = false
+                if self.bodyContainer.isHidden {
+                    self.bodyContainer.isHidden = false
                 }
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = self.transitionUnblurDuration
-                    self.bodyLabel.animator().alphaValue = 1
+                    self.bodyContainer.animator().alphaValue = 1
                 }
             }
 
@@ -468,6 +489,7 @@ final class TranscriptionPill: NSView {
         let titleHeight = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude)).height
 
         if isCompact {
+            cancelBodyScroll()
             let titleFrame = NSRect(
                 x: pillPadH,
                 y: (targetBounds.height - titleHeight) / 2,
@@ -479,40 +501,106 @@ final class TranscriptionPill: NSView {
                     ctx.duration = duration
                     ctx.timingFunction = springTiming
                     titleLabel.animator().frame = titleFrame
-                    bodyLabel.animator().alphaValue = 0
+                    bodyContainer.animator().alphaValue = 0
                 }
             } else {
                 titleLabel.frame = titleFrame
-                bodyLabel.alphaValue = 0
-                bodyLabel.isHidden = true
+                bodyContainer.alphaValue = 0
+                bodyContainer.isHidden = true
             }
         } else {
-            let bodyHeight = bodyLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude)).height
-            let totalContent = titleHeight + textGap + bodyHeight
+            // Full content height (may exceed maxBodyHeight); container clips
+            // it and we scroll the label inside if overflowing.
+            let bodyContentHeight = bodyLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude)).height
+            let bodyVisibleHeight = min(bodyContentHeight, maxBodyHeight)
+            let totalContent = titleHeight + textGap + bodyVisibleHeight
             let startY = (targetBounds.height - totalContent) / 2
 
-            let bodyFrame = NSRect(x: pillPadH, y: startY, width: contentWidth, height: bodyHeight)
-            let titleFrame = NSRect(x: pillPadH, y: startY + bodyHeight + textGap, width: contentWidth, height: titleHeight)
+            let containerFrame = NSRect(x: pillPadH, y: startY, width: contentWidth, height: bodyVisibleHeight)
+            let titleFrame = NSRect(x: pillPadH, y: startY + bodyVisibleHeight + textGap, width: contentWidth, height: titleHeight)
 
-            if bodyLabel.isHidden {
-                bodyLabel.frame = bodyFrame
-                bodyLabel.isHidden = false
+            // Top-anchored: label's top edge lines up with container's top
+            // edge. NSView origin is bottom-left, so the label's y is
+            // (visible - content), which is ≤ 0 whenever we're overflowing.
+            // We later animate this y upward toward 0 to reveal the rest.
+            let initialLabelY = bodyVisibleHeight - bodyContentHeight
+            let labelFrame = NSRect(x: 0, y: initialLabelY, width: contentWidth, height: bodyContentHeight)
+
+            if bodyContainer.isHidden {
+                bodyContainer.frame = containerFrame
+                bodyLabel.frame = labelFrame
+                bodyContainer.isHidden = false
             }
 
             if animated {
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = duration
                     ctx.timingFunction = springTiming
-                    bodyLabel.animator().frame = bodyFrame
-                    bodyLabel.animator().alphaValue = 1
+                    bodyContainer.animator().frame = containerFrame
+                    bodyContainer.animator().alphaValue = 1
                     titleLabel.animator().frame = titleFrame
                 }
+                // Snap the label to its starting position inside the container
+                // — animating the inner label's frame alongside the container
+                // resize fights with the scroll animation we're about to start.
+                bodyLabel.frame = labelFrame
             } else {
-                bodyLabel.frame = bodyFrame
-                bodyLabel.alphaValue = 1
+                bodyContainer.frame = containerFrame
+                bodyContainer.alphaValue = 1
+                bodyLabel.frame = labelFrame
                 titleLabel.frame = titleFrame
             }
+
+            // Trigger or cancel the teleprompter scroll based on overflow.
+            if bodyContentHeight > maxBodyHeight {
+                startBodyScroll(targetY: 0)
+            } else {
+                cancelBodyScroll()
+            }
         }
+    }
+
+    // MARK: - Body scroll (teleprompter)
+
+    /// Linearly translate bodyLabel upward inside bodyContainer so the user
+    /// can read text that overflows the visible window. Uses a 1-second
+    /// pause at the start (so the user has time to read the first lines)
+    /// and a fixed 50 px/sec scroll speed — matches a comfortable reading
+    /// pace. One-pass, no looping; if TTS keeps going past the end, the
+    /// label just rests at the bottom-aligned position.
+    private func startBodyScroll(targetY: CGFloat) {
+        cancelBodyScroll()
+
+        let scrollSpeed: CGFloat = 50  // px/sec
+        let pauseSeconds: TimeInterval = 1.0
+        let tickInterval: TimeInterval = 1.0 / 60
+        let pixelsPerTick = scrollSpeed * CGFloat(tickInterval)
+
+        let initialY = bodyLabel.frame.origin.y
+        guard initialY < targetY else { return }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + pauseSeconds) { [weak self] in
+            guard let self else { return }
+            // The state may have changed during the pause; bail if so.
+            guard !self.bodyContainer.isHidden, self.bodyContainer.alphaValue > 0.01 else { return }
+            self.bodyScrollTimer = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { [weak self] timer in
+                guard let self else { timer.invalidate(); return }
+                let currentY = self.bodyLabel.frame.origin.y
+                if currentY >= targetY {
+                    timer.invalidate()
+                    self.bodyScrollTimer = nil
+                    return
+                }
+                var newFrame = self.bodyLabel.frame
+                newFrame.origin.y = min(currentY + pixelsPerTick, targetY)
+                self.bodyLabel.frame = newFrame
+            }
+        }
+    }
+
+    private func cancelBodyScroll() {
+        bodyScrollTimer?.invalidate()
+        bodyScrollTimer = nil
     }
 
     // MARK: - Show helper (for theme comparison)
