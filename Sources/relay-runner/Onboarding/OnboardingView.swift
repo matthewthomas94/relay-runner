@@ -452,6 +452,11 @@ struct OnboardingView: View {
                         detail: "Run \u{2018}claude\u{2019} in any terminal and type /relay-bridge. Install the slash command from Settings \u{2192} General if needed."
                     )
                 }
+                Text("Already running Claude Code or a terminal? Restart it to load /relay-bridge.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("Tap Caps Lock to start and stop recording in either mode.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
