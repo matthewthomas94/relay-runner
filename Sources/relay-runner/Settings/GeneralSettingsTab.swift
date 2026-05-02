@@ -10,12 +10,28 @@ struct GeneralSettingsTab: View {
         Form {
             TextField("Target Command", text: $config.command, prompt: Text("claude"))
 
+            Picker("Model", selection: $config.model) {
+                Text("Default").tag("default")
+                Text("Opus").tag("opus")
+                Text("Sonnet").tag("sonnet")
+                Text("Haiku").tag("haiku")
+            }
+
             HStack {
                 TextField("Working Directory", text: $config.working_directory, prompt: Text("~ (home)"))
                 Button("Browse\u{2026}") { pickDirectory() }
             }
 
             Toggle("Auto-start services on app launch", isOn: $config.auto_start)
+
+            Toggle(isOn: $config.bypass_permissions) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Bypass Claude permission prompts")
+                    Text("When on, sessions launched from Relay Runner skip per-tool approval. Voice flow is much smoother, but anything Claude proposes runs without confirmation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             Divider()
 
