@@ -33,6 +33,7 @@ struct GeneralConfig: Codable, Equatable {
     var auto_start: Bool = false
     var working_directory: String = ""
     var bypass_permissions: Bool = true
+    var model: String = "default"
 
     /// Resolve legacy terminal short names to full app paths.
     static func resolveTerminalPath(_ terminal: String) -> String {

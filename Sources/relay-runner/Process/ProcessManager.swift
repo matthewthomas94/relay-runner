@@ -178,6 +178,7 @@ final class ProcessManager {
         }
 
         let bypassFlag = config.general.bypass_permissions ? "--dangerously-skip-permissions " : ""
+        let modelFlag = Self.modelFlag(config.general.model)
         let launcher = "/tmp/voice_bridge_launch.command"
         let cdLine = Self.cdLine(config.general.working_directory)
         let script = """
@@ -202,7 +203,7 @@ final class ProcessManager {
         # ~/.claude/commands/relay-bridge.md by `relay-bridge --install-skills`)
         # boots the voice_bridge daemon and drives the polling loop from
         # inside this session.
-        '\(claudeBinary)' \(bypassFlag)"/relay-bridge"
+        '\(claudeBinary)' \(modelFlag)\(bypassFlag)"/relay-bridge"
         echo ''
         echo '[Relay Runner] Session ended.'
         """
@@ -231,6 +232,16 @@ final class ProcessManager {
             return local
         }
         return "claude"
+    }
+
+    /// Render the `--model <name>` flag for the launcher script, or empty
+    /// string when the user wants Claude's default. Single-quotes the name
+    /// so a TOML-edited custom model id (e.g. `claude-sonnet-4-6`) can't
+    /// break shell parsing.
+    private static func modelFlag(_ raw: String) -> String {
+        let v = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        if v.isEmpty || v == "default" { return "" }
+        return "--model '\(raw.trimmingCharacters(in: .whitespaces))' "
     }
 
     // MARK: - Claude Code skill install

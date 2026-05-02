@@ -10,6 +10,13 @@ struct GeneralSettingsTab: View {
         Form {
             TextField("Target Command", text: $config.command, prompt: Text("claude"))
 
+            Picker("Model", selection: $config.model) {
+                Text("Default").tag("default")
+                Text("Opus").tag("opus")
+                Text("Sonnet").tag("sonnet")
+                Text("Haiku").tag("haiku")
+            }
+
             HStack {
                 TextField("Working Directory", text: $config.working_directory, prompt: Text("~ (home)"))
                 Button("Browse\u{2026}") { pickDirectory() }

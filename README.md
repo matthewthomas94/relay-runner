@@ -88,6 +88,7 @@ All settings live in the Settings window. Config is persisted to:
 ### General
 
 - **Target command** — defaults to `claude`; change if Claude Code is aliased
+- **Model** — Default, Opus, Sonnet, or Haiku. *Default* lets Claude Code pick from your account-level setting; the others pass `--model <alias>` to the CLI for this session.
 - **Working directory** — where new voice sessions open
 - **Terminal** — Warp, iTerm2, Terminal, Kitty, or Alacritty
 - **Bypass Claude permission prompts** — when on (default), sessions launched from **Start Session…** run with `--dangerously-skip-permissions` so voice flow isn't interrupted. Turn off if you want CC to ask before each tool use; voice still works, you'll just answer prompts in the terminal.
