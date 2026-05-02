@@ -44,14 +44,22 @@ All speech-to-text and text-to-speech runs **on-device**. No voice data leaves y
 
 ## Use it
 
-### From Claude Code
+### Quickest path
 
-In the Relay Runner menu, click **Settings → General → Install** under *Claude Code Skills*. This adds two slash commands to Claude Code:
+1. Click the Relay Runner menu bar icon → **Start Session…**.
+2. A terminal opens, runs Claude Code, and auto-starts a voice session.
+3. Tap **Caps Lock** to speak; Claude responds in the terminal and via TTS.
+
+The session is a normal Claude Code window — `/model`, `/clear`, `/resume`, and every other slash command and TUI feature work exactly as they do in a hand-launched session. By default, **Start Session…** launches Claude with `--dangerously-skip-permissions` so voice flow isn't interrupted by per-tool approval prompts. You can turn that off in **Settings → General**.
+
+### From an existing terminal
+
+If you'd rather start from a terminal you already have open, install the slash commands once via **Settings → General → Install** under *Claude Code Skills*. This adds:
 
 - `/relay-bridge` — starts a voice session in the current Claude Code window
 - `/relay-stop` — ends it
 
-Once installed, run `claude` in your terminal and type `/relay-bridge`.
+Then run `claude` and type `/relay-bridge`. This path is identical to **Start Session…** except you decide when (and with what flags) to launch the CLI.
 
 ### Controls
 
@@ -82,6 +90,7 @@ All settings live in the Settings window. Config is persisted to:
 - **Target command** — defaults to `claude`; change if Claude Code is aliased
 - **Working directory** — where new voice sessions open
 - **Terminal** — Warp, iTerm2, Terminal, Kitty, or Alacritty
+- **Bypass Claude permission prompts** — when on (default), sessions launched from **Start Session…** run with `--dangerously-skip-permissions` so voice flow isn't interrupted. Turn off if you want CC to ask before each tool use; voice still works, you'll just answer prompts in the terminal.
 - **Auto-start services on app launch**
 - **Claude Code Skills** — install/reinstall `/relay-bridge` and `/relay-stop`
 
@@ -177,7 +186,7 @@ Info.plist                Bundle metadata
 ## Troubleshooting
 
 - **Tray icon blank** — quit the app fully (menu → Quit) and relaunch after a rebuild; macOS caches menu bar items.
-- **`/relay-bridge` does nothing** — make sure `claude --version` works in the same terminal, and that the Relay Runner app is running (STT happens inside the menu bar app).
+- **`/relay-bridge` does nothing** — make sure `claude --version` works in the same terminal, that the slash command is installed (Settings → General → Install under *Claude Code Skills*), and that the Relay Runner app is running (STT happens inside the menu bar app).
 - **First launch is slow** — model downloads and venv setup happen lazily. Subsequent launches are instant.
 - **No audio output** — check Settings → TTS → Auto-play. If off, press the replay hotkey to flush the queue.
 

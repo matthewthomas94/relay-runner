@@ -150,18 +150,34 @@ final class ProcessManager {
         }
     }
 
-    /// Launch voice_bridge.py in direct mode (its own Claude session) in a new terminal tab.
-    /// The launcher script defers to the bundled `relay-bridge` for the venv
-    /// install (single source of truth — relay-bridge handles relocatable
-    /// Python download, pip deps, and Kokoro model pre-download), then
-    /// exec's voice_bridge.py against the user-Library venv it set up.
+    /// Launch interactive Claude Code in a new terminal tab and have it
+    /// auto-fire `/relay-bridge` on startup. That slash command is the
+    /// single source of truth for spinning up the voice bridge daemon and
+    /// running the polling loop inside the live Claude session — so the
+    /// user gets the full Claude Code TUI (model picker, /commands,
+    /// thinking stream) and voice in the same window.
+    ///
+    /// The launcher still calls `relay-bridge --venv-only` first so the
+    /// Python venv, Kokoro model, and Claude CLI are all in place before
+    /// the slash command runs (which spawns the daemon that needs them).
+    /// The skill `.md` files have to exist on disk before launch too,
+    /// otherwise `/relay-bridge` is silently treated as a literal prompt;
+    /// we self-heal by reinstalling them if they've gone missing.
     func launchNewSession(config: AppConfig) {
         let configPath = ConfigManager.shared.configPath.path
-        let bridgeScript = bundledServicesDir.appendingPathComponent("voice_bridge.py").path
         let relayBridge = bundledRelayBridge.path
-        let python = Self.userVenvPython
-        NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) bridgeScript=\(bridgeScript) configPath=\(configPath)")
+        let claudeBinary = Self.resolveClaudeBinary()
+        NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) claudeBinary=\(claudeBinary) configPath=\(configPath)")
 
+        // /relay-bridge is delivered as the prompt arg; if its .md file is
+        // missing, Claude would treat the string as literal user input.
+        // Reinstall on demand — onboarding already gave consent.
+        if !isSkillInstalled {
+            NSLog("[ProcessManager] Slash command files missing — installing before launch.")
+            installSkill()
+        }
+
+        let bypassFlag = config.general.bypass_permissions ? "--dangerously-skip-permissions " : ""
         let launcher = "/tmp/voice_bridge_launch.command"
         let cdLine = Self.cdLine(config.general.working_directory)
         let script = """
@@ -174,14 +190,19 @@ final class ProcessManager {
         # opened.
         '\(relayBridge)' --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }
         # claude.ai/install.sh symlinks the Claude Code binary at
-        # ~/.local/bin/claude. Make sure that's on PATH for python's
-        # shutil.which("claude") lookup downstream — the user's shell
-        # profile sourced above usually adds it, but on fresh installs
-        # the relay-bridge install just dropped the binary moments ago
-        # and the profile isn't aware of it yet.
+        # ~/.local/bin/claude. Make sure that's on PATH so anything Claude
+        # spawns downstream finds it — the user's shell profile sourced
+        # above usually adds it, but on fresh installs the relay-bridge
+        # install just dropped the binary moments ago and the profile
+        # isn't aware of it yet.
         export PATH="$HOME/.local/bin:$PATH"
         \(cdLine)
-        '\(python)' '\(bridgeScript)' --config '\(configPath)'
+        # Interactive Claude Code with the /relay-bridge slash command
+        # pre-fired. The slash command (installed at
+        # ~/.claude/commands/relay-bridge.md by `relay-bridge --install-skills`)
+        # boots the voice_bridge daemon and drives the polling loop from
+        # inside this session.
+        '\(claudeBinary)' \(bypassFlag)"/relay-bridge"
         echo ''
         echo '[Relay Runner] Session ended.'
         """
@@ -193,10 +214,23 @@ final class ProcessManager {
         try? chmod.run()
         chmod.waitUntilExit()
 
-        // Create FIFO before bridge starts
+        // Pre-create the legacy voice_in fifo for any old-path consumers;
+        // the new --relay daemon manages /tmp/voice_bridge.sock,
+        // /tmp/voice_cmd_ready, /tmp/tts_in.fifo, and the heartbeat itself.
         ensureFifo()
 
         launchInTerminal(command: launcher)
+    }
+
+    /// Resolve the Claude Code binary. Prefers `~/.local/bin/claude` (where
+    /// claude.ai/install.sh symlinks the CLI), falling back to bare `claude`
+    /// so the user's $PATH is consulted at run time.
+    private static func resolveClaudeBinary() -> String {
+        let local = ClaudeAuth.claudeBinaryPath
+        if FileManager.default.isExecutableFile(atPath: local) {
+            return local
+        }
+        return "claude"
     }
 
     // MARK: - Claude Code skill install
