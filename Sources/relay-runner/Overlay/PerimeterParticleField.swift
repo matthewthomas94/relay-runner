@@ -65,7 +65,7 @@ final class PerimeterParticleField {
     private let minDotRadius: CGFloat = 0.3
 
     init(theme: ParticleFieldRenderer.Theme = .tts,
-         thicknessFraction: CGFloat = 0.41,
+         thicknessFraction: CGFloat = 0.35,
          falloffExponent: CGFloat = 0.9) {
         self.theme = theme
         self.thicknessFraction = thicknessFraction
