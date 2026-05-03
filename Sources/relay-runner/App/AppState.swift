@@ -52,6 +52,13 @@ final class AppState {
     }()
     @ObservationIgnored private let permissionNotifier = PermissionNotifier()
 
+    /// One-shot wizard that fires when MCP detects a not-yet-onboarded
+    /// parent terminal/IDE. AppState owns the controller; the bus calls into
+    /// it via the closures wired in `startOverlay`. @ObservationIgnored
+    /// because the controller's window lifecycle is imperative — UI doesn't
+    /// observe it directly.
+    @ObservationIgnored private let parentOnboardingController = ParentOnboardingController()
+
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
     private var overlayController: OverlayController?
@@ -72,6 +79,13 @@ final class AppState {
     /// Has the bridge for the current direct session been observed alive at least once?
     /// Used to distinguish "still starting up" from "came up and then died".
     private var sessionBridgeSeen = false
+    /// Per-bridge-session flag for the per-parent permissions wizard. False at
+    /// startup and after any bridge death; flipped true once the watchdog has
+    /// either surfaced the wizard for this session or confirmed the parent is
+    /// already onboarded. Without this, the watchdog's per-tick retry (needed
+    /// to handle MCP's `parent_detected` arriving after the bridge transition)
+    /// would re-open the wizard window every 3s while it's dismissed.
+    private var wizardShownForCurrentBridgeSession = false
 
     /// Whether any voice session is active (for menu bar UI). Covers both
     /// direct-mode (menu's Start Session) and externally-started bridges
@@ -300,6 +314,28 @@ final class AppState {
                 self.onboarding.markSessionRun()
             }
 
+            // Per-parent permissions wizard. Bridge alive = user has actively
+            // engaged voice from a particular terminal/IDE. That's the
+            // contextual moment for the wizard.
+            //
+            // We retry on every alive tick (not just the dead→alive transition)
+            // until the wizard either surfaces or the parent is confirmed
+            // already onboarded. Reason: MCP's `parent_detected` and the
+            // bridge process can come up in either order; on a cold start the
+            // bridge often appears first and `currentParent()` returns nil
+            // until the MCP server's startup message arrives ~1-2s later.
+            // The session-scoped flag prevents re-opening the wizard window
+            // every tick while the user has it dismissed.
+            if alive {
+                if !wasAlive { wizardShownForCurrentBridgeSession = false }
+                if !wizardShownForCurrentBridgeSession {
+                    self.surfaceParentWizardIfNeeded()
+                }
+            } else if wasAlive {
+                // Bridge died — reset so the next /relay-bridge re-evaluates.
+                wizardShownForCurrentBridgeSession = false
+            }
+
             // Detect orphaned relay bridge (process alive but consumer dead).
             // Reap the orphan but don't pop the session-prompt overlay — the
             // user gets the prompt when they actually press Caps Lock with no
@@ -345,6 +381,32 @@ final class AppState {
         bridgeWatchdog = nil
     }
 
+    /// Read the bus's most-recently-detected parent and open the wizard if
+    /// this parent hasn't been onboarded yet. Called from the bridge
+    /// watchdog on every tick the bridge is alive (until the per-session flag
+    /// flips true). Skips when the bus hasn't yet received a
+    /// `parent_detected` (MCP server still booting — the next tick retries),
+    /// when the parent was unclassifiable (the wizard has nothing useful to
+    /// say — flag set so we don't keep checking), and when the tracker has
+    /// recorded an acknowledgement (flag set to stop polling).
+    private func surfaceParentWizardIfNeeded() {
+        guard let bus = actionsBus else { return }
+        let controller = parentOnboardingController
+        Task { [weak self] in
+            guard let self else { return }
+            // Parent unknown yet — leave the flag false so the next tick retries.
+            guard let parent = await bus.currentParent() else { return }
+            await MainActor.run {
+                // We have a parent. Settle this session one way or another
+                // so the watchdog stops polling.
+                self.wizardShownForCurrentBridgeSession = true
+                if parent == "unknown" { return }
+                if ParentOnboardingTracker.isOnboarded(parent) { return }
+                controller.show(parent: parent)
+            }
+        }
+    }
+
     // MARK: - Overlay management
 
     private func startOverlay() {
@@ -356,7 +418,22 @@ final class AppState {
         // Computer-action confirmation bus (request/reply socket between the
         // RelayActionsMCP helper and the menu-bar app — drives perimeter
         // glow + double-tap confirmation for propose_action).
-        let actions = ActionsConfirmBus(stateMachine: stateMachine)
+        //
+        // Wires one parent-onboarding callback for the revocation case:
+        // pre-flight discovered a missing permission for an already-onboarded
+        // parent → reset and re-surface so the user can re-grant. Proactive
+        // first-time wizard surfacing is driven by the bridge watchdog (see
+        // `surfaceParentWizardIfNeeded`), tied to "voice just started from
+        // this app" rather than "MCP server happened to spawn."
+        let onboardingController = parentOnboardingController
+        let actions = ActionsConfirmBus(
+            stateMachine: stateMachine,
+            onParentPermissionRevoked: { parent, _ in
+                guard parent != "unknown" else { return }
+                ParentOnboardingTracker.resetOnboarded(parent)
+                await MainActor.run { onboardingController.show(parent: parent) }
+            }
+        )
         actionsBus = actions
         Task { await actions.start() }
         // Wire CapsLockGesture's modal yes/no resolution back to the bus.

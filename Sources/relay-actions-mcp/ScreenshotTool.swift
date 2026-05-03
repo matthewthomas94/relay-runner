@@ -7,9 +7,10 @@ struct ScreenshotTool: MCPTool {
     let name = "screenshot"
     let description = """
         Capture a screenshot of a connected display and return it as a base64-encoded PNG. \
-        Defaults to the primary display. Coordinates returned by other tools (clicks, scrolls) \
-        are in the same pixel space as this image. Returns an error string if Screen Recording \
-        permission has not been granted.
+        Defaults to the primary display. The returned image's pixel dimensions match \
+        NSScreen.frame × backingScaleFactor (i.e. the display's native pixels). Coordinates \
+        consumed by `click`, `scroll`, etc. are in this same pixel space — Claude can read \
+        a coordinate directly off the image and pass it through.
         """
 
     var inputSchema: [String: Any] {
@@ -28,14 +29,13 @@ struct ScreenshotTool: MCPTool {
     func call(arguments: [String: Any]) async throws -> [[String: Any]] {
         let displayIndex = arguments["display_index"] as? Int ?? 0
 
-        // Pre-flight: if Screen Recording isn't granted yet, ask now. TCC walks
-        // the responsibility chain, so this prompt fires for the terminal/IDE
-        // that spawned `claude` — not for relay-actions-mcp itself. If the
-        // status is .notDetermined this surfaces a system dialog the user can
-        // act on. If it's .denied this is a no-op (TCC remembers and won't
-        // re-prompt; only Settings can flip the toggle).
-        if !CGPreflightScreenCaptureAccess() {
-            _ = CGRequestScreenCaptureAccess()
+        // Pre-flight: speak a warning and surface the OS prompt before we touch
+        // SCShareableContent, so the user knows what's coming and which app to
+        // grant. ScreenshotTool used to call CGRequestScreenCaptureAccess inline
+        // here, which fired the OS dialog with no warning.
+        switch PermissionPreflight.ensureScreenRecording(fallbackPurpose: "take a screenshot") {
+        case .granted: break
+        case .stillMissing(let message): throw MCPToolError(message: message)
         }
 
         let content: SCShareableContent
@@ -45,34 +45,17 @@ struct ScreenshotTool: MCPTool {
                 onScreenWindowsOnly: true
             )
         } catch {
-            // SCShareableContent failed. Two real reasons:
-            //  (a) user just got prompted and dismissed/denied
-            //  (b) status is .denied from a previous session
-            // Either way, re-trigger the prompt one more time so a user who
-            // changed their mind gets another chance, then describe exactly
-            // which app needs the grant.
-            _ = CGRequestScreenCaptureAccess()
-
-            let blockerName = ParentProcess.detectTerminal()?.displayName
+            // SCShareableContent failed despite the preflight saying we were
+            // granted — usually means the grant only takes effect on relaunch.
+            // Reuse the same parent-app message the preflight would emit.
+            let parent = ParentProcess.detectTerminal()?.displayName
                 ?? "the app you launched `claude` from"
             throw MCPToolError(message: """
-                Could not capture the screen. Screen Recording permission is not granted.
-
-                IMPORTANT: macOS attributes screen capture to the app that launched \
-                `claude`, NOT to Relay Runner. You need to grant Screen Recording to \
-                **\(blockerName)**.
-
-                If you just saw a system prompt and dismissed it, try again — I just \
-                re-requested. If no prompt appeared, you previously denied it and macOS \
-                won't ask again until you grant it manually:
-
-                1. Open System Settings → Privacy & Security → Screen Recording
-                2. Toggle on \(blockerName)
-                3. Quit and relaunch \(blockerName) (the permission only takes effect on relaunch)
-                4. Restart your `claude` session
-
-                Without this permission, every screenshot, click, and computer-vision \
-                request I make will fail. Voice transcription and speech still work.
+                Could not capture the screen. macOS reported permission as granted, but \
+                SCShareableContent still failed. This is the well-known "grant doesn't \
+                take effect until relaunch" behaviour for Screen Recording on a \
+                long-running process. Quit and relaunch **\(parent)**, then restart your \
+                `claude` session.
 
                 Underlying error: \(error.localizedDescription)
                 """)
@@ -89,13 +72,23 @@ struct ScreenshotTool: MCPTool {
         let display = content.displays[displayIndex]
         let filter = SCContentFilter(display: display, excludingWindows: [])
 
+        // SCDisplay.width/height return the *active display mode* dimensions,
+        // which on a "scaled" mode (e.g. MacBook Pro at "More Space") are the
+        // logical-points dimensions, NOT the underlying retina pixels. If we
+        // hand those numbers to SCStreamConfiguration we get a downscaled
+        // image — and the input tools' coordinate math (which divides input by
+        // backingScaleFactor on the assumption that input is native pixels)
+        // ends up off by exactly that scale factor.
+        //
+        // Source the dimensions from NSScreen.frame × backingScaleFactor
+        // instead — that's the actual pixel grid the system renders at, and
+        // matches what ClickTool's pointFromPixel() reverses.
+        let (configWidth, configHeight) = nativePixelDimensions(forDisplayID: display.displayID)
+            ?? (display.width, display.height)
+
         let config = SCStreamConfiguration()
-        // SCDisplay.width / .height are in pixels — using them gives a native-resolution
-        // screenshot. Coordinates we hand back to Claude are in this same pixel space, which
-        // means downstream click/scroll tools must convert pixels → CGEvent points before
-        // posting (CGEvent is in the global display coordinate space, points).
-        config.width = display.width
-        config.height = display.height
+        config.width = configWidth
+        config.height = configHeight
         config.showsCursor = false
 
         let cgImage: CGImage
@@ -125,8 +118,25 @@ struct ScreenshotTool: MCPTool {
             // having to inspect the image — useful for grounding click coordinates.
             [
                 "type": "text",
-                "text": "Captured display \(displayIndex) at \(display.width)×\(display.height) pixels.",
+                "text": "Captured display \(displayIndex) at \(configWidth)×\(configHeight) pixels. Click/scroll coordinates are in this same pixel space.",
             ],
         ]
+    }
+
+    /// Find the NSScreen for a CGDirectDisplayID and return its native pixel
+    /// dimensions (frame × backingScaleFactor). Returns nil if no NSScreen
+    /// matches — caller falls back to SCDisplay's reported dims.
+    private func nativePixelDimensions(forDisplayID id: CGDirectDisplayID) -> (Int, Int)? {
+        for screen in NSScreen.screens {
+            let key = NSDeviceDescriptionKey("NSScreenNumber")
+            guard let screenID = screen.deviceDescription[key] as? CGDirectDisplayID else { continue }
+            if screenID == id {
+                let scale = screen.backingScaleFactor
+                let w = Int((screen.frame.width * scale).rounded())
+                let h = Int((screen.frame.height * scale).rounded())
+                return (w, h)
+            }
+        }
+        return nil
     }
 }

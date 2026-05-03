@@ -72,6 +72,12 @@ struct ProposeActionTool: MCPTool {
             throw MCPToolError(message: "propose_action requires 'summary' and 'risk' arguments.")
         }
 
+        // Stash the summary so the pre-flight permission warning can use it
+        // verbatim: "To click Send in Slack, macOS needs to give …" instead of
+        // a generic "to click at (x, y)". Pre-flight reads back through
+        // PermissionPreflight.recentPurpose() with a 15s TTL.
+        PermissionPreflight.recordProposedAction(summary: summary)
+
         var effectiveRisk = risk
 
         // Server-side keyword escalation: medium → high if summary contains a

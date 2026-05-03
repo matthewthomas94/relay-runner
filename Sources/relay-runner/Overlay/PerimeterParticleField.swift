@@ -251,12 +251,16 @@ final class PerimeterParticleField {
                 + elapsed * 0.95
             ) * 0.45
 
-            let wave = CGFloat(wave1 + wave2 + wave3 + wave4) / 2.7
-            let radiusScale: CGFloat = 1.0 + wave * 0.35
+            // Divisor 2.2 (was 2.7) scales all four waves up ~22% before the
+            // per-modulation amplitudes apply. Combined with the bumped
+            // radius/alpha scalars below, the wave motion becomes clearly
+            // visible at a glance instead of as a subliminal shimmer.
+            let wave = CGFloat(wave1 + wave2 + wave3 + wave4) / 2.2
+            let radiusScale: CGFloat = 1.0 + wave * 0.55     // was 0.35 — dots breathe more
             let radius = dot.baseRadius * radiusScale * breath
             guard radius > 0.1 else { continue }
 
-            let alpha = dot.baseAlpha * (1.0 + wave * 0.28) * breath
+            let alpha = dot.baseAlpha * (1.0 + wave * 0.45) * breath  // was 0.28 — brighter peaks
             guard alpha > 0.02 else { continue }
 
             ctx.setFillColor(red: dot.r, green: dot.g, blue: dot.b, alpha: alpha)
