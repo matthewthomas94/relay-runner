@@ -43,12 +43,19 @@ final class MCPServer {
         // when debugging "I granted Screen Recording but it still fails" —
         // the user can compare the logged app name to what they actually
         // granted in System Settings.
+        let parentName: String
         if let term = ParentProcess.detectTerminal() {
             log("Responsible parent for TCC (Screen Recording / Accessibility): \(term.displayName) (pid \(term.pid))")
+            parentName = term.displayName
         } else {
             log("Could not identify a terminal/IDE in the parent chain — Screen Recording prompts will reference an unnamed parent.")
             log("Process chain: \(ParentProcess.dumpChain())")
+            parentName = "unknown"
         }
+        // Notify the menu-bar app so it can surface the per-parent permissions
+        // wizard on first encounter. Fire-and-forget; if the menu-bar app
+        // isn't running, the fall back is the per-action TTS pre-flight.
+        ConfirmationClient.notifyParentDetected(parent: parentName)
         var buffer = Data()
         do {
             for try await byte in FileHandle.standardInput.bytes {

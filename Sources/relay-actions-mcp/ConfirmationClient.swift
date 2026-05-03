@@ -34,6 +34,32 @@ enum ConfirmationClient {
         _ = sendJSONLine(fd: fd, payload: payload)
     }
 
+    /// Sent once on MCP server startup with the detected parent terminal/IDE
+    /// (or "unknown" if `ParentProcess.detectTerminal()` couldn't classify
+    /// the chain). The menu-bar app uses this to decide whether to surface
+    /// the per-parent permissions wizard.
+    static func notifyParentDetected(parent: String) {
+        let payload: [String: Any] = ["type": "parent_detected", "parent": parent]
+        guard let fd = openSocket() else { return }
+        defer { close(fd) }
+        _ = sendJSONLine(fd: fd, payload: payload)
+    }
+
+    /// Sent by `PermissionPreflight` when a permission the parent should have
+    /// (per the wizard) is missing at action time — typically because the user
+    /// or macOS revoked it. Triggers the menu-bar app to reset onboarded state
+    /// for this parent and re-surface the wizard.
+    static func notifyParentPermissionRevoked(parent: String, permission: String) {
+        let payload: [String: Any] = [
+            "type": "parent_permission_revoked",
+            "parent": parent,
+            "permission": permission,
+        ]
+        guard let fd = openSocket() else { return }
+        defer { close(fd) }
+        _ = sendJSONLine(fd: fd, payload: payload)
+    }
+
     static func requestConfirmation(summary: String, risk: String) -> ConfirmationOutcome {
         let id = UUID().uuidString
         let payload: [String: Any] = [

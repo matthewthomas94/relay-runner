@@ -62,7 +62,11 @@ enum PermissionPreflight {
     /// `fallbackPurpose` is used when the model didn't call propose_action
     /// recently — keep it short and starting with a verb ("click at (x, y)").
     static func ensureAccessibility(fallbackPurpose: String) -> Outcome {
-        if AXIsProcessTrusted() { return .granted }
+        if AXIsProcessTrusted() {
+            // Also clear any stale revocation flag — the wizard tracker
+            // doesn't need to re-fire if the user has now granted.
+            return .granted
+        }
 
         let purpose = recentPurpose() ?? fallbackPurpose
         let parent = ParentProcess.detectTerminal()?.displayName
@@ -87,6 +91,10 @@ enum PermissionPreflight {
         if pollUntilGranted(check: { AXIsProcessTrusted() }, timeout: 4.0) {
             return .granted
         }
+
+        // Tell the menu-bar app the parent's permission is missing — drives
+        // the per-parent wizard to re-surface so the user can fix it.
+        ConfirmationClient.notifyParentPermissionRevoked(parent: parent, permission: "accessibility")
 
         return .stillMissing(message: """
             Could not perform the action. Accessibility permission is not granted.
@@ -128,6 +136,10 @@ enum PermissionPreflight {
         if pollUntilGranted(check: { CGPreflightScreenCaptureAccess() }, timeout: 4.0) {
             return .granted
         }
+
+        // Tell the menu-bar app the parent's permission is missing — drives
+        // the per-parent wizard to re-surface so the user can fix it.
+        ConfirmationClient.notifyParentPermissionRevoked(parent: parent, permission: "screen_recording")
 
         // Screen Recording grants notoriously don't take effect for already-running
         // processes. Tell the user explicitly so they don't grant, retry, fail, and

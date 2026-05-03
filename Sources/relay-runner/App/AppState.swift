@@ -52,6 +52,13 @@ final class AppState {
     }()
     @ObservationIgnored private let permissionNotifier = PermissionNotifier()
 
+    /// One-shot wizard that fires when MCP detects a not-yet-onboarded
+    /// parent terminal/IDE. AppState owns the controller; the bus calls into
+    /// it via the closures wired in `startOverlay`. @ObservationIgnored
+    /// because the controller's window lifecycle is imperative — UI doesn't
+    /// observe it directly.
+    @ObservationIgnored private let parentOnboardingController = ParentOnboardingController()
+
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
     private var overlayController: OverlayController?
@@ -356,7 +363,27 @@ final class AppState {
         // Computer-action confirmation bus (request/reply socket between the
         // RelayActionsMCP helper and the menu-bar app — drives perimeter
         // glow + double-tap confirmation for propose_action).
-        let actions = ActionsConfirmBus(stateMachine: stateMachine)
+        //
+        // The two trailing closures hand off parent-onboarding events to the
+        // wizard controller on the main thread:
+        //   - parent_detected: surface the wizard the first time MCP sees a
+        //     given terminal/IDE running `claude`.
+        //   - parent_permission_revoked: pre-flight discovered a missing
+        //     permission for an already-onboarded parent → reset and
+        //     re-surface so the user can re-grant.
+        let onboardingController = parentOnboardingController
+        let actions = ActionsConfirmBus(
+            stateMachine: stateMachine,
+            onParentDetected: { parent in
+                guard !ParentOnboardingTracker.isOnboarded(parent), parent != "unknown" else { return }
+                await MainActor.run { onboardingController.show(parent: parent) }
+            },
+            onParentPermissionRevoked: { parent, _ in
+                guard parent != "unknown" else { return }
+                ParentOnboardingTracker.resetOnboarded(parent)
+                await MainActor.run { onboardingController.show(parent: parent) }
+            }
+        )
         actionsBus = actions
         Task { await actions.start() }
         // Wire CapsLockGesture's modal yes/no resolution back to the bus.

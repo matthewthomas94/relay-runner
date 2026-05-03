@@ -28,6 +28,13 @@ actor ActionsConfirmBus {
     private var acceptTask: Task<Void, Never>?
     private weak var stateMachine: StateMachine?
 
+    /// Optional callbacks for the per-parent permissions wizard. Called from
+    /// the actor when the MCP server reports a new parent terminal/IDE
+    /// or signals a previously-onboarded parent has lost a permission.
+    /// `AppState` wires these to `ParentOnboardingController` on main.
+    private let onParentDetected: ((String) async -> Void)?
+    private let onParentPermissionRevoked: ((String, String) async -> Void)?
+
     /// Outstanding `propose_action` requests, keyed by request id. Value is
     /// the connection fd holding open the reply. When the user double-taps
     /// (or the timeout fires), we look up the fd, write the JSON reply, and
@@ -42,8 +49,12 @@ actor ActionsConfirmBus {
     /// responded, write a "timeout" reply, and clear the pending entry.
     private var timeoutTasks: [String: Task<Void, Never>] = [:]
 
-    init(stateMachine: StateMachine) {
+    init(stateMachine: StateMachine,
+         onParentDetected: ((String) async -> Void)? = nil,
+         onParentPermissionRevoked: ((String, String) async -> Void)? = nil) {
         self.stateMachine = stateMachine
+        self.onParentDetected = onParentDetected
+        self.onParentPermissionRevoked = onParentPermissionRevoked
     }
 
     func start() {
@@ -154,6 +165,26 @@ actor ActionsConfirmBus {
         case "tool_fired":
             // Fire-and-forget. Update state, refresh decay, close connection.
             await enterComputerVision(prompt: nil)
+            close(fd)
+
+        case "parent_detected":
+            // Fire-and-forget signal from MCP server startup. Hand off to the
+            // wizard controller (via AppState's wired closure); the controller
+            // checks ParentOnboardingTracker and shows the window only on first
+            // sight of this parent.
+            if let parent = json["parent"] as? String {
+                await onParentDetected?(parent)
+            }
+            close(fd)
+
+        case "parent_permission_revoked":
+            // PermissionPreflight saw a still-missing permission for an already-
+            // onboarded parent. Reset onboarded state and re-surface the wizard
+            // so the user knows what to fix.
+            if let parent = json["parent"] as? String {
+                let permission = json["permission"] as? String ?? "unknown"
+                await onParentPermissionRevoked?(parent, permission)
+            }
             close(fd)
 
         case "propose":
