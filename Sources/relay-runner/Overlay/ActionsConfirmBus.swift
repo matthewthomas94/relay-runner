@@ -28,11 +28,13 @@ actor ActionsConfirmBus {
     private var acceptTask: Task<Void, Never>?
     private weak var stateMachine: StateMachine?
 
-    /// Optional callbacks for the per-parent permissions wizard. Called from
-    /// the actor when the MCP server reports a new parent terminal/IDE
-    /// or signals a previously-onboarded parent has lost a permission.
-    /// `AppState` wires these to `ParentOnboardingController` on main.
-    private let onParentDetected: ((String) async -> Void)?
+    /// Called when PermissionPreflight reports a permission missing for a
+    /// previously-onboarded parent — `AppState` wires this to reset the
+    /// tracker and re-surface the wizard. Proactive wizard surfacing for
+    /// not-yet-onboarded parents is driven by `AppState`'s bridge watchdog
+    /// reading `currentParent()`, not by a bus callback — the bus has no
+    /// signal that distinguishes "MCP just spawned because Claude opened"
+    /// from "user actually started voice."
     private let onParentPermissionRevoked: ((String, String) async -> Void)?
 
     /// Outstanding `propose_action` requests, keyed by request id. Value is
@@ -50,19 +52,16 @@ actor ActionsConfirmBus {
     private var timeoutTasks: [String: Task<Void, Never>] = [:]
 
     /// Most recent parent reported by the MCP server's `parent_detected`
-    /// message. Cached so we can attach it to the first real tool use without
-    /// re-asking the MCP server. The wizard does NOT surface on
-    /// `parent_detected` itself — Claude.app and other Claude clients spawn
-    /// the MCP server on session boot just by being opened, which would pop
-    /// the wizard for users who never intend to use computer-action tools.
-    /// Defer the trigger to actual tool use instead.
+    /// message. Read by `AppState` via `currentParent()` when the voice
+    /// bridge transitions alive — that's the moment "user is engaging
+    /// Relay Runner from this app." The MCP startup itself isn't a usable
+    /// signal because Claude.app and IDE-embedded Claude all spawn the
+    /// MCP server on session boot regardless of voice.
     private var lastDetectedParent: String?
 
     init(stateMachine: StateMachine,
-         onParentDetected: ((String) async -> Void)? = nil,
          onParentPermissionRevoked: ((String, String) async -> Void)? = nil) {
         self.stateMachine = stateMachine
-        self.onParentDetected = onParentDetected
         self.onParentPermissionRevoked = onParentPermissionRevoked
     }
 
@@ -174,19 +173,14 @@ actor ActionsConfirmBus {
         case "tool_fired":
             // Fire-and-forget. Update state, refresh decay, close connection.
             await enterComputerVision(prompt: nil)
-            // First real tool use is when "the user is engaging Relay Runner"
-            // — that's when the wizard is relevant. AppState's closure dedupes
-            // via ParentOnboardingTracker, so calling on every tool_fired is
-            // cheap and self-throttling.
-            await maybeSurfaceParentWizard()
             close(fd)
 
         case "parent_detected":
-            // Cache only — do NOT surface the wizard yet. Claude.app and other
-            // MCP-aware Claude clients spawn the relay-actions-mcp server on
-            // session boot, so this message arrives the moment Claude starts —
-            // long before the user has indicated any interest in voice-driven
-            // computer actions. Wait until they actually fire a tool.
+            // Cache only — UI is surfaced by AppState when /relay-bridge
+            // (or menu-bar Start Session) actually starts the voice loop
+            // from this parent. The MCP server fires this on every startup
+            // (Claude.app, terminal, IDE all auto-spawn it on session boot),
+            // which isn't a sign of user intent on its own.
             if let parent = json["parent"] as? String {
                 lastDetectedParent = parent
             }
@@ -211,14 +205,6 @@ actor ActionsConfirmBus {
             }
             let prompt = ConfirmationPrompt(summary: summary, risk: risk, requestId: id)
             await enterComputerVision(prompt: prompt)
-            // propose for medium/high never goes through the tool_fired path
-            // (the server suppresses the standard notify), so surface the
-            // wizard here too. Pre-confirmation is also a defensible moment —
-            // the user is about to be asked to confirm a click, and giving
-            // them the wizard at the same time means the perimeter pulse and
-            // the wizard appear together rather than the wizard popping
-            // afterwards.
-            await maybeSurfaceParentWizard()
             pending[id] = fd
             // 30s timeout — if no double-tap arrives, reply "timeout" and
             // close. The user may have walked away or never noticed the prompt.
@@ -262,14 +248,13 @@ actor ActionsConfirmBus {
         touchDecay()
     }
 
-    /// Hand the cached parent off to AppState's wizard closure, which checks
-    /// `ParentOnboardingTracker` and shows the window only on first sight.
-    /// Safe to call on every tool firing — the closure self-throttles via
-    /// the tracker, and an "unknown" parent (no terminal pattern matched in
-    /// the process chain) is filtered out by the closure.
-    private func maybeSurfaceParentWizard() async {
-        guard let parent = lastDetectedParent else { return }
-        await onParentDetected?(parent)
+    /// Most recent parent reported by the MCP server, or nil if no MCP server
+    /// has connected this session yet. AppState reads this when the voice
+    /// bridge transitions alive so the per-parent wizard is tied to the
+    /// "user just activated voice from this app" moment rather than the
+    /// "MCP server happened to spawn" moment.
+    func currentParent() -> String? {
+        lastDetectedParent
     }
 
     private func touchDecay() {

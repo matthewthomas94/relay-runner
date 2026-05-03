@@ -307,6 +307,17 @@ final class AppState {
                 self.onboarding.markSessionRun()
             }
 
+            // Bridge dead → alive is the moment the user has actively
+            // engaged voice from a particular terminal/IDE. That's when
+            // the per-parent permissions wizard is contextual and useful.
+            // Covers both /relay-bridge (external) and the menu's Start
+            // Session (direct mode) — newSession() flips bridgeAliveCache
+            // optimistically, then the watchdog confirms with a real
+            // pgrep on next tick, producing the same false→true transition.
+            if alive && !wasAlive {
+                self.surfaceParentWizardIfNeeded()
+            }
+
             // Detect orphaned relay bridge (process alive but consumer dead).
             // Reap the orphan but don't pop the session-prompt overlay — the
             // user gets the prompt when they actually press Caps Lock with no
@@ -352,6 +363,25 @@ final class AppState {
         bridgeWatchdog = nil
     }
 
+    /// Read the bus's most-recently-detected parent and open the wizard if
+    /// this parent hasn't been onboarded yet. Called from the bridge
+    /// watchdog on dead→alive transitions. Skips when the bus hasn't yet
+    /// received a `parent_detected` (MCP server still booting), when the
+    /// parent was unclassifiable (the wizard would have nothing useful to
+    /// say), and when the tracker has already recorded an acknowledgement.
+    private func surfaceParentWizardIfNeeded() {
+        guard let bus = actionsBus else { return }
+        let controller = parentOnboardingController
+        Task {
+            guard let parent = await bus.currentParent(),
+                  parent != "unknown",
+                  !ParentOnboardingTracker.isOnboarded(parent) else { return }
+            await MainActor.run {
+                controller.show(parent: parent)
+            }
+        }
+    }
+
     // MARK: - Overlay management
 
     private func startOverlay() {
@@ -364,20 +394,15 @@ final class AppState {
         // RelayActionsMCP helper and the menu-bar app — drives perimeter
         // glow + double-tap confirmation for propose_action).
         //
-        // The two trailing closures hand off parent-onboarding events to the
-        // wizard controller on the main thread:
-        //   - parent_detected: surface the wizard the first time MCP sees a
-        //     given terminal/IDE running `claude`.
-        //   - parent_permission_revoked: pre-flight discovered a missing
-        //     permission for an already-onboarded parent → reset and
-        //     re-surface so the user can re-grant.
+        // Wires one parent-onboarding callback for the revocation case:
+        // pre-flight discovered a missing permission for an already-onboarded
+        // parent → reset and re-surface so the user can re-grant. Proactive
+        // first-time wizard surfacing is driven by the bridge watchdog (see
+        // `surfaceParentWizardIfNeeded`), tied to "voice just started from
+        // this app" rather than "MCP server happened to spawn."
         let onboardingController = parentOnboardingController
         let actions = ActionsConfirmBus(
             stateMachine: stateMachine,
-            onParentDetected: { parent in
-                guard !ParentOnboardingTracker.isOnboarded(parent), parent != "unknown" else { return }
-                await MainActor.run { onboardingController.show(parent: parent) }
-            },
             onParentPermissionRevoked: { parent, _ in
                 guard parent != "unknown" else { return }
                 ParentOnboardingTracker.resetOnboarded(parent)
