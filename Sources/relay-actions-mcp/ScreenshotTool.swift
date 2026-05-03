@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
@@ -27,36 +28,51 @@ struct ScreenshotTool: MCPTool {
     func call(arguments: [String: Any]) async throws -> [[String: Any]] {
         let displayIndex = arguments["display_index"] as? Int ?? 0
 
+        // Pre-flight: if Screen Recording isn't granted yet, ask now. TCC walks
+        // the responsibility chain, so this prompt fires for the terminal/IDE
+        // that spawned `claude` — not for relay-actions-mcp itself. If the
+        // status is .notDetermined this surfaces a system dialog the user can
+        // act on. If it's .denied this is a no-op (TCC remembers and won't
+        // re-prompt; only Settings can flip the toggle).
+        if !CGPreflightScreenCaptureAccess() {
+            _ = CGRequestScreenCaptureAccess()
+        }
+
         let content: SCShareableContent
         do {
-            // SCShareableContent triggers the Screen Recording TCC prompt the first time.
-            // If denied it throws — translate to an MCP tool error so Claude speaks it
-            // via TTS rather than crashing the server.
             content = try await SCShareableContent.excludingDesktopWindows(
                 false,
                 onScreenWindowsOnly: true
             )
         } catch {
-            // TCC attributes the request to the *responsible* process — not Relay Runner,
-            // because Relay Runner didn't spawn this MCP server. `claude` spawned it,
-            // and `claude` was spawned by the user's terminal (or IDE). Walk up the
-            // process tree and name the actual app the user needs to grant.
+            // SCShareableContent failed. Two real reasons:
+            //  (a) user just got prompted and dismissed/denied
+            //  (b) status is .denied from a previous session
+            // Either way, re-trigger the prompt one more time so a user who
+            // changed their mind gets another chance, then describe exactly
+            // which app needs the grant.
+            _ = CGRequestScreenCaptureAccess()
+
             let blockerName = ParentProcess.detectTerminal()?.displayName
                 ?? "the app you launched `claude` from"
             throw MCPToolError(message: """
-                Could not capture the screen. Screen Recording permission is missing.
+                Could not capture the screen. Screen Recording permission is not granted.
 
-                IMPORTANT: macOS attributes screen-capture permission to the app that \
-                launched `claude`, NOT to Relay Runner. You almost certainly need to grant \
-                Screen Recording to **\(blockerName)**, not Relay Runner.
+                IMPORTANT: macOS attributes screen capture to the app that launched \
+                `claude`, NOT to Relay Runner. You need to grant Screen Recording to \
+                **\(blockerName)**.
+
+                If you just saw a system prompt and dismissed it, try again — I just \
+                re-requested. If no prompt appeared, you previously denied it and macOS \
+                won't ask again until you grant it manually:
 
                 1. Open System Settings → Privacy & Security → Screen Recording
                 2. Toggle on \(blockerName)
                 3. Quit and relaunch \(blockerName) (the permission only takes effect on relaunch)
                 4. Restart your `claude` session
 
-                Granting Relay Runner the same permission is harmless and recommended for \
-                future menu-bar-driven tools, but won't fix today's prompt.
+                Without this permission, every screenshot, click, and computer-vision \
+                request I make will fail. Voice transcription and speech still work.
 
                 Underlying error: \(error.localizedDescription)
                 """)

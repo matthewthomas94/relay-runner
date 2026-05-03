@@ -78,8 +78,15 @@ final class PerimeterOverlayManager {
 
         for screen in NSScreen.screens {
             let panel = PerimeterPanel(for: screen)
-            // Hidden by default — applyState() shows when state warrants it.
-            panel.alphaValue = 0
+            // Panel itself stays at full alpha — visibility is controlled
+            // entirely by the particle field's layer opacity, which fades
+            // between 0 (hidden) / 0.75 (steady CV) / pulse-animated (waiting).
+            // Earlier this was alphaValue=0 with the intention of crossfading
+            // the whole panel, but the refactor moved opacity control into
+            // PerimeterParticleField — leaving the panel at 0 made the
+            // overlay invisible regardless of state. The field starts hidden
+            // (active=false), so nothing renders until applyState() flips it.
+            panel.alphaValue = 1
             panel.orderFrontRegardless()
             panels.append(panel)
         }
@@ -109,6 +116,10 @@ final class PerimeterOverlayManager {
         }
         lastVisible = visible
         lastPulsing = pulsing
+
+        // Diagnostic — surfaces in Console.app so it's easy to confirm the
+        // bus → state → overlay chain works without watching for visual cues.
+        NSLog("[PerimeterOverlay] state=\(state) → visible=\(visible) pulsing=\(pulsing) (panels: \(panels.count))")
 
         for panel in panels {
             panel.setVisible(visible, pulsing: pulsing)
