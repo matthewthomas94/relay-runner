@@ -42,7 +42,7 @@ struct ParentOnboardingView: View {
             footer
         }
         .padding(28)
-        .frame(width: 520, height: 480)
+        .frame(width: 520, height: 560)
     }
 
     // MARK: - Sections
@@ -84,13 +84,23 @@ struct ParentOnboardingView: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "arrow.clockwise.circle.fill")
                 .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("After granting Screen Recording, restart \(parent)")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("After granting, restart \(parent) AND re-run /relay-bridge")
                     .font(.callout).bold()
-                Text("macOS doesn't apply that grant to long-running processes — quit \(parent), reopen it, and start a fresh `claude` session.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("macOS doesn't apply Screen Recording to processes already running, so two restarts are needed for the new permission to take effect:")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("1. Quit and reopen \(parent)")
+                    Text("2. Start a fresh `claude` session")
+                    Text("3. Run /relay-bridge again")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 4)
+                .padding(.top, 2)
             }
         }
         .padding(12)
