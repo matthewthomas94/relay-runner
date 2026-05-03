@@ -50,6 +50,13 @@ mkdir -p "$APP_DIR/Contents/SharedSupport/scripts"
 # Binary
 cp "$BUILD_DIR/relay-runner" "$APP_DIR/Contents/MacOS/relay-runner"
 
+# Helper binary: computer-action MCP server. Spawned by `claude` (not by the
+# menu-bar app) when a session is active and the MCP entry registered by
+# scripts/relay-bridge points here. Lives alongside the main binary so the TCC
+# attribution falls on the bundle (Screen Recording / Accessibility prompts
+# read "Relay Runner", not "relay-actions-mcp").
+cp "$BUILD_DIR/relay-actions-mcp" "$APP_DIR/Contents/MacOS/relay-actions-mcp"
+
 # App icon: compile AppIcon.iconset into AppIcon.icns via macOS iconutil.
 ICONSET_SRC="$PROJECT_ROOT/assets/AppIcon.iconset"
 if [ -d "$ICONSET_SRC" ]; then
@@ -137,6 +144,12 @@ if [ -n "$SIGN_IDENTITY" ]; then
             codesign --force --timestamp --options runtime \
                 --sign "$SIGN_IDENTITY" "$f"
           done
+    # Helper binaries (MCP server). No entitlements — TCC permissions inherit
+    # from the bundle's bundle-id at first prompt. Still needs hardened runtime
+    # + timestamp for notarisation.
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-actions-mcp"
     # Main executable last, with entitlements + hardened runtime.
     codesign --force --timestamp --options runtime \
         --entitlements "$ENTITLEMENTS" \

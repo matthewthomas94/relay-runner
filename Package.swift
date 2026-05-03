@@ -20,5 +20,9 @@ let package = Package(
                 .process("Resources"),
             ]
         ),
+        .executableTarget(
+            name: "relay-actions-mcp",
+            path: "Sources/relay-actions-mcp"
+        ),
     ]
 )

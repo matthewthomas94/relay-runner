@@ -49,6 +49,16 @@ final class CapsLockGesture {
     private var pendingPlay = false
     private var pendingCancel = false
 
+    /// Modal confirmation gate. When `stateMachine?.pendingConfirmation != nil`
+    /// the modifier double-taps mean yes/no instead of play/cancel:
+    ///   Option ×2 → confirmationResolver(true)
+    ///   Control ×2 → confirmationResolver(false)
+    /// When no confirmation is pending, gestures behave as before (play / cancel).
+    /// Wired up in AppState.startOverlay() so the gesture object stays
+    /// independent of the cross-process IPC layer.
+    weak var stateMachine: StateMachine?
+    var confirmationResolver: ((Bool) -> Void)?
+
     init(activationKey: String = "") {
         let isCapsLock = activationKey.isEmpty
             || activationKey.lowercased() == "caps lock"
@@ -186,27 +196,34 @@ final class CapsLockGesture {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let now = Date()
 
-        // Option key double-tap → play
+        // Option key double-tap → play (or "yes" while a confirmation is pending)
         let optionDown = flags.contains(.option)
         if optionDown && !optionWasDown {
-            // Option key pressed
             optionTaps.append(now)
             optionTaps = optionTaps.filter { now.timeIntervalSince($0) < tapWindowSec }
             if optionTaps.count >= 2 {
                 optionTaps.removeAll()
-                pendingPlay = true
+                if stateMachine?.pendingConfirmation != nil, let resolver = confirmationResolver {
+                    resolver(true)
+                } else {
+                    pendingPlay = true
+                }
             }
         }
         optionWasDown = optionDown
 
-        // Control key double-tap → cancel
+        // Control key double-tap → cancel (or "no" while a confirmation is pending)
         let controlDown = flags.contains(.control)
         if controlDown && !controlWasDown {
             controlTaps.append(now)
             controlTaps = controlTaps.filter { now.timeIntervalSince($0) < tapWindowSec }
             if controlTaps.count >= 2 {
                 controlTaps.removeAll()
-                pendingCancel = true
+                if stateMachine?.pendingConfirmation != nil, let resolver = confirmationResolver {
+                    resolver(false)
+                } else {
+                    pendingCancel = true
+                }
             }
         }
         controlWasDown = controlDown

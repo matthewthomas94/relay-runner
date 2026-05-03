@@ -280,6 +280,8 @@ struct OnboardingView: View {
             return "Your organisation's security policy appears to be blocking Accessibility access. You'll need your IT team to allow Relay Runner. Voice input still works via the menu-bar Record button — only auto-pause of media during recording is affected."
         case .inputMonitoring:
             return "Your organisation's security policy appears to be blocking keyboard capture. You'll need your IT team to allow Relay Runner. Voice still works via the menu-bar Record button or always-on mode in Settings — only the global trigger key is affected."
+        case .screenRecording:
+            return "Your organisation's security policy appears to be blocking Screen Recording. You'll need your IT team to allow Relay Runner. Only the optional computer-action voice tools (UAT, dashboard automation) are affected — voice transcription and speech still work."
         }
     }
 
@@ -830,6 +832,12 @@ struct OnboardingView: View {
         case .microphone:      return "Allow microphone access"
         case .accessibility:   return "Allow Accessibility access"
         case .inputMonitoring: return "Allow Input Monitoring"
+        // Screen Recording is intentionally not part of onboarding — it's
+        // only needed by the optional computer-action voice tools and is
+        // requested on first use (see PermissionsManager.promptScreenRecording).
+        // Strings provided so the switch is exhaustive and the case is ready
+        // to wire up if a future step adds it to onboarding.
+        case .screenRecording: return "Allow Screen Recording"
         }
     }
 
@@ -841,6 +849,8 @@ struct OnboardingView: View {
             return "So Relay Runner can detect your Caps Lock (or configured trigger key) no matter which app you're using, it needs Accessibility access. This is also how it pauses media when you start talking."
         case .inputMonitoring:
             return "On macOS, capturing global keyboard events requires a second permission called Input Monitoring, separate from Accessibility. Same purpose — letting the app notice your trigger key across every app."
+        case .screenRecording:
+            return "Optional. Required only when you ask Claude to take a screenshot or walk through an app for UAT. Voice transcription and speech don't need it."
         }
     }
 
@@ -854,6 +864,8 @@ struct OnboardingView: View {
             return "Click the button below. In System Settings, find Relay Runner in the list and switch it on. This window will update automatically when you're done."
         case .inputMonitoring:
             return "Click the button below. In System Settings, find Relay Runner in the list and switch it on. This window will update automatically when you're done."
+        case .screenRecording:
+            return "Click the button below. In System Settings, find Relay Runner under Screen Recording and switch it on."
         }
     }
 

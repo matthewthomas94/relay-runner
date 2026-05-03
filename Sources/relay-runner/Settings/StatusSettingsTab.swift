@@ -224,6 +224,7 @@ struct StatusSettingsTab: View {
             switch kind {
             case .accessibility:   appState.permissions.promptAccessibility()
             case .inputMonitoring: appState.permissions.promptInputMonitoring()
+            case .screenRecording: appState.permissions.promptScreenRecording()
             case .microphone:      break
             }
             appState.permissions.openSettings(for: kind)
