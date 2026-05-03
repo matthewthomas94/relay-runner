@@ -4,11 +4,17 @@ import Foundation
 
 // CGEvent posting tools: click, type, key, scroll.
 //
-// All coordinates are in the same pixel space as ScreenshotTool returns.
-// CGEvent itself is in global display coordinates measured in points (top-left
-// origin), so we convert pixels → points using the screen's backing scale
-// factor before posting. On a single-display 1× setup these are identical;
-// on Retina or mixed-DPI multi-display setups they're not.
+// Coordinate contract: x/y inputs are in the SAME pixel space ScreenshotTool
+// returns — i.e. NSScreen.frame × backingScaleFactor (the display's native
+// pixel grid). CGEvent itself is in global display coordinates measured in
+// points (top-left origin), so pointFromPixel() divides by the screen's
+// backing scale factor before posting. On a single-display 1× setup pixels
+// and points are identical; on Retina or mixed-DPI setups they aren't.
+//
+// Every tool here pre-flights AXIsProcessTrusted via PermissionPreflight
+// before posting. The pre-flight speaks a TTS warning naming the parent app
+// (Terminal / Warp / VS Code) the user must grant, since macOS attributes
+// CGEvent posting to that app — not Relay Runner.
 
 private func screenForPixel(x: Int, y: Int) -> NSScreen? {
     // Walk all screens, picking the one whose pixel-space frame contains the point.
@@ -47,9 +53,12 @@ private func pointFromPixel(x: Int, y: Int) -> CGPoint {
 struct ClickTool: MCPTool {
     let name = "click"
     let description = """
-        Post a mouse click at the given pixel coordinates. Coordinates are in the same pixel \
-        space as the most recent `screenshot` tool output. `button` defaults to 'left'. \
-        `modifiers` is an optional array of any of: 'cmd', 'shift', 'option', 'control'.
+        Post a mouse click at the given pixel coordinates. x/y are in the SAME pixel \
+        space as the most recent `screenshot` tool output — read the coordinate directly \
+        off the screenshot image and pass it through. `button` defaults to 'left'. \
+        `modifiers` is an optional array of any of: 'cmd', 'shift', 'option', 'control'. \
+        Call `propose_action` first for any state-changing click so the user can confirm \
+        AND so the permission pre-flight (if needed) names the action accurately.
         """
 
     var inputSchema: [String: Any] {
@@ -84,6 +93,12 @@ struct ClickTool: MCPTool {
         let buttonName = arguments["button"] as? String ?? "left"
         let doubleClick = arguments["double"] as? Bool ?? false
         let modifiers = (arguments["modifiers"] as? [String]) ?? []
+
+        let verb = (buttonName == "right" ? "right-click" : (buttonName == "middle" ? "middle-click" : "click"))
+        switch PermissionPreflight.ensureAccessibility(fallbackPurpose: "\(verb) at (\(x), \(y))") {
+        case .granted: break
+        case .stillMissing(let message): throw MCPToolError(message: message)
+        }
 
         let mouseButton: CGMouseButton
         let downType: CGEventType
@@ -149,6 +164,12 @@ struct TypeTool: MCPTool {
         guard let text = arguments["text"] as? String else {
             throw MCPToolError(message: "type requires a string text argument.")
         }
+        // Don't quote the text in the fallback purpose — it could be a password
+        // that the user is having Claude type into a focused field.
+        switch PermissionPreflight.ensureAccessibility(fallbackPurpose: "type text into the focused field") {
+        case .granted: break
+        case .stillMissing(let message): throw MCPToolError(message: message)
+        }
         // CGEvent's keyboardSetUnicodeString accepts arbitrary UTF-16 strings —
         // we don't need to map to virtual keycodes for individual chars. This
         // also handles emoji, punctuation, accented characters etc.
@@ -193,6 +214,10 @@ struct KeyTool: MCPTool {
     func call(arguments: [String: Any]) async throws -> [[String: Any]] {
         guard let combo = arguments["combo"] as? String else {
             throw MCPToolError(message: "key requires a string combo argument.")
+        }
+        switch PermissionPreflight.ensureAccessibility(fallbackPurpose: "press \(combo)") {
+        case .granted: break
+        case .stillMissing(let message): throw MCPToolError(message: message)
         }
         let parts = combo.lowercased().split(separator: "+").map { String($0).trimmingCharacters(in: .whitespaces) }
         var modifiers: [String] = []
@@ -249,6 +274,11 @@ struct ScrollTool: MCPTool {
             throw MCPToolError(message: "scroll requires integer x, y, and dy arguments.")
         }
         let dx = arguments["dx"] as? Int ?? 0
+
+        switch PermissionPreflight.ensureAccessibility(fallbackPurpose: "scroll at (\(x), \(y))") {
+        case .granted: break
+        case .stillMissing(let message): throw MCPToolError(message: message)
+        }
 
         // First move the cursor so scroll is targeted at the right window — apps that gate
         // scroll by hover (e.g. Safari nested scroll containers) need this.
