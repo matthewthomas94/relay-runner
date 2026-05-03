@@ -301,8 +301,24 @@ CLAUDE_CLI_OK=false
 # install so the .md commands always reference a working `claude`.
 RELAY_SKILLS_OK=false
 [ -f "$HOME/.claude/commands/relay-bridge.md" ] && [ -f "$HOME/.claude/commands/relay-stop.md" ] && RELAY_SKILLS_OK=true
+# The computer-action MCP server (relay-actions-mcp) gives Claude
+# screenshot + click/type tools for UAT and dashboard automation, gated
+# by hardware double-tap confirmation. Registered into Claude Code at
+# user scope (~/.claude.json) so it's available in every working dir,
+# not just this project. Check uses `claude mcp get` which exits 0 when
+# the named server is registered. Skipped here if the CLI isn't present
+# yet — the install block below registers it after installing the CLI.
+RELAY_MCP_OK=false
+if [ -x "$HOME/.local/bin/claude" ] || command -v claude >/dev/null 2>&1; then
+    if [ -x "$HOME/.local/bin/claude" ]; then
+        __claude_for_check="$HOME/.local/bin/claude"
+    else
+        __claude_for_check="$(command -v claude)"
+    fi
+    "$__claude_for_check" mcp get relay-actions >/dev/null 2>&1 && RELAY_MCP_OK=true
+fi
 
-if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $CLAUDE_CLI_OK || ! $RELAY_SKILLS_OK; then
+if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $CLAUDE_CLI_OK || ! $RELAY_SKILLS_OK || ! $RELAY_MCP_OK; then
     echo ''
     echo '╔══════════════════════════════════════════╗'
     echo '║  Relay Runner — First-time setup         ║'
@@ -586,6 +602,55 @@ PYEOF
         # via Settings → Reinstall (--install-skills flag).
         emit_progress 98 "Installing Claude Code skills..."
         install_skills if-missing
+    fi
+
+    if ! $RELAY_MCP_OK; then
+        # Register the relay-actions MCP server with Claude Code at user
+        # scope so screenshot / click / type tools are available in every
+        # `claude` invocation, not just sessions started in this repo.
+        #
+        # find_mcp_binary resolves the absolute path to the helper Mach-O.
+        # Bundled installs find it next to the main binary inside the .app;
+        # dev runs from the repo find it in .build/{release,debug}/.
+        # Idempotent: `claude mcp add` errors when the name already exists,
+        # so we gate on the upfront RELAY_MCP_OK check above.
+        emit_progress 99 "Registering MCP server..."
+        __claude_bin=""
+        if [ -x "$HOME/.local/bin/claude" ]; then
+            __claude_bin="$HOME/.local/bin/claude"
+        elif command -v claude >/dev/null 2>&1; then
+            __claude_bin="$(command -v claude)"
+        fi
+        __mcp_bin=""
+        # Bundled (Contents/SharedSupport/scripts → ../../MacOS/relay-actions-mcp).
+        __bundled_mcp="$SCRIPT_DIR/../../MacOS/relay-actions-mcp"
+        if [ -x "$__bundled_mcp" ]; then
+            __mcp_bin="$(cd "$(dirname "$__bundled_mcp")" && pwd)/relay-actions-mcp"
+        else
+            for __cfg in release debug; do
+                __dev_mcp="$SCRIPT_DIR/../.build/$__cfg/relay-actions-mcp"
+                if [ -x "$__dev_mcp" ]; then
+                    __mcp_bin="$(cd "$(dirname "$__dev_mcp")" && pwd)/relay-actions-mcp"
+                    break
+                fi
+            done
+        fi
+        if [ -z "$__claude_bin" ]; then
+            echo "[Relay Runner] Skipping MCP registration — claude CLI not found." >&2
+        elif [ -z "$__mcp_bin" ]; then
+            echo "[Relay Runner] Skipping MCP registration — relay-actions-mcp binary not found." >&2
+            echo "[Relay Runner] Looked in $__bundled_mcp and .build/{release,debug}/." >&2
+        else
+            # `claude mcp add -s user` writes to ~/.claude.json. Non-fatal on
+            # failure — voice features still work without the MCP server,
+            # only the new computer-action tools become unavailable.
+            if "$__claude_bin" mcp add -s user relay-actions -- "$__mcp_bin" >/dev/null 2>&1; then
+                echo "[Relay Runner] Registered MCP server: relay-actions → $__mcp_bin"
+            else
+                echo "[Relay Runner] MCP server registration failed (non-fatal). Try manually:" >&2
+                echo "    $__claude_bin mcp add -s user relay-actions -- $__mcp_bin" >&2
+            fi
+        fi
     fi
 
     emit_progress 100 "Setup complete."

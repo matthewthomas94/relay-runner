@@ -1,5 +1,19 @@
 import Foundation
 
+/// A pending computer-action confirmation surfaced by `propose_action` in the
+/// RelayActionsMCP server. While a prompt is non-nil, the modifier double-tap
+/// gestures (Option/Control) are repurposed as yes/no instead of play/cancel.
+struct ConfirmationPrompt: Equatable {
+    /// Human-readable summary, e.g. "Click 'Send' in Slack".
+    let summary: String
+    /// "low" | "medium" | "high". `low` is auto-confirmed before the prompt is
+    /// surfaced, so any value reaching the UI is medium or high.
+    let risk: String
+    /// Opaque correlation id from the MCP server — round-tripped back so the
+    /// MCP server matches the reply to the right outstanding request.
+    let requestId: String
+}
+
 /// Possible overlay states, driven by STT engine (in-process) and Python services (via socket).
 enum OverlayState: Equatable {
     case idle
@@ -18,6 +32,11 @@ enum OverlayState: Equatable {
     case speaking
     case paused
     case sessionPrompt   // No session running — prompt user to start one
+    /// RelayActionsMCP has fired at least one tool recently. Triggers the
+    /// purple perimeter overlay. `awaitingConfirmation` is non-nil while a
+    /// `propose_action(risk: medium|high)` is blocked waiting on the user's
+    /// double-tap response.
+    case computerVision(awaitingConfirmation: ConfirmationPrompt?)
 
     /// Which particle field theme to show (nil = hidden).
     var particleTheme: ParticleFieldRenderer.Theme? {
@@ -26,7 +45,7 @@ enum OverlayState: Equatable {
             return nil
         case .listening, .recording:
             return .stt
-        case .processing, .messageWaiting, .preparing, .speaking:
+        case .processing, .messageWaiting, .preparing, .speaking, .computerVision:
             return .tts
         }
     }
@@ -38,7 +57,7 @@ enum OverlayState: Equatable {
             return .stt
         case .cancelled(.tts):
             return .tts
-        case .processing, .messageWaiting, .preparing, .speaking:
+        case .processing, .messageWaiting, .preparing, .speaking, .computerVision:
             return .tts
         default:
             return .tts
@@ -161,6 +180,35 @@ final class StateMachine: @unchecked Sendable {
         if case .sessionPrompt = state {
             state = .idle
         }
+    }
+
+    // MARK: - Computer vision
+
+    /// Enter or refresh the .computerVision state. Called by ActionsConfirmBus
+    /// on every MCP tool firing (refreshes the decay window) and on
+    /// propose_action requests (sets `prompt` non-nil).
+    ///
+    /// While `prompt` is non-nil, `pendingConfirmation` returns it and
+    /// CapsLockGesture resolves Option/Control double-taps as yes/no.
+    func setComputerVision(awaitingConfirmation prompt: ConfirmationPrompt?) {
+        state = .computerVision(awaitingConfirmation: prompt)
+    }
+
+    /// Exit the .computerVision state. Called when the 10s decay window
+    /// expires or the bus is torn down. No-op when not in computer vision.
+    func clearComputerVision() {
+        if case .computerVision = state {
+            state = .idle
+        }
+    }
+
+    /// The currently pending confirmation, if any. CapsLockGesture polls this
+    /// to decide whether to repurpose double-tap Option/Control.
+    var pendingConfirmation: ConfirmationPrompt? {
+        if case .computerVision(let prompt) = state {
+            return prompt
+        }
+        return nil
     }
 
     /// Reset to idle (services stopped).

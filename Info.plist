@@ -22,5 +22,10 @@
     <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Relay Runner uses the microphone for speech-to-text.</string>
+    <!-- Screen Recording is only requested when the computer-action MCP server
+         takes a screenshot for UAT or dashboard automation. Voice features
+         work without it. The TCC prompt copies this string verbatim. -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Relay Runner can capture the screen for the optional computer-action voice tools (UAT walkthroughs and dense-dashboard configuration). Voice transcription and speech work without this permission.</string>
 </dict>
 </plist>

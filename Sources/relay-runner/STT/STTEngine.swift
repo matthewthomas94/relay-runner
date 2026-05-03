@@ -56,6 +56,17 @@ final class STTEngine: @unchecked Sendable {
         self.keepSamples = sampleRate * 200 / 1000  // 200ms
     }
 
+    /// Inject the modal-confirmation hooks for computer-action `propose_action`
+    /// prompts. When `stateMachine.pendingConfirmation != nil`, double-tap
+    /// Option/Control are routed to `resolver(true|false)` instead of the
+    /// default play/cancel behavior. AppState calls this once during
+    /// startOverlay() to bridge the gesture monitor to the ActionsConfirmBus
+    /// actor without exposing the private gesture object.
+    func wireConfirmationGate(stateMachine: StateMachine, resolver: @escaping (Bool) -> Void) {
+        gesture.stateMachine = stateMachine
+        gesture.confirmationResolver = resolver
+    }
+
     // MARK: - Lifecycle
 
     func start() async throws {

@@ -55,7 +55,9 @@ final class AppState {
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
     private var overlayController: OverlayController?
+    private var perimeterOverlay: PerimeterOverlayManager?
     private var eventBus: StateEventBus?
+    private var actionsBus: ActionsConfirmBus?
     private var sttPollTimer: Timer?
     private var bridgeWatchdog: Timer?
     /// True while a direct-mode terminal session owns the bridge.
@@ -351,10 +353,28 @@ final class AppState {
         eventBus = bus
         Task { await bus.start() }
 
+        // Computer-action confirmation bus (request/reply socket between the
+        // RelayActionsMCP helper and the menu-bar app — drives perimeter
+        // glow + double-tap confirmation for propose_action).
+        let actions = ActionsConfirmBus(stateMachine: stateMachine)
+        actionsBus = actions
+        Task { await actions.start() }
+        // Wire CapsLockGesture's modal yes/no resolution back to the bus.
+        // Gesture handler runs on the main thread; bridge to the actor via Task.
+        sttEngine?.wireConfirmationGate(stateMachine: stateMachine) { [weak actions] confirmed in
+            Task { _ = await actions?.resolveLatest(confirmed: confirmed) }
+        }
+
         // Overlay controller (panel + glow + pill)
         let oc = OverlayController(config: config.awareness)
         oc.start(stateMachine: stateMachine)
         overlayController = oc
+
+        // Perimeter overlay (purple band on every screen while
+        // .computerVision is active; pulses while a confirmation is pending).
+        let perimeter = PerimeterOverlayManager()
+        perimeter.start(stateMachine: stateMachine)
+        perimeterOverlay = perimeter
 
         // Poll STT engine state → state machine (STT is in-process, no socket needed)
         sttPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
@@ -419,8 +439,14 @@ final class AppState {
         overlayController?.stop()
         overlayController = nil
 
+        perimeterOverlay?.stop()
+        perimeterOverlay = nil
+
         Task { await eventBus?.stop() }
         eventBus = nil
+
+        Task { await actionsBus?.stop() }
+        actionsBus = nil
 
         stateMachine.reset()
     }

@@ -23,14 +23,19 @@ enum PermissionStatus: Equatable {
 /// Privacy permissions Relay Runner can use. All are optional — the app
 /// degrades gracefully when any of them is denied:
 /// - Microphone: required to capture speech.
-/// - Accessibility: enables media-pause when recording starts.
+/// - Accessibility: enables media-pause when recording starts; required by
+///   the computer-action MCP server to post CGEvents (clicks, keystrokes).
 /// - Input Monitoring: required to capture non-modifier global activation
 ///   keys (Caps Lock alone works without it; modifier flags are readable
 ///   via NSEvent without Input Monitoring).
+/// - Screen Recording: required by the computer-action MCP server's
+///   `screenshot` tool. Without it, the screenshot tool returns a clear
+///   error string but the rest of the app keeps working.
 enum PermissionKind: String, CaseIterable, Identifiable {
     case microphone
     case accessibility
     case inputMonitoring
+    case screenRecording
 
     var id: String { rawValue }
 
@@ -40,6 +45,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
         case .microphone:      return "Microphone"
         case .accessibility:   return "Accessibility"
         case .inputMonitoring: return "Input Monitoring"
+        case .screenRecording: return "Screen Recording"
         }
     }
 }
@@ -58,6 +64,11 @@ final class PermissionsManager {
     private(set) var microphone: PermissionStatus = .notDetermined
     private(set) var accessibility: PermissionStatus = .notDetermined
     private(set) var inputMonitoring: PermissionStatus = .notDetermined
+    /// Screen Recording is gated only by the new computer-action MCP tools
+    /// (specifically `screenshot`). Voice features work even when this is
+    /// denied — onboarding therefore treats it as optional, surfaced when the
+    /// user first hits a vision-requiring prompt.
+    private(set) var screenRecording: PermissionStatus = .notDetermined
 
     /// Permissions blocked by a device policy. Only populated for
     /// Microphone — the system reports `.restricted` directly via
@@ -131,10 +142,13 @@ final class PermissionsManager {
         case .microphone:      return microphone
         case .accessibility:   return accessibility
         case .inputMonitoring: return inputMonitoring
+        case .screenRecording: return screenRecording
         }
     }
 
-    /// True when every required permission is granted.
+    /// True when every *required* permission is granted. Screen Recording is
+    /// optional (only the computer-action `screenshot` tool needs it), so it
+    /// is intentionally excluded — onboarding shouldn't block on it.
     var allGranted: Bool {
         microphone == .granted &&
         accessibility == .granted &&
@@ -160,6 +174,7 @@ final class PermissionsManager {
         let mic = Self.checkMicrophone()
         let ax = Self.checkAccessibility()
         let im = Self.checkInputMonitoring()
+        let sr = Self.checkScreenRecording()
         if mic != microphone {
             let old = microphone; microphone = mic
             onChange?(.microphone, old, mic)
@@ -177,6 +192,12 @@ final class PermissionsManager {
             onChange?(.inputMonitoring, old, im)
             Self.persistLastKnown(.inputMonitoring, status: im)
             if im == .granted { resetSinceLastRun.remove(.inputMonitoring) }
+        }
+        if sr != screenRecording {
+            let old = screenRecording; screenRecording = sr
+            onChange?(.screenRecording, old, sr)
+            Self.persistLastKnown(.screenRecording, status: sr)
+            if sr == .granted { resetSinceLastRun.remove(.screenRecording) }
         }
         // Microphone is the only kind for which the system reports a real
         // policy lock. Mirror its restricted state into likelyRestricted
@@ -292,6 +313,33 @@ final class PermissionsManager {
         }
     }
 
+    /// Screen Recording is checked via CGPreflightScreenCaptureAccess (macOS 11+).
+    /// This API doesn't trigger a prompt — it just reads current TCC state.
+    /// To actually prompt, the caller invokes the computer-action `screenshot`
+    /// tool (which calls SCShareableContent.current and triggers the prompt
+    /// the first time). There's no programmatic "request" call that doesn't
+    /// also do the work, unlike CGRequestScreenCaptureAccess (which works but
+    /// can't be replaced with a no-op preflight).
+    private static func checkScreenRecording() -> PermissionStatus {
+        // The preflight API returns true only when granted; otherwise we
+        // can't tell .denied from .notDetermined here. Treat both as .denied
+        // — the screenshot tool's failure path tells the user how to grant
+        // and surfaces the same Settings deep-link as other permissions.
+        return CGPreflightScreenCaptureAccess() ? .granted : .denied
+    }
+
+    /// Trigger the system Screen Recording prompt. Like Accessibility, this
+    /// just makes the app appear in the Privacy pane — the user still has to
+    /// flip the toggle in System Settings. Calling it pre-emptively is OK.
+    func promptScreenRecording() {
+        // CGRequestScreenCaptureAccess registers the app's cdhash with TCC
+        // for kTCCServiceScreenCapture if it isn't already registered. Returns
+        // true if the user has already granted; false otherwise. Either way,
+        // the app appears in System Settings → Privacy & Security → Screen
+        // Recording afterward.
+        _ = CGRequestScreenCaptureAccess()
+    }
+
     // MARK: - Last-known status persistence
 
     private static func loadLastKnown() -> [PermissionKind: PermissionStatus] {
@@ -345,6 +393,8 @@ private extension PermissionKind {
             return "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         case .inputMonitoring:
             return "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        case .screenRecording:
+            return "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         }
     }
 }

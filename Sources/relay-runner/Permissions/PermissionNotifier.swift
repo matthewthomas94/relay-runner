@@ -58,6 +58,8 @@ final class PermissionNotifier {
             return "Relay Runner can't pause media during recording — Accessibility access was removed. Open the menu and choose Fix Permissions."
         case .inputMonitoring:
             return "Relay Runner can't detect your trigger key — Input Monitoring access was removed. Open the menu and choose Fix Permissions."
+        case .screenRecording:
+            return "Relay Runner can't take screenshots for the computer-action voice tools — Screen Recording access was removed. Voice transcription and speech still work."
         }
     }
 }
