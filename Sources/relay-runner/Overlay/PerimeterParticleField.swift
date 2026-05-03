@@ -45,12 +45,18 @@ final class PerimeterParticleField {
     private var pulsing = false
 
     // Same dot model as ParticleFieldRenderer — kept private so this file
-    // stays self-contained.
+    // stays self-contained. Adds precomputed radial distances from two
+    // "wave centers" so the renderFrame hot loop doesn't repeat sqrt 80k
+    // times per tick. Two centers means two overlapping radial ripples,
+    // which destroys the linear-stripe character a single planar sin
+    // produces and matches the soft cloud-like motion in the design ref.
     private struct Dot {
         let x: CGFloat, y: CGFloat
         let baseRadius: CGFloat
         let baseAlpha: CGFloat
         let r: CGFloat, g: CGFloat, b: CGFloat
+        let distFromCenter: CGFloat       // ripple from screen center
+        let distFromOffsetCenter: CGFloat // ripple from off-axis point
     }
     private var dots: [Dot] = []
 
@@ -207,28 +213,45 @@ final class PerimeterParticleField {
         // be subliminal but visible if you're looking for it.
         let breath = 0.92 + 0.12 * CGFloat(sin(elapsed * 0.6))
 
-        // Same wave structure as ParticleFieldRenderer.renderFrame so the two
-        // surfaces feel like the same effect at different positions on screen.
-        // Amplitudes (radius 0.35, alpha 0.28) are higher than the bottom
-        // field's (0.2 / 0.1) so the wider perimeter band reads as actively
-        // moving rather than statically lit.
+        // Wave design — diverges from ParticleFieldRenderer.renderFrame on
+        // purpose. The bottom field is a thin horizontal strip where short-
+        // wavelength planar waves read fine. The perimeter field covers most
+        // of the screen, so high-frequency planar waves stack into visible
+        // diagonal bars. Two changes break that:
+        //   1. Spatial frequencies dropped ~3x so each wave's wavelength
+        //      exceeds screen width — single waves become slow gradients
+        //      rather than tight stripes.
+        //   2. Two radial ripples replace the vertical-only third wave —
+        //      circular ripples never read as linear bars, and offsetting
+        //      one center off-axis stops the ripples from looking
+        //      symmetrically pulse-from-center.
         for dot in dots {
+            // Soft diagonal swell — wavelength ~1500pt
             let wave1 = sin(
-                Double(dot.x) * 0.012
-                - Double(dot.y) * 0.008
-                - elapsed * 4.2
+                Double(dot.x) * 0.0042
+                - Double(dot.y) * 0.0028
+                - elapsed * 2.8
             )
+            // Counter-diagonal at a different angle and slower phase
             let wave2 = sin(
-                Double(dot.x) * 0.007
-                + Double(dot.y) * 0.011
-                - elapsed * 2.7
-            ) * 0.4
+                Double(dot.x) * 0.0028
+                + Double(dot.y) * 0.0048
+                - elapsed * 1.9
+            ) * 0.7
+            // Radial ripple from screen center
             let wave3 = sin(
-                Double(dot.x) * 0.004
-                - elapsed * 1.1
-            ) * 0.3
+                Double(dot.distFromCenter) * 0.0095
+                - elapsed * 1.4
+            ) * 0.55
+            // Radial ripple from an off-axis center, drifting opposite phase —
+            // interference between the two radial waves creates moving
+            // "blob" patterns instead of concentric circles.
+            let wave4 = sin(
+                Double(dot.distFromOffsetCenter) * 0.0072
+                + elapsed * 0.95
+            ) * 0.45
 
-            let wave = CGFloat(wave1 + wave2 + wave3) / 1.7
+            let wave = CGFloat(wave1 + wave2 + wave3 + wave4) / 2.7
             let radiusScale: CGFloat = 1.0 + wave * 0.35
             let radius = dot.baseRadius * radiusScale * breath
             guard radius > 0.1 else { continue }
@@ -254,6 +277,16 @@ final class PerimeterParticleField {
 
         var result: [Dot] = []
         result.reserveCapacity(cols * rows / 4)
+
+        // Two wave centers for radial ripples. The primary sits at the screen
+        // center; the offset sits in the upper-left quadrant so the two
+        // ripple patterns interfere asymmetrically rather than producing
+        // symmetric moiré. Both are precomputed per-dot so renderFrame's
+        // hot loop avoids per-frame sqrt.
+        let centerX = size.width / 2
+        let centerY = size.height / 2
+        let offsetX = size.width * 0.32
+        let offsetY = size.height * 0.68
 
         // Deterministic pseudo-random for color variation — same constants as
         // ParticleFieldRenderer.buildDotGrid so colors come from the same
@@ -310,10 +343,17 @@ final class PerimeterParticleField {
                 let fg = cg * (1 - liftWeight) + h.g * liftWeight
                 let fb = cb * (1 - liftWeight) + h.b * liftWeight
 
+                let dxC = x - centerX, dyC = y - centerY
+                let dxO = x - offsetX, dyO = y - offsetY
+                let distFromCenter = sqrt(dxC * dxC + dyC * dyC)
+                let distFromOffsetCenter = sqrt(dxO * dxO + dyO * dyO)
+
                 result.append(Dot(
                     x: x, y: y,
                     baseRadius: dotRadius, baseAlpha: dotAlpha,
-                    r: fr, g: fg, b: fb))
+                    r: fr, g: fg, b: fb,
+                    distFromCenter: distFromCenter,
+                    distFromOffsetCenter: distFromOffsetCenter))
             }
         }
 
