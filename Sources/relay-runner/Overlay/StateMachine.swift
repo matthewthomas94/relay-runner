@@ -38,14 +38,17 @@ enum OverlayState: Equatable {
     /// double-tap response.
     case computerVision(awaitingConfirmation: ConfirmationPrompt?)
 
-    /// Which particle field theme to show (nil = hidden).
+    /// Which particle field theme to show on the bottom-of-screen overlay
+    /// (nil = hidden). The .computerVision state intentionally returns nil
+    /// here — its dot pattern lives in PerimeterParticleField, rendered
+    /// around the screen edges by PerimeterOverlay, not at the bottom.
     var particleTheme: ParticleFieldRenderer.Theme? {
         switch self {
-        case .idle, .paused, .sent, .cancelled(_), .sessionPrompt:
+        case .idle, .paused, .sent, .cancelled(_), .sessionPrompt, .computerVision:
             return nil
         case .listening, .recording:
             return .stt
-        case .processing, .messageWaiting, .preparing, .speaking, .computerVision:
+        case .processing, .messageWaiting, .preparing, .speaking:
             return .tts
         }
     }

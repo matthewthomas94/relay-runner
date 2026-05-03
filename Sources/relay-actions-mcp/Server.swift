@@ -39,6 +39,16 @@ final class MCPServer {
 
     func run() async {
         log("relay-actions-mcp starting (\(tools.count) tool(s))")
+        // Log the detected terminal/IDE responsible for TCC attribution. Helps
+        // when debugging "I granted Screen Recording but it still fails" —
+        // the user can compare the logged app name to what they actually
+        // granted in System Settings.
+        if let term = ParentProcess.detectTerminal() {
+            log("Responsible parent for TCC (Screen Recording / Accessibility): \(term.displayName) (pid \(term.pid))")
+        } else {
+            log("Could not identify a terminal/IDE in the parent chain — Screen Recording prompts will reference an unnamed parent.")
+            log("Process chain: \(ParentProcess.dumpChain())")
+        }
         var buffer = Data()
         do {
             for try await byte in FileHandle.standardInput.bytes {

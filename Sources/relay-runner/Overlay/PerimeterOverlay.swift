@@ -1,18 +1,17 @@
 import AppKit
 import QuartzCore
 
-// Purple glow around the perimeter of every connected screen while
+// Halftone-dot perimeter around every connected screen while
 // `OverlayState.computerVision` is active. Pulses brighter when an
 // `awaitingConfirmation` prompt is surfaced — visual signal that the
 // user needs to double-tap Option (yes) or Control (no).
 //
 // Architecture:
 // - One NSPanel per NSScreen, screen-saver level, click-through, transparent.
-// - Each panel hosts a PerimeterView with four CAGradientLayer bands (top /
-//   bottom / left / right) that fade from edge-opaque to inward-transparent.
-//   GPU-accelerated, no filters or off-screen passes.
-// - Color matches ParticleFieldRenderer.Theme.tts (hue 0.68 / sat 0.80) so the
-//   perimeter feels visually identical to the existing reply state.
+// - Each panel hosts a PerimeterParticleField — same dot grid + animation as
+//   ParticleFieldRenderer, but the visibility mask favors dots within ~90pt
+//   of any edge instead of along the bottom. Identical color palette to the
+//   .tts reply state so the two surfaces feel like one effect.
 // - Rebuilds on NSApplication.didChangeScreenParametersNotification so screen
 //   add/remove takes effect immediately.
 //
@@ -120,11 +119,24 @@ final class PerimeterOverlayManager {
 // MARK: - Panel
 
 private final class PerimeterPanel: NSPanel {
-    private let perimeterView = PerimeterView()
+    private let hostView: NSView
+    private let particleField: PerimeterParticleField
 
     init(for screen: NSScreen) {
+        let frame = screen.frame
+        let view = NSView(frame: NSRect(origin: .zero, size: frame.size))
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        self.hostView = view
+
+        let field = PerimeterParticleField(theme: .tts)
+        // Match the host screen's backing scale before attach so the bitmap
+        // context is sized correctly — multi-display setups can mix 1× and 2×.
+        field.setBackingScale(screen.backingScaleFactor)
+        self.particleField = field
+
         super.init(
-            contentRect: screen.frame,
+            contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -141,117 +153,16 @@ private final class PerimeterPanel: NSPanel {
         isMovableByWindowBackground = false
         ignoresMouseEvents = true       // click-through (spec requirement)
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
-        setFrame(screen.frame, display: false)
+        setFrame(frame, display: false)
 
-        perimeterView.frame = NSRect(origin: .zero, size: screen.frame.size)
-        contentView = perimeterView
+        contentView = hostView
+        particleField.attach(to: hostView)
     }
 
     func setVisible(_ visible: Bool, pulsing: Bool) {
-        // Crossfade the panel; PerimeterView handles internal pulse.
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.18
-            animator().alphaValue = visible ? 1.0 : 0.0
-        }
-        perimeterView.setPulsing(pulsing)
-    }
-}
-
-// MARK: - View
-
-private final class PerimeterView: NSView {
-
-    /// Band thickness in points. Spec calls for ~24pt.
-    private let bandThickness: CGFloat = 24
-
-    // .tts theme color from ParticleFieldRenderer (hue 0.68 / sat 0.80, value
-    // chosen to read clearly against typical dark and light backgrounds).
-    private let bandColor = NSColor(hue: 0.68, saturation: 0.80, brightness: 0.95, alpha: 1.0)
-
-    private let topBand = CAGradientLayer()
-    private let bottomBand = CAGradientLayer()
-    private let leftBand = CAGradientLayer()
-    private let rightBand = CAGradientLayer()
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-        configureBands()
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func layout() {
-        super.layout()
-        layoutBands()
-    }
-
-    override var isFlipped: Bool { false }   // origin bottom-left, matches AppKit
-
-    private func configureBands() {
-        let opaque = bandColor.cgColor
-        let clear = bandColor.withAlphaComponent(0).cgColor
-
-        for band in [topBand, bottomBand, leftBand, rightBand] {
-            band.colors = [opaque, clear]
-            band.locations = [0.0, 1.0]
-            // Subtle ease — start strong, fall off quickly. Most of the visual
-            // weight lives in the first ~25% of the band.
-            band.startPoint = .zero
-            band.endPoint = .zero
-            layer?.addSublayer(band)
-        }
-
-        // Direction per band: each fades from the edge inward.
-        // (start → end goes solid → transparent)
-        topBand.startPoint = CGPoint(x: 0.5, y: 1.0)        // top edge (in bottom-left origin)
-        topBand.endPoint   = CGPoint(x: 0.5, y: 0.0)
-        bottomBand.startPoint = CGPoint(x: 0.5, y: 0.0)     // bottom edge
-        bottomBand.endPoint   = CGPoint(x: 0.5, y: 1.0)
-        leftBand.startPoint = CGPoint(x: 0.0, y: 0.5)
-        leftBand.endPoint   = CGPoint(x: 1.0, y: 0.5)
-        rightBand.startPoint = CGPoint(x: 1.0, y: 0.5)
-        rightBand.endPoint   = CGPoint(x: 0.0, y: 0.5)
-    }
-
-    private func layoutBands() {
-        let b = bounds
-        let t = bandThickness
-        // Side bands span the full height; top/bottom bands span only the
-        // middle so the corners aren't double-painted (the side gradient
-        // already handles them).
-        topBand.frame = NSRect(x: 0, y: b.height - t, width: b.width, height: t)
-        bottomBand.frame = NSRect(x: 0, y: 0, width: b.width, height: t)
-        leftBand.frame = NSRect(x: 0, y: 0, width: t, height: b.height)
-        rightBand.frame = NSRect(x: b.width - t, y: 0, width: t, height: b.height)
-    }
-
-    func setPulsing(_ pulsing: Bool) {
-        // Implementation: animate layer opacity between two values. Removes any
-        // running animation first so toggling on/off doesn't compound.
-        for band in [topBand, bottomBand, leftBand, rightBand] {
-            band.removeAnimation(forKey: "pulse")
-        }
-
-        if pulsing {
-            let pulse = CABasicAnimation(keyPath: "opacity")
-            pulse.fromValue = 0.55
-            pulse.toValue = 1.0
-            pulse.duration = 0.7
-            pulse.autoreverses = true
-            pulse.repeatCount = .infinity
-            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            for band in [topBand, bottomBand, leftBand, rightBand] {
-                band.add(pulse, forKey: "pulse")
-            }
-        } else {
-            // Steady state: a calmer 0.65 opacity so it reads as "active but
-            // not demanding action." Set as the model value so it sticks once
-            // any in-flight animation finishes.
-            for band in [topBand, bottomBand, leftBand, rightBand] {
-                band.opacity = 0.65
-            }
-        }
+        // PerimeterParticleField handles its own opacity transitions and
+        // pulse animation — the panel itself stays fully opaque so the
+        // dot rendering controls every visible byte.
+        particleField.setActive(visible, pulsing: pulsing)
     }
 }

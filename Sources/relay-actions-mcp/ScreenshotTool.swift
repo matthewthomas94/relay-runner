@@ -29,19 +29,36 @@ struct ScreenshotTool: MCPTool {
 
         let content: SCShareableContent
         do {
-            // SCShareableContent.current is the trigger that surfaces the Screen Recording
-            // permission prompt the first time. If denied it throws — we translate to a
-            // user-readable MCP tool error so Claude can speak it via TTS rather than
-            // crashing the server.
+            // SCShareableContent triggers the Screen Recording TCC prompt the first time.
+            // If denied it throws — translate to an MCP tool error so Claude speaks it
+            // via TTS rather than crashing the server.
             content = try await SCShareableContent.excludingDesktopWindows(
                 false,
                 onScreenWindowsOnly: true
             )
         } catch {
+            // TCC attributes the request to the *responsible* process — not Relay Runner,
+            // because Relay Runner didn't spawn this MCP server. `claude` spawned it,
+            // and `claude` was spawned by the user's terminal (or IDE). Walk up the
+            // process tree and name the actual app the user needs to grant.
+            let blockerName = ParentProcess.detectTerminal()?.displayName
+                ?? "the app you launched `claude` from"
             throw MCPToolError(message: """
-                Could not enumerate displays. Screen Recording permission is likely missing or \
-                denied. Open System Settings → Privacy & Security → Screen Recording and grant \
-                Relay Runner. Underlying error: \(error.localizedDescription)
+                Could not capture the screen. Screen Recording permission is missing.
+
+                IMPORTANT: macOS attributes screen-capture permission to the app that \
+                launched `claude`, NOT to Relay Runner. You almost certainly need to grant \
+                Screen Recording to **\(blockerName)**, not Relay Runner.
+
+                1. Open System Settings → Privacy & Security → Screen Recording
+                2. Toggle on \(blockerName)
+                3. Quit and relaunch \(blockerName) (the permission only takes effect on relaunch)
+                4. Restart your `claude` session
+
+                Granting Relay Runner the same permission is harmless and recommended for \
+                future menu-bar-driven tools, but won't fix today's prompt.
+
+                Underlying error: \(error.localizedDescription)
                 """)
         }
 
