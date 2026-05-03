@@ -170,12 +170,14 @@ final class ProcessManager {
         NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) claudeBinary=\(claudeBinary) configPath=\(configPath)")
 
         // /relay-bridge is delivered as the prompt arg; if its .md file is
-        // missing, Claude would treat the string as literal user input.
-        // Reinstall on demand — onboarding already gave consent.
-        if !isSkillInstalled {
-            NSLog("[ProcessManager] Slash command files missing — installing before launch.")
-            installSkill()
-        }
+        // missing OR stale, Claude would treat the string as literal user
+        // input or follow obsolete instructions. The skill content lives in
+        // the relay-bridge bash script as the source of truth, so we
+        // unconditionally reinstall on every launch — cheap (single file
+        // write, ~10ms) and ensures the user always runs against the
+        // shipped version of the skill text. Onboarding already gave consent.
+        NSLog("[ProcessManager] Refreshing slash command files before launch.")
+        installSkill()
 
         let bypassFlag = config.general.bypass_permissions ? "--dangerously-skip-permissions " : ""
         let modelFlag = Self.modelFlag(config.general.model)

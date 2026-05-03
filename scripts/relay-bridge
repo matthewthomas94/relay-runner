@@ -139,7 +139,7 @@ This blocks until the user speaks via Caps Lock. If the voice bridge is killed (
 ### Step 2: Process the input
 
 - If the text is `__BRIDGE_DIED__`, the voice session was ended (another session was started, or the bridge was stopped). Say "Voice session ended." and stop the loop — do NOT go back to Step 1. Clean up and return to normal operation.
-- If the text is `__INTERRUPT__`, acknowledge briefly and go back to Step 1.
+- If the text is `__INTERRUPT__`, **silently** go back to Step 1. Do NOT generate any text response, do NOT write to `/tmp/tts_in.fifo`, do NOT acknowledge in any user-visible way. Cancel means the user wants silence — speaking again would just give them another message to cancel, which loops.
 - Otherwise, treat the text as a normal user message. Respond naturally and helpfully, as you would to any typed message.
 
 ### Step 3: Speak your response
