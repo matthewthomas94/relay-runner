@@ -18,10 +18,19 @@ final class PerimeterParticleField {
     // to the existing reply state — no risk of drift when the theme is tuned.
     private let theme: ParticleFieldRenderer.Theme
 
-    /// Distance from any edge (in points) at which dots fade fully out.
-    /// Spec calls for a ~24pt visible band; the falloff curve below makes the
-    /// dots strongest at the very edge and tapering across this thickness.
-    private let thickness: CGFloat
+    /// Fraction of the smaller screen dimension the visible band spans.
+    /// At 0.55, the four edge falloffs overlap inside the middle ~10% — every
+    /// dot on screen has some opacity, with a clear edge bias. Tunable via
+    /// init for testing tighter / wider bands.
+    private let thicknessFraction: CGFloat
+
+    /// Falloff exponent. Lower = softer (dots stay visible deeper inward),
+    /// higher = sharper edge band. 0.9 reads as "wide perimeter glow" —
+    /// matches the design reference where dots span most of the screen.
+    private let falloffExponent: CGFloat
+
+    /// Computed during layout from `thicknessFraction × min(width, height)`.
+    private var thickness: CGFloat = 100
 
     private let particleLayer = CALayer()
 
@@ -49,9 +58,12 @@ final class PerimeterParticleField {
     private let maxDotRadius: CGFloat = 3.0
     private let minDotRadius: CGFloat = 0.3
 
-    init(theme: ParticleFieldRenderer.Theme = .tts, thickness: CGFloat = 90) {
+    init(theme: ParticleFieldRenderer.Theme = .tts,
+         thicknessFraction: CGFloat = 0.55,
+         falloffExponent: CGFloat = 0.9) {
         self.theme = theme
-        self.thickness = thickness
+        self.thicknessFraction = thicknessFraction
+        self.falloffExponent = falloffExponent
         particleLayer.opacity = 0
         // Suppress implicit fade so our explicit animations control opacity transitions.
         particleLayer.actions = ["opacity": NSNull(), "contents": NSNull()]
@@ -77,6 +89,11 @@ final class PerimeterParticleField {
             // Use the host screen's backing scale, not NSScreen.main — the
             // perimeter spans every connected screen and they may differ.
             screenScale = particleLayer.contentsScale > 0 ? particleLayer.contentsScale : 2.0
+            // Recompute thickness for this screen — at 0.55 of the shorter
+            // edge, a 1080p display gets ~600pt of falloff, a 27" 5K gets
+            // ~830pt. The four edges' falloffs overlap inside the middle so
+            // every dot on screen has some opacity.
+            thickness = min(bounds.width, bounds.height) * thicknessFraction
             rebuildContext()
             dots = buildDotGrid(size: bounds.size)
         }
@@ -184,8 +201,17 @@ final class PerimeterParticleField {
         ctx.saveGState()
         ctx.scaleBy(x: scale, y: scale)
 
+        // Slow global breathing — same value applied to every dot's radius
+        // and alpha, so the whole field feels like one organism inhaling /
+        // exhaling instead of a flat texture. ~10s cycle is slow enough to
+        // be subliminal but visible if you're looking for it.
+        let breath = 0.92 + 0.12 * CGFloat(sin(elapsed * 0.6))
+
         // Same wave structure as ParticleFieldRenderer.renderFrame so the two
         // surfaces feel like the same effect at different positions on screen.
+        // Amplitudes (radius 0.35, alpha 0.28) are higher than the bottom
+        // field's (0.2 / 0.1) so the wider perimeter band reads as actively
+        // moving rather than statically lit.
         for dot in dots {
             let wave1 = sin(
                 Double(dot.x) * 0.012
@@ -203,11 +229,11 @@ final class PerimeterParticleField {
             ) * 0.3
 
             let wave = CGFloat(wave1 + wave2 + wave3) / 1.7
-            let radiusScale: CGFloat = 1.0 + wave * 0.2
-            let radius = dot.baseRadius * radiusScale
+            let radiusScale: CGFloat = 1.0 + wave * 0.35
+            let radius = dot.baseRadius * radiusScale * breath
             guard radius > 0.1 else { continue }
 
-            let alpha = dot.baseAlpha * (1.0 + wave * 0.1)
+            let alpha = dot.baseAlpha * (1.0 + wave * 0.28) * breath
             guard alpha > 0.02 else { continue }
 
             ctx.setFillColor(red: dot.r, green: dot.g, blue: dot.b, alpha: alpha)
@@ -239,9 +265,11 @@ final class PerimeterParticleField {
                 let x = CGFloat(col) * spacing + spacing / 2
                 let y = CGFloat(row) * spacing + spacing / 2
 
-                // Perimeter mask: dots near any edge are visible, dots in the
-                // middle are not. Falloff is cubic — strong band at the very
-                // edge fading into nothing within `thickness` points inward.
+                // Perimeter mask. distFromEdge is the L∞ distance to the
+                // nearest screen edge — small near edges, large in the center.
+                // The falloff curve uses `falloffExponent` (default 0.9 for
+                // a soft, wide band) so dots stay readable well into the
+                // screen rather than vanishing right after the edge.
                 let distLeft = x
                 let distRight = size.width - x
                 let distBottom = y
@@ -250,8 +278,8 @@ final class PerimeterParticleField {
 
                 guard distFromEdge < thickness else { continue }
                 let t = distFromEdge / thickness                  // 0 at edge, 1 at inner cutoff
-                let edgeFactor = pow(1.0 - t, 1.6)                // matches ParticleFieldRenderer's verticalFactor curve
-                guard edgeFactor > 0.02 else { continue }
+                let edgeFactor = pow(1.0 - t, falloffExponent)
+                guard edgeFactor > 0.015 else { continue }        // tighter cutoff: keep faint center dots
 
                 let dotRadius = minDotRadius + (maxDotRadius - minDotRadius) * edgeFactor
                 let dotAlpha = 0.2 + 0.6 * edgeFactor
