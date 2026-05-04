@@ -53,6 +53,19 @@ cancel_run --run_id=17             → SIGTERM the worker, prune the worktree
 
 Voice equivalents work too: "what are the agents doing?", "how's REL-42?", "stop REL-42".
 
+## The intended workflow
+
+The orchestrator is designed around a four-step loop. The main Claude Code session is the *orchestrator* — it's the one talking to you and routing work — and each `claude -p` worker is a one-shot *sub-agent*.
+
+1. **Discuss.** You and the main session talk through what needs to happen. Voice via `/relay-bridge`, or just typed chat. The main session has full context of the conversation, the codebase, and the project state.
+2. **Write tickets.** When the discussion settles on concrete work, the main session writes Linear issues for the team's project — title, description with acceptance criteria, priority. Each issue should be small enough that a sub-agent can complete it in one pass without further clarification.
+3. **Dispatch.** The main session calls `mcp__relay-orchestrator__dispatch_issue(identifier="MEN-N")` for each ticket it should hand off. Multiple dispatches in parallel are supported (no concurrency cap by design — bound by your Anthropic rate limit). Pass a `context` argument when there's relevant background that doesn't fit cleanly in the issue body — sub-agents have no memory of the conversation otherwise.
+4. **Integrate.** Each sub-agent commits to its `relay/<id>` branch and posts a status comment on the Linear issue. The main session merges those branches into the working branch (resolving conflicts when sub-agents touched overlapping code), marks the Linear issue Done, and prunes the worktree + branch.
+
+The main session is *not* a passive router. It's the same session that holds the discussion, so it owns: drafting issue acceptance criteria, deciding which issues to dispatch in parallel, picking the merge order when conflicts are likely, and reviewing the sub-agents' work for quality.
+
+You can still write tickets directly in Linear if you prefer — the orchestrator just needs the identifier. And the main session won't autonomously pick issues off the backlog (no Linear polling in MVP); every dispatch is an explicit decision.
+
 ## What the worker is allowed to do
 
 The default `WORKFLOW.md` constrains the worker to:
