@@ -324,6 +324,7 @@ fi
 ORCH_OK=false
 if [ -f "$HOME/.claude/commands/relay-link-project.md" ] \
    && [ -f "$HOME/.claude/commands/relay-orchestrate.md" ] \
+   && [ -f "$HOME/.claude/commands/relay-workflow.md" ] \
    && [ -f "$HOME/Library/LaunchAgents/com.relay.orchestrator.plist" ] \
    && { [ -x "$HOME/.local/bin/claude" ] || command -v claude >/dev/null 2>&1; }; then
     if [ -x "$HOME/.local/bin/claude" ]; then
