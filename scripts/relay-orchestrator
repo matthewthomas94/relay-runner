@@ -1,0 +1,346 @@
+#!/bin/bash
+# relay-orchestrator -- Sub-agent orchestrator daemon launcher.
+#
+# Usage:
+#   relay-orchestrator                # Run the daemon in the foreground (used by launchd)
+#   relay-orchestrator --install      # First-run install: skills + MCP + launchd plist + load
+#   relay-orchestrator --uninstall    # Reverse --install
+#   relay-orchestrator --start        # Load the launchd plist (start daemon in background)
+#   relay-orchestrator --stop         # Unload the launchd plist (stop daemon)
+#   relay-orchestrator --status       # Print quick status (process, port, recent log)
+#
+# The daemon is the Symphony-style sub-agent orchestrator at services/orchestrator.py.
+# It reuses the same venv and Python that scripts/relay-bridge installs, so we
+# delegate venv bootstrap to that script via `--venv-only`.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+USER_DATA_DIR="$HOME/Library/Application Support/relay-runner"
+SERVICES_DIR="$USER_DATA_DIR/services"
+RELOCATABLE_PYTHON="$USER_DATA_DIR/python/bin/python3"
+VENV_PYTHON="$SERVICES_DIR/.venv/bin/python"
+
+ORCH_DIR="$USER_DATA_DIR/orchestrator"
+LOG_FILE="/tmp/relay_orchestrator.log"
+ERR_FILE="/tmp/relay_orchestrator.err"
+PORT_FILE="/tmp/relay_orchestrator.port"
+
+PLIST_LABEL="com.relay.orchestrator"
+PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
+
+CMDS_DIR="$HOME/.claude/commands"
+LINK_MD="$CMDS_DIR/relay-link-project.md"
+ORCH_MD="$CMDS_DIR/relay-orchestrate.md"
+
+# -- Common helpers --
+
+ensure_venv() {
+    # Delegate venv bootstrap to relay-bridge. It's already battle-tested for the
+    # same Python deps; --venv-only short-circuits before voice features start.
+    "$SCRIPT_DIR/relay-bridge" --venv-only
+    if [ ! -x "$VENV_PYTHON" ]; then
+        echo "[relay-orchestrator] venv bootstrap failed — see relay-bridge output." >&2
+        exit 1
+    fi
+}
+
+find_claude_bin() {
+    if [ -x "$HOME/.local/bin/claude" ]; then
+        echo "$HOME/.local/bin/claude"
+    elif command -v claude >/dev/null 2>&1; then
+        command -v claude
+    else
+        echo ""
+    fi
+}
+
+find_orchestrator_mcp_bin() {
+    # Bundled (Contents/SharedSupport/scripts → ../../MacOS/relay-orchestrator-mcp).
+    local bundled="$SCRIPT_DIR/../../MacOS/relay-orchestrator-mcp"
+    if [ -x "$bundled" ]; then
+        (cd "$(dirname "$bundled")" && pwd)
+        return
+    fi
+    for cfg in release debug; do
+        local dev="$PROJECT_ROOT/.build/$cfg/relay-orchestrator-mcp"
+        if [ -x "$dev" ]; then
+            echo "$(cd "$(dirname "$dev")" && pwd)/relay-orchestrator-mcp"
+            return
+        fi
+    done
+    echo ""
+}
+
+# -- Subcommands --
+
+install_skills() {
+    local mode="${1:-if-missing}"
+    mkdir -p "$CMDS_DIR"
+
+    if [ "$mode" = "force" ] || [ ! -f "$LINK_MD" ]; then
+        cat > "$LINK_MD" <<'LINK_MD_EOF'
+Link the current project to a Linear project so the relay-runner orchestrator can dispatch its issues to autonomous sub-agent runs.
+
+## What this command does
+
+1. Identifies the current local git repo (path + remote URL).
+2. Asks the user (or infers from context) which Linear project to associate.
+3. Calls `mcp__relay-orchestrator__link_project` to persist the link.
+
+## Steps
+
+1. **Confirm the orchestrator daemon is reachable.** Either the menu bar app started it, or run:
+
+   ```bash
+   relay-orchestrator --start || scripts/relay-orchestrator --start
+   ```
+
+2. **Discover the local repo.** From the current working directory:
+
+   ```bash
+   git rev-parse --show-toplevel
+   git remote get-url origin
+   git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || echo main
+   ```
+
+3. **Identify the Linear project.** Use `mcp__linear__list_projects` (the Linear MCP) to find candidates. If the user named one, search by name; otherwise list a few options and ask.
+
+4. **Link.** Call `mcp__relay-orchestrator__link_project` with:
+   - `linear_project_id`: the Linear project's id (UUID)
+   - `repo_path`: absolute path from step 2
+   - `repo_remote`: remote URL from step 2
+   - `default_branch`: branch from step 2 (default: main)
+
+5. **Confirm.** Call `mcp__relay-orchestrator__list_projects` and show the user the link summary.
+
+## Notes
+
+- Linking is persisted to `~/Library/Application Support/relay-runner/orchestrator/projects.toml`. Edit via `unlink_project` / `link_project`, not by hand.
+- One Linear project may be linked at a time per local repo. Re-running `link_project` for the same Linear project ID overwrites the prior link.
+- The daemon doesn't push or modify Linear state — workers do, via the Linear MCP. The link is purely a local routing decision.
+LINK_MD_EOF
+        echo "[relay-orchestrator] wrote $LINK_MD"
+    fi
+
+    if [ "$mode" = "force" ] || [ ! -f "$ORCH_MD" ]; then
+        cat > "$ORCH_MD" <<'ORCH_MD_EOF'
+Dispatch a Linear issue to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs `claude -p` autonomously inside it.
+
+## When to use this
+
+The user said something like "work on REL-42" or "have an agent take REL-42". This command picks up the issue, runs it in an isolated worktree, and returns once the sub-agent finishes (or you can leave it running and check `list_runs` later).
+
+## Steps
+
+1. **Identify the issue.** Extract the Linear identifier (e.g. `REL-42`) from the user's message. If multiple are mentioned, dispatch each via separate calls.
+
+2. **Verify project link.** Call `mcp__relay-orchestrator__list_projects`. If empty, tell the user to run `/relay-link-project` first.
+
+3. **Dispatch.** Call `mcp__relay-orchestrator__dispatch_issue(identifier="REL-42")`. The tool returns:
+   - `already_active: true` → there's already a run going for this issue. Tell the user the existing run_id and stop.
+   - `already_active: false` → a fresh run is started; the response includes `run_id`, `state` (Claimed → Running), `workspace_path`, `branch`.
+
+4. **Report briefly.** One sentence: "Started REL-42 in worktree `<path>`, run_id N." Don't wait — the run is async. The user can ask "How's REL-42?" later and you'll call `get_run` / `list_runs`.
+
+## Status checks
+
+When the user asks "what are the agents doing?" / "how's REL-42?":
+- `mcp__relay-orchestrator__list_runs(state="Running")` → all active runs
+- `mcp__relay-orchestrator__get_run(run_id=N)` → details of a specific run, including `state`, `exit_code`, `last_error`, `log_path`
+
+If a run finished, also peek at the worktree (path is in the run record) to see the diff: `git -C <workspace_path> diff <default_branch>...`.
+
+## Cancelling
+
+`mcp__relay-orchestrator__cancel_run(run_id=N)` terminates the worker (SIGTERM, then SIGKILL) and prunes the worktree by default.
+
+## Notes
+
+- The worker runs with `--dangerously-skip-permissions` inside an isolated branch (`relay/<sanitized-id>`); changes are local-only and never pushed automatically.
+- The default workflow template is at `~/Library/Application Support/relay-runner/orchestrator/WORKFLOW.md`. A repo-local `WORKFLOW.md` overrides the default for that repo.
+- The daemon doesn't talk to Linear directly — the worker reads issue context and posts status comments via the Linear MCP it inherits from your session.
+ORCH_MD_EOF
+        echo "[relay-orchestrator] wrote $ORCH_MD"
+    fi
+}
+
+uninstall_skills() {
+    rm -f "$LINK_MD" "$ORCH_MD"
+    echo "[relay-orchestrator] removed slash command files."
+}
+
+register_mcp() {
+    local claude_bin
+    claude_bin="$(find_claude_bin)"
+    local mcp_bin
+    mcp_bin="$(find_orchestrator_mcp_bin)"
+
+    if [ -z "$claude_bin" ]; then
+        echo "[relay-orchestrator] claude CLI not found — skipping MCP registration." >&2
+        return 0
+    fi
+    if [ -z "$mcp_bin" ]; then
+        echo "[relay-orchestrator] relay-orchestrator-mcp binary not found." >&2
+        echo "[relay-orchestrator] Build with: swift build --product relay-orchestrator-mcp" >&2
+        return 0
+    fi
+
+    if "$claude_bin" mcp get relay-orchestrator >/dev/null 2>&1; then
+        echo "[relay-orchestrator] MCP server already registered."
+        return 0
+    fi
+
+    if "$claude_bin" mcp add -s user relay-orchestrator -- "$mcp_bin" >/dev/null 2>&1; then
+        echo "[relay-orchestrator] Registered MCP server: relay-orchestrator → $mcp_bin"
+    else
+        echo "[relay-orchestrator] MCP server registration failed (non-fatal)." >&2
+        echo "[relay-orchestrator] Try manually:" >&2
+        echo "    $claude_bin mcp add -s user relay-orchestrator -- $mcp_bin" >&2
+    fi
+}
+
+unregister_mcp() {
+    local claude_bin
+    claude_bin="$(find_claude_bin)"
+    [ -z "$claude_bin" ] && return 0
+    "$claude_bin" mcp remove -s user relay-orchestrator >/dev/null 2>&1 || true
+    echo "[relay-orchestrator] removed MCP server registration."
+}
+
+write_plist() {
+    mkdir -p "$(dirname "$PLIST_PATH")"
+    cat > "$PLIST_PATH" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${PLIST_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${SCRIPT_DIR}/relay-orchestrator</string>
+        <string>--run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>${LOG_FILE}</string>
+    <key>StandardErrorPath</key>
+    <string>${ERR_FILE}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
+PLIST_EOF
+    echo "[relay-orchestrator] wrote launchd plist: $PLIST_PATH"
+}
+
+remove_plist() {
+    rm -f "$PLIST_PATH"
+    echo "[relay-orchestrator] removed launchd plist."
+}
+
+launchctl_load() {
+    if [ ! -f "$PLIST_PATH" ]; then
+        echo "[relay-orchestrator] no plist at $PLIST_PATH — run --install first." >&2
+        return 1
+    fi
+    # bootstrap is the modern replacement for `load -w`. Errors when already loaded;
+    # fall back to a quiet kickstart in that case.
+    if launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null; then
+        echo "[relay-orchestrator] daemon loaded via launchctl bootstrap."
+    else
+        launchctl kickstart -k "gui/$(id -u)/${PLIST_LABEL}" >/dev/null 2>&1 || true
+        echo "[relay-orchestrator] daemon already loaded — restarted via kickstart."
+    fi
+}
+
+launchctl_unload() {
+    launchctl bootout "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null || true
+    echo "[relay-orchestrator] daemon unloaded."
+}
+
+cmd_status() {
+    echo "Daemon process:"
+    if pgrep -f 'services/orchestrator.py' >/dev/null 2>&1; then
+        pgrep -fl 'services/orchestrator.py' | head -3 | sed 's/^/  /'
+    else
+        echo "  (not running)"
+    fi
+    echo "Port file ($PORT_FILE):"
+    if [ -f "$PORT_FILE" ]; then
+        echo "  port=$(cat "$PORT_FILE")"
+    else
+        echo "  (absent)"
+    fi
+    echo "Plist: $([ -f "$PLIST_PATH" ] && echo installed || echo missing)"
+    echo "Recent stderr ($ERR_FILE):"
+    tail -5 "$ERR_FILE" 2>/dev/null | sed 's/^/  /' || echo "  (no log yet)"
+}
+
+cmd_run() {
+    ensure_venv
+    mkdir -p "$ORCH_DIR"
+    exec "$VENV_PYTHON" "$PROJECT_ROOT/services/orchestrator.py" "$@"
+}
+
+cmd_install() {
+    ensure_venv
+    install_skills if-missing
+    register_mcp
+    write_plist
+    launchctl_load
+    echo
+    echo "[relay-orchestrator] install complete. Try:"
+    echo "    relay-orchestrator --status"
+    echo
+    echo "From any Claude Code session:"
+    echo "    /relay-link-project   (one-time link to a Linear project)"
+    echo "    /relay-orchestrate    (dispatch an issue to a sub-agent)"
+}
+
+cmd_uninstall() {
+    launchctl_unload
+    remove_plist
+    unregister_mcp
+    uninstall_skills
+    rm -f "$PORT_FILE"
+    echo "[relay-orchestrator] uninstall complete."
+}
+
+# -- Dispatch --
+
+mode="${1:-run}"
+case "$mode" in
+    --install)            shift || true; cmd_install   "$@" ;;
+    --uninstall)          shift || true; cmd_uninstall "$@" ;;
+    --start)              shift || true; ensure_venv; launchctl_load ;;
+    --stop)               shift || true; launchctl_unload ;;
+    --status)             shift || true; cmd_status ;;
+    --install-skills)     shift || true; install_skills force ;;
+    --run|run|"")
+        shift || true
+        cmd_run "$@"
+        ;;
+    -h|--help)
+        sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+        ;;
+    *)
+        echo "Unknown subcommand: $mode" >&2
+        echo "Try: relay-orchestrator --help" >&2
+        exit 64
+        ;;
+esac

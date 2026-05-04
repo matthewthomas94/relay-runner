@@ -318,7 +318,23 @@ if [ -x "$HOME/.local/bin/claude" ] || command -v claude >/dev/null 2>&1; then
     "$__claude_for_check" mcp get relay-actions >/dev/null 2>&1 && RELAY_MCP_OK=true
 fi
 
-if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $CLAUDE_CLI_OK || ! $RELAY_SKILLS_OK || ! $RELAY_MCP_OK; then
+# Orchestrator install gate: covers the slash commands, MCP server
+# registration, and the launchd plist that keeps the daemon alive.
+# Falls back through the same `claude mcp get` probe used for relay-actions.
+ORCH_OK=false
+if [ -f "$HOME/.claude/commands/relay-link-project.md" ] \
+   && [ -f "$HOME/.claude/commands/relay-orchestrate.md" ] \
+   && [ -f "$HOME/Library/LaunchAgents/com.relay.orchestrator.plist" ] \
+   && { [ -x "$HOME/.local/bin/claude" ] || command -v claude >/dev/null 2>&1; }; then
+    if [ -x "$HOME/.local/bin/claude" ]; then
+        __claude_for_orch="$HOME/.local/bin/claude"
+    else
+        __claude_for_orch="$(command -v claude)"
+    fi
+    "$__claude_for_orch" mcp get relay-orchestrator >/dev/null 2>&1 && ORCH_OK=true
+fi
+
+if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $CLAUDE_CLI_OK || ! $RELAY_SKILLS_OK || ! $RELAY_MCP_OK || ! $ORCH_OK; then
     echo ''
     echo '╔══════════════════════════════════════════╗'
     echo '║  Relay Runner — First-time setup         ║'
@@ -650,6 +666,23 @@ PYEOF
                 echo "[Relay Runner] MCP server registration failed (non-fatal). Try manually:" >&2
                 echo "    $__claude_bin mcp add -s user relay-actions -- $__mcp_bin" >&2
             fi
+        fi
+    fi
+
+    if ! $ORCH_OK; then
+        # Orchestrator install: skills, MCP server, and launchd plist (keeps the
+        # daemon alive across logins). Delegated to scripts/relay-orchestrator
+        # --install which is idempotent and resolves its own binary paths the
+        # same way this script does for relay-actions-mcp. Non-fatal — voice
+        # features still work without the orchestrator; only the
+        # /relay-link-project + /relay-orchestrate slash commands and the
+        # mcp__relay-orchestrator__* tools become unavailable.
+        emit_progress 99 "Installing relay-orchestrator..."
+        if "$SCRIPT_DIR/relay-orchestrator" --install >/dev/null 2>&1; then
+            echo "[Relay Runner] Installed relay-orchestrator (skills + MCP + launchd plist)."
+        else
+            echo "[Relay Runner] relay-orchestrator install failed (non-fatal). Try manually:" >&2
+            echo "    $SCRIPT_DIR/relay-orchestrator --install" >&2
         fi
     fi
 

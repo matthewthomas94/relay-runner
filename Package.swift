@@ -24,5 +24,9 @@ let package = Package(
             name: "relay-actions-mcp",
             path: "Sources/relay-actions-mcp"
         ),
+        .executableTarget(
+            name: "relay-orchestrator-mcp",
+            path: "Sources/relay-orchestrator-mcp"
+        ),
     ]
 )
