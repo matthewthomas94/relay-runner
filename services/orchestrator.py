@@ -552,18 +552,33 @@ class Daemon:
             return repo_template
         return self.workflow_path
 
-    def _build_prompt(self, *, identifier: str, repo_path: str, branch: str, attempt: int) -> str:
+    def _build_prompt(
+        self, *, identifier: str, repo_path: str, branch: str, attempt: int,
+        caller_context: str | None = None,
+    ) -> str:
         template_path = self._resolve_workflow_for_repo(repo_path)
         try:
             template = template_path.read_text()
         except OSError as e:
             raise RuntimeError(f"could not read workflow template at {template_path}: {e}") from e
+        # Sub-agents have no memory of the dispatching session. The caller can
+        # pass `caller_context` to inject background that doesn't fit in the
+        # Linear issue (recent decisions, related runs, etc.). Wrap it in a
+        # heading only when present so an empty value collapses cleanly.
+        if caller_context and caller_context.strip():
+            context_block = (
+                "## Additional context from the dispatcher\n\n"
+                f"{caller_context.strip()}\n"
+            )
+        else:
+            context_block = ""
         return render_template(
             template,
             identifier=identifier,
             repo_path=repo_path,
             branch=branch,
             attempt=str(attempt),
+            caller_context=context_block,
         )
 
     # -- API -----------------------------------------------------------------
@@ -616,7 +631,8 @@ class Daemon:
     def list_projects(self) -> list[dict]:
         return self.projects.list()
 
-    def dispatch(self, *, identifier: str, linear_project_id: str | None = None) -> dict:
+    def dispatch(self, *, identifier: str, linear_project_id: str | None = None,
+                 context: str | None = None) -> dict:
         if not identifier:
             raise ValueError("issue identifier is required")
 
@@ -674,6 +690,7 @@ class Daemon:
                 repo_path=project["repo_path"],
                 branch=branch,
                 attempt=attempt,
+                caller_context=context,
             )
 
             run_id = self.runs.insert(
@@ -818,6 +835,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.daemon.dispatch(
                     identifier=body.get("identifier", ""),
                     linear_project_id=body.get("linear_project_id"),
+                    context=body.get("context"),
                 )
                 return (200 if result["already_active"] else 202), result
 

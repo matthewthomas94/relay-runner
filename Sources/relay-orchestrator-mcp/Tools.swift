@@ -123,6 +123,10 @@ struct DispatchIssueTool: MCPTool {
                     "type": "string",
                     "description": "Optional Linear project ID. Required only if multiple projects are linked.",
                 ],
+                "context": [
+                    "type": "string",
+                    "description": "Optional caller-supplied context for the sub-agent. Sub-agents have no memory of the dispatching session — pass background that doesn't fit cleanly in the Linear issue (recent decisions, related runs, constraints). Rendered into the worker's workflow prompt under 'Additional context from the dispatcher'.",
+                ],
             ],
             "required": ["identifier"],
         ]
@@ -134,6 +138,9 @@ struct DispatchIssueTool: MCPTool {
         ]
         if let pid = arguments["linear_project_id"] as? String, !pid.isEmpty {
             body["linear_project_id"] = pid
+        }
+        if let ctx = arguments["context"] as? String, !ctx.isEmpty {
+            body["context"] = ctx
         }
         return try await proxy(method: "POST", path: "/v1/runs", body: body)
     }
