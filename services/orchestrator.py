@@ -358,8 +358,28 @@ def create_worktree(*, repo_path: str, workspace_path: Path, branch: str, base_b
     raise RuntimeError(f"git worktree add failed: {err.strip()}")
 
 
-def remove_worktree(repo_path: str, workspace_path: Path) -> None:
-    _git(repo_path, "worktree", "remove", "--force", str(workspace_path), check=False)
+def remove_worktree(repo_path: str, workspace_path: Path) -> tuple[bool, str | None]:
+    """Remove a worktree. Returns (removed, error).
+
+    `git worktree remove --force` can silently leave the directory in place if
+    the worker process still holds open file descriptors / cwd inside it at the
+    moment of pruning (e.g., right after SIGTERM). When that happens, fall back
+    to `rm -rf` + `git worktree prune` so git's bookkeeping stays consistent.
+    """
+    result = _git(repo_path, "worktree", "remove", "--force", str(workspace_path), check=False)
+    if not workspace_path.exists():
+        return True, None
+
+    try:
+        shutil.rmtree(workspace_path)
+    except OSError as e:
+        git_err = (result.stderr or "").strip() or f"exit={result.returncode}"
+        return False, f"git worktree remove failed ({git_err}); rmtree fallback failed: {e}"
+
+    _git(repo_path, "worktree", "prune", check=False)
+    if workspace_path.exists():
+        return False, f"worktree directory still present after rm -rf: {workspace_path}"
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -666,12 +686,17 @@ class Daemon:
             self.runs.update(run_id, state="Canceled",
                              last_error="Canceled (no live worker)", ended=True)
 
+        result: dict = {"canceled": True, "run": self.runs.get(run_id)}
         if prune_worktree:
             project = self.projects.get(run["linear_project_id"])
             if project:
-                remove_worktree(project["repo_path"], Path(run["workspace_path"]))
-
-        return {"canceled": True, "run": self.runs.get(run_id)}
+                removed, error = remove_worktree(
+                    project["repo_path"], Path(run["workspace_path"])
+                )
+                result["worktree_removed"] = removed
+                if error:
+                    result["worktree_error"] = error
+        return result
 
     def shutdown(self) -> None:
         with self._workers_lock:
