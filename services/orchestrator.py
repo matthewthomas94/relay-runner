@@ -345,16 +345,22 @@ def create_worktree(*, repo_path: str, workspace_path: Path, branch: str, base_b
     if workspace_path.exists():
         raise RuntimeError(f"{workspace_path} exists but is not a git worktree")
 
-    # Try fresh branch off base. Fall back to attaching existing branch if it already exists.
     add = _git(repo_path, "worktree", "add", "-b", branch, str(workspace_path), base_branch, check=False)
     if add.returncode == 0:
         return
     err = add.stderr or ""
-    if "already exists" in err or "already used" in err:
-        attach = _git(repo_path, "worktree", "add", str(workspace_path), branch, check=False)
-        if attach.returncode == 0:
+    # Stale branch ref (no worktree owns it): delete and retry fresh off base. This recovers
+    # from a prior cancel that left the ref behind, or a default_branch change on the project.
+    if "already exists" in err:
+        delete_branch(repo_path, branch)
+        retry = _git(repo_path, "worktree", "add", "-b", branch, str(workspace_path), base_branch, check=False)
+        if retry.returncode == 0:
             return
-        raise RuntimeError(f"git worktree add (attach) failed: {attach.stderr.strip()}")
+        raise RuntimeError(f"git worktree add (after stale branch cleanup) failed: {retry.stderr.strip()}")
+    if "already used" in err:
+        raise RuntimeError(
+            f"branch {branch} is checked out by another worktree; cancel that run first: {err.strip()}"
+        )
     raise RuntimeError(f"git worktree add failed: {err.strip()}")
 
 
@@ -380,6 +386,11 @@ def remove_worktree(repo_path: str, workspace_path: Path) -> tuple[bool, str | N
     if workspace_path.exists():
         return False, f"worktree directory still present after rm -rf: {workspace_path}"
     return True, None
+
+
+def delete_branch(repo_path: str, branch: str) -> None:
+    """Force-delete a local branch ref. Best-effort — git will refuse if a worktree still owns it."""
+    _git(repo_path, "branch", "-D", branch, check=False)
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +707,9 @@ class Daemon:
                 result["worktree_removed"] = removed
                 if error:
                     result["worktree_error"] = error
+                # Drop the throwaway branch ref so a re-dispatch starts fresh off the
+                # current default_branch instead of attaching to the old tip.
+                delete_branch(project["repo_path"], run["branch"])
         return result
 
     def shutdown(self) -> None:

@@ -122,7 +122,7 @@ Then read `<workspace>/.relay/run.log`. The default timeout is 30 minutes; tune 
 
 **Worker can't see the Linear MCP.** The worker inherits the user's `~/.claude.json`. If `claude mcp list` (run as your user) doesn't show Linear, fix that first — the worker can't see what your shell can't.
 
-**Worktree branch already exists.** Probably from a prior run that wasn't cleaned up. Cancel any active run on that issue, then run `git -C <repo> worktree prune` and `git -C <repo> branch -D relay/<id>`.
+**Worktree branch already exists.** `cancel_run` with `prune_worktree=true` (the default) now deletes the local `relay/<id>` ref after pruning, and `dispatch_issue` recovers from a stale ref by deleting and recreating off the project's current `default_branch`. If you hit a leftover ref from before this fix, run `git -C <repo> worktree prune` and `git -C <repo> branch -D relay/<id>` once.
 
 ## Limits (MVP)
 
