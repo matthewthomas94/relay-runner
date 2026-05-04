@@ -4,7 +4,7 @@ import Foundation
 /// helper binary. Two kinds:
 ///
 /// 1. `{"type":"tool_fired","tool":"<name>"}` — fire-and-forget notification
-///    that any computer-action MCP tool just ran. Drives the perimeter glow:
+///    that any Relay Actions MCP tool just ran. Drives the perimeter glow:
 ///    transitions StateMachine to `.computerVision(awaitingConfirmation: nil)`
 ///    and starts (or refreshes) a 10s decay timer.
 ///

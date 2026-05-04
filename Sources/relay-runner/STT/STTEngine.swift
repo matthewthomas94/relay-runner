@@ -56,7 +56,7 @@ final class STTEngine: @unchecked Sendable {
         self.keepSamples = sampleRate * 200 / 1000  // 200ms
     }
 
-    /// Inject the modal-confirmation hooks for computer-action `propose_action`
+    /// Inject the modal-confirmation hooks for Relay Actions `propose_action`
     /// prompts. When `stateMachine.pendingConfirmation != nil`, double-tap
     /// Option/Control are routed to `resolver(true|false)` instead of the
     /// default play/cancel behavior. AppState calls this once during

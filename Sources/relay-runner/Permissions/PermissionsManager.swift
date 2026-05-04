@@ -24,11 +24,11 @@ enum PermissionStatus: Equatable {
 /// degrades gracefully when any of them is denied:
 /// - Microphone: required to capture speech.
 /// - Accessibility: enables media-pause when recording starts; required by
-///   the computer-action MCP server to post CGEvents (clicks, keystrokes).
+///   the Relay Actions MCP server to post CGEvents (clicks, keystrokes).
 /// - Input Monitoring: required to capture non-modifier global activation
 ///   keys (Caps Lock alone works without it; modifier flags are readable
 ///   via NSEvent without Input Monitoring).
-/// - Screen Recording: required by the computer-action MCP server's
+/// - Screen Recording: required by the Relay Actions MCP server's
 ///   `screenshot` tool. Without it, the screenshot tool returns a clear
 ///   error string but the rest of the app keeps working.
 enum PermissionKind: String, CaseIterable, Identifiable {
@@ -64,7 +64,7 @@ final class PermissionsManager {
     private(set) var microphone: PermissionStatus = .notDetermined
     private(set) var accessibility: PermissionStatus = .notDetermined
     private(set) var inputMonitoring: PermissionStatus = .notDetermined
-    /// Screen Recording is gated only by the new computer-action MCP tools
+    /// Screen Recording is gated only by the new Relay Actions MCP tools
     /// (specifically `screenshot`). Voice features work even when this is
     /// denied — onboarding therefore treats it as optional, surfaced when the
     /// user first hits a vision-requiring prompt.
@@ -147,7 +147,7 @@ final class PermissionsManager {
     }
 
     /// True when every *required* permission is granted. Screen Recording is
-    /// optional (only the computer-action `screenshot` tool needs it), so it
+    /// optional (only the Relay Actions `screenshot` tool needs it), so it
     /// is intentionally excluded — onboarding shouldn't block on it.
     var allGranted: Bool {
         microphone == .granted &&
@@ -315,7 +315,7 @@ final class PermissionsManager {
 
     /// Screen Recording is checked via CGPreflightScreenCaptureAccess (macOS 11+).
     /// This API doesn't trigger a prompt — it just reads current TCC state.
-    /// To actually prompt, the caller invokes the computer-action `screenshot`
+    /// To actually prompt, the caller invokes the Relay Actions `screenshot`
     /// tool (which calls SCShareableContent.current and triggers the prompt
     /// the first time). There's no programmatic "request" call that doesn't
     /// also do the work, unlike CGRequestScreenCaptureAccess (which works but

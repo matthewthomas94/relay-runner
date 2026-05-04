@@ -1,4 +1,4 @@
-# Computer Actions — Specification
+# Relay Actions — Specification
 
 **Created:** 2026-05-03
 **Status:** Draft (pre-implementation)
@@ -6,7 +6,7 @@
 
 ## Goal
 
-Voice-driven Claude can drive the macOS UI for two specific use cases — UAT of in-development software and configuring dense dashboards that lack CLI/MCP interfaces (e.g. Apple Developer site, Xcode preferences) — gated by hardware double-tap confirmation, with a purple perimeter overlay while computer-vision tools are active. The existing voice → STT → `claude -p` → TTS loop is unchanged when no computer-action tools are invoked.
+Voice-driven Claude can drive the macOS UI for two specific use cases — UAT of in-development software and configuring dense dashboards that lack CLI/MCP interfaces (e.g. Apple Developer site, Xcode preferences) — gated by hardware double-tap confirmation, with a purple perimeter overlay while computer-vision tools are active. The existing voice → STT → `claude -p` → TTS loop is unchanged when no Relay Actions tools are invoked.
 
 ## Background
 
@@ -37,7 +37,7 @@ These were resolved during the feasibility discussion and are not open for re-li
 | Cross-process state           | New Unix socket between `RelayActionsMCP` ↔ menu-bar app for events + confirm replies |
 | MCP server lifecycle          | Spawned per-session by `claude`; menu-bar app does not own it                         |
 | Existing tool permissions     | `--dangerously-skip-permissions` stays on for Bash/Edit/Read                          |
-| New tool permissions          | Computer-action tools gated by `propose_action`, not Claude Code's permission system  |
+| New tool permissions          | Relay Actions tools gated by `propose_action`, not Claude Code's permission system    |
 | Confirmation timeout          | 30s; default to "no" / aborted on timeout                                             |
 | Perimeter glow scope          | All connected screens (user may not be looking at the screen Claude is acting on)     |
 | Vision-active decay           | 10s after last MCP tool call; immediate clear on `/relay-stop` or session end         |
@@ -66,7 +66,7 @@ These were resolved during the feasibility discussion and are not open for re-li
    - Target: MCP tools `frontmost_app()` (returns `{name, bundle_id, pid}`) and `list_windows()` (returns array of `{app_name, window_title, frame, on_screen}`) using NSWorkspace + AX APIs.
    - Acceptance: `frontmost_app()` matches the user's currently focused app; `list_windows()` returns at least the windows visible in a screenshot taken at the same instant.
 
-5. **`propose_action` confirmation tool**: Computer-action tools that touch state are gated by an explicit user confirmation step.
+5. **`propose_action` confirmation tool**: Relay Actions tools that touch state are gated by an explicit user confirmation step.
    - Current: No confirmation mechanism exists. Claude Code's permission system is bypassed by `--dangerously-skip-permissions`.
    - Target: MCP tool `propose_action(summary: string, risk: "low"|"medium"|"high")`. Behavior: `low` returns `{confirmed: true}` after sending a brief visual flash event to the menu-bar app (~300ms); `medium` and `high` block waiting on user double-tap, returning `{confirmed: true}` on Option-double-tap, `{confirmed: false, reason: "user_rejected"}` on Control-double-tap, `{confirmed: false, reason: "timeout"}` after 30s of no input.
    - Acceptance: Calling with `risk: "low"` returns within 500ms with `confirmed: true`; calling with `risk: "high"`, then double-tapping Option, returns `confirmed: true`; double-tapping Control returns `confirmed: false, reason: "user_rejected"`; no input for 30s returns `confirmed: false, reason: "timeout"`.
@@ -84,7 +84,7 @@ These were resolved during the feasibility discussion and are not open for re-li
 8. **Perimeter overlay**: Purple particle band around all connected screens while computer vision is active.
    - Current: `OverlayPanel` is a full-screen `screenSaver`-level panel, but renders only the centered transcription pill ([OverlayPanel.swift:5-26](../../Sources/relay-runner/Overlay/OverlayPanel.swift)).
    - Target: A new `PerimeterOverlay` view renders a ~24pt-thick band along the perimeter of every connected screen, using the existing `.tts` purple particle theme ([ParticleFieldRenderer.swift:12](../../Sources/relay-runner/Overlay/ParticleFieldRenderer.swift)). Visible whenever `state == .computerVision(...)`. Brightness/intensity pulses higher when `awaitingConfirmation` is non-nil. Click-through (does not intercept input).
-   - Acceptance: After Claude calls any computer-action MCP tool, the perimeter band appears on every connected screen within 100ms and uses the `.tts` purple. Mouse clicks pass through it to underlying apps. Band intensity visibly pulses while a confirmation is pending. Band clears within 100ms of the 10s decay window expiring or `/relay-stop` running.
+   - Acceptance: After Claude calls any Relay Actions MCP tool, the perimeter band appears on every connected screen within 100ms and uses the `.tts` purple. Mouse clicks pass through it to underlying apps. Band intensity visibly pulses while a confirmation is pending. Band clears within 100ms of the 10s decay window expiring or `/relay-stop` running.
 
 9. **Screen Recording permission flow**: First-run UX explains and routes the user to grant Screen Recording — to the *terminal*, not Relay Runner.
    - Current: `PermissionsManager` manages microphone, accessibility, and input-monitoring ([PermissionsManager.swift:30-44](../../Sources/relay-runner/Permissions/PermissionsManager.swift)). Screen Recording is not requested.
@@ -97,10 +97,10 @@ These were resolved during the feasibility discussion and are not open for re-li
     - Target: `propose_action` requires Claude to classify each action. The system prompt or tool description guides classification: `low` = reversible/read-only (taking a screenshot, scrolling, hovering, reading window titles); `medium` = single-step state changes (clicking a button, typing into a field, pressing a key combo); `high` = irreversible or destructive (pressing Enter on a confirmation dialog, clicking buttons whose label includes Delete/Submit/Send/Pay/Confirm, sending keystrokes that would bypass a system dialog).
     - Acceptance: A test session that has Claude take 5 screenshots and 5 scrolls produces zero double-tap requirements. A test session that has Claude click a non-destructive button produces a medium-risk prompt resolvable by double-tap. A test session that has Claude click a destructive-labeled button produces a high-risk prompt.
 
-11. **Existing voice loop unchanged in absence of computer-action tools**: Adding computer actions does not regress the existing experience.
+11. **Existing voice loop unchanged in absence of Relay Actions tools**: Adding Relay Actions does not regress the existing experience.
     - Current: Voice → STT → `claude -p` → TTS works as documented in [README.md](../../README.md).
-    - Target: A voice session that does not invoke any computer-action MCP tool has identical perceived latency, identical pill behavior, identical gestures, and no perimeter overlay.
-    - Acceptance: Running a regression script of 10 prompts that don't touch computer-action tools (e.g. "what time is it", "summarize the last commit", "what files changed today") shows: no perimeter overlay, double-tap Option still plays TTS, double-tap Control still cancels, end-to-end latency within ±10% of baseline.
+    - Target: A voice session that does not invoke any Relay Actions MCP tool has identical perceived latency, identical pill behavior, identical gestures, and no perimeter overlay.
+    - Acceptance: Running a regression script of 10 prompts that don't touch Relay Actions tools (e.g. "what time is it", "summarize the last commit", "what files changed today") shows: no perimeter overlay, double-tap Option still plays TTS, double-tap Control still cancels, end-to-end latency within ±10% of baseline.
 
 ## Boundaries
 

@@ -59,7 +59,7 @@ final class PermissionNotifier {
         case .inputMonitoring:
             return "Relay Runner can't detect your trigger key — Input Monitoring access was removed. Open the menu and choose Fix Permissions."
         case .screenRecording:
-            return "Relay Runner can't take screenshots for the computer-action voice tools — Screen Recording access was removed. Voice transcription and speech still work."
+            return "Relay Runner can't take screenshots for the Relay Actions voice tools — Screen Recording access was removed. Voice transcription and speech still work."
         }
     }
 }
