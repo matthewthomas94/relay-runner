@@ -15,6 +15,7 @@ on:
       - "Info.plist"
       - "assets/**"
       - "scripts/**"
+      - "services/**"
       - ".github/workflows/build-dmg.yml"
   # Allow manual trigger
   workflow_dispatch:
