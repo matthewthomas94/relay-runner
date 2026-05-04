@@ -544,12 +544,40 @@ class Daemon:
         repo = Path(repo_path).expanduser()
         if not repo.is_dir() or not (repo / ".git").exists():
             raise ValueError(f"repo_path {repo} is not a git repository")
-        return self.projects.add(
+        new_default = default_branch or "main"
+
+        existing = self.projects.get(linear_project_id)
+        record = self.projects.add(
             linear_project_id=linear_project_id,
             repo_path=str(repo.resolve()),
             repo_remote=repo_remote,
-            default_branch=default_branch or "main",
+            default_branch=new_default,
         )
+
+        # If default_branch changed while runs are still active, the existing
+        # worktrees stay on the old base. Warn so the caller knows to cancel +
+        # redispatch to migrate them.
+        if existing and existing.get("default_branch", "main") != new_default:
+            old_default = existing.get("default_branch", "main")
+            affected = [
+                r for r in self.runs.list(limit=1000)
+                if r["linear_project_id"] == linear_project_id
+                and r["state"] in self.runs.ACTIVE_STATES
+            ]
+            if affected:
+                ids = ", ".join(
+                    f"run {r['id']} ({r['issue_identifier']})" for r in affected
+                )
+                warning = (
+                    f"default_branch changed {old_default!r} -> {new_default!r} for "
+                    f"project {linear_project_id!r}, but {len(affected)} active run(s) "
+                    f"are still based on {old_default!r}: {ids}. Cancel and redispatch "
+                    f"to migrate them to {new_default!r}."
+                )
+                print(f"[orchestrator] WARNING: {warning}", file=sys.stderr)
+                return {**record, "warnings": [warning]}
+
+        return record
 
     def unlink_project(self, linear_project_id: str) -> bool:
         return self.projects.remove(linear_project_id)
