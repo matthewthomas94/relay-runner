@@ -61,7 +61,7 @@ find_orchestrator_mcp_bin() {
     # Bundled (Contents/SharedSupport/scripts → ../../MacOS/relay-orchestrator-mcp).
     local bundled="$SCRIPT_DIR/../../MacOS/relay-orchestrator-mcp"
     if [ -x "$bundled" ]; then
-        (cd "$(dirname "$bundled")" && pwd)
+        echo "$(cd "$(dirname "$bundled")" && pwd)/relay-orchestrator-mcp"
         return
     fi
     for cfg in release debug; do
