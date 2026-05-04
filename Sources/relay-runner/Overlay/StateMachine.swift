@@ -1,6 +1,6 @@
 import Foundation
 
-/// A pending computer-action confirmation surfaced by `propose_action` in the
+/// A pending Relay Actions confirmation surfaced by `propose_action` in the
 /// RelayActionsMCP server. While a prompt is non-nil, the modifier double-tap
 /// gestures (Option/Control) are repurposed as yes/no instead of play/cancel.
 struct ConfirmationPrompt: Equatable {

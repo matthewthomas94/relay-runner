@@ -50,7 +50,7 @@ mkdir -p "$APP_DIR/Contents/SharedSupport/scripts"
 # Binary
 cp "$BUILD_DIR/relay-runner" "$APP_DIR/Contents/MacOS/relay-runner"
 
-# Helper binary: computer-action MCP server. Spawned by `claude` (not by the
+# Helper binary: Relay Actions MCP server. Spawned by `claude` (not by the
 # menu-bar app) when a session is active and the MCP entry registered by
 # scripts/relay-bridge points here. Lives alongside the main binary so the TCC
 # attribution falls on the bundle (Screen Recording / Accessibility prompts

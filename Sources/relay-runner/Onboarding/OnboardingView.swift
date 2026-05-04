@@ -281,7 +281,7 @@ struct OnboardingView: View {
         case .inputMonitoring:
             return "Your organisation's security policy appears to be blocking keyboard capture. You'll need your IT team to allow Relay Runner. Voice still works via the menu-bar Record button or always-on mode in Settings — only the global trigger key is affected."
         case .screenRecording:
-            return "Your organisation's security policy appears to be blocking Screen Recording. You'll need your IT team to allow Relay Runner. Only the optional computer-action voice tools (UAT, dashboard automation) are affected — voice transcription and speech still work."
+            return "Your organisation's security policy appears to be blocking Screen Recording. You'll need your IT team to allow Relay Runner. Only the optional Relay Actions voice tools (UAT, dashboard automation) are affected — voice transcription and speech still work."
         }
     }
 
@@ -833,7 +833,7 @@ struct OnboardingView: View {
         case .accessibility:   return "Allow Accessibility access"
         case .inputMonitoring: return "Allow Input Monitoring"
         // Screen Recording is intentionally not part of onboarding — it's
-        // only needed by the optional computer-action voice tools and is
+        // only needed by the optional Relay Actions voice tools and is
         // requested on first use (see PermissionsManager.promptScreenRecording).
         // Strings provided so the switch is exhaustive and the case is ready
         // to wire up if a future step adds it to onboarding.

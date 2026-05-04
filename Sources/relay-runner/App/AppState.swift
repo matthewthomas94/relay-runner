@@ -415,7 +415,7 @@ final class AppState {
         eventBus = bus
         Task { await bus.start() }
 
-        // Computer-action confirmation bus (request/reply socket between the
+        // Relay Actions confirmation bus (request/reply socket between the
         // RelayActionsMCP helper and the menu-bar app — drives perimeter
         // glow + double-tap confirmation for propose_action).
         //

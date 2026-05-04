@@ -301,7 +301,7 @@ CLAUDE_CLI_OK=false
 # install so the .md commands always reference a working `claude`.
 RELAY_SKILLS_OK=false
 [ -f "$HOME/.claude/commands/relay-bridge.md" ] && [ -f "$HOME/.claude/commands/relay-stop.md" ] && RELAY_SKILLS_OK=true
-# The computer-action MCP server (relay-actions-mcp) gives Claude
+# The Relay Actions MCP server (relay-actions-mcp) gives Claude
 # screenshot + click/type tools for UAT and dashboard automation, gated
 # by hardware double-tap confirmation. Registered into Claude Code at
 # user scope (~/.claude.json) so it's available in every working dir,
@@ -643,7 +643,7 @@ PYEOF
         else
             # `claude mcp add -s user` writes to ~/.claude.json. Non-fatal on
             # failure — voice features still work without the MCP server,
-            # only the new computer-action tools become unavailable.
+            # only the new Relay Actions tools become unavailable.
             if "$__claude_bin" mcp add -s user relay-actions -- "$__mcp_bin" >/dev/null 2>&1; then
                 echo "[Relay Runner] Registered MCP server: relay-actions → $__mcp_bin"
             else

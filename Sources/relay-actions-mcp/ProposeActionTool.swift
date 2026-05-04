@@ -1,9 +1,9 @@
 import Foundation
 
-// The confirmation gate that turns voice + computer actions into something
+// The confirmation gate that turns voice + Relay Actions into something
 // safe enough to leave running.
 //
-// Risk tiering (from docs/specs/computer-actions.md):
+// Risk tiering (from docs/specs/relay-actions.md):
 // - "low":    auto-confirms instantly. For read-only / reversible actions.
 //             Examples: scrolling, hovering, reading window titles, screenshots.
 // - "medium": blocks on user double-tap. For single-step state changes.
