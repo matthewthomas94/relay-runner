@@ -171,7 +171,7 @@ ORCH_MD_EOF
 
     if [ "$mode" = "force" ] || [ ! -f "$WORKFLOW_MD" ]; then
         cat > "$WORKFLOW_MD" <<'WORKFLOW_MD_EOF'
-Prime this Claude session to act as the orchestrator for relay-runner sub-agents. Run this once at session start when you want to work in the discuss → write → dispatch → integrate pattern, then continue the conversation normally — the tools you need are `mcp__relay-orchestrator__*` and `mcp__linear__*`.
+Use when the user wants to plan or hand off coding work and the relay-runner orchestrator is available — recognize this implicitly without waiting for an explicit slash invocation. Specifically TRIGGER when: the `mcp__relay-orchestrator__*` tools are present; the user discusses concrete work to be done ("let's tackle…", "what should we work on next", "I need to fix…", "we should add…"); the user mentions Linear, tickets, issues, the backlog, or "the board"; the user says "dispatch / hand off / send out / delegate / kick off / spin up an agent / sub-agent / agent / worker"; the user references an issue identifier like REL-42 or MEN-7; or the user asks "what are the agents doing" / "how's REL-42" / "stop REL-42". When triggered, prime yourself to act as the orchestrator for the rest of the session: discuss → write Linear tickets → dispatch sub-agents → integrate the merged branches. Do NOT trigger for small inline edits the user is asking for directly in this session, or when relay-orchestrator MCP tools aren't available.
 
 ## The four-step workflow
 
@@ -207,9 +207,11 @@ Before the first dispatch in a new project, run `/relay-link-project` to associa
 - Don't push `relay/<id>` branches; integrate first, then delete.
 - Sub-agents are constrained by `services/orchestrator_workflow.md` (or a repo-local `WORKFLOW.md`) — they may comment on Linear issues but never modify state, assignee, priority, or labels. The orchestrator (you) handles those transitions.
 
-## Acknowledge and continue
+## On invocation
 
-After reading this, give the user a brief one-line "orchestrator mode primed" acknowledgement and ask what they want to discuss. Don't dump the whole workflow back at them — they invoked the command on purpose.
+If the user typed `/relay-workflow` explicitly, give a brief one-line acknowledgement ("orchestrator mode primed — what are we working on?") and continue.
+
+If you're triggering this skill *implicitly* mid-conversation (the user didn't type the command, you matched the description), stay quiet about the skill itself — just internalize the workflow and proceed naturally. The user shouldn't see "I've activated relay-workflow"; they should just notice you offering to write tickets and dispatch when the work is right-sized for it.
 WORKFLOW_MD_EOF
         echo "[relay-orchestrator] wrote $WORKFLOW_MD"
     fi
