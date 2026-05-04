@@ -669,7 +669,13 @@ PYEOF
         fi
     fi
 
-    if ! $ORCH_OK; then
+    # Skip the orchestrator install branch under --venv-only:
+    # relay-orchestrator --install delegates venv bootstrap back to
+    # `relay-bridge --venv-only`, so re-running this branch from inside that
+    # call would fork-bomb. The --venv-only path only owes the caller a healthy
+    # Python venv; the orchestrator's other install steps (skills, MCP, plist)
+    # run on the next non-venv-only invocation.
+    if ! $ORCH_OK && ! $VENV_ONLY; then
         # Orchestrator install: skills, MCP server, and launchd plist (keeps the
         # daemon alive across logins). Delegated to scripts/relay-orchestrator
         # --install which is idempotent and resolves its own binary paths the
