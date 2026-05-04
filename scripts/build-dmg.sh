@@ -57,6 +57,13 @@ cp "$BUILD_DIR/relay-runner" "$APP_DIR/Contents/MacOS/relay-runner"
 # read "Relay Runner", not "relay-actions-mcp").
 cp "$BUILD_DIR/relay-actions-mcp" "$APP_DIR/Contents/MacOS/relay-actions-mcp"
 
+# Helper binary: Relay Orchestrator MCP server. Same TCC-attribution rationale
+# as relay-actions-mcp — sits in MacOS/ alongside the bundle so MCP tools
+# inherit the bundle's identity. The orchestrator daemon process itself runs
+# under launchd (via scripts/relay-orchestrator) and is just a Python script,
+# but the MCP proxy is the Swift binary registered with `claude mcp add`.
+cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"
+
 # App icon: compile AppIcon.iconset into AppIcon.icns via macOS iconutil.
 ICONSET_SRC="$PROJECT_ROOT/assets/AppIcon.iconset"
 if [ -d "$ICONSET_SRC" ]; then
@@ -95,7 +102,8 @@ if [ -d "$RESOURCE_BUNDLE" ]; then
 fi
 
 # Python services
-for f in voice_bridge.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py requirements.txt; do
+for f in voice_bridge.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py \
+         orchestrator.py orchestrator_workflow.md requirements.txt; do
     if [ -f "$PROJECT_ROOT/services/$f" ]; then
         cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"
     fi
@@ -104,6 +112,8 @@ done
 # Scripts
 cp "$PROJECT_ROOT/scripts/relay-bridge" "$APP_DIR/Contents/SharedSupport/scripts/"
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-bridge"
+cp "$PROJECT_ROOT/scripts/relay-orchestrator" "$APP_DIR/Contents/SharedSupport/scripts/"
+chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-orchestrator"
 
 # Setup script for Python venv (runs on first launch if needed)
 cat > "$APP_DIR/Contents/SharedSupport/setup-venv.sh" << 'SETUP_EOF'
@@ -144,12 +154,15 @@ if [ -n "$SIGN_IDENTITY" ]; then
             codesign --force --timestamp --options runtime \
                 --sign "$SIGN_IDENTITY" "$f"
           done
-    # Helper binaries (MCP server). No entitlements — TCC permissions inherit
+    # Helper binaries (MCP servers). No entitlements — TCC permissions inherit
     # from the bundle's bundle-id at first prompt. Still needs hardened runtime
     # + timestamp for notarisation.
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-actions-mcp"
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"
     # Main executable last, with entitlements + hardened runtime.
     codesign --force --timestamp --options runtime \
         --entitlements "$ENTITLEMENTS" \
