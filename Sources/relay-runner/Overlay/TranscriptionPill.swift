@@ -80,6 +80,10 @@ final class TranscriptionPill: NSView {
     /// the title but keeps the preview), we keep the existing scroll going
     /// instead of snapping back to the top.
     private var scrolledBodyText: String?
+    /// True once the user has manually scrolled the body. Auto-teleprompter
+    /// is cancelled and not restarted while this body text is displayed.
+    /// Reset to false when the body text changes (new message).
+    private var manualScrollEngaged = false
 
     // Spring-damped timing for Apple-like feel
     private let springTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
@@ -241,6 +245,13 @@ final class TranscriptionPill: NSView {
         }
         titleLabel.stringValue = title
         titleLabel.alignment = .left
+        // New body text means a fresh message — drop any manual-scroll override
+        // so the next layout starts from the top with the auto-teleprompter
+        // (or pin-to-bottom for STT). Same body across state transitions
+        // (messageWaiting → speaking) keeps the user's manual position.
+        if bodyLabel.stringValue != body {
+            manualScrollEngaged = false
+        }
         bodyLabel.stringValue = body
         isCompact = false
 
@@ -530,12 +541,25 @@ final class TranscriptionPill: NSView {
             // We later animate this y upward toward 0 to reveal the rest.
             let initialLabelY = bodyVisibleHeight - bodyContentHeight
 
-            // If the body text is the same one the scroll is currently
-            // animating, preserve its current y so the user doesn't see
-            // the text snap back to the top on every state transition.
-            // Otherwise (new content / fresh entrance) start at top.
+            // STT live transcription pins to the bottom (latest line always
+            // visible) instead of running the teleprompter — partial text
+            // grows as the user speaks, and auto-scrolling from the top each
+            // time the body changes produces the "hitch and restart" loop.
+            // Manual user scroll preserves whatever y the user landed on.
+            // Otherwise (TTS, fresh entrance) start at the top and let the
+            // teleprompter reveal the rest.
+            let isSttPinToBottom = themeMatches(.stt) && bodyContentHeight > maxBodyHeight
             let scrollContinues = bodyLabel.stringValue == scrolledBodyText && bodyScrollTimer != nil
-            let preservedY = scrollContinues ? bodyLabel.frame.origin.y : initialLabelY
+            let preservedY: CGFloat
+            if isSttPinToBottom {
+                preservedY = 0  // bottom of label aligned with bottom of container = latest text
+            } else if manualScrollEngaged {
+                preservedY = bodyLabel.frame.origin.y
+            } else if scrollContinues {
+                preservedY = bodyLabel.frame.origin.y
+            } else {
+                preservedY = initialLabelY
+            }
             let labelFrame = NSRect(x: 0, y: preservedY, width: contentWidth, height: bodyContentHeight)
 
             if bodyContainer.isHidden {
@@ -564,10 +588,13 @@ final class TranscriptionPill: NSView {
             }
 
             // Trigger or cancel the teleprompter scroll based on overflow.
-            // If scrollContinues, the existing timer is still running for the
-            // same text — leave it alone.
+            // STT pins to the bottom (no scroll). Manual scroll has taken
+            // control. Otherwise: TTS auto-teleprompter, preserved if the
+            // existing timer is already animating this same text.
             if bodyContentHeight > maxBodyHeight {
-                if !scrollContinues {
+                if isSttPinToBottom || manualScrollEngaged {
+                    cancelBodyScroll()
+                } else if !scrollContinues {
                     startBodyScroll(targetY: 0)
                 }
             } else {
@@ -629,6 +656,55 @@ final class TranscriptionPill: NSView {
         bodyScrollTimer?.invalidate()
         bodyScrollTimer = nil
         scrolledBodyText = nil
+    }
+
+    // MARK: - Manual scroll (trackpad / mouse wheel over the pill)
+
+    /// Trackpad or mouse-wheel scroll on the pill takes manual control of
+    /// the body scroll: the auto-teleprompter is cancelled and the user
+    /// drives the y position directly, clamped to the visible/content range.
+    /// Only active for TTS-themed full pills with overflowing body — STT
+    /// pin-to-bottom and compact pills fall through to default handling.
+    override func scrollWheel(with event: NSEvent) {
+        guard !isCompact, !themeMatches(.stt) else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let bodyContentHeight = bodyLabel.frame.height
+        let bodyVisibleHeight = bodyContainer.frame.height
+        guard bodyContentHeight > bodyVisibleHeight else {
+            super.scrollWheel(with: event)
+            return
+        }
+
+        manualScrollEngaged = true
+        cancelBodyScroll()
+
+        // origin.y range when overflowing: [bodyVisibleHeight - bodyContentHeight, 0]
+        // (negative bound shows the top; 0 shows the bottom). NSEvent.scrollingDeltaY
+        // is positive when the user scrolls upward — which should reveal later
+        // content, i.e. move origin.y toward 0.
+        let minY = bodyVisibleHeight - bodyContentHeight
+        let maxY: CGFloat = 0
+        let currentY = bodyLabel.frame.origin.y
+        let newY = max(minY, min(maxY, currentY + event.scrollingDeltaY))
+        if newY != currentY {
+            var f = bodyLabel.frame
+            f.origin.y = newY
+            bodyLabel.frame = f
+        }
+    }
+
+    // MARK: - Pill frame in screen coordinates (for selective click-through)
+
+    /// The pill's frame in screen coordinates. Returns nil when the pill is
+    /// hidden or not attached to a window. The OverlayController polls this
+    /// each tick to decide whether the panel should intercept mouse events
+    /// (cursor over pill) or pass them through (cursor anywhere else).
+    func pillFrameOnScreen() -> NSRect? {
+        guard let window, alphaValue > 0.01 else { return nil }
+        let frameInWindow = convert(bounds, to: nil)
+        return window.convertToScreen(frameInWindow)
     }
 
     // MARK: - Show helper (for theme comparison)

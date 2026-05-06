@@ -53,6 +53,7 @@ final class OverlayController {
             self.trackDisplay()
             self.tickSentDismiss(sm)
             self.applyState(sm)
+            self.tickPanelClickThrough()
         }
         RunLoop.main.add(timer, forMode: .common)
         stateObservation = timer
@@ -78,6 +79,34 @@ final class OverlayController {
     func updateConfig(_ newConfig: AwarenessConfig) {
         config = newConfig
         particleField.setIntensity(newConfig.glow_intensity)
+    }
+
+    // MARK: - Selective click-through
+
+    /// Last applied click-through state — skips redundant property writes
+    /// most ticks (the panel is click-through 99% of the time).
+    private var panelIgnoresMouseEvents: Bool = true
+
+    /// Polled at 30fps from the same timer that drives state observation.
+    /// Default: panel is click-through (events pass through to underlying
+    /// apps). When the cursor enters the pill's screen-space frame, the
+    /// panel temporarily intercepts events so the pill's scrollWheel
+    /// handler can drive manual body scroll. ~33ms transition latency is
+    /// imperceptible in practice and avoids the overhead of NSEvent
+    /// global/local monitor pairs.
+    private func tickPanelClickThrough() {
+        guard let panel else { return }
+        let cursorOverPill: Bool
+        if let pillRect = pill.pillFrameOnScreen() {
+            cursorOverPill = pillRect.contains(NSEvent.mouseLocation)
+        } else {
+            cursorOverPill = false
+        }
+        let shouldIgnore = !cursorOverPill
+        if panelIgnoresMouseEvents != shouldIgnore {
+            panel.ignoresMouseEvents = shouldIgnore
+            panelIgnoresMouseEvents = shouldIgnore
+        }
     }
 
     // MARK: - Multi-display tracking
