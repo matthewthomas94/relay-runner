@@ -1,12 +1,18 @@
 # Relay Actions — Specification
 
 **Created:** 2026-05-03
-**Status:** Draft (pre-implementation)
+**Status:** Implemented (with one deviation — see below)
 **Owner:** matthewthomas94
+
+> **Deviation from this spec:** the `propose_action(risk: medium|high)` double-tap confirmation flow described below was implemented but **abandoned in practice.** The double-tap Option/Control modifier gestures are bound to play/cancel TTS, and repurposing them for action confirmation produced a dual-binding that caused real UX problems. The current policy is: state-changing Relay Actions tools execute directly; if the model needs user permission for a genuinely high-stakes action, it asks via a normal chat message rather than via `propose_action`. The `propose_action` tool is still registered in the MCP server but should not be called — see [CLAUDE.md](../../CLAUDE.md) for the live guidance.
+>
+> RelayVision (the perimeter-glow overlay) is unchanged: it still pulses whenever any Relay Actions tool fires, as a visual signal that screen control is happening. It is no longer a confirmation surface.
+>
+> The rest of this document is left intact as the original design record.
 
 ## Goal
 
-Voice-driven Claude can drive the macOS UI for two specific use cases — UAT of in-development software and configuring dense dashboards that lack CLI/MCP interfaces (e.g. Apple Developer site, Xcode preferences) — gated by hardware double-tap confirmation, with a purple perimeter overlay while RelayVision (the project's screen-control + confirmation overlay layer) is active. The existing voice → STT → `claude -p` → TTS loop is unchanged when no Relay Actions tools are invoked.
+Voice-driven Claude can drive the macOS UI for two specific use cases — UAT of in-development software and configuring dense dashboards that lack CLI/MCP interfaces (e.g. Apple Developer site, Xcode preferences), with a purple perimeter overlay (RelayVision) while screen-control tools are active. The existing voice → STT → `claude -p` → TTS loop is unchanged when no Relay Actions tools are invoked.
 
 ## Background
 

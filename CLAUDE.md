@@ -22,37 +22,42 @@ A small change you can do inline in this session **without dispatching** is fine
 
 ## Always use the custom Relay stack — never native screen-control fallbacks
 
-This project ships an end-to-end stack for voice-driven screen control with on-screen confirmation. When working in this repo, **always use the custom path — never native MCP fallbacks** — even when both are connected.
+This project ships its own MCP server for voice-driven screen control. When working in this repo, **always use the custom path — never native MCP fallbacks** — even when both are connected.
 
-The custom stack has two layers, both first-class:
+The custom stack has two pieces:
 
 ### 1. RelayActions — the screen-control tools
 
-For all screen control — `screenshot`, `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`, `propose_action` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions.
+For all screen control — `screenshot`, `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions.
 
 If you genuinely need an operation RelayActions doesn't yet expose, surface that gap to the human before falling through to `mcp__computer-use__*`. The default answer is "extend RelayActions," not "fall back to native."
 
-### 2. RelayVision — the on-screen confirmation overlay
+### 2. RelayVision — the perimeter-glow overlay
 
-RelayVision is the project's perimeter overlay surface (the `OverlayState.relayVision` state in `Sources/relay-runner/Overlay/`). It activates when the MCP server calls `propose_action`, and it's how the user sees and confirms what's about to happen on their screen.
+RelayVision is the project's perimeter overlay (the `OverlayState.relayVision` state in `Sources/relay-runner/Overlay/`). It pulses around the screen edges whenever a RelayActions tool fires — so the user has a visual signal that screen control is happening. You don't call this directly; it's automatic, driven by the `tool_fired` notification every RelayActions tool sends after running.
 
-Before any **state-changing** click / type / key / scroll, call `mcp__relay-actions__propose_action` so RelayVision surfaces the confirmation:
-- `risk: "medium"` — single-step state changes (click a button, type into a field, key combo).
-- `risk: "high"` — irreversible / destructive (Send, Delete, Pay, Submit, Publish).
-- `risk: "low"` — read-only / reversible (scroll, hover, screenshot). Auto-confirms; usually you can call the underlying tool directly without `propose_action`.
+RelayVision is a **visual signal**, not a confirmation gate.
 
-Do **not** route confirmations through native computer-use prompts, ad-hoc chat questions, or any other channel for risky screen actions. That bypasses RelayVision — which is the surface the project exists to drive.
+## Asking for permission — don't use `propose_action`
+
+`mcp__relay-actions__propose_action` is registered in the MCP server, but **don't call it.** Its medium/high-risk path was designed to block on a double-tap Option/Control gesture for confirmation. That pattern was abandoned because those modifier double-taps are already bound to play/cancel TTS in voice mode, and the dual binding caused real UX problems. Calling it now will block on a confirmation the user is no longer expecting and time out after 30 seconds.
+
+If you need user permission for a risky screen action:
+
+1. **Default: just execute.** The user has already authorized voice control by starting the session. The RelayVision perimeter glow is the visual signal that screen control is happening.
+2. **If the action is genuinely high-stakes** (irreversible, sends a message, spends money, deletes data) and you're not confident the user wants it: **ask via a normal text message in the chat** with a clear summary, and wait for an explicit "yes" before proceeding. Do **not** call `propose_action`.
+3. **Never** route confirmations through native computer-use prompts. Same reason — bypasses the project's stack.
 
 ### Why this rule exists
 
-RelayActions + RelayVision is the product. Native MCPs work fine in any other repo, but in this one they bypass the instrumentation, the visual confirmation surface, and the double-tap Option/Control gesture that make the system safe enough to leave running. The custom path is non-negotiable here.
+RelayActions + RelayVision is the product. Native MCPs work fine in any other repo, but in this one they bypass the project's instrumentation and visual surface. The custom path is non-negotiable here.
 
 This rule overrides the generic "tier of tool" guidance the computer-use MCP injects when both are connected.
 
 ## Naming notes
 
 - **Relay Actions** = the screen-control feature and its MCP tool family (`mcp__relay-actions__*`). The tools themselves.
-- **RelayVision** = the perimeter overlay + double-tap confirmation gesture. The on-screen surface that lets the user see and approve what's about to happen. (`OverlayState.relayVision` in code.)
+- **RelayVision** = the perimeter-glow overlay that pulses whenever a RelayActions tool runs. Visual signal, not a confirmation gate. (`OverlayState.relayVision` in code.)
 - Together: **the Relay stack**. Don't conflate either with native "computer-use" or "computer-vision" — those are different MCPs from a different vendor.
 
 ## Where things live
