@@ -681,13 +681,15 @@ final class TranscriptionPill: NSView {
         cancelBodyScroll()
 
         // origin.y range when overflowing: [bodyVisibleHeight - bodyContentHeight, 0]
-        // (negative bound shows the top; 0 shows the bottom). NSEvent.scrollingDeltaY
-        // is positive when the user scrolls upward — which should reveal later
-        // content, i.e. move origin.y toward 0.
+        // (negative bound shows the top; 0 shows the bottom). scrollingDeltaY's
+        // sign reflects raw device direction; macOS sets isDirectionInvertedFromDevice
+        // when the user has natural scrolling enabled, so we undo the inversion to
+        // get a consistent "positive delta = reveal later content" interpretation.
         let minY = bodyVisibleHeight - bodyContentHeight
         let maxY: CGFloat = 0
         let currentY = bodyLabel.frame.origin.y
-        let newY = max(minY, min(maxY, currentY + event.scrollingDeltaY))
+        let delta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
+        let newY = max(minY, min(maxY, currentY + delta))
         if newY != currentY {
             var f = bodyLabel.frame
             f.origin.y = newY
