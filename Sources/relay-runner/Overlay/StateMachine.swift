@@ -119,9 +119,11 @@ final class StateMachine: @unchecked Sendable {
 
         case ("bridge", "processing"):
             switch state {
-            case .recording, .sent, .cancelled(_):
+            case .recording, .cancelled(_):
                 break  // don't override these transient states
             default:
+                // .sent → .processing is intentional: surfaces "Thinking…" the
+                // moment STT finalizes, instead of waiting on the .sent timer.
                 state = .processing
             }
 

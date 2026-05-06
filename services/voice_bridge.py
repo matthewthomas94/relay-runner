@@ -100,6 +100,7 @@ class VoiceBridge:
             proc.kill()
             proc.wait()
             print("\r\033[2K\033[1;31m  timed out\033[0m")
+            _notify_state("idle")
             return
 
         with self._lock:
@@ -108,8 +109,10 @@ class VoiceBridge:
         # Check if we were killed (interrupted)
         if proc.returncode != 0 and proc.returncode != 0:
             if proc.returncode == -9 or proc.returncode == -15:
+                _notify_state("idle")
                 return  # Interrupted — don't print anything
             print(f"\r\033[2K\033[1;31m  error (code {proc.returncode})\033[0m")
+            _notify_state("idle")
             return
 
         # Parse JSON
@@ -117,6 +120,7 @@ class VoiceBridge:
             resp = json.loads(stdout)
         except json.JSONDecodeError:
             print("\r\033[2K\033[1;31m  bad response\033[0m")
+            _notify_state("idle")
             return
 
         response_text = resp.get("result", "")
