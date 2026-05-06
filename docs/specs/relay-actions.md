@@ -6,7 +6,7 @@
 
 ## Goal
 
-Voice-driven Claude can drive the macOS UI for two specific use cases — UAT of in-development software and configuring dense dashboards that lack CLI/MCP interfaces (e.g. Apple Developer site, Xcode preferences) — gated by hardware double-tap confirmation, with a purple perimeter overlay while computer-vision tools are active. The existing voice → STT → `claude -p` → TTS loop is unchanged when no Relay Actions tools are invoked.
+Voice-driven Claude can drive the macOS UI for two specific use cases — UAT of in-development software and configuring dense dashboards that lack CLI/MCP interfaces (e.g. Apple Developer site, Xcode preferences) — gated by hardware double-tap confirmation, with a purple perimeter overlay while RelayVision (the project's screen-control + confirmation overlay layer) is active. The existing voice → STT → `claude -p` → TTS loop is unchanged when no Relay Actions tools are invoked.
 
 ## Background
 
@@ -32,7 +32,7 @@ These were resolved during the feasibility discussion and are not open for re-li
 | Implementation path           | Native Swift MCP server in this repo (not community MCP, not direct Anthropic API)    |
 | Confirmation modality         | Hardware double-tap, modal: Option = yes, Control = no                                |
 | Overlay color                 | Reuse existing `.tts` purple — no new theme                                           |
-| State ownership               | Single source of truth in `StateMachine` (new `.computerVision(...)` state)           |
+| State ownership               | Single source of truth in `StateMachine` (new `.relayVision(...)` state)           |
 | MCP transport                 | stdio between `RelayActionsMCP` ↔ `claude` CLI                                        |
 | Cross-process state           | New Unix socket between `RelayActionsMCP` ↔ menu-bar app for events + confirm replies |
 | MCP server lifecycle          | Spawned per-session by `claude`; menu-bar app does not own it                         |
@@ -78,12 +78,12 @@ These were resolved during the feasibility discussion and are not open for re-li
 
 7. **Modal double-tap confirmation gestures**: When a confirmation is pending, Option/Control double-tap means yes/no instead of play/cancel.
    - Current: Option double-tap = `__PLAY__`; Control double-tap = `__CANCEL__` ([CapsLockGesture.swift:189-212](../../Sources/relay-runner/STT/CapsLockGesture.swift)). No notion of confirmation state.
-   - Target: `CapsLockGesture` consults `StateMachine`. If `state == .computerVision(awaitingConfirmation: prompt)` is set, double-tap Option resolves the pending prompt with `confirmed: true` and double-tap Control resolves it with `confirmed: false`. Neither emits the existing `__PLAY__`/`__CANCEL__` while a confirmation is pending. When no confirmation is pending, gestures behave exactly as today.
+   - Target: `CapsLockGesture` consults `StateMachine`. If `state == .relayVision(awaitingConfirmation: prompt)` is set, double-tap Option resolves the pending prompt with `confirmed: true` and double-tap Control resolves it with `confirmed: false`. Neither emits the existing `__PLAY__`/`__CANCEL__` while a confirmation is pending. When no confirmation is pending, gestures behave exactly as today.
    - Acceptance: With no confirmation pending, double-tap Option still triggers TTS playback (verified by existing `__PLAY__` path); with a confirmation pending, double-tap Option resolves the prompt and does NOT trigger playback; same for Control double-tap respectively.
 
-8. **Perimeter overlay**: Purple particle band around all connected screens while computer vision is active.
+8. **Perimeter overlay**: Purple particle band around all connected screens while RelayVision is active.
    - Current: `OverlayPanel` is a full-screen `screenSaver`-level panel, but renders only the centered transcription pill ([OverlayPanel.swift:5-26](../../Sources/relay-runner/Overlay/OverlayPanel.swift)).
-   - Target: A new `PerimeterOverlay` view renders a ~24pt-thick band along the perimeter of every connected screen, using the existing `.tts` purple particle theme ([ParticleFieldRenderer.swift:12](../../Sources/relay-runner/Overlay/ParticleFieldRenderer.swift)). Visible whenever `state == .computerVision(...)`. Brightness/intensity pulses higher when `awaitingConfirmation` is non-nil. Click-through (does not intercept input).
+   - Target: A new `PerimeterOverlay` view renders a ~24pt-thick band along the perimeter of every connected screen, using the existing `.tts` purple particle theme ([ParticleFieldRenderer.swift:12](../../Sources/relay-runner/Overlay/ParticleFieldRenderer.swift)). Visible whenever `state == .relayVision(...)`. Brightness/intensity pulses higher when `awaitingConfirmation` is non-nil. Click-through (does not intercept input).
    - Acceptance: After Claude calls any Relay Actions MCP tool, the perimeter band appears on every connected screen within 100ms and uses the `.tts` purple. Mouse clicks pass through it to underlying apps. Band intensity visibly pulses while a confirmation is pending. Band clears within 100ms of the 10s decay window expiring or `/relay-stop` running.
 
 9. **Screen Recording permission flow**: First-run UX explains and routes the user to grant Screen Recording — to the *terminal*, not Relay Runner.

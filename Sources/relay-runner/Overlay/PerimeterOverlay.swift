@@ -2,7 +2,7 @@ import AppKit
 import QuartzCore
 
 // Halftone-dot perimeter around every connected screen while
-// `OverlayState.computerVision` is active. Pulses brighter when an
+// `OverlayState.relayVision` is active. Pulses brighter when an
 // `awaitingConfirmation` prompt is surfaced — visual signal that the
 // user needs to double-tap Option (yes) or Control (no).
 //
@@ -91,7 +91,7 @@ final class PerimeterOverlayManager {
             panels.append(panel)
         }
 
-        // Re-apply current state so a screen attach during computer-vision
+        // Re-apply current state so a screen attach during RelayVision
         // mode doesn't leave the new screen dark.
         lastVisible = false
         lastPulsing = false
@@ -103,7 +103,7 @@ final class PerimeterOverlayManager {
         let visible: Bool
         let pulsing: Bool
         switch state {
-        case .computerVision(let prompt):
+        case .relayVision(let prompt):
             visible = true
             pulsing = (prompt != nil)
         default:
