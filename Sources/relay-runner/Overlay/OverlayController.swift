@@ -174,7 +174,7 @@ final class OverlayController {
 
         case .processing:
             if state != lastAppliedState {
-                pill.showCompact(title: "Processing...", theme: .tts)
+                pill.showCompact(title: "Thinking\u{2026}", theme: .tts)
             }
 
         case .preparing:

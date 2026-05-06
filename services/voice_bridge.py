@@ -49,82 +49,180 @@ def open_fifo(path: str) -> int | None:
 
 
 class VoiceBridge:
+    """Persistent `claude -p` session reused across voice prompts.
+
+    The first prompt pays CLI startup + MCP-server-spawn cost (~5–7s on this
+    machine); subsequent prompts reuse the warm process and only pay LLM
+    inference time. Interrupt or crash respawns transparently, resuming the
+    same Claude session via --resume so conversation context is preserved.
+    """
+
     def __init__(self, claude_bin: str, tts_queue: queue.Queue, session_id: str | None = None):
         self.claude_bin = claude_bin
         self.tts_queue = tts_queue
         self.session_id: str | None = session_id
-        self._claude_proc: subprocess.Popen | None = None
+        self._proc: subprocess.Popen | None = None
+        self._reader_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._pending: dict | None = None
+
+    def _spawn(self) -> subprocess.Popen | None:
+        cmd = [
+            self.claude_bin, "-p",
+            "--input-format", "stream-json",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--dangerously-skip-permissions",
+        ]
+        if self.session_id:
+            cmd.extend(["--resume", self.session_id])
+        try:
+            return subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as e:
+            print(f"[voice_bridge] failed to spawn claude: {e}", file=sys.stderr)
+            return None
+
+    def _ensure_warm(self) -> bool:
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                return True
+            if self._proc is not None:
+                print(
+                    f"[voice_bridge] warm session died (rc={self._proc.returncode}); respawning",
+                    file=sys.stderr,
+                )
+                self._proc = None
+            proc = self._spawn()
+            if proc is None:
+                return False
+            self._proc = proc
+            self._reader_thread = threading.Thread(
+                target=self._read_stream, args=(proc,), daemon=True
+            )
+            self._reader_thread.start()
+            return True
+
+    def _read_stream(self, proc: subprocess.Popen):
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                sid = obj.get("session_id")
+                if sid:
+                    self.session_id = sid
+                if obj.get("type") == "result":
+                    pending = self._pending
+                    if pending is not None and not pending["done"]:
+                        pending["result_text"] = obj.get("result") or ""
+                        pending["done"] = True
+                        pending["event"].set()
+        except (OSError, ValueError):
+            pass
+        finally:
+            # Wake any pending request so send() doesn't hang on a dead process
+            pending = self._pending
+            if pending is not None and not pending["done"]:
+                pending["done"] = True
+                pending["interrupted"] = True
+                pending["event"].set()
 
     def interrupt(self):
-        """Kill any running Claude process and stop TTS."""
+        """Kill the warm Claude process; next send() respawns and resumes."""
         with self._lock:
-            proc = self._claude_proc
-            if proc and proc.poll() is None:
-                proc.kill()
-                proc.wait()
-                self._claude_proc = None
-                print("\r\033[2K\033[1;33m  interrupted\033[0m")
-                sys.stdout.flush()
+            proc = self._proc
+            self._proc = None
+        if proc and proc.poll() is None:
+            proc.kill()
+            proc.wait()
+            print("\r\033[2K\033[1;33m  interrupted\033[0m")
+            sys.stdout.flush()
+        pending = self._pending
+        if pending is not None and not pending["done"]:
+            pending["interrupted"] = True
+            pending["done"] = True
+            pending["event"].set()
+
+    def shutdown(self):
+        """Close the warm session cleanly on bridge exit."""
+        with self._lock:
+            proc = self._proc
+            self._proc = None
+        if proc is None:
+            return
+        try:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
     def send(self, text: str):
         """Send a message to Claude, display + speak the response."""
-        # Kill any in-progress request first
-        self.interrupt()
-
-        # Display prompt
         print(f"\n\033[1;36m❯ {text}\033[0m")
         print("\033[2m  thinking...\033[0m", end="", flush=True)
         _notify_state("processing", prompt=text[:200])
 
-        # Build command
-        cmd = [self.claude_bin, "-p", "--output-format", "json", "--dangerously-skip-permissions"]
-        if self.session_id:
-            cmd.extend(["--resume", self.session_id])
+        envelope = json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": text},
+        }) + "\n"
 
-        # Launch Claude (non-blocking)
-        with self._lock:
-            self._claude_proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            proc = self._claude_proc
+        pending = {"event": threading.Event(), "result_text": None, "interrupted": False, "done": False}
 
-        # Send prompt and wait for response in a way that can be interrupted
-        try:
-            stdout, stderr = proc.communicate(input=text, timeout=120)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        # Up to two attempts: first on warm session, second after respawn if write fails.
+        for attempt in range(2):
+            if not self._ensure_warm():
+                print("\r\033[2K\033[1;31m  spawn failed\033[0m")
+                _notify_state("idle")
+                return
+            self._pending = pending
+            try:
+                self._proc.stdin.write(envelope)
+                self._proc.stdin.flush()
+                break
+            except (BrokenPipeError, OSError) as e:
+                print(f"[voice_bridge] write to warm session failed ({e}); respawning",
+                      file=sys.stderr)
+                self._pending = None
+                with self._lock:
+                    self._proc = None
+                if attempt == 1:
+                    print("\r\033[2K\033[1;31m  send failed\033[0m")
+                    _notify_state("idle")
+                    return
+
+        completed = pending["event"].wait(timeout=120)
+        self._pending = None
+
+        if not completed:
             print("\r\033[2K\033[1;31m  timed out\033[0m")
+            self.interrupt()
+            _notify_state("idle")
             return
 
-        with self._lock:
-            self._claude_proc = None
-
-        # Check if we were killed (interrupted)
-        if proc.returncode != 0 and proc.returncode != 0:
-            if proc.returncode == -9 or proc.returncode == -15:
-                return  # Interrupted — don't print anything
-            print(f"\r\033[2K\033[1;31m  error (code {proc.returncode})\033[0m")
+        if pending["interrupted"]:
+            _notify_state("idle")
             return
-
-        # Parse JSON
-        try:
-            resp = json.loads(stdout)
-        except json.JSONDecodeError:
-            print("\r\033[2K\033[1;31m  bad response\033[0m")
-            return
-
-        response_text = resp.get("result", "")
-        if not self.session_id:
-            self.session_id = resp.get("session_id")
 
         _notify_state("idle")
 
+        response_text = pending["result_text"] or ""
         if response_text:
             print(f"\r\033[2K\n{response_text}\n")
             sys.stdout.flush()
@@ -503,6 +601,7 @@ def main():
     finally:
         shutdown_event.set()
         request_queue.put(None)  # Signal worker to exit
+        bridge.shutdown()
         tts_worker.shutdown()
         if fifo_fd is not None:
             try:
