@@ -5,12 +5,12 @@ import Foundation
 ///
 /// 1. `{"type":"tool_fired","tool":"<name>"}` — fire-and-forget notification
 ///    that any Relay Actions MCP tool just ran. Drives the perimeter glow:
-///    transitions StateMachine to `.computerVision(awaitingConfirmation: nil)`
+///    transitions StateMachine to `.relayVision(awaitingConfirmation: nil)`
 ///    and starts (or refreshes) a 10s decay timer.
 ///
 /// 2. `{"type":"propose","id":"<uuid>","summary":"...","risk":"medium|high"}` —
 ///    the MCP server is blocking inside `propose_action`. We update state to
-///    `.computerVision(awaitingConfirmation: prompt)`, hold the connection
+///    `.relayVision(awaitingConfirmation: prompt)`, hold the connection
 ///    open, and wait for `resolve(requestId:confirmed:)` to be called by
 ///    CapsLockGesture when the user double-taps. Then we write back
 ///    `{"id":"<uuid>","result":"confirmed"|"rejected"|"timeout"}` and close.
@@ -172,7 +172,7 @@ actor ActionsConfirmBus {
         switch type {
         case "tool_fired":
             // Fire-and-forget. Update state, refresh decay, close connection.
-            await enterComputerVision(prompt: nil)
+            await enterRelayVision(prompt: nil)
             close(fd)
 
         case "parent_detected":
@@ -204,7 +204,7 @@ actor ActionsConfirmBus {
                 return
             }
             let prompt = ConfirmationPrompt(summary: summary, risk: risk, requestId: id)
-            await enterComputerVision(prompt: prompt)
+            await enterRelayVision(prompt: prompt)
             pending[id] = fd
             // 30s timeout — if no double-tap arrives, reply "timeout" and
             // close. The user may have walked away or never noticed the prompt.
@@ -240,10 +240,10 @@ actor ActionsConfirmBus {
 
     // MARK: - State + decay
 
-    private func enterComputerVision(prompt: ConfirmationPrompt?) async {
+    private func enterRelayVision(prompt: ConfirmationPrompt?) async {
         let sm = stateMachine
         await MainActor.run {
-            sm?.setComputerVision(awaitingConfirmation: prompt)
+            sm?.setRelayVision(awaitingConfirmation: prompt)
         }
         touchDecay()
     }
@@ -273,7 +273,7 @@ actor ActionsConfirmBus {
         if !pending.isEmpty { return }
         let sm = stateMachine
         await MainActor.run {
-            sm?.clearComputerVision()
+            sm?.clearRelayVision()
         }
     }
 
@@ -304,12 +304,12 @@ actor ActionsConfirmBus {
 
         // Clear the prompt from the state machine. If there's another pending
         // prompt (rare — multi-session), surface it; otherwise drop into
-        // post-resolution computer-vision idle and let the decay timer
+        // post-resolution relay-vision idle and let the decay timer
         // eventually clear the perimeter glow.
         let nextPromptId = pending.keys.first
         let sm = stateMachine
         await MainActor.run {
-            sm?.setComputerVision(awaitingConfirmation: nil)
+            sm?.setRelayVision(awaitingConfirmation: nil)
             // If there's a queued prompt, the next propose-handler will set
             // it. We don't reach into stored prompt data here because the
             // bus doesn't keep ConfirmationPrompt structs around — they're

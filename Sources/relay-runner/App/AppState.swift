@@ -448,7 +448,7 @@ final class AppState {
         overlayController = oc
 
         // Perimeter overlay (purple band on every screen while
-        // .computerVision is active; pulses while a confirmation is pending).
+        // .relayVision is active; pulses while a confirmation is pending).
         let perimeter = PerimeterOverlayManager()
         perimeter.start(stateMachine: stateMachine)
         perimeterOverlay = perimeter

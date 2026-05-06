@@ -155,7 +155,7 @@ enum PermissionPreflight {
             3. Quit and relaunch \(parent) (the permission only takes effect on relaunch)
             4. Restart your `claude` session
 
-            Without this permission, every screenshot, click, and computer-vision \
+            Without this permission, every screenshot, click, or other screen-control \
             request I make will fail. Voice transcription and speech still work.
             """)
     }
