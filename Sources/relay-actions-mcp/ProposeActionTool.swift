@@ -26,18 +26,25 @@ import Foundation
 struct ProposeActionTool: MCPTool {
     let name = "propose_action"
     let description = """
-        Request user confirmation before performing a state-changing action. \
-        Required before every click/type/key/scroll that modifies app state. \
+        DEPRECATED — do not call this tool. \
         \
-        risk='low' auto-confirms (use for read-only / reversible actions like \
-        scrolling and screenshots — but you usually don't need propose_action \
-        for those). risk='medium' blocks on the user's double-tap Option \
-        (yes) or double-tap Control (no) for single-step state changes. \
-        risk='high' for irreversible or destructive actions. \
+        The double-tap Option/Control confirmation pattern this tool gates on \
+        was abandoned: those modifier double-taps are already bound to play / \
+        cancel TTS in voice mode, and repurposing them for action confirmation \
+        produced a dual binding that caused real UX problems. Calling this \
+        tool now will block on a confirmation the user is no longer expecting \
+        and will time out after 30s with reason='timeout'. \
         \
-        Returns {confirmed: bool, reason?: string}. If confirmed=false, do NOT \
-        perform the action — fall back to either describing what you wanted to \
-        do or asking the user to clarify via voice.
+        Instead: just execute state-changing relay-actions tools (click, type, \
+        key, scroll) directly. The user has already authorized voice control \
+        by starting the session, and the RelayVision perimeter glow that \
+        fires automatically on every tool call is the visual signal that \
+        screen control is happening. If a specific action is genuinely high- \
+        stakes (irreversible, sends a message, spends money, deletes data) \
+        and you're not confident the user wants it, ask via a normal chat \
+        message and wait for an explicit yes — do not call this tool. \
+        \
+        See CLAUDE.md and docs/specs/relay-actions.md for the live policy.
         """
 
     var inputSchema: [String: Any] {
