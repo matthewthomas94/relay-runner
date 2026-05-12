@@ -33,7 +33,7 @@ PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 
 CMDS_DIR="$HOME/.claude/commands"
 LINK_MD="$CMDS_DIR/relay-link-project.md"
-ORCH_MD="$CMDS_DIR/relay-orchestrate.md"
+DISPATCH_MD="$CMDS_DIR/relay-dispatch.md"
 WORKFLOW_MD="$CMDS_DIR/relay-workflow.md"
 
 # -- Common helpers --
@@ -127,8 +127,8 @@ LINK_MD_EOF
         echo "[relay-orchestrator] wrote $LINK_MD"
     fi
 
-    if [ "$mode" = "force" ] || [ ! -f "$ORCH_MD" ]; then
-        cat > "$ORCH_MD" <<'ORCH_MD_EOF'
+    if [ "$mode" = "force" ] || [ ! -f "$DISPATCH_MD" ]; then
+        cat > "$DISPATCH_MD" <<'DISPATCH_MD_EOF'
 Dispatch a Linear issue to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs `claude -p` autonomously inside it.
 
 ## When to use this
@@ -165,8 +165,8 @@ If a run finished, also peek at the worktree (path is in the run record) to see 
 - The default workflow template is at `~/Library/Application Support/relay-runner/orchestrator/WORKFLOW.md`. A repo-local `WORKFLOW.md` overrides the default for that repo.
 - The daemon doesn't talk to Linear directly — the worker reads issue context and posts status comments via the Linear MCP it inherits from your session.
 - For the broader "discuss → write → dispatch → integrate" workflow this command sits inside, see `/relay-workflow`.
-ORCH_MD_EOF
-        echo "[relay-orchestrator] wrote $ORCH_MD"
+DISPATCH_MD_EOF
+        echo "[relay-orchestrator] wrote $DISPATCH_MD"
     fi
 
     if [ "$mode" = "force" ] || [ ! -f "$WORKFLOW_MD" ]; then
@@ -222,7 +222,7 @@ WORKFLOW_MD_EOF
 }
 
 uninstall_skills() {
-    rm -f "$LINK_MD" "$ORCH_MD" "$WORKFLOW_MD"
+    rm -f "$LINK_MD" "$DISPATCH_MD" "$WORKFLOW_MD"
     echo "[relay-orchestrator] removed slash command files."
 }
 
@@ -364,7 +364,7 @@ cmd_install() {
     echo "From any Claude Code session:"
     echo "    /relay-workflow       (prime the discuss → write → dispatch → integrate pattern)"
     echo "    /relay-link-project   (one-time link to a Linear project)"
-    echo "    /relay-orchestrate    (dispatch an issue to a sub-agent)"
+    echo "    /relay-dispatch       (dispatch an issue to a sub-agent)"
 }
 
 cmd_uninstall() {
