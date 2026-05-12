@@ -37,5 +37,9 @@ struct RelayRunnerApp: App {
         Settings {
             SettingsWindow(appState: appState)
         }
+
+        Window("Board", id: "board") {
+            BoardView(appState: appState)
+        }
     }
 }

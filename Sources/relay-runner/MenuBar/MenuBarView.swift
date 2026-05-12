@@ -3,6 +3,7 @@ import SwiftUI
 struct MenuBarView: View {
     @Bindable var appState: AppState
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     private var statusLabel: String {
         if appState.hasActiveSession {
@@ -60,6 +61,16 @@ struct MenuBarView: View {
         Button("Replay") { appState.ttsCommand("replay") }
 
         Divider()
+
+        Button("Show Board\u{2026}") {
+            openWindow(id: "board")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                NSApp.activate(ignoringOtherApps: true)
+                for window in NSApp.windows where window.title == "Board" {
+                    window.orderFrontRegardless()
+                }
+            }
+        }
 
         Button("Settings\u{2026}") {
             openSettings()
