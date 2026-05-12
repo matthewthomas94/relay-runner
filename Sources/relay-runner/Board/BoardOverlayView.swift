@@ -3,6 +3,10 @@ import SwiftUI
 
 struct BoardOverlayView: View {
     let tickets: [Ticket]
+    /// Drives the panel glow color. Nil = no glow, just a neutral drop shadow.
+    /// .stt = red, .tts = purple — matches the current particle-field theme so
+    /// the board reads as part of the same visual moment as the pill.
+    let theme: ParticleFieldRenderer.Theme?
     let onDismiss: () -> Void
 
     private let columns: [BoardColumnSpec] = [
@@ -13,7 +17,6 @@ struct BoardOverlayView: View {
     ]
 
     var body: some View {
-        // Outer tap layer captures clicks that miss the columns — dismiss.
         Color.clear
             .contentShape(Rectangle())
             .onTapGesture { onDismiss() }
@@ -22,7 +25,8 @@ struct BoardOverlayView: View {
                     ForEach(columns) { spec in
                         BoardColumnPanel(
                             spec: spec,
-                            tickets: tickets.filter { $0.status == spec.status }
+                            tickets: tickets.filter { $0.status == spec.status },
+                            theme: theme
                         )
                     }
                 }
@@ -41,6 +45,7 @@ struct BoardColumnSpec: Identifiable {
 private struct BoardColumnPanel: View {
     let spec: BoardColumnSpec
     let tickets: [Ticket]
+    let theme: ParticleFieldRenderer.Theme?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -67,14 +72,31 @@ private struct BoardColumnPanel: View {
         .padding(.vertical, 18)
         .frame(width: 358, height: 633, alignment: .topLeading)
         .background(PillGlassBackground(cornerRadius: 16))
-        // TTS theme drop shadow — matches TranscriptionPill.applyTheme.
+        // Theme-aware glow. Mirrors TranscriptionPill.applyTheme: same
+        // primary-shadow colors for STT (red) and TTS (purple). With no
+        // particle theme active we drop to a neutral dark shadow — depth
+        // without the saturated glow.
         .shadow(
-            color: Color(.sRGB, red: 40 / 255, green: 17 / 255, blue: 208 / 255, opacity: 0.20),
+            color: BoardColumnPanel.shadowColor(for: theme),
             radius: 20,
             x: 0,
             y: -6
         )
         .onTapGesture { /* swallow taps on the panel so they don't dismiss */ }
+    }
+
+    private static func shadowColor(for theme: ParticleFieldRenderer.Theme?) -> Color {
+        switch theme {
+        case .stt:
+            // TranscriptionPill STT primaryShadowColor — #F43C09
+            return Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 0.20)
+        case .tts:
+            // TranscriptionPill TTS primaryShadowColor — #2811D0
+            return Color(.sRGB, red: 40 / 255, green: 17 / 255, blue: 208 / 255, opacity: 0.20)
+        case nil:
+            // No particle field active — neutral drop shadow, no color glow.
+            return Color.black.opacity(0.45)
+        }
     }
 }
 

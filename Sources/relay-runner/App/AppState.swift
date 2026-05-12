@@ -454,9 +454,14 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Board overlay — install global ⌃B / Esc hotkeys. The board itself
-        // only renders when the user toggles it from the menu or hotkey.
+        // Board overlay — install global ⌥B / Esc hotkeys, and wire the
+        // theme resolver so the board's glow tracks whichever particle field
+        // is currently active. The board itself only renders when the user
+        // toggles it from the menu or hotkey.
         boardOverlay.installGlobalHotkeys()
+        boardOverlay.setThemeResolver { [weak self] in
+            self?.stateMachine.state.particleTheme
+        }
 
         // Perimeter overlay (purple band on every screen while
         // .computerVision is active; pulses while a confirmation is pending).

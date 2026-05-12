@@ -16,6 +16,13 @@ final class BoardOverlayController {
     private(set) var isVisible = false
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    /// Resolves the current particle-field theme (STT/TTS/none) so the
+    /// board's glow matches whichever pill state is active.
+    private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
+
+    func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
+        self.themeResolver = resolver
+    }
 
     deinit {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
@@ -72,9 +79,12 @@ final class BoardOverlayController {
         }
 
         let tickets = loadTickets()
-        let hosting = NSHostingView(rootView: BoardOverlayView(tickets: tickets) { [weak self] in
-            self?.hide()
-        })
+        let theme = themeResolver?()
+        let hosting = NSHostingView(rootView: BoardOverlayView(
+            tickets: tickets,
+            theme: theme,
+            onDismiss: { [weak self] in self?.hide() }
+        ))
         hosting.frame = p.frame
         hosting.autoresizingMask = [.width, .height]
         // Transparent background so the panel's transparency shows through
