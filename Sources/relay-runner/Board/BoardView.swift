@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct BoardView: View {
@@ -41,10 +42,10 @@ struct BoardView: View {
         }
         .frame(minWidth: 920, minHeight: 520)
         .background(Color.black.opacity(0.85))
-        .navigationTitle(project.map { $0.repoPath.lastPathComponent } ?? "Board")
         .task {
             await load()
         }
+        .background(KeyboardShortcutHandler(refresh: { Task { await load() } }))
     }
 
     private func load() async {
@@ -54,6 +55,18 @@ struct BoardView: View {
             self.project = resolved
             self.tickets = scanned
             self.loaded = true
+            applyWindowTitle()
+        }
+    }
+
+    /// Set the NSWindow title to the repo name. `Window(_:id:)` takes a static
+    /// title at scene-declaration time, so we reach into AppKit to make it
+    /// dynamic per the spec's "titled with the current project's repo name".
+    @MainActor
+    private func applyWindowTitle() {
+        let title = project?.repoPath.lastPathComponent ?? "Board"
+        for window in NSApp.windows where window.identifier?.rawValue == "board" {
+            window.title = title
         }
     }
 }
@@ -178,6 +191,37 @@ private struct EmptyColumnPlaceholder: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 12)
             .padding(.horizontal, 4)
+    }
+}
+
+/// Invisible NSView that catches cmd-R to refresh the board.
+private struct KeyboardShortcutHandler: NSViewRepresentable {
+    let refresh: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let v = KeyView()
+        v.refresh = refresh
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? KeyView)?.refresh = refresh
+    }
+
+    private final class KeyView: NSView {
+        var refresh: (() -> Void)?
+        override var acceptsFirstResponder: Bool { true }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.makeFirstResponder(self)
+        }
+        override func keyDown(with event: NSEvent) {
+            if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "r" {
+                refresh?()
+            } else {
+                super.keyDown(with: event)
+            }
+        }
     }
 }
 
