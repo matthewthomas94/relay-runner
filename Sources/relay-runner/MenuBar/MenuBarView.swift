@@ -61,6 +61,8 @@ struct MenuBarView: View {
 
         Divider()
 
+        Button("Show Board") { appState.toggleBoard() }
+
         Button("Settings\u{2026}") {
             openSettings()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {

@@ -62,6 +62,7 @@ final class AppState {
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
     private var overlayController: OverlayController?
+    @ObservationIgnored private let boardOverlay = BoardOverlayController()
     private var perimeterOverlay: PerimeterOverlayManager?
     private var eventBus: StateEventBus?
     private var actionsBus: ActionsConfirmBus?
@@ -291,6 +292,12 @@ final class AppState {
 
     func toggleRecording() {
         sttEngine?.toggleRecording()
+    }
+
+    /// Show or hide the kanban-board overlay. Reads tickets from the linked
+    /// project's `.orchestrator/` on each show.
+    func toggleBoard() {
+        boardOverlay.toggle()
     }
 
     // MARK: - Bridge watchdog
