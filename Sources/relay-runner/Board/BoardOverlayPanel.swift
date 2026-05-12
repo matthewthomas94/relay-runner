@@ -25,15 +25,18 @@ final class BoardOverlayPanel: NSPanel {
         isMovableByWindowBackground = false
         hidesOnDeactivate = false
         animationBehavior = .none
-        // Accept first responder so keyDown reaches the content view (Esc).
-        becomesKeyOnlyIfNeeded = false
 
         if let screen = NSScreen.main {
             setFrame(screen.frame, display: false)
         }
     }
 
-    override var canBecomeKey: Bool { true }
+    // Don't become key. Esc dismissal is handled by the global+local NSEvent
+    // monitors in BoardOverlayController, so the panel doesn't need keyboard
+    // focus. Letting it become key was making the main overlay panel
+    // (where the pill lives) lose state — specifically, the pill would
+    // snap to compact mode during playback while the board was up.
+    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
     func reframe(to screen: NSScreen) {
