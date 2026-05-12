@@ -8,6 +8,9 @@ struct Ticket: Identifiable, Equatable {
     let dependsOn: [String]
     let runId: Int?
     let canceled: Bool
+    /// First paragraph after `## Description` in the body. Nil when the ticket
+    /// has no description section. Cards may further clip this if it overflows.
+    let description: String?
 
     enum Status: String, CaseIterable, Equatable {
         case backlog
@@ -37,7 +40,7 @@ enum TicketParser {
     /// or throws. Per spec: callers should log+skip on failure so one bad
     /// file doesn't take down the board.
     static func parse(contents: String) throws -> Ticket {
-        guard let frontmatter = extractFrontmatter(contents) else {
+        guard let (frontmatter, body) = split(contents) else {
             throw TicketParseError.missingFrontmatter
         }
         let fields = parseFields(frontmatter)
@@ -64,13 +67,44 @@ enum TicketParser {
             priority: priority,
             dependsOn: parseList(depsRaw),
             runId: parseOptionalInt(runIdRaw),
-            canceled: try parseBool(cancelRaw)
+            canceled: try parseBool(cancelRaw),
+            description: extractDescription(body)
         )
+    }
+
+    /// First paragraph after `## Description`. Returns nil when the section
+    /// is absent or empty. A paragraph is consecutive non-blank lines.
+    static func extractDescription(_ body: String) -> String? {
+        let lines = body.components(separatedBy: "\n")
+        guard let headingIdx = lines.firstIndex(where: { isDescriptionHeading($0) }) else {
+            return nil
+        }
+        var paragraph: [String] = []
+        var seenContent = false
+        for line in lines[(headingIdx + 1)...] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                if seenContent { break }
+                continue
+            }
+            if trimmed.hasPrefix("#") { break }
+            seenContent = true
+            paragraph.append(trimmed)
+        }
+        let joined = paragraph.joined(separator: " ")
+        return joined.isEmpty ? nil : joined
+    }
+
+    private static func isDescriptionHeading(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
+        return trimmed == "## description" || trimmed.hasPrefix("## description ")
     }
 
     // MARK: - Helpers
 
-    private static func extractFrontmatter(_ contents: String) -> String? {
+    /// Split the file into frontmatter and body. Returns nil when frontmatter
+    /// delimiters are missing.
+    private static func split(_ contents: String) -> (frontmatter: String, body: String)? {
         let lines = contents.components(separatedBy: "\n")
         guard let first = lines.first, first.trimmingCharacters(in: .whitespaces) == "---" else {
             return nil
@@ -78,7 +112,9 @@ enum TicketParser {
         guard let endIdx = lines.dropFirst().firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" }) else {
             return nil
         }
-        return lines[1..<endIdx].joined(separator: "\n")
+        let frontmatter = lines[1..<endIdx].joined(separator: "\n")
+        let body = lines.suffix(from: endIdx + 1).joined(separator: "\n")
+        return (frontmatter, body)
     }
 
     private static func parseFields(_ frontmatter: String) -> [String: String] {
