@@ -22,7 +22,7 @@ final class BoardOverlayController {
         if let m = localMonitor { NSEvent.removeMonitor(m) }
     }
 
-    /// Install global keyboard hooks: ⌃B toggles the board (works from any
+    /// Install global keyboard hooks: ⌥B toggles the board (works from any
     /// app); Esc dismisses while the board is visible. Both rely on the
     /// Accessibility / Input Monitoring permission the app already needs for
     /// Caps Lock detection.
@@ -44,9 +44,11 @@ final class BoardOverlayController {
     }
 
     private func handle(_ event: NSEvent) {
-        // ⌃B (control + b) — toggle from anywhere.
-        let controlOnly = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .control
-        if controlOnly, event.charactersIgnoringModifiers?.lowercased() == "b" {
+        // ⌥B (option + b) — toggle from anywhere. charactersIgnoringModifiers
+        // is "b" even with Option pressed; `event.characters` would be "∫"
+        // because Option+B types the integral sign on the default US layout.
+        let optionOnly = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .option
+        if optionOnly, event.charactersIgnoringModifiers?.lowercased() == "b" {
             DispatchQueue.main.async { [weak self] in self?.toggle() }
             return
         }
