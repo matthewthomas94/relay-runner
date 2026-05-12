@@ -116,13 +116,17 @@ private struct PillGlassBackground: View {
         ZStack {
             // 1. Visual-effect blur of what's behind (underWindowBackground material).
             VisualEffectBlur(material: .underWindowBackground, blendingMode: .behindWindow)
-            // 2. Dark base fill — NSColor(white: 0, alpha: 0.45).
-            Color.black.opacity(0.45)
-            // 3. Subtle vertical gradient overlay (bottom darker, top hint of light).
+            // 2. Dark base fill. Lighter than the pill's 45% — board panels
+            // are much larger, so the same opacity reads as more black than
+            // frost. Pull back so the blur dominates the surface.
+            Color.black.opacity(0.25)
+            // 3. Subtle vertical gradient overlay: dark at top, faint warm
+            // highlight at the bottom — mirrors TranscriptionPill exactly
+            // (the original SwiftUI port had it inverted).
             LinearGradient(
                 gradient: Gradient(colors: [
-                    Color(white: 0.97).opacity(0.10),
                     Color(white: 0).opacity(0.10),
+                    Color(white: 0.97).opacity(0.10),
                 ]),
                 startPoint: .top,
                 endPoint: .bottom
