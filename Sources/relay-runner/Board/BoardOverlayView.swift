@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct BoardOverlayView: View {
@@ -62,31 +63,92 @@ private struct BoardColumnPanel: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 24)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
         .frame(width: 358, height: 633, alignment: .topLeading)
-        .background(BoardPanelBackground())
-        .shadow(color: Color(.sRGB, red: 198 / 255, green: 191 / 255, blue: 249 / 255, opacity: 0.10), radius: 6, x: 0, y: 8)
-        .shadow(color: Color(.sRGB, red: 40 / 255, green: 17 / 255, blue: 208 / 255, opacity: 0.25), radius: 12, x: 0, y: 8)
+        .background(PillGlassBackground(cornerRadius: 16))
+        // TTS theme drop shadow — matches TranscriptionPill.applyTheme.
+        .shadow(
+            color: Color(.sRGB, red: 40 / 255, green: 17 / 255, blue: 208 / 255, opacity: 0.20),
+            radius: 20,
+            x: 0,
+            y: -6
+        )
         .onTapGesture { /* swallow taps on the panel so they don't dismiss */ }
     }
 }
 
-/// Glass + tint background. Approximates the Figma `Glass` (radius 8) +
-/// dark-purple tint visible in the design. NSVisualEffectView would be a more
-/// authentic match — swap in a polish pass if material isn't close enough.
-private struct BoardPanelBackground: View {
+/// Replicates the TranscriptionPill's "liquid glass" layer stack (TTS theme)
+/// so columns and cards share the exact same visual language as the pill.
+/// Mirrors values from `TranscriptionPill.init` — keep in sync if those change.
+private struct PillGlassBackground: View {
+    let cornerRadius: CGFloat
+
     var body: some View {
-        RoundedRectangle(cornerRadius: 16)
-            .fill(.ultraThinMaterial)
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.black.opacity(0.35))
+        ZStack {
+            // 1. Visual-effect blur of what's behind (underWindowBackground material).
+            VisualEffectBlur(material: .underWindowBackground, blendingMode: .behindWindow)
+            // 2. Dark base fill — NSColor(white: 0, alpha: 0.45).
+            Color.black.opacity(0.45)
+            // 3. Subtle vertical gradient overlay (bottom darker, top hint of light).
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(white: 0.97).opacity(0.10),
+                    Color(white: 0).opacity(0.10),
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-            )
+            // 4. Top specular highlight — 1 px of white at the top edge.
+            VStack(spacing: 0) {
+                LinearGradient(
+                    gradient: Gradient(colors: [
+                        Color.white.opacity(0.10),
+                        Color.white.opacity(0.0),
+                    ]),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 1)
+                Spacer(minLength: 0)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        .overlay(
+            // 5. Border gradient (white at top, fading to transparent).
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(
+                    LinearGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: Color.white.opacity(0.10), location: 0.0),
+                            .init(color: Color.white.opacity(0.0),  location: 0.9),
+                            .init(color: Color.white.opacity(0.0),  location: 1.0),
+                        ]),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+        )
+    }
+}
+
+private struct VisualEffectBlur: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blendingMode: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        view.appearance = NSAppearance(named: .darkAqua)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
     }
 }
 
@@ -110,16 +172,9 @@ private struct TicketCard: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 16)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.sRGB, red: 132 / 255, green: 110 / 255, blue: 240 / 255, opacity: 0.30))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.10), lineWidth: 1)
-        )
+        .background(PillGlassBackground(cornerRadius: 16))
         .opacity(ticket.canceled ? 0.45 : 1.0)
     }
 }
