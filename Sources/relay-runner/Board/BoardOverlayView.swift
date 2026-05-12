@@ -1,12 +1,17 @@
 import AppKit
 import SwiftUI
 
+/// Observable model driving the board view. The controller mutates `theme`
+/// from a poll timer so the panel glow updates live as the particle field
+/// changes (recording starts → red, playback starts → purple).
+@Observable
+final class BoardViewModel {
+    var tickets: [Ticket] = []
+    var theme: ParticleFieldRenderer.Theme?
+}
+
 struct BoardOverlayView: View {
-    let tickets: [Ticket]
-    /// Drives the panel glow color. Nil = no glow, just a neutral drop shadow.
-    /// .stt = red, .tts = purple — matches the current particle-field theme so
-    /// the board reads as part of the same visual moment as the pill.
-    let theme: ParticleFieldRenderer.Theme?
+    @Bindable var model: BoardViewModel
     let onDismiss: () -> Void
 
     private let columns: [BoardColumnSpec] = [
@@ -25,8 +30,8 @@ struct BoardOverlayView: View {
                     ForEach(columns) { spec in
                         BoardColumnPanel(
                             spec: spec,
-                            tickets: tickets.filter { $0.status == spec.status },
-                            theme: theme
+                            tickets: model.tickets.filter { $0.status == spec.status },
+                            theme: model.theme
                         )
                     }
                 }
@@ -82,6 +87,7 @@ private struct BoardColumnPanel: View {
             x: 0,
             y: -6
         )
+        .animation(.easeInOut(duration: 0.4), value: theme)
         .onTapGesture { /* swallow taps on the panel so they don't dismiss */ }
     }
 

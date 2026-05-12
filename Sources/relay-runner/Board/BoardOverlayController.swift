@@ -16,9 +16,14 @@ final class BoardOverlayController {
     private(set) var isVisible = false
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    /// Drives the SwiftUI view. Mutated by the controller (theme on every
+    /// poll tick, tickets on each show) — the view re-renders automatically.
+    private let model = BoardViewModel()
     /// Resolves the current particle-field theme (STT/TTS/none) so the
     /// board's glow matches whichever pill state is active.
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
+    /// Polls the resolver while the board is visible to keep glow live.
+    private var themePollTimer: Timer?
 
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
         self.themeResolver = resolver
@@ -27,6 +32,7 @@ final class BoardOverlayController {
     deinit {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor { NSEvent.removeMonitor(m) }
+        themePollTimer?.invalidate()
     }
 
     /// Install global keyboard hooks: ⌥B toggles the board (works from any
@@ -78,11 +84,13 @@ final class BoardOverlayController {
             p.reframe(to: screen)
         }
 
-        let tickets = loadTickets()
-        let theme = themeResolver?()
+        // Refresh model from current state. Tickets get re-scanned every show;
+        // theme is then kept live by the poll timer below.
+        model.tickets = loadTickets()
+        model.theme = themeResolver?()
+
         let hosting = NSHostingView(rootView: BoardOverlayView(
-            tickets: tickets,
-            theme: theme,
+            model: model,
             onDismiss: { [weak self] in self?.hide() }
         ))
         hosting.frame = p.frame
@@ -96,13 +104,35 @@ final class BoardOverlayController {
         p.orderFrontRegardless()
         self.panel = p
         self.isVisible = true
+
+        startThemePoll()
     }
 
     func hide() {
         guard isVisible else { return }
+        stopThemePoll()
         panel?.orderOut(nil)
         panel?.contentView = nil
         isVisible = false
+    }
+
+    /// Poll the resolver and update model.theme on changes. 100 ms feels
+    /// instant for state flips (recording start, playback start, etc.) and
+    /// the resolver itself is a constant-time enum lookup.
+    private func startThemePoll() {
+        stopThemePoll()
+        themePollTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self, self.isVisible else { return }
+            let next = self.themeResolver?()
+            if next != self.model.theme {
+                self.model.theme = next
+            }
+        }
+    }
+
+    private func stopThemePoll() {
+        themePollTimer?.invalidate()
+        themePollTimer = nil
     }
 
     // MARK: - Helpers
