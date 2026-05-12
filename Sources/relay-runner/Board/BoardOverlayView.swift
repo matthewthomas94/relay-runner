@@ -189,11 +189,17 @@ private struct TicketCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(ticket.title)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0))
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
+            HStack(alignment: .top, spacing: 8) {
+                Text(ticket.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+                if ticket.runId != nil {
+                    AgentActivityBadge(activity: .building)
+                }
+            }
             if let description = ticket.description {
                 Text(description)
                     .font(.system(size: 12, weight: .regular))
@@ -208,5 +214,59 @@ private struct TicketCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(PillGlassBackground(cornerRadius: 16))
         .opacity(ticket.canceled ? 0.45 : 1.0)
+    }
+}
+
+/// "Building"/"Testing" pill shown on tickets currently being worked by a
+/// sub-agent. Distinct visual treatment from the column header — bright
+/// foreground, small, runs along the right edge of the card title row.
+/// Two states (matches what sub-agents will report once finer-grained
+/// reporting lands). If no sub-agent is active, the badge is not shown.
+private struct AgentActivityBadge: View {
+    enum Activity {
+        case building
+        case testing
+
+        var label: String {
+            switch self {
+            case .building: return "Building"
+            case .testing:  return "Testing"
+            }
+        }
+
+        var dotColor: Color {
+            switch self {
+            case .building:
+                // TTS-theme purple — same family as the panel glow.
+                return Color(.sRGB, red: 198 / 255, green: 191 / 255, blue: 249 / 255, opacity: 1.0)
+            case .testing:
+                // STT-theme warm — visually distinguishes a different mode.
+                return Color(.sRGB, red: 242 / 255, green: 223 / 255, blue: 12 / 255, opacity: 1.0)
+            }
+        }
+    }
+
+    let activity: Activity
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(activity.dotColor)
+                .frame(width: 6, height: 6)
+                .opacity(0.9)
+            Text(activity.label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.08))
+        )
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+        )
     }
 }
