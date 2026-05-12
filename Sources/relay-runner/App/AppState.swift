@@ -454,6 +454,10 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
+        // Board overlay — install global ⌃B / Esc hotkeys. The board itself
+        // only renders when the user toggles it from the menu or hotkey.
+        boardOverlay.installGlobalHotkeys()
+
         // Perimeter overlay (purple band on every screen while
         // .computerVision is active; pulses while a confirmation is pending).
         let perimeter = PerimeterOverlayManager()

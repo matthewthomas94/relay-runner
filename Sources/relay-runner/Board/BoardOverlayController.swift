@@ -14,6 +14,48 @@ final class BoardOverlayController {
 
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
+
+    deinit {
+        if let m = globalMonitor { NSEvent.removeMonitor(m) }
+        if let m = localMonitor { NSEvent.removeMonitor(m) }
+    }
+
+    /// Install global keyboard hooks: ⌃B toggles the board (works from any
+    /// app); Esc dismisses while the board is visible. Both rely on the
+    /// Accessibility / Input Monitoring permission the app already needs for
+    /// Caps Lock detection.
+    ///
+    /// Call once from `AppState.startOverlay` — `BoardOverlayController` is
+    /// long-lived for the app's lifetime.
+    func installGlobalHotkeys() {
+        guard globalMonitor == nil else { return }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handle(event)
+        }
+        // Local monitor catches the same shortcuts when our app happens to be
+        // frontmost (NSEvent splits them across global/local). Returning the
+        // event lets it propagate normally.
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handle(event)
+            return event
+        }
+    }
+
+    private func handle(_ event: NSEvent) {
+        // ⌃B (control + b) — toggle from anywhere.
+        let controlOnly = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .control
+        if controlOnly, event.charactersIgnoringModifiers?.lowercased() == "b" {
+            DispatchQueue.main.async { [weak self] in self?.toggle() }
+            return
+        }
+        // Esc while visible — dismiss.
+        if event.keyCode == 53, isVisible {
+            DispatchQueue.main.async { [weak self] in self?.hide() }
+            return
+        }
+    }
 
     func toggle() {
         if isVisible { hide() } else { show() }
