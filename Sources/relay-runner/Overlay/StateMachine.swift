@@ -149,6 +149,18 @@ final class StateMachine: @unchecked Sendable {
         }
     }
 
+    /// Transition from processing → idle after the brief "Thinking…" window.
+    /// The pill reappears on its own when TTS messageWaiting/preparing/speaking
+    /// events arrive, so dropping back to .idle here only hides the indicator
+    /// during the dead air between STT finalize and the LLM's first output.
+    func dismissProcessing() {
+        if case .processing = state {
+            stateBeforeIdle = state
+            lastIdleTransitionTime = Date()
+            state = .idle
+        }
+    }
+
     /// User cancelled the current recording or TTS.
     func setCancelled() {
         let referenceState: OverlayState

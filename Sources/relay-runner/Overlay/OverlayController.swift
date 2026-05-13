@@ -14,8 +14,13 @@ final class OverlayController {
 
     private var config: AwarenessConfig
 
-    /// Timestamp when the `.sent` state was entered, for auto-dismiss.
-    private var sentTimestamp: Date?
+    /// Timestamp when the currently-auto-dismissing state was entered.
+    /// Reset whenever the state changes so each state gets its own window.
+    private var autoDismissTimestamp: Date?
+    /// The state being timed by `autoDismissTimestamp`. Used to detect state
+    /// changes within the auto-dismiss family — e.g. .sent → .processing —
+    /// so we restart the clock instead of carrying over the .sent elapsed.
+    private var autoDismissState: OverlayState?
 
     init(config: AwarenessConfig) {
         self.config = config
@@ -51,7 +56,7 @@ final class OverlayController {
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self, weak stateMachine] _ in
             guard let self, let sm = stateMachine else { return }
             self.trackDisplay()
-            self.tickSentDismiss(sm)
+            self.tickAutoDismiss(sm)
             self.applyState(sm)
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -97,26 +102,56 @@ final class OverlayController {
         }
     }
 
-    // MARK: - Sent auto-dismiss
+    // MARK: - Auto-dismiss
 
-    private func tickSentDismiss(_ sm: StateMachine) {
-        switch sm.state {
+    /// Drives the pill toward .idle for states that should fade themselves out
+    /// after a fixed window: .sent / .cancelled (acknowledge then disappear),
+    /// .processing (brief "Thinking…" beat, then get out of the way until TTS
+    /// arrives), and .sessionPrompt (long "no session" hint).
+    private func tickAutoDismiss(_ sm: StateMachine) {
+        let state = sm.state
+        guard let timeout = Self.autoDismissTimeout(for: state) else {
+            autoDismissTimestamp = nil
+            autoDismissState = nil
+            return
+        }
+
+        if autoDismissState != state {
+            // State just entered (or switched between auto-dismiss states) —
+            // restart the clock so each state gets its full window.
+            autoDismissTimestamp = Date()
+            autoDismissState = state
+            return
+        }
+
+        guard let ts = autoDismissTimestamp,
+              Date().timeIntervalSince(ts) >= timeout else { return }
+
+        autoDismissTimestamp = nil
+        autoDismissState = nil
+
+        switch state {
         case .sent, .cancelled(_):
-            if sentTimestamp == nil {
-                sentTimestamp = Date()
-            } else if let ts = sentTimestamp, Date().timeIntervalSince(ts) >= 1.5 {
-                sentTimestamp = nil
-                sm.dismissSent()
-            }
+            sm.dismissSent()
+        case .processing:
+            sm.dismissProcessing()
         case .sessionPrompt:
-            if sentTimestamp == nil {
-                sentTimestamp = Date()
-            } else if let ts = sentTimestamp, Date().timeIntervalSince(ts) >= 5.0 {
-                sentTimestamp = nil
-                sm.dismissSessionPrompt()
-            }
+            sm.dismissSessionPrompt()
         default:
-            sentTimestamp = nil
+            break
+        }
+    }
+
+    private static func autoDismissTimeout(for state: OverlayState) -> TimeInterval? {
+        switch state {
+        case .sent, .cancelled(_):
+            return 1.5
+        case .processing:
+            return 1.0
+        case .sessionPrompt:
+            return 5.0
+        default:
+            return nil
         }
     }
 
