@@ -94,11 +94,14 @@ private struct BoardColumnPanel: View {
     private static func shadowColor(for theme: ParticleFieldRenderer.Theme?) -> Color {
         switch theme {
         case .stt:
-            // TranscriptionPill STT primaryShadowColor — #F43C09
-            return Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 0.20)
+            // TranscriptionPill STT primaryShadowColor — #F43C09. Opacity
+            // pulled back 25% from the original 0.20 so the colored glow is
+            // a hint of theme rather than a halo around the panel.
+            return Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 0.15)
         case .tts:
-            // TranscriptionPill TTS primaryShadowColor — #2811D0
-            return Color(.sRGB, red: 40 / 255, green: 17 / 255, blue: 208 / 255, opacity: 0.20)
+            // TranscriptionPill TTS primaryShadowColor — #2811D0. Same 25%
+            // pullback as STT.
+            return Color(.sRGB, red: 40 / 255, green: 17 / 255, blue: 208 / 255, opacity: 0.15)
         case nil:
             // No particle field active — neutral drop shadow, no color glow.
             return Color.black.opacity(0.45)
@@ -133,10 +136,12 @@ private struct PillGlassBackground: View {
         )
         // 2. Dark base fill. Lighter than the pill's 45% — board panels are
         //    much larger, so the same opacity reads as a wall of black rather
-        //    than frosted glass. Pull back so the blur dominates the surface.
+        //    than frosted glass. Pulled back further (0.18) so the blur and
+        //    the desktop behind it dominate the surface — the panels read
+        //    as genuinely transparent glass rather than tinted plates.
         .overlay {
             RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(Color.black.opacity(0.25))
+                .fill(Color.black.opacity(0.18))
         }
         // 3. Subtle vertical gradient: dark at top, faint warm highlight at
         //    the bottom — mirrors TranscriptionPill exactly.
@@ -240,6 +245,10 @@ private struct TicketCard: View {
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(PillGlassBackground(cornerRadius: 16))
+        // Neutral drop shadow — depth without the theme-colored glow the
+        // panels carry. Keeps cards visually anchored on top of the panel
+        // glass without bleeding the recording/playback hue into them.
+        .shadow(color: Color.black.opacity(0.35), radius: 6, x: 0, y: 2)
         .opacity(ticket.canceled ? 0.45 : 1.0)
     }
 }
