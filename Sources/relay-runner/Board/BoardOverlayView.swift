@@ -109,45 +109,64 @@ private struct BoardColumnPanel: View {
 /// Replicates the TranscriptionPill's "liquid glass" layer stack (TTS theme)
 /// so columns and cards share the exact same visual language as the pill.
 /// Mirrors values from `TranscriptionPill.init` — keep in sync if those change.
+///
+/// IMPORTANT: NSVisualEffectView's `.behindWindow` blending mode only reaches
+/// the desktop when the effect view composites directly against the window —
+/// wrapping it in a SwiftUI `ZStack` with a parent `clipShape` flattens the
+/// stack into a backing buffer and the OS blur silently degrades to "just
+/// transparency". So the structure here is deliberate:
+///
+///   - The blur is the receiver itself (a self-clipping NSVisualEffectView).
+///   - Each tint / gradient / specular / border layer is applied via its own
+///     `.overlay { ... }` so SwiftUI keeps them as sibling layers rather than
+///     fusing them into one compositing group.
 private struct PillGlassBackground: View {
     let cornerRadius: CGFloat
 
     var body: some View {
-        ZStack {
-            // 1. Visual-effect blur of what's behind (underWindowBackground material).
-            VisualEffectBlur(material: .underWindowBackground, blendingMode: .behindWindow)
-            // 2. Dark base fill. Lighter than the pill's 45% — board panels
-            // are much larger, so the same opacity reads as more black than
-            // frost. Pull back so the blur dominates the surface.
-            Color.black.opacity(0.25)
-            // 3. Subtle vertical gradient overlay: dark at top, faint warm
-            // highlight at the bottom — mirrors TranscriptionPill exactly
-            // (the original SwiftUI port had it inverted).
+        // 1. Visual-effect blur of what's behind. Self-clipping so we don't
+        //    need a parent clipShape that would flatten compositing.
+        VisualEffectBlur(
+            material: .underWindowBackground,
+            blendingMode: .behindWindow,
+            cornerRadius: cornerRadius
+        )
+        // 2. Dark base fill. Lighter than the pill's 45% — board panels are
+        //    much larger, so the same opacity reads as a wall of black rather
+        //    than frosted glass. Pull back so the blur dominates the surface.
+        .overlay {
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .fill(Color.black.opacity(0.25))
+        }
+        // 3. Subtle vertical gradient: dark at top, faint warm highlight at
+        //    the bottom — mirrors TranscriptionPill exactly.
+        .overlay {
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .fill(
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color(white: 0).opacity(0.10),
+                            Color(white: 0.97).opacity(0.10),
+                        ]),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+        }
+        // 4. Top specular highlight — 1 px of white at the top edge.
+        .overlay(alignment: .top) {
             LinearGradient(
                 gradient: Gradient(colors: [
-                    Color(white: 0).opacity(0.10),
-                    Color(white: 0.97).opacity(0.10),
+                    Color.white.opacity(0.10),
+                    Color.white.opacity(0.0),
                 ]),
                 startPoint: .top,
                 endPoint: .bottom
             )
-            // 4. Top specular highlight — 1 px of white at the top edge.
-            VStack(spacing: 0) {
-                LinearGradient(
-                    gradient: Gradient(colors: [
-                        Color.white.opacity(0.10),
-                        Color.white.opacity(0.0),
-                    ]),
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 1)
-                Spacer(minLength: 0)
-            }
+            .frame(height: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-        .overlay(
-            // 5. Border gradient (white at top, fading to transparent).
+        // 5. Border gradient (white at top, fading to transparent).
+        .overlay {
             RoundedRectangle(cornerRadius: cornerRadius)
                 .strokeBorder(
                     LinearGradient(
@@ -161,13 +180,14 @@ private struct PillGlassBackground: View {
                     ),
                     lineWidth: 1
                 )
-        )
+        }
     }
 }
 
 private struct VisualEffectBlur: NSViewRepresentable {
     let material: NSVisualEffectView.Material
     let blendingMode: NSVisualEffectView.BlendingMode
+    let cornerRadius: CGFloat
 
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
@@ -175,12 +195,19 @@ private struct VisualEffectBlur: NSViewRepresentable {
         view.blendingMode = blendingMode
         view.state = .active
         view.appearance = NSAppearance(named: .darkAqua)
+        // Self-clip rather than relying on a SwiftUI clipShape on the parent.
+        // SwiftUI clipShape forces the receiver into a flattened compositing
+        // buffer which silently kills `.behindWindow` blur.
+        view.wantsLayer = true
+        view.layer?.cornerRadius = cornerRadius
+        view.layer?.masksToBounds = true
         return view
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+        nsView.layer?.cornerRadius = cornerRadius
     }
 }
 
