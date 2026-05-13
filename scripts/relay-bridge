@@ -131,10 +131,10 @@ Now enter a continuous loop. Repeat these steps until the user says "stop listen
 ### Step 1: Wait for voice input
 
 ```bash
-while [ ! -f /tmp/voice_cmd_ready ]; do sleep 0.2; touch /tmp/voice_bridge_heartbeat; [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }; done; cat /tmp/voice_cmd_ready; rm -f /tmp/voice_cmd_ready
+while [ ! -f /tmp/voice_cmd_ready ]; do sleep 0.2; touch /tmp/voice_bridge_heartbeat; [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }; done; cat /tmp/voice_cmd_ready; rm -f /tmp/voice_cmd_ready; (while sleep 2; do touch /tmp/voice_bridge_heartbeat; done) & echo $! > /tmp/voice_bridge_heartbeat.pid
 ```
 
-This blocks until the user speaks via Caps Lock. If the voice bridge is killed (e.g. a new session was started), the loop exits.
+This blocks until the user speaks via Caps Lock. If the voice bridge is killed (e.g. a new session was started), the loop exits. Once a command is read, a background heartbeat refresher is spawned so the app's watchdog doesn't reap the bridge during long Claude processing (multi-tool tasks, builds, agent spawns). The refresher is torn down in Step 3.
 
 ### Step 2: Process the input
 
@@ -144,9 +144,10 @@ This blocks until the user speaks via Caps Lock. If the voice bridge is killed (
 
 ### Step 3: Speak your response
 
-After generating your response, ensure the bridge is still alive (the app's watchdog may have killed an orphaned bridge during long processing). If it died, restart it via the bundled relay-bridge so the user still receives your response:
+After generating your response, tear down the background heartbeat refresher spawned in Step 1, then ensure the bridge is still alive (the app's watchdog may still have killed an orphaned bridge during very long processing). If it died, restart it via the bundled relay-bridge so the user still receives your response:
 
 ```bash
+[ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 touch /tmp/voice_bridge_heartbeat
 if ! pgrep -f 'voice_bridge.py' > /dev/null 2>&1; then
     rm -f /tmp/voice_bridge.sock
@@ -172,6 +173,7 @@ Go back to Step 1 and wait for the next voice command.
 When the session ends (user says "stop listening", "exit voice", or similar), clean up:
 
 ```bash
+[ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat
 ```
 

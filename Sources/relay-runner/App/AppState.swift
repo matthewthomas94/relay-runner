@@ -62,6 +62,7 @@ final class AppState {
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
     private var overlayController: OverlayController?
+    @ObservationIgnored private let boardOverlay = BoardOverlayController()
     private var perimeterOverlay: PerimeterOverlayManager?
     private var eventBus: StateEventBus?
     private var actionsBus: ActionsConfirmBus?
@@ -293,6 +294,12 @@ final class AppState {
         sttEngine?.toggleRecording()
     }
 
+    /// Show or hide the kanban-board overlay. Reads tickets from the linked
+    /// project's `.orchestrator/` on each show.
+    func toggleBoard() {
+        boardOverlay.toggle()
+    }
+
     // MARK: - Bridge watchdog
 
     private func startBridgeWatchdog() {
@@ -446,6 +453,15 @@ final class AppState {
         let oc = OverlayController(config: config.awareness)
         oc.start(stateMachine: stateMachine)
         overlayController = oc
+
+        // Board overlay — install global ⌥B / Esc hotkeys, and wire the
+        // theme resolver so the board's glow tracks whichever particle field
+        // is currently active. The board itself only renders when the user
+        // toggles it from the menu or hotkey.
+        boardOverlay.installGlobalHotkeys()
+        boardOverlay.setThemeResolver { [weak self] in
+            self?.stateMachine.state.particleTheme
+        }
 
         // Perimeter overlay (purple band on every screen while
         // .relayVision is active; pulses while a confirmation is pending).

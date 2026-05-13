@@ -14,13 +14,6 @@ struct STTSettingsTab: View {
                 Text("System Default").tag("default")
             }
 
-            Picker("Input Mode", selection: $config.input_mode) {
-                Text("Caps Lock").tag("caps_lock_toggle")
-                Text("Always-on").tag("always_on")
-                Text("Push-to-talk").tag("push_to_talk")
-            }
-            .pickerStyle(.segmented)
-
             if config.input_mode == "push_to_talk" {
                 KeyCaptureView(label: "Push-to-talk Key", value: $config.push_to_talk_key)
             }

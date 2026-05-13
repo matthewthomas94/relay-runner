@@ -119,9 +119,11 @@ final class StateMachine: @unchecked Sendable {
 
         case ("bridge", "processing"):
             switch state {
-            case .recording, .sent, .cancelled(_):
+            case .recording, .cancelled(_):
                 break  // don't override these transient states
             default:
+                // .sent → .processing is intentional: surfaces "Thinking…" the
+                // moment STT finalizes, instead of waiting on the .sent timer.
                 state = .processing
             }
 
@@ -144,6 +146,18 @@ final class StateMachine: @unchecked Sendable {
             state = .idle
         default:
             break
+        }
+    }
+
+    /// Transition from processing → idle after the brief "Thinking…" window.
+    /// The pill reappears on its own when TTS messageWaiting/preparing/speaking
+    /// events arrive, so dropping back to .idle here only hides the indicator
+    /// during the dead air between STT finalize and the LLM's first output.
+    func dismissProcessing() {
+        if case .processing = state {
+            stateBeforeIdle = state
+            lastIdleTransitionTime = Date()
+            state = .idle
         }
     }
 

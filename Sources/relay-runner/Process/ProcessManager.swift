@@ -96,19 +96,21 @@ final class ProcessManager {
             return false
         }
 
-        // Slow check: if heartbeat is stale for >5 minutes, consumer is likely
-        // dead. The skill's bash polling loop touches the file every 200ms
-        // while waiting for voice input — but during Claude processing
-        // (multi-tool tasks, long agent spawns, builds) nothing is touching
-        // it. The threshold has to be generous enough to outlast realistic
-        // background work; 5 minutes is comfortably above typical processing
-        // and still small enough that a truly closed terminal gets reaped
-        // before the user notices the leak.
+        // Slow check: if heartbeat is stale for >15 minutes, consumer is
+        // likely dead. The skill's bash polling loop touches the file every
+        // 200ms while waiting for voice input, plus a background refresher
+        // (Step 1 of the slash command) touches it every 2s during Claude
+        // processing — but if Claude itself has crashed or the terminal was
+        // closed, neither runs. 15 minutes is comfortably above realistic
+        // tool/agent work (long builds, ultrareview, parallel agents) and
+        // still gets a truly closed terminal reaped before the user notices.
+        // Earlier threshold (5 min) was too tight: long turns with deep
+        // tool stacks could blow past it and get reaped mid-conversation.
         let heartbeatPath = "/tmp/voice_bridge_heartbeat"
         guard fm.fileExists(atPath: heartbeatPath) else { return true } // no file = old skill version, benefit of doubt
         guard let attrs = try? fm.attributesOfItem(atPath: heartbeatPath),
               let modified = attrs[.modificationDate] as? Date else { return true }
-        return Date().timeIntervalSince(modified) < 300
+        return Date().timeIntervalSince(modified) < 900
     }
 
     /// Kill any running voice_bridge process (but leave the terminal window open).

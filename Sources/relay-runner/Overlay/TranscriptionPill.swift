@@ -72,6 +72,14 @@ final class TranscriptionPill: NSView {
     private var isTransitioning = false
     private var currentTheme: Theme?
 
+    /// Latest pill size requested via `transitionContent`. The deferred
+    /// callback reads these instead of its captured arguments so that a
+    /// rapid follow-up `showCompact` (e.g. .sent → .processing within one
+    /// 30fps tick) doesn't get clobbered by the original size animating
+    /// back in at peak blur.
+    private var pendingTransitionWidth: CGFloat?
+    private var pendingTransitionHeight: CGFloat?
+
     /// Active body-scroll animation timer. Replaced/cancelled when state
     /// changes or the pill hides.
     private var bodyScrollTimer: Timer?
@@ -388,6 +396,12 @@ final class TranscriptionPill: NSView {
     /// Content changes are masked by the peak blur so the user never
     /// sees an abrupt visual switch.
     private func transitionContent(width: CGFloat, height: CGFloat) {
+        // Always record the latest target so the deferred callback resizes
+        // to the most recent showCompact/showFull, not the one that kicked
+        // off the blur.
+        pendingTransitionWidth = width
+        pendingTransitionHeight = height
+
         guard !isTransitioning else {
             // If already transitioning, just update layout immediately
             applyLayout(width: width, height: height, animated: false)
@@ -402,8 +416,11 @@ final class TranscriptionPill: NSView {
         DispatchQueue.main.asyncAfter(deadline: .now() + transitionBlurDuration * 0.8) { [weak self] in
             guard let self else { return }
 
-            // Update layout at peak blur (content change is invisible)
-            self.applyLayout(width: width, height: height, animated: true, duration: self.transitionUnblurDuration)
+            // Update layout at peak blur (content change is invisible).
+            // Read the latest target rather than the captured args.
+            let targetWidth = self.pendingTransitionWidth ?? width
+            let targetHeight = self.pendingTransitionHeight ?? height
+            self.applyLayout(width: targetWidth, height: targetHeight, animated: true, duration: self.transitionUnblurDuration)
 
             // Show body if full mode
             if !self.isCompact {

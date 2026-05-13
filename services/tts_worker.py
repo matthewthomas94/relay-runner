@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import wave
 
 import numpy as np
@@ -109,6 +110,21 @@ class TTSWorker:
         self._shutdown = False
         self._last_wav: str | None = None  # Path to last played WAV for replay
 
+        # Speculative TTS — generation runs in parallel with the pill so audio
+        # is already on disk by the time the user double-taps Option to play.
+        # _spec_text is the text the slot currently belongs to; _spec_wav is
+        # the synthesized file once ready; _spec_done flips to True when the
+        # generator finishes (success or failure). Mutating any of these or
+        # waiting for them goes through _spec_cond.
+        self._spec_lock = threading.Lock()
+        self._spec_cond = threading.Condition(self._spec_lock)
+        self._spec_text: str = ""
+        self._spec_wav: str | None = None
+        self._spec_done: bool = False
+        # Serializes Kokoro calls so a fallback _speak doesn't race a still-
+        # running speculation thread inside the same in-process model.
+        self._synth_lock = threading.Lock()
+
         # Read initial config
         cfg = load_config()["tts"]
         self._voice: str = cfg.get("voice", "af_bella")
@@ -181,13 +197,20 @@ class TTSWorker:
                 else:
                     self._pending_text = chunk
 
-                if was_empty and self._pending_text.strip():
+                full_text = self._pending_text.strip()
+                if was_empty and full_text:
                     self._play_chime()
                     # Send the full text (capped generously) — the overlay
                     # pill grows vertically to fit it, so cropping here just
                     # hides the tail of long responses for no reason. 2000 is
                     # a soft safety net for pathological inputs.
-                    _notify_state("message_waiting", text=self._pending_text.strip()[:2000])
+                    _notify_state("message_waiting", text=full_text[:2000])
+
+            # Kick off speculative TTS in parallel with the pill so audio is
+            # ready by the time the user double-taps Option. Outside the main
+            # lock — speculation has its own lock and Kokoro can take seconds.
+            if full_text and not self._playing:
+                self._start_speculation(full_text)
 
     def _control_loop(self):
         """Listen on Unix socket for play/pause/skip commands."""
@@ -243,7 +266,20 @@ class TTSWorker:
         self._paused = False
         _notify_state("preparing")
 
-        t = threading.Thread(target=self._speak, args=(text,), daemon=True)
+        # Try the speculation cache first. If a matching WAV is already
+        # ready, skip synthesis entirely (cache hit — the win). If a matching
+        # gen is in flight, wait for it: the worst-case wait is bounded by
+        # the on-demand baseline because speculation started earlier than
+        # this tap. Falling back to _speak before the spec finishes would
+        # actually be slower (it'd serialize behind the in-flight Kokoro
+        # call via _synth_lock, then redo synthesis from scratch). We only
+        # fall back when the speculation slot doesn't match this text or
+        # the gen errored out.
+        wav = self._claim_speculation(text, timeout=30.0)
+        if wav:
+            t = threading.Thread(target=self._play_speculative_wav, args=(wav,), daemon=True)
+        else:
+            t = threading.Thread(target=self._speak, args=(text,), daemon=True)
         t.start()
 
     def pause(self):
@@ -266,6 +302,7 @@ class TTSWorker:
         self.stop_playback()
         with self._lock:
             self._pending_text = ""
+        self._cancel_speculation()
         _notify_state("idle")
 
     def replay(self):
@@ -299,6 +336,42 @@ class TTSWorker:
             self._current_proc = None
             _notify_state("idle")
 
+    def _synthesize_to_wav(self, text: str) -> str | None:
+        """Render `text` to a fresh WAV via Kokoro, return its path or None on failure.
+        Serialized via _synth_lock so a fallback _speak doesn't fight a still-running
+        speculation thread inside the in-process model."""
+        if not self._kokoro:
+            return None
+        wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(wav_fd)
+        try:
+            with self._synth_lock:
+                # Synthesize at speed=1.0 to avoid kokoro_onnx int32 truncation bug
+                # (newer ONNX exports cast speed to int32, so 1.2 → 1, 1.8 → 1, etc.)
+                # Playback rate is applied via afplay -r instead for smooth control.
+                samples, sample_rate = self._kokoro.create(
+                    text, voice=self._voice, speed=1.0, lang="en-us"
+                )
+            if samples is None or len(samples) == 0:
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
+                return None
+            int16_audio = (np.asarray(samples) * 32767).astype(np.int16)
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(sample_rate)
+                wf.writeframes(int16_audio.tobytes())
+            return wav_path
+        except Exception:
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+            raise
+
     def _speak(self, text: str):
         """Synthesize and play speech using Kokoro."""
         if not self._kokoro:
@@ -306,29 +379,10 @@ class TTSWorker:
             self._playing = False
             return
 
-        wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
-        os.close(wav_fd)
-
         try:
-            # Synthesize at speed=1.0 to avoid kokoro_onnx int32 truncation bug
-            # (newer ONNX exports cast speed to int32, so 1.2 → 1, 1.8 → 1, etc.)
-            # Playback rate is applied via afplay -r instead for smooth control.
-            samples, sample_rate = self._kokoro.create(
-                text, voice=self._voice, speed=1.0, lang="en-us"
-            )
-
-            if samples is None or len(samples) == 0:
+            wav_path = self._synthesize_to_wav(text)
+            if not wav_path:
                 return
-
-            # Convert float32 [-1,1] to int16
-            int16_audio = (np.asarray(samples) * 32767).astype(np.int16)
-
-            # Write WAV file
-            with wave.open(wav_path, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)  # 16-bit
-                wf.setframerate(sample_rate)
-                wf.writeframes(int16_audio.tobytes())
 
             # Keep previous WAV for replay, clean up the one before
             old_wav = self._last_wav
@@ -353,6 +407,119 @@ class TTSWorker:
             self._current_proc.wait()
         except Exception as e:
             print(f"[tts_worker] TTS error: {e}", file=sys.stderr)
+        finally:
+            self._playing = False
+            self._current_proc = None
+            _notify_state("idle")
+
+    def _start_speculation(self, text: str):
+        """Begin (or restart) speculative TTS gen for `text` in a daemon thread.
+        No-op when the slot is already speculating on the same text or has it
+        cached. Newer texts supersede older ones; the older thread's output is
+        discarded when it returns."""
+        if not self._kokoro or not text:
+            return
+        with self._spec_cond:
+            if self._spec_text == text and (self._spec_wav or not self._spec_done):
+                return
+            old_wav = self._spec_wav
+            self._spec_text = text
+            self._spec_wav = None
+            self._spec_done = False
+            self._spec_cond.notify_all()
+        if old_wav:
+            try:
+                os.remove(old_wav)
+            except OSError:
+                pass
+
+        def _gen():
+            wav: str | None = None
+            try:
+                # Skip the (potentially expensive) Kokoro call if our request
+                # has already been superseded by a newer one.
+                with self._spec_cond:
+                    if self._spec_text != text:
+                        return
+                wav = self._synthesize_to_wav(text)
+            except Exception as e:
+                print(f"[tts_worker] Speculation error: {e}", file=sys.stderr)
+                wav = None
+            with self._spec_cond:
+                if self._spec_text != text:
+                    # superseded mid-flight — discard
+                    if wav:
+                        try:
+                            os.remove(wav)
+                        except OSError:
+                            pass
+                    return
+                self._spec_wav = wav
+                self._spec_done = True
+                self._spec_cond.notify_all()
+
+        threading.Thread(target=_gen, daemon=True).start()
+
+    def _claim_speculation(self, text: str, timeout: float = 0.0) -> str | None:
+        """Return the speculative WAV for `text` if ready, optionally waiting
+        up to `timeout` seconds for an in-flight gen. Caller takes ownership
+        of the returned path (the slot is cleared)."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._spec_cond:
+            while True:
+                if self._spec_text != text:
+                    return None
+                if self._spec_done:
+                    wav = self._spec_wav
+                    self._spec_wav = None
+                    self._spec_text = ""
+                    self._spec_done = False
+                    self._spec_cond.notify_all()
+                    return wav
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._spec_cond.wait(timeout=remaining)
+
+    def _cancel_speculation(self):
+        """Drop any cached or in-flight speculation. In-flight Kokoro work
+        cannot be preempted (in-process model), but the result is discarded
+        on completion via the supersede check."""
+        with self._spec_cond:
+            old_wav = self._spec_wav
+            self._spec_text = ""
+            self._spec_wav = None
+            self._spec_done = False
+            self._spec_cond.notify_all()
+        if old_wav:
+            try:
+                os.remove(old_wav)
+            except OSError:
+                pass
+
+    def _play_speculative_wav(self, wav_path: str):
+        """Play a pre-generated speculative WAV. Mirrors _speak's playback
+        side-effects (last_wav for replay, state notifications)."""
+        try:
+            old_wav = self._last_wav
+            self._last_wav = wav_path
+            if old_wav and old_wav != wav_path:
+                try:
+                    os.remove(old_wav)
+                except OSError:
+                    pass
+            _notify_state("speaking")
+            cmd = ["afplay", wav_path]
+            if self._rate != 1.0:
+                cmd.extend(["-r", str(self._rate)])
+            self._current_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._current_proc.wait()
+        except Exception as e:
+            print(f"[tts_worker] Speculative playback error: {e}", file=sys.stderr)
         finally:
             self._playing = False
             self._current_proc = None

@@ -30,7 +30,7 @@ The link lands in `~/Library/Application Support/relay-runner/orchestrator/proje
 ### 2. Dispatch an issue
 
 ```
-/relay-orchestrate work on REL-42
+/relay-dispatch work on REL-42
 ```
 
 Or just say it via voice in a `/relay-bridge` session. Claude calls `mcp__relay-orchestrator__dispatch_issue(identifier="REL-42")`. The daemon:

@@ -67,8 +67,10 @@ This rule overrides the generic "tier of tool" guidance the computer-use MCP inj
 - `Sources/relay-orchestrator-mcp/` — Swift MCP proxy
 - `Sources/relay-actions-mcp/` — Swift MCP server for RelayActions screen-control tools
 - `Sources/relay-runner/Overlay/` — RelayVision overlay (state machine, perimeter panel, particle field)
+- `Sources/relay-runner/Board/` — local kanban board overlay (RR-* tickets in `.orchestrator/`)
 - `scripts/relay-orchestrator` — launcher / installer
 - `docs/orchestrator.md` — orchestrator user-facing reference
 - `docs/specs/relay-actions.md` — Relay Actions feature spec
+- `docs/specs/orchestrator-tickets.md` — local board ticket schema
 
 For the wider behavioral guidelines (Karpathy rules, project-ledger sync, etc.), see `~/.claude/CLAUDE.md` — those still apply on top of this.
