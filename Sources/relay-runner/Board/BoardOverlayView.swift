@@ -136,12 +136,12 @@ private struct PillGlassBackground: View {
         )
         // 2. Dark base fill. Lighter than the pill's 45% — board panels are
         //    much larger, so the same opacity reads as a wall of black rather
-        //    than frosted glass. Pulled back further (0.18) so the blur and
-        //    the desktop behind it dominate the surface — the panels read
-        //    as genuinely transparent glass rather than tinted plates.
+        //    than frosted glass. Pulled all the way back to 0.10 so the
+        //    panel reads as truly transparent — the desktop blur is the
+        //    surface, and the tint is just enough to keep the column legible.
         .overlay {
             RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(Color.black.opacity(0.18))
+                .fill(Color.black.opacity(0.10))
         }
         // 3. Subtle vertical gradient: dark at top, faint warm highlight at
         //    the bottom — mirrors TranscriptionPill exactly.
@@ -244,11 +244,16 @@ private struct TicketCard: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(PillGlassBackground(cornerRadius: 16))
-        // Neutral drop shadow — depth without the theme-colored glow the
-        // panels carry. Keeps cards visually anchored on top of the panel
-        // glass without bleeding the recording/playback hue into them.
-        .shadow(color: Color.black.opacity(0.35), radius: 6, x: 0, y: 2)
+        // Flat dark card — explicitly NOT the PillGlassBackground stack.
+        // The top specular highlight + bright border the pill carries reads
+        // as a faint glow at card scale, which we don't want here. A simple
+        // tinted rounded rect with a real drop shadow gives depth without
+        // the inner-glow look.
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.black.opacity(0.35))
+        )
+        .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
         .opacity(ticket.canceled ? 0.45 : 1.0)
     }
 }
