@@ -25,6 +25,15 @@ final class BoardOverlayController {
     /// Polls the resolver while the board is visible to keep glow live.
     private var themePollTimer: Timer?
 
+    /// Gesture state for the modifier-only ⌃⌥ hotkey. NSEvent doesn't have a
+    /// native "hotkey is two modifiers and no letter" abstraction — we drive
+    /// it off `.flagsChanged` instead. Press Control+Option together, release
+    /// either to toggle. If any key is pressed while both modifiers are held
+    /// (e.g. ⌃⌥+Arrow for word-selection in text editors), `sawKeyDownDuringGesture`
+    /// aborts so the toggle doesn't fire on incidental modifier use.
+    private var bothModifiersHeld = false
+    private var sawKeyDownDuringGesture = false
+
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
         self.themeResolver = resolver
     }
@@ -35,43 +44,63 @@ final class BoardOverlayController {
         themePollTimer?.invalidate()
     }
 
-    /// Install global keyboard hooks: ⌃⌥B toggles the board (works from any
-    /// app); Esc dismisses while the board is visible. Both rely on the
-    /// Accessibility / Input Monitoring permission the app already needs for
-    /// Caps Lock detection.
+    /// Install global keyboard hooks: ⌃⌥ (Control+Option pressed together,
+    /// no letter) toggles the board (works from any app); Esc dismisses while
+    /// the board is visible. Both rely on the Accessibility / Input Monitoring
+    /// permission the app already needs for Caps Lock detection.
     ///
     /// Call once from `AppState.startOverlay` — `BoardOverlayController` is
     /// long-lived for the app's lifetime.
     func installGlobalHotkeys() {
         guard globalMonitor == nil else { return }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        let mask: NSEvent.EventTypeMask = [.keyDown, .flagsChanged]
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
             self?.handle(event)
         }
         // Local monitor catches the same shortcuts when our app happens to be
         // frontmost (NSEvent splits them across global/local). Returning the
         // event lets it propagate normally.
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
             self?.handle(event)
             return event
         }
     }
 
     private func handle(_ event: NSEvent) {
-        // ⌃⌥B (control + option + b) — toggle from anywhere.
-        // charactersIgnoringModifiers is "b" even with Option pressed;
-        // `event.characters` would be "∫" because Option+B types the integral
-        // sign on the default US layout. We require exactly Control+Option as
-        // the modifier mask so single-modifier presses (Option+B = ∫,
-        // Control+B = ^B in terminal apps) don't fire the toggle by accident.
-        let ctrlOpt = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.control, .option]
-        if ctrlOpt, event.charactersIgnoringModifiers?.lowercased() == "b" {
-            DispatchQueue.main.async { [weak self] in self?.toggle() }
-            return
+        switch event.type {
+        case .flagsChanged:
+            handleFlagsChanged(event)
+        case .keyDown:
+            // Any keypress while both modifiers are held aborts the gesture —
+            // ⌃⌥+Arrow word-selection, ⌃⌥+Click for option-click-with-control,
+            // etc., should NOT fire the board toggle.
+            if bothModifiersHeld { sawKeyDownDuringGesture = true }
+            // Esc while visible — dismiss.
+            if event.keyCode == 53, isVisible {
+                DispatchQueue.main.async { [weak self] in self?.hide() }
+            }
+        default:
+            break
         }
-        // Esc while visible — dismiss.
-        if event.keyCode == 53, isVisible {
-            DispatchQueue.main.async { [weak self] in self?.hide() }
-            return
+    }
+
+    private func handleFlagsChanged(_ event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let hasBoth = flags.contains([.control, .option])
+        if hasBoth && !bothModifiersHeld {
+            // Both modifiers just became simultaneously held — start the
+            // gesture window. The toggle doesn't fire yet; we wait for
+            // release to make sure no key was pressed in the interim.
+            bothModifiersHeld = true
+            sawKeyDownDuringGesture = false
+        } else if !hasBoth && bothModifiersHeld {
+            // One or both modifiers released — gesture ends. Fire only if no
+            // key intercepted (i.e. this was a clean ⌃⌥-tap, not the start of
+            // a longer combo like ⌃⌥+Arrow).
+            bothModifiersHeld = false
+            if !sawKeyDownDuringGesture {
+                DispatchQueue.main.async { [weak self] in self?.toggle() }
+            }
         }
     }
 

@@ -454,7 +454,7 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Board overlay — install global ⌃⌥B / Esc hotkeys, and wire the
+        // Board overlay — install global ⌃⌥ (modifier-only) / Esc hotkeys, and wire the
         // theme resolver so the board's glow tracks whichever particle field
         // is currently active. The board itself only renders when the user
         // toggles it from the menu or hotkey.
