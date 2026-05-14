@@ -10,8 +10,9 @@ import QuartzCore
 // - One NSPanel per NSScreen, screen-saver level, click-through, transparent.
 // - Each panel hosts a PerimeterParticleField — same dot grid + animation as
 //   ParticleFieldRenderer, but the visibility mask favors dots within ~90pt
-//   of any edge instead of along the bottom. Identical color palette to the
-//   .tts reply state so the two surfaces feel like one effect.
+//   of any edge instead of along the bottom. Uses the `.stt` color palette
+//   because RelayVision means "the agent is reading the screen" — a recording
+//   surface, conceptually, not a playback one.
 // - Rebuilds on NSApplication.didChangeScreenParametersNotification so screen
 //   add/remove takes effect immediately.
 //
@@ -140,7 +141,7 @@ private final class PerimeterPanel: NSPanel {
         view.layer?.backgroundColor = NSColor.clear.cgColor
         self.hostView = view
 
-        let field = PerimeterParticleField(theme: .tts)
+        let field = PerimeterParticleField(theme: .stt)
         // Match the host screen's backing scale before attach so the bitmap
         // context is sized correctly — multi-display setups can mix 1× and 2×.
         field.setBackingScale(screen.backingScaleFactor)
