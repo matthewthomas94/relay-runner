@@ -35,7 +35,7 @@ final class BoardOverlayController {
         themePollTimer?.invalidate()
     }
 
-    /// Install global keyboard hooks: ⌥B toggles the board (works from any
+    /// Install global keyboard hooks: ⌃⌥B toggles the board (works from any
     /// app); Esc dismisses while the board is visible. Both rely on the
     /// Accessibility / Input Monitoring permission the app already needs for
     /// Caps Lock detection.
@@ -57,11 +57,14 @@ final class BoardOverlayController {
     }
 
     private func handle(_ event: NSEvent) {
-        // ⌥B (option + b) — toggle from anywhere. charactersIgnoringModifiers
-        // is "b" even with Option pressed; `event.characters` would be "∫"
-        // because Option+B types the integral sign on the default US layout.
-        let optionOnly = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .option
-        if optionOnly, event.charactersIgnoringModifiers?.lowercased() == "b" {
+        // ⌃⌥B (control + option + b) — toggle from anywhere.
+        // charactersIgnoringModifiers is "b" even with Option pressed;
+        // `event.characters` would be "∫" because Option+B types the integral
+        // sign on the default US layout. We require exactly Control+Option as
+        // the modifier mask so single-modifier presses (Option+B = ∫,
+        // Control+B = ^B in terminal apps) don't fire the toggle by accident.
+        let ctrlOpt = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.control, .option]
+        if ctrlOpt, event.charactersIgnoringModifiers?.lowercased() == "b" {
             DispatchQueue.main.async { [weak self] in self?.toggle() }
             return
         }
