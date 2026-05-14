@@ -68,7 +68,7 @@ class VoiceBridge:
 
     def _spawn(self) -> subprocess.Popen | None:
         cmd = [
-            self.claude_bin, "-p",
+            self.claude_bin,
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",

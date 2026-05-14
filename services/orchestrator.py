@@ -430,8 +430,7 @@ class Worker:
 
         try:
             cmd = [
-                self.claude_bin, "-p",
-                "--output-format", "json",
+                self.claude_bin,
                 "--dangerously-skip-permissions",
             ]
             try:
