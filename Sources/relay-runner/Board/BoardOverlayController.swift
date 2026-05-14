@@ -25,6 +25,14 @@ final class BoardOverlayController {
     /// Polls the resolver while the board is visible to keep glow live.
     private var themePollTimer: Timer?
 
+    /// Fired from `show()` and `hide()`. AppState uses these to drive the
+    /// perimeter RelayVision overlay when the board surfaces during an
+    /// active voice/relay session — visual signal that the board state is
+    /// "in the loop" for the user. Wired with `setBoardLifecycleHooks` so
+    /// the controller stays decoupled from `StateMachine`.
+    private var onShown: (() -> Void)?
+    private var onHidden: (() -> Void)?
+
     /// Gesture state for the modifier-only ⌃⌥ hotkey. NSEvent doesn't have a
     /// native "hotkey is two modifiers and no letter" abstraction — we drive
     /// it off `.flagsChanged` instead. Press Control+Option together, release
@@ -36,6 +44,14 @@ final class BoardOverlayController {
 
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
         self.themeResolver = resolver
+    }
+
+    /// Wire callbacks for board show/hide so AppState can trigger
+    /// RelayVision when a voice/relay session is active. Either closure may
+    /// be nil; the controller no-ops on an unwired side.
+    func setBoardLifecycleHooks(onShown: (() -> Void)?, onHidden: (() -> Void)?) {
+        self.onShown = onShown
+        self.onHidden = onHidden
     }
 
     deinit {
@@ -138,6 +154,7 @@ final class BoardOverlayController {
         self.isVisible = true
 
         startThemePoll()
+        onShown?()
     }
 
     func hide() {
@@ -146,6 +163,7 @@ final class BoardOverlayController {
         panel?.orderOut(nil)
         panel?.contentView = nil
         isVisible = false
+        onHidden?()
     }
 
     /// Poll the resolver and update model.theme on changes. 100 ms feels
