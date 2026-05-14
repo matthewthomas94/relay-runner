@@ -460,7 +460,13 @@ final class AppState {
         // toggles it from the menu or hotkey.
         boardOverlay.installGlobalHotkeys()
         boardOverlay.setThemeResolver { [weak self] in
-            self?.stateMachine.state.particleTheme
+            guard let state = self?.stateMachine.state else { return nil }
+            // RelayVision intentionally returns nil from `particleTheme` so
+            // the bottom particle field stays hidden — but the board has its
+            // own glow that should reflect "agent is reading the screen".
+            // Map it to .stt so the board glow matches the perimeter dots.
+            if case .relayVision = state { return .stt }
+            return state.particleTheme
         }
         // When the board surfaces during an active voice/relay session,
         // trigger the perimeter RelayVision overlay so the user has a clear
