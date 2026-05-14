@@ -286,7 +286,7 @@ PYTHON_DEPS_OK=false
 KOKORO_MODELS_OK=false
 [ -f "$KOKORO_MODEL_FILE" ] && [ -f "$KOKORO_VOICES_FILE" ] && KOKORO_MODELS_OK=true
 # voice_bridge.py spawns the Claude Code CLI when started without --relay
-# (each spoken turn shells out to `claude -p ...`). If the binary isn't
+# (each spoken turn shells out to `claude ...`). If the binary isn't
 # present a session falls over with "claude not found on PATH" the
 # moment the user clicks Start Session — no visible progress bar, just a
 # dead terminal. claude.ai/install.sh symlinks the binary to
@@ -591,7 +591,7 @@ PYEOF
     fi
 
     if ! $CLAUDE_CLI_OK; then
-        # voice_bridge.py spawns `claude -p ...` per spoken turn in the
+        # voice_bridge.py spawns `claude ...` per spoken turn in the
         # default (non-relay) session mode, so a missing CLI dead-ends
         # the very first session. Anthropic ships a native installer at
         # claude.ai/install.sh that drops a binary at ~/.local/bin/claude

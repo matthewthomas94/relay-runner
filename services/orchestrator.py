@@ -2,7 +2,7 @@
 """Relay-runner orchestrator daemon.
 
 Symphony-style sub-agent orchestrator: links Linear projects to local git repos,
-dispatches issues to autonomous `claude -p` runs in isolated worktrees, and tracks
+dispatches issues to autonomous `claude` runs in isolated worktrees, and tracks
 state in SQLite. HTTP API on 127.0.0.1; MCP tool surface is the thin Swift proxy
 in Sources/relay-orchestrator-mcp/ which calls these endpoints.
 
@@ -398,7 +398,7 @@ def delete_branch(repo_path: str, branch: str) -> None:
 # ---------------------------------------------------------------------------
 
 class Worker:
-    """One `claude -p` subprocess running against a worktree. Owns its own thread."""
+    """One `claude` subprocess running against a worktree. Owns its own thread."""
 
     def __init__(self, *, run_id: int, run: dict, prompt: str, claude_bin: str,
                  store: RunsStore, log_path: Path, timeout_seconds: int,
@@ -430,8 +430,7 @@ class Worker:
 
         try:
             cmd = [
-                self.claude_bin, "-p",
-                "--output-format", "json",
+                self.claude_bin,
                 "--dangerously-skip-permissions",
             ]
             try:

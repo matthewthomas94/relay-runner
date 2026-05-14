@@ -49,7 +49,7 @@ def open_fifo(path: str) -> int | None:
 
 
 class VoiceBridge:
-    """Persistent `claude -p` session reused across voice prompts.
+    """Persistent `claude` session reused across voice prompts.
 
     The first prompt pays CLI startup + MCP-server-spawn cost (~5–7s on this
     machine); subsequent prompts reuse the warm process and only pay LLM
@@ -68,7 +68,7 @@ class VoiceBridge:
 
     def _spawn(self) -> subprocess.Popen | None:
         cmd = [
-            self.claude_bin, "-p",
+            self.claude_bin,
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",

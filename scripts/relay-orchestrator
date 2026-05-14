@@ -129,7 +129,7 @@ LINK_MD_EOF
 
     if [ "$mode" = "force" ] || [ ! -f "$DISPATCH_MD" ]; then
         cat > "$DISPATCH_MD" <<'DISPATCH_MD_EOF'
-Dispatch a Linear issue to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs `claude -p` autonomously inside it.
+Dispatch a Linear issue to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs `claude` autonomously inside it.
 
 ## When to use this
 
@@ -179,7 +179,7 @@ Do NOT trigger when: relay-orchestrator MCP isn't registered (`claude mcp get re
 
 ## The four-step workflow
 
-You (this main session) are the orchestrator. Each `claude -p` worker spawned by `dispatch_issue` is a one-shot sub-agent with no memory of this conversation.
+You (this main session) are the orchestrator. Each `claude` worker spawned by `dispatch_issue` is a one-shot sub-agent with no memory of this conversation.
 
 1. **Discuss.** Talk through what needs to happen. Surface assumptions, push back when something's underspecified, propose alternatives. Don't jump to writing tickets until the work is concrete.
 2. **Write tickets.** When the discussion settles on a unit of work, file a Linear issue against the linked project (`mcp__linear__save_issue` — title + description with acceptance criteria + priority + project name). Each issue should be small enough that a sub-agent can complete it in one pass without further clarification.

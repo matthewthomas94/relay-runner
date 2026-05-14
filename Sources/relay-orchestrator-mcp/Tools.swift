@@ -105,7 +105,7 @@ struct DispatchIssueTool: MCPTool {
     let name = "dispatch_issue"
     let description = """
         Dispatch a Linear issue to a sub-agent run. The orchestrator creates a git worktree for the \
-        issue's branch (relay/<sanitized-id>), renders the workflow prompt, and spawns `claude -p` \
+        issue's branch (relay/<sanitized-id>), renders the workflow prompt, and spawns `claude` \
         in that worktree. The worker reads issue context via the Linear MCP and posts a status \
         comment back when done. Returns the run record (state, run_id, workspace_path, branch). \
         If a project_id isn't provided and only one project is linked, that project is assumed.

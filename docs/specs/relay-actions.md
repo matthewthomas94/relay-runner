@@ -12,11 +12,11 @@
 
 ## Goal
 
-Voice-driven Claude can drive the macOS UI for two specific use cases — UAT of in-development software and configuring dense dashboards that lack CLI/MCP interfaces (e.g. Apple Developer site, Xcode preferences), with a purple perimeter overlay (RelayVision) while screen-control tools are active. The existing voice → STT → `claude -p` → TTS loop is unchanged when no Relay Actions tools are invoked.
+Voice-driven Claude can drive the macOS UI for two specific use cases — UAT of in-development software and configuring dense dashboards that lack CLI/MCP interfaces (e.g. Apple Developer site, Xcode preferences), with a purple perimeter overlay (RelayVision) while screen-control tools are active. The existing voice → STT → `claude` → TTS loop is unchanged when no Relay Actions tools are invoked.
 
 ## Background
 
-Today, voice prompts go through `voice_bridge.py` to `claude -p --dangerously-skip-permissions` ([services/voice_bridge.py:81](../../services/voice_bridge.py)). That gives Claude all default Code tools (Bash, Edit, Read, etc.) but no way to see the screen, click, or type into other apps.
+Today, voice prompts go through `voice_bridge.py` to `claude --dangerously-skip-permissions` ([services/voice_bridge.py:70](../../services/voice_bridge.py)). That gives Claude all default Code tools (Bash, Edit, Read, etc.) but no way to see the screen, click, or type into other apps.
 
 Anthropic's Claude Cowork solves the same problem via MCP servers (`mcp__computer-use__*`, `mcp__Claude_in_Chrome__*`) bundled with the Claude Desktop app. Those servers are not publicly distributed, so we build our own narrow equivalent — a Swift-native MCP server scoped to UAT and dashboard config — and register it into the bundled `claude` CLI's MCP config.
 
@@ -104,7 +104,7 @@ These were resolved during the feasibility discussion and are not open for re-li
     - Acceptance: A test session that has Claude take 5 screenshots and 5 scrolls produces zero double-tap requirements. A test session that has Claude click a non-destructive button produces a medium-risk prompt resolvable by double-tap. A test session that has Claude click a destructive-labeled button produces a high-risk prompt.
 
 11. **Existing voice loop unchanged in absence of Relay Actions tools**: Adding Relay Actions does not regress the existing experience.
-    - Current: Voice → STT → `claude -p` → TTS works as documented in [README.md](../../README.md).
+    - Current: Voice → STT → `claude` → TTS works as documented in [README.md](../../README.md).
     - Target: A voice session that does not invoke any Relay Actions MCP tool has identical perceived latency, identical pill behavior, identical gestures, and no perimeter overlay.
     - Acceptance: Running a regression script of 10 prompts that don't touch Relay Actions tools (e.g. "what time is it", "summarize the last commit", "what files changed today") shows: no perimeter overlay, double-tap Option still plays TTS, double-tap Control still cancels, end-to-end latency within ±10% of baseline.
 

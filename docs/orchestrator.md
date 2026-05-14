@@ -1,6 +1,6 @@
 # Relay Runner Orchestrator
 
-Symphony-style sub-agent orchestrator. Links Linear projects to local git repos, dispatches Linear issues to autonomous `claude -p` runs in isolated git worktrees, and tracks state in SQLite. Modeled on [openai/symphony](https://github.com/openai/symphony) — the daemon owns "is this issue claimed / running / done", and each sub-agent owns its own context window for the duration of one run.
+Symphony-style sub-agent orchestrator. Links Linear projects to local git repos, dispatches Linear issues to autonomous `claude` runs in isolated git worktrees, and tracks state in SQLite. Modeled on [openai/symphony](https://github.com/openai/symphony) — the daemon owns "is this issue claimed / running / done", and each sub-agent owns its own context window for the duration of one run.
 
 ## Quick start
 
@@ -37,7 +37,7 @@ Or just say it via voice in a `/relay-bridge` session. Claude calls `mcp__relay-
 
 1. Adds a git worktree at `~/Library/Application Support/relay-runner/workspaces/rel-42/` on branch `relay/rel-42`.
 2. Renders the workflow prompt (default at `services/orchestrator_workflow.md`, override per-repo at `<repo>/WORKFLOW.md`).
-3. Spawns `claude -p --dangerously-skip-permissions` in that worktree, piping the prompt as stdin.
+3. Spawns `claude --dangerously-skip-permissions` in that worktree, piping the prompt as stdin.
 4. Returns a `run_id` immediately — the worker continues in the background.
 
 The worker reads the issue's title/description/labels via the Linear MCP, implements the change, commits with conventional commits referencing the identifier, and posts a status comment back to Linear when done.
@@ -55,7 +55,7 @@ Voice equivalents work too: "what are the agents doing?", "how's REL-42?", "stop
 
 ## The intended workflow
 
-The orchestrator is designed around a four-step loop. The main Claude Code session is the *orchestrator* — it's the one talking to you and routing work — and each `claude -p` worker is a one-shot *sub-agent*.
+The orchestrator is designed around a four-step loop. The main Claude Code session is the *orchestrator* — it's the one talking to you and routing work — and each `claude` worker is a one-shot *sub-agent*.
 
 1. **Discuss.** You and the main session talk through what needs to happen. Voice via `/relay-bridge`, or just typed chat. The main session has full context of the conversation, the codebase, and the project state.
 2. **Write tickets.** When the discussion settles on concrete work, the main session writes Linear issues for the team's project — title, description with acceptance criteria, priority. Each issue should be small enough that a sub-agent can complete it in one pass without further clarification.
