@@ -454,7 +454,7 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Board overlay — install global ⌥B / Esc hotkeys, and wire the
+        // Board overlay — install global ⌃⌥ (modifier-only) / Esc hotkeys, and wire the
         // theme resolver so the board's glow tracks whichever particle field
         // is currently active. The board itself only renders when the user
         // toggles it from the menu or hotkey.
@@ -462,6 +462,28 @@ final class AppState {
         boardOverlay.setThemeResolver { [weak self] in
             self?.stateMachine.state.particleTheme
         }
+        // When the board surfaces during an active voice/relay session,
+        // trigger the perimeter RelayVision overlay so the user has a clear
+        // signal that the agent is screen-aware of board state. Session
+        // detection is "voice bridge socket exists" (relay-bridge mode +
+        // standalone voice mode both create /tmp/voice_bridge.sock). On
+        // hide we only clear if (a) we're still in .relayVision and (b) no
+        // confirmation is pending — so we never interrupt the
+        // ActionsConfirmBus's own RelayVision lifecycle.
+        boardOverlay.setBoardLifecycleHooks(
+            onShown: { [weak self] in
+                guard let self else { return }
+                guard FileManager.default.fileExists(atPath: "/tmp/voice_bridge.sock") else { return }
+                self.stateMachine.setRelayVision(awaitingConfirmation: nil)
+            },
+            onHidden: { [weak self] in
+                guard let self else { return }
+                guard self.stateMachine.pendingConfirmation == nil else { return }
+                if case .relayVision = self.stateMachine.state {
+                    self.stateMachine.clearRelayVision()
+                }
+            }
+        )
 
         // Perimeter overlay (purple band on every screen while
         // .relayVision is active; pulses while a confirmation is pending).
