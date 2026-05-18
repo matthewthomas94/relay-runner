@@ -8,9 +8,18 @@ struct Ticket: Identifiable, Equatable {
     let dependsOn: [String]
     let runId: Int?
     let canceled: Bool
+    /// Sort key within a column. Lower = higher in the list. Optional in the
+    /// on-disk schema — missing `order` falls back to the numeric portion of
+    /// the ticket id (so existing tickets keep their RR-1, RR-2, … sequence
+    /// without a migration). The board renumbers on drag-drop.
+    let order: Int
     /// First paragraph after `## Description` in the body. Nil when the ticket
     /// has no description section. Cards may further clip this if it overflows.
     let description: String?
+    /// Full body of the ticket as stored on disk (everything after the closing
+    /// `---`). Held so the editor can round-trip non-Description sections like
+    /// `## Acceptance criteria` without throwing them away on save.
+    let body: String
 
     enum Status: String, CaseIterable, Equatable {
         case backlog
@@ -68,8 +77,88 @@ enum TicketParser {
             dependsOn: parseList(depsRaw),
             runId: parseOptionalInt(runIdRaw),
             canceled: try parseBool(cancelRaw),
-            description: extractDescription(body)
+            order: parseOrder(fields["order"], fallbackFrom: id),
+            description: extractDescription(body),
+            body: body
         )
+    }
+
+    /// `order` is optional in the on-disk schema. Missing or unparseable →
+    /// fall back to the numeric portion of the ticket id, so a pre-`order`
+    /// repo renders in id order on first load. Tickets get explicit `order`
+    /// values once they're touched by drag-drop.
+    private static func parseOrder(_ raw: String?, fallbackFrom id: String) -> Int {
+        if let raw, let n = Int(raw) { return n }
+        if let dash = id.lastIndex(of: "-"), let n = Int(id[id.index(after: dash)...]) {
+            return n
+        }
+        return 0
+    }
+
+    /// Replace the paragraph under `## Description` in `body` with
+    /// `newDescription`. If the body has no Description section, one is
+    /// inserted at the top (before any other content). If `newDescription`
+    /// is empty/whitespace, the section is removed entirely. All other
+    /// sections (e.g. `## Acceptance criteria`) are preserved verbatim.
+    static func replaceDescription(in body: String, with newDescription: String) -> String {
+        let trimmed = newDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = body.components(separatedBy: "\n")
+
+        if let headingIdx = lines.firstIndex(where: { isDescriptionHeading($0) }) {
+            // Find the end of the existing description block — first heading
+            // after the Description heading, or end-of-body.
+            var endIdx = lines.count
+            for i in (headingIdx + 1)..<lines.count {
+                let t = lines[i].trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("#") { endIdx = i; break }
+            }
+            var rebuilt: [String] = Array(lines[..<headingIdx])
+            if !trimmed.isEmpty {
+                rebuilt.append("## Description")
+                rebuilt.append("")
+                rebuilt.append(trimmed)
+                rebuilt.append("")
+            }
+            // Trim a leading blank line from the tail so we don't accumulate
+            // them across edits.
+            var tail = Array(lines[endIdx...])
+            while tail.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                tail.removeFirst()
+            }
+            if !tail.isEmpty { rebuilt.append(contentsOf: tail) }
+            return rebuilt.joined(separator: "\n")
+        }
+
+        if trimmed.isEmpty { return body }
+        // No existing section — prepend one. Leading blank lines from the
+        // original body get dropped to keep formatting tight.
+        var rebuilt: [String] = ["## Description", "", trimmed, ""]
+        var trimmedLines = lines
+        while trimmedLines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            trimmedLines.removeFirst()
+        }
+        rebuilt.append(contentsOf: trimmedLines)
+        return rebuilt.joined(separator: "\n")
+    }
+
+    /// Everything between `## Description` and the next heading (or end of
+    /// body), preserving paragraph breaks. Returns nil when the section is
+    /// absent. Used by the editor — `extractDescription` is the card-summary
+    /// counterpart and only returns the first paragraph.
+    static func extractFullDescription(_ body: String) -> String? {
+        let lines = body.components(separatedBy: "\n")
+        guard let headingIdx = lines.firstIndex(where: { isDescriptionHeading($0) }) else {
+            return nil
+        }
+        var collected: [String] = []
+        for line in lines[(headingIdx + 1)...] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#") { break }
+            collected.append(line)
+        }
+        let joined = collected.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
     }
 
     /// First paragraph after `## Description`. Returns nil when the section
