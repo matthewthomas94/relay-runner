@@ -45,7 +45,7 @@ enum ProjectResolver {
     }
 
     static func scanTickets(in project: LinkedProject) -> [Ticket] {
-        let dir = project.repoPath.appendingPathComponent(".orchestrator", isDirectory: true)
+        let dir = ticketsDirectory(in: project)
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: nil,
@@ -63,6 +63,12 @@ enum ProjectResolver {
             }
         }
         return tickets
+    }
+
+    /// `.orchestrator/` under the linked project. The writer and scanner share
+    /// this so they stay aligned.
+    static func ticketsDirectory(in project: LinkedProject) -> URL {
+        project.repoPath.appendingPathComponent(".orchestrator", isDirectory: true)
     }
 
     private static func applicationSupportDir() -> URL? {

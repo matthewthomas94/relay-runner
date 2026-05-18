@@ -31,12 +31,16 @@ final class BoardOverlayPanel: NSPanel {
         }
     }
 
-    // Don't become key. Esc dismissal is handled by the global+local NSEvent
-    // monitors in BoardOverlayController, so the panel doesn't need keyboard
-    // focus. Letting it become key was making the main overlay panel
-    // (where the pill lives) lose state — specifically, the pill would
-    // snap to compact mode during playback while the board was up.
-    override var canBecomeKey: Bool { false }
+    /// Toggled by `BoardOverlayController` while the editor modal is open —
+    /// the panel needs key focus for TextField input but going key while the
+    /// pill is playing back causes the pill to snap to compact mode. So we
+    /// only opt in for the brief window the modal is on screen.
+    var keyEligible: Bool = false
+
+    // Esc dismissal is handled by the global+local NSEvent monitors in
+    // BoardOverlayController; the panel doesn't need to be key unless the
+    // editor modal is up.
+    override var canBecomeKey: Bool { keyEligible }
     override var canBecomeMain: Bool { false }
 
     func reframe(to screen: NSScreen) {

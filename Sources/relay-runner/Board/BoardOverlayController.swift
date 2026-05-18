@@ -91,9 +91,12 @@ final class BoardOverlayController {
             // ⌃⌥+Arrow word-selection, ⌃⌥+Click for option-click-with-control,
             // etc., should NOT fire the board toggle.
             if bothModifiersHeld { sawKeyDownDuringGesture = true }
-            // Esc while visible — dismiss.
+            // Esc: cancel an open editor first, otherwise dismiss the board.
             if event.keyCode == 53, isVisible {
-                DispatchQueue.main.async { [weak self] in self?.hide() }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if self.model.editing != nil { self.cancelEditor() } else { self.hide() }
+                }
             }
         default:
             break
@@ -136,10 +139,17 @@ final class BoardOverlayController {
         // theme is then kept live by the poll timer below.
         model.tickets = loadTickets()
         model.theme = themeResolver?()
+        model.editing = nil
 
         let hosting = NSHostingView(rootView: BoardOverlayView(
             model: model,
-            onDismiss: { [weak self] in self?.hide() }
+            onDismiss: { [weak self] in self?.hide() },
+            onDrop: { [weak self] id, status, idx in self?.handleDrop(ticketId: id, to: status, insertIndex: idx) },
+            onCreate: { [weak self] status in self?.handleCreate(in: status) },
+            onEdit: { [weak self] ticket in self?.openEditor(for: ticket) },
+            onCommit: { [weak self] draft in self?.commitEditor(draft) },
+            onCancel: { [weak self] in self?.cancelEditor() },
+            onDelete: { [weak self] ticket in self?.handleDelete(ticket) }
         ))
         hosting.frame = p.frame
         hosting.autoresizingMask = [.width, .height]
@@ -159,6 +169,12 @@ final class BoardOverlayController {
 
     func hide() {
         guard isVisible else { return }
+        // Cancel any open edit so reopening the board lands on a clean view.
+        if model.editing != nil {
+            model.editing = nil
+            setPanelKeyEligible(false)
+        }
+        model.dragState = nil
         stopThemePoll()
         panel?.orderOut(nil)
         panel?.contentView = nil
@@ -183,6 +199,151 @@ final class BoardOverlayController {
     private func stopThemePoll() {
         themePollTimer?.invalidate()
         themePollTimer = nil
+    }
+
+    // MARK: - Editor / mutation handlers
+
+    private func openEditor(for ticket: Ticket) {
+        // Pull the full description (all paragraphs until the next heading)
+        // so the editor round-trips multi-paragraph content cleanly.
+        let fullDescription = TicketParser.extractFullDescription(ticket.body) ?? ""
+        model.editing = TicketDraft(
+            editorId: ticket.id,
+            original: ticket,
+            title: ticket.title,
+            description: fullDescription
+        )
+        setPanelKeyEligible(true)
+    }
+
+    private func cancelEditor() {
+        model.editing = nil
+        setPanelKeyEligible(false)
+    }
+
+    private func commitEditor(_ draft: TicketDraft) {
+        guard let project = ProjectResolver.resolve() else { cancelEditor(); return }
+        let trimmedTitle = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let titleToSave = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
+        let withDescription = TicketWriter.ticket(
+            draft.original,
+            withDescription: draft.description
+        )
+        let updated = Ticket(
+            id: withDescription.id,
+            title: titleToSave,
+            status: withDescription.status,
+            priority: withDescription.priority,
+            dependsOn: withDescription.dependsOn,
+            runId: withDescription.runId,
+            canceled: withDescription.canceled,
+            order: withDescription.order,
+            description: withDescription.description,
+            body: withDescription.body
+        )
+        do {
+            try TicketWriter.save(updated, in: project)
+        } catch {
+            NSLog("[relay-runner] failed to save ticket \(updated.id): \(error)")
+        }
+        model.editing = nil
+        setPanelKeyEligible(false)
+        model.tickets = loadTickets()
+    }
+
+    private func handleCreate(in status: Ticket.Status) {
+        guard let project = ProjectResolver.resolve() else { return }
+        let existing = model.tickets.filter { $0.status == status }
+        let nextOrder = (existing.map(\.order).max() ?? 0) + 10
+        do {
+            let ticket = try TicketWriter.mint(
+                in: project,
+                status: status,
+                title: "Untitled",
+                order: nextOrder
+            )
+            model.tickets = loadTickets()
+            openEditor(for: ticket)
+        } catch {
+            NSLog("[relay-runner] failed to mint ticket: \(error)")
+        }
+    }
+
+    private func handleDelete(_ ticket: Ticket) {
+        guard let project = ProjectResolver.resolve() else { return }
+        do {
+            try TicketWriter.delete(ticket.id, in: project)
+        } catch {
+            NSLog("[relay-runner] failed to delete ticket \(ticket.id): \(error)")
+        }
+        model.editing = nil
+        setPanelKeyEligible(false)
+        model.tickets = loadTickets()
+    }
+
+    /// Drop handler: move `ticketId` into `status` at position `insertIndex`
+    /// within the sorted column. Renumbers the column's `order` values so
+    /// the new layout is stable on next load.
+    private func handleDrop(ticketId: String, to status: Ticket.Status, insertIndex: Int) {
+        guard let project = ProjectResolver.resolve() else { return }
+        guard let dragged = model.tickets.first(where: { $0.id == ticketId }) else { return }
+
+        // Build the new column order. `insertIndex` is the index in the
+        // destination column's sorted list *before* the dragged ticket is
+        // inserted. If the ticket is moving within the same column, remove
+        // it from the source list first; then clamp the insert index.
+        var destColumn = model.tickets
+            .filter { $0.status == status && $0.id != ticketId }
+            .sorted { $0.order < $1.order }
+        let clampedIndex = max(0, min(insertIndex, destColumn.count))
+        let moved = Ticket(
+            id: dragged.id,
+            title: dragged.title,
+            status: status,
+            priority: dragged.priority,
+            dependsOn: dragged.dependsOn,
+            runId: dragged.runId,
+            canceled: dragged.canceled,
+            order: dragged.order,
+            description: dragged.description,
+            body: dragged.body
+        )
+        destColumn.insert(moved, at: clampedIndex)
+
+        // Renumber by 10s so future inserts have headroom without renumbering
+        // every neighbor on every drop.
+        for (i, t) in destColumn.enumerated() {
+            let newOrder = (i + 1) * 10
+            if t.order == newOrder && t.status == status && t.id != ticketId { continue }
+            let updated = Ticket(
+                id: t.id,
+                title: t.title,
+                status: status,
+                priority: t.priority,
+                dependsOn: t.dependsOn,
+                runId: t.runId,
+                canceled: t.canceled,
+                order: newOrder,
+                description: t.description,
+                body: t.body
+            )
+            do {
+                try TicketWriter.save(updated, in: project)
+            } catch {
+                NSLog("[relay-runner] failed to renumber ticket \(t.id): \(error)")
+            }
+        }
+        model.tickets = loadTickets()
+    }
+
+    private func setPanelKeyEligible(_ enabled: Bool) {
+        guard let panel else { return }
+        panel.keyEligible = enabled
+        if enabled {
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            panel.resignKey()
+        }
     }
 
     // MARK: - Helpers
