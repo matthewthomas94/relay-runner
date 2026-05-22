@@ -1,8 +1,6 @@
 # Orchestrator tickets: file format & lifecycle
 
-This document defines the on-disk schema for orchestrator-managed work. The goal is to replace Linear as the system of record with files that travel with the repo — so the orchestrator pattern works against any clone, with no external service required.
-
-> Status: **draft schema**. Not yet wired into the daemon or UI. See *Implementation milestones* at the bottom for the rollout sequence.
+This document defines the on-disk schema for orchestrator-managed work. Files that travel with the repo are the system of record — the orchestrator pattern works against any clone with no external service required.
 
 ## Why files, not a service
 
@@ -10,8 +8,6 @@ This document defines the on-disk schema for orchestrator-managed work. The goal
 - Git is the access layer — no auth, no roles, no permissions API. Want gated changes? Branch protection. Want to contribute? Open a PR.
 - The history of any ticket is `git log` on its file. Free, full diffs, attributable.
 - AI agents (this one included) can read, write, and grep tickets like any other source file.
-
-Linear support, if added later, is an *outbound projector* — push state to it for stakeholder visibility — but the repo file remains authoritative.
 
 ## Layout
 
@@ -112,9 +108,9 @@ Backlog → Ready → In Progress → Done
 
 | Transition                    | Actor                       | Trigger                                  |
 |-------------------------------|-----------------------------|------------------------------------------|
-| `backlog → ready`             | Orchestrator session (human-driven, AI-assisted) | Discuss step settles on acceptance criteria. |
-| `ready → in_progress`         | Daemon                      | `dispatch_issue` called; stamps `run_id`.   |
-| `in_progress → done`          | Integration step            | Sub-agent's branch merged.                  |
+| `backlog → ready`             | Human via board drag/edit, OR daemon auto-progression | Promoting a card to `ready` is the auto-dispatch trigger — the board calls `dispatch_ticket` the moment a card lands there (drag, or new-in-ready + save). The daemon also flips `backlog → ready` on dependents when a predecessor reaches `done` (then dispatches them in turn). |
+| `ready → in_progress`         | Sub-agent                   | Worker's first step after `dispatch_ticket` claims the run; the worker stamps `run_id` and commits the frontmatter change. |
+| `in_progress → done`          | Sub-agent                   | Worker flips status and appends `## Run log` before exiting; commit lands on the worker's branch and reaches the board when the branch is merged. |
 | any → `canceled: true`        | Daemon or human             | `cancel_run` called, or manual cancel.      |
 
 Cancellation does **not** move the ticket to a new column. It flips `canceled: true` and the card renders with a strikethrough or muted treatment in whatever column it sat in. Re-opening clears the flag.
@@ -153,7 +149,7 @@ If the user switches projects (kills the bridge in repo A, launches a new one in
 
 Because each ticket is a separate file, parallel sub-agents working on different tickets cannot collide on metadata edits — git merges trivially. The two real conflict cases:
 
-- **Two agents claim the same ticket.** The daemon's `dispatch_issue` is the single chokepoint; it refuses to dispatch a ticket already `in_progress`.
+- **Two agents claim the same ticket.** The daemon's `dispatch_ticket` is the single chokepoint; it refuses to dispatch a ticket already `in_progress`.
 - **An agent edits its own ticket while the orchestrator also edits it.** Sub-agents are conventionally read-only on their own ticket file (they emit progress as commit messages and status comments instead). The schema permits writes, but the workflow discourages them.
 
 ## Example tickets
@@ -203,14 +199,12 @@ Render `.orchestrator/*.md` as a four-column board…
 - [ ] No write actions yet — read-only first.
 ```
 
-## Implementation milestones
+## Implementation status
 
-Rollout sequence, in increasing risk:
+Shipped:
 
-1. **Schema** *(this doc)* — agree on the file format. No code.
-2. **Read-only viewer** — SwiftUI window in the menu bar app, scans `.orchestrator/`, renders four-column board. Daemon untouched. Validates the schema works in practice.
-3. **Dispatch wiring** — daemon learns the file format; `dispatch_issue` reads ticket from `.orchestrator/<id>.md`, stamps `run_id` and flips status to `in_progress`. Replaces (or runs alongside) Linear as source.
-4. **Write UX** — new-card, edit-in-place, drag-between-columns. The board becomes the primary authoring surface.
-5. **Linear projector** *(optional)* — outbound mirror for stakeholder visibility.
-
-Migration from a Linear-backed flow is left to each user. Recommended path: hard-cut — close out remaining Linear tickets at their natural break point, then start authoring in `.orchestrator/` going forward. An optional one-shot importer (`linear → .orchestrator/`) can be added later if demand emerges, but it's explicitly not part of the initial milestones; the schema is the boundary, not Linear shape compatibility.
+1. **Schema** *(this doc)* — file format and lifecycle.
+2. **Board UI** — SwiftUI overlay in the menu bar app reads `.orchestrator/`, renders four-column board, supports new/edit/delete and drag-between-columns.
+3. **Dispatch wiring** — `mcp__relay-orchestrator__dispatch_ticket(ticket_id, repo_path)` reads `<repo>/.orchestrator/<ticket_id>.md` and spawns a sub-agent. The worker flips `status` to `in_progress` (stamping `run_id`) at the start of the run and to `done` (with an appended `## Run log` section) before exiting; both changes are committed to the worker's branch.
+4. **Auto-dispatch on `ready`** — the board calls `dispatch_ticket` automatically whenever a card lands in the `ready` column (via drag, or new-in-ready followed by editor save). The daemon's `find_active` makes the call idempotent, so re-promoting a ticket that's already running is a no-op.
+5. **Dependency auto-progression** — when a worker reaches `Succeeded`, the daemon scans the repo's `.orchestrator/` for tickets whose `depends_on` includes the just-finished ticket. Any dependent in `backlog` with all of its other deps also `done` gets its frontmatter flipped to `ready` and dispatched. This is the only path where the daemon writes ticket files — sub-agents own their own ticket; the daemon owns inter-ticket gating.

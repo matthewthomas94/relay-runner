@@ -18,10 +18,7 @@ final class MCPServer {
 
     init() {
         let registered: [any MCPTool] = [
-            LinkProjectTool(),
-            UnlinkProjectTool(),
-            ListProjectsTool(),
-            DispatchIssueTool(),
+            DispatchTicketTool(),
             ListRunsTool(),
             GetRunTool(),
             CancelRunTool(),
