@@ -14,13 +14,23 @@ scripts/relay-orchestrator --status
 
 You should see a running daemon, a port file, and an installed plist.
 
-### 1. Write a ticket
+### 1. Open a `/relay-bridge` session in the repo
+
+The board is scoped to whichever repo your active voice-bridge session is rooted in. From a Claude Code session whose cwd is the project you want to work on:
+
+```
+/relay-bridge
+```
+
+The bridge records its launching cwd to `/tmp/voice_bridge.cwd` so the menu-bar app knows which repo's `.orchestrator/` to render. Without a live bridge (no `/tmp/voice_bridge.sock`), the board's `⌃⌥` hotkey surfaces a "no active session" toast instead of opening — there's no project picker, the session itself is the picker. Switching projects means stopping one bridge (or running `/relay-stop`) and starting another from the new repo's cwd.
+
+### 2. Write a ticket
 
 Open the menu-bar Board (`⌃⌥` to toggle) and create a ticket via the column's `+` button. The board writes the file to `<repo>/.orchestrator/<TICKET_ID>.md` and bumps `<repo>/.orchestrator/config.toml`'s `next_id`. Commit both to the working branch — that's the ticket's audit trail going forward.
 
 You can also create the file by hand. The schema is in [docs/specs/orchestrator-tickets.md](specs/orchestrator-tickets.md).
 
-### 2. Promote to `ready` — the board auto-dispatches
+### 3. Promote to `ready` — the board auto-dispatches
 
 Drag the card from `backlog` to `ready` in the menu-bar Board. The moment it lands in the `ready` column, the board calls `mcp__relay-orchestrator__dispatch_ticket(ticket_id, repo_path)` for you — there's no separate "press go" step. This also fires for tickets created directly in the `ready` column (after you fill in the editor and save).
 
@@ -40,7 +50,7 @@ The daemon:
 
 The worker reads the ticket file, flips its status to `in_progress`, implements the change, commits the code with a conventional commit referencing the ticket, then flips the ticket's status to `done` (or leaves it `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits land on the worker's branch.
 
-### 3. Check status / cancel
+### 4. Check status / cancel
 
 ```
 list_runs                          → all recent runs, newest first
@@ -84,11 +94,15 @@ A repo's `WORKFLOW.md` is a fine place to encode project conventions: which test
 
 ## How tickets persist
 
-Tickets live as version-controlled markdown under `<repo>/.orchestrator/`. The daemon never writes there itself; reads/writes happen via the board UI (in the menu-bar app) and the sub-agent (during a run). That means:
+Tickets live as version-controlled markdown under `<repo>/.orchestrator/`. Reads/writes happen via the board UI (in the menu-bar app) and the sub-agent (during a run); the daemon writes ticket files in exactly one case — flipping a dependent from `backlog` to `ready` after its predecessor finishes (see dep auto-progression). That means:
 
 - The audit trail is `git log <repo>/.orchestrator/<ticket_id>.md`. Free, attributable, full diffs.
 - Cloning the repo brings the board state with it.
 - No external service, no auth, no schema-migration story across machines.
+
+## Which board you see
+
+The board has no project picker. The active `/relay-bridge` session is the picker: when the bridge starts, it writes its launching cwd to `/tmp/voice_bridge.cwd`; the menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` as liveness check) and renders the `.orchestrator/` inside it. With no live bridge, the board's `⌃⌥` hotkey shows a brief toast instead of opening — there's no project to render. Switch projects by stopping one bridge (or `/relay-stop`) and starting another from the new repo's cwd.
 
 The full file format is documented at [docs/specs/orchestrator-tickets.md](specs/orchestrator-tickets.md).
 

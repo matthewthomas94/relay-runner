@@ -141,9 +141,11 @@ Validation is a one-shot pass over `.orchestrator/`; the daemon runs it on start
 
 Each repo owns its own `.orchestrator/` directory, its own prefix, and its own ID space. Boards are per-repo by construction; there is no cross-repo ticket model, no aggregated "everything" view, no shared dependency graph.
 
-**Project resolution at view time.** The board UI doesn't show a project picker. The currently-active board is determined by the working directory of the Claude Code session that owns the voice bridge (i.e., where `/relay-bridge` was invoked). The voice bridge is 1:1 with a Claude Code session, the session is rooted in one repo, so "show me the board" unambiguously means "the board for this repo."
+**Project resolution at view time.** The board UI has no project picker. Resolution runs through the active voice-bridge session: when `/relay-bridge` starts, the bridge script writes its launching cwd to `/tmp/voice_bridge.cwd`. The menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` existing as a liveness check) and renders the `.orchestrator/` directory inside that cwd. The voice bridge is 1:1 with a Claude Code session, the session is rooted in one repo, so "show me the board" unambiguously means "the board for this repo."
 
-If the user switches projects (kills the bridge in repo A, launches a new one in repo B), the next "show me the board" command reflects repo B's `.orchestrator/`. A menu-bar-driven picker for browsing other linked projects' boards is a later enhancement, not part of the initial milestones.
+Without a live bridge, the board's `⌃⌥` hotkey surfaces a brief "Start a /relay-bridge session" toast rather than opening — better to teach the rule than to silently open the wrong project or no project at all.
+
+If the user switches projects (kills the bridge in repo A, launches a new one in repo B), the next toggle reflects repo B's `.orchestrator/`. A menu-bar-driven picker for browsing other repos' boards is a later enhancement, not part of the current implementation.
 
 ## Concurrency model
 

@@ -31,6 +31,11 @@ RELOCATABLE_PYTHON="$RELOCATABLE_PYTHON_DIR/bin/python3"
 mkdir -p "$SERVICES_DIR"
 VOICE_FIFO="/tmp/voice_in.fifo"
 BRIDGE_SOCK="/tmp/voice_bridge.sock"
+# Records the cwd of whoever launched the bridge so the menu-bar app can
+# resolve "which repo is the active session pointed at" without a separate
+# registry. The menu-bar Board refuses to open unless this file resolves
+# to a git repo containing .orchestrator/.
+BRIDGE_CWD_FILE="/tmp/voice_bridge.cwd"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-}"
 if [ -z "$CONFIG_DIR" ]; then
@@ -112,7 +117,7 @@ If not running, tell the user to start the Relay Runner menu bar app, then try `
 2. Kill any existing voice bridge and start a new one in relay mode. The bundled `relay-bridge` script handles its own venv install (relocatable Python, pip deps, Kokoro speech model) and short-circuits when everything's already set up; on first run it may take a couple of minutes downloading deps:
 
 ```bash
-pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat
+pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd
 nohup '__RELAY_BRIDGE__' --relay > /tmp/voice_bridge.log 2>&1 &
 ```
 
@@ -174,7 +179,7 @@ When the session ends (user says "stop listening", "exit voice", or similar), cl
 
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
-pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat
+pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd
 ```
 
 ## Important Notes
@@ -201,7 +206,7 @@ Stop the voice I/O bridge for this Claude session. Use this to end a `/relay-bri
 1. Kill the voice bridge process and remove its runtime files:
 
 ```bash
-pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat
+pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd
 ```
 
 2. Confirm it's stopped:
@@ -262,7 +267,7 @@ s.close()
         pkill -f 'voice_bridge.py' 2>/dev/null || true
         sleep 0.3
     fi
-    rm -f "$BRIDGE_SOCK"
+    rm -f "$BRIDGE_SOCK" "$BRIDGE_CWD_FILE"
 fi
 
 # -- Ensure Python venv with dependencies AND speech-model files --
@@ -723,4 +728,9 @@ fi
 
 # -- Start voice bridge --
 echo "[relay-bridge] Starting voice bridge..."
+# Record the launching cwd so the menu-bar Board knows which repo the active
+# session is pointed at. Written before exec so it's in place by the time
+# the socket appears; cleaned up by the kill block above on next restart and
+# by the /relay-bridge + /relay-stop skill cleanup snippets.
+printf '%s\n' "$PWD" > "$BRIDGE_CWD_FILE"
 exec "$PYTHON" "$SERVICES_BUNDLE/voice_bridge.py" --config "$CONFIG_PATH" --relay "$@"

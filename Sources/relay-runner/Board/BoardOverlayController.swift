@@ -114,6 +114,15 @@ final class BoardOverlayController {
     func show() {
         guard !isVisible else { return }
 
+        // Board is scoped to the active /relay-bridge session — the bridge's
+        // cwd selects which repo's .orchestrator/ we render. No session,
+        // no project, no board. We surface a brief teachable toast so the
+        // hotkey doesn't feel broken.
+        guard ProjectResolver.resolve() != nil else {
+            NoSessionToast.show()
+            return
+        }
+
         let p = panel ?? BoardOverlayPanel()
         if let screen = currentMouseScreen() {
             p.reframe(to: screen)
