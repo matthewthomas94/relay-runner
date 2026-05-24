@@ -34,9 +34,15 @@ PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 CMDS_DIR="$HOME/.claude/commands"
 DISPATCH_MD="$CMDS_DIR/relay-dispatch.md"
 WORKFLOW_MD="$CMDS_DIR/relay-workflow.md"
-# Legacy slash command from the prior project-linking flow; removed at
-# install time so stale prompts don't surface in Claude sessions.
+# Legacy slash commands removed at install time so stale prompts don't
+# surface in Claude sessions. relay-link-project.md is from the prior
+# project-linking flow; relay-orchestrate.md is from before the
+# relay-orchestrate → relay-dispatch rename. Both can contain Linear
+# instructions that previous bundled releases wrote; cleaning them on
+# every install guarantees a re-install scrubs the slate even if the
+# user upgraded mid-rename.
 LEGACY_LINK_MD="$CMDS_DIR/relay-link-project.md"
+LEGACY_ORCHESTRATE_MD="$CMDS_DIR/relay-orchestrate.md"
 
 # -- Common helpers --
 
@@ -83,9 +89,9 @@ install_skills() {
     local mode="${1:-if-missing}"
     mkdir -p "$CMDS_DIR"
 
-    # Always remove the legacy link-project command if present — even on
+    # Always remove the legacy slash commands if present — even on
     # if-missing installs — so old prompts don't shadow the new ones.
-    rm -f "$LEGACY_LINK_MD"
+    rm -f "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
 
     if [ "$mode" = "force" ] || [ ! -f "$DISPATCH_MD" ]; then
         cat > "$DISPATCH_MD" <<'DISPATCH_MD_EOF'
@@ -183,9 +189,7 @@ WORKFLOW_MD_EOF
 }
 
 uninstall_skills() {
-    rm -f "$DISPATCH_MD" "$WORKFLOW_MD" "$LEGACY_LINK_MD"
-    # Also remove legacy file from before the relay-orchestrate → relay-dispatch rename.
-    rm -f "$CMDS_DIR/relay-orchestrate.md"
+    rm -f "$DISPATCH_MD" "$WORKFLOW_MD" "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
     echo "[relay-orchestrator] removed slash command files."
 }
 
