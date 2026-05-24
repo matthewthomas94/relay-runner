@@ -143,7 +143,7 @@ Each repo owns its own `.orchestrator/` directory, its own prefix, and its own I
 
 **Project resolution at view time.** The board UI has no project picker. Resolution runs through the active voice-bridge session: when `/relay-bridge` starts, the bridge script writes its launching cwd to `/tmp/voice_bridge.cwd`. The menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` existing as a liveness check) and renders the `.orchestrator/` directory inside that cwd. The voice bridge is 1:1 with a Claude Code session, the session is rooted in one repo, so "show me the board" unambiguously means "the board for this repo."
 
-Without a live bridge, the board's `⌃⌥` hotkey surfaces a brief "Start a /relay-bridge session" toast rather than opening — better to teach the rule than to silently open the wrong project or no project at all.
+Without a live bridge, the board's `⌃⌥` hotkey surfaces the same "No session running" pill that fires when the user tries to record voice out of session, rather than opening — better to teach the rule (and reuse a known UI surface) than to silently open the wrong project or no project at all.
 
 If the user switches projects (kills the bridge in repo A, launches a new one in repo B), the next toggle reflects repo B's `.orchestrator/`. A menu-bar-driven picker for browsing other repos' boards is a later enhancement, not part of the current implementation.
 

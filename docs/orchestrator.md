@@ -22,7 +22,7 @@ The board is scoped to whichever repo your active voice-bridge session is rooted
 /relay-bridge
 ```
 
-The bridge records its launching cwd to `/tmp/voice_bridge.cwd` so the menu-bar app knows which repo's `.orchestrator/` to render. Without a live bridge (no `/tmp/voice_bridge.sock`), the board's `⌃⌥` hotkey surfaces a "no active session" toast instead of opening — there's no project picker, the session itself is the picker. Switching projects means stopping one bridge (or running `/relay-stop`) and starting another from the new repo's cwd.
+The bridge records its launching cwd to `/tmp/voice_bridge.cwd` so the menu-bar app knows which repo's `.orchestrator/` to render. Without a live bridge (no `/tmp/voice_bridge.sock`), the board's `⌃⌥` hotkey surfaces the same "No session running" pill that appears when you try to record voice out of session — there's no project picker, the session itself is the picker. Switching projects means stopping one bridge (or running `/relay-stop`) and starting another from the new repo's cwd.
 
 ### 2. Write a ticket
 
@@ -102,7 +102,7 @@ Tickets live as version-controlled markdown under `<repo>/.orchestrator/`. Reads
 
 ## Which board you see
 
-The board has no project picker. The active `/relay-bridge` session is the picker: when the bridge starts, it writes its launching cwd to `/tmp/voice_bridge.cwd`; the menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` as liveness check) and renders the `.orchestrator/` inside it. With no live bridge, the board's `⌃⌥` hotkey shows a brief toast instead of opening — there's no project to render. Switch projects by stopping one bridge (or `/relay-stop`) and starting another from the new repo's cwd.
+The board has no project picker. The active `/relay-bridge` session is the picker: when the bridge starts, it writes its launching cwd to `/tmp/voice_bridge.cwd`; the menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` as liveness check) and renders the `.orchestrator/` inside it. With no live bridge, the board's `⌃⌥` hotkey shows the same "No session running" pill as the record-out-of-session path instead of opening — there's no project to render. Switch projects by stopping one bridge (or `/relay-stop`) and starting another from the new repo's cwd.
 
 The full file format is documented at [docs/specs/orchestrator-tickets.md](specs/orchestrator-tickets.md).
 

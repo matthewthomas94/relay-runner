@@ -38,6 +38,16 @@ final class BoardOverlayController {
         self.themeResolver = resolver
     }
 
+    /// Called when the user toggles the board without an active /relay-bridge
+    /// session. Wired by AppState to `stateMachine.showSessionPrompt()` so the
+    /// board reuses the exact same pill the rest of the app shows when a user
+    /// tries to record voice out of session — same component, same auto-dismiss,
+    /// same "Double tap Option to start a new session" affordance.
+    private var noSessionHandler: (() -> Void)?
+    func setNoSessionHandler(_ handler: @escaping () -> Void) {
+        self.noSessionHandler = handler
+    }
+
     deinit {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor { NSEvent.removeMonitor(m) }
@@ -116,10 +126,12 @@ final class BoardOverlayController {
 
         // Board is scoped to the active /relay-bridge session — the bridge's
         // cwd selects which repo's .orchestrator/ we render. No session,
-        // no project, no board. We surface a brief teachable toast so the
-        // hotkey doesn't feel broken.
+        // no project, no board. Reuse the same pill the rest of the app
+        // shows when a user tries to record out of session so the UX is
+        // consistent ("No session running / Double tap Option to start a
+        // new session"). AppState wires the handler at startup.
         guard ProjectResolver.resolve() != nil else {
-            NoSessionToast.show()
+            noSessionHandler?()
             return
         }
 

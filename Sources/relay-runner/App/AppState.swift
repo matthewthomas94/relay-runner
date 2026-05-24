@@ -468,6 +468,14 @@ final class AppState {
             if case .relayVision = state { return .stt }
             return state.particleTheme
         }
+        // Reuse the existing "no session" pill when the user tries to open
+        // the board without a /relay-bridge session. Same component the
+        // record-out-of-session path uses (StateMachine.showSessionPrompt
+        // → OverlayController renders .sessionPrompt as a TranscriptionPill
+        // with a 5s auto-dismiss).
+        boardOverlay.setNoSessionHandler { [weak self] in
+            self?.stateMachine.showSessionPrompt()
+        }
         // Perimeter overlay (purple band on every screen while
         // .relayVision is active; pulses while a confirmation is pending).
         let perimeter = PerimeterOverlayManager()
