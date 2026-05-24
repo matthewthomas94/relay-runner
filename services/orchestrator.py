@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Relay-runner orchestrator daemon.
 
-Symphony-style sub-agent orchestrator: links Linear projects to local git repos,
-dispatches issues to autonomous `claude` runs in isolated worktrees, and tracks
-state in SQLite. HTTP API on 127.0.0.1; MCP tool surface is the thin Swift proxy
-in Sources/relay-orchestrator-mcp/ which calls these endpoints.
+Symphony-style sub-agent orchestrator: dispatches tickets from a repo's local
+kanban board (`<repo>/.orchestrator/<ticket_id>.md`) to autonomous `claude`
+runs in isolated worktrees, and tracks state in SQLite. HTTP API on 127.0.0.1;
+MCP tool surface is the thin Swift proxy in Sources/relay-orchestrator-mcp/
+which calls these endpoints.
 
-MVP scope: voice/MCP-driven dispatch only. The daemon does not talk to Linear —
-the spawned worker uses the user's Linear MCP to read issue context and post
-status comments back. Autonomous Linear polling lands in v1 behind a
-`[orchestrator].linear_api_key` config.
+MVP scope: voice/MCP-driven dispatch only. The repo is the source of truth —
+tickets live as version-controlled markdown under `.orchestrator/`, and the
+sub-agent edits its ticket's YAML frontmatter + appends a "## Run log" section
+when it finishes. No external service is involved.
 """
 
 from __future__ import annotations
@@ -31,14 +32,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
-
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib  # type: ignore
-    except ImportError:
-        tomllib = None  # type: ignore
 
 # Reuse the existing config loader (sibling file).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -111,98 +104,18 @@ def render_template(template: str, **vars: Any) -> str:
     return _TEMPLATE_RE.sub(lambda m: str(vars.get(m.group(1).strip(), "")), template)
 
 
-def _toml_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
 # ---------------------------------------------------------------------------
 # Stores
 # ---------------------------------------------------------------------------
 
-class ProjectsStore:
-    """Human-readable TOML store for project links.
-
-    File layout:
-        [projects.<linear_project_id>]
-        linear_project_id = "..."
-        repo_path = "..."
-        repo_remote = "..."
-        default_branch = "main"
-        created_at = 1700000000.0
-    """
-
-    def __init__(self, path: Path):
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-
-    def _read(self) -> dict[str, dict]:
-        if not self.path.exists() or tomllib is None:
-            return {}
-        try:
-            with open(self.path, "rb") as f:
-                data = tomllib.load(f)
-        except (OSError, ValueError, tomllib.TOMLDecodeError):  # type: ignore[attr-defined]
-            return {}
-        return data.get("projects", {}) or {}
-
-    def _write(self, projects: dict[str, dict]) -> None:
-        lines = [
-            "# relay-runner orchestrator project links — managed by the daemon.",
-            "# Edit via the link_project / unlink_project MCP tools, not by hand.",
-            "",
-        ]
-        for key in sorted(projects):
-            project = projects[key]
-            lines.append(f'[projects."{_toml_escape(key)}"]')
-            for field in ("linear_project_id", "repo_path", "repo_remote", "default_branch"):
-                if field in project:
-                    lines.append(f'{field} = "{_toml_escape(str(project[field]))}"')
-            if "created_at" in project:
-                lines.append(f"created_at = {float(project['created_at'])}")
-            lines.append("")
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text("\n".join(lines))
-        tmp.replace(self.path)
-
-    def add(self, *, linear_project_id: str, repo_path: str, repo_remote: str, default_branch: str) -> dict:
-        record = {
-            "linear_project_id": linear_project_id,
-            "repo_path": str(Path(repo_path).expanduser().resolve()),
-            "repo_remote": repo_remote,
-            "default_branch": default_branch or "main",
-            "created_at": time.time(),
-        }
-        with self._lock:
-            projects = self._read()
-            projects[linear_project_id] = record
-            self._write(projects)
-        return record
-
-    def remove(self, linear_project_id: str) -> bool:
-        with self._lock:
-            projects = self._read()
-            if linear_project_id not in projects:
-                return False
-            del projects[linear_project_id]
-            self._write(projects)
-            return True
-
-    def get(self, linear_project_id: str) -> dict | None:
-        with self._lock:
-            return self._read().get(linear_project_id)
-
-    def list(self) -> list[dict]:
-        with self._lock:
-            return list(self._read().values())
-
-
 class RunsStore:
+    SCHEMA_VERSION = 2  # bump when the runs table shape changes
+
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        issue_identifier TEXT NOT NULL,
-        linear_project_id TEXT NOT NULL,
+        ticket_id TEXT NOT NULL,
+        repo_path TEXT NOT NULL,
         workspace_path TEXT NOT NULL,
         branch TEXT NOT NULL,
         state TEXT NOT NULL,
@@ -215,7 +128,7 @@ class RunsStore:
         last_error TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_runs_state ON runs(state);
-    CREATE INDEX IF NOT EXISTS idx_runs_issue ON runs(issue_identifier);
+    CREATE INDEX IF NOT EXISTS idx_runs_ticket ON runs(ticket_id);
     """
 
     ACTIVE_STATES = ("Claimed", "Running")
@@ -237,16 +150,25 @@ class RunsStore:
                 conn.close()
 
     def _init(self) -> None:
+        # PRAGMA user_version gates schema migrations. A version mismatch
+        # drops the table entirely (historical runs lose their rows —
+        # acceptable for a local dev tool).
         with self._conn() as c:
-            c.executescript(self.SCHEMA)
+            current = int(c.execute("PRAGMA user_version").fetchone()[0])
+            if current != self.SCHEMA_VERSION:
+                c.execute("DROP TABLE IF EXISTS runs")
+                c.executescript(self.SCHEMA)
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+            else:
+                c.executescript(self.SCHEMA)
 
-    def insert(self, *, issue_identifier: str, linear_project_id: str, workspace_path: str,
+    def insert(self, *, ticket_id: str, repo_path: str, workspace_path: str,
                branch: str, state: str, attempt: int = 1, log_path: str | None = None) -> int:
         with self._conn() as c:
             cur = c.execute(
-                "INSERT INTO runs(issue_identifier, linear_project_id, workspace_path, branch, "
+                "INSERT INTO runs(ticket_id, repo_path, workspace_path, branch, "
                 "state, attempt, started_at, log_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (issue_identifier, linear_project_id, workspace_path, branch,
+                (ticket_id, repo_path, workspace_path, branch,
                  state, attempt, time.time(), log_path),
             )
             return int(cur.lastrowid)
@@ -289,13 +211,13 @@ class RunsStore:
                 ).fetchall()
             return [dict(r) for r in rows]
 
-    def find_active(self, issue_identifier: str) -> dict | None:
+    def find_active(self, ticket_id: str) -> dict | None:
         ph = ",".join("?" * len(self.ACTIVE_STATES))
         with self._conn() as c:
             row = c.execute(
-                f"SELECT * FROM runs WHERE issue_identifier = ? AND state IN ({ph}) "
+                f"SELECT * FROM runs WHERE ticket_id = ? AND state IN ({ph}) "
                 "ORDER BY id DESC LIMIT 1",
-                (issue_identifier, *self.ACTIVE_STATES),
+                (ticket_id, *self.ACTIVE_STATES),
             ).fetchone()
             return dict(row) if row else None
 
@@ -311,12 +233,12 @@ class RunsStore:
             )
             return cur.rowcount
 
-    def next_attempt(self, issue_identifier: str) -> int:
-        """Returns the attempt number to use for a new run on this issue (1 if none, max+1 otherwise)."""
+    def next_attempt(self, ticket_id: str) -> int:
+        """Returns the attempt number to use for a new run on this ticket (1 if none, max+1 otherwise)."""
         with self._conn() as c:
             row = c.execute(
-                "SELECT MAX(attempt) AS a FROM runs WHERE issue_identifier = ?",
-                (issue_identifier,),
+                "SELECT MAX(attempt) AS a FROM runs WHERE ticket_id = ?",
+                (ticket_id,),
             ).fetchone()
             if row and row["a"]:
                 return int(row["a"]) + 1
@@ -527,12 +449,10 @@ class Daemon:
         self.port = int(orch_cfg.get("port", DEFAULT_PORT))
 
         data = _data_root()
-        self.projects = ProjectsStore(data / "projects.toml")
         self.runs = RunsStore(data / "runs.db")
 
         # MVP: single concurrency. Held during the dispatch claim → spawn window
         # (release immediately after spawn — the worker runs in its own thread).
-        # Concurrency > 1 lands in v1 alongside Linear polling.
         self._dispatch_lock = threading.Lock()
         self._workers: dict[int, Worker] = {}
         self._workers_lock = threading.Lock()
@@ -552,7 +472,7 @@ class Daemon:
         return self.workflow_path
 
     def _build_prompt(
-        self, *, identifier: str, repo_path: str, branch: str, attempt: int,
+        self, *, ticket_id: str, repo_path: str, branch: str, attempt: int, run_id: int,
         caller_context: str | None = None,
     ) -> str:
         template_path = self._resolve_workflow_for_repo(repo_path)
@@ -562,7 +482,7 @@ class Daemon:
             raise RuntimeError(f"could not read workflow template at {template_path}: {e}") from e
         # Sub-agents have no memory of the dispatching session. The caller can
         # pass `caller_context` to inject background that doesn't fit in the
-        # Linear issue (recent decisions, related runs, etc.). Wrap it in a
+        # ticket file (recent decisions, related runs, etc.). Wrap it in a
         # heading only when present so an empty value collapses cleanly.
         if caller_context and caller_context.strip():
             context_block = (
@@ -573,106 +493,63 @@ class Daemon:
             context_block = ""
         return render_template(
             template,
-            identifier=identifier,
+            ticket_id=ticket_id,
             repo_path=repo_path,
             branch=branch,
             attempt=str(attempt),
+            run_id=str(run_id),
             caller_context=context_block,
         )
 
     # -- API -----------------------------------------------------------------
 
-    def link_project(self, *, linear_project_id: str, repo_path: str, repo_remote: str,
-                     default_branch: str | None = None) -> dict:
-        if not linear_project_id:
-            raise ValueError("linear_project_id is required")
-        repo = Path(repo_path).expanduser()
+    @staticmethod
+    def _resolve_default_branch(repo_path: str) -> str:
+        """Resolve the repo's default branch via `git symbolic-ref`. Falls back to 'main'."""
+        result = _git(repo_path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False)
+        if result.returncode == 0:
+            out = result.stdout.strip()
+            if out.startswith("origin/"):
+                return out[len("origin/"):]
+        return "main"
+
+    def dispatch(self, *, ticket_id: str, repo_path: str,
+                 context: str | None = None) -> dict:
+        if not ticket_id:
+            raise ValueError("ticket_id is required")
+        if not repo_path:
+            raise ValueError("repo_path is required")
+
+        repo = Path(repo_path).expanduser().resolve()
         if not repo.is_dir() or not (repo / ".git").exists():
             raise ValueError(f"repo_path {repo} is not a git repository")
-        new_default = default_branch or "main"
+        ticket_file = repo / ".orchestrator" / f"{ticket_id}.md"
+        if not ticket_file.is_file():
+            raise ValueError(f"ticket {ticket_id} not found at {ticket_file}")
 
-        existing = self.projects.get(linear_project_id)
-        record = self.projects.add(
-            linear_project_id=linear_project_id,
-            repo_path=str(repo.resolve()),
-            repo_remote=repo_remote,
-            default_branch=new_default,
-        )
-
-        # If default_branch changed while runs are still active, the existing
-        # worktrees stay on the old base. Warn so the caller knows to cancel +
-        # redispatch to migrate them.
-        if existing and existing.get("default_branch", "main") != new_default:
-            old_default = existing.get("default_branch", "main")
-            affected = [
-                r for r in self.runs.list(limit=1000)
-                if r["linear_project_id"] == linear_project_id
-                and r["state"] in self.runs.ACTIVE_STATES
-            ]
-            if affected:
-                ids = ", ".join(
-                    f"run {r['id']} ({r['issue_identifier']})" for r in affected
-                )
-                warning = (
-                    f"default_branch changed {old_default!r} -> {new_default!r} for "
-                    f"project {linear_project_id!r}, but {len(affected)} active run(s) "
-                    f"are still based on {old_default!r}: {ids}. Cancel and redispatch "
-                    f"to migrate them to {new_default!r}."
-                )
-                print(f"[orchestrator] WARNING: {warning}", file=sys.stderr)
-                return {**record, "warnings": [warning]}
-
-        return record
-
-    def unlink_project(self, linear_project_id: str) -> bool:
-        return self.projects.remove(linear_project_id)
-
-    def list_projects(self) -> list[dict]:
-        return self.projects.list()
-
-    def dispatch(self, *, identifier: str, linear_project_id: str | None = None,
-                 context: str | None = None) -> dict:
-        if not identifier:
-            raise ValueError("issue identifier is required")
-
-        # Resolve project link.
-        project = None
-        if linear_project_id:
-            project = self.projects.get(linear_project_id)
-            if not project:
-                raise ValueError(f"no link for linear_project_id={linear_project_id!r}")
-        else:
-            projects = self.projects.list()
-            if not projects:
-                raise ValueError("no linked projects — run link_project first")
-            if len(projects) > 1:
-                raise ValueError(
-                    "multiple linked projects exist — pass linear_project_id explicitly"
-                )
-            project = projects[0]
-
-        sanitized = sanitize_identifier(identifier)
+        sanitized = sanitize_identifier(ticket_id)
         branch = f"{self.branch_prefix}{sanitized}"
         workspace_path = self.workspace_root / sanitized
         log_path = workspace_path / ".relay" / "run.log"
+        base_branch = self._resolve_default_branch(str(repo))
 
         with self._dispatch_lock:
-            existing = self.runs.find_active(identifier)
+            existing = self.runs.find_active(ticket_id)
             if existing:
                 return {"already_active": True, "run": existing}
 
             try:
                 create_worktree(
-                    repo_path=project["repo_path"],
+                    repo_path=str(repo),
                     workspace_path=workspace_path,
                     branch=branch,
-                    base_branch=project.get("default_branch", "main"),
+                    base_branch=base_branch,
                 )
             except RuntimeError as e:
                 # Pre-flight failure — record the attempt as Failed for visibility.
                 run_id = self.runs.insert(
-                    issue_identifier=identifier,
-                    linear_project_id=project["linear_project_id"],
+                    ticket_id=ticket_id,
+                    repo_path=str(repo),
                     workspace_path=str(workspace_path),
                     branch=branch,
                     state="Failed",
@@ -681,25 +558,26 @@ class Daemon:
                 self.runs.update(run_id, last_error=str(e), ended=True, exit_code=-1)
                 raise
 
-            # Pre-existing attempts: bump attempt number for THIS issue.
-            attempt = self.runs.next_attempt(identifier)
-
-            prompt = self._build_prompt(
-                identifier=identifier,
-                repo_path=project["repo_path"],
-                branch=branch,
-                attempt=attempt,
-                caller_context=context,
-            )
+            # Pre-existing attempts: bump attempt number for THIS ticket.
+            attempt = self.runs.next_attempt(ticket_id)
 
             run_id = self.runs.insert(
-                issue_identifier=identifier,
-                linear_project_id=project["linear_project_id"],
+                ticket_id=ticket_id,
+                repo_path=str(repo),
                 workspace_path=str(workspace_path),
                 branch=branch,
                 state="Claimed",
                 attempt=attempt,
                 log_path=str(log_path),
+            )
+
+            prompt = self._build_prompt(
+                ticket_id=ticket_id,
+                repo_path=str(repo),
+                branch=branch,
+                attempt=attempt,
+                run_id=run_id,
+                caller_context=context,
             )
 
             run = self.runs.get(run_id) or {}
@@ -717,6 +595,40 @@ class Daemon:
     def _on_worker_complete(self, run_id: int) -> None:
         with self._workers_lock:
             self._workers.pop(run_id, None)
+        # Auto-progress dependents. Released both locks before re-entering
+        # dispatch so we don't deadlock against another caller that's mid-claim.
+        run = self.runs.get(run_id)
+        if not run or run.get("state") != "Succeeded":
+            return
+        try:
+            self._progress_dependents(repo_path=run["repo_path"], finished_ticket_id=run["ticket_id"])
+        except Exception as e:  # noqa: BLE001 — never crash the worker thread on follow-up failure
+            print(f"[orchestrator] dep-progression error for {run['ticket_id']}: {e}", file=sys.stderr)
+
+    def _progress_dependents(self, *, repo_path: str, finished_ticket_id: str) -> None:
+        """When a ticket completes, scan dependents and dispatch any backlog
+        tickets whose deps are now fully satisfied. Flips status to 'ready'
+        on disk before dispatching — the daemon writing ticket files is the
+        deliberate exception to 'sub-agents own the ticket file'.
+        """
+        from tickets import scan_repo, write as write_ticket, all_deps_done
+
+        repo = Path(repo_path)
+        all_tickets = scan_repo(repo)
+        dependents = [t for t in all_tickets if finished_ticket_id in t["depends_on"]]
+        for dep in dependents:
+            if dep["status"] != "backlog":
+                continue
+            if not all_deps_done(dep, all_tickets):
+                continue
+            dep["status"] = "ready"
+            write_ticket(dep["_path"], dep)
+            try:
+                self.dispatch(ticket_id=dep["id"], repo_path=str(repo))
+            except ValueError as e:
+                # Daemon refused dispatch (e.g. file missing, already active);
+                # the status flip stays — user can drag/redispatch manually.
+                print(f"[orchestrator] auto-dispatch declined for {dep['id']}: {e}", file=sys.stderr)
 
     def list_runs(self, state: str | None = None, limit: int = 100) -> list[dict]:
         return self.runs.list(state=state, limit=limit)
@@ -743,17 +655,17 @@ class Daemon:
 
         result: dict = {"canceled": True, "run": self.runs.get(run_id)}
         if prune_worktree:
-            project = self.projects.get(run["linear_project_id"])
-            if project:
+            repo_path = run.get("repo_path")
+            if repo_path:
                 removed, error = remove_worktree(
-                    project["repo_path"], Path(run["workspace_path"])
+                    repo_path, Path(run["workspace_path"])
                 )
                 result["worktree_removed"] = removed
                 if error:
                     result["worktree_error"] = error
                 # Drop the throwaway branch ref so a re-dispatch starts fresh off the
-                # current default_branch instead of attaching to the old tip.
-                delete_branch(project["repo_path"], run["branch"])
+                # current default branch instead of attaching to the old tip.
+                delete_branch(repo_path, run["branch"])
         return result
 
     def shutdown(self) -> None:
@@ -807,23 +719,6 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and segments == ["v1", "health"]:
                 return 200, {"ok": True, "version": self.server_version}
 
-            if method == "GET" and segments == ["v1", "projects"]:
-                return 200, {"projects": self.daemon.list_projects()}
-
-            if method == "POST" and segments == ["v1", "projects"]:
-                body = _read_body(self)
-                project = self.daemon.link_project(
-                    linear_project_id=body.get("linear_project_id", ""),
-                    repo_path=body.get("repo_path", ""),
-                    repo_remote=body.get("repo_remote", ""),
-                    default_branch=body.get("default_branch") or "main",
-                )
-                return 200, {"project": project}
-
-            if method == "DELETE" and len(segments) == 3 and segments[:2] == ["v1", "projects"]:
-                removed = self.daemon.unlink_project(segments[2])
-                return (200 if removed else 404), {"removed": removed}
-
             if method == "GET" and segments == ["v1", "runs"]:
                 state = (query.get("state") or [None])[0]
                 limit = int((query.get("limit") or ["100"])[0])
@@ -832,8 +727,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST" and segments == ["v1", "runs"]:
                 body = _read_body(self)
                 result = self.daemon.dispatch(
-                    identifier=body.get("identifier", ""),
-                    linear_project_id=body.get("linear_project_id"),
+                    ticket_id=body.get("ticket_id", ""),
+                    repo_path=body.get("repo_path", ""),
                     context=body.get("context"),
                 )
                 return (200 if result["already_active"] else 202), result
@@ -861,10 +756,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         status, payload = self._route("POST", self.path)
-        _json_response(self, status, payload)
-
-    def do_DELETE(self) -> None:
-        status, payload = self._route("DELETE", self.path)
         _json_response(self, status, payload)
 
 
@@ -935,13 +826,6 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    if tomllib is None:
-        print(
-            "[orchestrator] error: tomllib is not available. Run under Python 3.11+ "
-            "or `pip install tomli` in the active environment.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
     cfg = load_config(args.config) if args.config else load_config()
     daemon = Daemon(cfg)
     if args.print_port:

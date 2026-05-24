@@ -114,7 +114,6 @@ def load_config(config_path: str | None = None) -> dict:
             "branch_prefix": "relay/",
             "default_workflow_path": "",
             "worker_timeout_seconds": 1800,
-            "linear_api_key": "",
         },
     }
 

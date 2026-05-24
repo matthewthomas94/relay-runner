@@ -1,47 +1,49 @@
 import Foundation
-import TOMLKit
 
-/// Locates the currently-active project's `.orchestrator/` directory.
+/// Resolves the currently-active project from the running voice-bridge session.
 ///
-/// V1 strategy: read the orchestrator daemon's `projects.toml` and return the
-/// first linked project's repo path. This matches the spec's "single linked
-/// project" assumption; a real picker UI (and voice-bridge-cwd resolution)
-/// land in later milestones.
+/// The board only opens when a `/relay-bridge` session is live. The bridge
+/// writes its launching cwd to `/tmp/voice_bridge.cwd` at startup and clears
+/// it on shutdown; the bridge socket at `/tmp/voice_bridge.sock` is the
+/// liveness check. Together they let the board show "the repo this voice
+/// session is rooted in" without a separate project registry — there's
+/// exactly one bridge session at a time, so there's no ambiguity.
+///
+/// A path resolves to a project iff it points to a directory containing both
+/// `.git/` (a real git repo) and `.orchestrator/` (the board's ticket store).
+/// Anything else returns nil — the board shows a "no active session" toast.
 enum ProjectResolver {
 
+    /// Minimal value type the board passes around. The previous
+    /// repoRemote/defaultBranch fields are gone — defaults come from
+    /// `git symbolic-ref` daemon-side now, and nothing in the UI used them.
     struct LinkedProject {
         let repoPath: URL
-        let repoRemote: String
-        let defaultBranch: String
     }
 
-    static func resolve() -> LinkedProject? {
-        guard let supportDir = applicationSupportDir() else { return nil }
-        let tomlPath = supportDir
-            .appendingPathComponent("orchestrator", isDirectory: true)
-            .appendingPathComponent("projects.toml", isDirectory: false)
+    private static let bridgeSocket = "/tmp/voice_bridge.sock"
+    private static let bridgeCwdFile = "/tmp/voice_bridge.cwd"
 
-        guard let raw = try? String(contentsOf: tomlPath, encoding: .utf8),
-              let table = try? TOMLTable(string: raw),
-              let projects = table["projects"]?.tomlValue.table else {
+    static func resolve() -> LinkedProject? {
+        let fm = FileManager.default
+        // Bridge socket is the liveness check. If the bridge died without
+        // cleanup, the socket file may linger — that's acceptable here
+        // because the .cwd file is paired with it and the worst case is
+        // a stale-but-correct project (the user's last bridge session).
+        guard fm.fileExists(atPath: bridgeSocket) else { return nil }
+        guard let raw = try? String(contentsOfFile: bridgeCwdFile, encoding: .utf8) else {
             return nil
         }
+        let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
 
-        // Pick the first project. TOMLTable doesn't promise iteration order,
-        // but for v1 (zero or one linked project per user) any deterministic
-        // pick is fine.
-        for (_, value) in projects {
-            guard let entry = value.tomlValue.table,
-                  let repoPath = entry["repo_path"]?.tomlValue.string else { continue }
-            let remote = entry["repo_remote"]?.tomlValue.string ?? ""
-            let branch = entry["default_branch"]?.tomlValue.string ?? "main"
-            return LinkedProject(
-                repoPath: URL(fileURLWithPath: repoPath),
-                repoRemote: remote,
-                defaultBranch: branch
-            )
+        let repoURL = URL(fileURLWithPath: path)
+        let dotGit = repoURL.appendingPathComponent(".git", isDirectory: false).path
+        let dotOrch = repoURL.appendingPathComponent(".orchestrator", isDirectory: true).path
+        guard fm.fileExists(atPath: dotGit), fm.fileExists(atPath: dotOrch) else {
+            return nil
         }
-        return nil
+        return LinkedProject(repoPath: repoURL)
     }
 
     static func scanTickets(in project: LinkedProject) -> [Ticket] {
@@ -69,15 +71,5 @@ enum ProjectResolver {
     /// this so they stay aligned.
     static func ticketsDirectory(in project: LinkedProject) -> URL {
         project.repoPath.appendingPathComponent(".orchestrator", isDirectory: true)
-    }
-
-    private static func applicationSupportDir() -> URL? {
-        let fm = FileManager.default
-        return try? fm.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: false
-        ).appendingPathComponent("relay-runner", isDirectory: true)
     }
 }

@@ -21,7 +21,7 @@ The Claude Code subscription delivers roughly an order of magnitude more compute
 
 The two callsites:
 
-1. `services/orchestrator.py` — spawns one `claude -p` worker per dispatched Linear issue, in an isolated git worktree.
+1. `services/orchestrator.py` — spawns one `claude -p` worker per dispatched ticket, in an isolated git worktree.
 2. `services/voice_bridge.py` — maintains a persistent `claude -p` session that processes each spoken voice turn.
 
 Both can be moved to interactive-mode invocation by dropping the `-p` flag. Interactive Claude Code accepts piped stdin and (verified) supports the `--input-format stream-json` / `--output-format stream-json` protocol without `-p`. Session resumption via `--resume <session-id>` still works. The structural argument that this routes the usage into the interactive subscription bucket is supported by the rate-limit event shape (see Empirical Verification below).
@@ -106,7 +106,7 @@ The `--input-format stream-json` envelope format (`{"type":"user","message":{"ro
 A sub-agent picking this up should verify all of:
 
 1. **Diff is minimal.** Only the two `cmd` array literals change. No other code in `orchestrator.py` or `voice_bridge.py` is touched. No new files, no new dependencies, no abstractions.
-2. **Orchestrator dispatch still works end-to-end.** File a trivial test Linear issue (e.g. "create a file `scratch.txt` with the contents `migration-test` and commit it"), dispatch it via `mcp__relay-orchestrator__dispatch_issue`, and confirm: the worker creates the file in its worktree, commits to `relay/<id>`, the daemon marks the run `Succeeded`, the kanban board reflects the completion, and the worker process exited rc=0.
+2. **Orchestrator dispatch still works end-to-end.** Write a trivial test ticket to `.orchestrator/RR-N.md` (e.g. "create a file `scratch.txt` with the contents `migration-test` and commit it"), dispatch it via `mcp__relay-orchestrator__dispatch_ticket`, and confirm: the worker creates the file in its worktree, commits to `relay/<id>`, the daemon marks the run `Succeeded`, the kanban board reflects the completion, and the worker process exited rc=0.
 3. **Voice bridge still works across multiple turns.** Start the voice bridge, speak two utterances where the second references context from the first (e.g. "What's my name? My name is Casey." → "What did I just tell you my name was?"). Confirm: Claude responds appropriately to both, session continuity is preserved (i.e. `--resume` still works), and TTS streams as before.
 4. **Process cleanup is unchanged.** Both workers terminate cleanly on rc=0; cancel/timeout/interrupt paths still kill the subprocess correctly.
 

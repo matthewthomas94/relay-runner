@@ -32,9 +32,17 @@ PLIST_LABEL="com.relay.orchestrator"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 
 CMDS_DIR="$HOME/.claude/commands"
-LINK_MD="$CMDS_DIR/relay-link-project.md"
 DISPATCH_MD="$CMDS_DIR/relay-dispatch.md"
 WORKFLOW_MD="$CMDS_DIR/relay-workflow.md"
+# Legacy slash commands removed at install time so stale prompts don't
+# surface in Claude sessions. relay-link-project.md is from the prior
+# project-linking flow; relay-orchestrate.md is from before the
+# relay-orchestrate → relay-dispatch rename. Both can contain Linear
+# instructions that previous bundled releases wrote; cleaning them on
+# every install guarantees a re-install scrubs the slate even if the
+# user upgraded mid-rename.
+LEGACY_LINK_MD="$CMDS_DIR/relay-link-project.md"
+LEGACY_ORCHESTRATE_MD="$CMDS_DIR/relay-orchestrate.md"
 
 # -- Common helpers --
 
@@ -81,75 +89,39 @@ install_skills() {
     local mode="${1:-if-missing}"
     mkdir -p "$CMDS_DIR"
 
-    if [ "$mode" = "force" ] || [ ! -f "$LINK_MD" ]; then
-        cat > "$LINK_MD" <<'LINK_MD_EOF'
-Link the current project to a Linear project so the relay-runner orchestrator can dispatch its issues to autonomous sub-agent runs.
-
-## What this command does
-
-1. Identifies the current local git repo (path + remote URL).
-2. Asks the user (or infers from context) which Linear project to associate.
-3. Calls `mcp__relay-orchestrator__link_project` to persist the link.
-
-## Steps
-
-1. **Confirm the orchestrator daemon is reachable.** Either the menu bar app started it, or run:
-
-   ```bash
-   relay-orchestrator --start || scripts/relay-orchestrator --start
-   ```
-
-2. **Discover the local repo.** From the current working directory:
-
-   ```bash
-   git rev-parse --show-toplevel
-   git remote get-url origin
-   git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || echo main
-   ```
-
-3. **Identify the Linear project.** Use `mcp__linear__list_projects` (the Linear MCP) to find candidates. If the user named one, search by name; otherwise list a few options and ask.
-
-4. **Link.** Call `mcp__relay-orchestrator__link_project` with:
-   - `linear_project_id`: the Linear project's id (UUID)
-   - `repo_path`: absolute path from step 2
-   - `repo_remote`: remote URL from step 2
-   - `default_branch`: branch from step 2 (default: main)
-
-5. **Confirm.** Call `mcp__relay-orchestrator__list_projects` and show the user the link summary.
-
-## Notes
-
-- Linking is persisted to `~/Library/Application Support/relay-runner/orchestrator/projects.toml`. Edit via `unlink_project` / `link_project`, not by hand.
-- One Linear project may be linked at a time per local repo. Re-running `link_project` for the same Linear project ID overwrites the prior link.
-- The daemon doesn't push or modify Linear state — workers do, via the Linear MCP. The link is purely a local routing decision.
-- After linking, run `/relay-workflow` to see the recommended orchestrator pattern (discuss → write tickets → dispatch → integrate).
-LINK_MD_EOF
-        echo "[relay-orchestrator] wrote $LINK_MD"
-    fi
+    # Always remove the legacy slash commands if present — even on
+    # if-missing installs — so old prompts don't shadow the new ones.
+    rm -f "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
 
     if [ "$mode" = "force" ] || [ ! -f "$DISPATCH_MD" ]; then
         cat > "$DISPATCH_MD" <<'DISPATCH_MD_EOF'
-Dispatch a Linear issue to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs `claude` autonomously inside it.
+Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs `claude` autonomously inside it.
 
 ## When to use this
 
-The user said something like "work on REL-42" or "have an agent take REL-42". This command picks up the issue, runs it in an isolated worktree, and returns once the sub-agent finishes (or you can leave it running and check `list_runs` later).
+The user said something like "work on RR-6" or "have an agent take RR-6". This command picks up the ticket, runs it in an isolated worktree, and returns once the sub-agent finishes (or you can leave it running and check `list_runs` later).
 
 ## Steps
 
-1. **Identify the issue.** Extract the Linear identifier (e.g. `REL-42`) from the user's message. If multiple are mentioned, dispatch each via separate calls.
+1. **Identify the ticket.** Extract the ticket id (e.g. `RR-6`) from the user's message. If multiple are mentioned, dispatch each via separate calls.
 
-2. **Verify project link.** Call `mcp__relay-orchestrator__list_projects`. If empty, tell the user to run `/relay-link-project` first.
+2. **Resolve the repo path.** The orchestrator needs an absolute path to the repo whose `.orchestrator/` board owns the ticket — that's the repo the current session is operating in. From the current working directory:
 
-3. **Dispatch.** Call `mcp__relay-orchestrator__dispatch_issue(identifier="REL-42")`. The tool returns:
-   - `already_active: true` → there's already a run going for this issue. Tell the user the existing run_id and stop.
+   ```bash
+   git rev-parse --show-toplevel
+   ```
+
+   Confirm `<repo>/.orchestrator/<ticket_id>.md` exists before dispatching.
+
+3. **Dispatch.** Call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-6", repo_path="<absolute path>")`. The tool returns:
+   - `already_active: true` → there's already a run going for this ticket. Tell the user the existing run_id and stop.
    - `already_active: false` → a fresh run is started; the response includes `run_id`, `state` (Claimed → Running), `workspace_path`, `branch`.
 
-4. **Report briefly.** One sentence: "Started REL-42 in worktree `<path>`, run_id N." Don't wait — the run is async. The user can ask "How's REL-42?" later and you'll call `get_run` / `list_runs`.
+4. **Report briefly.** One sentence: "Started RR-6 in worktree `<path>`, run_id N." Don't wait — the run is async. The user can ask "How's RR-6?" later and you'll call `get_run` / `list_runs`.
 
 ## Status checks
 
-When the user asks "what are the agents doing?" / "how's REL-42?":
+When the user asks "what are the agents doing?" / "how's RR-6?":
 - `mcp__relay-orchestrator__list_runs(state="Running")` → all active runs
 - `mcp__relay-orchestrator__get_run(run_id=N)` → details of a specific run, including `state`, `exit_code`, `last_error`, `log_path`
 
@@ -163,7 +135,7 @@ If a run finished, also peek at the worktree (path is in the run record) to see 
 
 - The worker runs with `--dangerously-skip-permissions` inside an isolated branch (`relay/<sanitized-id>`); changes are local-only and never pushed automatically.
 - The default workflow template is at `~/Library/Application Support/relay-runner/orchestrator/WORKFLOW.md`. A repo-local `WORKFLOW.md` overrides the default for that repo.
-- The daemon doesn't talk to Linear directly — the worker reads issue context and posts status comments via the Linear MCP it inherits from your session.
+- The worker mutates the ticket file: flips status to `in_progress` on start, then to `done` (or leaves `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits are committed to the worker's branch.
 - For the broader "discuss → write → dispatch → integrate" workflow this command sits inside, see `/relay-workflow`.
 DISPATCH_MD_EOF
         echo "[relay-orchestrator] wrote $DISPATCH_MD"
@@ -171,45 +143,40 @@ DISPATCH_MD_EOF
 
     if [ "$mode" = "force" ] || [ ! -f "$WORKFLOW_MD" ]; then
         cat > "$WORKFLOW_MD" <<'WORKFLOW_MD_EOF'
-**MANDATORY orchestrator-mode prime.** Invoke this skill on the FIRST conversational turn of any session where the `mcp__relay-orchestrator__*` tools are registered — the user installed relay-runner specifically so that this is the default operating mode. The orchestrator workflow (discuss → write Linear tickets → dispatch sub-agents → integrate) is the *only* intended workflow for relay-runner installations. The user should not have to ask for it, mention "dispatch", or invoke any slash command — having relay-runner installed *is* the request to operate this way.
+**MANDATORY orchestrator-mode prime.** Invoke this skill on the FIRST conversational turn of any session where the `mcp__relay-orchestrator__*` tools are registered — the user installed relay-runner specifically so that this is the default operating mode. The orchestrator workflow (discuss → write tickets to `.orchestrator/` → dispatch sub-agents → integrate) is the *only* intended workflow for relay-runner installations. The user should not have to ask for it, mention "dispatch", or invoke any slash command — having relay-runner installed *is* the request to operate this way.
 
-Also re-trigger when the user discusses concrete work to be done ("let's tackle…", "what should we work on", "I need to fix…", "we should add…"), mentions Linear / tickets / issues / the backlog / the board, says "dispatch / hand off / delegate / kick off / spin up an agent", references an identifier like REL-42 or MEN-7, or asks "what are the agents doing" / "how's REL-42" / "stop REL-42".
+Also re-trigger when the user discusses concrete work to be done ("let's tackle…", "what should we work on", "I need to fix…", "we should add…"), mentions tickets / issues / the backlog / the board, says "dispatch / hand off / delegate / kick off / spin up an agent", references a ticket id like RR-6, or asks "what are the agents doing" / "how's RR-6" / "stop RR-6".
 
 Do NOT trigger when: relay-orchestrator MCP isn't registered (`claude mcp get relay-orchestrator` fails), or the user has explicitly said "stay in this session, don't dispatch" / "don't use the orchestrator". A small inline edit the user asks for directly is still fine to do here — the orchestrator workflow says "dispatch when the round-trip pays off", not "always dispatch".
 
 ## The four-step workflow
 
-You (this main session) are the orchestrator. Each `claude` worker spawned by `dispatch_issue` is a one-shot sub-agent with no memory of this conversation.
+You (this main session) are the orchestrator. Each `claude` worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
 
 1. **Discuss.** Talk through what needs to happen. Surface assumptions, push back when something's underspecified, propose alternatives. Don't jump to writing tickets until the work is concrete.
-2. **Write tickets.** When the discussion settles on a unit of work, file a Linear issue against the linked project (`mcp__linear__save_issue` — title + description with acceptance criteria + priority + project name). Each issue should be small enough that a sub-agent can complete it in one pass without further clarification.
-3. **Dispatch.** Call `mcp__relay-orchestrator__dispatch_issue(identifier="...")`. If the issue body wouldn't survive cold without this conversation, pass `context="..."` with the relevant background. Multiple parallel dispatches are supported (no concurrency cap), but expect merge conflicts when sub-agents touch overlapping code.
-4. **Integrate.** Each sub-agent commits to its `relay/<id>` branch and posts a status comment back on the Linear issue. Merge those branches into the working branch in a sensible order, resolve conflicts intentionally (don't just accept "theirs"), mark the Linear issue Done (`mcp__linear__save_issue` with `state="Done"`), and clean up the worktree + delete the throwaway branch.
+2. **Write tickets.** When the discussion settles on a unit of work, create a ticket file under `<repo>/.orchestrator/<TICKET_ID>.md` following the schema in `docs/specs/orchestrator-tickets.md` (YAML frontmatter + `## Description` + `## Acceptance criteria`). Commit the new ticket to the working branch so the board reflects it. Use the next available id from `<repo>/.orchestrator/config.toml`'s `next_id` and bump that counter in the same commit. Each ticket should be small enough that a sub-agent can complete it in one pass without further clarification.
+3. **Dispatch.** Call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-N", repo_path="<repo absolute path>")`. If the ticket body wouldn't survive cold without this conversation, pass `context="..."` with the relevant background. Multiple parallel dispatches are supported (no concurrency cap), but expect merge conflicts when sub-agents touch overlapping code.
+4. **Integrate.** Each sub-agent commits to its `relay/<id>` branch — both the code change and the ticket-file update (status flipped to `done` + a `## Run log` entry). Merge those branches into the working branch in a sensible order, resolve conflicts intentionally (don't just accept "theirs"), then clean up the worktree + delete the throwaway branch.
 
 ## When NOT to dispatch
 
 A small change you can do inline in this session is usually faster than dispatching. Each sub-agent is a fresh `claude` process with cold-start overhead, its own context window (more tokens against your quota), and zero awareness of what's been discussed here. Dispatch when:
 - The work is large enough that the round-trip pays off.
-- You want a Linear audit trail.
+- You want an in-repo audit trail (the ticket file + run log) without doing it by hand.
 - You want isolation (an autonomous run that can't disturb the main repo's working copy).
 
 For a one-line typo fix or a doc tweak, just edit and commit in this session.
-
-## Setup before dispatch
-
-Before the first dispatch in a new project, run `/relay-link-project` to associate the local repo with a Linear project. The link is one-time per project; subsequent sessions inherit it from `~/Library/Application Support/relay-runner/orchestrator/projects.toml`.
 
 ## Status checks
 
 - `mcp__relay-orchestrator__list_runs(state="Running")` — what's currently dispatched
 - `mcp__relay-orchestrator__get_run(run_id=N)` — details of one run, including `state`, `exit_code`, and `log_path`
-- `git -C <workspace_path> log --oneline <default_branch>..HEAD` from the run record — what the worker actually committed
+- `git -C <workspace_path> log --oneline <default_branch>..HEAD` from the run record — what the worker actually committed (code + ticket update)
 
 ## Boundaries
 
-- Don't auto-poll Linear for new issues — the orchestrator MVP is dispatch-driven by design, every run is an explicit decision.
 - Don't push `relay/<id>` branches; integrate first, then delete.
-- Sub-agents are constrained by `services/orchestrator_workflow.md` (or a repo-local `WORKFLOW.md`) — they may comment on Linear issues but never modify state, assignee, priority, or labels. The orchestrator (you) handles those transitions.
+- Sub-agents are constrained by `services/orchestrator_workflow.md` (or a repo-local `WORKFLOW.md`) — they may only edit their own ticket file under `.orchestrator/`. Other tickets and the board layout belong to the orchestrator (you).
 
 ## On invocation
 
@@ -222,9 +189,7 @@ WORKFLOW_MD_EOF
 }
 
 uninstall_skills() {
-    rm -f "$LINK_MD" "$DISPATCH_MD" "$WORKFLOW_MD"
-    # Also remove legacy file from before the relay-orchestrate → relay-dispatch rename.
-    rm -f "$CMDS_DIR/relay-orchestrate.md"
+    rm -f "$DISPATCH_MD" "$WORKFLOW_MD" "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
     echo "[relay-orchestrator] removed slash command files."
 }
 
@@ -365,8 +330,7 @@ cmd_install() {
     echo
     echo "From any Claude Code session:"
     echo "    /relay-workflow       (prime the discuss → write → dispatch → integrate pattern)"
-    echo "    /relay-link-project   (one-time link to a Linear project)"
-    echo "    /relay-dispatch       (dispatch an issue to a sub-agent)"
+    echo "    /relay-dispatch       (dispatch a ticket from .orchestrator/ to a sub-agent)"
 }
 
 cmd_uninstall() {

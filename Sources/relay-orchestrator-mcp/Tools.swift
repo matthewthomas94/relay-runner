@@ -27,118 +27,44 @@ private func proxy(method: String, path: String, body: [String: Any]? = nil) asy
     }
 }
 
-// MARK: - link_project
+// MARK: - dispatch_ticket
 
-struct LinkProjectTool: MCPTool {
-    let name = "link_project"
+struct DispatchTicketTool: MCPTool {
+    let name = "dispatch_ticket"
     let description = """
-        Link a Linear project to a local git repo so the orchestrator knows where to dispatch its issues. \
-        One-time setup per project. Pass the Linear project's ID (UUID), the absolute path to a local \
-        clone of the repo, and the repo's remote URL. `default_branch` is the branch new worktrees \
-        branch off of (default: 'main').
+        Dispatch a ticket from a repo's local kanban board to a sub-agent run. The orchestrator creates \
+        a git worktree at branch `relay/<sanitized-id>`, renders the workflow prompt, and spawns \
+        `claude` in that worktree. The worker reads the ticket from `<repo_path>/.orchestrator/<ticket_id>.md`, \
+        updates its YAML status, appends a run log to the body, and commits everything. Returns the run \
+        record (state, run_id, workspace_path, branch).
         """
 
     var inputSchema: [String: Any] {
         [
             "type": "object",
             "properties": [
-                "linear_project_id": ["type": "string", "description": "Linear project UUID."],
-                "repo_path": ["type": "string", "description": "Absolute path to a local git clone."],
-                "repo_remote": ["type": "string", "description": "Remote URL of the repo (e.g. git@github.com:owner/name.git)."],
-                "default_branch": ["type": "string", "description": "Branch to create worktrees from. Default: main."],
-            ],
-            "required": ["linear_project_id", "repo_path", "repo_remote"],
-        ]
-    }
-
-    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
-        let body: [String: Any] = [
-            "linear_project_id": try requireString(arguments, "linear_project_id"),
-            "repo_path": try requireString(arguments, "repo_path"),
-            "repo_remote": try requireString(arguments, "repo_remote"),
-            "default_branch": (arguments["default_branch"] as? String) ?? "main",
-        ]
-        return try await proxy(method: "POST", path: "/v1/projects", body: body)
-    }
-}
-
-// MARK: - unlink_project
-
-struct UnlinkProjectTool: MCPTool {
-    let name = "unlink_project"
-    let description = "Remove a Linear-project link. Does not touch the repo or any worktrees."
-
-    var inputSchema: [String: Any] {
-        [
-            "type": "object",
-            "properties": [
-                "linear_project_id": ["type": "string"],
-            ],
-            "required": ["linear_project_id"],
-        ]
-    }
-
-    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
-        let id = try requireString(arguments, "linear_project_id")
-        return try await proxy(method: "DELETE", path: "/v1/projects/\(urlEscape(id))")
-    }
-}
-
-// MARK: - list_projects
-
-struct ListProjectsTool: MCPTool {
-    let name = "list_projects"
-    let description = "List all linked Linear projects with their local repo paths and remotes."
-
-    var inputSchema: [String: Any] {
-        ["type": "object", "properties": [String: Any](), "required": []]
-    }
-
-    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
-        return try await proxy(method: "GET", path: "/v1/projects")
-    }
-}
-
-// MARK: - dispatch_issue
-
-struct DispatchIssueTool: MCPTool {
-    let name = "dispatch_issue"
-    let description = """
-        Dispatch a Linear issue to a sub-agent run. The orchestrator creates a git worktree for the \
-        issue's branch (relay/<sanitized-id>), renders the workflow prompt, and spawns `claude` \
-        in that worktree. The worker reads issue context via the Linear MCP and posts a status \
-        comment back when done. Returns the run record (state, run_id, workspace_path, branch). \
-        If a project_id isn't provided and only one project is linked, that project is assumed.
-        """
-
-    var inputSchema: [String: Any] {
-        [
-            "type": "object",
-            "properties": [
-                "identifier": [
+                "ticket_id": [
                     "type": "string",
-                    "description": "Linear issue identifier, e.g. 'REL-42'.",
+                    "description": "Ticket id matching the filename under .orchestrator/, e.g. 'RR-6'.",
                 ],
-                "linear_project_id": [
+                "repo_path": [
                     "type": "string",
-                    "description": "Optional Linear project ID. Required only if multiple projects are linked.",
+                    "description": "Absolute path to the local git repo whose .orchestrator/ board owns the ticket. Required — the daemon won't infer the repo.",
                 ],
                 "context": [
                     "type": "string",
-                    "description": "Optional caller-supplied context for the sub-agent. Sub-agents have no memory of the dispatching session — pass background that doesn't fit cleanly in the Linear issue (recent decisions, related runs, constraints). Rendered into the worker's workflow prompt under 'Additional context from the dispatcher'.",
+                    "description": "Optional caller-supplied context for the sub-agent. Sub-agents have no memory of the dispatching session — pass background that doesn't fit cleanly in the ticket body (recent decisions, related runs, constraints). Rendered into the worker's workflow prompt under 'Additional context from the dispatcher'.",
                 ],
             ],
-            "required": ["identifier"],
+            "required": ["ticket_id", "repo_path"],
         ]
     }
 
     func call(arguments: [String: Any]) async throws -> [[String: Any]] {
         var body: [String: Any] = [
-            "identifier": try requireString(arguments, "identifier"),
+            "ticket_id": try requireString(arguments, "ticket_id"),
+            "repo_path": try requireString(arguments, "repo_path"),
         ]
-        if let pid = arguments["linear_project_id"] as? String, !pid.isEmpty {
-            body["linear_project_id"] = pid
-        }
         if let ctx = arguments["context"] as? String, !ctx.isEmpty {
             body["context"] = ctx
         }

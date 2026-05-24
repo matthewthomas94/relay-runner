@@ -468,29 +468,14 @@ final class AppState {
             if case .relayVision = state { return .stt }
             return state.particleTheme
         }
-        // When the board surfaces during an active voice/relay session,
-        // trigger the perimeter RelayVision overlay so the user has a clear
-        // signal that the agent is screen-aware of board state. Session
-        // detection is "voice bridge socket exists" (relay-bridge mode +
-        // standalone voice mode both create /tmp/voice_bridge.sock). On
-        // hide we only clear if (a) we're still in .relayVision and (b) no
-        // confirmation is pending — so we never interrupt the
-        // ActionsConfirmBus's own RelayVision lifecycle.
-        boardOverlay.setBoardLifecycleHooks(
-            onShown: { [weak self] in
-                guard let self else { return }
-                guard FileManager.default.fileExists(atPath: "/tmp/voice_bridge.sock") else { return }
-                self.stateMachine.setRelayVision(awaitingConfirmation: nil)
-            },
-            onHidden: { [weak self] in
-                guard let self else { return }
-                guard self.stateMachine.pendingConfirmation == nil else { return }
-                if case .relayVision = self.stateMachine.state {
-                    self.stateMachine.clearRelayVision()
-                }
-            }
-        )
-
+        // Reuse the existing "no session" pill when the user tries to open
+        // the board without a /relay-bridge session. Same component the
+        // record-out-of-session path uses (StateMachine.showSessionPrompt
+        // → OverlayController renders .sessionPrompt as a TranscriptionPill
+        // with a 5s auto-dismiss).
+        boardOverlay.setNoSessionHandler { [weak self] in
+            self?.stateMachine.showSessionPrompt()
+        }
         // Perimeter overlay (purple band on every screen while
         // .relayVision is active; pulses while a confirmation is pending).
         let perimeter = PerimeterOverlayManager()

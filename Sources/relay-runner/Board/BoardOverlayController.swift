@@ -25,14 +25,6 @@ final class BoardOverlayController {
     /// Polls the resolver while the board is visible to keep glow live.
     private var themePollTimer: Timer?
 
-    /// Fired from `show()` and `hide()`. AppState uses these to drive the
-    /// perimeter RelayVision overlay when the board surfaces during an
-    /// active voice/relay session — visual signal that the board state is
-    /// "in the loop" for the user. Wired with `setBoardLifecycleHooks` so
-    /// the controller stays decoupled from `StateMachine`.
-    private var onShown: (() -> Void)?
-    private var onHidden: (() -> Void)?
-
     /// Gesture state for the modifier-only ⌃⌥ hotkey. NSEvent doesn't have a
     /// native "hotkey is two modifiers and no letter" abstraction — we drive
     /// it off `.flagsChanged` instead. Press Control+Option together, release
@@ -46,12 +38,14 @@ final class BoardOverlayController {
         self.themeResolver = resolver
     }
 
-    /// Wire callbacks for board show/hide so AppState can trigger
-    /// RelayVision when a voice/relay session is active. Either closure may
-    /// be nil; the controller no-ops on an unwired side.
-    func setBoardLifecycleHooks(onShown: (() -> Void)?, onHidden: (() -> Void)?) {
-        self.onShown = onShown
-        self.onHidden = onHidden
+    /// Called when the user toggles the board without an active /relay-bridge
+    /// session. Wired by AppState to `stateMachine.showSessionPrompt()` so the
+    /// board reuses the exact same pill the rest of the app shows when a user
+    /// tries to record voice out of session — same component, same auto-dismiss,
+    /// same "Double tap Option to start a new session" affordance.
+    private var noSessionHandler: (() -> Void)?
+    func setNoSessionHandler(_ handler: @escaping () -> Void) {
+        self.noSessionHandler = handler
     }
 
     deinit {
@@ -130,6 +124,17 @@ final class BoardOverlayController {
     func show() {
         guard !isVisible else { return }
 
+        // Board is scoped to the active /relay-bridge session — the bridge's
+        // cwd selects which repo's .orchestrator/ we render. No session,
+        // no project, no board. Reuse the same pill the rest of the app
+        // shows when a user tries to record out of session so the UX is
+        // consistent ("No session running / Double tap Option to start a
+        // new session"). AppState wires the handler at startup.
+        guard ProjectResolver.resolve() != nil else {
+            noSessionHandler?()
+            return
+        }
+
         let p = panel ?? BoardOverlayPanel()
         if let screen = currentMouseScreen() {
             p.reframe(to: screen)
@@ -164,7 +169,6 @@ final class BoardOverlayController {
         self.isVisible = true
 
         startThemePoll()
-        onShown?()
     }
 
     func hide() {
@@ -179,7 +183,6 @@ final class BoardOverlayController {
         panel?.orderOut(nil)
         panel?.contentView = nil
         isVisible = false
-        onHidden?()
     }
 
     /// Poll the resolver and update model.theme on changes. 100 ms feels
@@ -249,6 +252,15 @@ final class BoardOverlayController {
         model.editing = nil
         setPanelKeyEligible(false)
         model.tickets = loadTickets()
+
+        // Auto-dispatch when the saved ticket is in `ready`. Covers
+        // "create-in-ready-then-type-title": handleCreate opens the editor
+        // on a fresh ticket; the worker isn't useful until the user supplies
+        // a real title/description, so we wait for the save. Daemon's
+        // find_active makes the call idempotent.
+        if updated.status == .ready {
+            OrchestratorClient.dispatchTicket(ticketId: updated.id, repoPath: project.repoPath.path)
+        }
     }
 
     private func handleCreate(in status: Ticket.Status) {
@@ -334,6 +346,15 @@ final class BoardOverlayController {
             }
         }
         model.tickets = loadTickets()
+
+        // Auto-dispatch when this drop transitioned the dragged ticket INTO
+        // ready (not when reordering within ready, not when moving out of ready).
+        // The daemon's find_active short-circuits repeats, so even a drag-out-
+        // then-drag-back is safe, but limiting the trigger to genuine
+        // backlog/in_progress/done → ready transitions keeps logs clean.
+        if dragged.status != .ready && status == .ready {
+            OrchestratorClient.dispatchTicket(ticketId: dragged.id, repoPath: project.repoPath.path)
+        }
     }
 
     private func setPanelKeyEligible(_ enabled: Bool) {
