@@ -36,6 +36,7 @@ from urllib.parse import parse_qs, urlparse
 # Reuse the existing config loader (sibling file).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
+from tickets import scan_repo, write as write_ticket, all_deps_done
 
 PORT_FILE = Path("/tmp/relay_orchestrator.port")
 DEFAULT_PORT = 7634
@@ -671,8 +672,6 @@ class Daemon:
         on disk before dispatching — the daemon writing ticket files is the
         deliberate exception to 'sub-agents own the ticket file'.
         """
-        from tickets import scan_repo, write as write_ticket, all_deps_done
-
         repo = Path(repo_path)
         all_tickets = scan_repo(repo)
         dependents = [t for t in all_tickets if finished_ticket_id in t["depends_on"]]
