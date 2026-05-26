@@ -60,13 +60,13 @@ end tell'
 
 The chord toggles `BoardOverlayController` in the menu-bar app (gated on an active `/relay-bridge` session — `/tmp/voice_bridge.sock` must exist).
 
-### 2. RelayVision — the perimeter-glow overlay
+### 2. ActionGlow — the perimeter-glow overlay
 
-RelayVision is the project's perimeter overlay (the `OverlayState.relayVision` state in `Sources/relay-runner/Overlay/`). It pulses around the screen edges whenever a RelayActions tool fires — so the user has a visual signal that screen control is happening. You don't call this directly; it's automatic, driven by the `tool_fired` notification every RelayActions tool sends after running.
+ActionGlow is the project's perimeter overlay (the `OverlayState.actionGlow` state in `Sources/relay-runner/Overlay/`). It pulses around the screen edges whenever a RelayActions tool fires — so the user has a visual signal that screen control is happening. You don't call this directly; it's automatic, driven by the `tool_fired` notification every RelayActions tool sends after running.
 
-RelayVision is a **visual signal**, not a confirmation gate.
+ActionGlow is a **visual signal**, not a confirmation gate.
 
-**Looking at the user's screen.** When the user says "look at my screen", "what's on my screen", "can you see X", "check the screen", or any similar voice intent to have you observe the current display, fire `mcp__relay-actions__screenshot` immediately. Do not explore the codebase, do not ask clarifying questions about which display, do not summarize before looking. The screenshot tool pulses RelayVision automatically as it runs, so the user gets the visual signal at the same moment you get the pixels.
+**Looking at the user's screen.** When the user says "look at my screen", "what's on my screen", "can you see X", "check the screen", or any similar voice intent to have you observe the current display, fire `mcp__relay-actions__screenshot` immediately. Do not explore the codebase, do not ask clarifying questions about which display, do not summarize before looking. The screenshot tool pulses ActionGlow automatically as it runs, so the user gets the visual signal at the same moment you get the pixels.
 
 ## Asking for permission — don't use `propose_action`
 
@@ -74,20 +74,20 @@ RelayVision is a **visual signal**, not a confirmation gate.
 
 If you need user permission for a risky screen action:
 
-1. **Default: just execute.** The user has already authorized voice control by starting the session. The RelayVision perimeter glow is the visual signal that screen control is happening.
+1. **Default: just execute.** The user has already authorized voice control by starting the session. The ActionGlow perimeter glow is the visual signal that screen control is happening.
 2. **If the action is genuinely high-stakes** (irreversible, sends a message, spends money, deletes data) and you're not confident the user wants it: **ask via a normal text message in the chat** with a clear summary, and wait for an explicit "yes" before proceeding. Do **not** call `propose_action`.
 3. **Never** route confirmations through native computer-use prompts. Same reason — bypasses the project's stack.
 
 ### Why this rule exists
 
-RelayActions + RelayVision is the product. Native MCPs work fine in any other repo, but in this one they bypass the project's instrumentation and visual surface. The custom path is non-negotiable here.
+RelayActions + ActionGlow is the product. Native MCPs work fine in any other repo, but in this one they bypass the project's instrumentation and visual surface. The custom path is non-negotiable here.
 
 This rule overrides the generic "tier of tool" guidance the computer-use MCP injects when both are connected.
 
 ## Naming notes
 
 - **Relay Actions** = the screen-control feature and its MCP tool family (`mcp__relay-actions__*`). The tools themselves.
-- **RelayVision** = the perimeter-glow overlay that pulses whenever a RelayActions tool runs. Visual signal, not a confirmation gate. (`OverlayState.relayVision` in code.)
+- **ActionGlow** = the perimeter-glow overlay that pulses whenever a RelayActions tool runs. Visual signal, not a confirmation gate. (`OverlayState.actionGlow` in code.)
 - Together: **the Relay stack**. Don't conflate either with native "computer-use" or "computer-vision" — those are different MCPs from a different vendor.
 
 ## Where things live
@@ -96,7 +96,7 @@ This rule overrides the generic "tier of tool" guidance the computer-use MCP inj
 - `services/orchestrator_workflow.md` — default sub-agent prompt template (`{{caller_context}}` slot included)
 - `Sources/relay-orchestrator-mcp/` — Swift MCP proxy
 - `Sources/relay-actions-mcp/` — Swift MCP server for RelayActions screen-control tools
-- `Sources/relay-runner/Overlay/` — RelayVision overlay (state machine, perimeter panel, particle field)
+- `Sources/relay-runner/Overlay/` — ActionGlow overlay (state machine, perimeter panel, particle field)
 - `Sources/relay-runner/Board/` — local kanban board overlay (RR-* tickets in `.orchestrator/`)
 - `scripts/relay-orchestrator` — launcher / installer
 - `docs/orchestrator.md` — orchestrator user-facing reference

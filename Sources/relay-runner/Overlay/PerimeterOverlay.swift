@@ -2,7 +2,7 @@ import AppKit
 import QuartzCore
 
 // Halftone-dot perimeter around every connected screen while
-// `OverlayState.relayVision` is active. Pulses brighter when an
+// `OverlayState.actionGlow` is active. Pulses brighter when an
 // `awaitingConfirmation` prompt is surfaced — visual signal that the
 // user needs to double-tap Option (yes) or Control (no).
 //
@@ -11,7 +11,7 @@ import QuartzCore
 // - Each panel hosts a PerimeterParticleField — same dot grid + animation as
 //   ParticleFieldRenderer, but the visibility mask favors dots within ~90pt
 //   of any edge instead of along the bottom. Uses the `.stt` color palette
-//   because RelayVision means "the agent is reading the screen" — a recording
+//   because ActionGlow means "the agent is reading the screen" — a recording
 //   surface, conceptually, not a playback one.
 // - Rebuilds on NSApplication.didChangeScreenParametersNotification so screen
 //   add/remove takes effect immediately.
@@ -92,7 +92,7 @@ final class PerimeterOverlayManager {
             panels.append(panel)
         }
 
-        // Re-apply current state so a screen attach during RelayVision
+        // Re-apply current state so a screen attach during ActionGlow
         // mode doesn't leave the new screen dark.
         lastVisible = false
         lastPulsing = false
@@ -104,7 +104,7 @@ final class PerimeterOverlayManager {
         let visible: Bool
         let pulsing: Bool
         switch state {
-        case .relayVision(let prompt):
+        case .actionGlow(let prompt):
             visible = true
             pulsing = (prompt != nil)
         default:

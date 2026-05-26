@@ -164,7 +164,7 @@ final class PerimeterParticleField {
             particleLayer.opacity = 0.78          // mid-point — settles here on stop
             particleLayer.add(pulse, forKey: "pulse")
         } else {
-            // Steady "RelayVision active, no decision needed" state.
+            // Steady "ActionGlow active, no decision needed" state.
             // Fade in if we were hidden.
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = particleLayer.presentation()?.opacity ?? particleLayer.opacity

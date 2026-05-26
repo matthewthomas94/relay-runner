@@ -1,7 +1,7 @@
 ---
 id: RR-9
 title: Rename RelayVision overlay to ActionGlow
-status: in_progress
+status: done
 priority: medium
 depends_on: []
 run_id: 3
@@ -36,3 +36,13 @@ This is a pure rename: no behavior changes. The overlay still listens for the sa
 - Be careful with case-sensitive global replace: do `RelayVision` → `ActionGlow` *and* `relayVision` → `actionGlow` as separate passes. Don't blindly s/// the lowercase string `relayvision` since some compound identifiers may not exist.
 - `.orchestrator/RR-8.md` mentions RelayVision in its description and acceptance criteria. Leave it alone — that's frozen prose about the prior naming.
 - `.orchestrator/RR-10.md` (vision split) depends on this ticket completing first, so the auto-promotion will dispatch it after RR-9 lands.
+
+## Run log
+
+### Run 3 (attempt 2) — branch `relay/rr-9`
+
+- Mechanical case-distinct rename across 6 Swift files + 3 docs: `RelayVision`→`ActionGlow`, `relayVision`→`actionGlow` (two passes, lowercase `relayvision` untouched — none existed). Covered `OverlayState.relayVision`→`.actionGlow`, `set/clear/enterRelayVision`→`ActionGlow` equivalents, and all call sites in `AppState.swift` + `ProposeActionTool.swift`. No `RelayVision*`-named files existed, so no file renames.
+- `swift build` completes clean (78s, no new warnings). Code comments were renamed mechanically (not prose-rewritten) to stay surgical; docs bodies are consistent ActionGlow.
+- **Environment issue (needs human):** ticket files are normally untracked working-tree files in the main repo, not present in this worktree. A `cd` into the main repo on attempt-2 startup committed `chore(RR-9): claim run 3` (`6ce4e4e`) onto `main` instead of `relay/rr-9`; a parallel RR-11 worker then committed `a04758c` on top. I did **not** rewrite `main` history (parallel worker active). Main also has uncommitted edits to `CLAUDE.md` + `config.toml`. On integration, expect an add/add conflict on `.orchestrator/RR-9.md` and a `CLAUDE.md` conflict — resolve in favor of this branch (done status + ActionGlow). The stray `6ce4e4e` claim commit on `main` should be dropped during cleanup.
+
+**Status: done.** Rename complete and building; only the branch/worktree bookkeeping anomaly above needs a human eye.
