@@ -1,6 +1,12 @@
 import Foundation
 
-// MCP server for Relay Runner.
+// MCP server for Relay Vision — screen *observation* tools.
+//
+// Split out of relay-actions-mcp (RR-10): RelayActions now owns manipulation
+// (click/type/scroll/key/list_windows/frontmost_app) and RelayVision owns
+// observation (screenshot, initially). They share the same `tool_fired`
+// notification to the menu-bar app, so ActionGlow pulses identically no matter
+// which server fired.
 //
 // Implements MCP over stdio: newline-delimited JSON-RPC 2.0 on stdin/stdout,
 // logs to stderr. The server is single-threaded and processes requests
@@ -11,7 +17,7 @@ import Foundation
 // SDK churn outweighs the ~150 lines we'd save.
 
 final class MCPServer {
-    private let serverName = "relay-actions"
+    private let serverName = "relay-vision"
     private let serverVersion = "0.1.0"
     // 2024-11-05 is the MCP protocol revision we target. Newer revisions are
     // backward-compatible for the small surface we use.
@@ -21,13 +27,7 @@ final class MCPServer {
 
     init() {
         let registered: [any MCPTool] = [
-            ClickTool(),
-            TypeTool(),
-            KeyTool(),
-            ScrollTool(),
-            FrontmostAppTool(),
-            ListWindowsTool(),
-            ProposeActionTool(),
+            ScreenshotTool(),
         ]
         var byName: [String: any MCPTool] = [:]
         for tool in registered {
@@ -37,14 +37,14 @@ final class MCPServer {
     }
 
     func run() async {
-        log("relay-actions-mcp starting (\(tools.count) tool(s))")
+        log("relay-vision-mcp starting (\(tools.count) tool(s))")
         // Log the detected terminal/IDE responsible for TCC attribution. Helps
         // when debugging "I granted Screen Recording but it still fails" —
         // the user can compare the logged app name to what they actually
         // granted in System Settings.
         let parentName: String
         if let term = ParentProcess.detectTerminal() {
-            log("Responsible parent for TCC (Screen Recording / Accessibility): \(term.displayName) (pid \(term.pid))")
+            log("Responsible parent for TCC (Screen Recording): \(term.displayName) (pid \(term.pid))")
             parentName = term.displayName
         } else {
             log("Could not identify a terminal/IDE in the parent chain — Screen Recording prompts will reference an unnamed parent.")
@@ -73,7 +73,7 @@ final class MCPServer {
         } catch {
             log("stdin read error: \(error)")
         }
-        log("relay-actions-mcp exiting")
+        log("relay-vision-mcp exiting")
     }
 
     private func handleLine(_ data: Data) async {
@@ -148,14 +148,11 @@ final class MCPServer {
             do {
                 let content = try await tool.call(arguments: arguments)
                 // Notify the menu-bar app that a tool fired — drives the
-                // perimeter glow + 10s decay window. propose_action skips this
-                // here because it already calls notifyToolFired() inline (and
-                // we don't want to double-notify when the user is staring at a
-                // confirmation prompt). Tool failures also skip — we only
-                // light up on successful actions, not error responses.
-                if name != "propose_action" {
-                    ConfirmationClient.notifyToolFired(toolName: name)
-                }
+                // perimeter glow + 10s decay window. Same notification name and
+                // payload shape as relay-actions-mcp, so ActionGlow pulses on
+                // screenshot calls with no overlay changes. Tool failures skip —
+                // we only light up on successful observations, not error responses.
+                ConfirmationClient.notifyToolFired(toolName: name)
                 return ["content": content, "isError": false]
             } catch let error as MCPToolError {
                 // Tool errors are reported as content + isError=true so Claude sees them inline,
@@ -237,6 +234,6 @@ protocol MCPTool {
 // MARK: - Logging
 
 func log(_ message: String) {
-    let line = "[relay-actions-mcp] \(message)\n"
+    let line = "[relay-vision-mcp] \(message)\n"
     FileHandle.standardError.write(Data(line.utf8))
 }

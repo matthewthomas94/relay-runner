@@ -363,6 +363,21 @@ if [ -x "$HOME/.local/bin/claude" ] || command -v claude >/dev/null 2>&1; then
     "$__claude_for_check" mcp get relay-actions >/dev/null 2>&1 && RELAY_MCP_OK=true
 fi
 
+# The Relay Vision MCP server (relay-vision-mcp) gives Claude the
+# screenshot observation tool, split out of relay-actions in RR-10.
+# Registered at user scope alongside relay-actions, same `claude mcp get`
+# probe. Tracked separately so a partial install (actions present, vision
+# missing) still triggers the vision registration below.
+RELAY_VISION_MCP_OK=false
+if [ -x "$HOME/.local/bin/claude" ] || command -v claude >/dev/null 2>&1; then
+    if [ -x "$HOME/.local/bin/claude" ]; then
+        __claude_for_check="$HOME/.local/bin/claude"
+    else
+        __claude_for_check="$(command -v claude)"
+    fi
+    "$__claude_for_check" mcp get relay-vision >/dev/null 2>&1 && RELAY_VISION_MCP_OK=true
+fi
+
 # Orchestrator install gate: covers the slash commands, MCP server
 # registration, and the launchd plist that keeps the daemon alive.
 # Falls back through the same `claude mcp get` probe used for relay-actions.
@@ -711,6 +726,48 @@ PYEOF
             else
                 echo "[Relay Runner] MCP server registration failed (non-fatal). Try manually:" >&2
                 echo "    $__claude_bin mcp add -s user relay-actions -- $__mcp_bin" >&2
+            fi
+        fi
+    fi
+
+    if ! $RELAY_VISION_MCP_OK; then
+        # Register the relay-vision MCP server (screenshot observation tool).
+        # Mirrors the relay-actions registration above — same binary-resolution
+        # order (bundled MacOS/ first, then .build/{release,debug}/) and the
+        # same user-scope `claude mcp add`. Idempotent via the RELAY_VISION_MCP_OK
+        # gate.
+        emit_progress 99 "Registering Vision MCP server..."
+        __claude_bin=""
+        if [ -x "$HOME/.local/bin/claude" ]; then
+            __claude_bin="$HOME/.local/bin/claude"
+        elif command -v claude >/dev/null 2>&1; then
+            __claude_bin="$(command -v claude)"
+        fi
+        __vision_mcp_bin=""
+        # Bundled (Contents/SharedSupport/scripts → ../../MacOS/relay-vision-mcp).
+        __bundled_vision_mcp="$SCRIPT_DIR/../../MacOS/relay-vision-mcp"
+        if [ -x "$__bundled_vision_mcp" ]; then
+            __vision_mcp_bin="$(cd "$(dirname "$__bundled_vision_mcp")" && pwd)/relay-vision-mcp"
+        else
+            for __cfg in release debug; do
+                __dev_vision_mcp="$SCRIPT_DIR/../.build/$__cfg/relay-vision-mcp"
+                if [ -x "$__dev_vision_mcp" ]; then
+                    __vision_mcp_bin="$(cd "$(dirname "$__dev_vision_mcp")" && pwd)/relay-vision-mcp"
+                    break
+                fi
+            done
+        fi
+        if [ -z "$__claude_bin" ]; then
+            echo "[Relay Runner] Skipping Vision MCP registration — claude CLI not found." >&2
+        elif [ -z "$__vision_mcp_bin" ]; then
+            echo "[Relay Runner] Skipping Vision MCP registration — relay-vision-mcp binary not found." >&2
+            echo "[Relay Runner] Looked in $__bundled_vision_mcp and .build/{release,debug}/." >&2
+        else
+            if "$__claude_bin" mcp add -s user relay-vision -- "$__vision_mcp_bin" >/dev/null 2>&1; then
+                echo "[Relay Runner] Registered MCP server: relay-vision → $__vision_mcp_bin"
+            else
+                echo "[Relay Runner] Vision MCP server registration failed (non-fatal). Try manually:" >&2
+                echo "    $__claude_bin mcp add -s user relay-vision -- $__vision_mcp_bin" >&2
             fi
         fi
     fi

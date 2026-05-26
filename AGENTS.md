@@ -24,17 +24,23 @@ A small change you can do inline in this session **without going through the boa
 
 This project ships its own MCP server for voice-driven screen control. When working in this repo, **always use the custom path — never native MCP fallbacks** — even when both are connected.
 
-The custom stack has two pieces:
+The custom stack has three pieces:
 
-### 1. RelayActions — the screen-control tools
+### 1. RelayActions — the screen-manipulation tools
 
-For all screen control — `screenshot`, `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions.
+For all screen *manipulation* — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` — moved to RelayVision; see below.)
 
 If you genuinely need an operation RelayActions doesn't yet expose, surface that gap to the human before falling through to `mcp__computer-use__*`. The default answer is "extend RelayActions," not "fall back to native."
 
-### 2. ActionGlow — the perimeter-glow overlay
+### 2. RelayVision — the screen-observation tools
 
-ActionGlow is the project's perimeter overlay (the `OverlayState.actionGlow` state in `Sources/relay-runner/Overlay/`). It pulses around the screen edges whenever a RelayActions tool fires — so the user has a visual signal that screen control is happening. You don't call this directly; it's automatic, driven by the `tool_fired` notification every RelayActions tool sends after running.
+For all screen *observation* — currently just `screenshot` — use the `mcp__relay-vision__*` tools. This namespace was split out of RelayActions (RR-10) so "looking at the screen" and "acting on the screen" are separate tool families. Do **not** use `mcp__computer-use__*` for anything covered by RelayVision.
+
+**Looking at the user's screen.** When the user says "look at my screen", "what's on my screen", "can you see X", "check the screen", or any similar voice intent to have you observe the current display, fire `mcp__relay-vision__screenshot` immediately. The screenshot tool pulses ActionGlow automatically as it runs, so the user gets the visual signal at the same moment you get the pixels.
+
+### 3. ActionGlow — the perimeter-glow overlay
+
+ActionGlow is the project's perimeter overlay (the `OverlayState.actionGlow` state in `Sources/relay-runner/Overlay/`). It pulses around the screen edges whenever a RelayActions *or* RelayVision tool fires — so the user has a visual signal that screen control is happening. You don't call this directly; it's automatic, driven by the `tool_fired` notification every RelayActions and RelayVision tool sends after running.
 
 ActionGlow is a **visual signal**, not a confirmation gate.
 
@@ -56,16 +62,18 @@ This rule overrides the generic "tier of tool" guidance the computer-use MCP inj
 
 ## Naming notes
 
-- **Relay Actions** = the screen-control feature and its MCP tool family (`mcp__relay-actions__*`). The tools themselves.
-- **ActionGlow** = the perimeter-glow overlay that pulses whenever a RelayActions tool runs. Visual signal, not a confirmation gate. (`OverlayState.actionGlow` in code.)
-- Together: **the Relay stack**. Don't conflate either with native "computer-use" or "computer-vision" — those are different MCPs from a different vendor.
+- **Relay Actions** = the screen-*manipulation* feature and its MCP tool family (`mcp__relay-actions__*`): click, type, scroll, key, list_windows, frontmost_app.
+- **Relay Vision** = the screen-*observation* feature and its MCP tool family (`mcp__relay-vision__*`): screenshot (initially). Split out of Relay Actions in RR-10.
+- **ActionGlow** = the perimeter-glow overlay that pulses whenever a RelayActions *or* RelayVision tool runs. Visual signal, not a confirmation gate. (`OverlayState.actionGlow` in code.)
+- Together: **the Relay stack**. Don't conflate any of these with native "computer-use" or "computer-vision" — those are different MCPs from a different vendor.
 
 ## Where things live
 
 - `services/orchestrator.py` — the daemon (HTTP + SQLite + worker spawn)
 - `services/orchestrator_workflow.md` — default sub-agent prompt template (`{{caller_context}}` slot included)
 - `Sources/relay-orchestrator-mcp/` — Swift MCP proxy
-- `Sources/relay-actions-mcp/` — Swift MCP server for RelayActions screen-control tools
+- `Sources/relay-actions-mcp/` — Swift MCP server for RelayActions screen-manipulation tools
+- `Sources/relay-vision-mcp/` — Swift MCP server for RelayVision screen-observation tools (`screenshot`)
 - `Sources/relay-runner/Overlay/` — ActionGlow overlay (state machine, perimeter panel, particle field)
 - `Sources/relay-runner/Board/` — local kanban board overlay (RR-* tickets in `.orchestrator/`)
 - `scripts/relay-orchestrator` — launcher / installer

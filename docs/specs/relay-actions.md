@@ -8,6 +8,8 @@
 >
 > ActionGlow (the perimeter-glow overlay) is unchanged: it still pulses whenever any Relay Actions tool fires, as a visual signal that screen control is happening. It is no longer a confirmation surface.
 >
+> **Scope split (RR-10):** the `screenshot` *observation* tool described below was moved out of Relay Actions into a separate **Relay Vision** namespace (`mcp__relay-vision__screenshot`) so observation and manipulation are distinct tool families. Relay Actions now ships manipulation only — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`. See [relay-vision.md](relay-vision.md) for the observation spec. ActionGlow pulses identically for both servers (same `tool_fired` notification). The screenshot design details below are retained as the original record; the implementation now lives in `Sources/relay-vision-mcp/`.
+>
 > The rest of this document is left intact as the original design record.
 
 ## Goal
