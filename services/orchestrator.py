@@ -16,6 +16,7 @@ when it finishes. No external service is involved.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import re
@@ -105,12 +106,67 @@ def render_template(template: str, **vars: Any) -> str:
     return _TEMPLATE_RE.sub(lambda m: str(vars.get(m.group(1).strip(), "")), template)
 
 
+# -- live activity summary (RR-12) ------------------------------------------
+# A worker's most recent tool call, distilled to a ≤60-char chip for the board.
+# No-op tools shouldn't clobber a more useful activity set moments earlier; the
+# heartbeat keeps `activity_at` fresh while a long-running tool is in flight so
+# the board doesn't false-positive into "Idle".
+ACTIVITY_MAX_LEN = 60
+ACTIVITY_DEBOUNCE_SECONDS = 5.0
+ACTIVITY_HEARTBEAT_SECONDS = 5.0
+_NOOP_TOOLS = frozenset({"TodoWrite"})
+
+
+def _clip(text: str, limit: int = ACTIVITY_MAX_LEN) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def derive_activity(tool_name: str, tool_input: dict | None) -> str:
+    """Heuristic summary of a worker's current tool call. Intentionally
+    approximate — grow this table as new tools matter (see RR-12)."""
+    ti = tool_input or {}
+    name = tool_name or ""
+
+    def base(p: Any) -> str:
+        s = str(p or "")
+        return os.path.basename(s) or s
+
+    if name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        f = ti.get("file_path") or ti.get("notebook_path") or ""
+        return _clip(f"Editing {base(f)}" if f else "Editing")
+    if name == "Read":
+        f = ti.get("file_path") or ""
+        return _clip(f"Reading {base(f)}" if f else "Reading")
+    if name in ("Grep", "Glob"):
+        return "Searching"
+    if name == "Bash":
+        cmd = (ti.get("command") or "").strip()
+        if re.match(r"git\s+commit", cmd):
+            return "Committing"
+        desc = (ti.get("description") or "").strip()
+        if desc:
+            return _clip(f"Running: {desc}")
+        first = cmd.splitlines()[0] if cmd else ""
+        return _clip(f"Running: {first}") if first else "Running"
+    if name in ("WebFetch", "WebSearch"):
+        return "Researching"
+    if name == "Task":
+        return "Delegating to sub-agent"
+    if name == "TodoWrite":
+        return "Planning"
+    # Unknown / MCP tools: just show the (clipped) tool name.
+    return _clip(name) or "Working"
+
+
 # ---------------------------------------------------------------------------
 # Stores
 # ---------------------------------------------------------------------------
 
 class RunsStore:
-    SCHEMA_VERSION = 2  # bump when the runs table shape changes
+    SCHEMA_VERSION = 3  # bump when the runs table shape changes
 
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS runs (
@@ -126,7 +182,9 @@ class RunsStore:
         ended_at REAL,
         exit_code INTEGER,
         log_path TEXT,
-        last_error TEXT
+        last_error TEXT,
+        activity TEXT,
+        activity_at REAL
     );
     CREATE INDEX IF NOT EXISTS idx_runs_state ON runs(state);
     CREATE INDEX IF NOT EXISTS idx_runs_ticket ON runs(ticket_id);
@@ -205,6 +263,22 @@ class RunsStore:
             c.execute(f"UPDATE runs SET {', '.join(fields)} WHERE id = ?", values)
         self.write_index()
 
+    def set_activity(self, run_id: int, activity: str) -> None:
+        """Record the worker's current activity summary (RR-12) and refresh its
+        timestamp. Rewrites the index so the board picks it up within a poll."""
+        with self._conn() as c:
+            c.execute("UPDATE runs SET activity = ?, activity_at = ? WHERE id = ?",
+                      (activity, time.time(), run_id))
+        self.write_index()
+
+    def touch_activity(self, run_id: int) -> None:
+        """Bump only the activity timestamp — the heartbeat while a tool is in
+        flight, so a long operation doesn't read as stalled on the board."""
+        with self._conn() as c:
+            c.execute("UPDATE runs SET activity_at = ? WHERE id = ?",
+                      (time.time(), run_id))
+        self.write_index()
+
     def get(self, run_id: int) -> dict | None:
         with self._conn() as c:
             row = c.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -278,6 +352,8 @@ class RunsStore:
                 "last_error": r["last_error"],
                 "workspace_path": r["workspace_path"],
                 "branch": r["branch"],
+                "activity": r["activity"],
+                "activity_at": r["activity_at"],
             }
             for r in rows
         ]
@@ -393,6 +469,11 @@ class Worker:
         self.proc: subprocess.Popen | None = None
         self.thread: threading.Thread | None = None
         self._cancel_requested = threading.Event()
+        self._timed_out = False
+        # Tool-use ids dispatched but not yet resolved by a tool_result. Shared
+        # with the heartbeat thread, so guarded by a lock.
+        self._inflight: set[str] = set()
+        self._inflight_lock = threading.Lock()
 
     def start(self) -> None:
         self.thread = threading.Thread(target=self._run, name=f"worker-{self.run_id}", daemon=True)
@@ -408,9 +489,18 @@ class Worker:
             return
 
         try:
+            # `-p --output-format stream-json --verbose` makes claude emit one
+            # JSON event per line as it works (assistant/tool_use, tool_result,
+            # result). We tee every line to the run log (so the log stays a full
+            # record) and parse tool_use blocks into the live activity chip
+            # (RR-12). The work the agent does is unchanged — only the output
+            # serialization differs.
             cmd = [
                 self.claude_bin,
+                "-p",
                 "--dangerously-skip-permissions",
+                "--verbose",
+                "--output-format", "stream-json",
             ]
             try:
                 self.proc = subprocess.Popen(
@@ -420,6 +510,7 @@ class Worker:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    bufsize=1,
                 )
             except FileNotFoundError as e:
                 self.store.update(self.run_id, state="Failed",
@@ -430,29 +521,60 @@ class Worker:
 
             self.store.update(self.run_id, state="Running", pid=self.proc.pid)
 
+            # Feed the prompt and close stdin so claude starts. The prompt is a
+            # few KB — well under the pipe buffer — so this single write won't
+            # deadlock against the stdout reads below.
             try:
-                stdout, _ = self.proc.communicate(input=self.prompt, timeout=self.timeout_seconds)
-            except subprocess.TimeoutExpired:
+                if self.proc.stdin:
+                    self.proc.stdin.write(self.prompt)
+                    self.proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+            # The read loop blocks on readline, so the timeout can't be enforced
+            # inline — a watchdog terminates the process and the loop ends on EOF.
+            watchdog = threading.Timer(self.timeout_seconds, self._on_timeout)
+            watchdog.daemon = True
+            watchdog.start()
+            # Keep activity_at fresh while a tool is in flight (e.g. a long
+            # `swift build`) so the board doesn't read it as stalled.
+            hb_stop = threading.Event()
+            hb_thread = threading.Thread(
+                target=self._heartbeat, args=(hb_stop,),
+                name=f"worker-{self.run_id}-hb", daemon=True,
+            )
+            hb_thread.start()
+
+            tail: collections.deque[str] = collections.deque(maxlen=5)
+            last_meaningful_at = 0.0
+            try:
+                for line in self.proc.stdout:  # type: ignore[union-attr]
+                    log.write(line)
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    tail.append(stripped[:500])
+                    last_meaningful_at = self._handle_event(stripped, last_meaningful_at)
+            finally:
+                log.flush()
+                hb_stop.set()
+                watchdog.cancel()
+
+            self.proc.wait()
+            rc = self.proc.returncode
+
+            if self._timed_out:
                 log.write(f"\n[orchestrator] worker timed out at {self.timeout_seconds}s\n")
-                self._terminate()
                 self.store.update(self.run_id, state="Failed",
                                   last_error=f"Timed out after {self.timeout_seconds}s",
                                   ended=True, exit_code=-1)
-                return
-
-            if stdout:
-                log.write(stdout)
-            log.flush()
-            rc = self.proc.returncode
-
-            if self._cancel_requested.is_set():
+            elif self._cancel_requested.is_set():
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
             elif rc == 0:
                 self.store.update(self.run_id, state="Succeeded", ended=True, exit_code=rc)
             elif rc in (-9, -15):
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
             else:
-                tail = (stdout or "").splitlines()[-5:]
                 self.store.update(self.run_id, state="Failed",
                                   last_error=f"exit={rc}; tail={' / '.join(tail)[:500]}",
                                   ended=True, exit_code=rc)
@@ -469,6 +591,58 @@ class Worker:
                 self.on_complete(self.run_id)
             except Exception:  # noqa: BLE001 — don't let callback crash worker thread
                 pass
+
+    def _on_timeout(self) -> None:
+        self._timed_out = True
+        self._terminate()
+
+    def _heartbeat(self, stop: threading.Event) -> None:
+        while not stop.wait(ACTIVITY_HEARTBEAT_SECONDS):
+            with self._inflight_lock:
+                busy = bool(self._inflight)
+            if busy:
+                self.store.touch_activity(self.run_id)
+
+    def _handle_event(self, line: str, last_meaningful_at: float) -> float:
+        """Parse one stream-json line and update the live activity summary.
+        Tolerant of unknown shapes — the format evolves, so anything we don't
+        recognise is ignored. Returns the (possibly updated) timestamp of the
+        last *meaningful* tool call, used to debounce no-op tools."""
+        try:
+            evt = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            return last_meaningful_at
+        if not isinstance(evt, dict):
+            return last_meaningful_at
+
+        etype = evt.get("type")
+        if etype == "assistant":
+            content = ((evt.get("message") or {}).get("content")) or []
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                tool_id = block.get("id")
+                if tool_id:
+                    with self._inflight_lock:
+                        self._inflight.add(tool_id)
+                name = block.get("name") or ""
+                now = time.time()
+                meaningful = name not in _NOOP_TOOLS
+                # Don't let a no-op tool clobber a useful activity set seconds ago.
+                if not meaningful and (now - last_meaningful_at) < ACTIVITY_DEBOUNCE_SECONDS:
+                    continue
+                self.store.set_activity(self.run_id, derive_activity(name, block.get("input")))
+                if meaningful:
+                    last_meaningful_at = now
+        elif etype == "user":
+            content = ((evt.get("message") or {}).get("content")) or []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_id = block.get("tool_use_id")
+                    if tool_id:
+                        with self._inflight_lock:
+                            self._inflight.discard(tool_id)
+        return last_meaningful_at
 
     def cancel(self) -> None:
         self._cancel_requested.set()

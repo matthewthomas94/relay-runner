@@ -40,6 +40,11 @@ final class BoardViewModel {
         runStates[ticket.id]?.pill(ticketStatus: ticket.status)
     }
 
+    /// Live run backing a ticket's activity chip (RR-12), or nil when none.
+    func activityRun(for ticket: Ticket) -> RunState? {
+        runStates[ticket.id]
+    }
+
     /// Hit-test `location` against the cached frames. Returns the column + the
     /// insertion index a drop at this point would land at, excluding the
     /// dragged ticket from the index calculation.
@@ -378,7 +383,8 @@ private struct DraggableTicketCard: View {
     }
 
     var body: some View {
-        TicketCard(ticket: ticket, pill: model.pill(for: ticket))
+        TicketCard(ticket: ticket, pill: model.pill(for: ticket),
+                   activityRun: model.activityRun(for: ticket))
             .opacity(isBeingDragged ? 0.25 : 1.0)
             .background(
                 GeometryReader { proxy in
@@ -536,6 +542,9 @@ private struct TicketCard: View {
     /// Live-run pill from the daemon's runs-index. Takes precedence over the
     /// ticket-file `run_id` "Building" badge when present.
     var pill: RunPill? = nil
+    /// Live run backing the activity chip (RR-12). The chip is subordinate to
+    /// the pill — it adds "what the agent is doing now", not the primary state.
+    var activityRun: RunState? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -550,6 +559,15 @@ private struct TicketCard: View {
                     RunStatusPill(pill: pill)
                 } else if ticket.runId != nil {
                     AgentActivityBadge(activity: .building)
+                }
+            }
+            // Live activity chip. Re-evaluated on a 1s timeline so a worker that
+            // goes silent flips to "Idle" without needing a runs.json change.
+            if let activityRun, activityRun.isActive {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    if let text = activityRun.activityChip(now: context.date) {
+                        ActivityChip(text: text)
+                    }
                 }
             }
             if let description = ticket.description {
@@ -570,6 +588,24 @@ private struct TicketCard: View {
         )
         .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
         .opacity(ticket.canceled ? 0.45 : 1.0)
+    }
+}
+
+/// Subordinate one-line chip describing the worker's current action (RR-12):
+/// smaller and lower-contrast than the status pill. Truncates with an ellipsis;
+/// the full text is available on hover and to VoiceOver.
+private struct ActivityChip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .regular))
+            .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.5))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(text)
+            .accessibilityLabel("Agent activity: \(text)")
     }
 }
 

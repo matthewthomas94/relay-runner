@@ -13,6 +13,13 @@ struct RunState: Equatable, Decodable {
     /// Failed | Stalled | Canceled.
     let state: String
     let lastError: String?
+    /// ≤60-char summary of the worker's current tool call (RR-12), e.g.
+    /// "Editing Server.swift". Absent for older entries / runs with no
+    /// activity yet.
+    let activity: String?
+    /// Epoch seconds of the last activity event. Used to detect a stalled
+    /// worker (no events for `idleThreshold`).
+    let activityAt: Double?
 
     private enum CodingKeys: String, CodingKey {
         case ticketId = "ticket_id"
@@ -20,10 +27,26 @@ struct RunState: Equatable, Decodable {
         case runId = "run_id"
         case state
         case lastError = "last_error"
+        case activity
+        case activityAt = "activity_at"
     }
 
     var isActive: Bool {
         state == "Claimed" || state == "Running" || state == "Stalled"
+    }
+
+    /// A worker silent this long reads as stalled, not working.
+    static let idleThreshold: TimeInterval = 30
+
+    /// Activity chip text for the card, or `nil` when none should render. Only
+    /// active runs get a chip; a stale `activityAt` (no events for
+    /// `idleThreshold`) collapses to "Idle" so a hung worker is visible.
+    func activityChip(now: Date = Date()) -> String? {
+        guard isActive, let activity, !activity.isEmpty else { return nil }
+        if let at = activityAt, now.timeIntervalSince1970 - at > Self.idleThreshold {
+            return "Idle"
+        }
+        return activity
     }
 
     /// The column this run forces the card into, overriding the ticket file's
