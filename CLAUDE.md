@@ -13,6 +13,20 @@ The user thinks of this session as the **orchestrator**, not the executor. Ticke
 
 A small change you can do inline in this session **without going through the board** is fine — dispatching has cold-start cost, eats Anthropic quota, and offers no coordination. Promote to `ready` when the work is large enough that the round-trip pays off, or when you want an in-repo audit trail (ticket + run log) without writing it by hand.
 
+### Recovery patterns
+
+- **Worker fails with `401 Invalid authentication credentials`.** The daemon is launched by the menu-bar app and inherits a minimal environment (no `ANTHROPIC_API_KEY`), so the spawned `claude` falls back to `~/.claude/.credentials.json`. When that OAuth file is stale or expired, every dispatched worker dies in under 10 seconds. Don't just tell the user — auto-recover: open a Terminal window with `claude` running, send the `/login` slash command, wait for the user to complete OAuth, then re-dispatch the failed runs. The osascript skeleton:
+
+  ```bash
+  osascript -e 'tell application "Terminal" to activate' \
+            -e 'tell application "Terminal" to do script "claude"'
+  sleep 2
+  osascript -e 'tell application "System Events" to keystroke "/login"' \
+            -e 'tell application "System Events" to keystroke return'
+  ```
+
+  After OAuth completes (heuristic: `~/.claude/.credentials.json` mtime is fresh), re-dispatch via `mcp__relay-orchestrator__dispatch_ticket` for each failed run.
+
 ### Things to avoid
 
 - Don't drag tickets to `ready` casually — promotion equals dispatch. Refine first.
@@ -32,11 +46,27 @@ For all screen control — `screenshot`, `click`, `type`, `scroll`, `key`, `list
 
 If you genuinely need an operation RelayActions doesn't yet expose, surface that gap to the human before falling through to `mcp__computer-use__*`. The default answer is "extend RelayActions," not "fall back to native."
 
+**Toggling the local kanban board.** RelayActions doesn't expose a board-toggle tool yet (tracked as RR-8). When the user says "bring up the board" or "show the board" or similar, fire the ⌃⌥ modifier-only chord directly — don't go exploring the codebase to re-derive this:
+
+```bash
+osascript -e 'tell application "System Events"
+    key down control
+    key down option
+    delay 0.08
+    key up option
+    key up control
+end tell'
+```
+
+The chord toggles `BoardOverlayController` in the menu-bar app (gated on an active `/relay-bridge` session — `/tmp/voice_bridge.sock` must exist).
+
 ### 2. RelayVision — the perimeter-glow overlay
 
 RelayVision is the project's perimeter overlay (the `OverlayState.relayVision` state in `Sources/relay-runner/Overlay/`). It pulses around the screen edges whenever a RelayActions tool fires — so the user has a visual signal that screen control is happening. You don't call this directly; it's automatic, driven by the `tool_fired` notification every RelayActions tool sends after running.
 
 RelayVision is a **visual signal**, not a confirmation gate.
+
+**Looking at the user's screen.** When the user says "look at my screen", "what's on my screen", "can you see X", "check the screen", or any similar voice intent to have you observe the current display, fire `mcp__relay-actions__screenshot` immediately. Do not explore the codebase, do not ask clarifying questions about which display, do not summarize before looking. The screenshot tool pulses RelayVision automatically as it runs, so the user gets the visual signal at the same moment you get the pixels.
 
 ## Asking for permission — don't use `propose_action`
 
