@@ -36,15 +36,15 @@ enum OverlayState: Equatable {
     /// purple perimeter overlay. `awaitingConfirmation` is non-nil while a
     /// `propose_action(risk: medium|high)` is blocked waiting on the user's
     /// double-tap response.
-    case relayVision(awaitingConfirmation: ConfirmationPrompt?)
+    case actionGlow(awaitingConfirmation: ConfirmationPrompt?)
 
     /// Which particle field theme to show on the bottom-of-screen overlay
-    /// (nil = hidden). The .relayVision state intentionally returns nil
+    /// (nil = hidden). The .actionGlow state intentionally returns nil
     /// here — its dot pattern lives in PerimeterParticleField, rendered
     /// around the screen edges by PerimeterOverlay, not at the bottom.
     var particleTheme: ParticleFieldRenderer.Theme? {
         switch self {
-        case .idle, .paused, .sent, .cancelled(_), .sessionPrompt, .relayVision:
+        case .idle, .paused, .sent, .cancelled(_), .sessionPrompt, .actionGlow:
             return nil
         case .listening, .recording:
             return .stt
@@ -60,7 +60,7 @@ enum OverlayState: Equatable {
             return .stt
         case .cancelled(.tts):
             return .tts
-        case .processing, .messageWaiting, .preparing, .speaking, .relayVision:
+        case .processing, .messageWaiting, .preparing, .speaking, .actionGlow:
             return .tts
         default:
             return .tts
@@ -199,22 +199,22 @@ final class StateMachine: @unchecked Sendable {
         }
     }
 
-    // MARK: - RelayVision
+    // MARK: - ActionGlow
 
-    /// Enter or refresh the .relayVision state. Called by ActionsConfirmBus
+    /// Enter or refresh the .actionGlow state. Called by ActionsConfirmBus
     /// on every MCP tool firing (refreshes the decay window) and on
     /// propose_action requests (sets `prompt` non-nil).
     ///
     /// While `prompt` is non-nil, `pendingConfirmation` returns it and
     /// CapsLockGesture resolves Option/Control double-taps as yes/no.
-    func setRelayVision(awaitingConfirmation prompt: ConfirmationPrompt?) {
-        state = .relayVision(awaitingConfirmation: prompt)
+    func setActionGlow(awaitingConfirmation prompt: ConfirmationPrompt?) {
+        state = .actionGlow(awaitingConfirmation: prompt)
     }
 
-    /// Exit the .relayVision state. Called when the 10s decay window
-    /// expires or the bus is torn down. No-op when not in RelayVision.
-    func clearRelayVision() {
-        if case .relayVision = state {
+    /// Exit the .actionGlow state. Called when the 10s decay window
+    /// expires or the bus is torn down. No-op when not in ActionGlow.
+    func clearActionGlow() {
+        if case .actionGlow = state {
             state = .idle
         }
     }
@@ -222,7 +222,7 @@ final class StateMachine: @unchecked Sendable {
     /// The currently pending confirmation, if any. CapsLockGesture polls this
     /// to decide whether to repurpose double-tap Option/Control.
     var pendingConfirmation: ConfirmationPrompt? {
-        if case .relayVision(let prompt) = state {
+        if case .actionGlow(let prompt) = state {
             return prompt
         }
         return nil

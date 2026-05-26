@@ -37,7 +37,7 @@ struct ProposeActionTool: MCPTool {
         \
         Instead: just execute state-changing relay-actions tools (click, type, \
         key, scroll) directly. The user has already authorized voice control \
-        by starting the session, and the RelayVision perimeter glow that \
+        by starting the session, and the ActionGlow perimeter glow that \
         fires automatically on every tool call is the visual signal that \
         screen control is happening. If a specific action is genuinely high- \
         stakes (irreversible, sends a message, spends money, deletes data) \
