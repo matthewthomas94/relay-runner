@@ -461,11 +461,11 @@ final class AppState {
         boardOverlay.installGlobalHotkeys()
         boardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
-            // RelayVision intentionally returns nil from `particleTheme` so
+            // ActionGlow intentionally returns nil from `particleTheme` so
             // the bottom particle field stays hidden — but the board has its
             // own glow that should reflect "agent is reading the screen".
             // Map it to .stt so the board glow matches the perimeter dots.
-            if case .relayVision = state { return .stt }
+            if case .actionGlow = state { return .stt }
             return state.particleTheme
         }
         // Reuse the existing "no session" pill when the user tries to open
@@ -477,7 +477,7 @@ final class AppState {
             self?.stateMachine.showSessionPrompt()
         }
         // Perimeter overlay (purple band on every screen while
-        // .relayVision is active; pulses while a confirmation is pending).
+        // .actionGlow is active; pulses while a confirmation is pending).
         let perimeter = PerimeterOverlayManager()
         perimeter.start(stateMachine: stateMachine)
         perimeterOverlay = perimeter

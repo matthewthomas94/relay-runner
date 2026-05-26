@@ -57,6 +57,13 @@ cp "$BUILD_DIR/relay-runner" "$APP_DIR/Contents/MacOS/relay-runner"
 # read "Relay Runner", not "relay-actions-mcp").
 cp "$BUILD_DIR/relay-actions-mcp" "$APP_DIR/Contents/MacOS/relay-actions-mcp"
 
+# Helper binary: Relay Vision MCP server. The screenshot observation tool,
+# split out of relay-actions in RR-10. Same TCC-attribution rationale —
+# lives alongside the main binary so Screen Recording prompts read
+# "Relay Runner", not "relay-vision-mcp". Registered with `claude mcp add`
+# by scripts/relay-bridge.
+cp "$BUILD_DIR/relay-vision-mcp" "$APP_DIR/Contents/MacOS/relay-vision-mcp"
+
 # Helper binary: Relay Orchestrator MCP server. Same TCC-attribution rationale
 # as relay-actions-mcp — sits in MacOS/ alongside the bundle so MCP tools
 # inherit the bundle's identity. The orchestrator daemon process itself runs
@@ -160,6 +167,9 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-actions-mcp"
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-vision-mcp"
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"

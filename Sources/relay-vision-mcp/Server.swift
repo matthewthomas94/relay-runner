@@ -1,27 +1,33 @@
 import Foundation
 
-// MCP server for the relay-runner orchestrator.
+// MCP server for Relay Vision — screen *observation* tools.
 //
-// This is a thin proxy: each MCP tool call translates to a single HTTP request
-// to the Python daemon (services/orchestrator.py) on 127.0.0.1. The Swift
-// surface exists so the orchestrator's tools appear in Claude Code's MCP toolbelt
-// alongside relay-actions, with consistent stdio framing.
+// Split out of relay-actions-mcp (RR-10): RelayActions now owns manipulation
+// (click/type/scroll/key/list_windows/frontmost_app) and RelayVision owns
+// observation (screenshot, initially). They share the same `tool_fired`
+// notification to the menu-bar app, so ActionGlow pulses identically no matter
+// which server fired.
 //
-// Mirrors Sources/relay-actions-mcp/Server.swift's hand-rolled JSON-RPC.
+// Implements MCP over stdio: newline-delimited JSON-RPC 2.0 on stdin/stdout,
+// logs to stderr. The server is single-threaded and processes requests
+// sequentially — MCP clients (the `claude` CLI) don't pipeline.
+//
+// The protocol layer is hand-rolled rather than depending on a Swift MCP SDK
+// because the surface we use is small (initialize, tools/list, tools/call) and
+// SDK churn outweighs the ~150 lines we'd save.
 
 final class MCPServer {
-    private let serverName = "relay-orchestrator"
+    private let serverName = "relay-vision"
     private let serverVersion = "0.1.0"
+    // 2024-11-05 is the MCP protocol revision we target. Newer revisions are
+    // backward-compatible for the small surface we use.
     private let protocolVersion = "2024-11-05"
 
     private let tools: [String: any MCPTool]
 
     init() {
         let registered: [any MCPTool] = [
-            DispatchTicketTool(),
-            ListRunsTool(),
-            GetRunTool(),
-            CancelRunTool(),
+            ScreenshotTool(),
         ]
         var byName: [String: any MCPTool] = [:]
         for tool in registered {
@@ -31,7 +37,24 @@ final class MCPServer {
     }
 
     func run() async {
-        log("relay-orchestrator-mcp starting (\(tools.count) tool(s))")
+        log("relay-vision-mcp starting (\(tools.count) tool(s))")
+        // Log the detected terminal/IDE responsible for TCC attribution. Helps
+        // when debugging "I granted Screen Recording but it still fails" —
+        // the user can compare the logged app name to what they actually
+        // granted in System Settings.
+        let parentName: String
+        if let term = ParentProcess.detectTerminal() {
+            log("Responsible parent for TCC (Screen Recording): \(term.displayName) (pid \(term.pid))")
+            parentName = term.displayName
+        } else {
+            log("Could not identify a terminal/IDE in the parent chain — Screen Recording prompts will reference an unnamed parent.")
+            log("Process chain: \(ParentProcess.dumpChain())")
+            parentName = "unknown"
+        }
+        // Notify the menu-bar app so it can surface the per-parent permissions
+        // wizard on first encounter. Fire-and-forget; if the menu-bar app
+        // isn't running, the fall back is the per-action TTS pre-flight.
+        ConfirmationClient.notifyParentDetected(parent: parentName)
         var buffer = Data()
         do {
             for try await byte in FileHandle.standardInput.bytes {
@@ -50,7 +73,7 @@ final class MCPServer {
         } catch {
             log("stdin read error: \(error)")
         }
-        log("relay-orchestrator-mcp exiting")
+        log("relay-vision-mcp exiting")
     }
 
     private func handleLine(_ data: Data) async {
@@ -60,8 +83,11 @@ final class MCPServer {
         }
 
         let method = object["method"] as? String ?? ""
+        // JSON-RPC id may be int, string, or null/missing (notification). Preserve the original
+        // value so we send it back verbatim per spec.
         let id = object["id"]
         let isNotification = object["id"] == nil
+
         let params = object["params"] as? [String: Any] ?? [:]
 
         do {
@@ -83,17 +109,20 @@ final class MCPServer {
     private func dispatch(method: String, params: [String: Any]) async throws -> Any {
         switch method {
         case "initialize":
-            // `instructions` ships the orchestration workflow + recovery rules to
-            // every session that connects — baked into the binary from
-            // services/instructions/ (see Instructions.generated.swift).
             return [
                 "protocolVersion": protocolVersion,
-                "capabilities": ["tools": [String: Any]()],
-                "serverInfo": ["name": serverName, "version": serverVersion],
-                "instructions": Instructions.payload,
+                "capabilities": [
+                    "tools": [String: Any](),
+                ],
+                "serverInfo": [
+                    "name": serverName,
+                    "version": serverVersion,
+                ],
             ]
 
         case "notifications/initialized", "notifications/cancelled":
+            // Notifications — no response. Returning anything is harmless because the caller
+            // checks `isNotification` before sending.
             return [String: Any]()
 
         case "tools/list":
@@ -118,8 +147,16 @@ final class MCPServer {
             let arguments = params["arguments"] as? [String: Any] ?? [:]
             do {
                 let content = try await tool.call(arguments: arguments)
+                // Notify the menu-bar app that a tool fired — drives the
+                // perimeter glow + 10s decay window. Same notification name and
+                // payload shape as relay-actions-mcp, so ActionGlow pulses on
+                // screenshot calls with no overlay changes. Tool failures skip —
+                // we only light up on successful observations, not error responses.
+                ConfirmationClient.notifyToolFired(toolName: name)
                 return ["content": content, "isError": false]
             } catch let error as MCPToolError {
+                // Tool errors are reported as content + isError=true so Claude sees them inline,
+                // not as a transport failure.
                 return [
                     "content": [["type": "text", "text": error.message]],
                     "isError": true,
@@ -197,6 +234,6 @@ protocol MCPTool {
 // MARK: - Logging
 
 func log(_ message: String) {
-    let line = "[relay-orchestrator-mcp] \(message)\n"
+    let line = "[relay-vision-mcp] \(message)\n"
     FileHandle.standardError.write(Data(line.utf8))
 }

@@ -21,7 +21,6 @@ final class MCPServer {
 
     init() {
         let registered: [any MCPTool] = [
-            ScreenshotTool(),
             ClickTool(),
             TypeTool(),
             KeyTool(),
@@ -110,6 +109,9 @@ final class MCPServer {
     private func dispatch(method: String, params: [String: Any]) async throws -> Any {
         switch method {
         case "initialize":
+            // `instructions` ships the Relay behavioral rules to every session
+            // that connects, regardless of project — baked into the binary from
+            // services/instructions/ (see Instructions.generated.swift).
             return [
                 "protocolVersion": protocolVersion,
                 "capabilities": [
@@ -119,6 +121,7 @@ final class MCPServer {
                     "name": serverName,
                     "version": serverVersion,
                 ],
+                "instructions": Instructions.payload,
             ]
 
         case "notifications/initialized", "notifications/cancelled":
