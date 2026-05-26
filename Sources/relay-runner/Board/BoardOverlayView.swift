@@ -8,6 +8,10 @@ import SwiftUI
 final class BoardViewModel {
     var tickets: [Ticket] = []
     var theme: ParticleFieldRenderer.Theme?
+    /// Live run state published by the daemon (runs.json), keyed by ticket id.
+    /// Overlaid on ticket files for column placement and pill rendering — the
+    /// ticket files themselves stay the source of truth for stable status.
+    var runStates: [String: RunState] = [:]
     /// When non-nil, the editor modal is rendered over the columns and the
     /// hosting panel takes key focus so text fields receive input. The
     /// controller listens for changes here and updates panel key-eligibility
@@ -23,6 +27,18 @@ final class BoardViewModel {
     /// Per-card geometry in the same coordinate space — used to compute
     /// insert index during a drag.
     var cardFrames: [String: CGRect] = [:]
+
+    /// Column a ticket renders in: a live run can override the file's status
+    /// (e.g. push a `ready` ticket into "In progress" while a worker grinds).
+    /// Falls back to the ticket file's own status when no run overrides it.
+    func effectiveStatus(for ticket: Ticket) -> Ticket.Status {
+        runStates[ticket.id]?.placement(ticketStatus: ticket.status) ?? ticket.status
+    }
+
+    /// Status pill to render on a ticket card, or nil when no live run applies.
+    func pill(for ticket: Ticket) -> RunPill? {
+        runStates[ticket.id]?.pill(ticketStatus: ticket.status)
+    }
 
     /// Hit-test `location` against the cached frames. Returns the column + the
     /// insertion index a drop at this point would land at, excluding the
@@ -247,7 +263,10 @@ private struct BoardColumnPanel: View {
     let onDrop: (String, Ticket.Status, Int) -> Void
 
     private var tickets: [Ticket] {
-        model.tickets.filter { $0.status == spec.status }.sorted { $0.order < $1.order }
+        // Placement honors the live-run override (a worker can pull a `ready`
+        // ticket into "In progress") rather than the raw ticket-file status.
+        model.tickets.filter { model.effectiveStatus(for: $0) == spec.status }
+            .sorted { $0.order < $1.order }
     }
 
     /// Index inside this column where the active drag would land, or `nil`
@@ -359,7 +378,7 @@ private struct DraggableTicketCard: View {
     }
 
     var body: some View {
-        TicketCard(ticket: ticket)
+        TicketCard(ticket: ticket, pill: model.pill(for: ticket))
             .opacity(isBeingDragged ? 0.25 : 1.0)
             .background(
                 GeometryReader { proxy in
@@ -514,6 +533,9 @@ private struct VisualEffectBlur: NSViewRepresentable {
 
 private struct TicketCard: View {
     let ticket: Ticket
+    /// Live-run pill from the daemon's runs-index. Takes precedence over the
+    /// ticket-file `run_id` "Building" badge when present.
+    var pill: RunPill? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -524,7 +546,9 @@ private struct TicketCard: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
-                if ticket.runId != nil {
+                if let pill {
+                    RunStatusPill(pill: pill)
+                } else if ticket.runId != nil {
                     AgentActivityBadge(activity: .building)
                 }
             }
@@ -595,6 +619,54 @@ private struct AgentActivityBadge: View {
             Capsule()
                 .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
         )
+    }
+}
+
+/// Live run-state pill driven by the daemon's runs-index. Mirrors
+/// `AgentActivityBadge`'s glass capsule; the dot color separates states at a
+/// glance (green running, amber stalled, red failed, blue awaiting-merge).
+private struct RunStatusPill: View {
+    let pill: RunPill
+
+    private var label: String {
+        switch pill {
+        case .running:       return "Running"
+        case .stalled:       return "Stalled"
+        case .failed:        return "Failed"
+        case .awaitingMerge: return "Awaiting merge"
+        }
+    }
+
+    private var dotColor: Color {
+        switch pill {
+        case .running:       return Color(.sRGB, red: 52 / 255,  green: 211 / 255, blue: 153 / 255, opacity: 1.0)
+        case .stalled:       return Color(.sRGB, red: 245 / 255, green: 180 / 255, blue: 40 / 255,  opacity: 1.0)
+        case .failed:        return Color(.sRGB, red: 244 / 255, green: 60 / 255,  blue: 9 / 255,   opacity: 1.0)
+        case .awaitingMerge: return Color(.sRGB, red: 96 / 255,  green: 165 / 255, blue: 250 / 255, opacity: 1.0)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 6, height: 6)
+                .opacity(0.9)
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.08))
+        )
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+        )
+        .fixedSize()
     }
 }
 

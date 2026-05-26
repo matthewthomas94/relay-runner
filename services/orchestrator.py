@@ -132,10 +132,18 @@ class RunsStore:
     """
 
     ACTIVE_STATES = ("Claimed", "Running")
+    # Completed entries linger in the runs-index file this long after `ended_at`
+    # so the board can render "Succeeded — awaiting merge" pills across the
+    # typical merge gap without flicker, then get pruned.
+    INDEX_RETENTION_SECONDS = 300
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, index_path: Path | None = None):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Ephemeral live-state view consumed by the board overlay. None disables
+        # index writes (keeps the store usable in unit tests without a filesystem
+        # side effect).
+        self.index_path = index_path
         self._lock = threading.Lock()
         self._init()
 
@@ -171,7 +179,9 @@ class RunsStore:
                 (ticket_id, repo_path, workspace_path, branch,
                  state, attempt, time.time(), log_path),
             )
-            return int(cur.lastrowid)
+            run_id = int(cur.lastrowid)
+        self.write_index()
+        return run_id
 
     def update(self, run_id: int, *, state: str | None = None, pid: int | None = None,
                exit_code: int | None = None, last_error: str | None = None,
@@ -192,6 +202,7 @@ class RunsStore:
         values.append(run_id)
         with self._conn() as c:
             c.execute(f"UPDATE runs SET {', '.join(fields)} WHERE id = ?", values)
+        self.write_index()
 
     def get(self, run_id: int) -> dict | None:
         with self._conn() as c:
@@ -243,6 +254,51 @@ class RunsStore:
             if row and row["a"]:
                 return int(row["a"]) + 1
             return 1
+
+    # -- runs-index file (board live-state view) --------------------------
+
+    def _index_entries(self, conn) -> list[dict]:
+        """Active runs plus completed ones inside the retention window. One
+        entry per run, shaped for the board overlay (run_id is the row id)."""
+        cutoff = time.time() - self.INDEX_RETENTION_SECONDS
+        rows = conn.execute(
+            "SELECT * FROM runs WHERE ended_at IS NULL OR ended_at >= ? "
+            "ORDER BY id DESC",
+            (cutoff,),
+        ).fetchall()
+        return [
+            {
+                "ticket_id": r["ticket_id"],
+                "repo_path": r["repo_path"],
+                "run_id": r["id"],
+                "state": r["state"],
+                "started_at": r["started_at"],
+                "ended_at": r["ended_at"],
+                "last_error": r["last_error"],
+                "workspace_path": r["workspace_path"],
+                "branch": r["branch"],
+            }
+            for r in rows
+        ]
+
+    def write_index(self) -> None:
+        """Rewrite the runs-index file from current state. Called on every
+        transition (insert/update) so the file never lags SQLite, and on a
+        periodic sweep so completed entries get pruned once their retention
+        window lapses. Atomic temp-write + rename so the board never reads a
+        half-written file. No-op when index_path is unset."""
+        if self.index_path is None:
+            return
+        with self._conn() as c:
+            entries = self._index_entries(c)
+        payload = json.dumps({"runs": entries}, default=str, indent=2)
+        tmp = self.index_path.with_name(self.index_path.name + ".tmp")
+        try:
+            tmp.write_text(payload)
+            tmp.replace(self.index_path)
+        except OSError as e:
+            print(f"[orchestrator] could not write runs index {self.index_path}: {e}",
+                  file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +505,7 @@ class Daemon:
         self.port = int(orch_cfg.get("port", DEFAULT_PORT))
 
         data = _data_root()
-        self.runs = RunsStore(data / "runs.db")
+        self.runs = RunsStore(data / "runs.db", index_path=data / "runs.json")
 
         # MVP: single concurrency. Held during the dispatch claim → spawn window
         # (release immediately after spawn — the worker runs in its own thread).
@@ -460,6 +516,10 @@ class Daemon:
         stalled = self.runs.reconcile_on_startup()
         if stalled:
             print(f"[orchestrator] reconciled {stalled} stalled run(s) on startup", file=sys.stderr)
+        # Seed the runs-index file so the board has something to read before the
+        # first transition (reconcile above mutates state directly, bypassing the
+        # insert/update write hooks).
+        self.runs.write_index()
 
         self.claude_bin = _find_claude_bin()
 
@@ -807,6 +867,15 @@ def serve(daemon: Daemon) -> None:
             signal.signal(sig, _signal_handler)
         except (OSError, ValueError):
             pass
+
+    # Periodic prune sweep: transitions keep the index current, but a run that
+    # completes and then sees no further transitions would linger past its
+    # retention window without this. Rewriting drops expired entries.
+    def _prune_loop():
+        while not stop.wait(30):
+            daemon.runs.write_index()
+
+    threading.Thread(target=_prune_loop, name="runs-index-pruner", daemon=True).start()
 
     try:
         server.serve_forever(poll_interval=0.5)

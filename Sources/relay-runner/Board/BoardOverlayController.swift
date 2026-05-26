@@ -24,6 +24,9 @@ final class BoardOverlayController {
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     /// Polls the resolver while the board is visible to keep glow live.
     private var themePollTimer: Timer?
+    /// Polls the daemon's runs-index file while the board is visible so live
+    /// run state (In-progress placement + status pills) tracks within ~1s.
+    private var runStatePollTimer: Timer?
 
     /// Gesture state for the modifier-only ⌃⌥ hotkey. NSEvent doesn't have a
     /// native "hotkey is two modifiers and no letter" abstraction — we drive
@@ -52,6 +55,7 @@ final class BoardOverlayController {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor { NSEvent.removeMonitor(m) }
         themePollTimer?.invalidate()
+        runStatePollTimer?.invalidate()
     }
 
     /// Install global keyboard hooks: ⌃⌥ (Control+Option pressed together,
@@ -143,6 +147,7 @@ final class BoardOverlayController {
         // Refresh model from current state. Tickets get re-scanned every show;
         // theme is then kept live by the poll timer below.
         model.tickets = loadTickets()
+        model.runStates = loadRunStates()
         model.theme = themeResolver?()
         model.editing = nil
 
@@ -169,6 +174,7 @@ final class BoardOverlayController {
         self.isVisible = true
 
         startThemePoll()
+        startRunStatePoll()
     }
 
     func hide() {
@@ -180,6 +186,7 @@ final class BoardOverlayController {
         }
         model.dragState = nil
         stopThemePoll()
+        stopRunStatePoll()
         panel?.orderOut(nil)
         panel?.contentView = nil
         isVisible = false
@@ -202,6 +209,25 @@ final class BoardOverlayController {
     private func stopThemePoll() {
         themePollTimer?.invalidate()
         themePollTimer = nil
+    }
+
+    /// Re-read the daemon's runs-index every 0.5s (well under the ~1s budget)
+    /// and push changes into the model. Only updates on actual change so an
+    /// idle board doesn't churn the SwiftUI tree.
+    private func startRunStatePoll() {
+        stopRunStatePoll()
+        runStatePollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self, self.isVisible else { return }
+            let next = self.loadRunStates()
+            if next != self.model.runStates {
+                self.model.runStates = next
+            }
+        }
+    }
+
+    private func stopRunStatePoll() {
+        runStatePollTimer?.invalidate()
+        runStatePollTimer = nil
     }
 
     // MARK: - Editor / mutation handlers
@@ -372,6 +398,11 @@ final class BoardOverlayController {
     private func loadTickets() -> [Ticket] {
         guard let project = ProjectResolver.resolve() else { return [] }
         return ProjectResolver.scanTickets(in: project)
+    }
+
+    private func loadRunStates() -> [String: RunState] {
+        guard let project = ProjectResolver.resolve() else { return [:] }
+        return RunStateStore.load(forRepo: project.repoPath)
     }
 
     private func currentMouseScreen() -> NSScreen? {
