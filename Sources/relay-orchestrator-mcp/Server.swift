@@ -83,10 +83,14 @@ final class MCPServer {
     private func dispatch(method: String, params: [String: Any]) async throws -> Any {
         switch method {
         case "initialize":
+            // `instructions` ships the orchestration workflow + recovery rules to
+            // every session that connects — baked into the binary from
+            // services/instructions/ (see Instructions.generated.swift).
             return [
                 "protocolVersion": protocolVersion,
                 "capabilities": ["tools": [String: Any]()],
                 "serverInfo": ["name": serverName, "version": serverVersion],
+                "instructions": Instructions.payload,
             ]
 
         case "notifications/initialized", "notifications/cancelled":
