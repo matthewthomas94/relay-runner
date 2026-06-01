@@ -68,3 +68,45 @@ enum ClaudeAuth {
         try? proc.run()
     }
 }
+
+enum CodexAuth {
+    static var codexBinaryPath: String {
+        "/Applications/Codex.app/Contents/Resources/codex"
+    }
+
+    static var isAuthenticated: Bool {
+        let path = (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".codex/auth.json")
+        return FileManager.default.fileExists(atPath: path)
+    }
+
+    static func openLoginInTerminal() {
+        let codex = codexBinaryPath
+        let script = """
+        tell application "Terminal"
+            activate
+            do script "'\(codex)' login; echo ''; echo '[Relay Runner] Codex sign-in complete — you can close this window.'"
+        end tell
+        """
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        proc.standardError = FileHandle.nullDevice
+        proc.standardOutput = FileHandle.nullDevice
+        try? proc.run()
+    }
+}
+
+enum AgentAuth {
+    static var isAuthenticated: Bool {
+        CodexAuth.isAuthenticated || ClaudeAuth.isAuthenticated
+    }
+
+    static func openLoginInTerminal() {
+        if FileManager.default.isExecutableFile(atPath: CodexAuth.codexBinaryPath) {
+            CodexAuth.openLoginInTerminal()
+        } else {
+            ClaudeAuth.openLoginInTerminal()
+        }
+    }
+}

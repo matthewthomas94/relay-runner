@@ -1,13 +1,17 @@
 ## Recovery patterns
 
-- **Worker fails with `401 Invalid authentication credentials`.** The daemon is launched by the menu-bar app and inherits a minimal environment (no `ANTHROPIC_API_KEY`), so the spawned `claude` falls back to `~/.claude/.credentials.json`. When that OAuth file is stale or expired, every dispatched worker dies in under 10 seconds. Don't just tell the user — auto-recover: open a Terminal window with `claude` running, send the `/login` slash command, wait for the user to complete OAuth, then re-dispatch the failed runs. The osascript skeleton:
+- **Codex worker fails with an authentication error.** Open a Terminal window with `codex login` running, wait for the user to finish sign-in, then re-dispatch the failed runs:
 
   ```bash
   osascript -e 'tell application "Terminal" to activate' \
-            -e 'tell application "Terminal" to do script "claude"'
-  sleep 2
-  osascript -e 'tell application "System Events" to keystroke "/login"' \
-            -e 'tell application "System Events" to keystroke return'
+            -e 'tell application "Terminal" to do script "codex login"'
   ```
 
-  After OAuth completes (heuristic: `~/.claude/.credentials.json` mtime is fresh), re-dispatch via `mcp__relay-orchestrator__dispatch_ticket` for each failed run.
+  After sign-in completes (heuristic: `~/.codex/auth.json` exists and is fresh), re-dispatch via `mcp__relay-orchestrator__dispatch_ticket` for each failed run.
+
+- **Claude worker fails with `401 Invalid authentication credentials`.** If the repo is explicitly configured to use Claude, open a Terminal window with `claude /login`, wait for the user to complete OAuth, then re-dispatch the failed runs:
+
+  ```bash
+  osascript -e 'tell application "Terminal" to activate' \
+            -e 'tell application "Terminal" to do script "claude /login"'
+  ```

@@ -54,7 +54,7 @@ def open_fifo(path):
 
 def main():
     import shutil
-    default_cmd = _cfg["general"].get("command", "claude")
+    default_cmd = _cfg["general"].get("command", "codex")
 
     # Parse out --config arg, leaving only the target command
     args = sys.argv[1:]

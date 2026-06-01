@@ -34,6 +34,11 @@ PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 CMDS_DIR="$HOME/.claude/commands"
 DISPATCH_MD="$CMDS_DIR/relay-dispatch.md"
 WORKFLOW_MD="$CMDS_DIR/relay-workflow.md"
+CODEX_SKILLS_DIR="$HOME/.codex/skills"
+CODEX_DISPATCH_DIR="$CODEX_SKILLS_DIR/relay-dispatch"
+CODEX_WORKFLOW_DIR="$CODEX_SKILLS_DIR/relay-workflow"
+CODEX_DISPATCH_MD="$CODEX_DISPATCH_DIR/SKILL.md"
+CODEX_WORKFLOW_MD="$CODEX_WORKFLOW_DIR/SKILL.md"
 # Legacy slash commands removed at install time so stale prompts don't
 # surface in Claude sessions. relay-link-project.md is from the prior
 # project-linking flow; relay-orchestrate.md is from before the
@@ -66,6 +71,16 @@ find_claude_bin() {
     fi
 }
 
+find_codex_bin() {
+    if [ -x "/Applications/Codex.app/Contents/Resources/codex" ]; then
+        echo "/Applications/Codex.app/Contents/Resources/codex"
+    elif command -v codex >/dev/null 2>&1; then
+        command -v codex
+    else
+        echo ""
+    fi
+}
+
 find_orchestrator_mcp_bin() {
     # Bundled (Contents/SharedSupport/scripts → ../../MacOS/relay-orchestrator-mcp).
     local bundled="$SCRIPT_DIR/../../MacOS/relay-orchestrator-mcp"
@@ -88,6 +103,7 @@ find_orchestrator_mcp_bin() {
 install_skills() {
     local mode="${1:-if-missing}"
     mkdir -p "$CMDS_DIR"
+    mkdir -p "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"
 
     # Always remove the legacy slash commands if present — even on
     # if-missing installs — so old prompts don't shadow the new ones.
@@ -95,7 +111,7 @@ install_skills() {
 
     if [ "$mode" = "force" ] || [ ! -f "$DISPATCH_MD" ]; then
         cat > "$DISPATCH_MD" <<'DISPATCH_MD_EOF'
-Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs `claude` autonomously inside it.
+Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs the configured agent autonomously inside it.
 
 ## When to use this
 
@@ -133,7 +149,7 @@ If a run finished, also peek at the worktree (path is in the run record) to see 
 
 ## Notes
 
-- The worker runs with `--dangerously-skip-permissions` inside an isolated branch (`relay/<sanitized-id>`); changes are local-only and never pushed automatically.
+- The worker runs with the configured agent's permission-bypass flag inside an isolated branch (`relay/<sanitized-id>`); changes are local-only and never pushed automatically.
 - The default workflow template is at `~/Library/Application Support/relay-runner/orchestrator/WORKFLOW.md`. A repo-local `WORKFLOW.md` overrides the default for that repo.
 - The worker mutates the ticket file: flips status to `in_progress` on start, then to `done` (or leaves `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits are committed to the worker's branch.
 - For the broader "discuss → write → dispatch → integrate" workflow this command sits inside, see `/relay-workflow`.
@@ -147,11 +163,11 @@ DISPATCH_MD_EOF
 
 Also re-trigger when the user discusses concrete work to be done ("let's tackle…", "what should we work on", "I need to fix…", "we should add…"), mentions tickets / issues / the backlog / the board, says "dispatch / hand off / delegate / kick off / spin up an agent", references a ticket id like RR-6, or asks "what are the agents doing" / "how's RR-6" / "stop RR-6".
 
-Do NOT trigger when: relay-orchestrator MCP isn't registered (`claude mcp get relay-orchestrator` fails), or the user has explicitly said "stay in this session, don't dispatch" / "don't use the orchestrator". A small inline edit the user asks for directly is still fine to do here — the orchestrator workflow says "dispatch when the round-trip pays off", not "always dispatch".
+Do NOT trigger when: relay-orchestrator MCP isn't registered, or the user has explicitly said "stay in this session, don't dispatch" / "don't use the orchestrator". A small inline edit the user asks for directly is still fine to do here — the orchestrator workflow says "dispatch when the round-trip pays off", not "always dispatch".
 
 ## The four-step workflow
 
-You (this main session) are the orchestrator. Each `claude` worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
+You (this main session) are the orchestrator. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
 
 1. **Discuss.** Talk through what needs to happen. Surface assumptions, push back when something's underspecified, propose alternatives. Don't jump to writing tickets until the work is concrete.
 2. **Write tickets.** When the discussion settles on a unit of work, create a ticket file under `<repo>/.orchestrator/<TICKET_ID>.md` following the schema in `docs/specs/orchestrator-tickets.md` (YAML frontmatter + `## Description` + `## Acceptance criteria`). Commit the new ticket to the working branch so the board reflects it. Use the next available id from `<repo>/.orchestrator/config.toml`'s `next_id` and bump that counter in the same commit. Each ticket should be small enough that a sub-agent can complete it in one pass without further clarification.
@@ -160,7 +176,7 @@ You (this main session) are the orchestrator. Each `claude` worker spawned by `d
 
 ## When NOT to dispatch
 
-A small change you can do inline in this session is usually faster than dispatching. Each sub-agent is a fresh `claude` process with cold-start overhead, its own context window (more tokens against your quota), and zero awareness of what's been discussed here. Dispatch when:
+A small change you can do inline in this session is usually faster than dispatching. Each sub-agent is a fresh configured-agent process with cold-start overhead, its own context window (more tokens against your quota), and zero awareness of what's been discussed here. Dispatch when:
 - The work is large enough that the round-trip pays off.
 - You want an in-repo audit trail (the ticket file + run log) without doing it by hand.
 - You want isolation (an autonomous run that can't disturb the main repo's working copy).
@@ -186,48 +202,121 @@ If you're triggering this skill *implicitly* mid-conversation (the user didn't t
 WORKFLOW_MD_EOF
         echo "[relay-orchestrator] wrote $WORKFLOW_MD"
     fi
+
+    if [ "$mode" = "force" ] || [ ! -f "$CODEX_DISPATCH_MD" ]; then
+        cat > "$CODEX_DISPATCH_MD" <<'CODEX_DISPATCH_MD_EOF'
+---
+name: relay-dispatch
+description: Dispatch a ticket from the current repo's local Relay Runner kanban board to a sub-agent. Use when the user says to work on, hand off, delegate, dispatch, or check an RR-style ticket.
+---
+
+# relay-dispatch
+
+Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs the configured agent autonomously inside it.
+
+## Steps
+
+1. Identify the ticket id, such as `RR-6`.
+2. Resolve the repo path with `git rev-parse --show-toplevel`.
+3. Confirm `<repo>/.orchestrator/<ticket_id>.md` exists.
+4. Call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-6", repo_path="<absolute path>")`.
+5. Report briefly: started run id, worktree path, and branch. Do not wait for completion unless the user asks.
+
+## Status
+
+Use `mcp__relay-orchestrator__list_runs` for active runs and `mcp__relay-orchestrator__get_run` for one run. If a run finished, inspect the worktree diff before recommending a merge.
+
+## Boundaries
+
+Workers run in local `relay/<id>` branches. Do not push those branches; integrate them into the working branch after review.
+CODEX_DISPATCH_MD_EOF
+        echo "[relay-orchestrator] wrote $CODEX_DISPATCH_MD"
+    fi
+
+    if [ "$mode" = "force" ] || [ ! -f "$CODEX_WORKFLOW_MD" ]; then
+        cat > "$CODEX_WORKFLOW_MD" <<'CODEX_WORKFLOW_MD_EOF'
+---
+name: relay-workflow
+description: Prime Relay Runner orchestrator mode in Codex. Use when relay-orchestrator MCP tools are present, when the user discusses concrete work, mentions tickets/backlog/board, or asks to dispatch/delegate/check an agent run.
+---
+
+# relay-workflow
+
+You are the orchestrator. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
+
+## Workflow
+
+1. Discuss the work first. Surface assumptions and ambiguity.
+2. Write concrete ticket files under `.orchestrator/` in `backlog`; include description, acceptance criteria, priority, and dependencies.
+3. Promote refined tickets to `ready` only when they are dispatchable. The board auto-dispatches `ready`; direct MCP dispatch is available for manual runs.
+4. Integrate worker branches after review, resolving conflicts intentionally, then prune worktrees and delete throwaway branches.
+
+Small edits are fine inline. Dispatch when isolation, audit trail, or parallelism pays for the cold start.
+CODEX_WORKFLOW_MD_EOF
+        echo "[relay-orchestrator] wrote $CODEX_WORKFLOW_MD"
+    fi
 }
 
 uninstall_skills() {
     rm -f "$DISPATCH_MD" "$WORKFLOW_MD" "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
+    rm -rf "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"
     echo "[relay-orchestrator] removed slash command files."
 }
 
 register_mcp() {
     local claude_bin
     claude_bin="$(find_claude_bin)"
+    local codex_bin
+    codex_bin="$(find_codex_bin)"
     local mcp_bin
     mcp_bin="$(find_orchestrator_mcp_bin)"
 
-    if [ -z "$claude_bin" ]; then
-        echo "[relay-orchestrator] claude CLI not found — skipping MCP registration." >&2
-        return 0
-    fi
     if [ -z "$mcp_bin" ]; then
         echo "[relay-orchestrator] relay-orchestrator-mcp binary not found." >&2
         echo "[relay-orchestrator] Build with: swift build --product relay-orchestrator-mcp" >&2
         return 0
     fi
 
-    if "$claude_bin" mcp get relay-orchestrator >/dev/null 2>&1; then
-        echo "[relay-orchestrator] MCP server already registered."
-        return 0
+    if [ -n "$claude_bin" ]; then
+        if "$claude_bin" mcp get relay-orchestrator >/dev/null 2>&1; then
+            echo "[relay-orchestrator] Claude MCP server already registered."
+        elif "$claude_bin" mcp add -s user relay-orchestrator -- "$mcp_bin" >/dev/null 2>&1; then
+            echo "[relay-orchestrator] Registered Claude MCP server: relay-orchestrator → $mcp_bin"
+        else
+            echo "[relay-orchestrator] Claude MCP server registration failed (non-fatal)." >&2
+            echo "[relay-orchestrator] Try manually:" >&2
+            echo "    $claude_bin mcp add -s user relay-orchestrator -- $mcp_bin" >&2
+        fi
+    else
+        echo "[relay-orchestrator] claude CLI not found — skipping Claude MCP registration." >&2
     fi
 
-    if "$claude_bin" mcp add -s user relay-orchestrator -- "$mcp_bin" >/dev/null 2>&1; then
-        echo "[relay-orchestrator] Registered MCP server: relay-orchestrator → $mcp_bin"
+    if [ -n "$codex_bin" ]; then
+        if "$codex_bin" mcp get relay-orchestrator >/dev/null 2>&1; then
+            echo "[relay-orchestrator] Codex MCP server already registered."
+        elif "$codex_bin" mcp add relay-orchestrator -- "$mcp_bin" >/dev/null 2>&1; then
+            echo "[relay-orchestrator] Registered Codex MCP server: relay-orchestrator → $mcp_bin"
+        else
+            echo "[relay-orchestrator] Codex MCP server registration failed (non-fatal)." >&2
+            echo "[relay-orchestrator] Try manually:" >&2
+            echo "    $codex_bin mcp add relay-orchestrator -- $mcp_bin" >&2
+        fi
     else
-        echo "[relay-orchestrator] MCP server registration failed (non-fatal)." >&2
-        echo "[relay-orchestrator] Try manually:" >&2
-        echo "    $claude_bin mcp add -s user relay-orchestrator -- $mcp_bin" >&2
+        echo "[relay-orchestrator] codex CLI not found — skipping Codex MCP registration." >&2
     fi
 }
 
 unregister_mcp() {
     local claude_bin
     claude_bin="$(find_claude_bin)"
-    [ -z "$claude_bin" ] && return 0
-    "$claude_bin" mcp remove -s user relay-orchestrator >/dev/null 2>&1 || true
+    if [ -n "$claude_bin" ]; then
+        "$claude_bin" mcp remove -s user relay-orchestrator >/dev/null 2>&1 || true
+    fi
+    local codex_bin
+    codex_bin="$(find_codex_bin)"
+    if [ -n "$codex_bin" ]; then
+        "$codex_bin" mcp remove relay-orchestrator >/dev/null 2>&1 || true
+    fi
     echo "[relay-orchestrator] removed MCP server registration."
 }
 
@@ -328,9 +417,9 @@ cmd_install() {
     echo "[relay-orchestrator] install complete. Try:"
     echo "    relay-orchestrator --status"
     echo
-    echo "From any Claude Code session:"
-    echo "    /relay-workflow       (prime the discuss → write → dispatch → integrate pattern)"
-    echo "    /relay-dispatch       (dispatch a ticket from .orchestrator/ to a sub-agent)"
+    echo "From any Codex or Claude session:"
+    echo "    relay-workflow        (prime the discuss → write → dispatch → integrate pattern)"
+    echo "    relay-dispatch        (dispatch a ticket from .orchestrator/ to a sub-agent)"
 }
 
 cmd_uninstall() {

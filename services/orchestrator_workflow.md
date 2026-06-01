@@ -20,7 +20,7 @@ You are a relay-runner sub-agent working on a single ticket inside an isolated g
 
 3. **Plan briefly.** Decide what files to read, what to change, and what success looks like. Don't over-plan — this isn't a phase; it's one ticket.
 
-4. **Implement.** Make the smallest change that satisfies the ticket. Match the project's existing style. Don't add speculative features. Don't refactor adjacent code that isn't broken. (See `~/.claude/CLAUDE.md` Karpathy guidelines.)
+4. **Implement.** Make the smallest change that satisfies the ticket. Match the project's existing style. Don't add speculative features. Don't refactor adjacent code that isn't broken. (See the global `AGENTS.md`/`CLAUDE.md` Karpathy guidelines for the runtime you're using.)
 
 5. **Verify.** Run whatever this repo uses to verify changes — tests, type-check, lint, build. If tests don't exist for the change, add minimal ones only when the ticket or repo conventions demand it.
 

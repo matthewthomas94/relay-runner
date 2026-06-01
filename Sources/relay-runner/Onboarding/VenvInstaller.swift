@@ -53,21 +53,23 @@ final class VenvInstaller {
     private let collectingCapPercent: Double = 0.78
 
     /// True when every runtime dependency a session needs is on disk:
-    /// the venv interpreter, the Kokoro speech-model files, the Claude
-    /// Code CLI, AND the two relay slash-command files. relay-bridge
+    /// the venv interpreter, the Kokoro speech-model files, an agent CLI,
+    /// AND the relay voice command/skill files. relay-bridge
     /// runs the install path if any one is missing, so the SwiftUI must
     /// check the same union — otherwise onboarding's pythonSetup would
     /// short-circuit to .succeeded while a missing piece still needed
     /// installing, and the user would discover it only when starting a
-    /// session (or typing /relay-bridge inside Claude Code).
+    /// session (or starting relay-bridge inside an agent session).
     static var alreadyInstalled: Bool {
         let fm = FileManager.default
         return fm.isExecutableFile(atPath: userVenvPython)
             && fm.fileExists(atPath: kokoroModelPath)
             && fm.fileExists(atPath: kokoroVoicesPath)
-            && fm.isExecutableFile(atPath: claudeCLIPath)
+            && (fm.isExecutableFile(atPath: codexCLIPath) || fm.isExecutableFile(atPath: claudeCLIPath))
             && fm.fileExists(atPath: bridgeSkillPath)
             && fm.fileExists(atPath: stopSkillPath)
+            && fm.fileExists(atPath: codexBridgeSkillPath)
+            && fm.fileExists(atPath: codexStopSkillPath)
     }
 
     /// Match what tts_worker.py:_find_kokoro_model() looks for and what
@@ -86,8 +88,11 @@ final class VenvInstaller {
         (NSHomeDirectory() as NSString)
             .appendingPathComponent(".local/bin/claude")
     }
-    /// Match relay-bridge's RELAY_SKILLS_OK gate — both .md slash-command
-    /// files must exist for the install to be considered complete.
+    private static var codexCLIPath: String {
+        "/Applications/Codex.app/Contents/Resources/codex"
+    }
+    /// Match relay-bridge's RELAY_SKILLS_OK gate — both command/skill files
+    /// must exist for the install to be considered complete.
     private static var bridgeSkillPath: String {
         (NSHomeDirectory() as NSString)
             .appendingPathComponent(".claude/commands/relay-bridge.md")
@@ -95,6 +100,14 @@ final class VenvInstaller {
     private static var stopSkillPath: String {
         (NSHomeDirectory() as NSString)
             .appendingPathComponent(".claude/commands/relay-stop.md")
+    }
+    private static var codexBridgeSkillPath: String {
+        (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".codex/skills/relay-bridge/SKILL.md")
+    }
+    private static var codexStopSkillPath: String {
+        (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".codex/skills/relay-stop/SKILL.md")
     }
 
     /// Begin the bootstrap if it isn't already running. Idempotent —

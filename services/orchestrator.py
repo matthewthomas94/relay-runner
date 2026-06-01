@@ -2,8 +2,8 @@
 """Relay-runner orchestrator daemon.
 
 Symphony-style sub-agent orchestrator: dispatches tickets from a repo's local
-kanban board (`<repo>/.orchestrator/<ticket_id>.md`) to autonomous `claude`
-runs in isolated worktrees, and tracks state in SQLite. HTTP API on 127.0.0.1;
+kanban board (`<repo>/.orchestrator/<ticket_id>.md`) to autonomous Codex or
+Claude runs in isolated worktrees, and tracks state in SQLite. HTTP API on 127.0.0.1;
 MCP tool surface is the thin Swift proxy in Sources/relay-orchestrator-mcp/
 which calls these endpoints.
 
@@ -71,14 +71,40 @@ def _resolve_workflow_default(cfg_value: str) -> Path:
     return Path(__file__).with_name("orchestrator_workflow.md")
 
 
-def _find_claude_bin() -> str:
-    p = shutil.which("claude")
+def _agent_kind(raw: str | None) -> str:
+    value = (raw or "codex").strip().lower()
+    name = os.path.basename(value)
+    if "claude" in name:
+        return "claude"
+    return "codex"
+
+
+def _find_agent_bin(agent: str, configured: str = "") -> str:
+    if configured:
+        expanded = os.path.expanduser(configured)
+        if os.path.sep in expanded and os.access(expanded, os.X_OK):
+            return expanded
+        p = shutil.which(configured)
+        if p:
+            return p
+        raise RuntimeError(f"{agent} CLI not found: {configured}")
+
+    if agent == "claude":
+        p = shutil.which("claude")
+        if p:
+            return p
+        fallback = os.path.expanduser("~/.local/bin/claude")
+        if os.access(fallback, os.X_OK):
+            return fallback
+        raise RuntimeError("claude CLI not found on PATH or at ~/.local/bin/claude")
+
+    p = shutil.which("codex")
     if p:
         return p
-    fallback = os.path.expanduser("~/.local/bin/claude")
+    fallback = "/Applications/Codex.app/Contents/Resources/codex"
     if os.access(fallback, os.X_OK):
         return fallback
-    raise RuntimeError("claude CLI not found on PATH or at ~/.local/bin/claude")
+    raise RuntimeError("codex CLI not found on PATH or in /Applications/Codex.app")
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +185,19 @@ def derive_activity(tool_name: str, tool_input: dict | None) -> str:
         return "Planning"
     # Unknown / MCP tools: just show the (clipped) tool name.
     return _clip(name) or "Working"
+
+
+def derive_codex_activity(item: dict | None) -> str:
+    """Heuristic summary for Codex exec --json item events."""
+    item = item or {}
+    itype = item.get("type") or ""
+    if itype == "command_execution":
+        command = (item.get("command") or "").strip()
+        if command:
+            return _clip(f"Running: {command.splitlines()[0]}")
+        return "Running command"
+    name = item.get("name") or item.get("tool_name") or itype
+    return _clip(str(name)) or "Working"
 
 
 # ---------------------------------------------------------------------------
@@ -453,15 +492,17 @@ def delete_branch(repo_path: str, branch: str) -> None:
 # ---------------------------------------------------------------------------
 
 class Worker:
-    """One `claude` subprocess running against a worktree. Owns its own thread."""
+    """One agent subprocess running against a worktree. Owns its own thread."""
 
-    def __init__(self, *, run_id: int, run: dict, prompt: str, claude_bin: str,
+    def __init__(self, *, run_id: int, run: dict, prompt: str, agent_bin: str,
+                 agent_kind: str,
                  store: RunsStore, log_path: Path, timeout_seconds: int,
                  on_complete: Callable[[int], None] | None = None):
         self.run_id = run_id
         self.run = run
         self.prompt = prompt
-        self.claude_bin = claude_bin
+        self.agent_bin = agent_bin
+        self.agent_kind = agent_kind
         self.store = store
         self.log_path = log_path
         self.timeout_seconds = timeout_seconds
@@ -489,19 +530,7 @@ class Worker:
             return
 
         try:
-            # `-p --output-format stream-json --verbose` makes claude emit one
-            # JSON event per line as it works (assistant/tool_use, tool_result,
-            # result). We tee every line to the run log (so the log stays a full
-            # record) and parse tool_use blocks into the live activity chip
-            # (RR-12). The work the agent does is unchanged — only the output
-            # serialization differs.
-            cmd = [
-                self.claude_bin,
-                "-p",
-                "--dangerously-skip-permissions",
-                "--verbose",
-                "--output-format", "stream-json",
-            ]
+            cmd = self._command()
             try:
                 self.proc = subprocess.Popen(
                     cmd,
@@ -514,14 +543,14 @@ class Worker:
                 )
             except FileNotFoundError as e:
                 self.store.update(self.run_id, state="Failed",
-                                  last_error=f"claude CLI not found: {e}",
+                                  last_error=f"{self.agent_kind} CLI not found: {e}",
                                   ended=True, exit_code=-1)
-                log.write(f"[orchestrator] claude CLI not found: {e}\n")
+                log.write(f"[orchestrator] {self.agent_kind} CLI not found: {e}\n")
                 return
 
             self.store.update(self.run_id, state="Running", pid=self.proc.pid)
 
-            # Feed the prompt and close stdin so claude starts. The prompt is a
+            # Feed the prompt and close stdin so the agent starts. The prompt is a
             # few KB — well under the pipe buffer — so this single write won't
             # deadlock against the stdout reads below.
             try:
@@ -585,6 +614,30 @@ class Worker:
                 pass
             self._notify_complete()
 
+    def _command(self) -> list[str]:
+        if self.agent_kind == "claude":
+            # Claude stream-json gives assistant/tool_use/tool_result/result
+            # events. The worker parses tool_use blocks into the live board
+            # activity chip while teeing the full stream to the run log.
+            return [
+                self.agent_bin,
+                "-p",
+                "--dangerously-skip-permissions",
+                "--verbose",
+                "--output-format", "stream-json",
+            ]
+
+        # Codex exec --json emits JSONL events such as thread.started,
+        # item.started command_execution, item.completed, and turn.completed.
+        # This is the non-interactive worker surface for Codex sub-agents.
+        return [
+            self.agent_bin,
+            "exec",
+            "--json",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+        ]
+
     def _notify_complete(self):
         if self.on_complete:
             try:
@@ -642,6 +695,21 @@ class Worker:
                     if tool_id:
                         with self._inflight_lock:
                             self._inflight.discard(tool_id)
+        elif etype == "item.started":
+            item = evt.get("item") or {}
+            if isinstance(item, dict):
+                item_id = item.get("id")
+                if item_id:
+                    with self._inflight_lock:
+                        self._inflight.add(item_id)
+                self.store.set_activity(self.run_id, derive_codex_activity(item))
+        elif etype == "item.completed":
+            item = evt.get("item") or {}
+            if isinstance(item, dict):
+                item_id = item.get("id")
+                if item_id:
+                    with self._inflight_lock:
+                        self._inflight.discard(item_id)
         return last_meaningful_at
 
     def cancel(self) -> None:
@@ -696,7 +764,12 @@ class Daemon:
         # insert/update write hooks).
         self.runs.write_index()
 
-        self.claude_bin = _find_claude_bin()
+        agent_setting = orch_cfg.get("agent") or cfg.get("general", {}).get("command") or "codex"
+        self.agent_kind = _agent_kind(str(agent_setting))
+        self.agent_bin = _find_agent_bin(
+            self.agent_kind,
+            str(orch_cfg.get("command") or ""),
+        )
 
     # -- prompt rendering -------------------------------------------------
 
@@ -817,7 +890,8 @@ class Daemon:
 
             run = self.runs.get(run_id) or {}
             worker = Worker(
-                run_id=run_id, run=run, prompt=prompt, claude_bin=self.claude_bin,
+                run_id=run_id, run=run, prompt=prompt, agent_bin=self.agent_bin,
+                agent_kind=self.agent_kind,
                 store=self.runs, log_path=log_path, timeout_seconds=self.worker_timeout,
                 on_complete=self._on_worker_complete,
             )

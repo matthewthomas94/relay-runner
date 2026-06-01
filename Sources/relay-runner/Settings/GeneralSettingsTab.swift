@@ -8,7 +8,7 @@ struct GeneralSettingsTab: View {
 
     var body: some View {
         Form {
-            TextField("Target Command", text: $config.command, prompt: Text("claude"))
+            TextField("Target Command", text: $config.command, prompt: Text("codex"))
 
             Picker("Model", selection: $config.model) {
                 Text("Default").tag("default")
@@ -26,8 +26,8 @@ struct GeneralSettingsTab: View {
 
             Toggle(isOn: $config.bypass_permissions) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Bypass Claude permission prompts")
-                    Text("When on, sessions launched from Relay Runner skip per-tool approval. Voice flow is much smoother, but anything Claude proposes runs without confirmation.")
+                    Text("Bypass agent permission prompts")
+                    Text("When on, sessions launched from Relay Runner skip per-tool approval. Voice flow is much smoother, but anything the agent proposes runs without confirmation.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -37,8 +37,8 @@ struct GeneralSettingsTab: View {
 
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Claude Code Skills")
-                    Text("Adds the /relay-bridge and /relay-stop commands to Claude Code")
+                    Text("Relay Skills")
+                    Text("Adds relay-bridge and relay-stop support to Codex and Claude Code")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -59,7 +59,7 @@ struct GeneralSettingsTab: View {
                 Button("Overwrite", role: .destructive) { doInstallSkill() }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("This will replace ~/.claude/commands/relay-bridge.md and ~/.claude/commands/relay-stop.md with the default versions.")
+                Text("This will replace the installed Relay Runner voice command/skill files with the default versions.")
             }
         }
     }

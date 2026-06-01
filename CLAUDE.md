@@ -15,7 +15,7 @@ When the relay-orchestrator MCP is connected, you are the **orchestrator**, not 
 3. **Refine and promote.** When a ticket is concrete enough that you'd hand it to a colleague cold, drag it from `backlog` to `ready` in the board (or change the frontmatter to `status: ready` and save via the editor). The board immediately calls `dispatch_ticket(ticket_id, repo_path)`; a worker spawns in an isolated worktree. The first ticket of a chain is the only one you drag — its `depends_on` predecessors auto-promote when each one completes. For a one-off manual dispatch (e.g. retry, skip the queue), the MCP tool `mcp__relay-orchestrator__dispatch_ticket` still works directly. Use `context="..."` when the ticket body wouldn't survive cold without this conversation.
 4. **Integrate.** Each sub-agent commits to its `relay/<id>` branch — both the code change and the ticket-file update (status flipped to `done` + a `## Run log` entry). Merge those branches into the working branch in a sensible order, resolve conflicts intentionally (don't just accept "theirs"), then prune worktrees + delete the throwaway branches. The merge is what publishes the `done` status to the board, which is what triggers any dependents waiting on this ticket to flip to `ready` and dispatch in turn.
 
-A small change you can do inline in this session **without going through the board** is fine — dispatching has cold-start cost, eats Anthropic quota, and offers no coordination. Promote to `ready` when the work is large enough that the round-trip pays off, or when you want an in-repo audit trail (ticket + run log) without writing it by hand.
+A small change you can do inline in this session **without going through the board** is fine — dispatching has cold-start cost, eats agent quota, and offers no coordination. Promote to `ready` when the work is large enough that the round-trip pays off, or when you want an in-repo audit trail (ticket + run log) without writing it by hand.
 
 ### Things to avoid
 
@@ -26,17 +26,21 @@ A small change you can do inline in this session **without going through the boa
 
 ## Recovery patterns
 
-- **Worker fails with `401 Invalid authentication credentials`.** The daemon is launched by the menu-bar app and inherits a minimal environment (no `ANTHROPIC_API_KEY`), so the spawned `claude` falls back to `~/.claude/.credentials.json`. When that OAuth file is stale or expired, every dispatched worker dies in under 10 seconds. Don't just tell the user — auto-recover: open a Terminal window with `claude` running, send the `/login` slash command, wait for the user to complete OAuth, then re-dispatch the failed runs. The osascript skeleton:
+- **Codex worker fails with an authentication error.** Open a Terminal window with `codex login` running, wait for the user to finish sign-in, then re-dispatch the failed runs:
 
   ```bash
   osascript -e 'tell application "Terminal" to activate' \
-            -e 'tell application "Terminal" to do script "claude"'
-  sleep 2
-  osascript -e 'tell application "System Events" to keystroke "/login"' \
-            -e 'tell application "System Events" to keystroke return'
+            -e 'tell application "Terminal" to do script "codex login"'
   ```
 
-  After OAuth completes (heuristic: `~/.claude/.credentials.json` mtime is fresh), re-dispatch via `mcp__relay-orchestrator__dispatch_ticket` for each failed run.
+  After sign-in completes (heuristic: `~/.codex/auth.json` exists and is fresh), re-dispatch via `mcp__relay-orchestrator__dispatch_ticket` for each failed run.
+
+- **Claude worker fails with `401 Invalid authentication credentials`.** If the repo is explicitly configured to use Claude, open a Terminal window with `claude /login`, wait for the user to complete OAuth, then re-dispatch the failed runs:
+
+  ```bash
+  osascript -e 'tell application "Terminal" to activate' \
+            -e 'tell application "Terminal" to do script "claude /login"'
+  ```
 
 ## Always use the custom Relay stack — never native screen-control fallbacks
 

@@ -1,6 +1,6 @@
 # Relay Runner Orchestrator
 
-Symphony-style sub-agent orchestrator. Dispatches tickets from a repo's local kanban board (`<repo>/.orchestrator/<TICKET_ID>.md`) to autonomous `claude` runs in isolated git worktrees, and tracks state in SQLite. Modeled on [openai/symphony](https://github.com/openai/symphony) — the daemon owns "is this ticket claimed / running / done", and each sub-agent owns its own context window for the duration of one run.
+Symphony-style sub-agent orchestrator. Dispatches tickets from a repo's local kanban board (`<repo>/.orchestrator/<TICKET_ID>.md`) to autonomous Codex or Claude runs in isolated git worktrees, and tracks state in SQLite. Modeled on [openai/symphony](https://github.com/openai/symphony) — the daemon owns "is this ticket claimed / running / done", and each sub-agent owns its own context window for the duration of one run.
 
 The repo is the source of truth: tickets are version-controlled markdown files, the sub-agent edits its ticket's YAML frontmatter and appends a `## Run log` section when it finishes, and everything (code + ticket update) is committed to the worker's branch.
 
@@ -16,7 +16,7 @@ You should see a running daemon, a port file, and an installed plist.
 
 ### 1. Open a `/relay-bridge` session in the repo
 
-The board is scoped to whichever repo your active voice-bridge session is rooted in. From a Claude Code session whose cwd is the project you want to work on:
+The board is scoped to whichever repo your active voice-bridge session is rooted in. From a Codex or Claude session whose cwd is the project you want to work on:
 
 ```
 /relay-bridge
@@ -34,7 +34,7 @@ You can also create the file by hand. The schema is in [docs/specs/orchestrator-
 
 Drag the card from `backlog` to `ready` in the menu-bar Board. The moment it lands in the `ready` column, the board calls `mcp__relay-orchestrator__dispatch_ticket(ticket_id, repo_path)` for you — there's no separate "press go" step. This also fires for tickets created directly in the `ready` column (after you fill in the editor and save).
 
-Manual dispatch is still available for edge cases — retries, dispatching out-of-order, or driving from voice without using the board. Either way Claude calls the same MCP tool:
+Manual dispatch is still available for edge cases — retries, dispatching out-of-order, or driving from voice without using the board. Either way the agent calls the same MCP tool:
 
 ```
 /relay-dispatch work on RR-6
@@ -45,7 +45,7 @@ The daemon:
 1. Validates `<repo>/.orchestrator/RR-6.md` exists.
 2. Adds a git worktree at `~/Library/Application Support/relay-runner/workspaces/rr-6/` on branch `relay/rr-6`, branched off the repo's default branch (resolved via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `main`).
 3. Renders the workflow prompt (default at `services/orchestrator_workflow.md`, override per-repo at `<repo>/WORKFLOW.md`).
-4. Spawns `claude --dangerously-skip-permissions` in that worktree, piping the prompt as stdin.
+4. Spawns the configured agent in that worktree, piping the prompt as stdin. New configs default to `codex exec --json --dangerously-bypass-approvals-and-sandbox`; Claude remains available via `[orchestrator].agent = "claude"`.
 5. Returns a `run_id` immediately — the worker continues in the background.
 
 The worker reads the ticket file, flips its status to `in_progress`, implements the change, commits the code with a conventional commit referencing the ticket, then flips the ticket's status to `done` (or leaves it `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits land on the worker's branch.
@@ -63,11 +63,11 @@ Voice equivalents work too: "what are the agents doing?", "how's RR-6?", "stop R
 
 ## The intended workflow
 
-The orchestrator is designed around a four-step loop. The main Claude Code session is the *orchestrator* — it's the one talking to you and routing work — and each `claude` worker is a one-shot *sub-agent*.
+The orchestrator is designed around a four-step loop. The main Codex or Claude session is the *orchestrator* — it's the one talking to you and routing work — and each worker is a one-shot *sub-agent*.
 
 1. **Discuss.** You and the main session talk through what needs to happen. Voice via `/relay-bridge`, or just typed chat. The main session has full context of the conversation, the codebase, and the project state.
 2. **Write tickets in `backlog`.** When the discussion settles on concrete work, the main session creates a ticket file under `<repo>/.orchestrator/` — title, description with acceptance criteria, priority, `depends_on` if it needs another ticket to land first. Default `status: backlog`. Each ticket should be small enough that a sub-agent can complete it in one pass without further clarification. Commit the new ticket (and the `next_id` bump) to the working branch.
-3. **Promote to `ready` — dispatch fires automatically.** When a ticket is refined enough, drag it from `backlog` to `ready` in the board. The moment it lands, the board calls `dispatch_ticket(ticket_id, repo_path)`; a worker spawns in an isolated worktree. For a chain (tickets with `depends_on`), promote only the first one — when each predecessor lands in `done`, the daemon auto-flips its dependents from `backlog` to `ready` and dispatches them. Multiple dispatches in parallel are supported (no concurrency cap by design — bound by your Anthropic rate limit). For one-off out-of-band dispatches, the MCP tool `mcp__relay-orchestrator__dispatch_ticket` is still callable directly; pass `context="..."` when there's relevant background that doesn't fit cleanly in the ticket body.
+3. **Promote to `ready` — dispatch fires automatically.** When a ticket is refined enough, drag it from `backlog` to `ready` in the board. The moment it lands, the board calls `dispatch_ticket(ticket_id, repo_path)`; a worker spawns in an isolated worktree. For a chain (tickets with `depends_on`), promote only the first one — when each predecessor lands in `done`, the daemon auto-flips its dependents from `backlog` to `ready` and dispatches them. Multiple dispatches in parallel are supported (no concurrency cap by design — bound by your agent rate limit). For one-off out-of-band dispatches, the MCP tool `mcp__relay-orchestrator__dispatch_ticket` is still callable directly; pass `context="..."` when there's relevant background that doesn't fit cleanly in the ticket body.
 4. **Integrate.** Each sub-agent commits to its `relay/<id>` branch — both the code change and the ticket-file update. The main session merges those branches into the working branch (resolving conflicts when sub-agents touched overlapping code), then prunes the worktree + branch. The merge publishes the `done` status to the board, which is what unblocks any dependents and triggers their auto-promotion.
 
 The main session is *not* a passive router. It's the same session that holds the discussion, so it owns: drafting ticket acceptance criteria, deciding which tickets to promote in parallel, picking the merge order when conflicts are likely, and reviewing the sub-agents' work for quality.
@@ -125,11 +125,11 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 
 ## Troubleshooting
 
-**MCP tools missing in Claude Code.** Confirm the registration:
+**MCP tools missing.** Confirm the registration:
 ```bash
-claude mcp list | grep relay-orchestrator
+codex mcp list | grep relay-orchestrator
 ```
-Re-run if absent: `scripts/relay-orchestrator --install`.
+Re-run if absent: `scripts/relay-orchestrator --install`. For Claude, use `claude mcp list`.
 
 **Tools error with "Orchestrator daemon is not reachable".** The daemon isn't running. Check:
 ```bash
@@ -154,4 +154,4 @@ Then read `<workspace>/.relay/run.log`. The default timeout is 30 minutes; tune 
 - No retry / backoff — failed runs stay failed; redispatch manually.
 - No cross-machine orchestration.
 - No PR opening — worktree is left for human review.
-- Concurrency is uncapped at the daemon level (workers all spawn in parallel); rate-limiting against Anthropic happens at their tier. Add a `max_concurrent` config knob if you need to clamp.
+- Concurrency is uncapped at the daemon level (workers all spawn in parallel); rate-limiting happens at the configured agent tier. Add a `max_concurrent` config knob if you need to clamp.

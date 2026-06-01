@@ -152,62 +152,60 @@ final class ProcessManager {
         }
     }
 
-    /// Launch interactive Claude Code in a new terminal tab and have it
-    /// auto-fire `/relay-bridge` on startup. That slash command is the
-    /// single source of truth for spinning up the voice bridge daemon and
-    /// running the polling loop inside the live Claude session — so the
-    /// user gets the full Claude Code TUI (model picker, /commands,
-    /// thinking stream) and voice in the same window.
+    /// Launch the configured agent in a new terminal tab and have it start
+    /// Relay Runner voice mode on the first turn. Claude uses the
+    /// `/relay-bridge` slash command; Codex uses the installed relay-bridge
+    /// skill and a normal initial prompt.
     ///
     /// The launcher still calls `relay-bridge --venv-only` first so the
-    /// Python venv, Kokoro model, and Claude CLI are all in place before
-    /// the slash command runs (which spawns the daemon that needs them).
-    /// The skill `.md` files have to exist on disk before launch too,
-    /// otherwise `/relay-bridge` is silently treated as a literal prompt;
+    /// Python venv, Kokoro model, and agent CLI are all in place before
+    /// the command/skill runs (which spawns the daemon that needs them).
+    /// The command/skill files have to exist on disk before launch too,
+    /// otherwise relay startup is silently treated as a literal prompt;
     /// we self-heal by reinstalling them if they've gone missing.
     func launchNewSession(config: AppConfig) {
         let configPath = ConfigManager.shared.configPath.path
         let relayBridge = bundledRelayBridge.path
-        let claudeBinary = Self.resolveClaudeBinary()
-        NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) claudeBinary=\(claudeBinary) configPath=\(configPath)")
+        let target = Self.target(for: config.general.command)
+        let agentBinary = Self.resolveAgentBinary(config.general.command, target: target)
+        NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) agentBinary=\(agentBinary) configPath=\(configPath)")
 
-        // /relay-bridge is delivered as the prompt arg; if its .md file is
-        // missing OR stale, Claude would treat the string as literal user
-        // input or follow obsolete instructions. The skill content lives in
+        // Relay startup is delivered as the prompt arg; if its command/skill
+        // file is missing or stale, the agent would treat the string as literal
+        // user input or follow obsolete instructions. The skill content lives in
         // the relay-bridge bash script as the source of truth, so we
         // unconditionally reinstall on every launch — cheap (single file
         // write, ~10ms) and ensures the user always runs against the
         // shipped version of the skill text. Onboarding already gave consent.
-        NSLog("[ProcessManager] Refreshing slash command files before launch.")
+        NSLog("[ProcessManager] Refreshing Relay skill files before launch.")
         installSkill()
 
-        let bypassFlag = config.general.bypass_permissions ? "--dangerously-skip-permissions " : ""
+        let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
         let modelFlag = Self.modelFlag(config.general.model)
         let launcher = "/tmp/voice_bridge_launch.command"
         let cdLine = Self.cdLine(config.general.working_directory)
+        let launchLine = Self.agentLaunchLine(
+            binary: agentBinary,
+            target: target,
+            modelFlag: modelFlag,
+            bypassFlag: bypassFlag
+        )
         let script = """
         #!/bin/bash
         \(Self.shellProfileSource())
-        # Ensure venv + deps + speech-model + Claude CLI are installed.
+        # Ensure venv + deps + speech-model + relay skills are installed.
         # relay-bridge short-circuits in well under a second when everything's
         # already in place; on first run it does the full no-admin install.
         # Either way, the user sees its progress in the Terminal that just
         # opened.
         '\(relayBridge)' --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }
-        # claude.ai/install.sh symlinks the Claude Code binary at
-        # ~/.local/bin/claude. Make sure that's on PATH so anything Claude
-        # spawns downstream finds it — the user's shell profile sourced
-        # above usually adds it, but on fresh installs the relay-bridge
-        # install just dropped the binary moments ago and the profile
-        # isn't aware of it yet.
+        # Keep common agent install locations on PATH for tools launched from
+        # this session. On fresh installs the relay-bridge install may have
+        # dropped a binary moments ago and the shell profile may not know yet.
         export PATH="$HOME/.local/bin:$PATH"
         \(cdLine)
-        # Interactive Claude Code with the /relay-bridge slash command
-        # pre-fired. The slash command (installed at
-        # ~/.claude/commands/relay-bridge.md by `relay-bridge --install-skills`)
-        # boots the voice_bridge daemon and drives the polling loop from
-        # inside this session.
-        '\(claudeBinary)' \(modelFlag)\(bypassFlag)"/relay-bridge"
+        # Interactive agent session with Relay Runner voice mode pre-fired.
+        \(launchLine)
         echo ''
         echo '[Relay Runner] Session ended.'
         """
@@ -227,19 +225,41 @@ final class ProcessManager {
         launchInTerminal(command: launcher)
     }
 
-    /// Resolve the Claude Code binary. Prefers `~/.local/bin/claude` (where
-    /// claude.ai/install.sh symlinks the CLI), falling back to bare `claude`
-    /// so the user's $PATH is consulted at run time.
-    private static func resolveClaudeBinary() -> String {
-        let local = ClaudeAuth.claudeBinaryPath
-        if FileManager.default.isExecutableFile(atPath: local) {
-            return local
+    private enum AgentTarget {
+        case codex
+        case claude
+    }
+
+    private static func target(for command: String) -> AgentTarget {
+        let name = URL(fileURLWithPath: command).lastPathComponent.lowercased()
+        return name.contains("claude") ? .claude : .codex
+    }
+
+    /// Resolve the configured agent binary. For Codex, prefer the desktop
+    /// app's bundled CLI; for Claude, prefer the installer symlink.
+    private static func resolveAgentBinary(_ command: String, target: AgentTarget) -> String {
+        let trimmed = command.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty && trimmed.hasPrefix("/") {
+            return trimmed
         }
-        return "claude"
+        switch target {
+        case .codex:
+            let bundled = "/Applications/Codex.app/Contents/Resources/codex"
+            if FileManager.default.isExecutableFile(atPath: bundled) {
+                return bundled
+            }
+            return trimmed.isEmpty ? "codex" : trimmed
+        case .claude:
+            let local = ClaudeAuth.claudeBinaryPath
+            if FileManager.default.isExecutableFile(atPath: local) {
+                return local
+            }
+            return trimmed.isEmpty ? "claude" : trimmed
+        }
     }
 
     /// Render the `--model <name>` flag for the launcher script, or empty
-    /// string when the user wants Claude's default. Single-quotes the name
+    /// string when the user wants the agent's default. Single-quotes the name
     /// so a TOML-edited custom model id (e.g. `claude-sonnet-4-6`) can't
     /// break shell parsing.
     private static func modelFlag(_ raw: String) -> String {
@@ -248,24 +268,58 @@ final class ProcessManager {
         return "--model '\(raw.trimmingCharacters(in: .whitespaces))' "
     }
 
-    // MARK: - Claude Code skill install
+    private static func bypassFlag(enabled: Bool, target: AgentTarget) -> String {
+        guard enabled else { return "" }
+        switch target {
+        case .codex:
+            return "--dangerously-bypass-approvals-and-sandbox "
+        case .claude:
+            return "--dangerously-skip-permissions "
+        }
+    }
 
-    private static let skillDir: URL = {
+    private static func agentLaunchLine(
+        binary: String,
+        target: AgentTarget,
+        modelFlag: String,
+        bypassFlag: String
+    ) -> String {
+        switch target {
+        case .codex:
+            return "'\(binary)' \(modelFlag)\(bypassFlag)'Use the relay-bridge skill now.'"
+        case .claude:
+            return "'\(binary)' \(modelFlag)\(bypassFlag)\"/relay-bridge\""
+        }
+    }
+
+    // MARK: - Relay skill install
+
+    private static let claudeSkillDir: URL = {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/commands")
     }()
 
-    private static let bridgeSkillPath: URL = skillDir.appendingPathComponent("relay-bridge.md")
-    private static let stopSkillPath: URL = skillDir.appendingPathComponent("relay-stop.md")
+    private static let codexSkillDir: URL = {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/skills")
+    }()
+
+    private static let claudeBridgeSkillPath: URL = claudeSkillDir.appendingPathComponent("relay-bridge.md")
+    private static let claudeStopSkillPath: URL = claudeSkillDir.appendingPathComponent("relay-stop.md")
+    private static let codexBridgeSkillPath: URL = codexSkillDir.appendingPathComponent("relay-bridge/SKILL.md")
+    private static let codexStopSkillPath: URL = codexSkillDir.appendingPathComponent("relay-stop/SKILL.md")
 
     var isSkillInstalled: Bool {
-        FileManager.default.fileExists(atPath: Self.bridgeSkillPath.path)
-            && FileManager.default.fileExists(atPath: Self.stopSkillPath.path)
+        let fm = FileManager.default
+        return fm.fileExists(atPath: Self.claudeBridgeSkillPath.path)
+            && fm.fileExists(atPath: Self.claudeStopSkillPath.path)
+            && fm.fileExists(atPath: Self.codexBridgeSkillPath.path)
+            && fm.fileExists(atPath: Self.codexStopSkillPath.path)
     }
 
-    /// Force-install the /relay-bridge and /relay-stop slash command files
-    /// by shelling out to `relay-bridge --install-skills`. The .md content
-    /// itself lives in the bash script (single source of truth — the
+    /// Force-install the relay-bridge and relay-stop command/skill files by
+    /// shelling out to `relay-bridge --install-skills`. The content itself
+    /// lives in the bash script (single source of truth — the
     /// onboarding bootstrap and this Settings action both read from the
     /// same place). Always overwrites — Settings shows an explicit
     /// confirmation alert before this is reached.
@@ -280,7 +334,7 @@ final class ProcessManager {
             try proc.run()
             proc.waitUntilExit()
             if proc.terminationStatus == 0 {
-                NSLog("[ProcessManager] Installed Claude Code skills via \(bundledRelayBridge.path)")
+                NSLog("[ProcessManager] Installed relay skills via \(bundledRelayBridge.path)")
                 return true
             }
             NSLog("[ProcessManager] relay-bridge --install-skills exited with code \(proc.terminationStatus)")

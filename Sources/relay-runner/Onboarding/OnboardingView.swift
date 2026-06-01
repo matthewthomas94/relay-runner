@@ -30,11 +30,11 @@ struct OnboardingView: View {
     /// soon as onboarding opens (welcome step) and is usually finished
     /// by the time the user reaches its dedicated step.
     @State private var venvInstaller = VenvInstaller()
-    /// Cached "is the Claude Code CLI signed in" state. Polled by a
+    /// Cached "is the configured agent signed in" state. Polled by a
     /// 1-second timer while on the claudeLogin step so we can auto-
     /// advance the moment the keychain entry appears (i.e., the user
-    /// has finished `claude /login` in the Terminal we spawned).
-    @State private var claudeSignedIn: Bool = ClaudeAuth.isAuthenticated
+    /// has finished the login flow in the Terminal we spawned).
+    @State private var claudeSignedIn: Bool = AgentAuth.isAuthenticated
     /// Whether we've already invoked the Accessibility prompt this session.
     /// AXIsProcessTrustedWithOptions reliably shows a system dialog on the
     /// first call (with its own "Open System Settings" button), then macOS
@@ -146,7 +146,7 @@ struct OnboardingView: View {
             // run it forever. When the entry appears, mirror the
             // permission auto-advance pattern.
             guard step == .claudeLogin else { return }
-            let now = ClaudeAuth.isAuthenticated
+            let now = AgentAuth.isAuthenticated
             guard now != claudeSignedIn else { return }
             claudeSignedIn = now
             if now {
@@ -387,10 +387,10 @@ struct OnboardingView: View {
                         .foregroundStyle(.secondary)
                         .font(.title3)
                 }
-                Text("Sign in to Claude")
+                Text("Sign in to your agent")
                     .font(.title3).bold()
             }
-            Text("Relay Runner uses Claude Code for the conversation. Sign in to your Anthropic account so voice sessions can connect to Claude — without this, every session would fail with an authentication error the moment you started speaking.")
+            Text("Relay Runner uses Codex or Claude for the conversation. Sign in to the configured agent so voice sessions can connect — without this, sessions fail with an authentication error.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if claudeSignedIn {
@@ -398,7 +398,7 @@ struct OnboardingView: View {
                     .font(.callout)
                     .foregroundStyle(.green)
             } else {
-                Text("Click the button below. A Terminal window will open and prompt you to sign in to Anthropic. This window will update automatically when you're done.")
+                Text("Click the button below. A Terminal window will open and prompt you to sign in. This window will update automatically when you're done.")
                     .font(.callout)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -446,15 +446,15 @@ struct OnboardingView: View {
                     sessionMethodRow(
                         icon: "menubar.rectangle",
                         title: "From the menu bar",
-                        detail: "Click the Relay Runner icon, then choose \u{201C}Start Session\u{2026}\u{201D}. A terminal opens with Claude Code already listening."
+                        detail: "Click the Relay Runner icon, then choose \u{201C}Start Session\u{2026}\u{201D}. A terminal opens with the configured agent already listening."
                     )
                     sessionMethodRow(
                         icon: "terminal",
-                        title: "From Claude Code",
-                        detail: "Run \u{2018}claude\u{2019} in any terminal and type /relay-bridge. Install the slash command from Settings \u{2192} General if needed."
+                        title: "From an Agent",
+                        detail: "Run Codex or Claude in any terminal and start the relay-bridge skill or command. Install Relay Skills from Settings \u{2192} General if needed."
                     )
                 }
-                Text("Already running Claude Code or a terminal? Restart it to load /relay-bridge.")
+                Text("Already running Codex, Claude Code, or a terminal? Restart it to load the Relay Runner skill or command.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -477,7 +477,7 @@ struct OnboardingView: View {
     private var workingDirectoryPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Text("Where should Claude run from?")
+                Text("Where should the agent run from?")
                     .font(.callout).bold()
                 if !hasConfirmedWorkingDirectory {
                     Text("(required)")
@@ -535,7 +535,7 @@ struct OnboardingView: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Choose where Claude should run from"
+        panel.message = "Choose where the agent should run from"
         if panel.runModal() == .OK, let url = panel.url {
             workingDirectory = url.path
             hasConfirmedWorkingDirectory = true
@@ -662,8 +662,8 @@ struct OnboardingView: View {
             if claudeSignedIn {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
-                Button("Sign in to Claude") {
-                    ClaudeAuth.openLoginInTerminal()
+                Button("Sign in") {
+                    AgentAuth.openLoginInTerminal()
                 }.keyboardShortcut(.defaultAction)
             }
         case .ready:
@@ -738,7 +738,7 @@ struct OnboardingView: View {
 
     /// The next step (after `from`) that still needs the user's attention —
     /// a permission not yet granted, pythonSetup if the venv hasn't been
-    /// bootstrapped, or claudeLogin if the Claude CLI isn't signed in.
+    /// bootstrapped, or claudeLogin if the configured agent isn't signed in.
     /// Used by the simplified re-prompt flow to skip already-done items.
     private func nextMissingStep(after from: Step) -> Step? {
         let remaining = Step.allCases.filter {
@@ -751,7 +751,7 @@ struct OnboardingView: View {
             if candidate == .pythonSetup, !VenvInstaller.alreadyInstalled {
                 return candidate
             }
-            if candidate == .claudeLogin, !ClaudeAuth.isAuthenticated {
+            if candidate == .claudeLogin, !AgentAuth.isAuthenticated {
                 return candidate
             }
         }
@@ -775,7 +775,7 @@ struct OnboardingView: View {
         case .accessibility:    return "Accessibility"
         case .inputMonitoring:  return "Input Monitoring"
         case .pythonSetup:      return "Python Environment"
-        case .claudeLogin:      return "Claude Account"
+        case .claudeLogin:      return "Agent Account"
         case .ready:            return "Setup Complete"
         }
     }
@@ -797,7 +797,7 @@ struct OnboardingView: View {
 
     /// Number of steps the simplified re-prompt flow will visit — the
     /// permissions still missing plus pythonSetup if the venv isn't
-    /// healthy plus claudeLogin if the CLI isn't signed in. Used so
+    /// healthy plus claudeLogin if the agent isn't signed in. Used so
     /// the "X of N" label reflects actual remaining work, not the full
     /// onboarding length.
     private var simplifiedTotalSteps: Int {
@@ -809,7 +809,7 @@ struct OnboardingView: View {
             if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
                 count += 1
             }
-            if s == .claudeLogin, !ClaudeAuth.isAuthenticated {
+            if s == .claudeLogin, !AgentAuth.isAuthenticated {
                 count += 1
             }
         }
@@ -850,7 +850,7 @@ struct OnboardingView: View {
         case .inputMonitoring:
             return "On macOS, capturing global keyboard events requires a second permission called Input Monitoring, separate from Accessibility. Same purpose — letting the app notice your trigger key across every app."
         case .screenRecording:
-            return "Optional. Required only when you ask Claude to take a screenshot or walk through an app for UAT. Voice transcription and speech don't need it."
+            return "Optional. Required only when you ask the agent to take a screenshot or walk through an app for UAT. Voice transcription and speech don't need it."
         }
     }
 
@@ -897,7 +897,7 @@ struct OnboardingView: View {
             if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
                 return s
             }
-            if s == .claudeLogin, !ClaudeAuth.isAuthenticated {
+            if s == .claudeLogin, !AgentAuth.isAuthenticated {
                 return s
             }
         }

@@ -1,30 +1,30 @@
 # Relay Runner
 
-A native macOS menu bar app that gives [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) a voice — speak prompts, hear responses, watch a live transcription overlay.
+A native macOS menu bar app that gives Codex or [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) a voice — speak prompts, hear responses, watch a live transcription overlay.
 
-All speech-to-text and text-to-speech runs **on-device**. No voice data leaves your machine; only the transcribed text reaches Claude, the same way typing would.
+All speech-to-text and text-to-speech runs **on-device**. No voice data leaves your machine; only the transcribed text reaches your configured agent, the same way typing would.
 
-> **Status:** early release. Claude Code is the only supported target for now.
+> **Status:** early release. Codex is the default target; Claude Code remains supported via configuration.
 
 ---
 
 ## How it works
 
 ```
-  mic  ──►  STT (Parakeet, on-device)  ──►  claude CLI  ──►  TTS (Kokoro, on-device)  ──►  speakers
+  mic  ──►  STT (Parakeet, on-device)  ──►  codex/claude CLI  ──►  TTS (Kokoro, on-device)  ──►  speakers
                                       │
                                       └──►  overlay pill (live transcript + response)
 ```
 
 - **Menu bar app** (SwiftUI) handles UI, hotkeys, audio capture, STT, and the on-screen awareness overlay
-- **Python bridge** (`voice_bridge.py`) pipes transcribed text into the `claude` CLI and reads its JSON responses back out to the TTS engine
+- **Python bridge** (`voice_bridge.py`) relays transcribed text into the active agent session and reads spoken summaries back out to the TTS engine
 
 ---
 
 ## Requirements
 
 - **macOS 14 (Sonoma) or later**, Apple Silicon recommended (Parakeet uses the ANE)
-- **[Claude Code](https://docs.claude.com/en/docs/claude-code/setup)** installed and authenticated — the `claude` CLI must be on your `$PATH`
+- **Codex** installed and authenticated (default) or **[Claude Code](https://docs.claude.com/en/docs/claude-code/setup)** installed and authenticated
 - **Python 3.10+** (usually already present on macOS via Homebrew or Xcode). Used for the TTS worker and bridge; a virtualenv is created on first launch
 
 ---
@@ -47,19 +47,19 @@ All speech-to-text and text-to-speech runs **on-device**. No voice data leaves y
 ### Quickest path
 
 1. Click the Relay Runner menu bar icon → **Start Session…**.
-2. A terminal opens, runs Claude Code, and auto-starts a voice session.
-3. Tap **Caps Lock** to speak; Claude responds in the terminal and via TTS.
+2. A terminal opens, runs the configured agent, and auto-starts a voice session.
+3. Tap **Caps Lock** to speak; the agent responds in the terminal and via TTS.
 
-The session is a normal Claude Code window — `/model`, `/clear`, `/resume`, and every other slash command and TUI feature work exactly as they do in a hand-launched session. By default, **Start Session…** launches Claude with `--dangerously-skip-permissions` so voice flow isn't interrupted by per-tool approval prompts. You can turn that off in **Settings → General**.
+The session is a normal Codex or Claude terminal session. By default, **Start Session…** launches the agent with its permission-bypass flag so voice flow isn't interrupted by per-tool approval prompts. You can turn that off in **Settings → General**.
 
 ### From an existing terminal
 
-If you'd rather start from a terminal you already have open, install the slash commands once via **Settings → General → Install** under *Claude Code Skills*. This adds:
+If you'd rather start from a terminal you already have open, install the commands once via **Settings → General → Install** under *Relay Skills*. This adds:
 
-- `/relay-bridge` — starts a voice session in the current Claude Code window
-- `/relay-stop` — ends it
+- `relay-bridge` / `/relay-bridge` — starts a voice session in the current agent window
+- `relay-stop` / `/relay-stop` — ends it
 
-Then run `claude` and type `/relay-bridge`. This path is identical to **Start Session…** except you decide when (and with what flags) to launch the CLI.
+Then run `codex` and ask it to use the relay-bridge skill, or run `claude` and type `/relay-bridge`. This path is identical to **Start Session…** except you decide when (and with what flags) to launch the CLI.
 
 ### Controls
 
@@ -87,13 +87,13 @@ All settings live in the Settings window. Config is persisted to:
 
 ### General
 
-- **Target command** — defaults to `claude`; change if Claude Code is aliased
-- **Model** — Default, Opus, Sonnet, or Haiku. *Default* lets Claude Code pick from your account-level setting; the others pass `--model <alias>` to the CLI for this session.
+- **Target command** — defaults to `codex`; set to `claude` if you want Claude Code instead
+- **Model** — Default, Opus, Sonnet, or Haiku. *Default* lets the configured agent pick from your account-level setting; the others pass `--model <alias>` to the CLI for this session.
 - **Working directory** — where new voice sessions open
 - **Terminal** — Warp, iTerm2, Terminal, Kitty, or Alacritty
-- **Bypass Claude permission prompts** — when on (default), sessions launched from **Start Session…** run with `--dangerously-skip-permissions` so voice flow isn't interrupted. Turn off if you want CC to ask before each tool use; voice still works, you'll just answer prompts in the terminal.
+- **Bypass agent permission prompts** — when on (default), sessions launched from **Start Session…** run with the configured agent's bypass flag so voice flow isn't interrupted. Turn off if you want the agent to ask before each tool use; voice still works, you'll just answer prompts in the terminal.
 - **Auto-start services on app launch**
-- **Claude Code Skills** — install/reinstall `/relay-bridge` and `/relay-stop`
+- **Relay Skills** — install/reinstall relay-bridge and relay-stop support for Codex and Claude Code
 
 ### STT
 
@@ -115,7 +115,7 @@ All settings live in the Settings window. Config is persisted to:
 
 - **Screen glow** — ambient particle field during active sessions
 - **Live transcription** — show your words as you speak
-- **Message preview** — show Claude's response in the pill
+- **Message preview** — show the agent's response in the pill
 - **Live captions**
 - **Glow intensity** — 0.1 – 1.0
 
@@ -187,7 +187,7 @@ Info.plist                Bundle metadata
 ## Troubleshooting
 
 - **Tray icon blank** — quit the app fully (menu → Quit) and relaunch after a rebuild; macOS caches menu bar items.
-- **`/relay-bridge` does nothing** — make sure `claude --version` works in the same terminal, that the slash command is installed (Settings → General → Install under *Claude Code Skills*), and that the Relay Runner app is running (STT happens inside the menu bar app).
+- **relay-bridge does nothing** — make sure `codex --version` or `claude --version` works in the same terminal, that Relay Skills are installed (Settings → General → Install), and that the Relay Runner app is running (STT happens inside the menu bar app).
 - **First launch is slow** — model downloads and venv setup happen lazily. Subsequent launches are instant.
 - **No audio output** — check Settings → TTS → Auto-play. If off, press the replay hotkey to flush the queue.
 
@@ -223,4 +223,5 @@ SOFTWARE.
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) by FluidInference for Parakeet on the ANE
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) for the TTS voices
+- Codex by OpenAI
 - [Claude Code](https://github.com/anthropics/claude-code) by Anthropic

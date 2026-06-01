@@ -34,7 +34,7 @@ struct DispatchTicketTool: MCPTool {
     let description = """
         Dispatch a ticket from a repo's local kanban board to a sub-agent run. The orchestrator creates \
         a git worktree at branch `relay/<sanitized-id>`, renders the workflow prompt, and spawns \
-        `claude` in that worktree. The worker reads the ticket from `<repo_path>/.orchestrator/<ticket_id>.md`, \
+        the configured agent in that worktree. The worker reads the ticket from `<repo_path>/.orchestrator/<ticket_id>.md`, \
         updates its YAML status, appends a run log to the body, and commits everything. Returns the run \
         record (state, run_id, workspace_path, branch).
         """

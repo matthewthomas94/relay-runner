@@ -4,16 +4,13 @@ __pycache__/
 # Swift
 .build/
 .swiftpm/
-
 # Models (downloaded at build time, too large for git)
 models/
-
 # Build output
 dist/
-
 # macOS
 .DS_Store
-
 # IDE
 .vscode/
 .idea/
+.pm/

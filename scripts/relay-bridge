@@ -3,12 +3,12 @@
 #
 # Usage:
 #   relay-bridge                     # Normal mode: full voice terminal
-#   relay-bridge --session <id>      # Resume a specific Claude session
+#   relay-bridge --session <id>      # Resume a specific agent session
 #   relay-bridge --relay             # Relay mode: daemon for /relay-bridge slash command
 #   relay-bridge --venv-only         # Run venv bootstrap and exit 0 (used by onboarding)
-#   relay-bridge --install-skills    # Force-write Claude Code slash command files and exit 0
+#   relay-bridge --install-skills    # Force-write Relay skills/commands and exit 0
 #
-# In relay mode, voice commands are written to /tmp/voice_cmd_ready for Claude
+# In relay mode, voice commands are written to /tmp/voice_cmd_ready for the agent
 # to pick up, and TTS input is read from /tmp/tts_in.fifo.
 
 set -euo pipefail
@@ -55,10 +55,10 @@ export PROJECT_ROOT
 # the app's onboarding flow so it can call into the same battle-tested
 # Python setup that interactive /relay-bridge sessions use, with output
 # streamed back to the SwiftUI progress view.
-# --install-skills: write ~/.claude/commands/relay-bridge.md and
-# relay-stop.md, then exit. Used by Settings → Install Skill so the .md
-# template content lives here as a single source of truth instead of
-# being duplicated as Swift literals.
+# --install-skills: write Relay Runner command/skill files for Claude Code
+# and Codex, then exit. Used by Settings → Install Skill so the template
+# content lives here as a single source of truth instead of being duplicated
+# as Swift literals.
 VENV_ONLY=false
 INSTALL_SKILLS_ONLY=false
 
@@ -78,24 +78,30 @@ emit_progress() {
     echo "RELAY_PROGRESS:$1:$2" >&2
 }
 
-# Write the two Claude Code slash-command files into ~/.claude/commands.
-# Mode "if-missing" (default) only writes a file if it doesn't already
-# exist, so the bootstrap path can't silently clobber a user's local
-# edits to the .md. Mode "force" always overwrites — used by the
-# explicit Settings → Reinstall action.
+# Write Relay Runner command/skill files into ~/.claude/commands and
+# ~/.codex/skills. Mode "if-missing" (default) only writes a file if it
+# doesn't already exist, so the bootstrap path can't silently clobber a user's
+# local edits. Mode "force" always overwrites — used by the explicit
+# Settings → Reinstall action.
 #
-# The bridge skill embeds the absolute path to *this* script so Claude
-# Code can launch the relay daemon directly. Using $SCRIPT_DIR (rather
-# than $PATH) keeps the skill working when the user's shell profile
-# doesn't surface the bundled relay-bridge.
+# The bridge skill embeds the absolute path to *this* script so the agent can
+# launch the relay daemon directly. Using $SCRIPT_DIR (rather than $PATH) keeps
+# the skill working when the user's shell profile doesn't surface the bundled
+# relay-bridge.
 install_skills() {
     local mode="${1:-if-missing}"
     local cmds_dir="$HOME/.claude/commands"
     local bridge_md="$cmds_dir/relay-bridge.md"
     local stop_md="$cmds_dir/relay-stop.md"
+    local codex_skills_dir="$HOME/.codex/skills"
+    local codex_bridge_dir="$codex_skills_dir/relay-bridge"
+    local codex_stop_dir="$codex_skills_dir/relay-stop"
+    local codex_bridge_md="$codex_bridge_dir/SKILL.md"
+    local codex_stop_md="$codex_stop_dir/SKILL.md"
     local relay_bridge_path="$SCRIPT_DIR/relay-bridge"
 
     mkdir -p "$cmds_dir"
+    mkdir -p "$codex_bridge_dir" "$codex_stop_dir"
 
     if [ "$mode" = "force" ] || [ ! -f "$bridge_md" ]; then
         # Quoted heredoc — no $-expansion. The single placeholder
@@ -117,8 +123,11 @@ If not running, tell the user to start the Relay Runner menu bar app, then try `
 2. Kill any existing voice bridge and start a new one in relay mode. The bundled `relay-bridge` script handles its own venv install (relocatable Python, pip deps, Kokoro speech model) and short-circuits when everything's already set up; on first run it may take a couple of minutes downloading deps:
 
 ```bash
-pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
-nohup '__RELAY_BRIDGE__' --relay > /tmp/voice_bridge.log 2>&1 &
+RELAY_CWD=$(pwd)
+launchctl remove com.relay.voicebridge 2>/dev/null || true
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+: > /tmp/voice_bridge.log
+launchctl submit -l com.relay.voicebridge -- /bin/bash -lc "cd \"$RELAY_CWD\" && exec '__RELAY_BRIDGE__' --relay >> /tmp/voice_bridge.log 2>&1"
 ```
 
 3. Wait for the relay bridge to come up. The 60-iteration cap is generous on purpose: the very first invocation may need to download a Python interpreter (~18 MB) and the Kokoro speech model (~350 MB) before the bridge can listen, so allow ~30 seconds:
@@ -192,9 +201,11 @@ After generating your response, tear down the background heartbeat refresher spa
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 touch /tmp/voice_bridge_heartbeat
-if ! pgrep -f 'voice_bridge.py' > /dev/null 2>&1; then
+if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
     rm -f /tmp/voice_bridge.sock
-    nohup '__RELAY_BRIDGE__' --relay > /tmp/voice_bridge.log 2>&1 &
+    RELAY_CWD=$(pwd)
+    launchctl remove com.relay.voicebridge 2>/dev/null || true
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc "cd \"$RELAY_CWD\" && exec '__RELAY_BRIDGE__' --relay >> /tmp/voice_bridge.log 2>&1"
     for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
 fi
 ```
@@ -217,7 +228,8 @@ When the session ends (user says "stop listening", "exit voice", or similar), cl
 
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
-pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+launchctl remove com.relay.voicebridge 2>/dev/null || true
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 
 ## Important Notes
@@ -244,13 +256,14 @@ Stop the voice I/O bridge for this Claude session. Use this to end a `/relay-bri
 1. Kill the voice bridge process and remove its runtime files:
 
 ```bash
-pkill -f 'voice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+launchctl remove com.relay.voicebridge 2>/dev/null || true
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 
 2. Confirm it's stopped:
 
 ```bash
-pgrep -f 'voice_bridge.py' > /dev/null 2>&1 && echo "bridge: STILL RUNNING" || echo "bridge: stopped"
+pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1 && echo "bridge: STILL RUNNING" || echo "bridge: stopped"
 ```
 
 If the bridge is still running, tell the user to check `/tmp/voice_bridge.log` and try again. Otherwise, tell the user the voice session has ended.
@@ -261,6 +274,236 @@ If the bridge is still running, tell the user to check `/tmp/voice_bridge.log` a
 - Any active `/relay-bridge` voice loop in another Claude session will detect the dead socket on its next heartbeat and exit on its own.
 - To start voice again, run `/relay-bridge`.
 STOP_MD_EOF
+    fi
+
+    if [ "$mode" = "force" ] || [ ! -f "$codex_bridge_md" ]; then
+        cat > "$codex_bridge_md" <<'CODEX_BRIDGE_MD_EOF'
+---
+name: relay-bridge
+description: Connect voice I/O to this Codex session. Use when the user wants a Relay Runner voice session, says to start listening, or launches Codex from Relay Runner.
+---
+
+# relay-bridge
+
+Connect voice I/O to this Codex session. You become a voice-interactive assistant: listen for spoken input, respond normally in the terminal, and write a concise spoken summary to Relay Runner TTS.
+
+## Setup
+
+1. Verify the Relay Runner app is running:
+
+```bash
+pgrep -f 'relay-runner' > /dev/null 2>&1 && echo "app: ok" || echo "app: NOT RUNNING"
+```
+
+If not running, tell the user to start the Relay Runner menu bar app, then stop.
+
+2. Kill any existing voice bridge and start a new one in relay mode:
+
+```bash
+launchctl remove com.relay.voicebridge 2>/dev/null || true
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+RELAY_CWD=$(pwd)
+: > /tmp/voice_bridge.log
+launchctl submit -l com.relay.voicebridge -- /bin/bash -lc "cd \"$RELAY_CWD\" && exec '__RELAY_BRIDGE__' --relay >> /tmp/voice_bridge.log 2>&1"
+```
+
+3. Wait for the bridge:
+
+```bash
+for i in $(seq 1 60); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && break; sleep 0.5; done; [ -S /tmp/voice_bridge.sock ] || echo "bridge: FAILED"
+```
+
+If the bridge failed, tell the user to check `/tmp/voice_bridge.log` and stop.
+
+## Voice Loop
+
+Repeat until the user asks to stop listening or the bridge dies.
+
+Before each wait, snapshot `.orchestrator/` if it exists and remember meaningful board changes:
+
+```bash
+{
+    if [ -d .orchestrator ]; then
+        for f in .orchestrator/*.md; do
+            [ -f "$f" ] || continue
+            awk '
+                BEGIN { id=""; title=""; status="" }
+                /^---$/ { n++; next }
+                n==1 && /^id:/     { sub(/^id:[ \t]*/,"");     id = $0 }
+                n==1 && /^title:/  { sub(/^title:[ \t]*/,"");  title = $0 }
+                n==1 && /^status:/ { sub(/^status:[ \t]*/,""); status = $0 }
+                END { if (id != "") print id " [" status "] " title }
+            ' "$f"
+        done | sort
+    fi
+} > /tmp/relay_board_now.txt
+if [ -f /tmp/relay_board_prev.txt ]; then
+    BOARD_DIFF=$(diff /tmp/relay_board_prev.txt /tmp/relay_board_now.txt)
+    if [ -n "$BOARD_DIFF" ]; then
+        echo "__BOARD_CHANGES__"
+        echo "$BOARD_DIFF"
+        echo "__END_BOARD_CHANGES__"
+    fi
+fi
+cp /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+```
+
+Wait for voice input:
+
+```bash
+while [ ! -f /tmp/voice_cmd_ready ]; do sleep 0.2; touch /tmp/voice_bridge_heartbeat; [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }; done; cat /tmp/voice_cmd_ready; rm -f /tmp/voice_cmd_ready; (while sleep 2; do touch /tmp/voice_bridge_heartbeat; done) & echo $! > /tmp/voice_bridge_heartbeat.pid
+```
+
+Interpret the text:
+- `__BRIDGE_DIED__`: say "Voice session ended." and stop.
+- `__INTERRUPT__`: silently return to waiting. Do not respond or write TTS.
+- Otherwise, treat it as the user's message and help normally.
+
+After your response, stop the heartbeat refresher and ensure the bridge is alive:
+
+```bash
+[ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
+touch /tmp/voice_bridge_heartbeat
+if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
+    rm -f /tmp/voice_bridge.sock
+    RELAY_CWD=$(pwd)
+    launchctl remove com.relay.voicebridge 2>/dev/null || true
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc "cd \"$RELAY_CWD\" && exec '__RELAY_BRIDGE__' --relay >> /tmp/voice_bridge.log 2>&1"
+    for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
+fi
+```
+
+Write only the spoken summary to TTS. Keep it to 1-3 conversational sentences, strip markdown/code details, and escape single quotes:
+
+```bash
+echo 'YOUR_SPOKEN_RESPONSE' > /tmp/tts_in.fifo
+```
+
+Then return to waiting.
+
+## Cleanup
+
+When the session ends:
+
+```bash
+[ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
+launchctl remove com.relay.voicebridge 2>/dev/null || true
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+```
+CODEX_BRIDGE_MD_EOF
+        local tmp="$codex_bridge_md.tmp"
+        sed "s|__RELAY_BRIDGE__|$relay_bridge_path|g" "$codex_bridge_md" > "$tmp" && mv "$tmp" "$codex_bridge_md"
+    fi
+
+    if [ "$mode" = "force" ] || [ ! -f "$codex_stop_md" ]; then
+        cat > "$codex_stop_md" <<'CODEX_STOP_MD_EOF'
+---
+name: relay-stop
+description: Stop the Relay Runner voice bridge for this Codex session.
+---
+
+# relay-stop
+
+Stop the voice I/O bridge for this Codex session.
+
+```bash
+launchctl remove com.relay.voicebridge 2>/dev/null || true
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1 && echo "bridge: STILL RUNNING" || echo "bridge: stopped"
+```
+
+If the bridge stopped, tell the user the voice session has ended.
+CODEX_STOP_MD_EOF
+    fi
+}
+
+find_claude_bin() {
+    if [ -x "$HOME/.local/bin/claude" ]; then
+        echo "$HOME/.local/bin/claude"
+    elif command -v claude >/dev/null 2>&1; then
+        command -v claude
+    else
+        echo ""
+    fi
+}
+
+find_codex_bin() {
+    if [ -x "/Applications/Codex.app/Contents/Resources/codex" ]; then
+        echo "/Applications/Codex.app/Contents/Resources/codex"
+    elif command -v codex >/dev/null 2>&1; then
+        command -v codex
+    else
+        echo ""
+    fi
+}
+
+find_mcp_binary() {
+    local binary_name="$1"
+    local bundled="$SCRIPT_DIR/../../MacOS/$binary_name"
+    if [ -x "$bundled" ]; then
+        echo "$(cd "$(dirname "$bundled")" && pwd)/$binary_name"
+        return 0
+    fi
+
+    local cfg
+    for cfg in release debug; do
+        local dev_bin="$SCRIPT_DIR/../.build/$cfg/$binary_name"
+        if [ -x "$dev_bin" ]; then
+            echo "$(cd "$(dirname "$dev_bin")" && pwd)/$binary_name"
+            return 0
+        fi
+    done
+    echo ""
+}
+
+available_agents_have_mcp() {
+    local server_name="$1"
+    local checked=false
+
+    if [ -n "${CLAUDE_BIN:-}" ]; then
+        checked=true
+        "$CLAUDE_BIN" mcp get "$server_name" >/dev/null 2>&1 || return 1
+    fi
+    if [ -n "${CODEX_BIN:-}" ]; then
+        checked=true
+        "$CODEX_BIN" mcp get "$server_name" >/dev/null 2>&1 || return 1
+    fi
+    $checked
+}
+
+register_mcp_for_available_agents() {
+    local server_name="$1"
+    local binary_name="$2"
+    local label="$3"
+    local mcp_bin
+    mcp_bin="$(find_mcp_binary "$binary_name")"
+
+    if [ -z "$mcp_bin" ]; then
+        echo "[Relay Runner] Skipping $label MCP registration — $binary_name binary not found." >&2
+        echo "[Relay Runner] Looked in $SCRIPT_DIR/../../MacOS/$binary_name and .build/{release,debug}/." >&2
+        return 0
+    fi
+
+    if [ -n "${CLAUDE_BIN:-}" ]; then
+        if "$CLAUDE_BIN" mcp get "$server_name" >/dev/null 2>&1; then
+            :
+        elif "$CLAUDE_BIN" mcp add -s user "$server_name" -- "$mcp_bin" >/dev/null 2>&1; then
+            echo "[Relay Runner] Registered Claude MCP server: $server_name → $mcp_bin"
+        else
+            echo "[Relay Runner] Claude $label MCP registration failed (non-fatal). Try manually:" >&2
+            echo "    $CLAUDE_BIN mcp add -s user $server_name -- $mcp_bin" >&2
+        fi
+    fi
+
+    if [ -n "${CODEX_BIN:-}" ]; then
+        if "$CODEX_BIN" mcp get "$server_name" >/dev/null 2>&1; then
+            :
+        elif "$CODEX_BIN" mcp add "$server_name" -- "$mcp_bin" >/dev/null 2>&1; then
+            echo "[Relay Runner] Registered Codex MCP server: $server_name → $mcp_bin"
+        else
+            echo "[Relay Runner] Codex $label MCP registration failed (non-fatal). Try manually:" >&2
+            echo "    $CODEX_BIN mcp add $server_name -- $mcp_bin" >&2
+        fi
     fi
 }
 
@@ -282,7 +525,7 @@ set -- "${__rb_args[@]+"${__rb_args[@]}"}"
 # confirmed they want to replace any existing files).
 if $INSTALL_SKILLS_ONLY; then
     install_skills force
-    echo "[relay-bridge] Installed Claude Code skills at $HOME/.claude/commands/relay-bridge.md and relay-stop.md."
+    echo "[relay-bridge] Installed Relay Runner skills for Codex and Claude Code."
     exit 0
 fi
 
@@ -290,7 +533,7 @@ fi
 # Skipped under --venv-only so onboarding doesn't tear down a running
 # session just to install dependencies in the background.
 if ! $VENV_ONLY && [ -S "$BRIDGE_SOCK" ]; then
-    if pgrep -f 'voice_bridge.py' > /dev/null 2>&1; then
+    if pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
         echo "[relay-bridge] Stopping previous voice session..."
         # Try graceful shutdown first
         python3 -c "
@@ -302,7 +545,7 @@ s.close()
 " 2>/dev/null
         sleep 0.5
         # Force kill if still alive
-        pkill -f 'voice_bridge.py' 2>/dev/null || true
+        pkill -f '[v]oice_bridge.py' 2>/dev/null || true
         sleep 0.3
     fi
     rm -f "$BRIDGE_SOCK" "$BRIDGE_CWD_FILE" /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
@@ -328,74 +571,52 @@ PYTHON_DEPS_OK=false
 "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1 && PYTHON_DEPS_OK=true
 KOKORO_MODELS_OK=false
 [ -f "$KOKORO_MODEL_FILE" ] && [ -f "$KOKORO_VOICES_FILE" ] && KOKORO_MODELS_OK=true
-# voice_bridge.py spawns the Claude Code CLI when started without --relay
-# (each spoken turn shells out to `claude ...`). If the binary isn't
-# present a session falls over with "claude not found on PATH" the
-# moment the user clicks Start Session — no visible progress bar, just a
-# dead terminal. claude.ai/install.sh symlinks the binary to
-# ~/.local/bin/claude (~/.local/share/claude/versions/X.Y.Z is the real
-# binary), so check both PATH and that canonical fallback location.
+CLAUDE_BIN="$(find_claude_bin)"
+CODEX_BIN="$(find_codex_bin)"
+# Start Session now launches an interactive agent and uses relay mode, while
+# legacy direct mode still needs an agent CLI. Codex ships with the desktop app;
+# Claude usually lives at ~/.local/bin/claude.
 CLAUDE_CLI_OK=false
-{ command -v claude >/dev/null 2>&1 || [ -x "$HOME/.local/bin/claude" ]; } && CLAUDE_CLI_OK=true
-# The /relay-bridge and /relay-stop slash commands live as .md files
-# under ~/.claude/commands. They're how the user invokes a voice loop
-# from inside an existing Claude Code session — without them, voice
-# input only works via the menu bar's Start Session path. Mirror the
-# Claude CLI gate so missing files trigger a write during the same
-# bootstrap run; the actual install step below runs *after* the CLI
-# install so the .md commands always reference a working `claude`.
+[ -n "$CLAUDE_BIN" ] && CLAUDE_CLI_OK=true
+CODEX_CLI_OK=false
+[ -n "$CODEX_BIN" ] && CODEX_CLI_OK=true
+AGENT_CLI_OK=false
+{ $CLAUDE_CLI_OK || $CODEX_CLI_OK; } && AGENT_CLI_OK=true
+# Relay voice commands/skills live under ~/.claude/commands for Claude
+# Code and ~/.codex/skills for Codex. They're how the user invokes a
+# voice loop from inside an existing agent session — without them, voice
+# input only works via the menu bar's Start Session path.
 RELAY_SKILLS_OK=false
-[ -f "$HOME/.claude/commands/relay-bridge.md" ] && [ -f "$HOME/.claude/commands/relay-stop.md" ] && RELAY_SKILLS_OK=true
-# The Relay Actions MCP server (relay-actions-mcp) gives Claude
-# screenshot + click/type tools for UAT and dashboard automation, gated
-# by hardware double-tap confirmation. Registered into Claude Code at
-# user scope (~/.claude.json) so it's available in every working dir,
-# not just this project. Check uses `claude mcp get` which exits 0 when
-# the named server is registered. Skipped here if the CLI isn't present
-# yet — the install block below registers it after installing the CLI.
+[ -f "$HOME/.claude/commands/relay-bridge.md" ] \
+    && [ -f "$HOME/.claude/commands/relay-stop.md" ] \
+    && [ -f "$HOME/.codex/skills/relay-bridge/SKILL.md" ] \
+    && [ -f "$HOME/.codex/skills/relay-stop/SKILL.md" ] \
+    && RELAY_SKILLS_OK=true
+# The Relay Actions MCP server gives available agents click/type/screen-control
+# tools for UAT and dashboard automation. Treat setup as healthy only when every
+# installed agent has the server registered; the install block below fills gaps.
 RELAY_MCP_OK=false
-if [ -x "$HOME/.local/bin/claude" ] || command -v claude >/dev/null 2>&1; then
-    if [ -x "$HOME/.local/bin/claude" ]; then
-        __claude_for_check="$HOME/.local/bin/claude"
-    else
-        __claude_for_check="$(command -v claude)"
-    fi
-    "$__claude_for_check" mcp get relay-actions >/dev/null 2>&1 && RELAY_MCP_OK=true
-fi
+available_agents_have_mcp relay-actions && RELAY_MCP_OK=true
 
-# The Relay Vision MCP server (relay-vision-mcp) gives Claude the
-# screenshot observation tool, split out of relay-actions in RR-10.
-# Registered at user scope alongside relay-actions, same `claude mcp get`
-# probe. Tracked separately so a partial install (actions present, vision
-# missing) still triggers the vision registration below.
+# Relay Vision provides the screenshot observation tool, split out of
+# relay-actions in RR-10. Tracked separately so a partial install still
+# triggers the missing registration below.
 RELAY_VISION_MCP_OK=false
-if [ -x "$HOME/.local/bin/claude" ] || command -v claude >/dev/null 2>&1; then
-    if [ -x "$HOME/.local/bin/claude" ]; then
-        __claude_for_check="$HOME/.local/bin/claude"
-    else
-        __claude_for_check="$(command -v claude)"
-    fi
-    "$__claude_for_check" mcp get relay-vision >/dev/null 2>&1 && RELAY_VISION_MCP_OK=true
-fi
+available_agents_have_mcp relay-vision && RELAY_VISION_MCP_OK=true
 
 # Orchestrator install gate: covers the slash commands, MCP server
 # registration, and the launchd plist that keeps the daemon alive.
-# Falls back through the same `claude mcp get` probe used for relay-actions.
+# Uses the same all-available-agents MCP probe used for relay-actions.
 ORCH_OK=false
-if [ -f "$HOME/.claude/commands/relay-link-project.md" ] \
-   && [ -f "$HOME/.claude/commands/relay-orchestrate.md" ] \
+if [ -f "$HOME/.claude/commands/relay-dispatch.md" ] \
    && [ -f "$HOME/.claude/commands/relay-workflow.md" ] \
-   && [ -f "$HOME/Library/LaunchAgents/com.relay.orchestrator.plist" ] \
-   && { [ -x "$HOME/.local/bin/claude" ] || command -v claude >/dev/null 2>&1; }; then
-    if [ -x "$HOME/.local/bin/claude" ]; then
-        __claude_for_orch="$HOME/.local/bin/claude"
-    else
-        __claude_for_orch="$(command -v claude)"
-    fi
-    "$__claude_for_orch" mcp get relay-orchestrator >/dev/null 2>&1 && ORCH_OK=true
+   && [ -f "$HOME/.codex/skills/relay-dispatch/SKILL.md" ] \
+   && [ -f "$HOME/.codex/skills/relay-workflow/SKILL.md" ] \
+   && [ -f "$HOME/Library/LaunchAgents/com.relay.orchestrator.plist" ]; then
+    available_agents_have_mcp relay-orchestrator && ORCH_OK=true
 fi
 
-if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $CLAUDE_CLI_OK || ! $RELAY_SKILLS_OK || ! $RELAY_MCP_OK || ! $ORCH_OK; then
+if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $AGENT_CLI_OK || ! $RELAY_SKILLS_OK || ! $RELAY_MCP_OK || ! $ORCH_OK; then
     echo ''
     echo '╔══════════════════════════════════════════╗'
     echo '║  Relay Runner — First-time setup         ║'
@@ -648,17 +869,12 @@ PYEOF
         fi
     fi
 
-    if ! $CLAUDE_CLI_OK; then
-        # voice_bridge.py spawns `claude ...` per spoken turn in the
-        # default (non-relay) session mode, so a missing CLI dead-ends
-        # the very first session. Anthropic ships a native installer at
-        # claude.ai/install.sh that drops a binary at ~/.local/bin/claude
-        # — no Node, no admin, no PATH gymnastics for non-admin users.
-        # ProcessManager prepends ~/.local/bin to the launcher's PATH so
-        # the just-installed binary is on PATH for python's
-        # shutil.which("claude") lookup downstream.
-        emit_progress 95 "Installing Claude Code CLI..."
-        echo "[Relay Runner] Installing Claude Code CLI from claude.ai/install.sh..."
+    if ! $AGENT_CLI_OK; then
+        # If neither Codex nor Claude is present, install Claude Code as a
+        # fallback agent. Codex ships with the desktop app and is not installed
+        # by this script.
+        emit_progress 95 "Installing fallback Claude Code CLI..."
+        echo "[Relay Runner] No Codex or Claude CLI found. Installing Claude Code CLI from claude.ai/install.sh..."
         if ! curl -fsSL https://claude.ai/install.sh | bash; then
             echo ''
             echo "[Relay Runner] Claude Code CLI install failed."
@@ -670,106 +886,26 @@ PYEOF
             echo "[Relay Runner] Claude Code installer ran but $HOME/.local/bin/claude is not executable."
             exit 1
         fi
+        CLAUDE_CLI_OK=true
+        CLAUDE_BIN="$HOME/.local/bin/claude"
+        AGENT_CLI_OK=true
     fi
 
     if ! $RELAY_SKILLS_OK; then
-        # Runs after the Claude CLI install above so the .md files
-        # always land into a working Claude environment. if-missing
-        # mode preserves user edits — a force overwrite is reachable
+        # if-missing mode preserves user edits — a force overwrite is reachable
         # via Settings → Reinstall (--install-skills flag).
-        emit_progress 98 "Installing Claude Code skills..."
+        emit_progress 98 "Installing Relay skills..."
         install_skills if-missing
     fi
 
     if ! $RELAY_MCP_OK; then
-        # Register the relay-actions MCP server with Claude Code at user
-        # scope so screenshot / click / type tools are available in every
-        # `claude` invocation, not just sessions started in this repo.
-        #
-        # find_mcp_binary resolves the absolute path to the helper Mach-O.
-        # Bundled installs find it next to the main binary inside the .app;
-        # dev runs from the repo find it in .build/{release,debug}/.
-        # Idempotent: `claude mcp add` errors when the name already exists,
-        # so we gate on the upfront RELAY_MCP_OK check above.
-        emit_progress 99 "Registering MCP server..."
-        __claude_bin=""
-        if [ -x "$HOME/.local/bin/claude" ]; then
-            __claude_bin="$HOME/.local/bin/claude"
-        elif command -v claude >/dev/null 2>&1; then
-            __claude_bin="$(command -v claude)"
-        fi
-        __mcp_bin=""
-        # Bundled (Contents/SharedSupport/scripts → ../../MacOS/relay-actions-mcp).
-        __bundled_mcp="$SCRIPT_DIR/../../MacOS/relay-actions-mcp"
-        if [ -x "$__bundled_mcp" ]; then
-            __mcp_bin="$(cd "$(dirname "$__bundled_mcp")" && pwd)/relay-actions-mcp"
-        else
-            for __cfg in release debug; do
-                __dev_mcp="$SCRIPT_DIR/../.build/$__cfg/relay-actions-mcp"
-                if [ -x "$__dev_mcp" ]; then
-                    __mcp_bin="$(cd "$(dirname "$__dev_mcp")" && pwd)/relay-actions-mcp"
-                    break
-                fi
-            done
-        fi
-        if [ -z "$__claude_bin" ]; then
-            echo "[Relay Runner] Skipping MCP registration — claude CLI not found." >&2
-        elif [ -z "$__mcp_bin" ]; then
-            echo "[Relay Runner] Skipping MCP registration — relay-actions-mcp binary not found." >&2
-            echo "[Relay Runner] Looked in $__bundled_mcp and .build/{release,debug}/." >&2
-        else
-            # `claude mcp add -s user` writes to ~/.claude.json. Non-fatal on
-            # failure — voice features still work without the MCP server,
-            # only the new Relay Actions tools become unavailable.
-            if "$__claude_bin" mcp add -s user relay-actions -- "$__mcp_bin" >/dev/null 2>&1; then
-                echo "[Relay Runner] Registered MCP server: relay-actions → $__mcp_bin"
-            else
-                echo "[Relay Runner] MCP server registration failed (non-fatal). Try manually:" >&2
-                echo "    $__claude_bin mcp add -s user relay-actions -- $__mcp_bin" >&2
-            fi
-        fi
+        emit_progress 99 "Registering Relay Actions MCP server..."
+        register_mcp_for_available_agents relay-actions relay-actions-mcp "Relay Actions"
     fi
 
     if ! $RELAY_VISION_MCP_OK; then
-        # Register the relay-vision MCP server (screenshot observation tool).
-        # Mirrors the relay-actions registration above — same binary-resolution
-        # order (bundled MacOS/ first, then .build/{release,debug}/) and the
-        # same user-scope `claude mcp add`. Idempotent via the RELAY_VISION_MCP_OK
-        # gate.
-        emit_progress 99 "Registering Vision MCP server..."
-        __claude_bin=""
-        if [ -x "$HOME/.local/bin/claude" ]; then
-            __claude_bin="$HOME/.local/bin/claude"
-        elif command -v claude >/dev/null 2>&1; then
-            __claude_bin="$(command -v claude)"
-        fi
-        __vision_mcp_bin=""
-        # Bundled (Contents/SharedSupport/scripts → ../../MacOS/relay-vision-mcp).
-        __bundled_vision_mcp="$SCRIPT_DIR/../../MacOS/relay-vision-mcp"
-        if [ -x "$__bundled_vision_mcp" ]; then
-            __vision_mcp_bin="$(cd "$(dirname "$__bundled_vision_mcp")" && pwd)/relay-vision-mcp"
-        else
-            for __cfg in release debug; do
-                __dev_vision_mcp="$SCRIPT_DIR/../.build/$__cfg/relay-vision-mcp"
-                if [ -x "$__dev_vision_mcp" ]; then
-                    __vision_mcp_bin="$(cd "$(dirname "$__dev_vision_mcp")" && pwd)/relay-vision-mcp"
-                    break
-                fi
-            done
-        fi
-        if [ -z "$__claude_bin" ]; then
-            echo "[Relay Runner] Skipping Vision MCP registration — claude CLI not found." >&2
-        elif [ -z "$__vision_mcp_bin" ]; then
-            echo "[Relay Runner] Skipping Vision MCP registration — relay-vision-mcp binary not found." >&2
-            echo "[Relay Runner] Looked in $__bundled_vision_mcp and .build/{release,debug}/." >&2
-        else
-            if "$__claude_bin" mcp add -s user relay-vision -- "$__vision_mcp_bin" >/dev/null 2>&1; then
-                echo "[Relay Runner] Registered MCP server: relay-vision → $__vision_mcp_bin"
-            else
-                echo "[Relay Runner] Vision MCP server registration failed (non-fatal). Try manually:" >&2
-                echo "    $__claude_bin mcp add -s user relay-vision -- $__vision_mcp_bin" >&2
-            fi
-        fi
+        emit_progress 99 "Registering Relay Vision MCP server..."
+        register_mcp_for_available_agents relay-vision relay-vision-mcp "Relay Vision"
     fi
 
     # Skip the orchestrator install branch under --venv-only:
@@ -783,9 +919,9 @@ PYEOF
         # daemon alive across logins). Delegated to scripts/relay-orchestrator
         # --install which is idempotent and resolves its own binary paths the
         # same way this script does for relay-actions-mcp. Non-fatal — voice
-        # features still work without the orchestrator; only the
-        # /relay-link-project + /relay-orchestrate slash commands and the
-        # mcp__relay-orchestrator__* tools become unavailable.
+        # features still work without the orchestrator; only ticket dispatch
+        # commands/skills and the mcp__relay-orchestrator__* tools become
+        # unavailable.
         emit_progress 99 "Installing relay-orchestrator..."
         if "$SCRIPT_DIR/relay-orchestrator" --install >/dev/null 2>&1; then
             echo "[Relay Runner] Installed relay-orchestrator (skills + MCP + launchd plist)."

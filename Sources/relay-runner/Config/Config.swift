@@ -28,7 +28,7 @@ struct TtsConfig: Codable, Equatable {
 }
 
 struct GeneralConfig: Codable, Equatable {
-    var command: String = "claude"
+    var command: String = "codex"
     var terminal: String = "warp"
     var auto_start: Bool = false
     var working_directory: String = ""

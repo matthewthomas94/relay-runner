@@ -104,11 +104,13 @@ def load_config(config_path: str | None = None) -> dict:
             "skip_key": "Shift+F5",
         },
         "general": {
-            "command": "claude",
+            "command": "codex",
             "terminal": "warp",
             "auto_start": False,
         },
         "orchestrator": {
+            "agent": "codex",
+            "command": "",
             "port": 7634,
             "workspace_root": "",
             "branch_prefix": "relay/",
