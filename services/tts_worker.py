@@ -109,6 +109,7 @@ class TTSWorker:
         self._current_proc: subprocess.Popen | None = None
         self._shutdown = False
         self._last_wav: str | None = None  # Path to last played WAV for replay
+        self._last_unheard_text = ""
 
         # Speculative TTS — generation runs in parallel with the pill so audio
         # is already on disk by the time the user double-taps Option to play.
@@ -257,11 +258,16 @@ class TTSWorker:
         with self._lock:
             text = self._pending_text.strip()
             self._pending_text = ""
+            if text:
+                self._last_unheard_text = ""
 
         if not text:
             self.replay()
             return
 
+        self._play_text(text)
+
+    def _play_text(self, text: str):
         self._playing = True
         self._paused = False
         _notify_state("preparing")
@@ -301,12 +307,28 @@ class TTSWorker:
         """Stop playback AND discard pending text."""
         self.stop_playback()
         with self._lock:
+            text = self._pending_text.strip()
             self._pending_text = ""
+            if text:
+                self._last_unheard_text = text
         self._cancel_speculation()
         _notify_state("idle")
 
     def replay(self):
         """Replay the last spoken audio."""
+        with self._lock:
+            text = self._pending_text.strip()
+            if text:
+                self._pending_text = ""
+                self._last_unheard_text = ""
+            elif self._last_unheard_text:
+                text = self._last_unheard_text
+                self._last_unheard_text = ""
+
+        if text:
+            self._play_text(text)
+            return
+
         wav = self._last_wav
         if not wav or not os.path.isfile(wav):
             print("[tts_worker] Nothing to replay", file=sys.stderr)
