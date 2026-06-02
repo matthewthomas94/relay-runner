@@ -20,6 +20,7 @@ import collections
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -141,6 +142,7 @@ ACTIVITY_MAX_LEN = 60
 ACTIVITY_DEBOUNCE_SECONDS = 5.0
 ACTIVITY_HEARTBEAT_SECONDS = 5.0
 _NOOP_TOOLS = frozenset({"TodoWrite"})
+_SHELL_NAMES = frozenset({"sh", "bash", "zsh"})
 
 
 def _clip(text: str, limit: int = ACTIVITY_MAX_LEN) -> str:
@@ -148,6 +150,99 @@ def _clip(text: str, limit: int = ACTIVITY_MAX_LEN) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def _shell_words(command: str) -> list[str]:
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return command.split()
+
+
+def _unwrap_shell_command(command: str) -> str:
+    lines = (command or "").strip().splitlines()
+    first = lines[0].strip() if lines else ""
+    words = _shell_words(first)
+    if not words:
+        return ""
+
+    if os.path.basename(words[0]) == "env" and len(words) > 1:
+        i = 1
+        while i < len(words) and (words[i].startswith("-") or "=" in words[i]):
+            i += 1
+        if i < len(words):
+            words = words[i:]
+
+    if os.path.basename(words[0]) in _SHELL_NAMES:
+        for i, word in enumerate(words[1:], start=1):
+            if word == "-c" or (word.startswith("-") and "c" in word[1:]):
+                if i + 1 < len(words):
+                    return words[i + 1].strip()
+                break
+    return first
+
+
+def _activity_from_description(description: str) -> str:
+    desc = (description or "").strip()
+    if not desc:
+        return ""
+    return _clip(desc[:1].upper() + desc[1:])
+
+
+def _task_activity(task: str) -> str:
+    return {
+        "test": "Running tests",
+        "lint": "Running lint",
+        "build": "Running build",
+    }.get(task, "Running project task")
+
+
+def _semantic_shell_activity(command: str, description: str = "") -> str:
+    cmd = _unwrap_shell_command(command)
+    lower = re.sub(r"\s+", " ", cmd.lower()).strip()
+    words = _shell_words(cmd)
+    first = os.path.basename(words[0]) if words else ""
+
+    if not lower:
+        return _activity_from_description(description) or "Running command"
+
+    if "apply_patch" in lower:
+        return "Editing source files"
+
+    if re.search(r"\b(swift test|xcodebuild\b.*\btest\b)\b", lower):
+        return "Running Swift tests"
+    if re.search(r"\b(swift build|xcodebuild)\b", lower):
+        return "Running Swift build"
+    if re.search(r"\b(pytest|python3? -m pytest)\b", lower):
+        return "Running Python tests"
+    if re.search(r"\b(npm|pnpm|yarn) (run )?(test|lint|build)\b", lower):
+        task = re.search(r"\b(test|lint|build)\b", lower)
+        return _task_activity(task.group(1)) if task else "Running project task"
+    if re.search(r"\b(make|just) (test|lint|build)\b", lower):
+        task = re.search(r"\b(test|lint|build)\b", lower)
+        return _task_activity(task.group(1)) if task else "Running project task"
+
+    if re.search(r"\b(git grep|rg|grep)\b", lower):
+        return "Searching source files"
+    if first in {"find", "fd"}:
+        return "Finding files"
+    if first in {"cat", "sed", "head", "tail", "nl", "wc"}:
+        return "Reading source files"
+    if first in {"ls", "pwd", "tree"} or re.search(r"\bgit ls-files\b", lower):
+        return "Inspecting workspace"
+
+    if re.search(r"\bgit commit\b", lower):
+        return "Committing changes"
+    if re.search(r"\bgit add\b", lower):
+        return "Staging changes"
+    if re.search(r"\bgit status\b", lower):
+        return "Checking git status"
+    if re.search(r"\bgit (diff|show|log)\b", lower):
+        return "Inspecting git changes"
+    if re.search(r"\bgit \w+", lower):
+        return "Working with git"
+
+    return _activity_from_description(description) or "Investigating"
 
 
 def derive_activity(tool_name: str, tool_input: dict | None) -> str:
@@ -170,13 +265,8 @@ def derive_activity(tool_name: str, tool_input: dict | None) -> str:
         return "Searching"
     if name == "Bash":
         cmd = (ti.get("command") or "").strip()
-        if re.match(r"git\s+commit", cmd):
-            return "Committing"
         desc = (ti.get("description") or "").strip()
-        if desc:
-            return _clip(f"Running: {desc}")
-        first = cmd.splitlines()[0] if cmd else ""
-        return _clip(f"Running: {first}") if first else "Running"
+        return _semantic_shell_activity(cmd, desc)
     if name in ("WebFetch", "WebSearch"):
         return "Researching"
     if name == "Task":
@@ -193,10 +283,16 @@ def derive_codex_activity(item: dict | None) -> str:
     itype = item.get("type") or ""
     if itype == "command_execution":
         command = (item.get("command") or "").strip()
-        if command:
-            return _clip(f"Running: {command.splitlines()[0]}")
-        return "Running command"
+        return _semantic_shell_activity(command)
+    if itype == "file_change":
+        changes = item.get("changes") or []
+        paths = [str(c.get("path") or "") for c in changes if isinstance(c, dict)]
+        if any(f"{os.sep}.orchestrator{os.sep}" in path for path in paths):
+            return "Updating ticket run log"
+        return "Editing source files"
     name = item.get("name") or item.get("tool_name") or itype
+    if str(name).endswith("apply_patch") or str(name) == "apply_patch":
+        return "Editing source files"
     return _clip(str(name)) or "Working"
 
 
