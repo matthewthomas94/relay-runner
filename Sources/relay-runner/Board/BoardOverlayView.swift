@@ -557,7 +557,7 @@ private struct TicketCard: View {
                 Spacer(minLength: 0)
                 if let pill {
                     RunStatusPill(pill: pill)
-                } else if ticket.runId != nil {
+                } else if ticket.status == .inProgress && ticket.runId != nil {
                     AgentActivityBadge(activity: .building)
                 }
             }
