@@ -439,6 +439,12 @@ final class AppState {
                 guard parent != "unknown" else { return }
                 ParentOnboardingTracker.resetOnboarded(parent)
                 await MainActor.run { onboardingController.show(parent: parent) }
+            },
+            onToggleBoard: { [weak self] in
+                guard let self else { return }
+                await MainActor.run {
+                    self.toggleBoard()
+                }
             }
         )
         actionsBus = actions

@@ -1,12 +1,13 @@
 import Foundation
 
 /// Listens on `/tmp/relay_actions.sock` for messages from the RelayActionsMCP
-/// helper binary. Two kinds:
+/// helper binary. Message types:
 ///
 /// 1. `{"type":"tool_fired","tool":"<name>"}` — fire-and-forget notification
 ///    that any Relay Actions MCP tool just ran. Drives the perimeter glow:
 ///    transitions StateMachine to `.actionGlow(awaitingConfirmation: nil)`
-///    and starts (or refreshes) a 10s decay timer.
+///    and starts (or refreshes) a 10s decay timer. When `"reply": true` is
+///    present, writes `{"result":"ok"}` before closing.
 ///
 /// 2. `{"type":"propose","id":"<uuid>","summary":"...","risk":"medium|high"}` —
 ///    the MCP server is blocking inside `propose_action`. We update state to
@@ -14,6 +15,9 @@ import Foundation
 ///    open, and wait for `resolve(requestId:confirmed:)` to be called by
 ///    CapsLockGesture when the user double-taps. Then we write back
 ///    `{"id":"<uuid>","result":"confirmed"|"rejected"|"timeout"}` and close.
+///
+/// 3. `{"type":"toggle_board"}` — request/reply command that toggles the
+///    local kanban board through `AppState.toggleBoard()`.
 ///
 /// Stream socket (not datagram) so request/reply works on the same connection
 /// without connection-id juggling. Per-connection accept loop runs as long as
@@ -36,6 +40,7 @@ actor ActionsConfirmBus {
     /// signal that distinguishes "MCP just spawned because Claude opened"
     /// from "user actually started voice."
     private let onParentPermissionRevoked: ((String, String) async -> Void)?
+    private let onToggleBoard: (() async -> Void)?
 
     /// Outstanding `propose_action` requests, keyed by request id. Value is
     /// the connection fd holding open the reply. When the user double-taps
@@ -60,9 +65,11 @@ actor ActionsConfirmBus {
     private var lastDetectedParent: String?
 
     init(stateMachine: StateMachine,
-         onParentPermissionRevoked: ((String, String) async -> Void)? = nil) {
+         onParentPermissionRevoked: ((String, String) async -> Void)? = nil,
+         onToggleBoard: (() async -> Void)? = nil) {
         self.stateMachine = stateMachine
         self.onParentPermissionRevoked = onParentPermissionRevoked
+        self.onToggleBoard = onToggleBoard
     }
 
     func start() {
@@ -173,6 +180,9 @@ actor ActionsConfirmBus {
         case "tool_fired":
             // Fire-and-forget. Update state, refresh decay, close connection.
             await enterActionGlow(prompt: nil)
+            if (json["reply"] as? Bool) == true {
+                writeReply(fd: fd, requestId: "", result: "ok")
+            }
             close(fd)
 
         case "parent_detected":
@@ -194,6 +204,11 @@ actor ActionsConfirmBus {
                 let permission = json["permission"] as? String ?? "unknown"
                 await onParentPermissionRevoked?(parent, permission)
             }
+            close(fd)
+
+        case "toggle_board":
+            await onToggleBoard?()
+            writeReply(fd: fd, requestId: "", result: "ok")
             close(fd)
 
         case "propose":
