@@ -127,7 +127,7 @@ RELAY_CWD=$(pwd)
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 : > /tmp/voice_bridge.log
-launchctl submit -l com.relay.voicebridge -- /bin/bash -lc "cd \"$RELAY_CWD\" && exec '__RELAY_BRIDGE__' --relay >> /tmp/voice_bridge.log 2>&1"
+launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" '__RELAY_BRIDGE__'
 ```
 
 3. Wait for the relay bridge to come up. The 60-iteration cap is generous on purpose: the very first invocation may need to download a Python interpreter (~18 MB) and the Kokoro speech model (~350 MB) before the bridge can listen, so allow ~30 seconds:
@@ -205,7 +205,7 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
     rm -f /tmp/voice_bridge.sock
     RELAY_CWD=$(pwd)
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc "cd \"$RELAY_CWD\" && exec '__RELAY_BRIDGE__' --relay >> /tmp/voice_bridge.log 2>&1"
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" '__RELAY_BRIDGE__'
     for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
 fi
 ```
@@ -304,7 +304,7 @@ launchctl remove com.relay.voicebridge 2>/dev/null || true
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_bridge_heartbeat /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 RELAY_CWD=$(pwd)
 : > /tmp/voice_bridge.log
-launchctl submit -l com.relay.voicebridge -- /bin/bash -lc "cd \"$RELAY_CWD\" && exec '__RELAY_BRIDGE__' --relay >> /tmp/voice_bridge.log 2>&1"
+launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" '__RELAY_BRIDGE__'
 ```
 
 3. Wait for the bridge:
@@ -368,7 +368,7 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
     rm -f /tmp/voice_bridge.sock
     RELAY_CWD=$(pwd)
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc "cd \"$RELAY_CWD\" && exec '__RELAY_BRIDGE__' --relay >> /tmp/voice_bridge.log 2>&1"
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" '__RELAY_BRIDGE__'
     for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
 fi
 ```
