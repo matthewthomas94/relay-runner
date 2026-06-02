@@ -1,10 +1,10 @@
 ---
 id: RR-8
 title: Expose board toggle as a relay-actions MCP tool
-status: ready
+status: in_progress
 priority: medium
 depends_on: []
-run_id: null
+run_id: 1
 canceled: false
 order: 20
 ---
