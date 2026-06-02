@@ -25,6 +25,7 @@ final class MCPServer {
             TypeTool(),
             KeyTool(),
             ScrollTool(),
+            ToggleBoardTool(),
             FrontmostAppTool(),
             ListWindowsTool(),
             ProposeActionTool(),
@@ -155,9 +156,11 @@ final class MCPServer {
                 // perimeter glow + 10s decay window. propose_action skips this
                 // here because it already calls notifyToolFired() inline (and
                 // we don't want to double-notify when the user is staring at a
-                // confirmation prompt). Tool failures also skip — we only
-                // light up on successful actions, not error responses.
-                if name != "propose_action" {
+                // confirmation prompt). toggle_board also sends inline so the
+                // board/no-session UI update can happen after ActionGlow is
+                // already applied. Tool failures also skip — we only light up
+                // on successful actions, not error responses.
+                if name != "propose_action" && name != "toggle_board" {
                     ConfirmationClient.notifyToolFired(toolName: name)
                 }
                 return ["content": content, "isError": false]

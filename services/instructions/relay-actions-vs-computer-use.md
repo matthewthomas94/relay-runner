@@ -6,7 +6,7 @@ The custom stack has three pieces: **RelayActions** (screen manipulation), **Rel
 
 ### RelayActions — the screen-manipulation tools
 
-For all screen *manipulation* — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` — lives in RelayVision; see the look-at-screen rule.)
+For all screen *manipulation* — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`, `toggle_board` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` — lives in RelayVision; see the look-at-screen rule.)
 
 If you genuinely need an operation RelayActions doesn't yet expose, surface that gap to the human before falling through to `mcp__computer-use__*`. The default answer is "extend RelayActions," not "fall back to native."
 

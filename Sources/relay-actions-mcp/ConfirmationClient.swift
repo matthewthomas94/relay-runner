@@ -2,11 +2,13 @@ import Foundation
 
 // Client for the menu-bar app's ActionsConfirmBus listener.
 //
-// Two-call API:
+// Socket API:
 // - notifyToolFired() — fire-and-forget. Sent after every successful tools/call
 //   so the perimeter glow lights up on any tool, not just propose_action.
 // - requestConfirmation(...) — blocking. Sends a propose payload and waits for
 //   the user's double-tap reply (or 30s server-side timeout).
+// - requestBoardToggle() — blocking. Asks the menu-bar app to toggle the local
+//   kanban board through the same socket instead of synthesizing a hotkey.
 //
 // Each call opens a fresh connection. The menu-bar listener can handle multiple
 // concurrent connections so a tool_fired arriving while a propose is open does
@@ -24,6 +26,11 @@ enum ConfirmationOutcome {
     case menuBarUnavailable
 }
 
+enum BoardToggleOutcome {
+    case delivered
+    case menuBarUnavailable
+}
+
 enum ConfirmationClient {
     static let socketPath = "/tmp/relay_actions.sock"
 
@@ -32,6 +39,43 @@ enum ConfirmationClient {
         guard let fd = openSocket() else { return }
         defer { close(fd) }
         _ = sendJSONLine(fd: fd, payload: payload)
+    }
+
+    static func notifyToolFiredAndWait(toolName: String) -> Bool {
+        let payload: [String: Any] = ["type": "tool_fired", "tool": toolName, "reply": true]
+        guard let fd = openSocket() else { return false }
+        defer { close(fd) }
+
+        guard sendJSONLine(fd: fd, payload: payload) else {
+            return false
+        }
+
+        setShortReadTimeout(fd: fd)
+        guard let line = readLine(fd: fd),
+              let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let result = json["result"] as? String else {
+            return false
+        }
+        return result == "ok"
+    }
+
+    static func requestBoardToggle() -> BoardToggleOutcome {
+        let payload: [String: Any] = ["type": "toggle_board"]
+        guard let fd = openSocket() else { return .menuBarUnavailable }
+        defer { close(fd) }
+
+        guard sendJSONLine(fd: fd, payload: payload) else {
+            return .menuBarUnavailable
+        }
+
+        setShortReadTimeout(fd: fd)
+        guard let line = readLine(fd: fd),
+              let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let result = json["result"] as? String,
+              result == "ok" else {
+            return .menuBarUnavailable
+        }
+        return .delivered
     }
 
     /// Sent once on MCP server startup with the detected parent terminal/IDE
@@ -133,6 +177,11 @@ enum ConfirmationClient {
             let n = send(fd, ptr.baseAddress, data.count, 0)
             return n == data.count
         }
+    }
+
+    private static func setShortReadTimeout(fd: Int32) {
+        var tv = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
     }
 
     private static func readLine(fd: Int32) -> Data? {

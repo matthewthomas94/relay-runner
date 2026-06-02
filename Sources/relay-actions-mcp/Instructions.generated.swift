@@ -11,7 +11,7 @@ The custom stack has three pieces: **RelayActions** (screen manipulation), **Rel
 
 ### RelayActions — the screen-manipulation tools
 
-For all screen *manipulation* — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` — lives in RelayVision; see the look-at-screen rule.)
+For all screen *manipulation* — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`, `toggle_board` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` — lives in RelayVision; see the look-at-screen rule.)
 
 If you genuinely need an operation RelayActions doesn't yet expose, surface that gap to the human before falling through to `mcp__computer-use__*`. The default answer is "extend RelayActions," not "fall back to native."
 
@@ -29,19 +29,7 @@ If you need user permission for a risky screen action:
 
 ## Toggling the local kanban board
 
-RelayActions doesn't expose a board-toggle tool yet (tracked as RR-8). When the user says "bring up the board" or "show the board" or similar, fire the ⌃⌥ modifier-only chord directly — don't go exploring the codebase to re-derive this:
-
-```bash
-osascript -e 'tell application "System Events"
-    key down control
-    key down option
-    delay 0.08
-    key up option
-    key up control
-end tell'
-```
-
-The chord toggles `BoardOverlayController` in the menu-bar app, gated on an active `/relay-bridge` session — `/tmp/voice_bridge.sock` must exist.
+When the user says "bring up the board", "show the board", or similar, call `mcp__relay-actions__toggle_board`. The tool routes through `/tmp/relay_actions.sock` into the menu-bar app and toggles `AppState.toggleBoard()`, including the standard "No session running" pill when no active `/relay-bridge` session exists.
 
 ## RelayVision — looking at the user's screen
 

@@ -1,15 +1,3 @@
 ## Toggling the local kanban board
 
-RelayActions doesn't expose a board-toggle tool yet (tracked as RR-8). When the user says "bring up the board" or "show the board" or similar, fire the ⌃⌥ modifier-only chord directly — don't go exploring the codebase to re-derive this:
-
-```bash
-osascript -e 'tell application "System Events"
-    key down control
-    key down option
-    delay 0.08
-    key up option
-    key up control
-end tell'
-```
-
-The chord toggles `BoardOverlayController` in the menu-bar app, gated on an active `/relay-bridge` session — `/tmp/voice_bridge.sock` must exist.
+When the user says "bring up the board", "show the board", or similar, call `mcp__relay-actions__toggle_board`. The tool routes through `/tmp/relay_actions.sock` into the menu-bar app and toggles `AppState.toggleBoard()`, including the standard "No session running" pill when no active `/relay-bridge` session exists.
