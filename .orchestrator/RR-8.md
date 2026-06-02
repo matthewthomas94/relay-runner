@@ -1,7 +1,7 @@
 ---
 id: RR-8
 title: Expose board toggle as a relay-actions MCP tool
-status: in_progress
+status: done
 priority: medium
 depends_on: []
 run_id: 1
@@ -30,3 +30,13 @@ Add a first-class RelayActions tool — `mcp__relay-actions__toggle_board` (or s
 - Reference implementations for "Swift action → relay-actions tool" already exist for `screenshot`, `click`, `type`, etc. in `Sources/relay-actions-mcp/`. Mirror that structure.
 - The board is gated on `/tmp/voice_bridge.sock` (see `BoardOverlayController` / `ProjectResolver`). If the bridge is down, the tool should surface the same "No session running" pill rather than silently no-op.
 - Don't ad-hoc-fix the bundled `.app`'s copy — DMG-build action is the source of truth; commit the Swift changes upstream and let CI rebuild.
+
+## Run log
+
+### Run 1 (attempt 1) — branch `relay/rr-8`
+
+- Added `toggle_board` to RelayActions, with a synchronous `tool_fired` acknowledgement followed by a `/tmp/relay_actions.sock` `toggle_board` request wired to `AppState.toggleBoard()`.
+- Updated RelayActions instruction source, generated MCP instructions, and `CLAUDE.md` so board voice intents call `mcp__relay-actions__toggle_board` instead of the osascript hotkey fallback.
+- Verified `swift build`, `scripts/build-instructions --check`, and MCP `tools/list` exposes `toggle_board`; `swift test` reports no test targets in this package.
+- Follow-up: live menu-bar round-trip verification was not run from this isolated worktree against a rebuilt app instance.
+- Status: done.
