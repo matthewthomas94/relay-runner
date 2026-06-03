@@ -138,6 +138,12 @@ for i in $(seq 1 60); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && b
 
 If the bridge failed to start, tell the user to check `/tmp/voice_bridge.log` and stop here.
 
+4. Once the bridge is up, speak a one-time startup confirmation:
+
+```bash
+if [ -p /tmp/tts_in.fifo ]; then printf '%s\n' 'Voice bridge is ready. You can speak at any point.' > /tmp/tts_in.fifo; fi
+```
+
 ## Voice Interaction Loop
 
 Now enter a continuous loop. Repeat these steps until the user says "stop listening" or you receive `__INTERRUPT__`:
@@ -314,6 +320,12 @@ for i in $(seq 1 60); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && b
 ```
 
 If the bridge failed, tell the user to check `/tmp/voice_bridge.log` and stop.
+
+4. Once the bridge is up, speak a one-time startup confirmation:
+
+```bash
+if [ -p /tmp/tts_in.fifo ]; then printf '%s\n' 'Voice bridge is ready. You can speak at any point.' > /tmp/tts_in.fifo; fi
+```
 
 ## Voice Loop
 
