@@ -61,6 +61,8 @@ If you'd rather start from a terminal you already have open, install the command
 
 Then run `codex` and ask it to use the relay-bridge skill, or run `claude` and type `/relay-bridge`. This path is identical to **Start Session…** except you decide when (and with what flags) to launch the CLI.
 
+Supported voice entry points are **Start Session…** and the installed relay-bridge skill/command. The older direct `voice_bridge.py` terminal loop is kept only as legacy implementation code, not as a documented launch path.
+
 ### Controls
 
 | Action | Default |

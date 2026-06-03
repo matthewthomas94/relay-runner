@@ -68,8 +68,8 @@ final class AppState {
     private var actionsBus: ActionsConfirmBus?
     private var sttPollTimer: Timer?
     private var bridgeWatchdog: Timer?
-    /// True while a direct-mode terminal session owns the bridge.
-    private var directSessionActive = false
+    /// True while a menu-started terminal session owns the bridge.
+    private var menuSessionActive = false
     /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
     private var bridgeAliveCache = false
     private var wasRecording = false
@@ -77,7 +77,7 @@ final class AppState {
     private var sessionPromptCapsState = false
     /// Grace period: don't let the watchdog revert a session before the bridge has time to start.
     private var sessionStartTime: Date = .distantPast
-    /// Has the bridge for the current direct session been observed alive at least once?
+    /// Has the bridge for the current menu-started session been observed alive at least once?
     /// Used to distinguish "still starting up" from "came up and then died".
     private var sessionBridgeSeen = false
     /// Per-bridge-session flag for the per-parent permissions wizard. False at
@@ -89,11 +89,11 @@ final class AppState {
     private var wizardShownForCurrentBridgeSession = false
 
     /// Whether any voice session is active (for menu bar UI). Covers both
-    /// direct-mode (menu's Start Session) and externally-started bridges
+    /// menu-started Start Session terminals and externally-started bridges
     /// (the /relay-bridge slash command). The watchdog flips bridgeAliveCache
     /// within ~3 seconds of an external bridge coming up, so /relay-bridge
     /// users see the menu reflect their session promptly.
-    var hasActiveSession: Bool { directSessionActive || bridgeAliveCache }
+    var hasActiveSession: Bool { menuSessionActive || bridgeAliveCache }
 
     init() {
         self.config = ConfigManager.shared.load()
@@ -189,10 +189,10 @@ final class AppState {
         startOverlay()
     }
 
-    /// End the active direct session and revert to awareness mode.
+    /// End the active voice session and revert to awareness mode.
     func endSession() {
         processManager.killBridge()
-        directSessionActive = false
+        menuSessionActive = false
         bridgeAliveCache = false
         statusText = "Ready"
         // Bridge events (processing/speaking/messageWaiting) are sticky on the
@@ -207,7 +207,7 @@ final class AppState {
     func stopServices() {
         guard isRunning else { return }
         stopBridgeWatchdog()
-        directSessionActive = false
+        menuSessionActive = false
         stopOverlay()
         sttEngine?.stop()
         sttEngine = nil
@@ -262,7 +262,7 @@ final class AppState {
         onboarding.markSessionRun()
         // Kill any existing voice bridge so only one session is active
         processManager.killBridge()
-        directSessionActive = true
+        menuSessionActive = true
         sessionStartTime = Date()
         sessionBridgeSeen = false
         // Bridge is about to launch — assume alive until watchdog says otherwise
@@ -277,7 +277,7 @@ final class AppState {
             }
         }
 
-        // Launch voice_bridge in direct mode (own Claude session) in a terminal
+        // Launch a normal agent terminal and pre-fire relay-bridge voice mode.
         processManager.launchNewSession(config: config)
         isRunning = true
         statusText = "Session"
@@ -312,7 +312,7 @@ final class AppState {
             self.bridgeAliveCache = alive
 
             // Track externally-started bridges (e.g. /relay-bridge)
-            if alive && !self.directSessionActive && self.statusText != "Session" {
+            if alive && !self.menuSessionActive && self.statusText != "Session" {
                 self.statusText = "Session"
                 // External /relay-bridge counts as the first session run
                 // for onboarding purposes — same as the menu Start Session
@@ -346,8 +346,8 @@ final class AppState {
             // Detect orphaned relay bridge (process alive but consumer dead).
             // Reap the orphan but don't pop the session-prompt overlay — the
             // user gets the prompt when they actually press Caps Lock with no
-            // session, not while Claude is mid-processing on a long task.
-            if alive && !self.directSessionActive && !self.processManager.bridgeConsumerAlive() {
+            // session, not while the agent is mid-processing on a long task.
+            if alive && !self.menuSessionActive && !self.processManager.bridgeConsumerAlive() {
                 NSLog("[AppState] Relay bridge orphaned (consumer heartbeat stale), killing")
                 self.processManager.killBridge()
                 self.bridgeAliveCache = false
@@ -355,26 +355,26 @@ final class AppState {
                 return
             }
 
-            if self.directSessionActive && alive {
+            if self.menuSessionActive && alive {
                 self.sessionBridgeSeen = true
             }
 
-            if self.directSessionActive && !alive {
+            if self.menuSessionActive && !alive {
                 // Only declare dead once we've actually seen the bridge alive
                 // (real death), or after a generous absolute timeout (true
                 // launch failure — covers cold starts where Kokoro load +
                 // venv setup can easily exceed the old 15s grace).
                 let elapsed = Date().timeIntervalSince(self.sessionStartTime)
                 if self.sessionBridgeSeen || elapsed > 90 {
-                    NSLog("[AppState] Direct session bridge died, reverting to awareness")
-                    self.directSessionActive = false
+                    NSLog("[AppState] Menu-started session bridge died, reverting to awareness")
+                    self.menuSessionActive = false
                     self.sessionBridgeSeen = false
                     self.statusText = "Ready"
                     // Don't auto-show the session prompt overlay — wait until
                     // the user actually tries to record (Caps Lock path in
                     // sttPollTimer fires it then).
                 }
-            } else if wasAlive && !alive && !self.directSessionActive {
+            } else if wasAlive && !alive && !self.menuSessionActive {
                 // Relay-bridge session ended externally — same idea: update
                 // status quietly, let the prompt fire on next Caps Lock.
                 NSLog("[AppState] Relay bridge died, reverting to awareness")
@@ -517,7 +517,7 @@ final class AppState {
             // Also detect orphaned relay bridges (process alive but no consumer).
             if justStartedRecording {
                 let bridgeProcessUp = self.processManager.bridgeAlive()
-                let bridgeUp = bridgeProcessUp && (self.directSessionActive || self.processManager.bridgeConsumerAlive())
+                let bridgeUp = bridgeProcessUp && (self.menuSessionActive || self.processManager.bridgeConsumerAlive())
                 self.bridgeAliveCache = bridgeUp
                 if !bridgeUp {
                     if bridgeProcessUp {

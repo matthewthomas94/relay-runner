@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Voice bridge — connects voice FIFO to Claude Code via JSON API, feeds TTS."""
+"""Voice bridge daemon for relay-mode voice sessions.
+
+Supported app/script paths run with --relay: the bridge writes voice commands
+to /tmp/voice_cmd_ready and reads spoken summaries from /tmp/tts_in.fifo. The
+non-relay branch below is legacy Claude-only direct mode retained for manual
+debugging; Start Session and the relay-bridge skills do not use it.
+"""
 
 from __future__ import annotations
 
@@ -48,13 +54,15 @@ def open_fifo(path: str) -> int | None:
         return None
 
 
-class VoiceBridge:
-    """Persistent `claude` session reused across voice prompts.
+class LegacyDirectVoiceBridge:
+    """Legacy persistent `claude` session reused across voice prompts.
 
-    The first prompt pays CLI startup + MCP-server-spawn cost (~5–7s on this
-    machine); subsequent prompts reuse the warm process and only pay LLM
-    inference time. Interrupt or crash respawns transparently, resuming the
-    same Claude session via --resume so conversation context is preserved.
+    This path is intentionally Claude-only and is not a supported user-facing
+    launch mode anymore. The first prompt pays CLI startup + MCP-server-spawn
+    cost (~5–7s on this machine); subsequent prompts reuse the warm process
+    and only pay LLM inference time. Interrupt or crash respawns transparently,
+    resuming the same Claude session via --resume so conversation context is
+    preserved.
     """
 
     def __init__(self, claude_bin: str, tts_queue: queue.Queue, session_id: str | None = None):
@@ -313,7 +321,7 @@ def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
 
 
 def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
-    """Relay mode: read voice FIFO, write commands to file for Claude, read TTS from FIFO."""
+    """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
     # Create TTS input FIFO
     for path in [TTS_IN_FIFO, VOICE_CMD_FILE]:
         try:
@@ -422,7 +430,7 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                 if slash_match:
                     text = "/" + slash_match.group(1).replace(" ", "-")
 
-                # Skip TTS for new voice input, write command for Claude
+                # Skip TTS for new voice input, write command for the agent
                 tts_worker.skip()
                 _notify_state("processing", prompt=text[:200])
                 _write_cmd_file(text)
@@ -457,6 +465,9 @@ def main():
     relay_mode = cli.get("relay", False)
 
     if not relay_mode:
+        # Legacy direct mode is intentionally Claude-only. The supported
+        # script/app entry points always pass --relay and run Codex or Claude
+        # through the installed relay-bridge skill/command instead.
         claude_bin = shutil.which("claude")
         if not claude_bin:
             print("[voice_bridge] Error: claude not found on PATH", file=sys.stderr)
@@ -476,7 +487,7 @@ def main():
     )
     control_thread.start()
 
-    # Relay mode: daemon for Claude Code slash command
+    # Relay mode: daemon for the relay-bridge skill/command
     if relay_mode:
         try:
             _run_relay(tts_worker, shutdown_event)
@@ -489,7 +500,7 @@ def main():
                 pass
         return
 
-    bridge = VoiceBridge(claude_bin, tts_queue, session_id=cli.get("session"))
+    bridge = LegacyDirectVoiceBridge(claude_bin, tts_queue, session_id=cli.get("session"))
 
     print("\033[1mRelay Runner\033[0m — Caps Lock to speak, Caps Lock again to interrupt")
     if bridge.session_id:
@@ -501,7 +512,7 @@ def main():
     if fifo_fd is None:
         sys.exit(1)
 
-    # Run Claude calls in a worker thread so FIFO stays responsive
+    # Run legacy Claude calls in a worker thread so FIFO stays responsive
     request_queue: queue.Queue = queue.Queue()
 
     def _worker():
@@ -590,7 +601,7 @@ def main():
                 if slash_match:
                     text = "/" + slash_match.group(1).replace(" ", "-")
 
-                # Interrupt any in-progress Claude request, stop TTS audio
+                # Interrupt any in-progress legacy Claude request, stop TTS audio
                 # (but don't discard pending text — user may still want to play it)
                 bridge.interrupt()
                 tts_worker.stop_playback()

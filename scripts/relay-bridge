@@ -2,14 +2,17 @@
 # relay-bridge -- Start voice I/O pipeline (STT sidecar + voice bridge).
 #
 # Usage:
-#   relay-bridge                     # Normal mode: full voice terminal
-#   relay-bridge --session <id>      # Resume a specific agent session
-#   relay-bridge --relay             # Relay mode: daemon for /relay-bridge slash command
+#   relay-bridge                     # Relay daemon for Start Session / relay-bridge skills
+#   relay-bridge --relay             # Same as default; kept for existing skill launchers
 #   relay-bridge --venv-only         # Run venv bootstrap and exit 0 (used by onboarding)
 #   relay-bridge --install-skills    # Force-write Relay skills/commands and exit 0
 #
-# In relay mode, voice commands are written to /tmp/voice_cmd_ready for the agent
-# to pick up, and TTS input is read from /tmp/tts_in.fifo.
+# Supported voice sessions run through Start Session or the installed
+# relay-bridge skill/command. The old full-terminal direct mode lives only in
+# services/voice_bridge.py for legacy manual debugging.
+#
+# Voice commands are written to /tmp/voice_cmd_ready for the agent to pick up,
+# and TTS input is read from /tmp/tts_in.fifo.
 
 set -euo pipefail
 
@@ -573,8 +576,8 @@ KOKORO_MODELS_OK=false
 [ -f "$KOKORO_MODEL_FILE" ] && [ -f "$KOKORO_VOICES_FILE" ] && KOKORO_MODELS_OK=true
 CLAUDE_BIN="$(find_claude_bin)"
 CODEX_BIN="$(find_codex_bin)"
-# Start Session now launches an interactive agent and uses relay mode, while
-# legacy direct mode still needs an agent CLI. Codex ships with the desktop app;
+# Supported voice sessions need an agent CLI: Start Session launches one, and
+# manual relay-bridge use runs inside one. Codex ships with the desktop app;
 # Claude usually lives at ~/.local/bin/claude.
 CLAUDE_CLI_OK=false
 [ -n "$CLAUDE_BIN" ] && CLAUDE_CLI_OK=true
