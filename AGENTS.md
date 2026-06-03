@@ -2,6 +2,10 @@
 
 This repo is its own dogfood: the relay-runner orchestrator is the sub-agent dispatcher you'll use *here*, not a separate tool. When the user is working in this repo, default to the orchestration workflow described below unless they say otherwise — and follow the Relay-stack tool defaults below for any screen-control work.
 
+## Provider parity
+
+Relay Runner supports multiple agent providers, especially Codex and Claude. When adding or changing provider-facing behavior for one provider, explicitly consider the equivalent user experience for every supported provider, not only the provider named in the immediate request. Provider-specific commands, flags, auth paths, model names, permissions, and limitations are allowed, but intentional differences must be documented in the ticket, implementation notes, or user-facing behavior.
+
 ## The orchestration workflow
 
 The user thinks of this session as the **orchestrator**, not the executor. Tickets live in this repo's `.orchestrator/` directory — that's the source of truth. No external service. **The board is gated on an active `/relay-bridge` session** — the bridge's launching cwd is what tells the menu-bar app which repo's `.orchestrator/` to render, so without a live bridge (`/tmp/voice_bridge.sock` present) the board hotkey just surfaces the same "No session running" pill the record-out-of-session path uses. **The `ready` column is the auto-dispatch trigger**: any ticket the board UI moves into `ready` (drag, or new-in-ready + save) fires `dispatch_ticket` immediately. Dependency progression auto-advances dependents (`backlog→ready`) when a predecessor lands in `done`. The four steps:

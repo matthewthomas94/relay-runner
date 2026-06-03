@@ -85,9 +85,11 @@ Anything else under `---` is ignored, leaving room for future fields without bre
 Two recommended sections, both freeform:
 
 - `## Description` — the *why* and *what*.
-- `## Acceptance criteria` — checkbox list of falsifiable checks. The sub-agent verifies against these.
+- `## Acceptance criteria` — checkbox list of falsifiable checks. The sub-agent verifies against these. For provider-facing work, include checks for each supported provider (currently Codex and Claude), or state the intentional provider-specific limitation or difference in the ticket.
 
 Neither is enforced by the schema. Tickets in `backlog` often have only a description; tickets in `ready` are expected to have acceptance criteria.
+
+A `ready` ticket for provider-facing work should make provider parity explicit: Codex-specific work should say what happens for Claude, Claude-specific work should say what happens for Codex, and any deliberate difference should be visible before dispatch.
 
 ## Statuses & lifecycle
 
