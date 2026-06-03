@@ -28,12 +28,96 @@ struct TtsConfig: Codable, Equatable {
 }
 
 struct GeneralConfig: Codable, Equatable {
+    enum AgentProvider: String, CaseIterable, Codable, Identifiable {
+        case codex
+        case claude
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .codex: return "Codex"
+            case .claude: return "Claude"
+            }
+        }
+
+        var defaultCommand: String { rawValue }
+    }
+
+    struct ModelOption: Identifiable, Equatable {
+        let label: String
+        let value: String
+
+        var id: String { value }
+    }
+
+    static let defaultModel = "default"
+
+    static let codexModelOptions: [ModelOption] = [
+        ModelOption(label: "Default", value: defaultModel),
+        ModelOption(label: "GPT-5 Codex", value: "gpt-5-codex"),
+        ModelOption(label: "GPT-5.2 Codex", value: "gpt-5.2-codex"),
+        ModelOption(label: "GPT-5.1 Codex", value: "gpt-5.1-codex"),
+    ]
+
+    static let claudeModelOptions: [ModelOption] = [
+        ModelOption(label: "Default", value: defaultModel),
+        ModelOption(label: "Opus", value: "opus"),
+        ModelOption(label: "Sonnet", value: "sonnet"),
+        ModelOption(label: "Haiku", value: "haiku"),
+    ]
+
+    var provider: AgentProvider = .codex
     var command: String = "codex"
     var terminal: String = "warp"
     var auto_start: Bool = false
     var working_directory: String = ""
     var bypass_permissions: Bool = true
-    var model: String = "default"
+    var model: String = defaultModel
+
+    static func modelOptions(for provider: AgentProvider) -> [ModelOption] {
+        switch provider {
+        case .codex: return codexModelOptions
+        case .claude: return claudeModelOptions
+        }
+    }
+
+    static func isModel(_ model: String, validFor provider: AgentProvider) -> Bool {
+        let normalized = model.trimmingCharacters(in: .whitespaces).lowercased()
+        return modelOptions(for: provider).contains { $0.value == normalized }
+    }
+
+    static func inferProvider(from command: String) -> AgentProvider {
+        let name = URL(fileURLWithPath: command).lastPathComponent.lowercased()
+        return name.contains("claude") ? .claude : .codex
+    }
+
+    mutating func selectProvider(_ newProvider: AgentProvider) {
+        provider = newProvider
+        if !hasCustomAbsoluteCommand {
+            command = newProvider.defaultCommand
+        }
+        normalizeSelectedModel()
+    }
+
+    mutating func normalize(providerWasExplicit: Bool) {
+        if !providerWasExplicit {
+            provider = Self.inferProvider(from: command)
+        }
+        if !hasCustomAbsoluteCommand {
+            command = provider.defaultCommand
+        }
+        normalizeSelectedModel()
+    }
+
+    private var hasCustomAbsoluteCommand: Bool {
+        command.trimmingCharacters(in: .whitespaces).hasPrefix("/")
+    }
+
+    private mutating func normalizeSelectedModel() {
+        let normalized = model.trimmingCharacters(in: .whitespaces).lowercased()
+        model = Self.isModel(normalized, validFor: provider) ? normalized : Self.defaultModel
+    }
 
     /// Resolve legacy terminal short names to full app paths.
     static func resolveTerminalPath(_ terminal: String) -> String {

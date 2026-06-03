@@ -8,13 +8,16 @@ struct GeneralSettingsTab: View {
 
     var body: some View {
         Form {
-            TextField("Target Command", text: $config.command, prompt: Text("codex"))
+            Picker("LLM Provider", selection: providerSelection) {
+                ForEach(GeneralConfig.AgentProvider.allCases) { provider in
+                    Text(provider.displayName).tag(provider)
+                }
+            }
 
             Picker("Model", selection: $config.model) {
-                Text("Default").tag("default")
-                Text("Opus").tag("opus")
-                Text("Sonnet").tag("sonnet")
-                Text("Haiku").tag("haiku")
+                ForEach(GeneralConfig.modelOptions(for: config.provider)) { option in
+                    Text(option.label).tag(option.value)
+                }
             }
 
             HStack {
@@ -62,6 +65,13 @@ struct GeneralSettingsTab: View {
                 Text("This will replace the installed Relay Runner voice command/skill files with the default versions.")
             }
         }
+    }
+
+    private var providerSelection: Binding<GeneralConfig.AgentProvider> {
+        Binding(
+            get: { config.provider },
+            set: { config.selectProvider($0) }
+        )
     }
 
     private func doInstallSkill() {

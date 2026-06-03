@@ -58,8 +58,14 @@ final class ConfigManager {
             if let v = tomlBool(tts, "show_notification") { config.tts.show_notification = v }
         }
 
+        var generalProviderWasExplicit = false
+
         // General
         if let general = table["general"]?.tomlValue.table {
+            if let v = tomlString(general, "provider") {
+                generalProviderWasExplicit = true
+                config.general.provider = GeneralConfig.AgentProvider(rawValue: v.lowercased()) ?? .codex
+            }
             if let v = tomlString(general, "command") { config.general.command = v }
             if let v = tomlString(general, "terminal") { config.general.terminal = v }
             if let v = tomlBool(general, "auto_start") { config.general.auto_start = v }
@@ -77,7 +83,7 @@ final class ConfigManager {
             if let v = tomlDouble(awareness, "glow_intensity") { config.awareness.glow_intensity = v }
         }
 
-        migrate(&config)
+        migrate(&config, generalProviderWasExplicit: generalProviderWasExplicit)
         return config
     }
 
@@ -112,6 +118,7 @@ final class ConfigManager {
         lines.append("")
 
         lines.append("[general]")
+        lines.append("provider = \"\(c.general.provider.rawValue)\"")
         lines.append("command = \"\(c.general.command)\"")
         lines.append("terminal = \"\(c.general.terminal)\"")
         lines.append("auto_start = \(c.general.auto_start)")
@@ -133,7 +140,7 @@ final class ConfigManager {
 
     // MARK: - Migration (matches lib.rs:150-180 and config.py:135-157)
 
-    private func migrate(_ config: inout AppConfig) {
+    private func migrate(_ config: inout AppConfig, generalProviderWasExplicit: Bool) {
         // Whisper models -> Parakeet
         switch config.stt.model {
         case "tiny.en", "base.en", "small.en", "medium.en":
@@ -155,6 +162,8 @@ final class ConfigManager {
         if config.tts.rate > 10.0 {
             config.tts.rate = min(2.0, max(0.5, 2.0 - (config.tts.rate - 100.0) * 1.5 / 200.0))
         }
+
+        config.general.normalize(providerWasExplicit: generalProviderWasExplicit)
     }
 }
 
