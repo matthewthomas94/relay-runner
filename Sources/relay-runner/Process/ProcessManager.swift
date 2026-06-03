@@ -166,7 +166,7 @@ final class ProcessManager {
     func launchNewSession(config: AppConfig) {
         let configPath = ConfigManager.shared.configPath.path
         let relayBridge = bundledRelayBridge.path
-        let target = Self.target(for: config.general.command)
+        let target = Self.target(for: config.general.provider)
         let agentBinary = Self.resolveAgentBinary(config.general.command, target: target)
         NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) agentBinary=\(agentBinary) configPath=\(configPath)")
 
@@ -181,7 +181,7 @@ final class ProcessManager {
         installSkill()
 
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
-        let modelFlag = Self.modelFlag(config.general.model)
+        let modelFlag = Self.modelFlag(config.general.model, target: target)
         let launcher = "/tmp/voice_bridge_launch.command"
         let cdLine = Self.cdLine(config.general.working_directory)
         let launchLine = Self.agentLaunchLine(
@@ -230,9 +230,11 @@ final class ProcessManager {
         case claude
     }
 
-    private static func target(for command: String) -> AgentTarget {
-        let name = URL(fileURLWithPath: command).lastPathComponent.lowercased()
-        return name.contains("claude") ? .claude : .codex
+    private static func target(for provider: GeneralConfig.AgentProvider) -> AgentTarget {
+        switch provider {
+        case .codex: return .codex
+        case .claude: return .claude
+        }
     }
 
     /// Resolve the configured agent binary. For Codex, prefer the desktop
@@ -248,13 +250,13 @@ final class ProcessManager {
             if FileManager.default.isExecutableFile(atPath: bundled) {
                 return bundled
             }
-            return trimmed.isEmpty ? "codex" : trimmed
+            return "codex"
         case .claude:
             let local = ClaudeAuth.claudeBinaryPath
             if FileManager.default.isExecutableFile(atPath: local) {
                 return local
             }
-            return trimmed.isEmpty ? "claude" : trimmed
+            return "claude"
         }
     }
 
@@ -262,10 +264,16 @@ final class ProcessManager {
     /// string when the user wants the agent's default. Single-quotes the name
     /// so a TOML-edited custom model id (e.g. `claude-sonnet-4-6`) can't
     /// break shell parsing.
-    private static func modelFlag(_ raw: String) -> String {
+    private static func modelFlag(_ raw: String, target: AgentTarget) -> String {
         let v = raw.trimmingCharacters(in: .whitespaces).lowercased()
         if v.isEmpty || v == "default" { return "" }
-        return "--model '\(raw.trimmingCharacters(in: .whitespaces))' "
+        let provider: GeneralConfig.AgentProvider
+        switch target {
+        case .codex: provider = .codex
+        case .claude: provider = .claude
+        }
+        guard GeneralConfig.isModel(v, validFor: provider) else { return "" }
+        return "--model '\(v)' "
     }
 
     private static func bypassFlag(enabled: Bool, target: AgentTarget) -> String {

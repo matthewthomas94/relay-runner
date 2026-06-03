@@ -82,6 +82,11 @@ def load_config(config_path: str | None = None) -> dict:
         else:
             config = _parse_toml_simple(raw.decode("utf-8"))
 
+    general_had_provider = (
+        isinstance(config.get("general"), dict)
+        and "provider" in config.get("general", {})
+    )
+
     # Apply defaults
     defaults = {
         "stt": {
@@ -104,9 +109,13 @@ def load_config(config_path: str | None = None) -> dict:
             "skip_key": "Shift+F5",
         },
         "general": {
+            "provider": "codex",
             "command": "codex",
             "terminal": "warp",
             "auto_start": False,
+            "working_directory": "",
+            "bypass_permissions": True,
+            "model": "default",
         },
         "orchestrator": {
             "agent": "codex",
@@ -137,11 +146,11 @@ def load_config(config_path: str | None = None) -> dict:
                 else:
                     config[section][key] = default
 
-    _migrate_config(config)
+    _migrate_config(config, general_had_provider=general_had_provider)
     return config
 
 
-def _migrate_config(config: dict):
+def _migrate_config(config: dict, general_had_provider: bool = True):
     """Migrate legacy config values in-place."""
     tts = config.get("tts", {})
 
@@ -163,3 +172,25 @@ def _migrate_config(config: dict):
         stt["model"] = "parakeet-tdt-v2"
     elif stt.get("model") in ("large", "large-v3"):
         stt["model"] = "parakeet-tdt-v3"
+
+    general = config.get("general", {})
+    if not general_had_provider:
+        command = str(general.get("command", "codex")).strip()
+        name = os.path.basename(command).lower()
+        general["provider"] = "claude" if "claude" in name else "codex"
+
+    provider = str(general.get("provider", "codex")).strip().lower()
+    if provider not in ("codex", "claude"):
+        provider = "codex"
+    general["provider"] = provider
+
+    command = str(general.get("command", ""))
+    if not command.strip().startswith("/"):
+        general["command"] = provider
+
+    valid_models = {
+        "codex": {"default", "gpt-5-codex", "gpt-5.2-codex", "gpt-5.1-codex"},
+        "claude": {"default", "opus", "sonnet", "haiku"},
+    }
+    model = str(general.get("model", "default")).strip().lower()
+    general["model"] = model if model in valid_models[provider] else "default"
