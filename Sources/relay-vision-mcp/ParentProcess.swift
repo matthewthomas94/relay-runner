@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 // Walks up the process tree from this MCP server's parent to find the
-// terminal (or IDE) that spawned `claude`. macOS attributes Screen Recording
+// terminal (or IDE) that spawned the agent session. macOS attributes Screen Recording
 // permission to the *responsible* process — typically that's the terminal,
 // not Relay Runner — so the user has to grant Screen Recording to e.g.
 // Terminal.app, not (only) to Relay Runner.app. Without naming the right app
@@ -41,7 +41,7 @@ enum ParentProcess {
 
     static func detectTerminal() -> TerminalApp? {
         var pid: Int32 = getppid()
-        // Cap the walk — most chains are 3–5 deep (claude → shell → terminal),
+        // Cap the walk — most chains are 3–5 deep (agent CLI → shell → terminal),
         // and we never legitimately need to walk further than this.
         for _ in 0..<10 {
             guard pid > 1 else { break }
@@ -102,12 +102,12 @@ enum ParentProcess {
             Pattern(needle: "/Hyper.app/",     display: "Hyper",     isBundle: true),
             Pattern(needle: "/Ghostty.app/",   display: "Ghostty",   isBundle: true),
             Pattern(needle: "/Tabby.app/",     display: "Tabby",     isBundle: true),
-            // Anthropic's own Claude Code desktop app — spawns `claude` from
+            // Anthropic's own Claude Code desktop app — spawns its CLI from
             // its embedded shell. Worth handling explicitly because (a) it's
             // increasingly common and (b) the `/Claude.app/` bundle is what
             // TCC attributes to.
             Pattern(needle: "/Claude.app/",                  display: "Claude",             isBundle: true),
-            // IDE-embedded terminals — VS Code spawns claude from its
+            // IDE-embedded terminals — VS Code spawns the agent CLI from its
             // integrated terminal under Code Helper (Plugin) etc.
             Pattern(needle: "/Visual Studio Code.app/",      display: "Visual Studio Code", isBundle: true),
             Pattern(needle: "/Code.app/",                    display: "Visual Studio Code", isBundle: true),

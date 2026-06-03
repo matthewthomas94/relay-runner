@@ -3,7 +3,7 @@ import Foundation
 
 // Window introspection tools: frontmost_app, list_windows.
 //
-// Used by Claude to ground itself before clicking — knowing what app is in front
+// Used by the agent to ground itself before clicking — knowing what app is in front
 // and what windows are visible avoids the "click coordinate but the app changed
 // underneath" failure mode common in vision-only loops.
 
@@ -88,7 +88,7 @@ struct ListWindowsTool: MCPTool {
             // Filter out the chrome of system surfaces — menubar, dock, notification center
             // overlays — by skipping zero-titled windows owned by 'Window Server' or 'Dock'.
             // Also drop tiny ornamental windows (≤ 5 px in either dimension) that clutter
-            // the list without helping Claude.
+            // the list without helping the agent.
             if (wPx <= 5 || hPx <= 5) && title.isEmpty { return nil }
 
             return [
