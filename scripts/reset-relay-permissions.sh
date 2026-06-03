@@ -192,7 +192,7 @@ detect_parent_bundle_ids() {
 }
 
 warn_if_running() {
-    if pgrep -f '[r]elay-runner' >/dev/null 2>&1; then
+    if pgrep -x 'relay-runner' >/dev/null 2>&1; then
         printf 'warning: Relay Runner appears to be running. Quit and relaunch it after executing this reset.\n\n' >&2
     fi
 }
