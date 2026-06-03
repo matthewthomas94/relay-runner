@@ -87,6 +87,25 @@ final class BoardProjectConfigTests: XCTestCase {
         )
     }
 
+    func testResolveRejectsUnhealthyBridgeSession() throws {
+        let repo = try makeTempRepo(named: "mouse-assist")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        try Data().write(to: bridgeSocket)
+        try Data(repo.path.utf8).write(to: bridgeCwd)
+
+        let project = ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            bridgeSessionAlive: { false }
+        )
+
+        XCTAssertNil(project)
+    }
+
     func testMintRejectsInvalidConfig() throws {
         let repo = try makeTempRepo(named: "mouse-assist")
         defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
