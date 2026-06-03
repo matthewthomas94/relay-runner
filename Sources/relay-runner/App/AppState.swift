@@ -344,14 +344,17 @@ final class AppState {
             }
 
             // Detect orphaned relay bridge (process alive but consumer dead).
-            // Reap the orphan but don't pop the session-prompt overlay — the
-            // user gets the prompt when they actually press Caps Lock with no
-            // session, not while the agent is mid-processing on a long task.
-            if alive && !self.menuSessionActive && !self.processManager.bridgeConsumerAlive() {
+            // Reap the orphan and surface the normal no-session prompt instead
+            // of letting voice commands sit unread behind a healthy-looking
+            // socket.
+            if alive && !self.processManager.bridgeConsumerAlive() {
                 NSLog("[AppState] Relay bridge orphaned (consumer heartbeat stale), killing")
                 self.processManager.killBridge()
                 self.bridgeAliveCache = false
+                self.menuSessionActive = false
                 self.statusText = "Ready"
+                self.sessionPromptCapsState = CapsLockGesture.isCapsLockOn()
+                self.stateMachine.showSessionPrompt()
                 return
             }
 
@@ -517,12 +520,13 @@ final class AppState {
             // Also detect orphaned relay bridges (process alive but no consumer).
             if justStartedRecording {
                 let bridgeProcessUp = self.processManager.bridgeAlive()
-                let bridgeUp = bridgeProcessUp && (self.menuSessionActive || self.processManager.bridgeConsumerAlive())
+                let bridgeUp = bridgeProcessUp && self.processManager.bridgeConsumerAlive()
                 self.bridgeAliveCache = bridgeUp
                 if !bridgeUp {
                     if bridgeProcessUp {
                         self.processManager.killBridge()
                     }
+                    self.menuSessionActive = false
                     engine.cancelRecording()
                     self.sessionPromptCapsState = CapsLockGesture.isCapsLockOn()
                     self.stateMachine.showSessionPrompt()

@@ -4,8 +4,8 @@ import Foundation
 ///
 /// The board only opens when a `/relay-bridge` session is live. The bridge
 /// writes its launching cwd to `/tmp/voice_bridge.cwd` at startup and clears
-/// it on shutdown; the bridge socket at `/tmp/voice_bridge.sock` is the
-/// liveness check. Together they let the board show "the repo this voice
+/// it on shutdown; the bridge socket plus the agent-consumer heartbeat are
+/// the liveness check. Together they let the board show "the repo this voice
 /// session is rooted in" without a separate project registry — there's
 /// exactly one bridge session at a time, so there's no ambiguity.
 ///
@@ -27,16 +27,20 @@ enum ProjectResolver {
     static func resolve() -> LinkedProject? {
         resolve(
             bridgeSocket: URL(fileURLWithPath: bridgeSocketPath),
-            bridgeCwdFile: URL(fileURLWithPath: bridgeCwdFilePath)
+            bridgeCwdFile: URL(fileURLWithPath: bridgeCwdFilePath),
+            bridgeSessionAlive: ProcessManager.activeRelaySessionAlive
         )
     }
 
-    static func resolve(bridgeSocket: URL, bridgeCwdFile: URL) -> LinkedProject? {
+    static func resolve(
+        bridgeSocket: URL,
+        bridgeCwdFile: URL,
+        bridgeSessionAlive: () -> Bool = { true }
+    ) -> LinkedProject? {
         let fm = FileManager.default
-        // Bridge socket is the liveness check. If the bridge died without
-        // cleanup, the socket file may linger — that's acceptable here
-        // because the .cwd file is paired with it and the worst case is
-        // a stale-but-correct project (the user's last bridge session).
+        // Tests can pass explicit fixture paths and use the default healthy
+        // closure; production resolve() checks process + consumer liveness.
+        guard bridgeSessionAlive() else { return nil }
         guard fm.fileExists(atPath: bridgeSocket.path) else { return nil }
         guard let raw = try? String(contentsOf: bridgeCwdFile, encoding: .utf8) else {
             return nil

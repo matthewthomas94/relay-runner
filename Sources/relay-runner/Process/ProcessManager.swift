@@ -4,15 +4,22 @@ import Foundation
 final class ProcessManager {
 
     private var bridgeProcess: Process?
+    private static let bridgeSocketPath = "/tmp/voice_bridge.sock"
+    private static let voiceCommandPath = "/tmp/voice_cmd_ready"
+    private static let heartbeatPath = "/tmp/voice_bridge_heartbeat"
+    private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
+    private static let pendingVoiceCommandTimeout: TimeInterval = 10
+    private static let staleHeartbeatTimeout: TimeInterval = 30
+    private static let missingHeartbeatGrace: TimeInterval = 30
     private static let bridgeRuntimePaths = [
         "/tmp/voice_in.fifo",
-        "/tmp/voice_bridge.sock",
-        "/tmp/voice_cmd_ready",
+        bridgeSocketPath,
+        voiceCommandPath,
         "/tmp/tts_in.fifo",
         "/tmp/tts_control.sock",
-        "/tmp/voice_bridge_heartbeat",
+        heartbeatPath,
         "/tmp/voice_bridge_heartbeat.pid",
-        "/tmp/voice_bridge.cwd",
+        bridgeCwdPath,
         "/tmp/relay_board_now.txt",
         "/tmp/relay_board_prev.txt",
     ]
@@ -80,7 +87,15 @@ final class ProcessManager {
     // MARK: - Bridge lifecycle
 
     func bridgeAlive() -> Bool {
-        guard FileManager.default.fileExists(atPath: "/tmp/voice_bridge.sock") else { return false }
+        Self.bridgeDaemonAlive()
+    }
+
+    static func activeRelaySessionAlive() -> Bool {
+        bridgeDaemonAlive() && relayConsumerAlive()
+    }
+
+    private static func bridgeDaemonAlive() -> Bool {
+        guard FileManager.default.fileExists(atPath: bridgeSocketPath) else { return false }
         return Self.voiceBridgeProcessAlive()
     }
 
@@ -102,32 +117,67 @@ final class ProcessManager {
     /// Check if the relay consumer (the agent skill's bash polling loop) is alive.
     /// Uses two signals: stale heartbeat file and unconsumed voice command.
     func bridgeConsumerAlive() -> Bool {
-        let fm = FileManager.default
+        Self.relayConsumerAlive()
+    }
 
+    static func relayConsumerAlive() -> Bool {
+        relayConsumerAlive(
+            voiceCommandPath: voiceCommandPath,
+            heartbeatPath: heartbeatPath,
+            sessionMarkerPaths: [bridgeSocketPath, bridgeCwdPath],
+            now: Date()
+        )
+    }
+
+    static func relayConsumerAlive(
+        voiceCommandPath: String,
+        heartbeatPath: String,
+        sessionMarkerPaths: [String],
+        now: Date,
+        fileManager fm: FileManager = .default
+    ) -> Bool {
         // Fast check: if a voice command has been pending for >10s, consumer is dead
         // (in normal flow, the agent reads voice_cmd_ready within ~1s)
-        if fm.fileExists(atPath: "/tmp/voice_cmd_ready"),
-           let attrs = try? fm.attributesOfItem(atPath: "/tmp/voice_cmd_ready"),
-           let modified = attrs[.modificationDate] as? Date,
-           Date().timeIntervalSince(modified) > 10 {
+        if let modified = modificationDate(of: voiceCommandPath, fileManager: fm),
+           now.timeIntervalSince(modified) > pendingVoiceCommandTimeout {
+            NSLog("[ProcessManager] relay consumer missing: voice command pending for \(Int(now.timeIntervalSince(modified)))s")
             return false
         }
 
-        // Slow check: if heartbeat is stale for >15 minutes, consumer is
-        // likely dead. The skill's bash polling loop touches the file every
-        // 200ms while waiting for voice input, plus a background refresher
-        // (Step 1 of the skill/command) touches it every 2s during agent
-        // processing — but if the agent itself has crashed or the terminal was
-        // closed, neither runs. 15 minutes is comfortably above realistic
-        // tool/agent work (long builds, ultrareview, parallel agents) and
-        // still gets a truly closed terminal reaped before the user notices.
-        // Earlier threshold (5 min) was too tight: long turns with deep
-        // tool stacks could blow past it and get reaped mid-conversation.
-        let heartbeatPath = "/tmp/voice_bridge_heartbeat"
-        guard fm.fileExists(atPath: heartbeatPath) else { return true } // no file = old skill version, benefit of doubt
-        guard let attrs = try? fm.attributesOfItem(atPath: heartbeatPath),
-              let modified = attrs[.modificationDate] as? Date else { return true }
-        return Date().timeIntervalSince(modified) < 900
+        // Modern Codex and Claude relay-bridge sessions touch the heartbeat
+        // every 200ms while waiting and every 2s while the agent is working.
+        // A missing heartbeat gets only a bounded startup/old-skill grace
+        // instead of indefinite benefit of doubt; after that, a live socket
+        // without a consumer is treated as an orphaned session.
+        if let modified = modificationDate(of: heartbeatPath, fileManager: fm) {
+            let age = now.timeIntervalSince(modified)
+            if age > staleHeartbeatTimeout {
+                NSLog("[ProcessManager] relay consumer missing: heartbeat stale for \(Int(age))s")
+                return false
+            }
+            return true
+        }
+
+        let newestMarker = sessionMarkerPaths
+            .compactMap { modificationDate(of: $0, fileManager: fm) }
+            .max()
+        guard let markerModified = newestMarker else {
+            NSLog("[ProcessManager] relay consumer missing: no heartbeat or session marker")
+            return false
+        }
+        let missingAge = now.timeIntervalSince(markerModified)
+        if missingAge > missingHeartbeatGrace {
+            NSLog("[ProcessManager] relay consumer missing: heartbeat absent for \(Int(missingAge))s")
+            return false
+        }
+        return true
+    }
+
+    private static func modificationDate(of path: String, fileManager fm: FileManager) -> Date? {
+        guard fm.fileExists(atPath: path),
+              let attrs = try? fm.attributesOfItem(atPath: path),
+              let modified = attrs[.modificationDate] as? Date else { return nil }
+        return modified
     }
 
     /// Kill any running voice_bridge process (but leave the terminal window open).
