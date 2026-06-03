@@ -14,9 +14,9 @@ scripts/relay-orchestrator --status
 
 You should see a running daemon, a port file, and an installed plist.
 
-### 1. Open a `/relay-bridge` session in the repo
+### 1. Open a `/relay-bridge` agent session in the repo
 
-The board is scoped to whichever repo your active voice-bridge session is rooted in. From a Codex or Claude session whose cwd is the project you want to work on:
+The board is scoped to whichever repo your active `/relay-bridge` agent session is rooted in. From a Codex or Claude session whose cwd is the project you want to work on:
 
 ```
 /relay-bridge
@@ -102,7 +102,7 @@ Tickets live as version-controlled markdown under `<repo>/.orchestrator/`. Reads
 
 ## Which board you see
 
-The board has no project picker. The active `/relay-bridge` session is the picker: when the bridge starts, it writes its launching cwd to `/tmp/voice_bridge.cwd`; the menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` as liveness check) and renders the `.orchestrator/` inside it. With no live bridge, the board's `⌃⌥` hotkey shows the same "No session running" pill as the record-out-of-session path instead of opening — there's no project to render. Switch projects by stopping one bridge (or `/relay-stop`) and starting another from the new repo's cwd.
+The board has no project picker. The active `/relay-bridge` agent session is the picker: when the bridge starts, it writes its launching cwd to `/tmp/voice_bridge.cwd`; the menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` as liveness check) and renders the `.orchestrator/` inside it. With no live bridge, the board's `⌃⌥` hotkey shows the same "No session running" pill as the record-out-of-session path instead of opening — there's no project to render. Switch projects by stopping one bridge (or `/relay-stop`) and starting another from the new repo's cwd.
 
 The full file format is documented at [docs/specs/orchestrator-tickets.md](specs/orchestrator-tickets.md).
 

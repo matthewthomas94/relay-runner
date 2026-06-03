@@ -8,7 +8,7 @@
 
 ## Goal
 
-Give voice-driven Claude a clean, separately-namespaced way to *see* the screen — without bundling observation into the manipulation tool family. The user-facing voice intent "look at my screen" routes to `mcp__relay-vision__screenshot`.
+Give voice-driven agents (Codex or Claude) a clean, separately-namespaced way to *see* the screen — without bundling observation into the manipulation tool family. The user-facing voice intent "look at my screen" routes to `mcp__relay-vision__screenshot`.
 
 ## Scope
 
@@ -26,12 +26,12 @@ The namespace is designed to grow — future observation tools could include reg
 
 ## Registration & packaging
 
-- Registered with the bundled `claude` CLI at user scope by `scripts/relay-bridge` (`claude mcp add -s user relay-vision -- <binary>`), gated on a `claude mcp get relay-vision` probe — mirroring the `relay-actions` registration.
+- Registered by `scripts/relay-bridge` with each available supported agent CLI: `claude mcp add -s user relay-vision -- <binary>` for Claude and `codex mcp add relay-vision -- <binary>` for Codex. Each path is gated on the matching `mcp get` probe, mirroring the `relay-actions` registration.
 - Bundled into the `.app` and codesigned by `scripts/build-dmg.sh`, alongside `relay-actions-mcp` and `relay-orchestrator-mcp`. TCC attribution falls on the bundle (Screen Recording prompts read "Relay Runner").
 
 ## Acceptance
 
-- [ ] `mcp__relay-vision__screenshot` is discoverable by `claude` and returns an image + dimensions block identical to the pre-split `mcp__relay-actions__screenshot`.
+- [ ] `mcp__relay-vision__screenshot` is discoverable by Codex and Claude when those CLIs are installed and returns an image + dimensions block identical to the pre-split `mcp__relay-actions__screenshot`.
 - [ ] ActionGlow pulses on a `relay-vision` screenshot, identically to before the split.
 - [ ] The old `mcp__relay-actions__screenshot` tool no longer exists; the remaining Relay Actions tools still pulse ActionGlow.
 - [ ] Screen Recording denial returns a descriptive error string naming the terminal/IDE to grant, not a crash.
