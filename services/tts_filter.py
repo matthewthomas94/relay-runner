@@ -25,13 +25,13 @@ _ANSI_RE = re.compile(
     r"|\[>[0-9;]*[a-zA-Z]"        # DA2 responses
 )
 
-# Claude Code spinner/status characters
+# Agent CLI spinner/status characters
 _CLAUDE_SPINNER_CHARS = set("✽✻✶✳✢·⏺●◐◑◒◓")
 
 # Spinner / progress characters
 _SPINNER_RE = re.compile(r"^[\s]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷|/\\-]+[\s]*$")
 
-# Claude Code status words — strip regardless of prefix. Claude cycles through
+# Agent CLI status words — strip regardless of prefix. Claude cycles through
 # many creative words as spinner text; match broadly with a trailing ellipsis.
 _CLAUDE_STATUS_RE_LINE = re.compile(r"^.*\w+…\s*$")
 _CLAUDE_STATUS_WORDS = [
@@ -45,7 +45,7 @@ _CLAUDE_STATUS_WORDS = [
 ]
 
 # Shell prompt patterns
-_PROMPT_RE = re.compile(r"^[\s]*([\$#>%]|\w+@\w+[:\$#]|❯|➜|\(.*\)[\s]*[\$#>])")
+_PROMPT_RE = re.compile(r"^[\s]*([\$#>%]|\w+@\w+[:\$#]|›|❯|➜|\(.*\)[\s]*[\$#>])")
 
 # Tool use markers from Claude Code
 _TOOL_MARKERS = [
@@ -53,17 +53,24 @@ _TOOL_MARKERS = [
     "Read(", "Edit(", "Write(", "Bash(", "Glob(", "Grep(",  # Tool calls
     "Agent(", "Search(", "WebFetch(", "WebSearch(",  # More tool calls
     "⎿",  # Tool result prefix
-    "Thinking", "thinking",  # Thinking indicators
 ]
 
-# Claude Code status/UI lines to skip entirely
+# Claude/Codex status/UI lines to skip entirely
 _STATUS_RE = re.compile(
     r"^[\s]*(Thinking|thinking|Generating|Streaming|Processing|Compiling|Building|Running|Installing"
     r"|Reading|Editing|Writing|Searching|Fetching"
+    r"|Working|Planning|Waiting"
     r"|[\d]+%|[\d]+/[\d]+"  # Progress indicators
     r"|\.{2,}"  # Ellipsis lines
     r"|[-=]{3,}"  # Horizontal rules
     r"|[*_]{1,3}\S)"  # Markdown emphasis at start of line
+)
+
+# Codex CLI header/status chrome seen in wrapped terminal sessions.
+_CODEX_UI_RE = re.compile(
+    r"^(OpenAI Codex\b|Codex CLI\b|Model:|Approval:|Sandbox:|Workdir:|Working directory:"
+    r"|Session:|Context:|Tokens?(?: used)?:|Usage:|Esc to|Press .* to|Ctrl\+C)",
+    re.IGNORECASE,
 )
 
 # Inline code pattern (backtick-wrapped)
@@ -205,23 +212,32 @@ class TTSFilter:
         # Very short fragments — streaming artifacts (individual chars/pairs)
         if len(stripped) <= 4:
             return True
-        # Claude Code status words (with any spinner prefix)
+        # Agent CLI status words (with any spinner prefix)
         for word in _CLAUDE_STATUS_WORDS:
             if core.startswith(word):
                 return True
         # Horizontal rules and box-drawing characters
         if all(c in "─═━—–-=_│|┌┐└┘├┤┬┴┼ " for c in stripped):
             return True
-        # Claude Code status bar patterns
+        # Claude/Codex status bar patterns
         if "context)" in stripped or "│" in stripped:
             return True
+        # Codex CLI status/header lines
+        if _CODEX_UI_RE.match(core):
+            return True
         # Model identifiers
-        if core.startswith("Opus") or core.startswith("Sonnet") or core.startswith("Haiku"):
+        if (
+            core.startswith("Opus")
+            or core.startswith("Sonnet")
+            or core.startswith("Haiku")
+            or core.startswith("GPT")
+            or core.startswith("gpt-")
+        ):
             return True
         # MCP / remote-control status
         if "MCP" in stripped or "remote-control" in stripped or "session_" in stripped:
             return True
-        # Claude Code status/UI lines
+        # Claude/Codex status/UI lines
         if _STATUS_RE.match(stripped):
             return True
         # Spinner/progress

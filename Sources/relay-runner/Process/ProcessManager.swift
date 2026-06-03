@@ -82,13 +82,13 @@ final class ProcessManager {
         }
     }
 
-    /// Check if the relay consumer (Claude's bash polling loop) is alive.
+    /// Check if the relay consumer (the agent skill's bash polling loop) is alive.
     /// Uses two signals: stale heartbeat file and unconsumed voice command.
     func bridgeConsumerAlive() -> Bool {
         let fm = FileManager.default
 
         // Fast check: if a voice command has been pending for >10s, consumer is dead
-        // (in normal flow, Claude reads voice_cmd_ready within ~1s)
+        // (in normal flow, the agent reads voice_cmd_ready within ~1s)
         if fm.fileExists(atPath: "/tmp/voice_cmd_ready"),
            let attrs = try? fm.attributesOfItem(atPath: "/tmp/voice_cmd_ready"),
            let modified = attrs[.modificationDate] as? Date,
@@ -99,8 +99,8 @@ final class ProcessManager {
         // Slow check: if heartbeat is stale for >15 minutes, consumer is
         // likely dead. The skill's bash polling loop touches the file every
         // 200ms while waiting for voice input, plus a background refresher
-        // (Step 1 of the slash command) touches it every 2s during Claude
-        // processing — but if Claude itself has crashed or the terminal was
+        // (Step 1 of the skill/command) touches it every 2s during agent
+        // processing — but if the agent itself has crashed or the terminal was
         // closed, neither runs. 15 minutes is comfortably above realistic
         // tool/agent work (long builds, ultrareview, parallel agents) and
         // still gets a truly closed terminal reaped before the user notices.
