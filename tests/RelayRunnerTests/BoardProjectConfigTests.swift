@@ -100,6 +100,31 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertThrowsError(try TicketWriter.mint(in: project, status: .backlog, order: 10))
     }
 
+    func testTicketNewestFirstSortsByNumericIdDescending() {
+        let tickets = [
+            makeTicket(id: "RR-1", order: 30),
+            makeTicket(id: "RR-30", order: 10),
+            makeTicket(id: "RR-2", order: 20),
+        ]
+
+        XCTAssertEqual(tickets.sorted(by: Ticket.newestFirst).map(\.id), ["RR-30", "RR-2", "RR-1"])
+    }
+
+    private func makeTicket(id: String, order: Int) -> Ticket {
+        Ticket(
+            id: id,
+            title: id,
+            status: .backlog,
+            priority: .medium,
+            dependsOn: [],
+            runId: nil,
+            canceled: false,
+            order: order,
+            description: nil,
+            body: ""
+        )
+    }
+
     private func makeTempRepo(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RelayRunnerTests-\(UUID().uuidString)", isDirectory: true)

@@ -332,7 +332,7 @@ final class BoardOverlayController {
         // it from the source list first; then clamp the insert index.
         var destColumn = model.tickets
             .filter { $0.status == status && $0.id != ticketId }
-            .sorted { $0.order < $1.order }
+            .sorted(by: Ticket.newestFirst)
         let clampedIndex = max(0, min(insertIndex, destColumn.count))
         let moved = Ticket(
             id: dragged.id,

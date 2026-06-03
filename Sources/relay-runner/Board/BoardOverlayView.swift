@@ -54,7 +54,7 @@ final class BoardViewModel {
         }
         let columnTickets = tickets
             .filter { $0.status == status && $0.id != draggedId }
-            .sorted { $0.order < $1.order }
+            .sorted(by: Ticket.newestFirst)
         var index = columnTickets.count
         for (i, t) in columnTickets.enumerated() {
             if let frame = cardFrames[t.id], location.y < frame.midY {
@@ -271,7 +271,7 @@ private struct BoardColumnPanel: View {
         // Placement honors the live-run override (a worker can pull a `ready`
         // ticket into "In progress") rather than the raw ticket-file status.
         model.tickets.filter { model.effectiveStatus(for: $0) == spec.status }
-            .sorted { $0.order < $1.order }
+            .sorted(by: Ticket.newestFirst)
     }
 
     /// Index inside this column where the active drag would land, or `nil`

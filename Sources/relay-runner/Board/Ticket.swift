@@ -11,7 +11,8 @@ struct Ticket: Identifiable, Equatable {
     /// Sort key within a column. Lower = higher in the list. Optional in the
     /// on-disk schema — missing `order` falls back to the numeric portion of
     /// the ticket id (so existing tickets keep their RR-1, RR-2, … sequence
-    /// without a migration). The board renumbers on drag-drop.
+    /// without a migration). The board still writes this on drag-drop, but
+    /// display order is newest-first by ticket id so recent work stays visible.
     let order: Int
     /// First paragraph after `## Description` in the body. Nil when the ticket
     /// has no description section. Cards may further clip this if it overflows.
@@ -33,6 +34,24 @@ struct Ticket: Identifiable, Equatable {
         case high
         case medium
         case low
+    }
+}
+
+extension Ticket {
+    static func newestFirst(_ lhs: Ticket, _ rhs: Ticket) -> Bool {
+        let left = ticketNumber(lhs.id)
+        let right = ticketNumber(rhs.id)
+        if left != right { return left > right }
+        if lhs.id != rhs.id { return lhs.id > rhs.id }
+        return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+    }
+
+    private static func ticketNumber(_ id: String) -> Int {
+        guard let dash = id.lastIndex(of: "-"),
+              let number = Int(id[id.index(after: dash)...]) else {
+            return Int.min
+        }
+        return number
     }
 }
 
