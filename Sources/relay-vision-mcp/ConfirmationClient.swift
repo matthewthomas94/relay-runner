@@ -15,7 +15,7 @@ import Foundation
 // Connect failure (menu-bar app not running) is non-fatal:
 // - tool_fired silently swallows it
 // - requestConfirmation returns .menuBarUnavailable so propose_action can
-//   surface a clear error to Claude
+//   surface a clear error to the agent
 
 enum ConfirmationOutcome {
     case confirmed

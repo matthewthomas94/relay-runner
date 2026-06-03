@@ -7,7 +7,7 @@ import Foundation
 //
 // macOS surfaces TCC dialogs the first time a process touches a gated API
 // (Accessibility for CGEvent, Screen Recording for SCShareableContent). When a
-// user is voice-driving Claude they have no idea a dialog is about to appear,
+// user is voice-driving an agent they have no idea a dialog is about to appear,
 // what it's for, or which app to grant — TCC attributes to the *responsible*
 // parent (Terminal / Warp / VS Code etc.), not Relay Runner.
 //
@@ -21,7 +21,7 @@ import Foundation
 // re-narrate the same permission ask. After the warning we sleep briefly so the
 // user can react before the dialog blocks the screen, then attempt the system
 // prompt and re-check. If the permission is still missing we surface a clear
-// error to Claude so it can speak a helpful follow-up rather than silently
+// error to the agent so it can speak a helpful follow-up rather than silently
 // posting CGEvents that get dropped.
 
 enum PermissionPreflight {
@@ -30,7 +30,7 @@ enum PermissionPreflight {
         /// Permission is (already) granted — proceed.
         case granted
         /// User has not yet granted; subsequent action will likely fail. Caller
-        /// should surface the message to Claude as a tool error.
+        /// should surface the message to the agent as a tool error.
         case stillMissing(message: String)
     }
 
@@ -70,7 +70,7 @@ enum PermissionPreflight {
 
         let purpose = recentPurpose() ?? fallbackPurpose
         let parent = ParentProcess.detectTerminal()?.displayName
-            ?? "the app you launched `claude` from"
+            ?? "the parent terminal, IDE, or app that launched this agent session"
 
         warnOnceIfNeeded(permission: .accessibility) {
             speak("""
@@ -99,8 +99,9 @@ enum PermissionPreflight {
         return .stillMissing(message: """
             Could not perform the action. Accessibility permission is not granted.
 
-            macOS attributes input control to the app that launched `claude`, NOT to \
-            Relay Runner. Grant Accessibility to **\(parent)**:
+            macOS attributes input control to the parent terminal, IDE, or app that \
+            launched this agent session, NOT to Relay Runner. Grant Accessibility to \
+            **\(parent)**:
 
             1. Open System Settings → Privacy & Security → Accessibility
             2. Toggle on \(parent)
@@ -118,13 +119,13 @@ enum PermissionPreflight {
 
         let purpose = recentPurpose() ?? fallbackPurpose
         let parent = ParentProcess.detectTerminal()?.displayName
-            ?? "the app you launched `claude` from"
+            ?? "the parent terminal, IDE, or app that launched this agent session"
 
         warnOnceIfNeeded(permission: .screenRecording) {
             speak("""
                 To \(purpose), macOS needs to give \(parent) permission to record the screen. \
                 A dialog will pop up — please click Allow, then I'll need you to restart \
-                your Claude session for it to take effect.
+                your agent session for it to take effect.
                 """)
         }
 
@@ -147,13 +148,14 @@ enum PermissionPreflight {
         return .stillMissing(message: """
             Could not capture the screen. Screen Recording permission is not granted.
 
-            macOS attributes screen capture to the app that launched `claude`, NOT to \
-            Relay Runner. Grant Screen Recording to **\(parent)**:
+            macOS attributes screen capture to the parent terminal, IDE, or app that \
+            launched this agent session, NOT to Relay Runner. Grant Screen Recording to \
+            **\(parent)**:
 
             1. Open System Settings → Privacy & Security → Screen Recording
             2. Toggle on \(parent)
             3. Quit and relaunch \(parent) (the permission only takes effect on relaunch)
-            4. Restart your `claude` session
+            4. Restart your agent session
 
             Without this permission, every screenshot, click, or other screen-control \
             request I make will fail. Voice transcription and speech still work.

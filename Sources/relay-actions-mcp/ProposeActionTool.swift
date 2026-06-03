@@ -17,7 +17,7 @@ import Foundation
 //   no input for 30s (server-side in ActionsConfirmBus) → "timeout"
 //   menu-bar app not running                → "menu_bar_unavailable"
 //
-// Server-side keyword guard: if Claude classifies an action as medium but the
+// Server-side keyword guard: if the agent classifies an action as medium but the
 // summary contains a destructive verb (delete, send, submit, pay, confirm,
 // remove, drop, terminate), the tool escalates it to high before prompting.
 // Cheap insurance against model misclassification — described as a v1.1
@@ -44,7 +44,8 @@ struct ProposeActionTool: MCPTool {
         and you're not confident the user wants it, ask via a normal chat \
         message and wait for an explicit yes — do not call this tool. \
         \
-        See CLAUDE.md and docs/specs/relay-actions.md for the live policy.
+        See the Relay Runner project instructions and docs/specs/relay-actions.md \
+        for the live policy.
         """
 
     var inputSchema: [String: Any] {
@@ -118,7 +119,7 @@ struct ProposeActionTool: MCPTool {
         case .timeout:
             return [rejectedReply(reason: "timeout")]
         case .menuBarUnavailable:
-            // No menu-bar app running — fail closed. Better Claude is told
+            // No menu-bar app running — fail closed. Better the agent is told
             // it can't act than silently letting actions through ungated.
             return [rejectedReply(reason: "menu_bar_unavailable")]
         }

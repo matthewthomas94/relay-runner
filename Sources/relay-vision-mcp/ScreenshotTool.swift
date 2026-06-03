@@ -9,7 +9,7 @@ struct ScreenshotTool: MCPTool {
         Capture a screenshot of a connected display and return it as a base64-encoded PNG. \
         Defaults to the primary display. The returned image's pixel dimensions match \
         NSScreen.frame × backingScaleFactor (i.e. the display's native pixels). Coordinates \
-        consumed by `click`, `scroll`, etc. are in this same pixel space — Claude can read \
+        consumed by `click`, `scroll`, etc. are in this same pixel space — the agent can read \
         a coordinate directly off the image and pass it through.
         """
 
@@ -49,13 +49,13 @@ struct ScreenshotTool: MCPTool {
             // granted — usually means the grant only takes effect on relaunch.
             // Reuse the same parent-app message the preflight would emit.
             let parent = ParentProcess.detectTerminal()?.displayName
-                ?? "the app you launched `claude` from"
+                ?? "the parent terminal, IDE, or app that launched this agent session"
             throw MCPToolError(message: """
                 Could not capture the screen. macOS reported permission as granted, but \
                 SCShareableContent still failed. This is the well-known "grant doesn't \
                 take effect until relaunch" behaviour for Screen Recording on a \
                 long-running process. Quit and relaunch **\(parent)**, then restart your \
-                `claude` session.
+                agent session.
 
                 Underlying error: \(error.localizedDescription)
                 """)

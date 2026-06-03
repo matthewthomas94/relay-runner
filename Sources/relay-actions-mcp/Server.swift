@@ -4,7 +4,7 @@ import Foundation
 //
 // Implements MCP over stdio: newline-delimited JSON-RPC 2.0 on stdin/stdout,
 // logs to stderr. The server is single-threaded and processes requests
-// sequentially — MCP clients (the `claude` CLI) don't pipeline.
+// sequentially — MCP clients don't pipeline.
 //
 // The protocol layer is hand-rolled rather than depending on a Swift MCP SDK
 // because the surface we use is small (initialize, tools/list, tools/call) and
@@ -165,7 +165,7 @@ final class MCPServer {
                 }
                 return ["content": content, "isError": false]
             } catch let error as MCPToolError {
-                // Tool errors are reported as content + isError=true so Claude sees them inline,
+                // Tool errors are reported as content + isError=true so the agent sees them inline,
                 // not as a transport failure.
                 return [
                     "content": [["type": "text", "text": error.message]],

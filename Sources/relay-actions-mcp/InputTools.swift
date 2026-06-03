@@ -165,7 +165,7 @@ struct TypeTool: MCPTool {
             throw MCPToolError(message: "type requires a string text argument.")
         }
         // Don't quote the text in the fallback purpose — it could be a password
-        // that the user is having Claude type into a focused field.
+        // that the user is having the agent type into a focused field.
         switch PermissionPreflight.ensureAccessibility(fallbackPurpose: "type text into the focused field") {
         case .granted: break
         case .stillMissing(let message): throw MCPToolError(message: message)
@@ -317,9 +317,9 @@ private func flagsFromModifiers(_ modifiers: [String]) -> CGEventFlags {
     return flags
 }
 
-// Subset of macOS virtual keycodes. Covers the keys Claude is realistically going to press
+// Subset of macOS virtual keycodes. Covers the keys an agent is realistically going to press
 // for UAT and dashboard navigation. Letter/number keys map to standard US layout — for other
-// layouts, Claude should use the `type` tool instead.
+// layouts, the agent should use the `type` tool instead.
 private func virtualKeyForName(_ name: String) -> CGKeyCode? {
     switch name {
     case "return", "enter": return 0x24
