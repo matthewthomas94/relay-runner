@@ -1,7 +1,7 @@
 """dmgbuild settings for Relay Runner's installer DMG.
 
 Invoked by scripts/build-dmg.sh. Produces the styled installer window
-(custom background, positioned app icon, Applications drag target)
+(custom background, positioned Relay Runner icon)
 without needing Apple Events / Finder — works identically on CI
 runners and local Macs.
 
@@ -22,11 +22,12 @@ import os
 # (rare) case of running dmgbuild manually from the repo root.
 PROJECT_ROOT = os.environ.get("RELAY_PROJECT_ROOT", os.getcwd())
 APP_NAME = "Relay Runner"
+VOLUME_NAME = "Install Relay Runner"
 APP_PATH = os.path.join(PROJECT_ROOT, "dist", f"{APP_NAME}.app")
 BG_PATH = os.path.join(PROJECT_ROOT, "assets", "dmg-background.tiff")
 
 # -- Volume / disk image --
-volume_name = APP_NAME
+volume_name = VOLUME_NAME
 format = "UDZO"
 filesystem = "HFS+"
 # size = None lets dmgbuild auto-pick based on contents.
@@ -34,15 +35,14 @@ size = None
 
 # -- Contents --
 files = [APP_PATH]
-symlinks = {"Applications": "/Applications"}
+symlinks = {}
 
 # -- Window layout (matches the prior osascript bounds: 200,120 → 840,540) --
 window_rect = ((200, 120), (640, 420))
 icon_size = 128
 text_size = 13
 icon_locations = {
-    f"{APP_NAME}.app": (160, 210),
-    "Applications": (480, 210),
+    f"{APP_NAME}.app": (320, 240),
 }
 default_view = "icon-view"
 show_icon_preview = False

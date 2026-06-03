@@ -22,33 +22,54 @@ private let _installSIGPIPEHandler: Void = {
 
 @main
 struct RelayRunnerApp: App {
-    @State private var appState = AppState()
+    @State private var appState: AppState?
 
     init() {
         _ = _installSIGPIPEHandler
+        let context = RelayInstallerContext.current()
+        _appState = State(initialValue: context == nil ? AppState() : nil)
+
+        if let context {
+            NSApp.setActivationPolicy(.regular)
+            DispatchQueue.main.async {
+                RelayInstallerWindowController.shared.show(context: context)
+            }
+        }
     }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(appState: appState)
+            if let appState {
+                MenuBarView(appState: appState)
+            } else {
+                Button("Quit") { NSApp.terminate(nil) }
+            }
         } label: {
-            // Red dot badge signals a missing permission — per PRD this is a
-            // passive indicator, not a nag. The menu dropdown has the "Fix"
-            // actions; this just makes the user notice something's wrong.
-            Image(appState.hasActiveSession ? "TrayIconActive" : "TrayIcon", bundle: resourceBundle)
-                .renderingMode(.original)
-                .overlay(alignment: .topTrailing) {
-                    if !appState.permissions.allGranted {
-                        Circle()
-                            .fill(.red)
-                            .frame(width: 6, height: 6)
-                            .offset(x: 2, y: -2)
+            if let appState {
+                // Red dot badge signals a missing permission — per PRD this is a
+                // passive indicator, not a nag. The menu dropdown has the "Fix"
+                // actions; this just makes the user notice something's wrong.
+                Image(appState.hasActiveSession ? "TrayIconActive" : "TrayIcon", bundle: resourceBundle)
+                    .renderingMode(.original)
+                    .overlay(alignment: .topTrailing) {
+                        if !appState.permissions.allGranted {
+                            Circle()
+                                .fill(.red)
+                                .frame(width: 6, height: 6)
+                                .offset(x: 2, y: -2)
+                        }
                     }
-                }
+            } else {
+                EmptyView()
+            }
         }
 
         Settings {
-            SettingsWindow(appState: appState)
+            if let appState {
+                SettingsWindow(appState: appState)
+            } else {
+                EmptyView()
+            }
         }
     }
 }

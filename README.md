@@ -32,8 +32,8 @@ All speech-to-text and text-to-speech runs **on-device**. No voice data leaves y
 ## Install
 
 1. Download the latest `RelayRunner.dmg` from [Releases](../../releases) (or build from source — see below).
-2. Open the DMG and drag **Relay Runner.app** to **Applications**.
-3. Launch it. It appears in the menu bar (top-right).
+2. Open the DMG and double-click **Relay Runner.app** in the installer window.
+3. Relay Runner copies itself to **Applications** and launches. It appears in the menu bar (top-right).
 4. Grant **microphone access** when prompted.
 5. First-run downloads:
     - Parakeet STT model (~600 MB) — on first transcription
@@ -150,7 +150,7 @@ The build script:
 - Bundles the app (`dist/Relay Runner.app`) with the asset catalog compiled by `actool`
 - Copies Python services into `Contents/SharedSupport/services/`
 - Ad-hoc code-signs the bundle
-- Packages a DMG and refreshes `/Applications/Relay Runner.app` if present
+- Packages a guided installer DMG and refreshes `/Applications/Relay Runner.app` if present
 
 For local iteration on the Swift side, `swift build` / `swift run` works, but SwiftUI asset loading requires the full `.app` bundle — run the DMG script when testing UI assets.
 
