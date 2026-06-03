@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Generate the DMG installer background image.
 
-Produces a 640x420 black canvas with the supplied glass-arrow asset composited
-between the eventual app-icon (left) and Applications (right) drop targets.
-The window is sized 640x420 in build-dmg.sh; icons sit at x=160 and x=480 and
-the arrow fills the gap.
+Produces a 640x420 installer canvas with Relay Runner install copy.
+The window is sized 640x420 in dmgbuild-settings.py; the app icon sits
+centered below the headline.
 
 Outputs (under assets/):
   dmg-background.png      640x420   (1x)
@@ -20,32 +19,67 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
-ARROW_SRC = ASSETS / "glass-arrow.png"
 
 WIDTH = 640
 HEIGHT = 420
 
-BG_COLOR = (0, 0, 0, 255)  # solid black, matching the Figma mock
+BG_COLOR = (7, 7, 9, 255)
+TEXT_COLOR = (245, 245, 247, 255)
+SECONDARY_TEXT_COLOR = (166, 166, 173, 255)
 
-ARROW_TARGET_WIDTH = 90  # @1x; the arrow's native aspect ratio sets the height
+
+def font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    for path in (
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/HelveticaNeue.ttc",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ):
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def draw_centered(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    y: int,
+    selected_font,
+    fill,
+    width: int,
+) -> None:
+    bbox = draw.textbbox((0, 0), text, font=selected_font)
+    x = (width - (bbox[2] - bbox[0])) // 2
+    draw.text((x, y), text, font=selected_font, fill=fill)
 
 
 def render(scale: int) -> Image.Image:
     w, h = WIDTH * scale, HEIGHT * scale
     img = Image.new("RGBA", (w, h), BG_COLOR)
 
-    arrow = Image.open(ARROW_SRC).convert("RGBA")
-    target_w = ARROW_TARGET_WIDTH * scale
-    target_h = round(arrow.height * (target_w / arrow.width))
-    arrow = arrow.resize((target_w, target_h), Image.LANCZOS)
-
-    x = (w - target_w) // 2
-    y = (h - target_h) // 2
-    img.paste(arrow, (x, y), arrow)
+    draw = ImageDraw.Draw(img)
+    draw_centered(draw, "Install Relay Runner", 58 * scale, font(32 * scale), TEXT_COLOR, w)
+    draw_centered(
+        draw,
+        "Double-click the app icon to install.",
+        104 * scale,
+        font(17 * scale),
+        SECONDARY_TEXT_COLOR,
+        w,
+    )
+    draw_centered(
+        draw,
+        "Relay Runner will copy itself to Applications and launch.",
+        362 * scale,
+        font(14 * scale),
+        SECONDARY_TEXT_COLOR,
+        w,
+    )
     return img
 
 

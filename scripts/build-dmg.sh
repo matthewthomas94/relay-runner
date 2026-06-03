@@ -202,7 +202,7 @@ if [ ! -f "$DMG_BG_SRC" ]; then
 fi
 
 # dmgbuild writes the styled .DS_Store layout (background, icon
-# positions, Applications drag target, window dimensions) directly via
+# position, window dimensions) directly via
 # the `ds_store` Python library — no Finder, no AppleScript, no Apple
 # Events / TCC grants needed. Same output locally and on CI.
 #
@@ -276,7 +276,9 @@ fi
 # If the app is already installed under /Applications, refresh it so this
 # rebuild is what Spotlight, the Dock and Cmd-Tab actually see.
 INSTALLED="/Applications/$APP_NAME.app"
-if [ -d "$INSTALLED" ]; then
+if [ "${RELAY_SKIP_APPLICATIONS_REFRESH:-0}" = "1" ]; then
+    echo "==> Skipping installed app refresh (RELAY_SKIP_APPLICATIONS_REFRESH=1)."
+elif [ -d "$INSTALLED" ]; then
     echo "==> Updating installed copy at $INSTALLED..."
     rm -rf "$INSTALLED"
     cp -R "$APP_DIR" "$INSTALLED"
