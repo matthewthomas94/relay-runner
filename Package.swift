@@ -32,5 +32,12 @@ let package = Package(
             name: "relay-orchestrator-mcp",
             path: "Sources/relay-orchestrator-mcp"
         ),
+        .testTarget(
+            name: "RelayRunnerTests",
+            dependencies: [
+                .target(name: "relay-runner"),
+            ],
+            path: "tests/RelayRunnerTests"
+        ),
     ]
 )

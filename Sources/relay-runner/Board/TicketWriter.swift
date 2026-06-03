@@ -1,5 +1,4 @@
 import Foundation
-import TOMLKit
 
 /// On-disk mutations for `.orchestrator/<id>.md` ticket files. The board UI
 /// owns these flows for now; once the daemon learns about tickets, both will
@@ -10,8 +9,6 @@ import TOMLKit
 enum TicketWriter {
 
     enum WriteError: Error {
-        case configMissing
-        case configInvalid
         case writeFailed(underlying: Error)
     }
 
@@ -32,7 +29,7 @@ enum TicketWriter {
         let dir = ProjectResolver.ticketsDirectory(in: project)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        let (prefix, nextId) = try claimNextId(in: dir)
+        let (prefix, nextId) = try BoardProjectConfig.claimNextId(forRepoAt: project.repoPath)
         let id = "\(prefix)-\(nextId)"
 
         let ticket = Ticket(
@@ -137,29 +134,5 @@ enum TicketWriter {
         let escaped = s.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
-    }
-
-    // MARK: - config.toml ID claim
-
-    /// Atomically read+bump `next_id` and return the claimed id. The write is
-    /// a textual rewrite of `config.toml` — TOMLKit can't preserve comments,
-    /// but config.toml only contains `prefix` and `next_id` so we rewrite the
-    /// whole file from scratch.
-    private static func claimNextId(in dir: URL) throws -> (prefix: String, id: Int) {
-        let configURL = dir.appendingPathComponent("config.toml")
-        let raw = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
-        guard let table = try? TOMLTable(string: raw),
-              let prefix = table["prefix"]?.tomlValue.string,
-              let nextId = table["next_id"]?.tomlValue.int else {
-            throw WriteError.configInvalid
-        }
-        let claimed = Int(nextId)
-        let updated = "prefix = \"\(prefix)\"\nnext_id = \(claimed + 1)\n"
-        do {
-            try updated.data(using: .utf8)?.write(to: configURL, options: .atomic)
-        } catch {
-            throw WriteError.writeFailed(underlying: error)
-        }
-        return (prefix, claimed)
     }
 }

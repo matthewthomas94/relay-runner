@@ -9,9 +9,9 @@ import Foundation
 /// session is rooted in" without a separate project registry — there's
 /// exactly one bridge session at a time, so there's no ambiguity.
 ///
-/// A path resolves to a project iff it points to a directory containing both
-/// `.git/` (a real git repo) and `.orchestrator/` (the board's ticket store).
-/// Anything else returns nil — the board shows a "no active session" toast.
+/// A path resolves to a project iff it points to a git repo. Fresh repos get
+/// `.orchestrator/config.toml` initialized on first resolve so the board can
+/// open empty and mint repo-scoped ticket IDs.
 enum ProjectResolver {
 
     /// Minimal value type the board passes around. The previous
@@ -21,17 +21,24 @@ enum ProjectResolver {
         let repoPath: URL
     }
 
-    private static let bridgeSocket = "/tmp/voice_bridge.sock"
-    private static let bridgeCwdFile = "/tmp/voice_bridge.cwd"
+    private static let bridgeSocketPath = "/tmp/voice_bridge.sock"
+    private static let bridgeCwdFilePath = "/tmp/voice_bridge.cwd"
 
     static func resolve() -> LinkedProject? {
+        resolve(
+            bridgeSocket: URL(fileURLWithPath: bridgeSocketPath),
+            bridgeCwdFile: URL(fileURLWithPath: bridgeCwdFilePath)
+        )
+    }
+
+    static func resolve(bridgeSocket: URL, bridgeCwdFile: URL) -> LinkedProject? {
         let fm = FileManager.default
         // Bridge socket is the liveness check. If the bridge died without
         // cleanup, the socket file may linger — that's acceptable here
         // because the .cwd file is paired with it and the worst case is
         // a stale-but-correct project (the user's last bridge session).
-        guard fm.fileExists(atPath: bridgeSocket) else { return nil }
-        guard let raw = try? String(contentsOfFile: bridgeCwdFile, encoding: .utf8) else {
+        guard fm.fileExists(atPath: bridgeSocket.path) else { return nil }
+        guard let raw = try? String(contentsOf: bridgeCwdFile, encoding: .utf8) else {
             return nil
         }
         let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -39,8 +46,13 @@ enum ProjectResolver {
 
         let repoURL = URL(fileURLWithPath: path)
         let dotGit = repoURL.appendingPathComponent(".git", isDirectory: false).path
-        let dotOrch = repoURL.appendingPathComponent(".orchestrator", isDirectory: true).path
-        guard fm.fileExists(atPath: dotGit), fm.fileExists(atPath: dotOrch) else {
+        guard fm.fileExists(atPath: dotGit) else {
+            return nil
+        }
+        do {
+            try BoardProjectConfig.ensureExists(forRepoAt: repoURL)
+        } catch {
+            NSLog("[relay-runner] failed to initialize board project at \(repoURL.path): \(error)")
             return nil
         }
         return LinkedProject(repoPath: repoURL)

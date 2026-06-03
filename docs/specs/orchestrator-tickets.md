@@ -30,14 +30,14 @@ prefix = "RR"            # ticket ID prefix; used when generating new ticket IDs
 next_id = 14             # monotonic counter; incremented on each new ticket
 ```
 
-The daemon reads `next_id`, mints `<prefix>-<next_id>`, then increments. Manual edits are fine but discouraged — gaps are harmless, collisions are not.
+The ticket writer reads `next_id`, mints `<prefix>-<next_id>`, then increments. Manual edits are fine but discouraged — gaps are harmless, collisions are not.
 
-**First-time init.** If `.orchestrator/config.toml` is missing when the daemon starts, it creates one with:
+**First-time init.** If `.orchestrator/config.toml` is missing when the board resolves a live bridge rooted in a git repo, it creates one with:
 
-- `prefix = "<REPO_SLUG>"` — the uppercased repo name (e.g., a repo named `relay-runner` becomes `RELAY` or `RR`; the daemon strips vowels past a length cap to keep IDs short). The user can override in `config.toml` before any tickets exist.
+- `prefix = "<PREFIX>"` — a repo-derived uppercase prefix. Hyphenated or underscored repo names use word initials (`relay-runner` -> `RR`, `mouse-assist` -> `MA`); single-word names use the first two alphanumeric characters.
 - `next_id = 1`.
 
-No tickets are created — the user authors the first one via `/relay-dispatch` flow, the board UI, or by writing the file by hand.
+No tickets are created — the user authors the first one via the board UI or by writing the file by hand. The user can still edit `config.toml` before creating tickets to override the prefix.
 
 **Concurrent ID minting across branches.** Two users on two branches can both mint `RR-14.md` independently. Merge conflicts surface this: the second one to merge gets a textual conflict on `.orchestrator/config.toml` (both bumped `next_id`) and a duplicate-filename conflict on `RR-14.md`. Resolution: bump the loser's `id` to the next free integer, rename their file, fix any `depends_on` references. This is rare in practice (mint-then-merge usually happens fast) but the spec is explicit that conflict resolution is a human step, not magic.
 
@@ -141,7 +141,7 @@ Validation is a one-shot pass over `.orchestrator/`; the daemon runs it on start
 
 Each repo owns its own `.orchestrator/` directory, its own prefix, and its own ID space. Boards are per-repo by construction; there is no cross-repo ticket model, no aggregated "everything" view, no shared dependency graph.
 
-**Project resolution at view time.** The board UI has no project picker. Resolution runs through the active voice-bridge session: when `/relay-bridge` starts, the bridge script writes its launching cwd to `/tmp/voice_bridge.cwd`. The menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` existing as a liveness check) and renders the `.orchestrator/` directory inside that cwd. The voice bridge is 1:1 with a Claude Code session, the session is rooted in one repo, so "show me the board" unambiguously means "the board for this repo."
+**Project resolution at view time.** The board UI has no project picker. Resolution runs through the active voice-bridge session: when `/relay-bridge` starts, the bridge script writes its launching cwd to `/tmp/voice_bridge.cwd`. The menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` existing as a liveness check) and renders the `.orchestrator/` directory inside that cwd. If the bridge cwd is a git repo with no `.orchestrator/config.toml` yet, the board initializes it before rendering an empty board. The voice bridge is 1:1 with a Claude Code session, the session is rooted in one repo, so "show me the board" unambiguously means "the board for this repo."
 
 Without a live bridge, the board's `⌃⌥` hotkey surfaces the same "No session running" pill that fires when the user tries to record voice out of session, rather than opening — better to teach the rule (and reuse a known UI surface) than to silently open the wrong project or no project at all.
 
