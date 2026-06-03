@@ -1,11 +1,11 @@
 import Foundation
 
-/// Tracks which parent terminals/IDEs (Terminal, Warp, VS Code, Claude.app, …)
+/// Tracks which parent terminals/IDEs/apps (Terminal, Warp, VS Code, Codex.app, …)
 /// the user has already walked through the permissions wizard for.
 ///
-/// The MCP server is spawned per-Claude-session by the parent (terminal/IDE),
+/// The MCP server is spawned per-agent-session by the parent (terminal/IDE/app),
 /// and macOS attributes Accessibility / Screen Recording grants to that
-/// parent — so each new parent the user runs `claude` from triggers a fresh
+/// parent — so each new parent the user runs Codex or Claude from triggers a fresh
 /// "you need to grant Terminal these permissions" prompt. We persist a list
 /// of acknowledged parents in UserDefaults so the wizard fires once per
 /// parent per install (or again after a permission revocation forces a reset).

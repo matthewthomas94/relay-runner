@@ -102,10 +102,9 @@ enum ParentProcess {
             Pattern(needle: "/Hyper.app/",     display: "Hyper",     isBundle: true),
             Pattern(needle: "/Ghostty.app/",   display: "Ghostty",   isBundle: true),
             Pattern(needle: "/Tabby.app/",     display: "Tabby",     isBundle: true),
-            // Anthropic's own Claude Code desktop app — spawns its CLI from
-            // its embedded shell. Worth handling explicitly because (a) it's
-            // increasingly common and (b) the `/Claude.app/` bundle is what
-            // TCC attributes to.
+            // First-class agent desktop apps — they can spawn the CLI from
+            // an embedded shell, and the app bundle is what TCC attributes to.
+            Pattern(needle: "/Codex.app/",                   display: "Codex",              isBundle: true),
             Pattern(needle: "/Claude.app/",                  display: "Claude",             isBundle: true),
             // IDE-embedded terminals — VS Code spawns the agent CLI from its
             // integrated terminal under Code Helper (Plugin) etc.

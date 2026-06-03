@@ -9,7 +9,7 @@ import Foundation
 // (Accessibility for CGEvent, Screen Recording for SCShareableContent). When a
 // user is voice-driving an agent they have no idea a dialog is about to appear,
 // what it's for, or which app to grant — TCC attributes to the *responsible*
-// parent (Terminal / Warp / VS Code etc.), not Relay Runner.
+// parent (Terminal / Codex / Claude / Warp / VS Code etc.), not Relay Runner.
 //
 // This helper warns the user via TTS *before* the API call that triggers the
 // dialog. The warning explicitly names:
@@ -25,6 +25,7 @@ import Foundation
 // posting CGEvents that get dropped.
 
 enum PermissionPreflight {
+    private static let defaultParentApps = "Terminal.app, Codex.app, and Claude.app"
 
     enum Outcome {
         /// Permission is (already) granted — proceed.
@@ -105,7 +106,8 @@ enum PermissionPreflight {
 
             1. Open System Settings → Privacy & Security → Accessibility
             2. Toggle on \(parent)
-            3. (No restart needed for Accessibility — try the action again)
+            3. For default supported launch paths, also check \(defaultParentApps)
+            4. (No restart needed for Accessibility — try the action again)
 
             Without this permission, every click, keystroke, and scroll I post will be \
             silently dropped by macOS. Voice transcription and speech still work.
@@ -154,8 +156,9 @@ enum PermissionPreflight {
 
             1. Open System Settings → Privacy & Security → Screen Recording
             2. Toggle on \(parent)
-            3. Quit and relaunch \(parent) (the permission only takes effect on relaunch)
-            4. Restart your agent session
+            3. For default supported launch paths, also check \(defaultParentApps)
+            4. Quit and relaunch \(parent) (the permission only takes effect on relaunch)
+            5. Restart your agent session
 
             Without this permission, every screenshot, click, or other screen-control \
             request I make will fail. Voice transcription and speech still work.

@@ -2,13 +2,14 @@ import AppKit
 import SwiftUI
 
 /// One-shot wizard that fires the first time Relay Runner sees a new parent
-/// terminal/IDE running `claude` (Terminal, Warp, VS Code, Claude.app, …).
+/// terminal/IDE/app running Codex or Claude (Terminal, Warp, VS Code, Codex.app, …).
 ///
 /// Why this exists: macOS attributes Accessibility + Screen Recording grants
-/// to the *responsible* process — typically the parent of `claude`. Granting
-/// Relay Runner doesn't help; the user must grant the parent. The MCP server
-/// detects the parent and surfaces this wizard so the user knows exactly
-/// which app to find in System Settings, without trial-and-error.
+/// to the *responsible* process — typically the app that launched the agent
+/// session. Granting Relay Runner doesn't help for those parent-agent grants;
+/// the user must grant the parent app. The MCP server detects the parent and
+/// surfaces this wizard so the user knows exactly which app to find in System
+/// Settings, without trial-and-error.
 ///
 /// Re-fires automatically if the per-action `PermissionPreflight` later
 /// reports a still-missing permission for the same parent (revocation case).
@@ -25,15 +26,15 @@ struct ParentOnboardingView: View {
             header
             stepRow(
                 number: 1,
-                title: "Grant \(parent) Accessibility",
-                detail: "Lets me click, type, and scroll on your behalf.",
+                title: "Grant parent-agent apps Accessibility",
+                detail: "Toggle on \(targetList) so Relay Actions can click, type, and scroll.",
                 buttonTitle: "Open Accessibility Settings",
                 action: openAccessibility
             )
             stepRow(
                 number: 2,
-                title: "Grant \(parent) Screen Recording",
-                detail: "Lets me see the screen so I can describe what's there and ground my clicks.",
+                title: "Grant parent-agent apps Screen Recording",
+                detail: "Toggle on \(targetList) so Relay Vision can see the screen and ground clicks.",
                 buttonTitle: "Open Screen Recording Settings",
                 action: openScreenRecording
             )
@@ -42,16 +43,16 @@ struct ParentOnboardingView: View {
             footer
         }
         .padding(28)
-        .frame(width: 520, height: 560)
+        .frame(width: 560, height: 600)
     }
 
     // MARK: - Sections
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("First time using Relay Runner via \(parent)")
+            Text("First time using Relay Runner via \(detectedParentName)")
                 .font(.title2).bold()
-            Text("macOS attributes Accessibility and Screen Recording to the app that launched `claude` — that's **\(parent)** for this session, not Relay Runner. Toggle \(parent) on in both panes below; you'll only see this prompt once per app.")
+            Text("Relay Runner has its own app permissions for microphone and menu-bar behavior. Screen control is different: macOS may attribute Accessibility and Screen Recording to the parent terminal, IDE, or app that launched Codex or Claude, not to Relay Runner. Toggle on these parent-agent apps when they appear: \(targetList).")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -85,16 +86,16 @@ struct ParentOnboardingView: View {
             Image(systemName: "arrow.clockwise.circle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 4) {
-                Text("After granting, restart \(parent) AND re-run /relay-bridge")
+                Text("After granting, restart the parent app and re-run /relay-bridge")
                     .font(.callout).bold()
                     .fixedSize(horizontal: false, vertical: true)
-                Text("macOS doesn't apply Screen Recording to processes already running, so two restarts are needed for the new permission to take effect:")
+                Text("macOS doesn't apply Screen Recording to processes already running. Quit and reopen each parent app you granted before starting a new session:")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("1. Quit and reopen \(parent)")
-                    Text("2. Start a fresh `claude` session")
+                    Text("1. Quit and reopen the granted parent app")
+                    Text("2. Start a fresh Codex or Claude session")
                     Text("3. Run /relay-bridge again")
                 }
                 .font(.caption)
@@ -105,6 +106,14 @@ struct ParentOnboardingView: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08)))
+    }
+
+    private var detectedParentName: String {
+        ParentPermissionGuidance.displayName(for: parent)
+    }
+
+    private var targetList: String {
+        ParentPermissionGuidance.targetList(detectedParent: parent)
     }
 
     private var footer: some View {
