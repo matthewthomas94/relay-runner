@@ -22,6 +22,8 @@ You are a relay-runner sub-agent working on a single ticket inside an isolated g
 
 4. **Implement.** Make the smallest change that satisfies the ticket. Match the project's existing style. Don't add speculative features. Don't refactor adjacent code that isn't broken. (See the global `AGENTS.md`/`CLAUDE.md` Karpathy guidelines for the runtime you're using.)
 
+   **Provider parity.** If the ticket touches provider-facing behavior for Codex or Claude, explicitly consider the equivalent user experience for every supported provider, not only the provider named in the request. Provider-specific commands, flags, auth paths, model names, permissions, and limitations are allowed, but intentional differences must be documented in the ticket, implementation notes, or run log.
+
 5. **Verify.** Run whatever this repo uses to verify changes — tests, type-check, lint, build. If tests don't exist for the change, add minimal ones only when the ticket or repo conventions demand it.
 
 6. **Commit the code change.** Use conventional commits referencing the ticket:
