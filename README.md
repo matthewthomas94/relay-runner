@@ -87,8 +87,8 @@ All settings live in the Settings window. Config is persisted to:
 
 ### General
 
-- **Target command** — defaults to `codex`; set to `claude` if you want Claude Code instead
-- **Model** — Default, Opus, Sonnet, or Haiku. *Default* lets the configured agent pick from your account-level setting; the others pass `--model <alias>` to the CLI for this session.
+- **LLM Provider** — Codex (default) or Claude. **Start Session…** launches the selected provider's CLI.
+- **Model** — provider-specific choices. Codex offers Default plus GPT-5 Codex variants; Claude offers Default, Opus, Sonnet, and Haiku. *Default* lets the selected provider use its normal account-level setting; the others pass `--model <alias>` to the CLI for this session.
 - **Working directory** — where new voice sessions open
 - **Terminal** — Warp, iTerm2, Terminal, Kitty, or Alacritty
 - **Bypass agent permission prompts** — when on (default), sessions launched from **Start Session…** run with the configured agent's bypass flag so voice flow isn't interrupted. Turn off if you want the agent to ask before each tool use; voice still works, you'll just answer prompts in the terminal.
