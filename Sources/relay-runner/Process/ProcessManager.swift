@@ -1,8 +1,21 @@
+import Darwin
 import Foundation
 
 final class ProcessManager {
 
     private var bridgeProcess: Process?
+    private static let bridgeRuntimePaths = [
+        "/tmp/voice_in.fifo",
+        "/tmp/voice_bridge.sock",
+        "/tmp/voice_cmd_ready",
+        "/tmp/tts_in.fifo",
+        "/tmp/tts_control.sock",
+        "/tmp/voice_bridge_heartbeat",
+        "/tmp/voice_bridge_heartbeat.pid",
+        "/tmp/voice_bridge.cwd",
+        "/tmp/relay_board_now.txt",
+        "/tmp/relay_board_prev.txt",
+    ]
 
     /// The read-only services directory that ships in the .app bundle (or
     /// repo, for dev). Holds voice_bridge.py, tts_worker.py, requirements.txt,
@@ -68,6 +81,10 @@ final class ProcessManager {
 
     func bridgeAlive() -> Bool {
         guard FileManager.default.fileExists(atPath: "/tmp/voice_bridge.sock") else { return false }
+        return Self.voiceBridgeProcessAlive()
+    }
+
+    private static func voiceBridgeProcessAlive() -> Bool {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
         proc.arguments = ["-f", "voice_bridge.py"]
@@ -119,17 +136,14 @@ final class ProcessManager {
             SocketClient.bridgeSend("shutdown")
             Thread.sleep(forTimeInterval: 0.5)
         }
-        if bridgeAlive() {
+        if Self.voiceBridgeProcessAlive() {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
             proc.arguments = ["-f", "voice_bridge.py"]
             try? proc.run()
             proc.waitUntilExit()
         }
-        // Clean up all IPC files so the next session starts fresh
-        for path in ["/tmp/voice_bridge.sock", "/tmp/voice_cmd_ready", "/tmp/tts_in.fifo", "/tmp/voice_bridge_heartbeat"] {
-            try? FileManager.default.removeItem(atPath: path)
-        }
+        Self.removeBridgeRuntimeFiles()
     }
 
     func stopServices() {
@@ -139,17 +153,14 @@ final class ProcessManager {
             Thread.sleep(forTimeInterval: 0.5)
         }
         // Force kill if still alive
-        if bridgeAlive() {
+        if Self.voiceBridgeProcessAlive() {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
             proc.arguments = ["-f", "voice_bridge.py"]
             try? proc.run()
             proc.waitUntilExit()
         }
-        // Clean up IPC files
-        for path in ["/tmp/voice_in.fifo", "/tmp/tts_control.sock", "/tmp/voice_bridge.sock"] {
-            try? FileManager.default.removeItem(atPath: path)
-        }
+        Self.removeBridgeRuntimeFiles()
     }
 
     /// Launch the configured agent in a new terminal tab and have it start
@@ -417,12 +428,22 @@ final class ProcessManager {
     }
 
     private func ensureFifo() {
-        let mkfifo = Process()
-        mkfifo.executableURL = URL(fileURLWithPath: "/usr/bin/mkfifo")
-        mkfifo.arguments = ["/tmp/voice_in.fifo"]
-        mkfifo.standardError = FileHandle.nullDevice
-        try? mkfifo.run()
-        mkfifo.waitUntilExit()
+        FIFOWriter.ensureFifo(FIFOWriter.voiceFifoPath)
+    }
+
+    private static func removeBridgeRuntimeFiles() {
+        stopHeartbeatRefresher()
+        let fm = FileManager.default
+        for path in bridgeRuntimePaths {
+            try? fm.removeItem(atPath: path)
+        }
+    }
+
+    private static func stopHeartbeatRefresher() {
+        let path = "/tmp/voice_bridge_heartbeat.pid"
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        Darwin.kill(pid, SIGTERM)
     }
 
     /// Launch a command in Terminal.app via AppleScript `do script`.

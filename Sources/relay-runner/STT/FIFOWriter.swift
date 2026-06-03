@@ -19,6 +19,7 @@ enum FIFOWriter {
 
     @discardableResult
     static func write(_ text: String, to path: String = voiceFifoPath) -> Bool {
+        ensureFifo(path)
         let fd = open(path, O_WRONLY | O_NONBLOCK)
         guard fd >= 0 else { return false }
         defer { Darwin.close(fd) }

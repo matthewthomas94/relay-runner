@@ -17,6 +17,7 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -40,13 +41,40 @@ def _notify_state(state: str, **kwargs):
         pass
 
 
-def open_fifo(path: str) -> int | None:
-    if not os.path.exists(path):
+def ensure_fifo(path: str) -> bool:
+    try:
+        mode = os.stat(path).st_mode
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"[voice_bridge] Could not inspect FIFO {path}: {e}", file=sys.stderr)
+        return False
+    else:
+        if stat.S_ISFIFO(mode):
+            return True
         try:
-            os.mkfifo(path)
+            os.unlink(path)
         except OSError as e:
-            print(f"[voice_bridge] Could not create FIFO {path}: {e}", file=sys.stderr)
-            return None
+            print(f"[voice_bridge] Could not replace non-FIFO {path}: {e}", file=sys.stderr)
+            return False
+
+    try:
+        os.mkfifo(path)
+        return True
+    except FileExistsError:
+        try:
+            return stat.S_ISFIFO(os.stat(path).st_mode)
+        except OSError as e:
+            print(f"[voice_bridge] Could not inspect FIFO {path}: {e}", file=sys.stderr)
+            return False
+    except OSError as e:
+        print(f"[voice_bridge] Could not create FIFO {path}: {e}", file=sys.stderr)
+        return False
+
+
+def open_fifo(path: str) -> int | None:
+    if not ensure_fifo(path):
+        return None
     try:
         return os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as e:
@@ -329,10 +357,8 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
         except OSError:
             pass
 
-    try:
-        os.mkfifo(TTS_IN_FIFO)
-    except OSError:
-        pass
+    if not ensure_fifo(TTS_IN_FIFO):
+        return
 
     # Start TTS input reader thread
     tts_reader = threading.Thread(
@@ -341,9 +367,6 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
         daemon=True,
     )
     tts_reader.start()
-
-    if not os.path.exists(VOICE_FIFO):
-        os.mkfifo(VOICE_FIFO)
 
     print("[voice_bridge] Relay mode — waiting for voice input...", file=sys.stderr)
     print(f"[voice_bridge] Voice commands → {VOICE_CMD_FILE}", file=sys.stderr)
@@ -473,8 +496,8 @@ def main():
             print("[voice_bridge] Error: claude not found on PATH", file=sys.stderr)
             sys.exit(1)
 
-    if not os.path.exists(VOICE_FIFO):
-        os.mkfifo(VOICE_FIFO)
+    if not ensure_fifo(VOICE_FIFO):
+        sys.exit(1)
 
     tts_queue: queue.Queue = queue.Queue()
     tts_worker = TTSWorker(tts_queue)
