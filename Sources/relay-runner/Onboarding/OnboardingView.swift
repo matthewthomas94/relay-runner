@@ -883,54 +883,65 @@ struct OnboardingView: View {
     }
 
     private var progressLabel: String? {
-        guard let index = visibleIndex else { return nil }
         // Full flow always visits agent choice + microphone + optional
         // parent permission guidance + pythonSetup + agentLogin
         // (the last two briefly auto-advance when their state is already
         // ready, but they still get slots in the count). Simplified flow
         // only counts steps that actually need attention.
-        let count: Int
-        if simplified {
-            count = simplifiedTotalSteps
-        } else {
-            count = 5
-        }
-        return "\(index) of \(count)"
+        Self.progressLabel(
+            for: step,
+            simplified: simplified,
+            requiresAgentChoice: requiresAgentChoice,
+            permissionStatus: { permissions.status(for: $0) },
+            venvInstalled: VenvInstaller.alreadyInstalled,
+            agentSignedIn: AgentAuth.isAuthenticated(for: selectedAgentProvider)
+        )
     }
 
-    /// Number of steps the simplified re-prompt flow will visit — the
-    /// first-run requirements still missing plus pythonSetup if the venv isn't
-    /// healthy plus agentLogin if the selected agent isn't signed in. Used so
-    /// the "X of N" label reflects actual remaining work, not the full
-    /// onboarding length.
-    private var simplifiedTotalSteps: Int {
-        var count = 0
+    static func progressLabel(for step: Step,
+                              simplified: Bool,
+                              requiresAgentChoice: Bool,
+                              permissionStatus: (PermissionKind) -> PermissionStatus,
+                              venvInstalled: Bool,
+                              agentSignedIn: Bool) -> String? {
+        let steps = progressSteps(
+            simplified: simplified,
+            requiresAgentChoice: requiresAgentChoice,
+            permissionStatus: permissionStatus,
+            venvInstalled: venvInstalled,
+            agentSignedIn: agentSignedIn
+        )
+        guard let index = steps.firstIndex(of: step) else { return nil }
+        return "\(index + 1) of \(steps.count)"
+    }
+
+    /// Steps that contribute to the header's "X of N" label.
+    /// Simplified flow only includes items that still need attention so
+    /// the numerator and denominator are always in the same sequence.
+    private static func progressSteps(simplified: Bool,
+                                      requiresAgentChoice: Bool,
+                                      permissionStatus: (PermissionKind) -> PermissionStatus,
+                                      venvInstalled: Bool,
+                                      agentSignedIn: Bool) -> [Step] {
+        if !simplified {
+            return [.agentChoice, .microphone, .parentPermissions, .pythonSetup, .agentLogin]
+        }
+        var steps: [Step] = []
         for s in Step.allCases {
             if s == .agentChoice, requiresAgentChoice {
-                count += 1
+                steps.append(s)
             }
-            if let kind = s.kind, permissions.status(for: kind) != .granted {
-                count += 1
+            if let kind = s.kind, permissionStatus(kind) != .granted {
+                steps.append(s)
             }
-            if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
-                count += 1
+            if s == .pythonSetup, !venvInstalled {
+                steps.append(s)
             }
-            if s == .agentLogin, !AgentAuth.isAuthenticated(for: selectedAgentProvider) {
-                count += 1
+            if s == .agentLogin, !agentSignedIn {
+                steps.append(s)
             }
         }
-        return count
-    }
-
-    private var visibleIndex: Int? {
-        switch step {
-        case .welcome, .ready: return nil
-        case .agentChoice:     return 1
-        case .microphone:      return 2
-        case .parentPermissions: return 3
-        case .pythonSetup:     return 4
-        case .agentLogin:      return 5
-        }
+        return steps
     }
 
     private func permissionTitle(for kind: PermissionKind) -> String {
