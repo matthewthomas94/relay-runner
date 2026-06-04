@@ -193,8 +193,9 @@ struct OnboardingView: View {
             Spacer()
             primaryButton
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.top, 16)
+        .padding(.bottom, 20)
+        .padding(.horizontal, 24)
     }
 
     // MARK: - Step bodies
