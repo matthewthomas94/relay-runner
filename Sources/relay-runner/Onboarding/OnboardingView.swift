@@ -193,10 +193,8 @@ struct OnboardingView: View {
             Spacer()
             primaryButton
         }
-        .frame(minHeight: 64)
-        .padding(.horizontal, 32)
-        .padding(.top, 16)
-        .padding(.bottom, 20)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
     }
 
     // MARK: - Step bodies
@@ -781,7 +779,7 @@ struct OnboardingView: View {
             // sidesteps that.
             let pickerVisible = setupStatus() == nil && permissions.allGranted
             if pickerVisible {
-                HStack(spacing: 10) {
+                HStack {
                     // Dismiss is always enabled — the user can defer
                     // their first session indefinitely. If they picked
                     // a path before dismissing, persist it so the
@@ -793,7 +791,6 @@ struct OnboardingView: View {
                         onFinish()
                     }
                     .keyboardShortcut(.cancelAction)
-                    .frame(minWidth: 88)
                     Button("Start Session") {
                         onSetWorkingDirectory(workingDirectory)
                         onStartSession()
@@ -801,7 +798,6 @@ struct OnboardingView: View {
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!hasConfirmedWorkingDirectory)
-                    .frame(minWidth: 120)
                 }
             } else {
                 Button("Done") { onFinish() }

@@ -74,8 +74,6 @@ struct ParentOnboardingView: View {
                 Text(title).font(.headline)
                 Text(detail).font(.callout).foregroundStyle(.secondary)
                 Button(buttonTitle, action: action)
-                    .controlSize(.small)
-                    .padding(.top, 4)
             }
             Spacer(minLength: 0)
         }
@@ -121,7 +119,6 @@ struct ParentOnboardingView: View {
             Spacer()
             Button("Got it", action: onAcknowledge)
                 .keyboardShortcut(.defaultAction)
-                .controlSize(.large)
         }
     }
 
