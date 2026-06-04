@@ -229,9 +229,73 @@ final class PermissionsManager {
     func requestMicrophone(completion: @escaping (Bool) -> Void) {
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
-                self?.microphone = granted ? .granted : .denied
+                self?.setMicrophoneStatus(granted ? .granted : .denied)
                 completion(granted)
             }
+        }
+    }
+
+    private func setMicrophoneStatus(_ newStatus: PermissionStatus) {
+        let old = microphone
+        microphone = newStatus
+        if old != newStatus {
+            onChange?(.microphone, old, newStatus)
+            Self.persistLastKnown(.microphone, status: newStatus)
+        }
+        if newStatus == .granted {
+            resetSinceLastRun.remove(.microphone)
+        }
+        if newStatus == .restricted {
+            likelyRestricted.insert(.microphone)
+        } else {
+            likelyRestricted.remove(.microphone)
+        }
+    }
+
+    /// Ask for microphone access without sending the user through System
+    /// Settings. If the user previously denied access, reset only this app's
+    /// Microphone TCC entry first so macOS can show the normal in-app prompt
+    /// again. That prompt applies immediately and avoids the Settings
+    /// "Quit & Reopen" sheet shown when a running app is toggled externally.
+    func requestMicrophonePrompt(completion: @escaping (Bool) -> Void) {
+        refresh()
+        switch microphone {
+        case .notDetermined:
+            requestMicrophone(completion: completion)
+        case .denied:
+            resetMicrophoneAndRequest(completion: completion)
+        case .granted:
+            completion(true)
+        case .restricted:
+            completion(false)
+        }
+    }
+
+    private func resetMicrophoneAndRequest(completion: @escaping (Bool) -> Void) {
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.relayrunner.app"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            _ = Self.resetTCC(service: "Microphone", bundleID: bundleID)
+            DispatchQueue.main.async {
+                self?.refresh()
+                self?.requestMicrophone(completion: completion)
+            }
+        }
+    }
+
+    private static func resetTCC(service: String, bundleID: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", service, bundleID]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            NSLog("[Permissions] tccutil reset \(service) failed: \(error)")
+            return false
         }
     }
 
@@ -253,21 +317,17 @@ final class PermissionsManager {
     }
 
     /// Force this app to appear in System Settings → Privacy & Security →
-    /// Input Monitoring on a clean install. macOS only registers an app's
-    /// cdhash for kTCCServiceListenEvent when something actually attempts to
-    /// install a global event monitor — IOHIDRequestAccess alone is unreliable
-    /// for this on ad-hoc-signed builds. Without this nudge, the user
-    /// reaching the Input Monitoring onboarding step has to click "+" in
-    /// System Settings and pick Relay Runner from a Finder dialog, while
-    /// every other permission step lets them flip a toggle in place.
+    /// Input Monitoring when the user explicitly needs it. macOS only
+    /// registers an app's cdhash for kTCCServiceListenEvent when something
+    /// actually attempts to install a global event monitor — IOHIDRequestAccess
+    /// alone is unreliable for this on ad-hoc-signed builds.
     ///
-    /// Install + immediately remove a no-op global key monitor at launch so
-    /// the cdhash is registered before the user clicks Open Settings. If the
-    /// app was already registered, this is a quick no-op. If permission
-    /// hasn't been granted yet, `addGlobalMonitorForEvents` returns nil and
-    /// no events are observed — TCC still sees the attempt, which is enough.
-    /// Must be called on the main thread (NSEvent monitor lifecycle is
-    /// main-thread-only).
+    /// Install + immediately remove a no-op global key monitor so the cdhash
+    /// is registered before the user clicks Open Settings. If the app was
+    /// already registered, this is a quick no-op. If permission hasn't been
+    /// granted yet, `addGlobalMonitorForEvents` returns nil and no events are
+    /// observed — TCC still sees the attempt, which is enough. Must be called
+    /// on the main thread (NSEvent monitor lifecycle is main-thread-only).
     func registerForInputMonitoringList() {
         guard let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown], handler: { _ in }) else {
             return

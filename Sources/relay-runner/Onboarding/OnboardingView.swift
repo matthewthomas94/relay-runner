@@ -728,13 +728,13 @@ struct OnboardingView: View {
                 // First-ever ask: AVCaptureDevice.requestAccess shows the
                 // standard system prompt.
                 Button("Grant Microphone Access") {
-                    permissions.requestMicrophone { _ in }
+                    permissions.requestMicrophonePrompt { _ in }
                 }.keyboardShortcut(.defaultAction)
-            case .denied, .restricted:
-                // Once macOS has heard a "No" (or a previous Allow that's
-                // since been revoked), requestAccess is a no-op — the
-                // system won't re-prompt. The only way back is to flip
-                // the toggle in System Settings.
+            case .denied:
+                Button("Ask Again") {
+                    permissions.requestMicrophonePrompt { _ in }
+                }.keyboardShortcut(.defaultAction)
+            case .restricted:
                 Button("Open System Settings") {
                     permissions.openSettings(for: .microphone)
                 }.keyboardShortcut(.defaultAction)
@@ -963,7 +963,10 @@ struct OnboardingView: View {
         case .microphone:
             // Only reached for .denied / .restricted — the .notDetermined
             // path uses the system prompt and skips the instruction box.
-            return "Click the button below. In System Settings, find Relay Runner under Microphone and switch it on. This window will update automatically when you're done."
+            if status == .denied {
+                return "Click Ask Again below. Relay Runner will reset its previous microphone decision and show Apple's normal microphone prompt again."
+            }
+            return "This Mac is blocking microphone access. Open System Settings to inspect Relay Runner under Microphone."
         case .accessibility:
             return "Click the button below. In System Settings, find Relay Runner in the list and switch it on. This window will update automatically when you're done."
         case .inputMonitoring:

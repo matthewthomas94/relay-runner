@@ -52,6 +52,7 @@ final class RelayInstallerModel {
     func start(context: RelayInstallerContext) {
         guard !started else { return }
         started = true
+        let startedAt = Date()
         phase = .installing
         statusText = "Installing Relay Runner..."
         detailText = "Copying Relay Runner to Applications."
@@ -65,6 +66,12 @@ final class RelayInstallerModel {
                     DispatchQueue.main.async { [weak self] in
                         self?.update(progress)
                     }
+                }
+
+                let remainingDelay = RelayInstallerLaunch.remainingDelay(startedAt: startedAt)
+                if remainingDelay > 0 {
+                    let nanoseconds = UInt64(remainingDelay * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: nanoseconds)
                 }
 
                 DispatchQueue.main.async { [weak self] in
@@ -96,8 +103,7 @@ final class RelayInstallerModel {
         statusText = "Relay Runner installed."
         detailText = "Launching Relay Runner..."
 
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
+        let configuration = RelayInstallerLaunch.openConfiguration()
         NSWorkspace.shared.openApplication(at: installedBundleURL, configuration: configuration) { _, error in
             DispatchQueue.main.async {
                 if let error {

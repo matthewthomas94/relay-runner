@@ -232,6 +232,12 @@ RELAY_PROJECT_ROOT="$PROJECT_ROOT" "$DMGBUILD_PYTHON" -m dmgbuild \
     "$APP_NAME" \
     "$DIST_DIR/$DMG_NAME.dmg"
 
+DMG_SIZE_BYTES=$(stat -f%z "$DIST_DIR/$DMG_NAME.dmg")
+if [ "$DMG_SIZE_BYTES" -lt 1000000 ]; then
+    echo "error: created DMG is unexpectedly small (${DMG_SIZE_BYTES} bytes); packaging failed." >&2
+    exit 1
+fi
+
 # Sign the DMG itself. Apple accepts unsigned DMGs into notarisation so this
 # isn't strictly required, but a signed DMG passes Gatekeeper assessment
 # directly (`spctl -a -t open --context context:primary-signature`) and

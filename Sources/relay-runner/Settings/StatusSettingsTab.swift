@@ -211,6 +211,8 @@ struct StatusSettingsTab: View {
         }
         switch status {
         case .granted:       return "Granted"
+        case .denied where kind == .microphone:
+            return "Denied — click Ask Again to show Apple's microphone prompt."
         case .denied:        return "Denied — open System Settings to allow."
         case .notDetermined: return "Not yet requested."
         case .restricted:    return "Restricted by system policy."
@@ -220,6 +222,11 @@ struct StatusSettingsTab: View {
     private func permissionAction(kind: PermissionKind,
                                   status: PermissionStatus) -> RowAction? {
         guard status != .granted else { return nil }
+        if kind == .microphone {
+            return RowAction(title: status == .denied ? "Ask Again" : "Request") {
+                appState.permissions.requestMicrophonePrompt { _ in }
+            }
+        }
         return RowAction(title: "Open Settings") {
             switch kind {
             case .accessibility:   appState.permissions.promptAccessibility()

@@ -22,7 +22,7 @@ import os
 # (rare) case of running dmgbuild manually from the repo root.
 PROJECT_ROOT = os.environ.get("RELAY_PROJECT_ROOT", os.getcwd())
 APP_NAME = "Relay Runner"
-VOLUME_NAME = "Install Relay Runner"
+VOLUME_NAME = "Relay Runner Install"
 APP_PATH = os.path.join(PROJECT_ROOT, "dist", f"{APP_NAME}.app")
 BG_PATH = os.path.join(PROJECT_ROOT, "assets", "dmg-background.tiff")
 

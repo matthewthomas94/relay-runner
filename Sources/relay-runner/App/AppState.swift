@@ -107,10 +107,6 @@ final class AppState {
         // Watch privacy permissions continuously — macOS doesn't notify us
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
-        // Pre-register for Input Monitoring TCC so the app appears in the
-        // System Settings list with a toggle if the user chooses a non-default
-        // activation key later. Cheap to call on every launch.
-        permissions.registerForInputMonitoringList()
         // Hook permission transitions: notify on revoke, auto-recover STT
         // when mic/input-monitoring comes back (the STT engine binds to the
         // mic + installs NSEvent monitors at start, so neither recovers
@@ -119,7 +115,14 @@ final class AppState {
             guard let self else { return }
             self.permissionNotifier.recordChange(kind, from: old, to: new)
             if new == .granted && old != .granted {
-                if kind == .microphone || kind == .inputMonitoring {
+                if kind == .microphone {
+                    if self.sttEngine == nil {
+                        self.startAwareness()
+                    } else {
+                        self.restartSTTForRecovery()
+                    }
+                } else if kind == .inputMonitoring {
+                    self.boardOverlay.installGlobalHotkeys()
                     self.restartSTTForRecovery()
                 }
             }
@@ -127,9 +130,13 @@ final class AppState {
         // Start awareness on next run loop tick (after app finishes launching)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            // Services start regardless — STTEngine etc. handle denied perms
-            // gracefully so the app is still usable while onboarding runs.
-            self.startAwareness()
+            // Don't touch the microphone at install/open time. Onboarding owns
+            // the permission ask, and STT starts only after the grant applies.
+            if self.permissions.microphone == .granted {
+                self.startAwareness()
+            } else {
+                self.statusText = "Microphone permission needed"
+            }
             self.onboarding.showIfNeeded()
         }
     }
@@ -259,6 +266,10 @@ final class AppState {
     }
 
     func newSession() {
+        guard permissions.microphone == .granted else {
+            onboarding.showAlways()
+            return
+        }
         // Mark first-session-run before we do anything else — the
         // onboarding controller uses this flag to decide whether to
         // re-show the All Set screen on next launch. Marking on
@@ -297,6 +308,10 @@ final class AppState {
     }
 
     func toggleRecording() {
+        guard permissions.microphone == .granted else {
+            permissions.requestMicrophonePrompt { _ in }
+            return
+        }
         sttEngine?.toggleRecording()
     }
 
@@ -469,11 +484,13 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Board overlay — install global ⌃⌥ (modifier-only) / Esc hotkeys, and wire the
-        // theme resolver so the board's glow tracks whichever particle field
-        // is currently active. The board itself only renders when the user
-        // toggles it from the menu or hotkey.
-        boardOverlay.installGlobalHotkeys()
+        // Board overlay — install global ⌃⌥ / Esc hotkeys only once macOS has
+        // already granted Input Monitoring. The menu and MCP toggle still work
+        // without that optional permission, and deferring avoids a TCC prompt
+        // during first launch.
+        if permissions.inputMonitoring == .granted {
+            boardOverlay.installGlobalHotkeys()
+        }
         boardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
             // ActionGlow intentionally returns nil from `particleTheme` so

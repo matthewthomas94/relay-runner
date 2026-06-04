@@ -38,7 +38,11 @@ struct MenuBarView: View {
             Divider()
             ForEach(appState.permissions.missing) { kind in
                 Button("\u{26A0} Fix \(kind.displayName) permission") {
-                    appState.permissions.openSettings(for: kind)
+                    if kind == .microphone {
+                        appState.permissions.requestMicrophonePrompt { _ in }
+                    } else {
+                        appState.permissions.openSettings(for: kind)
+                    }
                 }
             }
             Button("Re-run Setup Walkthrough\u{2026}") {

@@ -6,7 +6,7 @@ final class InstallerTests: XCTestCase {
         let applications = URL(fileURLWithPath: "/Applications", isDirectory: true)
 
         XCTAssertTrue(RelayInstallerContext.shouldInstall(
-            from: URL(fileURLWithPath: "/Volumes/Install Relay Runner/Relay Runner.app", isDirectory: true),
+            from: URL(fileURLWithPath: "/Volumes/Relay Runner Install/Relay Runner.app", isDirectory: true),
             applicationsURL: applications
         ))
         XCTAssertTrue(RelayInstallerContext.shouldInstall(
@@ -52,6 +52,35 @@ final class InstallerTests: XCTestCase {
             .filter { $0.hasPrefix(".Relay Runner.app.installing-") }
         XCTAssertEqual(leftovers, [])
         XCTAssertEqual(progressFractions.last, 1.0)
+    }
+
+    func testInstallerKeepsProgressVisibleForAtLeastThreeSeconds() {
+        let startedAt = Date(timeIntervalSinceReferenceDate: 1_000)
+
+        XCTAssertEqual(
+            RelayInstallerLaunch.remainingDelay(
+                startedAt: startedAt,
+                now: startedAt.addingTimeInterval(1.2)
+            ),
+            1.8,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            RelayInstallerLaunch.remainingDelay(
+                startedAt: startedAt,
+                now: startedAt.addingTimeInterval(3.5)
+            ),
+            0,
+            accuracy: 0.001
+        )
+    }
+
+    func testInstallerLaunchForcesInstalledBundleInsteadOfRunningInstallerCopy() {
+        let configuration = RelayInstallerLaunch.openConfiguration()
+
+        XCTAssertTrue(configuration.activates)
+        XCTAssertTrue(configuration.createsNewApplicationInstance)
+        XCTAssertFalse(configuration.allowsRunningApplicationSubstitution)
     }
 
     private func writeBundle(_ url: URL, marker: String) throws {
