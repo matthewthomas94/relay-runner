@@ -98,14 +98,18 @@ enum CodexAuth {
 }
 
 enum AgentAuth {
-    static var isAuthenticated: Bool {
-        CodexAuth.isAuthenticated || ClaudeAuth.isAuthenticated
+    static func isAuthenticated(for provider: GeneralConfig.AgentProvider) -> Bool {
+        switch provider {
+        case .codex: return CodexAuth.isAuthenticated
+        case .claude: return ClaudeAuth.isAuthenticated
+        }
     }
 
-    static func openLoginInTerminal() {
-        if FileManager.default.isExecutableFile(atPath: CodexAuth.codexBinaryPath) {
+    static func openLoginInTerminal(for provider: GeneralConfig.AgentProvider) {
+        switch provider {
+        case .codex:
             CodexAuth.openLoginInTerminal()
-        } else {
+        case .claude:
             ClaudeAuth.openLoginInTerminal()
         }
     }

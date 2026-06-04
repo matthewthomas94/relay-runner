@@ -28,7 +28,7 @@ enum PermissionStatus: Equatable {
 /// - Input Monitoring: required to capture non-modifier global activation
 ///   keys (Caps Lock alone works without it; modifier flags are readable
 ///   via NSEvent without Input Monitoring).
-/// - Screen Recording: required by the Relay Actions MCP server's
+/// - Screen Recording: required by the Relay Vision MCP server's
 ///   `screenshot` tool. Without it, the screenshot tool returns a clear
 ///   error string but the rest of the app keeps working.
 enum PermissionKind: String, CaseIterable, Identifiable {
@@ -52,7 +52,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
 
 /// Observable source of truth for the app's privacy permission state.
 ///
-/// All three checks are pure local syscalls so polling is cheap. We poll
+/// Permission checks are pure local syscalls so polling is cheap. We poll
 /// rather than rely on distributed notifications because macOS doesn't
 /// reliably notify apps when permissions flip — polling is the only way
 /// to recover automatically when a user grants in Settings. We also
@@ -64,7 +64,7 @@ final class PermissionsManager {
     private(set) var microphone: PermissionStatus = .notDetermined
     private(set) var accessibility: PermissionStatus = .notDetermined
     private(set) var inputMonitoring: PermissionStatus = .notDetermined
-    /// Screen Recording is gated only by the new Relay Actions MCP tools
+    /// Screen Recording is gated only by the new Relay Vision MCP tools
     /// (specifically `screenshot`). Voice features work even when this is
     /// denied — onboarding therefore treats it as optional, surfaced when the
     /// user first hits a vision-requiring prompt.
@@ -146,18 +146,16 @@ final class PermissionsManager {
         }
     }
 
-    /// True when every *required* permission is granted. Screen Recording is
-    /// optional (only the Relay Actions `screenshot` tool needs it), so it
-    /// is intentionally excluded — onboarding shouldn't block on it.
+    /// True when every first-run voice permission is granted. Relay Runner can
+    /// still run with Accessibility / Input Monitoring / Screen Recording
+    /// denied; those are surfaced contextually when a feature needs them.
     var allGranted: Bool {
-        microphone == .granted &&
-        accessibility == .granted &&
-        inputMonitoring == .granted
+        microphone == .granted
     }
 
-    /// The permissions that are not currently usable (anything other than `.granted`).
+    /// The missing permissions that block the default voice path.
     var missing: [PermissionKind] {
-        PermissionKind.allCases.filter { status(for: $0) != .granted }
+        [.microphone].filter { status(for: $0) != .granted }
     }
 
     /// Clear the stale-grant flag for a single permission (e.g. when the

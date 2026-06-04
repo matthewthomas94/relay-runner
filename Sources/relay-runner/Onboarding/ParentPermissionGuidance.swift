@@ -3,6 +3,17 @@ import Foundation
 enum ParentPermissionGuidance {
     static let defaultParentApps = ["Terminal.app", "Codex.app", "Claude.app"]
 
+    static func defaultParentApps(for provider: GeneralConfig.AgentProvider) -> [String] {
+        switch provider {
+        case .codex: return ["Terminal.app", "Codex.app"]
+        case .claude: return ["Terminal.app", "Claude.app"]
+        }
+    }
+
+    static func targetList(for provider: GeneralConfig.AgentProvider) -> String {
+        formatList(defaultParentApps(for: provider))
+    }
+
     static func targetNames(detectedParent parent: String) -> [String] {
         var targets = defaultParentApps
         let detected = displayName(for: parent)

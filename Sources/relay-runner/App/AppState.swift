@@ -41,6 +41,13 @@ final class AppState {
             permissions: permissions,
             setupStatus: { [weak self] in self?.setupStatusMessage },
             getWorkingDirectory: { [weak self] in self?.config.general.working_directory ?? "" },
+            getAgentProvider: { [weak self] in self?.config.general.provider ?? .codex },
+            setAgentProvider: { [weak self] provider in
+                guard let self else { return }
+                var newConfig = self.config
+                newConfig.general.selectProvider(provider)
+                self.saveConfig(newConfig)
+            },
             setWorkingDirectory: { [weak self] path in
                 guard let self else { return }
                 var newConfig = self.config
@@ -101,9 +108,8 @@ final class AppState {
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
         // Pre-register for Input Monitoring TCC so the app appears in the
-        // System Settings list with a toggle when the user lands on that
-        // onboarding step — instead of forcing them through the "+" button
-        // + Finder dialog. Cheap to call on every launch.
+        // System Settings list with a toggle if the user chooses a non-default
+        // activation key later. Cheap to call on every launch.
         permissions.registerForInputMonitoringList()
         // Hook permission transitions: notify on revoke, auto-recover STT
         // when mic/input-monitoring comes back (the STT engine binds to the

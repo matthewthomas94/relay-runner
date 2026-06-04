@@ -3,6 +3,25 @@ import XCTest
 
 final class ParentPermissionGuidanceTests: XCTestCase {
 
+    func testProviderTargetsStayFocusedOnSelectedAgent() {
+        XCTAssertEqual(
+            ParentPermissionGuidance.defaultParentApps(for: .codex),
+            ["Terminal.app", "Codex.app"]
+        )
+        XCTAssertEqual(
+            ParentPermissionGuidance.targetList(for: .codex),
+            "Terminal.app and Codex.app"
+        )
+        XCTAssertEqual(
+            ParentPermissionGuidance.defaultParentApps(for: .claude),
+            ["Terminal.app", "Claude.app"]
+        )
+        XCTAssertEqual(
+            ParentPermissionGuidance.targetList(for: .claude),
+            "Terminal.app and Claude.app"
+        )
+    }
+
     func testDefaultTargetsIncludeSupportedParentApps() {
         XCTAssertEqual(
             ParentPermissionGuidance.targetNames(detectedParent: "Terminal"),

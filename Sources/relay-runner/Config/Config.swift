@@ -55,9 +55,10 @@ struct GeneralConfig: Codable, Equatable {
 
     static let codexModelOptions: [ModelOption] = [
         ModelOption(label: "Default", value: defaultModel),
-        ModelOption(label: "GPT-5 Codex", value: "gpt-5-codex"),
-        ModelOption(label: "GPT-5.2 Codex", value: "gpt-5.2-codex"),
-        ModelOption(label: "GPT-5.1 Codex", value: "gpt-5.1-codex"),
+        ModelOption(label: "GPT-5.5", value: "gpt-5.5"),
+        ModelOption(label: "GPT-5.4", value: "gpt-5.4"),
+        ModelOption(label: "GPT-5.4-Mini", value: "gpt-5.4-mini"),
+        ModelOption(label: "GPT-5.3-Codex-Spark", value: "gpt-5.3-codex-spark"),
     ]
 
     static let claudeModelOptions: [ModelOption] = [

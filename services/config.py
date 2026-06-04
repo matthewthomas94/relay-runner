@@ -189,7 +189,7 @@ def _migrate_config(config: dict, general_had_provider: bool = True):
         general["command"] = provider
 
     valid_models = {
-        "codex": {"default", "gpt-5-codex", "gpt-5.2-codex", "gpt-5.1-codex"},
+        "codex": {"default", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"},
         "claude": {"default", "opus", "sonnet", "haiku"},
     }
     model = str(general.get("model", "default")).strip().lower()

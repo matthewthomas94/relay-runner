@@ -90,7 +90,7 @@ All settings live in the Settings window. Config is persisted to:
 ### General
 
 - **LLM Provider** — Codex (default) or Claude. **Start Session…** launches the selected provider's CLI.
-- **Model** — provider-specific choices. Codex offers Default plus GPT-5 Codex variants; Claude offers Default, Opus, Sonnet, and Haiku. *Default* lets the selected provider use its normal account-level setting; the others pass `--model <alias>` to the CLI for this session.
+- **Model** — provider-specific choices. Codex offers Default, GPT-5.5, GPT-5.4, GPT-5.4-Mini, and GPT-5.3-Codex-Spark; Claude offers Default, Opus, Sonnet, and Haiku. *Default* lets the selected provider use its normal account-level setting; the others pass `--model <alias>` to the CLI for this session.
 - **Working directory** — where new voice sessions open
 - **Terminal** — Warp, iTerm2, Terminal, Kitty, or Alacritty
 - **Bypass agent permission prompts** — when on (default), sessions launched from **Start Session…** run with the configured agent's bypass flag so voice flow isn't interrupted. Turn off if you want the agent to ask before each tool use; voice still works, you'll just answer prompts in the terminal.
@@ -131,7 +131,7 @@ Relay Runner uses up to three macOS privacy permissions, all optional with grace
 - **Accessibility** — used to pause currently-playing media when you start recording. The app still works without it; you'll just have audio playing over your voice.
 - **Input Monitoring** — required only when your activation key is *not* a modifier (Caps Lock / Option / etc.). Caps Lock-based triggering reads `NSEvent` modifier flags directly and doesn't need this permission. If you set the activation key to e.g. `F19`, macOS will ask for Input Monitoring at that point.
 
-First-launch onboarding walks through the ones that are needed and bootstraps the bundled Python environment so voice replies work immediately. If TCC ever resets the grants (a macOS update or app reinstall can do this), the Settings → Status tab surfaces a banner explaining what happened.
+First-launch onboarding asks which coding agent to use, walks through the permissions needed for voice, and bootstraps the bundled Python environment so voice replies work immediately. If TCC ever resets the grants (a macOS update or app reinstall can do this), the Settings → Status tab surfaces a banner explaining what happened.
 
 ---
 

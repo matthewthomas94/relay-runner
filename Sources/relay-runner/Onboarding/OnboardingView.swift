@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// First-launch onboarding flow. Walks through the three required
-/// privacy permissions and auto-advances when each is granted.
+/// First-launch onboarding flow. Walks through agent choice, microphone
+/// access, optional parent-app permission guidance, local Python setup,
+/// and agent sign-in.
 struct OnboardingView: View {
 
     @Bindable var permissions: PermissionsManager
@@ -15,6 +16,13 @@ struct OnboardingView: View {
     /// opens. Used to preload the Ready-step path picker so a returning
     /// user sees their last choice.
     let initialWorkingDirectory: String
+    /// Configured primary coding agent at the moment the window opens.
+    let initialAgentProvider: GeneralConfig.AgentProvider
+    /// When true in the simplified upgrade flow, ask for the provider choice
+    /// even if no other setup is missing.
+    let requiresAgentChoice: Bool
+    /// Persists the selected primary coding agent back to AppConfig.
+    let onSetAgentProvider: (GeneralConfig.AgentProvider) -> Void
     /// Persists the user's working-directory pick to AppConfig. Called
     /// from the Ready step's Done button.
     let onSetWorkingDirectory: (String) -> Void
@@ -31,23 +39,14 @@ struct OnboardingView: View {
     /// by the time the user reaches its dedicated step.
     @State private var venvInstaller = VenvInstaller()
     /// Cached "is the configured agent signed in" state. Polled by a
-    /// 1-second timer while on the claudeLogin step so we can auto-
-    /// advance the moment the keychain entry appears (i.e., the user
-    /// has finished the login flow in the Terminal we spawned).
-    @State private var claudeSignedIn: Bool = AgentAuth.isAuthenticated
-    /// Whether we've already invoked the Accessibility prompt this session.
-    /// AXIsProcessTrustedWithOptions reliably shows a system dialog on the
-    /// first call (with its own "Open System Settings" button), then macOS
-    /// suppresses repeats — so the first click delegates navigation to the
-    /// dialog, and subsequent clicks fall through to a Settings deep-link.
-    /// Input Monitoring doesn't get this treatment because IOHIDRequestAccess
-    /// only shows a dialog for .notDetermined status (the AX dialog fires for
-    /// .denied too), and we can't tell the cases apart at click time.
-    @State private var hasPromptedAccessibility = false
+    /// 1-second timer while on the agentLogin step so we can auto-advance
+    /// the moment the provider's local auth marker appears.
+    @State private var agentSignedIn: Bool
     /// Working directory the user picks on the Ready step. Initialized
     /// from `initialWorkingDirectory` so a returning user sees their
     /// previous choice; an empty string means "use the home folder."
     @State private var workingDirectory: String
+    @State private var selectedAgentProvider: GeneralConfig.AgentProvider
     /// True once the user has actively chosen a working directory on
     /// this opening of the onboarding window — by clicking Browse… or
     /// Use Home Folder. The Done button stays disabled until then so we
@@ -59,6 +58,9 @@ struct OnboardingView: View {
          simplified: Bool,
          setupStatus: @escaping () -> String? = { nil },
          initialWorkingDirectory: String = "",
+         initialAgentProvider: GeneralConfig.AgentProvider = .codex,
+         requiresAgentChoice: Bool = false,
+         onSetAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
          onSetWorkingDirectory: @escaping (String) -> Void = { _ in },
          onStartSession: @escaping () -> Void = {},
          onFinish: @escaping () -> Void) {
@@ -66,35 +68,42 @@ struct OnboardingView: View {
         self.simplified = simplified
         self.setupStatus = setupStatus
         self.initialWorkingDirectory = initialWorkingDirectory
+        self.initialAgentProvider = initialAgentProvider
+        self.requiresAgentChoice = requiresAgentChoice
+        self.onSetAgentProvider = onSetAgentProvider
         self.onSetWorkingDirectory = onSetWorkingDirectory
         self.onStartSession = onStartSession
         self.onFinish = onFinish
         // Simplified flow (re-prompt after initial onboarding): jump to the
-        // first missing permission. Full flow starts at the welcome screen.
+        // first missing setup item. Full flow starts at the welcome screen.
         let initial: Step
         if simplified {
-            initial = Self.firstMissing(permissions: permissions) ?? .ready
+            initial = Self.firstMissing(
+                permissions: permissions,
+                agentProvider: initialAgentProvider,
+                requiresAgentChoice: requiresAgentChoice
+            ) ?? .ready
         } else {
             initial = .welcome
         }
         _step = State(initialValue: initial)
         _workingDirectory = State(initialValue: initialWorkingDirectory)
+        _selectedAgentProvider = State(initialValue: initialAgentProvider)
+        _agentSignedIn = State(initialValue: AgentAuth.isAuthenticated(for: initialAgentProvider))
     }
 
     enum Step: Int, CaseIterable {
         case welcome
+        case agentChoice
         case microphone
-        case accessibility
-        case inputMonitoring
+        case parentPermissions
         case pythonSetup
-        case claudeLogin
+        case agentLogin
         case ready
 
         var kind: PermissionKind? {
             switch self {
             case .microphone:      return .microphone
-            case .accessibility:   return .accessibility
-            case .inputMonitoring: return .inputMonitoring
             default:               return nil
             }
         }
@@ -123,16 +132,6 @@ struct OnboardingView: View {
         .onChange(of: permissions.microphone) { _, new in
             autoAdvance(for: .microphone, status: new)
         }
-        .onChange(of: permissions.accessibility) { _, new in
-            autoAdvance(for: .accessibility, status: new)
-        }
-        // No auto-advance for inputMonitoring. IOHIDCheckAccess can return
-        // kIOHIDAccessTypeGranted from leftover TCC state (especially on
-        // ad-hoc-signed reinstalls) and can transition spuriously after
-        // the user opens System Settings — both of which would race the
-        // user past this step before they've actually granted. The
-        // primary button below shows Continue once the API reads granted,
-        // so the user advances on an explicit click instead.
         .onChange(of: venvInstaller.status) { _, new in
             // Auto-advance off pythonSetup as soon as the bootstrap
             // succeeds so the user doesn't have to click through.
@@ -141,14 +140,14 @@ struct OnboardingView: View {
             }
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            // Poll only while we're on the claudeLogin step — the
-            // keychain check is cheap, but there's no reason to
-            // run it forever. When the entry appears, mirror the
+            // Poll only while we're on the agentLogin step — the
+            // local auth check is cheap, but there's no reason to
+            // run it forever. When the marker appears, mirror the
             // permission auto-advance pattern.
-            guard step == .claudeLogin else { return }
-            let now = AgentAuth.isAuthenticated
-            guard now != claudeSignedIn else { return }
-            claudeSignedIn = now
+            guard step == .agentLogin else { return }
+            let now = AgentAuth.isAuthenticated(for: selectedAgentProvider)
+            guard now != agentSignedIn else { return }
+            agentSignedIn = now
             if now {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
             }
@@ -176,18 +175,18 @@ struct OnboardingView: View {
     private var content: some View {
         switch step {
         case .welcome:          welcomeView
+        case .agentChoice:      agentChoiceView
         case .microphone:       permissionView(for: .microphone)
-        case .accessibility:    permissionView(for: .accessibility)
-        case .inputMonitoring:  permissionView(for: .inputMonitoring)
+        case .parentPermissions: parentPermissionsView
         case .pythonSetup:      pythonSetupView
-        case .claudeLogin:      claudeLoginView
+        case .agentLogin:       agentLoginView
         case .ready:            readyView
         }
     }
 
     private var footer: some View {
         HStack {
-            if step != .welcome && step != .ready {
+            if step != .welcome && step != .ready && step != .agentChoice {
                 Button("Skip") { advance() }
                     .buttonStyle(.link)
             }
@@ -204,11 +203,73 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Let's get Relay Runner set up.")
                 .font(.title3)
-            Text("Relay Runner needs a few macOS privacy permissions so it can hear you and detect your trigger key. We'll walk through each one — it takes about a minute.")
+            Text("First choose the coding agent you want Relay Runner to launch. Then we'll handle the small amount of setup needed for voice.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var agentChoiceView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Which coding agent should Relay Runner use first?")
+                .font(.title3).bold()
+            Text("Start Session will open this agent by default. You can switch later in Settings.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 10) {
+                agentChoiceRow(
+                    provider: .codex,
+                    title: "Codex",
+                    detail: "Use OpenAI Codex as the default voice-driven coding session."
+                )
+                agentChoiceRow(
+                    provider: .claude,
+                    title: "Claude",
+                    detail: "Use Claude Code as the default voice-driven coding session."
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func agentChoiceRow(provider: GeneralConfig.AgentProvider,
+                                title: String,
+                                detail: String) -> some View {
+        Button {
+            selectedAgentProvider = provider
+            agentSignedIn = AgentAuth.isAuthenticated(for: provider)
+            onSetAgentProvider(provider)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: selectedAgentProvider == provider ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selectedAgentProvider == provider ? Color.accentColor : Color.secondary)
+                    .font(.title3)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(selectedAgentProvider == provider
+                            ? Color.accentColor.opacity(0.55)
+                            : Color.secondary.opacity(0.25))
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private func permissionView(for kind: PermissionKind) -> some View {
@@ -283,6 +344,71 @@ struct OnboardingView: View {
         case .screenRecording:
             return "Your organisation's security policy appears to be blocking Screen Recording. You'll need your IT team to allow Relay Runner. Only the optional Relay Actions voice tools (UAT, dashboard automation) are affected — voice transcription and speech still work."
         }
+    }
+
+    private var parentPermissionsView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "rectangle.on.rectangle")
+                    .foregroundStyle(.tint)
+                    .font(.title3)
+                Text("Screen-control permissions")
+                    .font(.title3).bold()
+            }
+
+            Text("Voice setup only needs Relay Runner's microphone permission. If you want the agent to see the screen, click, type, or scroll, macOS grants those permissions to the parent app that runs \(selectedAgentProvider.displayName), not always to Relay Runner.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 10) {
+                parentPermissionRow(
+                    icon: "hand.tap",
+                    title: "Accessibility",
+                    detail: "Toggle on \(selectedParentTargetList) so Relay Actions can control the Mac."
+                )
+                parentPermissionRow(
+                    icon: "rectangle.dashed",
+                    title: "Screen Recording",
+                    detail: "Toggle on \(selectedParentTargetList) so Relay Vision can inspect the screen."
+                )
+            }
+
+            Text("This step is optional for voice. You can grant these later when Relay Runner detects the agent's parent app.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func parentPermissionRow(icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(.tint)
+                .font(.title3)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.headline)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.25))
+        )
+    }
+
+    private var selectedParentTargetList: String {
+        ParentPermissionGuidance.targetList(for: selectedAgentProvider)
     }
 
     private var pythonSetupView: some View {
@@ -375,10 +501,10 @@ struct OnboardingView: View {
         }
     }
 
-    private var claudeLoginView: some View {
+    private var agentLoginView: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
-                if claudeSignedIn {
+                if agentSignedIn {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .font(.title3)
@@ -390,10 +516,10 @@ struct OnboardingView: View {
                 Text("Sign in to your agent")
                     .font(.title3).bold()
             }
-            Text("Relay Runner uses Codex or Claude for the conversation. Sign in to the configured agent so voice sessions can connect — without this, sessions fail with an authentication error.")
+            Text("Relay Runner will start \(selectedAgentProvider.displayName) for voice sessions. Sign in once so sessions can connect without an authentication stop.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if claudeSignedIn {
+            if agentSignedIn {
                 Text("Signed in — you're ready to go.")
                     .font(.callout)
                     .foregroundStyle(.green)
@@ -588,6 +714,12 @@ struct OnboardingView: View {
         case .welcome:
             Button("Get Started") { advance() }
                 .keyboardShortcut(.defaultAction)
+        case .agentChoice:
+            Button("Use \(selectedAgentProvider.displayName)") {
+                onSetAgentProvider(selectedAgentProvider)
+                advance()
+            }
+                .keyboardShortcut(.defaultAction)
         case .microphone:
             switch permissions.microphone {
             case .granted:
@@ -607,44 +739,9 @@ struct OnboardingView: View {
                     permissions.openSettings(for: .microphone)
                 }.keyboardShortcut(.defaultAction)
             }
-        case .accessibility:
-            if permissions.accessibility == .granted {
-                Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
-            } else {
-                Button("Open System Settings") {
-                    if !hasPromptedAccessibility {
-                        // First click: AXIsProcessTrustedWithOptions shows
-                        // its own system dialog with an "Open System Settings"
-                        // button. Letting that handle the navigation avoids
-                        // the focus race we'd get by also opening Settings
-                        // ourselves at the same instant.
-                        hasPromptedAccessibility = true
-                        permissions.promptAccessibility()
-                    } else {
-                        // Subsequent clicks: macOS suppresses the AX dialog
-                        // after the first call per launch, so the button
-                        // would otherwise do nothing visible. Deep-link to
-                        // Settings as the fallback.
-                        permissions.openSettings(for: .accessibility)
-                    }
-                }.keyboardShortcut(.defaultAction)
-            }
-        case .inputMonitoring:
-            // Continue is only the primary action when the API reads
-            // granted. We removed auto-advance for this step (see body
-            // above) because IOHIDCheckAccess can lie, so the user
-            // explicitly clicking Continue is what advances. When not
-            // granted, the primary button opens System Settings;
-            // IOHIDRequestAccess is also called so Relay Runner appears
-            // in the Input Monitoring list on a fresh install.
-            if permissions.inputMonitoring == .granted {
-                Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
-            } else {
-                Button("Open System Settings") {
-                    permissions.promptInputMonitoring()
-                    permissions.openSettings(for: .inputMonitoring)
-                }.keyboardShortcut(.defaultAction)
-            }
+        case .parentPermissions:
+            Button("Continue") { advance() }
+                .keyboardShortcut(.defaultAction)
         case .pythonSetup:
             switch venvInstaller.status {
             case .succeeded:
@@ -658,12 +755,12 @@ struct OnboardingView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(true)
             }
-        case .claudeLogin:
-            if claudeSignedIn {
+        case .agentLogin:
+            if agentSignedIn {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
                 Button("Sign in") {
-                    AgentAuth.openLoginInTerminal()
+                    AgentAuth.openLoginInTerminal(for: selectedAgentProvider)
                 }.keyboardShortcut(.defaultAction)
             }
         case .ready:
@@ -714,7 +811,7 @@ struct OnboardingView: View {
     private func advance() {
         if simplified {
             // Simplified re-prompt flow: finish as soon as every remaining
-            // missing permission has been addressed (granted or skipped).
+            // missing required setup item has been addressed (granted or skipped).
             if let next = nextMissingStep(after: step) {
                 step = next
             } else {
@@ -737,21 +834,24 @@ struct OnboardingView: View {
     }
 
     /// The next step (after `from`) that still needs the user's attention —
-    /// a permission not yet granted, pythonSetup if the venv hasn't been
-    /// bootstrapped, or claudeLogin if the configured agent isn't signed in.
+    /// microphone if not granted, pythonSetup if the venv hasn't been
+    /// bootstrapped, or agentLogin if the configured agent isn't signed in.
     /// Used by the simplified re-prompt flow to skip already-done items.
     private func nextMissingStep(after from: Step) -> Step? {
         let remaining = Step.allCases.filter {
             $0.rawValue > from.rawValue
         }
         for candidate in remaining {
+            if candidate == .agentChoice, requiresAgentChoice {
+                return candidate
+            }
             if let kind = candidate.kind, permissions.status(for: kind) != .granted {
                 return candidate
             }
             if candidate == .pythonSetup, !VenvInstaller.alreadyInstalled {
                 return candidate
             }
-            if candidate == .claudeLogin, !AgentAuth.isAuthenticated {
+            if candidate == .agentLogin, !AgentAuth.isAuthenticated(for: selectedAgentProvider) {
                 return candidate
             }
         }
@@ -771,18 +871,19 @@ struct OnboardingView: View {
     private var headerTitle: String {
         switch step {
         case .welcome:          return "Welcome to Relay Runner"
+        case .agentChoice:      return "Coding Agent"
         case .microphone:       return "Microphone"
-        case .accessibility:    return "Accessibility"
-        case .inputMonitoring:  return "Input Monitoring"
+        case .parentPermissions: return "Screen Control"
         case .pythonSetup:      return "Python Environment"
-        case .claudeLogin:      return "Agent Account"
+        case .agentLogin:       return "\(selectedAgentProvider.displayName) Account"
         case .ready:            return "Setup Complete"
         }
     }
 
     private var progressLabel: String? {
         guard let index = visibleIndex else { return nil }
-        // Full flow always visits 3 permissions + pythonSetup + claudeLogin
+        // Full flow always visits agent choice + microphone + optional
+        // parent permission guidance + pythonSetup + agentLogin
         // (the last two briefly auto-advance when their state is already
         // ready, but they still get slots in the count). Simplified flow
         // only counts steps that actually need attention.
@@ -796,20 +897,23 @@ struct OnboardingView: View {
     }
 
     /// Number of steps the simplified re-prompt flow will visit — the
-    /// permissions still missing plus pythonSetup if the venv isn't
-    /// healthy plus claudeLogin if the agent isn't signed in. Used so
+    /// first-run requirements still missing plus pythonSetup if the venv isn't
+    /// healthy plus agentLogin if the selected agent isn't signed in. Used so
     /// the "X of N" label reflects actual remaining work, not the full
     /// onboarding length.
     private var simplifiedTotalSteps: Int {
         var count = 0
         for s in Step.allCases {
+            if s == .agentChoice, requiresAgentChoice {
+                count += 1
+            }
             if let kind = s.kind, permissions.status(for: kind) != .granted {
                 count += 1
             }
             if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
                 count += 1
             }
-            if s == .claudeLogin, !AgentAuth.isAuthenticated {
+            if s == .agentLogin, !AgentAuth.isAuthenticated(for: selectedAgentProvider) {
                 count += 1
             }
         }
@@ -819,11 +923,11 @@ struct OnboardingView: View {
     private var visibleIndex: Int? {
         switch step {
         case .welcome, .ready: return nil
-        case .microphone:      return 1
-        case .accessibility:   return 2
-        case .inputMonitoring: return 3
+        case .agentChoice:     return 1
+        case .microphone:      return 2
+        case .parentPermissions: return 3
         case .pythonSetup:     return 4
-        case .claudeLogin:     return 5
+        case .agentLogin:      return 5
         }
     }
 
@@ -889,15 +993,20 @@ struct OnboardingView: View {
         }
     }
 
-    private static func firstMissing(permissions: PermissionsManager) -> Step? {
+    private static func firstMissing(permissions: PermissionsManager,
+                                     agentProvider: GeneralConfig.AgentProvider,
+                                     requiresAgentChoice: Bool) -> Step? {
         for s in Step.allCases {
+            if s == .agentChoice, requiresAgentChoice {
+                return s
+            }
             if let kind = s.kind, permissions.status(for: kind) != .granted {
                 return s
             }
             if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
                 return s
             }
-            if s == .claudeLogin, !AgentAuth.isAuthenticated {
+            if s == .agentLogin, !AgentAuth.isAuthenticated(for: agentProvider) {
                 return s
             }
         }
