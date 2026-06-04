@@ -10,7 +10,7 @@ final class RelayInstallerWindowController {
     func show(context: RelayInstallerContext) {
         if let window = windowController?.window {
             window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            NSApplication.shared.activate(ignoringOtherApps: true)
             return
         }
 
@@ -22,8 +22,8 @@ final class RelayInstallerWindowController {
         window.center()
         window.isReleasedWhenClosed = false
 
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
 
         let wc = NSWindowController(window: window)
         windowController = wc
@@ -103,7 +103,7 @@ final class RelayInstallerModel {
                 if let error {
                     self.fail(error)
                 } else {
-                    NSApp.terminate(nil)
+                    NSApplication.shared.terminate(nil)
                 }
             }
         }
@@ -148,7 +148,7 @@ struct RelayInstallerView: View {
                     .frame(width: 360)
 
                 HStack {
-                    Button("Quit") { NSApp.terminate(nil) }
+                    Button("Quit") { NSApplication.shared.terminate(nil) }
                     Button("Retry") { model.retry(context: context) }
                         .keyboardShortcut(.defaultAction)
                 }

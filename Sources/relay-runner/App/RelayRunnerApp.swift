@@ -30,7 +30,6 @@ struct RelayRunnerApp: App {
         _appState = State(initialValue: context == nil ? AppState() : nil)
 
         if let context {
-            NSApp.setActivationPolicy(.regular)
             DispatchQueue.main.async {
                 RelayInstallerWindowController.shared.show(context: context)
             }
@@ -42,7 +41,7 @@ struct RelayRunnerApp: App {
             if let appState {
                 MenuBarView(appState: appState)
             } else {
-                Button("Quit") { NSApp.terminate(nil) }
+                Button("Quit") { NSApplication.shared.terminate(nil) }
             }
         } label: {
             if let appState {
