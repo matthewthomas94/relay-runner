@@ -82,6 +82,7 @@ final class AppState {
     private var wasRecording = false
     /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
     private var sessionPromptCapsState = false
+    private var sessionPromptGate = SessionPromptGate()
     /// Grace period: don't let the watchdog revert a session before the bridge has time to start.
     private var sessionStartTime: Date = .distantPast
     /// Has the bridge for the current menu-started session been observed alive at least once?
@@ -282,6 +283,7 @@ final class AppState {
         menuSessionActive = true
         sessionStartTime = Date()
         sessionBridgeSeen = false
+        sessionPromptGate.reset()
         // Bridge is about to launch — assume alive until watchdog says otherwise
         bridgeAliveCache = true
 
@@ -325,12 +327,28 @@ final class AppState {
 
     private func startBridgeWatchdog() {
         stopBridgeWatchdog()
-        bridgeAliveCache = processManager.bridgeAlive()
+        let daemonAlive = processManager.bridgeAlive()
+        bridgeAliveCache = daemonAlive && processManager.bridgeConsumerAlive()
         bridgeWatchdog = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             guard let self, self.isRunning else { return }
-            let alive = self.processManager.bridgeAlive()
+            let daemonAlive = self.processManager.bridgeAlive()
+            let alive = daemonAlive && self.processManager.bridgeConsumerAlive()
             let wasAlive = self.bridgeAliveCache
             self.bridgeAliveCache = alive
+
+            // Reap orphaned relay bridges quietly. A live daemon without a
+            // consumer is not a usable session, but surfacing the no-session
+            // pill from a polling path is noisy; wait for an explicit record
+            // or board attempt before teaching the recovery action.
+            if daemonAlive && !alive {
+                NSLog("[AppState] Relay bridge orphaned (consumer heartbeat stale), killing")
+                self.processManager.killBridge()
+                self.bridgeAliveCache = false
+                self.menuSessionActive = false
+                self.sessionBridgeSeen = false
+                self.statusText = "Ready"
+                return
+            }
 
             // Track externally-started bridges (e.g. /relay-bridge)
             if alive && !self.menuSessionActive && self.statusText != "Session" {
@@ -364,21 +382,6 @@ final class AppState {
                 wizardShownForCurrentBridgeSession = false
             }
 
-            // Detect orphaned relay bridge (process alive but consumer dead).
-            // Reap the orphan and surface the normal no-session prompt instead
-            // of letting voice commands sit unread behind a healthy-looking
-            // socket.
-            if alive && !self.processManager.bridgeConsumerAlive() {
-                NSLog("[AppState] Relay bridge orphaned (consumer heartbeat stale), killing")
-                self.processManager.killBridge()
-                self.bridgeAliveCache = false
-                self.menuSessionActive = false
-                self.statusText = "Ready"
-                self.sessionPromptCapsState = CapsLockGesture.isCapsLockOn()
-                self.stateMachine.showSessionPrompt()
-                return
-            }
-
             if self.menuSessionActive && alive {
                 self.sessionBridgeSeen = true
             }
@@ -405,6 +408,17 @@ final class AppState {
                 self.statusText = "Ready"
             }
         }
+    }
+
+    private func showSessionPromptIfAllowed(now: Date = Date()) {
+        if case .sessionPrompt = stateMachine.state {
+            return
+        }
+        guard sessionPromptGate.shouldShow(now: now) else {
+            return
+        }
+        sessionPromptCapsState = CapsLockGesture.isCapsLockOn()
+        stateMachine.showSessionPrompt()
     }
 
     private func stopBridgeWatchdog() {
@@ -506,7 +520,7 @@ final class AppState {
         // → OverlayController renders .sessionPrompt as a TranscriptionPill
         // with a 5s auto-dismiss).
         boardOverlay.setNoSessionHandler { [weak self] in
-            self?.stateMachine.showSessionPrompt()
+            self?.showSessionPromptIfAllowed()
         }
         // Perimeter overlay (purple band on every screen while
         // .actionGlow is active; pulses while a confirmation is pending).
@@ -551,8 +565,7 @@ final class AppState {
                     }
                     self.menuSessionActive = false
                     engine.cancelRecording()
-                    self.sessionPromptCapsState = CapsLockGesture.isCapsLockOn()
-                    self.stateMachine.showSessionPrompt()
+                    self.showSessionPromptIfAllowed()
                     self.wasRecording = false
                     return
                 }
