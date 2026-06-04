@@ -158,7 +158,20 @@ launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 : > /tmp/voice_bridge.log
-launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" '__RELAY_BRIDGE__'
+RELAY_BRIDGE='__RELAY_BRIDGE__'
+launch_relay_bridge() {
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" >> /tmp/voice_bridge.log 2>&1 || true
+    for i in $(seq 1 20); do
+        [ -S /tmp/voice_bridge.sock ] && return 0
+        launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
+    [ -S /tmp/voice_bridge.sock ] && return 0
+    echo "[relay-bridge] launchctl did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+    launchctl remove com.relay.voicebridge 2>/dev/null || true
+    nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &
+}
+launch_relay_bridge
 ```
 
 3. Wait for the relay bridge to come up. The 60-iteration cap is generous on purpose: the very first invocation may need to download a Python interpreter (~18 MB) and the Kokoro speech model (~350 MB) before the bridge can listen, so allow ~30 seconds:
@@ -241,9 +254,20 @@ touch /tmp/voice_bridge_heartbeat
 if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
     rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
     RELAY_CWD=$(pwd)
+    RELAY_BRIDGE='__RELAY_BRIDGE__'
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" '__RELAY_BRIDGE__'
-    for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" >> /tmp/voice_bridge.log 2>&1 || true
+    for i in $(seq 1 20); do
+        [ -S /tmp/voice_bridge.sock ] && break
+        launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
+    if [ ! -S /tmp/voice_bridge.sock ]; then
+        echo "[relay-bridge] launchctl restart did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+        launchctl remove com.relay.voicebridge 2>/dev/null || true
+        nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &
+        for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
+    fi
 fi
 ```
 
@@ -343,7 +367,20 @@ launchctl remove com.relay.voicebridge 2>/dev/null || true
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 RELAY_CWD=$(pwd)
 : > /tmp/voice_bridge.log
-launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" '__RELAY_BRIDGE__'
+RELAY_BRIDGE='__RELAY_BRIDGE__'
+launch_relay_bridge() {
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" >> /tmp/voice_bridge.log 2>&1 || true
+    for i in $(seq 1 20); do
+        [ -S /tmp/voice_bridge.sock ] && return 0
+        launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
+    [ -S /tmp/voice_bridge.sock ] && return 0
+    echo "[relay-bridge] launchctl did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+    launchctl remove com.relay.voicebridge 2>/dev/null || true
+    nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &
+}
+launch_relay_bridge
 ```
 
 3. Wait for the bridge:
@@ -412,9 +449,20 @@ touch /tmp/voice_bridge_heartbeat
 if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
     rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
     RELAY_CWD=$(pwd)
+    RELAY_BRIDGE='__RELAY_BRIDGE__'
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" '__RELAY_BRIDGE__'
-    for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" >> /tmp/voice_bridge.log 2>&1 || true
+    for i in $(seq 1 20); do
+        [ -S /tmp/voice_bridge.sock ] && break
+        launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
+    if [ ! -S /tmp/voice_bridge.sock ]; then
+        echo "[relay-bridge] launchctl restart did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+        launchctl remove com.relay.voicebridge 2>/dev/null || true
+        nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &
+        for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
+    fi
 fi
 ```
 
