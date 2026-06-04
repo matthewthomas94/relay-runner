@@ -20,7 +20,9 @@ import Foundation
 // We warn at most once per (permission × session), so a chatty session doesn't
 // re-narrate the same permission ask. After the warning we sleep briefly so the
 // user can react before the dialog blocks the screen, then attempt the system
-// prompt and re-check. If the permission is still missing we surface a clear
+// prompt and re-check. We also confirm once when the active parent is actually
+// observed as granted, so the user hears that the Terminal/Codex/Claude host is
+// now set up correctly. If the permission is still missing we surface a clear
 // error to the agent so it can speak a helpful follow-up rather than silently
 // posting CGEvents that get dropped.
 
@@ -61,15 +63,13 @@ enum PermissionPreflight {
     /// `fallbackPurpose` is used when the model didn't call propose_action
     /// recently — keep it short and starting with a verb ("click at (x, y)").
     static func ensureAccessibility(fallbackPurpose: String) -> Outcome {
+        let parent = responsibleParentName()
         if AXIsProcessTrusted() {
-            // Also clear any stale revocation flag — the wizard tracker
-            // doesn't need to re-fire if the user has now granted.
+            confirmGrantedOnceIfNeeded(permission: .accessibility, parent: parent)
             return .granted
         }
 
         let purpose = recentPurpose() ?? fallbackPurpose
-        let parent = ParentProcess.detectTerminal()?.displayName
-            ?? "the parent terminal, IDE, or app that launched this agent session"
 
         warnOnceIfNeeded(permission: .accessibility) {
             speak("""
@@ -88,6 +88,7 @@ enum PermissionPreflight {
         // the OS dialog. We poll for up to ~4s so a quick grant takes effect
         // before we give up — most users click Allow within that window.
         if pollUntilGranted(check: { AXIsProcessTrusted() }, timeout: 4.0) {
+            confirmGrantedOnceIfNeeded(permission: .accessibility, parent: parent)
             return .granted
         }
 
@@ -115,11 +116,13 @@ enum PermissionPreflight {
     /// Pre-flight check before SCShareableContent / SCScreenshotManager use.
     /// Mirrors ensureAccessibility but for Screen Recording.
     static func ensureScreenRecording(fallbackPurpose: String) -> Outcome {
-        if CGPreflightScreenCaptureAccess() { return .granted }
+        let parent = responsibleParentName()
+        if CGPreflightScreenCaptureAccess() {
+            confirmGrantedOnceIfNeeded(permission: .screenRecording, parent: parent)
+            return .granted
+        }
 
         let purpose = recentPurpose() ?? fallbackPurpose
-        let parent = ParentProcess.detectTerminal()?.displayName
-            ?? "the parent terminal, IDE, or app that launched this agent session"
 
         warnOnceIfNeeded(permission: .screenRecording) {
             speak("""
@@ -135,6 +138,7 @@ enum PermissionPreflight {
         _ = CGRequestScreenCaptureAccess()
 
         if pollUntilGranted(check: { CGPreflightScreenCaptureAccess() }, timeout: 4.0) {
+            confirmGrantedOnceIfNeeded(permission: .screenRecording, parent: parent)
             return .granted
         }
 
@@ -172,6 +176,28 @@ enum PermissionPreflight {
 
     private static let lock = NSLock()
     private static var warnedThisSession: Set<Permission> = []
+    private static var confirmedThisSession: Set<Permission> = []
+
+    private static func responsibleParentName() -> String {
+        ParentProcess.detectTerminal()?.displayName
+            ?? "the parent terminal, IDE, or app that launched this agent session"
+    }
+
+    private static func confirmGrantedOnceIfNeeded(permission: Permission, parent: String) {
+        lock.lock()
+        let alreadyConfirmed = confirmedThisSession.contains(permission)
+        confirmedThisSession.insert(permission)
+        lock.unlock()
+
+        guard !alreadyConfirmed else { return }
+
+        switch permission {
+        case .accessibility:
+            speak("Accessibility is granted for \(parent). Relay Actions can click, type, and scroll now.")
+        case .screenRecording:
+            speak("Screen Recording is granted for \(parent). Relay Vision can see the screen now.")
+        }
+    }
 
     /// Warn at most once per (permission × session). The first call also blocks
     /// briefly so the user hears a chunk before the OS dialog blocks the screen.
