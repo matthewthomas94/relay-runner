@@ -9,7 +9,10 @@ import Foundation
 // the user opens System Settings, grants Relay Runner, and is confused when
 // the next screenshot still fails.
 //
-// The walk stops at the first known terminal-class app, or at launchd (pid 1).
+// The walk stops at the first known terminal/IDE host app, or at launchd
+// (pid 1). Native Codex.app / Claude.app matches are kept as fallbacks:
+// when their bundled CLI is run inside Terminal, the executable path still
+// contains `/Codex.app/` or `/Claude.app/`, but TCC belongs to Terminal.
 //
 // We don't try to be exhaustive — the goal is "you probably need to grant
 // Screen Recording to <X>", and a friendly fallback when detection fails.
@@ -41,14 +44,23 @@ enum ParentProcess {
 
     static func detectTerminal() -> TerminalApp? {
         var pid: Int32 = getppid()
+        var agentAppFallback: TerminalApp?
         // Cap the walk — most chains are 3–5 deep (agent CLI → shell → terminal),
         // and we never legitimately need to walk further than this.
         for _ in 0..<10 {
             guard pid > 1 else { break }
 
             let exePath = executablePath(for: pid) ?? ""
-            if let match = matchTerminal(executablePath: exePath) {
-                return TerminalApp(displayName: match, executablePath: exePath, pid: pid)
+            if let match = matchParent(executablePath: exePath) {
+                let app = TerminalApp(displayName: match.display, executablePath: exePath, pid: pid)
+                switch match.kind {
+                case .hostApp:
+                    return app
+                case .agentApp:
+                    if agentAppFallback == nil {
+                        agentAppFallback = app
+                    }
+                }
             }
 
             // Walk up. If sysctl fails or returns ourselves, stop to avoid
@@ -57,7 +69,28 @@ enum ParentProcess {
             if parent <= 0 || parent == pid { break }
             pid = parent
         }
-        return nil
+        return agentAppFallback
+    }
+
+    static func detectTerminal(inExecutablePathChain chain: [String]) -> TerminalApp? {
+        var agentAppFallback: TerminalApp?
+        for (index, exePath) in chain.enumerated() {
+            guard let match = matchParent(executablePath: exePath) else { continue }
+            let app = TerminalApp(
+                displayName: match.display,
+                executablePath: exePath,
+                pid: Int32(index + 1)
+            )
+            switch match.kind {
+            case .hostApp:
+                return app
+            case .agentApp:
+                if agentAppFallback == nil {
+                    agentAppFallback = app
+                }
+            }
+        }
+        return agentAppFallback
     }
 
     // MARK: - Helpers
@@ -83,53 +116,70 @@ enum ParentProcess {
         return info.kp_eproc.e_ppid
     }
 
-    /// Match an executable path to a known terminal-class app. Pattern is
-    /// either a `/<App>.app/` substring (covers most GUI terminals) or a
-    /// basename match (covers headless / non-bundled binaries). The display
-    /// name is what the user will look for in System Settings → Privacy →
-    /// Screen Recording.
-    private static func matchTerminal(executablePath path: String) -> String? {
-        struct Pattern { let needle: String; let display: String; let isBundle: Bool }
+    /// Match an executable path to a known host app. Pattern is either a
+    /// `/<App>.app/` substring (covers most GUI apps) or a basename match
+    /// (covers headless / non-bundled binaries). The display name is what
+    /// the user will look for in System Settings → Privacy → Screen Recording.
+    private static func matchParent(executablePath path: String) -> ParentMatch? {
         let patterns: [Pattern] = [
             // GUI terminals
-            Pattern(needle: "/Terminal.app/",  display: "Terminal",  isBundle: true),
-            Pattern(needle: "/iTerm.app/",     display: "iTerm",     isBundle: true),
-            Pattern(needle: "/iTerm2.app/",    display: "iTerm",     isBundle: true),
-            Pattern(needle: "/Warp.app/",      display: "Warp",      isBundle: true),
-            Pattern(needle: "/WezTerm.app/",   display: "WezTerm",   isBundle: true),
-            Pattern(needle: "/kitty.app/",     display: "kitty",     isBundle: true),
-            Pattern(needle: "/Alacritty.app/", display: "Alacritty", isBundle: true),
-            Pattern(needle: "/Hyper.app/",     display: "Hyper",     isBundle: true),
-            Pattern(needle: "/Ghostty.app/",   display: "Ghostty",   isBundle: true),
-            Pattern(needle: "/Tabby.app/",     display: "Tabby",     isBundle: true),
-            // First-class agent desktop apps — they can spawn the CLI from
-            // an embedded shell, and the app bundle is what TCC attributes to.
-            Pattern(needle: "/Codex.app/",                   display: "Codex",              isBundle: true),
-            Pattern(needle: "/Claude.app/",                  display: "Claude",             isBundle: true),
+            Pattern(needle: "/Terminal.app/",  display: "Terminal",  isBundle: true, kind: .hostApp),
+            Pattern(needle: "/iTerm.app/",     display: "iTerm",     isBundle: true, kind: .hostApp),
+            Pattern(needle: "/iTerm2.app/",    display: "iTerm",     isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Warp.app/",      display: "Warp",      isBundle: true, kind: .hostApp),
+            Pattern(needle: "/WezTerm.app/",   display: "WezTerm",   isBundle: true, kind: .hostApp),
+            Pattern(needle: "/kitty.app/",     display: "kitty",     isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Alacritty.app/", display: "Alacritty", isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Hyper.app/",     display: "Hyper",     isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Ghostty.app/",   display: "Ghostty",   isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Tabby.app/",     display: "Tabby",     isBundle: true, kind: .hostApp),
             // IDE-embedded terminals — VS Code spawns the agent CLI from its
             // integrated terminal under Code Helper (Plugin) etc.
-            Pattern(needle: "/Visual Studio Code.app/",      display: "Visual Studio Code", isBundle: true),
-            Pattern(needle: "/Code.app/",                    display: "Visual Studio Code", isBundle: true),
-            Pattern(needle: "/Cursor.app/",                  display: "Cursor",             isBundle: true),
-            Pattern(needle: "/Windsurf.app/",                display: "Windsurf",           isBundle: true),
-            Pattern(needle: "/JetBrains Toolbox.app/",       display: "JetBrains Toolbox",  isBundle: true),
-            Pattern(needle: "/Zed.app/",                     display: "Zed",                isBundle: true),
-            Pattern(needle: "/Sublime Text.app/",            display: "Sublime Text",       isBundle: true),
+            Pattern(needle: "/Visual Studio Code.app/",      display: "Visual Studio Code", isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Code.app/",                    display: "Visual Studio Code", isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Cursor.app/",                  display: "Cursor",             isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Windsurf.app/",                display: "Windsurf",           isBundle: true, kind: .hostApp),
+            Pattern(needle: "/JetBrains Toolbox.app/",       display: "JetBrains Toolbox",  isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Zed.app/",                     display: "Zed",                isBundle: true, kind: .hostApp),
+            Pattern(needle: "/Sublime Text.app/",            display: "Sublime Text",       isBundle: true, kind: .hostApp),
+            // First-class agent desktop apps. Keep walking after these so a
+            // bundled CLI launched from Terminal resolves to Terminal instead.
+            Pattern(needle: "/Codex.app/",                   display: "Codex",              isBundle: true, kind: .agentApp),
+            Pattern(needle: "/Claude.app/",                  display: "Claude",             isBundle: true, kind: .agentApp),
             // Headless / direct-binary launches
-            Pattern(needle: "/wezterm",   display: "WezTerm",   isBundle: false),
-            Pattern(needle: "/alacritty", display: "Alacritty", isBundle: false),
-            Pattern(needle: "/kitty",     display: "kitty",     isBundle: false),
+            Pattern(needle: "/wezterm",   display: "WezTerm",   isBundle: false, kind: .hostApp),
+            Pattern(needle: "/alacritty", display: "Alacritty", isBundle: false, kind: .hostApp),
+            Pattern(needle: "/kitty",     display: "kitty",     isBundle: false, kind: .hostApp),
         ]
         for p in patterns {
             if p.isBundle {
-                if path.contains(p.needle) { return p.display }
+                if path.contains(p.needle) { return ParentMatch(display: p.display, kind: p.kind) }
             } else {
                 // Basename match for non-bundled binaries — `/Applications/x.app/Contents/MacOS/wezterm`
                 // already matched the bundle path; only fire on bare paths.
                 let basename = (path as NSString).lastPathComponent
-                if basename == (p.needle as NSString).lastPathComponent { return p.display }
+                if basename == (p.needle as NSString).lastPathComponent {
+                    return ParentMatch(display: p.display, kind: p.kind)
+                }
             }
         }
         return nil
+    }
+
+    private enum ParentMatchKind {
+        case hostApp
+        case agentApp
+    }
+
+    private struct ParentMatch {
+        let display: String
+        let kind: ParentMatchKind
+    }
+
+    private struct Pattern {
+        let needle: String
+        let display: String
+        let isBundle: Bool
+        let kind: ParentMatchKind
     }
 }

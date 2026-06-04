@@ -3,24 +3,25 @@ import Foundation
 enum ParentPermissionGuidance {
     static let defaultParentApps = ["Terminal.app", "Codex.app", "Claude.app"]
 
-    static func defaultParentApps(for provider: GeneralConfig.AgentProvider) -> [String] {
+    static func defaultParentHint(for provider: GeneralConfig.AgentProvider) -> String {
         switch provider {
-        case .codex: return ["Terminal.app", "Codex.app"]
-        case .claude: return ["Terminal.app", "Claude.app"]
+        case .codex:
+            return "the terminal or IDE running Codex (or Codex.app when using the native app)"
+        case .claude:
+            return "the terminal or IDE running Claude (or Claude.app when using the native app)"
         }
     }
 
     static func targetList(for provider: GeneralConfig.AgentProvider) -> String {
-        formatList(defaultParentApps(for: provider))
+        defaultParentHint(for: provider)
     }
 
     static func targetNames(detectedParent parent: String) -> [String] {
-        var targets = defaultParentApps
         let detected = displayName(for: parent)
-        if !detected.isEmpty && !targets.contains(detected) {
-            targets.append(detected)
+        if !detected.isEmpty {
+            return [detected]
         }
-        return targets
+        return defaultParentApps
     }
 
     static func targetList(detectedParent parent: String) -> String {

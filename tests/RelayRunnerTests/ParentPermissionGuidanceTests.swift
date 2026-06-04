@@ -3,36 +3,43 @@ import XCTest
 
 final class ParentPermissionGuidanceTests: XCTestCase {
 
-    func testProviderTargetsStayFocusedOnSelectedAgent() {
+    func testProviderTargetsDescribeNativeVsTerminalHosts() {
         XCTAssertEqual(
-            ParentPermissionGuidance.defaultParentApps(for: .codex),
-            ["Terminal.app", "Codex.app"]
+            ParentPermissionGuidance.defaultParentHint(for: .codex),
+            "the terminal or IDE running Codex (or Codex.app when using the native app)"
         )
         XCTAssertEqual(
             ParentPermissionGuidance.targetList(for: .codex),
-            "Terminal.app and Codex.app"
+            "the terminal or IDE running Codex (or Codex.app when using the native app)"
         )
         XCTAssertEqual(
-            ParentPermissionGuidance.defaultParentApps(for: .claude),
-            ["Terminal.app", "Claude.app"]
+            ParentPermissionGuidance.defaultParentHint(for: .claude),
+            "the terminal or IDE running Claude (or Claude.app when using the native app)"
         )
         XCTAssertEqual(
             ParentPermissionGuidance.targetList(for: .claude),
-            "Terminal.app and Claude.app"
+            "the terminal or IDE running Claude (or Claude.app when using the native app)"
         )
     }
 
-    func testDefaultTargetsIncludeSupportedParentApps() {
+    func testDetectedParentTargetsOnlyDetectedHost() {
         XCTAssertEqual(
             ParentPermissionGuidance.targetNames(detectedParent: "Terminal"),
-            ["Terminal.app", "Codex.app", "Claude.app"]
+            ["Terminal.app"]
         )
         XCTAssertEqual(
             ParentPermissionGuidance.targetNames(detectedParent: "Codex"),
-            ["Terminal.app", "Codex.app", "Claude.app"]
+            ["Codex.app"]
         )
         XCTAssertEqual(
             ParentPermissionGuidance.targetNames(detectedParent: "Claude"),
+            ["Claude.app"]
+        )
+    }
+
+    func testUnknownParentFallsBackToSupportedParentApps() {
+        XCTAssertEqual(
+            ParentPermissionGuidance.targetNames(detectedParent: "unknown"),
             ["Terminal.app", "Codex.app", "Claude.app"]
         )
     }
@@ -40,11 +47,11 @@ final class ParentPermissionGuidanceTests: XCTestCase {
     func testNonDefaultDetectedParentIsStillIncluded() {
         XCTAssertEqual(
             ParentPermissionGuidance.targetNames(detectedParent: "Warp"),
-            ["Terminal.app", "Codex.app", "Claude.app", "Warp"]
+            ["Warp"]
         )
         XCTAssertEqual(
             ParentPermissionGuidance.targetList(detectedParent: "iTerm"),
-            "Terminal.app, Codex.app, Claude.app, and iTerm"
+            "iTerm"
         )
     }
 }

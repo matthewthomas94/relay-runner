@@ -26,14 +26,14 @@ struct ParentOnboardingView: View {
             header
             stepRow(
                 number: 1,
-                title: "Grant parent-agent apps Accessibility",
+                title: "Grant parent app Accessibility",
                 detail: "Toggle on \(targetList) so Relay Actions can click, type, and scroll.",
                 buttonTitle: "Open Accessibility Settings",
                 action: openAccessibility
             )
             stepRow(
                 number: 2,
-                title: "Grant parent-agent apps Screen Recording",
+                title: "Grant parent app Screen Recording",
                 detail: "Toggle on \(targetList) so Relay Vision can see the screen and ground clicks.",
                 buttonTitle: "Open Screen Recording Settings",
                 action: openScreenRecording
@@ -52,7 +52,7 @@ struct ParentOnboardingView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("First time using Relay Runner via \(detectedParentName)")
                 .font(.title2).bold()
-            Text("Relay Runner has its own app permissions for microphone and menu-bar behavior. Screen control is different: macOS may attribute Accessibility and Screen Recording to the parent terminal, IDE, or app that launched Codex or Claude, not to Relay Runner. Toggle on these parent-agent apps when they appear: \(targetList).")
+            Text("Relay Runner has its own app permissions for microphone and menu-bar behavior. Screen control is different: macOS attributes Accessibility and Screen Recording to the parent terminal, IDE, or native app that launched Codex or Claude. Toggle on the detected parent when it appears: \(targetList).")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -89,7 +89,7 @@ struct ParentOnboardingView: View {
                 Text("After granting, restart the parent app and re-run /relay-bridge")
                     .font(.callout).bold()
                     .fixedSize(horizontal: false, vertical: true)
-                Text("macOS doesn't apply Screen Recording to processes already running. Quit and reopen each parent app you granted before starting a new session:")
+                Text("macOS doesn't apply Screen Recording to processes already running. Quit and reopen the parent app you granted before starting a new session:")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
