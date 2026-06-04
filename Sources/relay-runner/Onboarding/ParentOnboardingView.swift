@@ -42,7 +42,9 @@ struct ParentOnboardingView: View {
             Spacer(minLength: 0)
             footer
         }
-        .padding(28)
+        .padding(.top, 36)
+        .padding(.horizontal, 28)
+        .padding(.bottom, 32)
         .frame(width: 560, height: 600)
     }
 

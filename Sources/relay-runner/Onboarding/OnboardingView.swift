@@ -120,7 +120,7 @@ struct OnboardingView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 520, minHeight: 640)
+        .frame(minWidth: 560, minHeight: 680)
         .onAppear {
             // Kick the Python bootstrap off as soon as the window opens
             // so it has a head start while the user grants permissions.
@@ -167,8 +167,9 @@ struct OnboardingView: View {
                     .font(.subheadline)
             }
         }
+        .padding(.top, 28)
+        .padding(.bottom, 16)
         .padding(.horizontal, 24)
-        .padding(.vertical, 16)
     }
 
     @ViewBuilder
@@ -194,8 +195,8 @@ struct OnboardingView: View {
             primaryButton
         }
         .padding(.top, 16)
-        .padding(.bottom, 20)
-        .padding(.horizontal, 24)
+        .padding(.bottom, 32)
+        .padding(.horizontal, 28)
     }
 
     // MARK: - Step bodies

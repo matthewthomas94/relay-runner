@@ -214,11 +214,9 @@ final class OnboardingController {
         let window = NSWindow(contentViewController: hosting)
         window.title = "Welcome to Relay Runner"
         window.styleMask = [.titled, .closable]
-        // Tall enough to fit the Ready step's full content (path
-        // picker + two start-method rows + footer buttons) without
-        // pushing the footer off-screen. Earlier 520pt builds clipped
-        // the Dismiss / Start Session buttons.
-        window.setContentSize(NSSize(width: 560, height: 640))
+        // Tall enough to fit the Ready step's full content with
+        // comfortable header and footer margins.
+        window.setContentSize(NSSize(width: 560, height: 680))
         window.center()
         window.isReleasedWhenClosed = false
 
