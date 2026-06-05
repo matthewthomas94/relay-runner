@@ -58,6 +58,10 @@ struct OnboardingView: View {
     /// another app's TCC grants here; the session-time parent wizard still
     /// reappears if Relay Actions or Relay Vision report a missing grant.
     @State private var parentPermissionsReviewed: Bool = false
+    /// Tracks permission panes opened automatically in this view lifetime,
+    /// so resuming the step can be helpful without repeatedly yanking focus
+    /// back to System Settings every time polling updates.
+    @State private var autoOpenedPermissionKinds: Set<PermissionKind> = []
 
     init(permissions: PermissionsManager,
          simplified: Bool,
@@ -170,6 +174,7 @@ struct OnboardingView: View {
                 venvInstaller.install()
             }
             advancePastGrantedPermissionIfNeeded()
+            openPermissionPaneAutomaticallyIfNeeded()
         }
         .onChange(of: step) { _, new in
             persistResume()
@@ -177,6 +182,7 @@ struct OnboardingView: View {
                 venvInstaller.install()
             }
             advancePastGrantedPermissionIfNeeded()
+            openPermissionPaneAutomaticallyIfNeeded()
         }
         .onChange(of: selectedAgentProvider) { _, _ in
             persistResume()
@@ -402,8 +408,8 @@ struct OnboardingView: View {
             }
             if kind == .inputMonitoring {
                 PermissionAppDragGuide(
-                    title: "If Relay Runner is hard to find",
-                    detail: "Open Input Monitoring, then drag Relay Runner into the list if macOS search does not surface it.",
+                    title: "Drag this Relay Runner icon",
+                    detail: "Relay Runner opens Input Monitoring automatically. If macOS still does not add it to the list, drag this app icon into System Settings.",
                     settingsPane: "Input Monitoring",
                     targets: [Self.relayRunnerAppTarget]
                 )
@@ -486,8 +492,8 @@ struct OnboardingView: View {
             }
 
             PermissionAppDragGuide(
-                title: "Drag the parent app if it is missing",
-                detail: "For screen control, macOS grants permission to the app running \(selectedAgentProvider.displayName). Drag the app you use for sessions into the Settings list if it is not searchable.",
+                title: "Drag the app that runs \(selectedAgentProvider.displayName)",
+                detail: "For screen control, macOS grants permission to the parent app, not only Relay Runner. Drag the app you use for sessions into Settings if it is missing.",
                 settingsPane: "Accessibility or Screen Recording",
                 targets: selectedParentAppTargets
             )
@@ -1245,7 +1251,7 @@ struct OnboardingView: View {
         case .accessibility:
             return "Click the button below. In System Settings, find Relay Runner in the list and switch it on. This window will update automatically when you're done."
         case .inputMonitoring:
-            return "Click the button below. In System Settings, find Relay Runner under Input Monitoring and switch it on. This window will update automatically, and global hotkeys are restored as soon as macOS reports the grant."
+            return "Relay Runner will open Input Monitoring automatically. Switch it on there; if the row is missing, drag the large Relay Runner icon below into the Settings list."
         case .screenRecording:
             return "Click the button below. In System Settings, find Relay Runner under Screen Recording and switch it on."
         }
@@ -1412,6 +1418,22 @@ struct OnboardingView: View {
                 return
             }
             advance()
+        }
+    }
+
+    private func openPermissionPaneAutomaticallyIfNeeded() {
+        guard step == .inputMonitoring,
+              permissions.inputMonitoring != .granted,
+              !autoOpenedPermissionKinds.contains(.inputMonitoring) else {
+            return
+        }
+        autoOpenedPermissionKinds.insert(.inputMonitoring)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard step == .inputMonitoring,
+                  permissions.inputMonitoring != .granted else {
+                return
+            }
+            requestInputMonitoringPermission()
         }
     }
 }
