@@ -41,11 +41,11 @@ struct PermissionAppDragGuide: View {
                     .foregroundStyle(.secondary)
                     .font(.title3)
 
-                settingsTile
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                permissionListMock
+                    .frame(width: 210)
             }
 
-            Text("Drag the large app icon into the Settings list. If macOS will not accept the drag from here, reveal it in Finder and drag the app from there.")
+            Text("Drag the app icon into the list on the right, then turn on its switch.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -78,20 +78,13 @@ struct PermissionAppDragGuide: View {
                 .padding(.vertical, 2)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
-            if let path = target.bundleURL?.path {
-                Text(path)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 128)
-            }
-            if target.bundleURL != nil {
-                Button("Reveal in Finder") { reveal(target) }
-                    .font(.caption)
-            }
         }
         .frame(width: targets.count == 1 ? 150 : 128)
+        .contextMenu {
+            if target.bundleURL != nil {
+                Button("Reveal in Finder") { reveal(target) }
+            }
+        }
 
         if let url = target.bundleURL {
             tile.onDrag {
@@ -102,22 +95,77 @@ struct PermissionAppDragGuide: View {
         }
     }
 
-    private var settingsTile: some View {
-        VStack(alignment: .center, spacing: 8) {
-            Image(systemName: "switch.2")
+    private var permissionListMock: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(settingsPane)
+                .font(.caption).bold()
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+
+            Text("Allow the applications below to monitor input from your keyboard.")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
-                .font(.title2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(settingsPane)
-                    .font(.callout).bold()
-                Text("Privacy & Security list")
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+
+            Divider()
+
+            mockPermissionRow(icon: "safari", name: "Arc", enabled: true)
+            mockPermissionRow(icon: "circle.grid.cross", name: "Google Chrome", enabled: true)
+            mockPermissionRow(icon: "keyboard", name: "keyviz", enabled: true)
+
+            HStack(spacing: 4) {
+                Image(systemName: "plus")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Image(systemName: "minus")
+                    .font(.caption)
+                    .foregroundStyle(.secondary.opacity(0.5))
+                Spacer()
+                Text("Drop app here")
+                    .font(.caption2).bold()
+                    .foregroundStyle(Color.accentColor)
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color.accentColor.opacity(0.12))
         }
-        .padding(10)
-        .background(Color.secondary.opacity(0.08))
+        .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.35))
+        )
+    }
+
+    private func mockPermissionRow(icon: String, name: String, enabled: Bool) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.caption)
+                .frame(width: 18, height: 18)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            Text(name)
+                .font(.caption)
+                .lineLimit(1)
+            Spacer()
+            Capsule()
+                .fill(enabled ? Color.accentColor : Color.secondary.opacity(0.35))
+                .frame(width: 24, height: 13)
+                .overlay(alignment: enabled ? .trailing : .leading) {
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 9, height: 9)
+                        .padding(2)
+                }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
     }
 
     private func appIcon(for url: URL?, size: CGFloat) -> some View {

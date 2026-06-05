@@ -408,8 +408,8 @@ struct OnboardingView: View {
             }
             if kind == .inputMonitoring {
                 PermissionAppDragGuide(
-                    title: "Drag this Relay Runner icon",
-                    detail: "Relay Runner opens Input Monitoring automatically. If macOS still does not add it to the list, drag this app icon into System Settings.",
+                    title: "Drag Relay Runner into the list",
+                    detail: "The Input Monitoring pane is already open. Drag the app icon below into the applications list, then turn on its switch.",
                     settingsPane: "Input Monitoring",
                     targets: [Self.relayRunnerAppTarget]
                 )
@@ -493,7 +493,7 @@ struct OnboardingView: View {
 
             PermissionAppDragGuide(
                 title: "Drag the app that runs \(selectedAgentProvider.displayName)",
-                detail: "For screen control, macOS grants permission to the parent app, not only Relay Runner. Drag the app you use for sessions into Settings if it is missing.",
+                detail: "For screen control, drag your session app into the permission list if it is missing, then turn on its switch.",
                 settingsPane: "Accessibility or Screen Recording",
                 targets: selectedParentAppTargets
             )
@@ -1251,7 +1251,7 @@ struct OnboardingView: View {
         case .accessibility:
             return "Click the button below. In System Settings, find Relay Runner in the list and switch it on. This window will update automatically when you're done."
         case .inputMonitoring:
-            return "Relay Runner will open Input Monitoring automatically. Switch it on there; if the row is missing, drag the large Relay Runner icon below into the Settings list."
+            return "Relay Runner opens Input Monitoring automatically. Drag the app icon below into the applications list if it is missing, then turn on the switch. If macOS asks to quit and reopen, approve it — Relay Runner resumes here."
         case .screenRecording:
             return "Click the button below. In System Settings, find Relay Runner under Screen Recording and switch it on."
         }
