@@ -13,6 +13,7 @@ APP_SUPPORT_DIR="$HOME/Library/Application Support/relay-runner"
 DRY_RUN=1
 INCLUDE_PARENT_APPS=0
 RESET_LOCAL_STATE=1
+RESET_CONFIG=0
 CUSTOM_BUNDLE_ID=0
 
 RELAY_TCC_SERVICES=(
@@ -72,7 +73,11 @@ Options:
   --bundle-id ID            Reset this Relay Runner bundle ID instead of auto-detected/default.
   --include-parent-apps     Also reset Accessibility and Screen Recording for known parent apps
                             such as Terminal, Codex, Claude, Warp, iTerm, VS Code, and Cursor.
-  --no-local-state          Leave Relay Runner onboarding/defaults state intact.
+  --reset-config            Also delete Relay Runner config.toml for a true first-run walkthrough,
+                            including the coding-agent preference step. Cannot be combined with
+                            --no-local-state.
+  --no-local-state          Leave Relay Runner onboarding/defaults state intact. This preserves
+                            the coding-agent choice sentinel and may skip that onboarding step.
   -h, --help                Show this help.
 
 Environment:
@@ -80,8 +85,9 @@ Environment:
 
 Notes:
   This intentionally avoids `tccutil reset All`. It resets only the services
-  Relay Runner uses, and it does not delete config.toml, models, orchestrator
-  run history, or worktrees under Application Support.
+  Relay Runner uses. It does not delete models, orchestrator run history, or
+  worktrees under Application Support. It only deletes config.toml when
+  --reset-config is provided.
 EOF
 }
 
@@ -171,6 +177,11 @@ reset_local_state() {
     done
 }
 
+reset_config() {
+    printf '\nRelay Runner config:\n'
+    run_cmd /bin/rm -f "$APP_SUPPORT_DIR/config.toml"
+}
+
 detect_parent_bundle_ids() {
     PARENT_BUNDLE_IDS=()
     local seen="|"
@@ -221,6 +232,9 @@ while [ "$#" -gt 0 ]; do
         --include-parent-apps)
             INCLUDE_PARENT_APPS=1
             ;;
+        --reset-config)
+            RESET_CONFIG=1
+            ;;
         --no-local-state)
             RESET_LOCAL_STATE=0
             ;;
@@ -236,6 +250,11 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
+
+if [ "$RESET_CONFIG" -eq 1 ] && [ "$RESET_LOCAL_STATE" -eq 0 ]; then
+    printf 'error: --reset-config cannot be combined with --no-local-state because first-run onboarding state must be cleared too.\n' >&2
+    exit 2
+fi
 
 detect_relay_bundle_id
 
@@ -257,6 +276,12 @@ if [ "$RESET_LOCAL_STATE" -eq 1 ]; then
 else
     printf 'preserve\n'
 fi
+printf 'Config: '
+if [ "$RESET_CONFIG" -eq 1 ]; then
+    printf 'reset\n'
+else
+    printf 'preserve\n'
+fi
 printf 'Parent app permissions: '
 if [ "$INCLUDE_PARENT_APPS" -eq 1 ]; then
     printf 'reset for detected parent apps\n'
@@ -265,12 +290,20 @@ else
 fi
 printf '\n'
 
+if [ "$RESET_LOCAL_STATE" -eq 0 ]; then
+    printf 'note: --no-local-state preserves the coding-agent choice sentinel; omit it when testing first-run onboarding.\n\n'
+fi
+
 warn_if_running
 
 reset_tcc_for_bundle "Relay Runner TCC entries" "$APP_BUNDLE_ID" "${RELAY_TCC_SERVICES[@]}"
 
 if [ "$RESET_LOCAL_STATE" -eq 1 ]; then
     reset_local_state
+fi
+
+if [ "$RESET_CONFIG" -eq 1 ]; then
+    reset_config
 fi
 
 if [ "$INCLUDE_PARENT_APPS" -eq 1 ]; then
@@ -284,4 +317,4 @@ if [ "$INCLUDE_PARENT_APPS" -eq 1 ]; then
     fi
 fi
 
-printf '\nDone. For a clean walkthrough, quit Relay Runner, run this script with --execute, then launch Relay Runner again.\n'
+printf '\nDone. For a clean first-run walkthrough, quit Relay Runner, run this script with --execute --reset-config, then launch Relay Runner again.\n'

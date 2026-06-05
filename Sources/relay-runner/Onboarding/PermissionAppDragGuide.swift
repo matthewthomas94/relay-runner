@@ -12,35 +12,33 @@ struct PermissionAppTarget: Identifiable, Equatable {
 
 struct PermissionAppDragGuide: View {
     let title: String
-    let detail: String
     let settingsPane: String
     let targets: [PermissionAppTarget]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.up.forward.app")
                     .foregroundStyle(.tint)
                 Text(title)
                     .font(.callout).bold()
             }
-            HStack(alignment: .center, spacing: 18) {
-                HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                LazyVGrid(columns: iconColumns, alignment: .leading, spacing: 10) {
                     ForEach(targets) { target in
                         draggableAppIcon(target)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Image(systemName: "arrow.right")
                     .foregroundStyle(.secondary)
                     .font(.title3)
 
                 permissionListMock
-                    .frame(width: 210)
+                    .frame(width: 168)
             }
 
-            Text("Drag this icon into the window that just opened, then turn on its switch.")
+            Text("Literally drag this icon into the window that just opened, then turn on its switch.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -55,21 +53,37 @@ struct PermissionAppDragGuide: View {
         )
     }
 
+    private var iconColumns: [GridItem] {
+        let count = max(1, min(targets.count, 2))
+        return Array(
+            repeating: GridItem(.fixed(tileWidth), spacing: 8, alignment: .top),
+            count: count
+        )
+    }
+
+    private var iconSize: CGFloat {
+        targets.count == 1 ? 68 : 48
+    }
+
+    private var tileWidth: CGFloat {
+        targets.count == 1 ? 100 : 78
+    }
+
     @ViewBuilder
     private func draggableAppIcon(_ target: PermissionAppTarget) -> some View {
         let tile = VStack(spacing: 7) {
             DraggableAppIconView(
                 bundleURL: target.bundleURL,
-                size: targets.count == 1 ? 92 : 76
+                size: iconSize
             )
-            .frame(width: targets.count == 1 ? 92 : 76, height: targets.count == 1 ? 92 : 76)
-                .padding(8)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.accentColor.opacity(0.55), lineWidth: 1)
-                )
+            .frame(width: iconSize, height: iconSize)
+            .padding(7)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.accentColor.opacity(0.55), lineWidth: 1)
+            )
             Text(target.displayName)
                 .font(.caption)
                 .lineLimit(1)
@@ -78,7 +92,7 @@ struct PermissionAppDragGuide: View {
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         }
-        .frame(width: targets.count == 1 ? 150 : 128)
+        .frame(width: tileWidth)
         .contextMenu {
             if target.bundleURL != nil {
                 Button("Reveal in Finder") { reveal(target) }
@@ -93,13 +107,6 @@ struct PermissionAppDragGuide: View {
                 .font(.caption).bold()
                 .padding(.horizontal, 8)
                 .padding(.top, 8)
-                .padding(.bottom, 4)
-
-            Text("Allow the applications below to monitor input from your keyboard.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 8)
                 .padding(.bottom, 6)
 
             Divider()

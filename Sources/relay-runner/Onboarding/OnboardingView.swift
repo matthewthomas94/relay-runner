@@ -58,6 +58,9 @@ struct OnboardingView: View {
     /// another app's TCC grants here; the session-time parent wizard still
     /// reappears if Relay Actions or Relay Vision report a missing grant.
     @State private var parentPermissionsReviewed: Bool = false
+    @State private var parentAccessibilityConfirmed: Bool = false
+    @State private var parentScreenRecordingConfirmed: Bool = false
+    @State private var parentAppListConfirmed: Bool = false
     /// Tracks permission panes opened automatically in this view lifetime,
     /// so resuming the step can be helpful without repeatedly yanking focus
     /// back to System Settings every time polling updates.
@@ -105,6 +108,9 @@ struct OnboardingView: View {
         _selectedAgentProvider = State(initialValue: startingProvider)
         _agentSignedIn = State(initialValue: AgentAuth.isAuthenticated(for: startingProvider))
         _parentPermissionsReviewed = State(initialValue: startingParentReviewed)
+        _parentAccessibilityConfirmed = State(initialValue: startingParentReviewed)
+        _parentScreenRecordingConfirmed = State(initialValue: startingParentReviewed)
+        _parentAppListConfirmed = State(initialValue: startingParentReviewed)
     }
 
     enum Step: Int, CaseIterable {
@@ -409,7 +415,6 @@ struct OnboardingView: View {
             if kind == .inputMonitoring {
                 PermissionAppDragGuide(
                     title: "Drag Relay Runner into the list",
-                    detail: "The Input Monitoring pane is already open. Drag the app icon below into the applications list, then turn on its switch.",
                     settingsPane: "Input Monitoring",
                     targets: [Self.relayRunnerAppTarget]
                 )
@@ -461,7 +466,7 @@ struct OnboardingView: View {
     }
 
     private var parentPermissionsView: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: "rectangle.on.rectangle")
                     .foregroundStyle(.tint)
@@ -474,28 +479,73 @@ struct OnboardingView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 10) {
-                parentPermissionRow(
-                    icon: "hand.tap",
+            VStack(alignment: .leading, spacing: 0) {
+                parentPermissionChecklistStep(
+                    number: 1,
                     title: "Accessibility",
-                    detail: "Toggle on \(selectedParentTargetList) so Relay Actions can control the Mac.",
-                    buttonTitle: "Open Accessibility Settings",
-                    action: openParentAccessibilitySettings
-                )
-                parentPermissionRow(
-                    icon: "rectangle.dashed",
-                    title: "Screen Recording",
-                    detail: "Toggle on \(selectedParentTargetList) so Relay Vision can inspect the screen.",
-                    buttonTitle: "Open Screen Recording Settings",
-                    action: openParentScreenRecordingSettings
-                )
-            }
+                    detail: "Open the list, add \(selectedParentTargetList) if needed, then turn on its switch.",
+                    isComplete: parentAccessibilityConfirmed
+                ) {
+                    parentPermissionControls(
+                        openTitle: "Open Accessibility Settings",
+                        doneTitle: "Accessibility is on",
+                        isComplete: parentAccessibilityConfirmed,
+                        isEnabled: true,
+                        openAction: openParentAccessibilitySettings,
+                        doneAction: { parentAccessibilityConfirmed = true }
+                    )
+                }
 
-            PermissionAppDragGuide(
-                title: "Drag the app that runs \(selectedAgentProvider.displayName)",
-                detail: "For screen control, drag your session app into the permission list if it is missing, then turn on its switch.",
-                settingsPane: "Accessibility or Screen Recording",
-                targets: selectedParentAppTargets
+                Divider().padding(.leading, 48)
+
+                parentPermissionChecklistStep(
+                    number: 2,
+                    title: "Screen Recording",
+                    detail: "Open the list, add \(selectedParentTargetList) if needed, then turn on its switch.",
+                    isComplete: parentScreenRecordingConfirmed,
+                    isEnabled: parentAccessibilityConfirmed
+                ) {
+                    parentPermissionControls(
+                        openTitle: "Open Screen Recording Settings",
+                        doneTitle: "Screen Recording is on",
+                        isComplete: parentScreenRecordingConfirmed,
+                        isEnabled: parentAccessibilityConfirmed,
+                        openAction: openParentScreenRecordingSettings,
+                        doneAction: { parentScreenRecordingConfirmed = true }
+                    )
+                }
+
+                Divider().padding(.leading, 48)
+
+                parentPermissionChecklistStep(
+                    number: 3,
+                    title: "Add the app if it is missing",
+                    detail: "If System Settings does not show the app, drag the icon below into the window that opened.",
+                    isComplete: parentAppListConfirmed,
+                    isEnabled: parentScreenRecordingConfirmed
+                ) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        PermissionAppDragGuide(
+                            title: "Drag the app that runs \(selectedAgentProvider.displayName)",
+                            settingsPane: "Accessibility or Screen Recording",
+                            targets: selectedParentAppTargets
+                        )
+                        parentPermissionControls(
+                            openTitle: nil,
+                            doneTitle: "App is in the list",
+                            isComplete: parentAppListConfirmed,
+                            isEnabled: parentScreenRecordingConfirmed,
+                            openAction: {},
+                            doneAction: { parentAppListConfirmed = true }
+                        )
+                    }
+                }
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.secondary.opacity(0.25))
             )
 
             Text("This step is optional for voice. If the selected parent app was already running, quit and reopen it after granting Screen Recording; Relay Runner will verify again when the MCP tools start.")
@@ -506,35 +556,70 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func parentPermissionRow(icon: String,
-                                     title: String,
-                                     detail: String,
-                                     buttonTitle: String,
-                                     action: @escaping () -> Void) -> some View {
+    private func parentPermissionChecklistStep<Content: View>(number: Int,
+                                                              title: String,
+                                                              detail: String,
+                                                              isComplete: Bool,
+                                                              isEnabled: Bool = true,
+                                                              @ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(.tint)
-                .font(.title3)
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 5) {
+            checklistBadge(number: number, isComplete: isComplete, isEnabled: isEnabled)
+            VStack(alignment: .leading, spacing: 8) {
                 Text(title)
                     .font(.headline)
                 Text(detail)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button(buttonTitle, action: action)
+                content()
+                    .disabled(!isEnabled)
+                    .opacity(isEnabled ? 1 : 0.45)
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.secondary.opacity(0.25))
-        )
+        .opacity(isEnabled ? 1 : 0.62)
+    }
+
+    private func checklistBadge(number: Int, isComplete: Bool, isEnabled: Bool) -> some View {
+        ZStack {
+            Circle()
+                .fill(isComplete ? Color.green.opacity(0.18) : Color.accentColor.opacity(isEnabled ? 0.16 : 0.08))
+                .frame(width: 28, height: 28)
+            if isComplete {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.green)
+            } else {
+                Text("\(number)")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(isEnabled ? Color.accentColor : Color.secondary)
+            }
+        }
+        .frame(width: 34)
+    }
+
+    @ViewBuilder
+    private func parentPermissionControls(openTitle: String?,
+                                          doneTitle: String,
+                                          isComplete: Bool,
+                                          isEnabled: Bool,
+                                          openAction: @escaping () -> Void,
+                                          doneAction: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            if let openTitle {
+                Button(openTitle, action: openAction)
+            }
+            if isComplete {
+                Label(doneTitle, systemImage: "checkmark.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(Color.green)
+            } else {
+                Button(doneTitle, action: doneAction)
+                    .disabled(!isEnabled)
+            }
+        }
     }
 
     private var selectedParentTargetList: String {
@@ -543,6 +628,10 @@ struct OnboardingView: View {
 
     private var selectedParentAppTargets: [PermissionAppTarget] {
         ParentPermissionGuidance.appTargets(for: selectedAgentProvider)
+    }
+
+    private var parentPermissionChecklistComplete: Bool {
+        parentAccessibilityConfirmed && parentScreenRecordingConfirmed && parentAppListConfirmed
     }
 
     private var pythonSetupView: some View {
@@ -965,7 +1054,8 @@ struct OnboardingView: View {
                 )
                 advance()
             }
-                .keyboardShortcut(.defaultAction)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!parentPermissionChecklistComplete)
         case .pythonSetup:
             switch venvInstaller.status {
             case .succeeded:

@@ -40,7 +40,6 @@ struct ParentOnboardingView: View {
             )
             PermissionAppDragGuide(
                 title: "Drag the parent app if it is missing",
-                detail: "Open the permission pane, then drag the detected parent app into the list if macOS search does not show it.",
                 settingsPane: "Accessibility or Screen Recording",
                 targets: ParentPermissionGuidance.appTargets(detectedParent: parent)
             )
