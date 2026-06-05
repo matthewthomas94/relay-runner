@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 enum ParentPermissionGuidance {
@@ -14,6 +15,48 @@ enum ParentPermissionGuidance {
 
     static func targetList(for provider: GeneralConfig.AgentProvider) -> String {
         defaultParentHint(for: provider)
+    }
+
+    static func appTargets(for provider: GeneralConfig.AgentProvider) -> [PermissionAppTarget] {
+        switch provider {
+        case .codex:
+            return [
+                target(displayName: "Codex.app", bundleIDs: ["com.openai.codex"], fallbackPaths: ["/Applications/Codex.app"]),
+                terminalTarget()
+            ]
+        case .claude:
+            return [
+                target(
+                    displayName: "Claude.app",
+                    bundleIDs: ["com.anthropic.claudefordesktop", "com.anthropic.claude"],
+                    fallbackPaths: ["/Applications/Claude.app"]
+                ),
+                terminalTarget()
+            ]
+        }
+    }
+
+    static func appTargets(detectedParent parent: String) -> [PermissionAppTarget] {
+        let name = displayName(for: parent)
+        guard !name.isEmpty else {
+            return defaultParentApps.map { PermissionAppTarget(displayName: $0, bundleURL: nil) }
+        }
+        switch name {
+        case "Terminal.app":
+            return [terminalTarget()]
+        case "Codex.app":
+            return [target(displayName: "Codex.app", bundleIDs: ["com.openai.codex"], fallbackPaths: ["/Applications/Codex.app"])]
+        case "Claude.app":
+            return [
+                target(
+                    displayName: "Claude.app",
+                    bundleIDs: ["com.anthropic.claudefordesktop", "com.anthropic.claude"],
+                    fallbackPaths: ["/Applications/Claude.app"]
+                )
+            ]
+        default:
+            return [PermissionAppTarget(displayName: name, bundleURL: nil)]
+        }
     }
 
     static func targetNames(detectedParent parent: String) -> [String] {
@@ -55,5 +98,32 @@ enum ParentPermissionGuidance {
         default:
             return "\(items.dropLast().joined(separator: ", ")), and \(items.last!)"
         }
+    }
+
+    private static func terminalTarget() -> PermissionAppTarget {
+        target(
+            displayName: "Terminal.app",
+            bundleIDs: ["com.apple.Terminal"],
+            fallbackPaths: [
+                "/System/Applications/Utilities/Terminal.app",
+                "/Applications/Utilities/Terminal.app"
+            ]
+        )
+    }
+
+    private static func target(displayName: String,
+                               bundleIDs: [String],
+                               fallbackPaths: [String]) -> PermissionAppTarget {
+        for bundleID in bundleIDs {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                return PermissionAppTarget(displayName: displayName, bundleURL: url)
+            }
+        }
+        for path in fallbackPaths {
+            if FileManager.default.fileExists(atPath: path) {
+                return PermissionAppTarget(displayName: displayName, bundleURL: URL(fileURLWithPath: path))
+            }
+        }
+        return PermissionAppTarget(displayName: displayName, bundleURL: nil)
     }
 }

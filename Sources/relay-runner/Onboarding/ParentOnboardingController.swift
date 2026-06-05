@@ -42,7 +42,7 @@ final class ParentOnboardingController {
         let window = NSWindow(contentViewController: hosting)
         window.title = "Permissions for \(parent)"
         window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 560, height: 600))
+        window.setContentSize(NSSize(width: 560, height: 700))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = nil

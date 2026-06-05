@@ -188,6 +188,8 @@ final class OnboardingController {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
+        let resumeState = simplified ? OnboardingResumeState.load() : nil
+        let requiresParentPermissionGuidance = resumeState?.parentPermissionsReviewed == false
 
         // Mark "started" before the window is even constructed, so any
         // mid-flow exit leaves enough state for the next launch to resume
@@ -201,6 +203,8 @@ final class OnboardingController {
             initialWorkingDirectory: getWorkingDirectory(),
             initialAgentProvider: getAgentProvider(),
             requiresAgentChoice: !hasChosenAgent,
+            requiresParentPermissionGuidance: requiresParentPermissionGuidance,
+            resumeState: resumeState,
             onSetAgentProvider: { [weak self] provider in
                 self?.setAgentProvider(provider)
                 self?.markAgentChoiceComplete()
@@ -235,6 +239,7 @@ final class OnboardingController {
     /// completes or skips past the final step.
     private func finish() {
         try? Data().write(to: Self.flagURL)
+        OnboardingResumeState.clear()
         // Started flag is no longer meaningful once onboarding has completed.
         // Clear it so a future focused setup prompt doesn't get treated as a
         // resumed mid-flow exit.

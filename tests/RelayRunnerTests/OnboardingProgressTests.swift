@@ -83,6 +83,50 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(parent, "2 of 2")
     }
 
+    func testInterruptedSetupStillIncludesParentPermissionGuidanceAfterProviderChoice() {
+        let parent = OnboardingView.progressLabel(
+            for: .parentPermissions,
+            simplified: true,
+            requiresAgentChoice: false,
+            requiresParentPermissionGuidance: true,
+            permissionStatus: { _ in .granted },
+            venvInstalled: true,
+            agentSignedIn: true,
+            parentPermissionsReviewed: false
+        )
+
+        XCTAssertEqual(parent, "1 of 1")
+    }
+
+    func testResumeRestoresInterruptedInputMonitoringStep() {
+        let step = OnboardingView.initialStep(
+            simplified: true,
+            resumeStep: .inputMonitoring,
+            requiresAgentChoice: false,
+            requiresParentPermissionGuidance: true,
+            parentPermissionsReviewed: false,
+            permissionStatus: { _ in .granted },
+            venvInstalled: true,
+            agentSignedIn: true
+        )
+
+        XCTAssertEqual(step, .inputMonitoring)
+    }
+
+    func testGrantedInputMonitoringResumeContinuesToParentPermissions() {
+        let next = OnboardingView.nextStepAfter(
+            .inputMonitoring,
+            requiresAgentChoice: false,
+            requiresParentPermissionGuidance: true,
+            parentPermissionsReviewed: false,
+            permissionStatus: { _ in .granted },
+            venvInstalled: true,
+            agentSignedIn: true
+        )
+
+        XCTAssertEqual(next, .parentPermissions)
+    }
+
     func testReadySummaryNamesDeferredInputMonitoringFeatures() {
         let summary = OnboardingView.inputMonitoringSummary(status: .denied)
 

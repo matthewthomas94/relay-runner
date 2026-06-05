@@ -54,4 +54,12 @@ final class ParentPermissionGuidanceTests: XCTestCase {
             "iTerm"
         )
     }
+
+    func testProviderAppTargetsIncludeNativeAppAndTerminalNames() {
+        let codexTargets = ParentPermissionGuidance.appTargets(for: .codex).map(\.displayName)
+        let claudeTargets = ParentPermissionGuidance.appTargets(for: .claude).map(\.displayName)
+
+        XCTAssertEqual(codexTargets, ["Codex.app", "Terminal.app"])
+        XCTAssertEqual(claudeTargets, ["Claude.app", "Terminal.app"])
+    }
 }

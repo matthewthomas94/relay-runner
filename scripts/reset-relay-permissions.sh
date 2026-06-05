@@ -41,6 +41,9 @@ DEFAULT_KEYS=(
     "com.relayrunner.lastKnownPermission.accessibility"
     "com.relayrunner.lastKnownPermission.inputMonitoring"
     "com.relayrunner.lastKnownPermission.screenRecording"
+    "com.relayrunner.onboarding.resume.step"
+    "com.relayrunner.onboarding.resume.provider"
+    "com.relayrunner.onboarding.resume.parentPermissionsReviewed"
 )
 
 PARENT_APP_PATHS=(

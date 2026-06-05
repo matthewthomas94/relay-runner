@@ -21,6 +21,7 @@ struct OnboardingView: View {
     /// When true in the simplified upgrade flow, ask for the provider choice
     /// even if no other setup is missing.
     let requiresAgentChoice: Bool
+    let requiresParentPermissionGuidance: Bool
     /// Persists the selected primary coding agent back to AppConfig.
     let onSetAgentProvider: (GeneralConfig.AgentProvider) -> Void
     /// Persists the user's working-directory pick to AppConfig. Called
@@ -64,6 +65,8 @@ struct OnboardingView: View {
          initialWorkingDirectory: String = "",
          initialAgentProvider: GeneralConfig.AgentProvider = .codex,
          requiresAgentChoice: Bool = false,
+         requiresParentPermissionGuidance: Bool = false,
+         resumeState: OnboardingResumeState.Snapshot? = nil,
          onSetAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
          onSetWorkingDirectory: @escaping (String) -> Void = { _ in },
          onStartSession: @escaping () -> Void = {},
@@ -74,26 +77,30 @@ struct OnboardingView: View {
         self.initialWorkingDirectory = initialWorkingDirectory
         self.initialAgentProvider = initialAgentProvider
         self.requiresAgentChoice = requiresAgentChoice
+        self.requiresParentPermissionGuidance = requiresParentPermissionGuidance
         self.onSetAgentProvider = onSetAgentProvider
         self.onSetWorkingDirectory = onSetWorkingDirectory
         self.onStartSession = onStartSession
         self.onFinish = onFinish
+        let startingProvider = resumeState?.provider ?? initialAgentProvider
+        let startingParentReviewed = resumeState?.parentPermissionsReviewed ?? false
         // Simplified flow (re-prompt after initial onboarding): jump to the
         // first missing setup item. Full flow starts at the welcome screen.
-        let initial: Step
-        if simplified {
-            initial = Self.firstMissing(
-                permissions: permissions,
-                agentProvider: initialAgentProvider,
-                requiresAgentChoice: requiresAgentChoice
-            ) ?? .ready
-        } else {
-            initial = .welcome
-        }
+        let initial = Self.initialStep(
+            simplified: simplified,
+            resumeStep: resumeState?.step,
+            requiresAgentChoice: requiresAgentChoice,
+            requiresParentPermissionGuidance: requiresParentPermissionGuidance,
+            parentPermissionsReviewed: startingParentReviewed,
+            permissionStatus: { permissions.status(for: $0) },
+            venvInstalled: VenvInstaller.alreadyInstalled,
+            agentSignedIn: AgentAuth.isAuthenticated(for: startingProvider)
+        )
         _step = State(initialValue: initial)
         _workingDirectory = State(initialValue: initialWorkingDirectory)
-        _selectedAgentProvider = State(initialValue: initialAgentProvider)
-        _agentSignedIn = State(initialValue: AgentAuth.isAuthenticated(for: initialAgentProvider))
+        _selectedAgentProvider = State(initialValue: startingProvider)
+        _agentSignedIn = State(initialValue: AgentAuth.isAuthenticated(for: startingProvider))
+        _parentPermissionsReviewed = State(initialValue: startingParentReviewed)
     }
 
     enum Step: Int, CaseIterable {
@@ -113,6 +120,32 @@ struct OnboardingView: View {
             default:               return nil
             }
         }
+
+        var resumeID: OnboardingStepID {
+            switch self {
+            case .welcome:           return .welcome
+            case .agentChoice:       return .agentChoice
+            case .microphone:        return .microphone
+            case .inputMonitoring:   return .inputMonitoring
+            case .parentPermissions: return .parentPermissions
+            case .pythonSetup:       return .pythonSetup
+            case .agentLogin:        return .agentLogin
+            case .ready:             return .ready
+            }
+        }
+
+        init?(resumeID: OnboardingStepID) {
+            switch resumeID {
+            case .welcome:           self = .welcome
+            case .agentChoice:       self = .agentChoice
+            case .microphone:        self = .microphone
+            case .inputMonitoring:   self = .inputMonitoring
+            case .parentPermissions: self = .parentPermissions
+            case .pythonSetup:       self = .pythonSetup
+            case .agentLogin:        self = .agentLogin
+            case .ready:             self = .ready
+            }
+        }
     }
 
     var body: some View {
@@ -128,6 +161,7 @@ struct OnboardingView: View {
         }
         .frame(minWidth: 560, minHeight: 680)
         .onAppear {
+            persistResume()
             // Full first-run onboarding starts setup from the provider-choice
             // CTA. Focused re-prompt flows may open directly on a later step,
             // so start the automatable setup work there without another user
@@ -135,11 +169,20 @@ struct OnboardingView: View {
             if simplified && step != .agentChoice {
                 venvInstaller.install()
             }
+            advancePastGrantedPermissionIfNeeded()
         }
         .onChange(of: step) { _, new in
+            persistResume()
             if new == .pythonSetup {
                 venvInstaller.install()
             }
+            advancePastGrantedPermissionIfNeeded()
+        }
+        .onChange(of: selectedAgentProvider) { _, _ in
+            persistResume()
+        }
+        .onChange(of: parentPermissionsReviewed) { _, _ in
+            persistResume()
         }
         .onChange(of: permissions.microphone) { _, new in
             autoAdvance(for: .microphone, status: new)
@@ -357,6 +400,14 @@ struct OnboardingView: View {
                             .stroke(Color.secondary.opacity(0.25))
                     )
             }
+            if kind == .inputMonitoring {
+                PermissionAppDragGuide(
+                    title: "If Relay Runner is hard to find",
+                    detail: "Open Input Monitoring, then drag Relay Runner into the list if macOS search does not surface it.",
+                    settingsPane: "Input Monitoring",
+                    targets: [Self.relayRunnerAppTarget]
+                )
+            }
             if restricted {
                 mdmRestrictionBox(for: kind)
             }
@@ -434,6 +485,13 @@ struct OnboardingView: View {
                 )
             }
 
+            PermissionAppDragGuide(
+                title: "Drag the parent app if it is missing",
+                detail: "For screen control, macOS grants permission to the app running \(selectedAgentProvider.displayName). Drag the app you use for sessions into the Settings list if it is not searchable.",
+                settingsPane: "Accessibility or Screen Recording",
+                targets: selectedParentAppTargets
+            )
+
             Text("This step is optional for voice. If the selected parent app was already running, quit and reopen it after granting Screen Recording; Relay Runner will verify again when the MCP tools start.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -475,6 +533,10 @@ struct OnboardingView: View {
 
     private var selectedParentTargetList: String {
         ParentPermissionGuidance.targetList(for: selectedAgentProvider)
+    }
+
+    private var selectedParentAppTargets: [PermissionAppTarget] {
+        ParentPermissionGuidance.appTargets(for: selectedAgentProvider)
     }
 
     private var pythonSetupView: some View {
@@ -869,6 +931,7 @@ struct OnboardingView: View {
                 }.keyboardShortcut(.defaultAction)
             case .restricted:
                 Button("Open System Settings") {
+                    persistResume()
                     permissions.openSettings(for: .microphone)
                 }.keyboardShortcut(.defaultAction)
             }
@@ -882,12 +945,18 @@ struct OnboardingView: View {
                 }.keyboardShortcut(.defaultAction)
             case .restricted:
                 Button("Open System Settings") {
+                    persistResume()
                     permissions.openSettings(for: .inputMonitoring)
                 }.keyboardShortcut(.defaultAction)
             }
         case .parentPermissions:
             Button("Continue") {
                 parentPermissionsReviewed = true
+                OnboardingResumeState.save(
+                    step: step.resumeID,
+                    provider: selectedAgentProvider,
+                    parentPermissionsReviewed: true
+                )
                 advance()
             }
                 .keyboardShortcut(.defaultAction)
@@ -909,6 +978,7 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             } else {
                 Button("Sign in") {
+                    persistResume()
                     AgentAuth.openLoginInTerminal(for: selectedAgentProvider)
                 }.keyboardShortcut(.defaultAction)
             }
@@ -995,6 +1065,24 @@ struct OnboardingView: View {
     /// signed in.
     /// Used by the simplified re-prompt flow to skip already-done items.
     private func nextMissingStep(after from: Step) -> Step? {
+        Self.nextStepAfter(
+            from,
+            requiresAgentChoice: requiresAgentChoice,
+            requiresParentPermissionGuidance: requiresParentPermissionGuidance,
+            parentPermissionsReviewed: parentPermissionsReviewed,
+            permissionStatus: { permissions.status(for: $0) },
+            venvInstalled: VenvInstaller.alreadyInstalled,
+            agentSignedIn: AgentAuth.isAuthenticated(for: selectedAgentProvider)
+        )
+    }
+
+    static func nextStepAfter(_ from: Step,
+                              requiresAgentChoice: Bool,
+                              requiresParentPermissionGuidance: Bool,
+                              parentPermissionsReviewed: Bool,
+                              permissionStatus: (PermissionKind) -> PermissionStatus,
+                              venvInstalled: Bool,
+                              agentSignedIn: Bool) -> Step? {
         let remaining = Step.allCases.filter {
             $0.rawValue > from.rawValue
         }
@@ -1003,17 +1091,17 @@ struct OnboardingView: View {
                 return candidate
             }
             if candidate == .parentPermissions,
-               requiresAgentChoice,
+               (requiresAgentChoice || requiresParentPermissionGuidance),
                !parentPermissionsReviewed {
                 return candidate
             }
-            if let kind = candidate.kind, permissions.status(for: kind) != .granted {
+            if let kind = candidate.kind, permissionStatus(kind) != .granted {
                 return candidate
             }
-            if candidate == .pythonSetup, !VenvInstaller.alreadyInstalled {
+            if candidate == .pythonSetup, !venvInstalled {
                 return candidate
             }
-            if candidate == .agentLogin, !AgentAuth.isAuthenticated(for: selectedAgentProvider) {
+            if candidate == .agentLogin, !agentSignedIn {
                 return candidate
             }
         }
@@ -1053,6 +1141,7 @@ struct OnboardingView: View {
             for: step,
             simplified: simplified,
             requiresAgentChoice: requiresAgentChoice,
+            requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             permissionStatus: { permissions.status(for: $0) },
             venvInstalled: VenvInstaller.alreadyInstalled,
             agentSignedIn: AgentAuth.isAuthenticated(for: selectedAgentProvider),
@@ -1063,6 +1152,7 @@ struct OnboardingView: View {
     static func progressLabel(for step: Step,
                               simplified: Bool,
                               requiresAgentChoice: Bool,
+                              requiresParentPermissionGuidance: Bool = false,
                               permissionStatus: (PermissionKind) -> PermissionStatus,
                               venvInstalled: Bool,
                               agentSignedIn: Bool,
@@ -1070,6 +1160,7 @@ struct OnboardingView: View {
         let steps = progressSteps(
             simplified: simplified,
             requiresAgentChoice: requiresAgentChoice,
+            requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             permissionStatus: permissionStatus,
             venvInstalled: venvInstalled,
             agentSignedIn: agentSignedIn,
@@ -1084,6 +1175,7 @@ struct OnboardingView: View {
     /// the numerator and denominator are always in the same sequence.
     private static func progressSteps(simplified: Bool,
                                       requiresAgentChoice: Bool,
+                                      requiresParentPermissionGuidance: Bool,
                                       permissionStatus: (PermissionKind) -> PermissionStatus,
                                       venvInstalled: Bool,
                                       agentSignedIn: Bool,
@@ -1097,7 +1189,7 @@ struct OnboardingView: View {
                 steps.append(s)
             }
             if s == .parentPermissions,
-               requiresAgentChoice,
+               (requiresAgentChoice || requiresParentPermissionGuidance),
                !parentPermissionsReviewed {
                 steps.append(s)
             }
@@ -1179,20 +1271,52 @@ struct OnboardingView: View {
         }
     }
 
-    private static func firstMissing(permissions: PermissionsManager,
-                                     agentProvider: GeneralConfig.AgentProvider,
-                                     requiresAgentChoice: Bool) -> Step? {
+    static func initialStep(simplified: Bool,
+                            resumeStep: OnboardingStepID?,
+                            requiresAgentChoice: Bool,
+                            requiresParentPermissionGuidance: Bool,
+                            parentPermissionsReviewed: Bool,
+                            permissionStatus: (PermissionKind) -> PermissionStatus,
+                            venvInstalled: Bool,
+                            agentSignedIn: Bool) -> Step {
+        if let resumeStep, let step = Step(resumeID: resumeStep) {
+            return step
+        }
+        guard simplified else {
+            return .welcome
+        }
+        return firstMissing(
+            requiresAgentChoice: requiresAgentChoice,
+            requiresParentPermissionGuidance: requiresParentPermissionGuidance,
+            parentPermissionsReviewed: parentPermissionsReviewed,
+            permissionStatus: permissionStatus,
+            venvInstalled: venvInstalled,
+            agentSignedIn: agentSignedIn
+        ) ?? .ready
+    }
+
+    private static func firstMissing(requiresAgentChoice: Bool,
+                                     requiresParentPermissionGuidance: Bool,
+                                     parentPermissionsReviewed: Bool,
+                                     permissionStatus: (PermissionKind) -> PermissionStatus,
+                                     venvInstalled: Bool,
+                                     agentSignedIn: Bool) -> Step? {
         for s in Step.allCases {
             if s == .agentChoice, requiresAgentChoice {
                 return s
             }
-            if let kind = s.kind, permissions.status(for: kind) != .granted {
+            if s == .parentPermissions,
+               (requiresAgentChoice || requiresParentPermissionGuidance),
+               !parentPermissionsReviewed {
                 return s
             }
-            if s == .pythonSetup, !VenvInstaller.alreadyInstalled {
+            if let kind = s.kind, permissionStatus(kind) != .granted {
                 return s
             }
-            if s == .agentLogin, !AgentAuth.isAuthenticated(for: agentProvider) {
+            if s == .pythonSetup, !venvInstalled {
+                return s
+            }
+            if s == .agentLogin, !agentSignedIn {
                 return s
             }
         }
@@ -1213,6 +1337,7 @@ struct OnboardingView: View {
     }
 
     private func requestInputMonitoringPermission() {
+        persistResume()
         permissions.registerForInputMonitoringList()
         permissions.promptInputMonitoring()
         permissions.openSettings(for: .inputMonitoring)
@@ -1236,6 +1361,10 @@ struct OnboardingView: View {
         return VenvInstaller.alreadyInstalled
     }
 
+    private static var relayRunnerAppTarget: PermissionAppTarget {
+        PermissionAppTarget(displayName: "Relay Runner.app", bundleURL: Bundle.main.bundleURL)
+    }
+
     private func readinessIcon(for mode: GuidedSetupReadiness.Mode) -> String {
         switch mode {
         case .blocked: return "exclamationmark.triangle.fill"
@@ -1253,12 +1382,36 @@ struct OnboardingView: View {
     }
 
     private func openParentAccessibilitySettings() {
+        persistResume()
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
         NSWorkspace.shared.open(url)
     }
 
     private func openParentScreenRecordingSettings() {
+        persistResume()
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private func persistResume() {
+        OnboardingResumeState.save(
+            step: step.resumeID,
+            provider: selectedAgentProvider,
+            parentPermissionsReviewed: parentPermissionsReviewed
+        )
+    }
+
+    private func advancePastGrantedPermissionIfNeeded() {
+        guard let kind = step.kind,
+              permissions.status(for: kind) == .granted else {
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard step.kind == kind,
+                  permissions.status(for: kind) == .granted else {
+                return
+            }
+            advance()
+        }
     }
 }
