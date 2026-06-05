@@ -33,10 +33,9 @@ struct OnboardingView: View {
     let onFinish: () -> Void
 
     @State private var step: Step
-    /// Drives the Python venv bootstrap on the pythonSetup step. Held
-    /// at view scope so the install can start in the background as
-    /// soon as onboarding opens (welcome step) and is usually finished
-    /// by the time the user reaches its dedicated step.
+    /// Drives the Python venv bootstrap. Held at view scope so the
+    /// provider-choice CTA can start the guided setup run, and the
+    /// pythonSetup step can surface live progress.
     @State private var venvInstaller = VenvInstaller()
     /// Cached "is the configured agent signed in" state. Polled by a
     /// 1-second timer while on the agentLogin step so we can auto-advance
@@ -53,6 +52,11 @@ struct OnboardingView: View {
     /// can guarantee an explicit pick rather than silently inheriting
     /// whatever was already in config.
     @State private var hasConfirmedWorkingDirectory: Bool = false
+    /// True when the user has walked through the parent-app permission
+    /// guidance for this setup run. macOS does not let Relay Runner verify
+    /// another app's TCC grants here; the session-time parent wizard still
+    /// reappears if Relay Actions or Relay Vision report a missing grant.
+    @State private var parentPermissionsReviewed: Bool = false
 
     init(permissions: PermissionsManager,
          simplified: Bool,
@@ -124,12 +128,18 @@ struct OnboardingView: View {
         }
         .frame(minWidth: 560, minHeight: 680)
         .onAppear {
-            // Kick the Python bootstrap off as soon as the window opens
-            // so it has a head start while the user grants permissions.
-            // install() short-circuits to .succeeded if the venv is
-            // already healthy, or no-ops if a previous onAppear already
-            // started it — safe to call unconditionally.
-            venvInstaller.install()
+            // Full first-run onboarding starts setup from the provider-choice
+            // CTA. Focused re-prompt flows may open directly on a later step,
+            // so start the automatable setup work there without another user
+            // decision.
+            if simplified && step != .agentChoice {
+                venvInstaller.install()
+            }
+        }
+        .onChange(of: step) { _, new in
+            if new == .pythonSetup {
+                venvInstaller.install()
+            }
         }
         .onChange(of: permissions.microphone) { _, new in
             autoAdvance(for: .microphone, status: new)
@@ -238,8 +248,47 @@ struct OnboardingView: View {
                     detail: "Use Claude Code as the default voice-driven coding session."
                 )
             }
+
+            setupPlanView
+
+            Text("macOS privacy permissions cannot be granted silently. The setup run opens the right prompt or Settings pane for each manual step, polls for Relay Runner permission changes, and continues when macOS reports the grant.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var setupPlanView: some View {
+        let plan = GuidedSetupPlan(provider: selectedAgentProvider)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("One guided setup run will:")
+                .font(.callout).bold()
+            ForEach(plan.items) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                            .font(.callout)
+                        Text(item.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.25))
+        )
     }
 
     private func agentChoiceRow(provider: GeneralConfig.AgentProvider,
@@ -372,16 +421,20 @@ struct OnboardingView: View {
                 parentPermissionRow(
                     icon: "hand.tap",
                     title: "Accessibility",
-                    detail: "Toggle on \(selectedParentTargetList) so Relay Actions can control the Mac."
+                    detail: "Toggle on \(selectedParentTargetList) so Relay Actions can control the Mac.",
+                    buttonTitle: "Open Accessibility Settings",
+                    action: openParentAccessibilitySettings
                 )
                 parentPermissionRow(
                     icon: "rectangle.dashed",
                     title: "Screen Recording",
-                    detail: "Toggle on \(selectedParentTargetList) so Relay Vision can inspect the screen."
+                    detail: "Toggle on \(selectedParentTargetList) so Relay Vision can inspect the screen.",
+                    buttonTitle: "Open Screen Recording Settings",
+                    action: openParentScreenRecordingSettings
                 )
             }
 
-            Text("This step is optional for voice. You can grant these later when Relay Runner detects the agent's parent app.")
+            Text("This step is optional for voice. If the selected parent app was already running, quit and reopen it after granting Screen Recording; Relay Runner will verify again when the MCP tools start.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -389,7 +442,11 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func parentPermissionRow(icon: String, title: String, detail: String) -> some View {
+    private func parentPermissionRow(icon: String,
+                                     title: String,
+                                     detail: String,
+                                     buttonTitle: String,
+                                     action: @escaping () -> Void) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon)
                 .foregroundStyle(.tint)
@@ -402,6 +459,7 @@ struct OnboardingView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Button(buttonTitle, action: action)
             }
             Spacer(minLength: 0)
         }
@@ -550,7 +608,8 @@ struct OnboardingView: View {
     private var readyView: some View {
         let status = setupStatus()
         let isLoading = status != nil
-        let voiceReady = permissions.allGranted
+        let readiness = currentReadiness
+        let voiceReady = readiness.voiceReady
         let inputMonitoringSummary = Self.inputMonitoringSummary(status: permissions.inputMonitoring)
         return VStack(spacing: 16) {
             Spacer(minLength: 4)
@@ -558,24 +617,32 @@ struct OnboardingView: View {
                 ProgressView()
                     .controlSize(.large)
             } else {
-                Image(systemName: voiceReady ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                Image(systemName: readinessIcon(for: readiness.mode))
                     .font(.system(size: 44))
-                    .foregroundStyle(voiceReady ? .green : .orange)
+                    .foregroundStyle(readinessColor(for: readiness.mode))
             }
-            Text(isLoading ? "Almost ready\u{2026}" : "You're all set.")
+            Text(isLoading ? "Almost ready\u{2026}" : readiness.title)
                 .font(.title2).bold()
             if isLoading, let status {
                 Text(status)
                     .foregroundStyle(.secondary)
             } else if !voiceReady {
-                Text("Some features are disabled until missing permissions are granted — open Relay Runner's menu to fix them later.")
+                Text(readiness.detail)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 workingDirectoryPicker
+                Text(readiness.detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let inputMonitoringSummary {
                     inputMonitoringDeferredNotice(detail: inputMonitoringSummary)
+                }
+                if readiness.deferredItems.contains(where: { $0.contains("Parent-app") }) {
+                    parentPermissionsDeferredNotice
                 }
                 Text("Two ways to start a voice session:")
                     .foregroundStyle(.secondary)
@@ -624,6 +691,32 @@ struct OnboardingView: View {
             Button("Open Settings") {
                 requestInputMonitoringPermission()
             }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.orange.opacity(0.35))
+        )
+    }
+
+    private var parentPermissionsDeferredNotice: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "rectangle.on.rectangle")
+                .foregroundStyle(.orange)
+                .font(.title3)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Parent app permissions deferred")
+                    .font(.callout).bold()
+                Text("Voice sessions can start. Relay Actions and Relay Vision may still need Accessibility and Screen Recording for \(selectedParentTargetList); Relay Runner will surface that guide again after the provider session starts if the MCP tools report a missing grant.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -756,9 +849,8 @@ struct OnboardingView: View {
             Button("Get Started") { advance() }
                 .keyboardShortcut(.defaultAction)
         case .agentChoice:
-            Button("Use \(selectedAgentProvider.displayName)") {
-                onSetAgentProvider(selectedAgentProvider)
-                advance()
+            Button(GuidedSetupPlan(provider: selectedAgentProvider).primaryActionTitle) {
+                beginGuidedSetup()
             }
                 .keyboardShortcut(.defaultAction)
         case .microphone:
@@ -794,7 +886,10 @@ struct OnboardingView: View {
                 }.keyboardShortcut(.defaultAction)
             }
         case .parentPermissions:
-            Button("Continue") { advance() }
+            Button("Continue") {
+                parentPermissionsReviewed = true
+                advance()
+            }
                 .keyboardShortcut(.defaultAction)
         case .pythonSetup:
             switch venvInstaller.status {
@@ -831,7 +926,7 @@ struct OnboardingView: View {
             // conditional branches inside @ViewBuilder occasionally
             // misrender on macOS — being explicit about the container
             // sidesteps that.
-            let pickerVisible = setupStatus() == nil && permissions.allGranted
+            let pickerVisible = setupStatus() == nil && currentReadiness.voiceReady
             if pickerVisible {
                 HStack {
                     // Dismiss is always enabled — the user can defer
@@ -881,6 +976,13 @@ struct OnboardingView: View {
         }
     }
 
+    private func beginGuidedSetup() {
+        onSetAgentProvider(selectedAgentProvider)
+        agentSignedIn = AgentAuth.isAuthenticated(for: selectedAgentProvider)
+        venvInstaller.install()
+        advance()
+    }
+
     private func autoAdvance(for kind: PermissionKind, status: PermissionStatus) {
         guard status == .granted, step.kind == kind else { return }
         // Small delay so the user sees the green check before the view flips
@@ -898,6 +1000,11 @@ struct OnboardingView: View {
         }
         for candidate in remaining {
             if candidate == .agentChoice, requiresAgentChoice {
+                return candidate
+            }
+            if candidate == .parentPermissions,
+               requiresAgentChoice,
+               !parentPermissionsReviewed {
                 return candidate
             }
             if let kind = candidate.kind, permissions.status(for: kind) != .granted {
@@ -948,7 +1055,8 @@ struct OnboardingView: View {
             requiresAgentChoice: requiresAgentChoice,
             permissionStatus: { permissions.status(for: $0) },
             venvInstalled: VenvInstaller.alreadyInstalled,
-            agentSignedIn: AgentAuth.isAuthenticated(for: selectedAgentProvider)
+            agentSignedIn: AgentAuth.isAuthenticated(for: selectedAgentProvider),
+            parentPermissionsReviewed: parentPermissionsReviewed
         )
     }
 
@@ -957,13 +1065,15 @@ struct OnboardingView: View {
                               requiresAgentChoice: Bool,
                               permissionStatus: (PermissionKind) -> PermissionStatus,
                               venvInstalled: Bool,
-                              agentSignedIn: Bool) -> String? {
+                              agentSignedIn: Bool,
+                              parentPermissionsReviewed: Bool = true) -> String? {
         let steps = progressSteps(
             simplified: simplified,
             requiresAgentChoice: requiresAgentChoice,
             permissionStatus: permissionStatus,
             venvInstalled: venvInstalled,
-            agentSignedIn: agentSignedIn
+            agentSignedIn: agentSignedIn,
+            parentPermissionsReviewed: parentPermissionsReviewed
         )
         guard let index = steps.firstIndex(of: step) else { return nil }
         return "\(index + 1) of \(steps.count)"
@@ -976,13 +1086,19 @@ struct OnboardingView: View {
                                       requiresAgentChoice: Bool,
                                       permissionStatus: (PermissionKind) -> PermissionStatus,
                                       venvInstalled: Bool,
-                                      agentSignedIn: Bool) -> [Step] {
+                                      agentSignedIn: Bool,
+                                      parentPermissionsReviewed: Bool) -> [Step] {
         if !simplified {
             return [.agentChoice, .microphone, .inputMonitoring, .parentPermissions, .pythonSetup, .agentLogin]
         }
         var steps: [Step] = []
         for s in Step.allCases {
             if s == .agentChoice, requiresAgentChoice {
+                steps.append(s)
+            }
+            if s == .parentPermissions,
+               requiresAgentChoice,
+               !parentPermissionsReviewed {
                 steps.append(s)
             }
             if let kind = s.kind, permissionStatus(kind) != .granted {
@@ -1100,5 +1216,49 @@ struct OnboardingView: View {
         permissions.registerForInputMonitoringList()
         permissions.promptInputMonitoring()
         permissions.openSettings(for: .inputMonitoring)
+    }
+
+    private var currentReadiness: GuidedSetupReadiness {
+        GuidedSetupReadiness(
+            provider: selectedAgentProvider,
+            microphone: permissions.microphone,
+            inputMonitoring: permissions.inputMonitoring,
+            pythonInstalled: venvReady,
+            agentSignedIn: agentSignedIn,
+            parentPermissionsReviewed: parentPermissionsReviewed
+        )
+    }
+
+    private var venvReady: Bool {
+        if case .succeeded = venvInstaller.status {
+            return true
+        }
+        return VenvInstaller.alreadyInstalled
+    }
+
+    private func readinessIcon(for mode: GuidedSetupReadiness.Mode) -> String {
+        switch mode {
+        case .blocked: return "exclamationmark.triangle.fill"
+        case .voiceOnly: return "mic.circle.fill"
+        case .fullyArmed: return "checkmark.seal.fill"
+        }
+    }
+
+    private func readinessColor(for mode: GuidedSetupReadiness.Mode) -> Color {
+        switch mode {
+        case .blocked: return .orange
+        case .voiceOnly: return .green
+        case .fullyArmed: return .green
+        }
+    }
+
+    private func openParentAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func openParentScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
+        NSWorkspace.shared.open(url)
     }
 }

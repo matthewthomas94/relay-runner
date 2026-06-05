@@ -59,6 +59,30 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(label, "1 of 1")
     }
 
+    func testSimplifiedProviderChoiceIncludesParentPermissionGuidance() {
+        let choice = OnboardingView.progressLabel(
+            for: .agentChoice,
+            simplified: true,
+            requiresAgentChoice: true,
+            permissionStatus: { _ in .granted },
+            venvInstalled: true,
+            agentSignedIn: true,
+            parentPermissionsReviewed: false
+        )
+        let parent = OnboardingView.progressLabel(
+            for: .parentPermissions,
+            simplified: true,
+            requiresAgentChoice: true,
+            permissionStatus: { _ in .granted },
+            venvInstalled: true,
+            agentSignedIn: true,
+            parentPermissionsReviewed: false
+        )
+
+        XCTAssertEqual(choice, "1 of 2")
+        XCTAssertEqual(parent, "2 of 2")
+    }
+
     func testReadySummaryNamesDeferredInputMonitoringFeatures() {
         let summary = OnboardingView.inputMonitoringSummary(status: .denied)
 
