@@ -918,7 +918,7 @@ class Daemon:
         return "main"
 
     def dispatch(self, *, ticket_id: str, repo_path: str,
-                 context: str | None = None) -> dict:
+                 context: str | None = None, source: str = "direct") -> dict:
         if not ticket_id:
             raise ValueError("ticket_id is required")
         if not repo_path:
@@ -940,6 +940,11 @@ class Daemon:
         with self._dispatch_lock:
             existing = self.runs.find_active(ticket_id)
             if existing:
+                print(
+                    f"[orchestrator] dispatch skipped for {ticket_id} from {source}: "
+                    f"already active run {existing['id']}",
+                    file=sys.stderr,
+                )
                 return {"already_active": True, "run": existing}
 
             try:
@@ -995,6 +1000,12 @@ class Daemon:
                 self._workers[run_id] = worker
             worker.start()
 
+            print(
+                f"[orchestrator] dispatch claimed {ticket_id} from {source}: "
+                f"run {run_id} ({self.agent_kind})",
+                file=sys.stderr,
+            )
+
         return {"already_active": False, "run": self.runs.get(run_id)}
 
     def _on_worker_complete(self, run_id: int) -> None:
@@ -1027,11 +1038,89 @@ class Daemon:
             dep["status"] = "ready"
             write_ticket(dep["_path"], dep)
             try:
-                self.dispatch(ticket_id=dep["id"], repo_path=str(repo))
+                self.dispatch(ticket_id=dep["id"], repo_path=str(repo), source="dependency-progression")
             except ValueError as e:
                 # Daemon refused dispatch (e.g. file missing, already active);
                 # the status flip stays — user can drag/redispatch manually.
                 print(f"[orchestrator] auto-dispatch declined for {dep['id']}: {e}", file=sys.stderr)
+
+    def sweep_ready_tickets(self, *, repo_path: str, trigger: str | None = None) -> dict:
+        """Reconcile a repo board and dispatch eligible stale ready tickets.
+
+        The app calls this repeatedly for the active project. It deliberately
+        re-enters `dispatch()` for worker creation so Codex/Claude provider
+        selection, worktree creation, and active-run idempotency stay in one
+        chokepoint.
+        """
+        if not repo_path:
+            raise ValueError("repo_path is required")
+
+        repo = Path(repo_path).expanduser().resolve()
+        if not repo.is_dir() or not (repo / ".git").exists():
+            raise ValueError(f"repo_path {repo} is not a git repository")
+
+        all_tickets = scan_repo(repo)
+        dispatched: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+
+        def skip(ticket: dict[str, Any], reason: str, **extra: Any) -> None:
+            entry = {"ticket_id": ticket["id"], "reason": reason}
+            entry.update(extra)
+            skipped.append(entry)
+
+        for ticket in all_tickets:
+            if ticket["status"] != "ready":
+                skip(ticket, f"status:{ticket['status']}")
+                continue
+            if ticket["canceled"]:
+                skip(ticket, "canceled")
+                continue
+            if ticket["run_id"] is not None:
+                skip(ticket, "run_id_present", run_id=ticket["run_id"])
+                continue
+            if not all_deps_done(ticket, all_tickets):
+                skip(ticket, "dependencies_not_done")
+                continue
+
+            existing = self.runs.find_active(ticket["id"])
+            if existing:
+                skip(ticket, "already_active", run_id=existing["id"])
+                continue
+
+            try:
+                result = self.dispatch(
+                    ticket_id=ticket["id"],
+                    repo_path=str(repo),
+                    source="ready-sweeper",
+                )
+            except (ValueError, RuntimeError) as e:
+                skip(ticket, "dispatch_failed", error=str(e))
+                print(
+                    f"[orchestrator] ready-sweeper dispatch failed for {ticket['id']}: {e}",
+                    file=sys.stderr,
+                )
+                continue
+
+            run = result.get("run") or {}
+            run_id = run.get("id")
+            if result.get("already_active"):
+                skip(ticket, "already_active", run_id=run_id)
+                continue
+
+            dispatched.append({"ticket_id": ticket["id"], "run_id": run_id})
+            trigger_note = f" after {trigger}" if trigger else ""
+            print(
+                f"[orchestrator] ready-sweeper auto-dispatched {ticket['id']}"
+                f"{trigger_note}: run {run_id}",
+                file=sys.stderr,
+            )
+
+        return {
+            "repo_path": str(repo),
+            "trigger": trigger,
+            "dispatched": dispatched,
+            "skipped": skipped,
+        }
 
     def list_runs(self, state: str | None = None, limit: int = 100) -> list[dict]:
         return self.runs.list(state=state, limit=limit)
@@ -1133,8 +1222,17 @@ class Handler(BaseHTTPRequestHandler):
                     ticket_id=body.get("ticket_id", ""),
                     repo_path=body.get("repo_path", ""),
                     context=body.get("context"),
+                    source=body.get("source") or "direct",
                 )
                 return (200 if result["already_active"] else 202), result
+
+            if method == "POST" and segments == ["v1", "ready-sweep"]:
+                body = _read_body(self)
+                result = self.daemon.sweep_ready_tickets(
+                    repo_path=body.get("repo_path", ""),
+                    trigger=body.get("trigger"),
+                )
+                return 200, result
 
             if method == "GET" and len(segments) == 3 and segments[:2] == ["v1", "runs"]:
                 run = self.daemon.get_run(int(segments[2]))

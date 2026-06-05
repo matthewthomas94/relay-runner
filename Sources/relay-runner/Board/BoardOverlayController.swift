@@ -134,7 +134,7 @@ final class BoardOverlayController {
         // shows when a user tries to record out of session so the UX is
         // consistent ("No session running / Double tap Option to start a
         // new session"). AppState wires the handler at startup.
-        guard ProjectResolver.resolve() != nil else {
+        guard let project = ProjectResolver.resolve() else {
             noSessionHandler?()
             return
         }
@@ -150,6 +150,7 @@ final class BoardOverlayController {
         model.runStates = loadRunStates()
         model.theme = themeResolver?()
         model.editing = nil
+        OrchestratorClient.sweepReadyTickets(repoPath: project.repoPath.path, trigger: "board-show")
 
         let hosting = NSHostingView(rootView: BoardOverlayView(
             model: model,
@@ -285,7 +286,11 @@ final class BoardOverlayController {
         // a real title/description, so we wait for the save. Daemon's
         // find_active makes the call idempotent.
         if updated.status == .ready {
-            OrchestratorClient.dispatchTicket(ticketId: updated.id, repoPath: project.repoPath.path)
+            OrchestratorClient.dispatchTicket(
+                ticketId: updated.id,
+                repoPath: project.repoPath.path,
+                source: "board-save"
+            )
         }
     }
 
@@ -379,7 +384,11 @@ final class BoardOverlayController {
         // then-drag-back is safe, but limiting the trigger to genuine
         // backlog/in_progress/done → ready transitions keeps logs clean.
         if dragged.status != .ready && status == .ready {
-            OrchestratorClient.dispatchTicket(ticketId: dragged.id, repoPath: project.repoPath.path)
+            OrchestratorClient.dispatchTicket(
+                ticketId: dragged.id,
+                repoPath: project.repoPath.path,
+                source: "board-drop"
+            )
         }
     }
 

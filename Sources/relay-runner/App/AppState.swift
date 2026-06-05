@@ -360,6 +360,12 @@ final class AppState {
                 self.onboarding.markSessionRun()
             }
 
+            if alive {
+                self.sweepReadyTicketsForActiveProject(
+                    trigger: wasAlive ? "bridge-watchdog" : "bridge-reconnect"
+                )
+            }
+
             // Per-parent permissions wizard. Bridge alive = user has actively
             // engaged voice from a particular terminal/IDE. That's the
             // contextual moment for the wizard.
@@ -424,6 +430,11 @@ final class AppState {
     private func stopBridgeWatchdog() {
         bridgeWatchdog?.invalidate()
         bridgeWatchdog = nil
+    }
+
+    private func sweepReadyTicketsForActiveProject(trigger: String) {
+        guard let project = ProjectResolver.resolve() else { return }
+        OrchestratorClient.sweepReadyTickets(repoPath: project.repoPath.path, trigger: trigger)
     }
 
     /// Read the bus's most-recently-detected parent and open the wizard if
