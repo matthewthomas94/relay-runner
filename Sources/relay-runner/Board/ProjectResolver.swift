@@ -9,7 +9,9 @@ import Foundation
 /// session is rooted in" without a separate project registry — there's
 /// exactly one bridge session at a time, so there's no ambiguity.
 ///
-/// A path resolves to a project iff it points to a git repo. Fresh repos get
+/// If the bridge starts inside an existing git repo, the board uses that repo
+/// root. If it starts in a directory that is not already in a repo, the board
+/// initializes that cwd as a repo. Either way, the project gets
 /// `.orchestrator/config.toml` initialized on first resolve so the board can
 /// open empty and mint repo-scoped ticket IDs.
 enum ProjectResolver {
@@ -48,18 +50,15 @@ enum ProjectResolver {
         let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return nil }
 
-        let repoURL = URL(fileURLWithPath: path)
-        let dotGit = repoURL.appendingPathComponent(".git", isDirectory: false).path
-        guard fm.fileExists(atPath: dotGit) else {
-            return nil
-        }
+        let cwdURL = URL(fileURLWithPath: path)
         do {
+            let repoURL = try ensureGitRepo(forBridgeCwd: cwdURL)
             try BoardProjectConfig.ensureExists(forRepoAt: repoURL)
+            return LinkedProject(repoPath: repoURL)
         } catch {
-            NSLog("[relay-runner] failed to initialize board project at \(repoURL.path): \(error)")
+            NSLog("[relay-runner] failed to initialize board project at \(cwdURL.path): \(error)")
             return nil
         }
-        return LinkedProject(repoPath: repoURL)
     }
 
     static func scanTickets(in project: LinkedProject) -> [Ticket] {
@@ -87,5 +86,63 @@ enum ProjectResolver {
     /// this so they stay aligned.
     static func ticketsDirectory(in project: LinkedProject) -> URL {
         project.repoPath.appendingPathComponent(".orchestrator", isDirectory: true)
+    }
+
+    private static func ensureGitRepo(forBridgeCwd cwdURL: URL) throws -> URL {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: cwdURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw GitError.notDirectory(path: cwdURL.path)
+        }
+
+        if let repoURL = try gitTopLevel(containing: cwdURL) {
+            return repoURL
+        }
+
+        let initResult = try runGit(["init", "--quiet"], in: cwdURL)
+        guard initResult.status == 0 else {
+            throw GitError.initFailed(path: cwdURL.path, status: initResult.status)
+        }
+        return cwdURL
+    }
+
+    private static func gitTopLevel(containing cwdURL: URL) throws -> URL? {
+        let result = try runGit(["rev-parse", "--show-toplevel"], in: cwdURL)
+        guard result.status == 0 else { return nil }
+
+        let path = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    private static func runGit(_ arguments: [String], in directory: URL) throws -> (status: Int32, stdout: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git"] + arguments
+        process.currentDirectoryURL = directory
+
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+
+        try process.run()
+        process.waitUntilExit()
+
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
+    private enum GitError: Error, CustomStringConvertible {
+        case notDirectory(path: String)
+        case initFailed(path: String, status: Int32)
+
+        var description: String {
+            switch self {
+            case .notDirectory(let path):
+                return "bridge cwd is not a directory: \(path)"
+            case .initFailed(let path, let status):
+                return "git init failed at \(path) with status \(status)"
+            }
+        }
     }
 }
