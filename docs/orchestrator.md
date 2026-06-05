@@ -37,13 +37,13 @@ Drag the card from `backlog` to `ready` in the menu-bar Board. The moment it lan
 Manual dispatch is still available for edge cases — retries, dispatching out-of-order, or driving from voice without using the board. Either way the agent calls the same MCP tool:
 
 ```
-/relay-dispatch work on RR-6
+/relay-dispatch work on MA-6
 ```
 
 The daemon:
 
-1. Validates `<repo>/.orchestrator/RR-6.md` exists.
-2. Adds a git worktree at `~/Library/Application Support/relay-runner/workspaces/rr-6/` on branch `relay/rr-6`, branched off the repo's default branch (resolved via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `main`).
+1. Validates `<repo>/.orchestrator/MA-6.md` exists.
+2. Adds a git worktree at `~/Library/Application Support/relay-runner/workspaces/ma-6/` on branch `relay/ma-6`, branched off the repo's default branch (resolved via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `main`).
 3. Renders the workflow prompt (default at `services/orchestrator_workflow.md`, override per-repo at `<repo>/WORKFLOW.md`).
 4. Spawns the configured agent in that worktree, piping the prompt as stdin. New configs default to `codex exec --json --dangerously-bypass-approvals-and-sandbox`; Claude remains available via `[orchestrator].agent = "claude"`.
 5. Returns a `run_id` immediately — the worker continues in the background.
@@ -59,7 +59,7 @@ get_run --run_id=17                → details for one run
 cancel_run --run_id=17             → SIGTERM the worker, prune the worktree
 ```
 
-Voice equivalents work too: "what are the agents doing?", "how's RR-6?", "stop RR-6".
+Voice equivalents work too: "what are the agents doing?", "how's MA-6?", "stop MA-6".
 
 ## The intended workflow
 
