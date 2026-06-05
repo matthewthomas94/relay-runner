@@ -38,7 +38,7 @@ struct PermissionAppDragGuide: View {
                     .frame(width: 168)
             }
 
-            Text("Literally drag this icon into the window that just opened, then turn on its switch.")
+            Text("Literally drag the relevant app icon into the window that just opened, then turn on its switch.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

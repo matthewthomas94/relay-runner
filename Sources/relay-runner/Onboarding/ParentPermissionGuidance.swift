@@ -17,6 +17,19 @@ enum ParentPermissionGuidance {
         defaultParentHint(for: provider)
     }
 
+    static func targetNames(for provider: GeneralConfig.AgentProvider) -> [String] {
+        switch provider {
+        case .codex:
+            return ["Codex.app", "Terminal.app"]
+        case .claude:
+            return ["Claude.app", "Terminal.app"]
+        }
+    }
+
+    static func targetNameList(for provider: GeneralConfig.AgentProvider) -> String {
+        formatList(targetNames(for: provider))
+    }
+
     static func appTargets(for provider: GeneralConfig.AgentProvider) -> [PermissionAppTarget] {
         switch provider {
         case .codex:

@@ -62,4 +62,15 @@ final class ParentPermissionGuidanceTests: XCTestCase {
         XCTAssertEqual(codexTargets, ["Codex.app", "Terminal.app"])
         XCTAssertEqual(claudeTargets, ["Claude.app", "Terminal.app"])
     }
+
+    func testProviderTargetNamesSurfaceDraggableApps() {
+        XCTAssertEqual(
+            ParentPermissionGuidance.targetNames(for: .codex),
+            ["Codex.app", "Terminal.app"]
+        )
+        XCTAssertEqual(
+            ParentPermissionGuidance.targetNameList(for: .claude),
+            "Claude.app and Terminal.app"
+        )
+    }
 }

@@ -5,6 +5,10 @@ enum OnboardingStepID: String, CaseIterable {
     case agentChoice
     case microphone
     case inputMonitoring
+    case parentAccessibility
+    case parentScreenRecording
+    /// Legacy resume value from builds that showed one combined parent
+    /// permission screen.
     case parentPermissions
     case pythonSetup
     case agentLogin
