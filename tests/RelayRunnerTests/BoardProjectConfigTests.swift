@@ -87,6 +87,68 @@ final class BoardProjectConfigTests: XCTestCase {
         )
     }
 
+    func testResolveInitializesUnderscoredGitRepoFromBridgeCwd() throws {
+        let repo = try makeTempRepo(named: "client_dashboard")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        try Data().write(to: bridgeSocket)
+        try Data(repo.path.utf8).write(to: bridgeCwd)
+
+        let project = ProjectResolver.resolve(bridgeSocket: bridgeSocket, bridgeCwdFile: bridgeCwd)
+
+        XCTAssertEqual(resolvedPath(project?.repoPath), resolvedPath(repo))
+        XCTAssertEqual(
+            try String(
+                contentsOf: repo.appendingPathComponent(".orchestrator/config.toml"),
+                encoding: .utf8
+            ),
+            """
+            prefix = "CD"
+            next_id = 1
+
+            """
+        )
+    }
+
+    func testResolvePreservesExistingConfigFromBridgeCwd() throws {
+        let repo = try makeTempRepo(named: "client_dashboard")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let orchDir = repo.appendingPathComponent(".orchestrator", isDirectory: true)
+        try FileManager.default.createDirectory(at: orchDir, withIntermediateDirectories: true)
+        let customConfig = """
+        prefix = "CUSTOM"
+        next_id = 7
+
+        """
+        try Data(customConfig.utf8).write(to: orchDir.appendingPathComponent("config.toml"))
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        try Data().write(to: bridgeSocket)
+        try Data(repo.path.utf8).write(to: bridgeCwd)
+
+        let project = try XCTUnwrap(ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd
+        ))
+        let ticket = try TicketWriter.mint(in: project, status: .backlog, order: 10)
+
+        XCTAssertEqual(ticket.id, "CUSTOM-7")
+        XCTAssertEqual(
+            try String(contentsOf: orchDir.appendingPathComponent("config.toml"), encoding: .utf8),
+            """
+            prefix = "CUSTOM"
+            next_id = 8
+
+            """
+        )
+    }
+
     func testResolveUsesExistingRepoRootWhenBridgeStartsInSubdirectory() throws {
         let repo = try makeTempRepo(named: "mouse-assist")
         let root = repo.deletingLastPathComponent()
@@ -150,6 +212,37 @@ final class BoardProjectConfigTests: XCTestCase {
             ),
             """
             prefix = "SW"
+            next_id = 2
+
+            """
+        )
+    }
+
+    func testResolveInitializesFallbackPrefixForNonAlphanumericBridgeCwd() throws {
+        let repo = try makeTempDirectory(named: "!!!")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        try Data().write(to: bridgeSocket)
+        try Data(repo.path.utf8).write(to: bridgeCwd)
+
+        let project = try XCTUnwrap(ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd
+        ))
+        let ticket = try TicketWriter.mint(in: project, status: .backlog, order: 10)
+
+        XCTAssertEqual(resolvedPath(project.repoPath), resolvedPath(repo))
+        XCTAssertEqual(ticket.id, "T-1")
+        XCTAssertEqual(
+            try String(
+                contentsOf: repo.appendingPathComponent(".orchestrator/config.toml"),
+                encoding: .utf8
+            ),
+            """
+            prefix = "T"
             next_id = 2
 
             """

@@ -11,6 +11,8 @@ This document defines the on-disk schema for orchestrator-managed work. Files th
 
 ## Layout
 
+Example layout for this `relay-runner` repo:
+
 ```
 <repo>/
   .orchestrator/
@@ -26,7 +28,7 @@ Everything lives under `.orchestrator/` at the repo root. No nesting.
 ### `config.toml`
 
 ```toml
-prefix = "RR"            # ticket ID prefix; used when generating new ticket IDs
+prefix = "RR"            # example ticket ID prefix for relay-runner
 next_id = 14             # monotonic counter; incremented on each new ticket
 ```
 
@@ -34,12 +36,12 @@ The ticket writer reads `next_id`, mints `<prefix>-<next_id>`, then increments. 
 
 **First-time init.** If `.orchestrator/config.toml` is missing when the board resolves a live bridge rooted in a git repo, it creates one with:
 
-- `prefix = "<PREFIX>"` — a repo-derived uppercase prefix. Hyphenated or underscored repo names use word initials (`relay-runner` -> `RR`, `mouse-assist` -> `MA`); single-word names use the first two alphanumeric characters.
+- `prefix = "<PREFIX>"` — a repo-derived uppercase prefix. Hyphenated or underscored repo names use word initials (`relay-runner` -> `RR`, `mouse-assist` -> `MA`, `client_dashboard` -> `CD`); single-word names use the first two alphanumeric characters. If no alphanumeric characters remain, the board uses `T` as a documented safe fallback.
 - `next_id = 1`.
 
 No tickets are created — the user authors the first one via the board UI or by writing the file by hand. The user can still edit `config.toml` before creating tickets to override the prefix.
 
-**Concurrent ID minting across branches.** Two users on two branches can both mint `RR-14.md` independently. Merge conflicts surface this: the second one to merge gets a textual conflict on `.orchestrator/config.toml` (both bumped `next_id`) and a duplicate-filename conflict on `RR-14.md`. Resolution: bump the loser's `id` to the next free integer, rename their file, fix any `depends_on` references. This is rare in practice (mint-then-merge usually happens fast) but the spec is explicit that conflict resolution is a human step, not magic.
+**Concurrent ID minting across branches.** Two users on two branches can both mint the same next ticket, such as `MA-14.md` in a `mouse-assist` repo. Merge conflicts surface this: the second one to merge gets a textual conflict on `.orchestrator/config.toml` (both bumped `next_id`) and a duplicate-filename conflict on the ticket file. Resolution: bump the loser's `id` to the next free integer, rename their file, fix any `depends_on` references. This is rare in practice (mint-then-merge usually happens fast) but the spec is explicit that conflict resolution is a human step, not magic.
 
 ## Ticket file format
 
@@ -157,6 +159,8 @@ Because each ticket is a separate file, parallel sub-agents working on different
 - **An agent edits its own ticket while the orchestrator also edits it.** Sub-agents are conventionally read-only on their own ticket file (they emit progress as commit messages and status comments instead). The schema permits writes, but the workflow discourages them.
 
 ## Example tickets
+
+These examples use this repo's `RR` prefix.
 
 A backlog idea:
 
