@@ -58,7 +58,11 @@ struct PermissionAppDragGuide: View {
     @ViewBuilder
     private func draggableAppIcon(_ target: PermissionAppTarget) -> some View {
         let tile = VStack(spacing: 7) {
-            appIcon(for: target.bundleURL, size: targets.count == 1 ? 92 : 76)
+            DraggableAppIconView(
+                bundleURL: target.bundleURL,
+                size: targets.count == 1 ? 92 : 76
+            )
+            .frame(width: targets.count == 1 ? 92 : 76, height: targets.count == 1 ? 92 : 76)
                 .padding(8)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -80,14 +84,7 @@ struct PermissionAppDragGuide: View {
                 Button("Reveal in Finder") { reveal(target) }
             }
         }
-
-        if let url = target.bundleURL {
-            tile.onDrag {
-                NSItemProvider(contentsOf: url) ?? NSItemProvider(object: url.path as NSString)
-            }
-        } else {
-            tile
-        }
+        tile
     }
 
     private var permissionListMock: some View {
@@ -163,20 +160,76 @@ struct PermissionAppDragGuide: View {
         }
     }
 
-    private func appIcon(for url: URL?, size: CGFloat) -> some View {
-        let image: NSImage
-        if let url {
-            image = NSWorkspace.shared.icon(forFile: url.path)
-        } else {
-            image = NSImage(named: NSImage.applicationIconName) ?? NSImage()
-        }
-        return Image(nsImage: image)
-            .resizable()
-            .frame(width: size, height: size)
-    }
-
     private func reveal(_ target: PermissionAppTarget) {
         guard let url = target.bundleURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+}
+
+private struct DraggableAppIconView: NSViewRepresentable {
+    let bundleURL: URL?
+    let size: CGFloat
+
+    func makeNSView(context: Context) -> AppFileDragView {
+        AppFileDragView()
+    }
+
+    func updateNSView(_ view: AppFileDragView, context: Context) {
+        view.bundleURL = bundleURL
+        view.image = Self.icon(for: bundleURL)
+        view.frame.size = NSSize(width: size, height: size)
+    }
+
+    private static func icon(for url: URL?) -> NSImage {
+        if let url {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSImage(named: NSImage.applicationIconName) ?? NSImage(size: NSSize(width: 92, height: 92))
+    }
+}
+
+private final class AppFileDragView: NSImageView, NSDraggingSource {
+    var bundleURL: URL?
+    private var mouseDownEvent: NSEvent?
+
+    init() {
+        super.init(frame: .zero)
+        imageScaling = .scaleProportionallyUpOrDown
+        isEditable = false
+        unregisterDraggedTypes()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        imageScaling = .scaleProportionallyUpOrDown
+        isEditable = false
+        unregisterDraggedTypes()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownEvent = event
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let bundleURL,
+              let image,
+              let mouseDownEvent else {
+            return
+        }
+
+        let item = NSDraggingItem(pasteboardWriter: bundleURL as NSURL)
+        item.setDraggingFrame(bounds, contents: image)
+
+        beginDraggingSession(with: [item], event: mouseDownEvent, source: self)
+        self.mouseDownEvent = nil
+    }
+
+    func draggingSession(_ session: NSDraggingSession,
+                         sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        .copy
+    }
+
+    func ignoreModifierKeys(for session: NSDraggingSession) -> Bool {
+        true
     }
 }
