@@ -25,9 +25,8 @@ enum PermissionStatus: Equatable {
 /// - Microphone: required to capture speech.
 /// - Accessibility: enables media-pause when recording starts; required by
 ///   the Relay Actions MCP server to post CGEvents (clicks, keystrokes).
-/// - Input Monitoring: required to capture non-modifier global activation
-///   keys (Caps Lock alone works without it; modifier flags are readable
-///   via NSEvent without Input Monitoring).
+/// - Input Monitoring: required to capture non-Caps-Lock global activation
+///   keys and the Control+Option board hotkey.
 /// - Screen Recording: required by the Relay Vision MCP server's
 ///   `screenshot` tool. Without it, the screenshot tool returns a clear
 ///   error string but the rest of the app keeps working.

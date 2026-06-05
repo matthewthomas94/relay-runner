@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 /// First-launch onboarding flow. Walks through agent choice, microphone
-/// access, optional parent-app permission guidance, local Python setup,
-/// and agent sign-in.
+/// access, optional Input Monitoring, optional parent-app permission guidance,
+/// local Python setup, and agent sign-in.
 struct OnboardingView: View {
 
     @Bindable var permissions: PermissionsManager
@@ -96,6 +96,7 @@ struct OnboardingView: View {
         case welcome
         case agentChoice
         case microphone
+        case inputMonitoring
         case parentPermissions
         case pythonSetup
         case agentLogin
@@ -104,6 +105,7 @@ struct OnboardingView: View {
         var kind: PermissionKind? {
             switch self {
             case .microphone:      return .microphone
+            case .inputMonitoring: return .inputMonitoring
             default:               return nil
             }
         }
@@ -131,6 +133,9 @@ struct OnboardingView: View {
         }
         .onChange(of: permissions.microphone) { _, new in
             autoAdvance(for: .microphone, status: new)
+        }
+        .onChange(of: permissions.inputMonitoring) { _, new in
+            autoAdvance(for: .inputMonitoring, status: new)
         }
         .onChange(of: venvInstaller.status) { _, new in
             // Auto-advance off pythonSetup as soon as the bootstrap
@@ -178,6 +183,7 @@ struct OnboardingView: View {
         case .welcome:          welcomeView
         case .agentChoice:      agentChoiceView
         case .microphone:       permissionView(for: .microphone)
+        case .inputMonitoring:  permissionView(for: .inputMonitoring)
         case .parentPermissions: parentPermissionsView
         case .pythonSetup:      pythonSetupView
         case .agentLogin:       agentLoginView
@@ -544,29 +550,33 @@ struct OnboardingView: View {
     private var readyView: some View {
         let status = setupStatus()
         let isLoading = status != nil
-        let allGranted = permissions.allGranted
+        let voiceReady = permissions.allGranted
+        let inputMonitoringSummary = Self.inputMonitoringSummary(status: permissions.inputMonitoring)
         return VStack(spacing: 16) {
             Spacer(minLength: 4)
             if isLoading {
                 ProgressView()
                     .controlSize(.large)
             } else {
-                Image(systemName: allGranted ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                Image(systemName: voiceReady ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                     .font(.system(size: 44))
-                    .foregroundStyle(allGranted ? .green : .orange)
+                    .foregroundStyle(voiceReady ? .green : .orange)
             }
             Text(isLoading ? "Almost ready\u{2026}" : "You're all set.")
                 .font(.title2).bold()
             if isLoading, let status {
                 Text(status)
                     .foregroundStyle(.secondary)
-            } else if !allGranted {
+            } else if !voiceReady {
                 Text("Some features are disabled until missing permissions are granted — open Relay Runner's menu to fix them later.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 workingDirectoryPicker
+                if let inputMonitoringSummary {
+                    inputMonitoringDeferredNotice(detail: inputMonitoringSummary)
+                }
                 Text("Two ways to start a voice session:")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -594,6 +604,35 @@ struct OnboardingView: View {
             Spacer(minLength: 4)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func inputMonitoringDeferredNotice(detail: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "keyboard.badge.eye")
+                .foregroundStyle(.orange)
+                .font(.title3)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Input Monitoring deferred")
+                    .font(.callout).bold()
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Button("Open Settings") {
+                requestInputMonitoringPermission()
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.orange.opacity(0.35))
+        )
     }
 
     /// Path picker on the Ready step. The user must actively click
@@ -741,6 +780,19 @@ struct OnboardingView: View {
                     permissions.openSettings(for: .microphone)
                 }.keyboardShortcut(.defaultAction)
             }
+        case .inputMonitoring:
+            switch permissions.inputMonitoring {
+            case .granted:
+                Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
+            case .notDetermined, .denied:
+                Button("Open Input Monitoring Settings") {
+                    requestInputMonitoringPermission()
+                }.keyboardShortcut(.defaultAction)
+            case .restricted:
+                Button("Open System Settings") {
+                    permissions.openSettings(for: .inputMonitoring)
+                }.keyboardShortcut(.defaultAction)
+            }
         case .parentPermissions:
             Button("Continue") { advance() }
                 .keyboardShortcut(.defaultAction)
@@ -836,8 +888,9 @@ struct OnboardingView: View {
     }
 
     /// The next step (after `from`) that still needs the user's attention —
-    /// microphone if not granted, pythonSetup if the venv hasn't been
-    /// bootstrapped, or agentLogin if the configured agent isn't signed in.
+    /// microphone/Input Monitoring if not granted, pythonSetup if the venv
+    /// hasn't been bootstrapped, or agentLogin if the configured agent isn't
+    /// signed in.
     /// Used by the simplified re-prompt flow to skip already-done items.
     private func nextMissingStep(after from: Step) -> Step? {
         let remaining = Step.allCases.filter {
@@ -875,6 +928,7 @@ struct OnboardingView: View {
         case .welcome:          return "Welcome to Relay Runner"
         case .agentChoice:      return "Coding Agent"
         case .microphone:       return "Microphone"
+        case .inputMonitoring:  return "Input Monitoring"
         case .parentPermissions: return "Screen Control"
         case .pythonSetup:      return "Python Environment"
         case .agentLogin:       return "\(selectedAgentProvider.displayName) Account"
@@ -884,7 +938,7 @@ struct OnboardingView: View {
 
     private var progressLabel: String? {
         // Full flow always visits agent choice + microphone + optional
-        // parent permission guidance + pythonSetup + agentLogin
+        // Input Monitoring + parent permission guidance + pythonSetup + agentLogin
         // (the last two briefly auto-advance when their state is already
         // ready, but they still get slots in the count). Simplified flow
         // only counts steps that actually need attention.
@@ -924,7 +978,7 @@ struct OnboardingView: View {
                                       venvInstalled: Bool,
                                       agentSignedIn: Bool) -> [Step] {
         if !simplified {
-            return [.agentChoice, .microphone, .parentPermissions, .pythonSetup, .agentLogin]
+            return [.agentChoice, .microphone, .inputMonitoring, .parentPermissions, .pythonSetup, .agentLogin]
         }
         var steps: [Step] = []
         for s in Step.allCases {
@@ -965,7 +1019,7 @@ struct OnboardingView: View {
         case .accessibility:
             return "So Relay Runner can detect your Caps Lock (or configured trigger key) no matter which app you're using, it needs Accessibility access. This is also how it pauses media when you start talking."
         case .inputMonitoring:
-            return "On macOS, capturing global keyboard events requires a second permission called Input Monitoring, separate from Accessibility. Same purpose — letting the app notice your trigger key across every app."
+            return "Input Monitoring lets Relay Runner capture global keyboard events. It enables non-Caps-Lock activation keys and the Control+Option board hotkey; voice still works with microphone permission alone if you skip it."
         case .screenRecording:
             return "Optional. Required only when you ask the agent to take a screenshot or walk through an app for UAT. Voice transcription and speech don't need it."
         }
@@ -983,7 +1037,7 @@ struct OnboardingView: View {
         case .accessibility:
             return "Click the button below. In System Settings, find Relay Runner in the list and switch it on. This window will update automatically when you're done."
         case .inputMonitoring:
-            return "Click the button below. In System Settings, find Relay Runner in the list and switch it on. This window will update automatically when you're done."
+            return "Click the button below. In System Settings, find Relay Runner under Input Monitoring and switch it on. This window will update automatically, and global hotkeys are restored as soon as macOS reports the grant."
         case .screenRecording:
             return "Click the button below. In System Settings, find Relay Runner under Screen Recording and switch it on."
         }
@@ -1027,5 +1081,24 @@ struct OnboardingView: View {
             }
         }
         return nil
+    }
+
+    static func inputMonitoringSummary(status: PermissionStatus) -> String? {
+        switch status {
+        case .granted:
+            return nil
+        case .notDetermined:
+            return "Voice works with microphone permission alone. Grant Input Monitoring later to enable non-Caps-Lock activation keys and the Control+Option board hotkey."
+        case .denied:
+            return "Voice works with microphone permission alone. Restore Input Monitoring to re-enable non-Caps-Lock activation keys and the Control+Option board hotkey."
+        case .restricted:
+            return "Voice works with microphone permission alone, but a device policy appears to block Input Monitoring. Ask IT to allow Relay Runner before global activation keys and the Control+Option board hotkey can work."
+        }
+    }
+
+    private func requestInputMonitoringPermission() {
+        permissions.registerForInputMonitoringList()
+        permissions.promptInputMonitoring()
+        permissions.openSettings(for: .inputMonitoring)
     }
 }
