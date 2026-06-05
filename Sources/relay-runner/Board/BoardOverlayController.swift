@@ -60,8 +60,8 @@ final class BoardOverlayController {
 
     /// Install global keyboard hooks: ⌃⌥ (Control+Option pressed together,
     /// no letter) toggles the board (works from any app); Esc dismisses while
-    /// the board is visible. Both rely on the Accessibility / Input Monitoring
-    /// permission the app already needs for Caps Lock detection.
+    /// the board is visible. Both rely on Relay Runner's Input Monitoring
+    /// permission.
     ///
     /// Call once from `AppState.startOverlay` — `BoardOverlayController` is
     /// long-lived for the app's lifetime.

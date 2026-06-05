@@ -88,7 +88,7 @@ struct StatusSettingsTab: View {
         return statusRow(
             label: kind.displayName,
             state: permissionState(status: status, restricted: restricted),
-            detail: permissionDetail(kind: kind, status: status, restricted: restricted),
+            detail: Self.permissionDetailText(kind: kind, status: status, restricted: restricted),
             action: permissionAction(kind: kind, status: status)
         )
     }
@@ -203,9 +203,9 @@ struct StatusSettingsTab: View {
         }
     }
 
-    private func permissionDetail(kind: PermissionKind,
-                                  status: PermissionStatus,
-                                  restricted: Bool) -> String {
+    static func permissionDetailText(kind: PermissionKind,
+                                     status: PermissionStatus,
+                                     restricted: Bool) -> String {
         if restricted {
             return "Blocked by a device policy — contact your IT admin."
         }
@@ -213,7 +213,11 @@ struct StatusSettingsTab: View {
         case .granted:       return "Granted"
         case .denied where kind == .microphone:
             return "Denied — click Ask Again to show Apple's microphone prompt."
+        case .denied where kind == .inputMonitoring:
+            return "Denied — global activation keys and the Control+Option board hotkey are disabled until restored."
         case .denied:        return "Denied — open System Settings to allow."
+        case .notDetermined where kind == .inputMonitoring:
+            return "Not set up — grant to enable global activation keys and the Control+Option board hotkey."
         case .notDetermined: return "Not yet requested."
         case .restricted:    return "Restricted by system policy."
         }
@@ -225,6 +229,13 @@ struct StatusSettingsTab: View {
         if kind == .microphone {
             return RowAction(title: status == .denied ? "Ask Again" : "Request") {
                 appState.permissions.requestMicrophonePrompt { _ in }
+            }
+        }
+        if kind == .inputMonitoring {
+            return RowAction(title: "Restore Hotkeys") {
+                appState.permissions.registerForInputMonitoringList()
+                appState.permissions.promptInputMonitoring()
+                appState.permissions.openSettings(for: kind)
             }
         }
         return RowAction(title: "Open Settings") {
