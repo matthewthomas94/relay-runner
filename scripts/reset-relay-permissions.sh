@@ -32,6 +32,7 @@ ONBOARDING_FLAGS=(
     "$APP_SUPPORT_DIR/.onboarded"
     "$APP_SUPPORT_DIR/.onboarding-started"
     "$APP_SUPPORT_DIR/.session-run"
+    "$APP_SUPPORT_DIR/.agent-choice-v1"
 )
 
 DEFAULT_KEYS=(
