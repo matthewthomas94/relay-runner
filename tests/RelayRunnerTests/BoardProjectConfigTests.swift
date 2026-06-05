@@ -73,7 +73,7 @@ final class BoardProjectConfigTests: XCTestCase {
 
         let project = ProjectResolver.resolve(bridgeSocket: bridgeSocket, bridgeCwdFile: bridgeCwd)
 
-        XCTAssertEqual(project?.repoPath.path, repo.path)
+        XCTAssertEqual(resolvedPath(project?.repoPath), resolvedPath(repo))
         XCTAssertEqual(
             try String(
                 contentsOf: repo.appendingPathComponent(".orchestrator/config.toml"),
@@ -82,6 +82,75 @@ final class BoardProjectConfigTests: XCTestCase {
             """
             prefix = "MA"
             next_id = 1
+
+            """
+        )
+    }
+
+    func testResolveUsesExistingRepoRootWhenBridgeStartsInSubdirectory() throws {
+        let repo = try makeTempRepo(named: "mouse-assist")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let subdirectory = repo.appendingPathComponent("Sources/App", isDirectory: true)
+        try FileManager.default.createDirectory(at: subdirectory, withIntermediateDirectories: true)
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        try Data().write(to: bridgeSocket)
+        try Data(subdirectory.path.utf8).write(to: bridgeCwd)
+
+        let project = ProjectResolver.resolve(bridgeSocket: bridgeSocket, bridgeCwdFile: bridgeCwd)
+
+        XCTAssertEqual(resolvedPath(project?.repoPath), resolvedPath(repo))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: subdirectory.appendingPathComponent(".git").path
+        ))
+    }
+
+    func testResolveInitializesNonGitBridgeCwdAndCanMintTickets() throws {
+        let repo = try makeTempDirectory(named: "scratch-work")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        try Data().write(to: bridgeSocket)
+        try Data(repo.path.utf8).write(to: bridgeCwd)
+
+        let project = try XCTUnwrap(ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd
+        ))
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".git").path
+        ))
+        XCTAssertEqual(
+            try String(
+                contentsOf: repo.appendingPathComponent(".orchestrator/config.toml"),
+                encoding: .utf8
+            ),
+            """
+            prefix = "SW"
+            next_id = 1
+
+            """
+        )
+
+        let ticket = try TicketWriter.mint(in: project, status: .ready, order: 10)
+        XCTAssertEqual(ticket.id, "SW-1")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".orchestrator/SW-1.md").path
+        ))
+        XCTAssertEqual(
+            try String(
+                contentsOf: repo.appendingPathComponent(".orchestrator/config.toml"),
+                encoding: .utf8
+            ),
+            """
+            prefix = "SW"
+            next_id = 2
 
             """
         )
@@ -144,12 +213,21 @@ final class BoardProjectConfigTests: XCTestCase {
         )
     }
 
+    private func resolvedPath(_ url: URL?) -> String? {
+        url?.resolvingSymlinksInPath().path
+    }
+
     private func makeTempRepo(named name: String) throws -> URL {
+        let repo = try makeTempDirectory(named: name)
+        try runGit(["init", "--quiet"], in: repo)
+        return repo
+    }
+
+    private func makeTempDirectory(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RelayRunnerTests-\(UUID().uuidString)", isDirectory: true)
         let repo = root.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
-        try runGit(["init", "--quiet"], in: repo)
         return repo
     }
 
