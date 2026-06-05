@@ -24,11 +24,6 @@ struct PermissionAppDragGuide: View {
                 Text(title)
                     .font(.callout).bold()
             }
-            Text(detail)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
             HStack(alignment: .center, spacing: 18) {
                 HStack(alignment: .top, spacing: 14) {
                     ForEach(targets) { target in
@@ -45,7 +40,7 @@ struct PermissionAppDragGuide: View {
                     .frame(width: 210)
             }
 
-            Text("Drag the app icon into the list on the right, then turn on its switch.")
+            Text("Drag this icon into the window that just opened, then turn on its switch.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -112,9 +107,9 @@ struct PermissionAppDragGuide: View {
 
             Divider()
 
-            mockPermissionRow(icon: "safari", name: "Arc", enabled: true)
-            mockPermissionRow(icon: "circle.grid.cross", name: "Google Chrome", enabled: true)
-            mockPermissionRow(icon: "keyboard", name: "keyviz", enabled: true)
+            mockPermissionRow(icon: "app", name: "App 1", enabled: true)
+            mockPermissionRow(icon: "app", name: "App 2", enabled: true)
+            mockPermissionRow(icon: "app", name: "App 3", enabled: true)
 
             HStack(spacing: 4) {
                 Image(systemName: "plus")
