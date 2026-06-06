@@ -110,7 +110,8 @@ fi
 
 # Python services
 for f in voice_bridge.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py \
-         orchestrator.py orchestrator_workflow.md requirements.txt; do
+         graphify_core.py graphify_ingest.py orchestrator.py orchestrator_workflow.md \
+         program_status.py requirements.txt session_capture.py tickets.py; do
     if [ -f "$PROJECT_ROOT/services/$f" ]; then
         cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"
     fi
