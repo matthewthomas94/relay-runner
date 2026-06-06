@@ -619,6 +619,9 @@ final class AppState {
         boardOverlay.setNoSessionHandler { [weak self] in
             self?.showSessionPromptIfAllowed()
         }
+        boardOverlay.setProgramBoardHandler { [weak self] in
+            self?.programBoardOverlay.toggle()
+        }
         programBoardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
             if case .actionGlow = state { return .stt }

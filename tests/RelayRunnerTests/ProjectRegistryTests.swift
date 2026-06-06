@@ -227,6 +227,142 @@ final class ProjectRegistryTests: XCTestCase {
         ))
     }
 
+    func testBoardRouteOpensProjectBoardForSingleProjectBridgeSession() throws {
+        let repo = try makeTempRepo(named: "mouse-assist")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        try Data().write(to: bridgeSocket)
+        try Data(repo.path.utf8).write(to: bridgeCwd)
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+        let route = ProjectResolver.resolveBoardRoute(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            registry: registry
+        )
+
+        guard case .project(let project) = route else {
+            return XCTFail("Expected project board route.")
+        }
+        XCTAssertEqual(resolvedPath(project.repoPath), resolvedPath(repo))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".orchestrator/config.toml").path
+        ))
+    }
+
+    func testBoardRouteOpensProgramBoardForWorkspaceBridgeSession() throws {
+        let workspace = try makeTempDirectory(named: "dev")
+        let root = workspace.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = workspace.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = workspace.appendingPathComponent("tools", isDirectory: true)
+        try makeGitRepo(at: clientRepo)
+        try makeGitRepo(at: toolsRepo)
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        let bridgeProvider = root.appendingPathComponent("voice_bridge.provider")
+        try Data().write(to: bridgeSocket)
+        try Data(workspace.path.utf8).write(to: bridgeCwd)
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+        for provider in ["codex", "Claude"] {
+            try Data("\(provider)\n".utf8).write(to: bridgeProvider)
+            let route = ProjectResolver.resolveBoardRoute(
+                bridgeSocket: bridgeSocket,
+                bridgeCwdFile: bridgeCwd,
+                bridgeProviderFile: bridgeProvider,
+                registry: registry
+            )
+            guard case .programBoard = route else {
+                return XCTFail("Expected Program Board route for \(provider).")
+            }
+        }
+
+        let document = try registry.load()
+        XCTAssertEqual(document.activeWorkspaceRootID, resolvedPath(workspace))
+        XCTAssertEqual(document.workspaceRoots.first?.providers["codex"]?.lastActivationSource, .bridgeCwd)
+        XCTAssertEqual(document.workspaceRoots.first?.providers["claude"]?.lastActivationSource, .bridgeCwd)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: workspace.appendingPathComponent(".orchestrator").path
+        ))
+    }
+
+    func testBoardRoutePrefersWorkspaceRootForAmbiguousParentRepo() throws {
+        let parentRepo = try makeTempRepo(named: "platform")
+        let root = parentRepo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let childRepo = parentRepo.appendingPathComponent("client-dashboard", isDirectory: true)
+        try makeGitRepo(at: childRepo)
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        try Data().write(to: bridgeSocket)
+        try Data(parentRepo.path.utf8).write(to: bridgeCwd)
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+        let route = ProjectResolver.resolveBoardRoute(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            registry: registry
+        )
+
+        guard case .programBoard = route else {
+            return XCTFail("Expected ambiguous parent repo to route to Program Board.")
+        }
+        let document = try registry.load()
+        XCTAssertEqual(document.activeWorkspaceRootID, resolvedPath(parentRepo))
+        XCTAssertNil(document.projects.first { $0.repoPath == resolvedPath(parentRepo) })
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: parentRepo.appendingPathComponent(".orchestrator").path
+        ))
+    }
+
+    func testExplicitParentProjectActivationCanOpenProjectBoard() throws {
+        let parentRepo = try makeTempRepo(named: "platform")
+        let root = parentRepo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let childRepo = parentRepo.appendingPathComponent("client-dashboard", isDirectory: true)
+        try makeGitRepo(at: childRepo)
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+        _ = try registry.registerDiscovery(at: parentRepo, provider: "codex")
+        _ = try ProjectResolver.activateProject(
+            at: parentRepo,
+            alias: "platform",
+            provider: "Claude",
+            registry: registry
+        )
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        try Data().write(to: bridgeSocket)
+        try Data(parentRepo.path.utf8).write(to: bridgeCwd)
+
+        let route = ProjectResolver.resolveBoardRoute(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            registry: registry
+        )
+
+        guard case .project(let project) = route else {
+            return XCTFail("Expected explicit parent project activation to route to project board.")
+        }
+        XCTAssertEqual(resolvedPath(project.repoPath), resolvedPath(parentRepo))
+        let document = try registry.load()
+        XCTAssertEqual(document.activeProjectID, resolvedPath(parentRepo))
+        XCTAssertNil(document.activeWorkspaceRootID)
+        XCTAssertEqual(document.projects.first { $0.repoPath == resolvedPath(parentRepo) }?.providers["claude"]?.lastActivationSource, .programmatic)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: parentRepo.appendingPathComponent(".orchestrator/config.toml").path
+        ))
+    }
+
     func testResolveUsesProgrammaticallyActiveProjectWithoutBridge() throws {
         let repo = try makeTempRepo(named: "client-dashboard")
         let root = repo.deletingLastPathComponent()

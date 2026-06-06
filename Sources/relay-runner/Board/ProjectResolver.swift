@@ -21,6 +21,12 @@ enum ProjectResolver {
         let repoPath: URL
     }
 
+    enum BoardRoute {
+        case project(LinkedProject)
+        case programBoard
+        case unavailable
+    }
+
     private static let bridgeSocketPath = "/tmp/voice_bridge.sock"
     private static let bridgeCwdFilePath = "/tmp/voice_bridge.cwd"
     private static let bridgeProviderFilePath = "/tmp/voice_bridge.provider"
@@ -65,6 +71,65 @@ enum ProjectResolver {
         } catch {
             NSLog("[relay-runner] failed to resolve active project: \(error)")
             return nil
+        }
+    }
+
+    static func resolveBoardRoute() -> BoardRoute {
+        resolveBoardRoute(
+            bridgeSocket: URL(fileURLWithPath: bridgeSocketPath),
+            bridgeCwdFile: URL(fileURLWithPath: bridgeCwdFilePath),
+            bridgeProviderFile: URL(fileURLWithPath: bridgeProviderFilePath),
+            bridgeSessionAlive: ProcessManager.activeRelaySessionAlive
+        )
+    }
+
+    static func resolveBoardRoute(
+        bridgeSocket: URL,
+        bridgeCwdFile: URL,
+        bridgeProviderFile: URL? = nil,
+        bridgeSessionAlive: () -> Bool = { true },
+        registry: ProjectRegistry = ProjectRegistry()
+    ) -> BoardRoute {
+        let fm = FileManager.default
+        let bridgeAlive = bridgeSessionAlive() && fm.fileExists(atPath: bridgeSocket.path)
+        if bridgeAlive,
+           let raw = try? String(contentsOf: bridgeCwdFile, encoding: .utf8) {
+            let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty else { return .unavailable }
+
+            let cwdURL = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+            let provider = bridgeProviderFile.flatMap(readBridgeProvider)
+            do {
+                if let explicitProject = try registry.activeProject(),
+                   explicitProject.repoPath.standardizedFileURL.resolvingSymlinksInPath().path == cwdURL.path {
+                    return .project(explicitProject)
+                }
+                if let project = try registry.activateBridgeCwd(at: cwdURL, provider: provider) {
+                    return .project(project)
+                }
+                if let workspaceRoot = try registry.activeWorkspaceRoot(),
+                   !workspaceRoot.discoveredProjectIDs.isEmpty {
+                    return .programBoard
+                }
+                return .unavailable
+            } catch {
+                NSLog("[relay-runner] failed to route board for \(cwdURL.path): \(error)")
+                return .unavailable
+            }
+        }
+
+        do {
+            if let workspaceRoot = try registry.activeWorkspaceRoot(),
+               !workspaceRoot.discoveredProjectIDs.isEmpty {
+                return .programBoard
+            }
+            if let project = try registry.activeProject() {
+                return .project(project)
+            }
+            return .unavailable
+        } catch {
+            NSLog("[relay-runner] failed to resolve board route: \(error)")
+            return .unavailable
         }
     }
 
