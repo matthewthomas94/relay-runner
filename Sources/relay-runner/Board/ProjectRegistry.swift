@@ -2,6 +2,7 @@ import Foundation
 
 enum ProjectActivationSource: String, Codable, Equatable {
     case bridgeCwd = "bridge_cwd"
+    case discovery
     case programmatic
 }
 
@@ -20,11 +21,59 @@ struct RegisteredProject: Codable, Equatable {
     var providers: [String: ProjectProviderMetadata]
 }
 
+struct RegisteredWorkspaceRoot: Codable, Equatable {
+    var id: String
+    var rootPath: String
+    var displayName: String
+    var lastSeenAt: Date
+    var discoveredProjectIDs: [String]
+    var providers: [String: ProjectProviderMetadata]
+}
+
 struct ProjectRegistryDocument: Codable, Equatable {
     var activeProjectID: String?
+    var activeWorkspaceRootID: String?
+    var workspaceRoots: [RegisteredWorkspaceRoot]
     var projects: [RegisteredProject]
 
-    static let empty = ProjectRegistryDocument(activeProjectID: nil, projects: [])
+    static let empty = ProjectRegistryDocument(
+        activeProjectID: nil,
+        activeWorkspaceRootID: nil,
+        workspaceRoots: [],
+        projects: []
+    )
+
+    private enum CodingKeys: String, CodingKey {
+        case activeProjectID
+        case activeWorkspaceRootID
+        case workspaceRoots
+        case projects
+    }
+
+    init(
+        activeProjectID: String?,
+        activeWorkspaceRootID: String?,
+        workspaceRoots: [RegisteredWorkspaceRoot],
+        projects: [RegisteredProject]
+    ) {
+        self.activeProjectID = activeProjectID
+        self.activeWorkspaceRootID = activeWorkspaceRootID
+        self.workspaceRoots = workspaceRoots
+        self.projects = projects
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        activeProjectID = try values.decodeIfPresent(String.self, forKey: .activeProjectID)
+        activeWorkspaceRootID = try values.decodeIfPresent(String.self, forKey: .activeWorkspaceRootID)
+        workspaceRoots = try values.decodeIfPresent([RegisteredWorkspaceRoot].self, forKey: .workspaceRoots) ?? []
+        projects = try values.decodeIfPresent([RegisteredProject].self, forKey: .projects) ?? []
+    }
+}
+
+enum ProjectDiscoveryClassification: Equatable {
+    case workspaceRoot(rootPath: URL, childRepoPaths: [URL])
+    case singleProject(repoPath: URL)
 }
 
 struct ProjectRegistry {
@@ -47,6 +96,38 @@ struct ProjectRegistry {
         try BoardProjectConfig.ensureExists(forRepoAt: repoURL)
         try registerResolvedProject(repoURL: repoURL, alias: alias, provider: provider, source: source)
         return ProjectResolver.LinkedProject(repoPath: repoURL)
+    }
+
+    @discardableResult
+    func registerDiscovery(at path: URL, provider: String? = nil) throws -> ProjectDiscoveryClassification {
+        let classification = try classifyDiscoveryRoot(at: path)
+        switch classification {
+        case .workspaceRoot(let rootURL, let childRepoURLs):
+            try registerWorkspaceRoot(rootURL: rootURL, childRepoURLs: childRepoURLs, provider: provider)
+        case .singleProject(let repoURL):
+            try BoardProjectConfig.ensureExists(forRepoAt: repoURL)
+            try registerResolvedProject(
+                repoURL: repoURL,
+                alias: nil,
+                provider: provider,
+                source: .programmatic
+            )
+        }
+        return classification
+    }
+
+    func classifyDiscoveryRoot(at path: URL) throws -> ProjectDiscoveryClassification {
+        let directory = try existingDirectory(path)
+        let childRepoURLs = try childGitRepos(under: directory)
+        if !childRepoURLs.isEmpty {
+            return .workspaceRoot(rootPath: directory, childRepoPaths: childRepoURLs)
+        }
+
+        if let repoURL = try gitRepoRoot(containing: directory) {
+            return .singleProject(repoPath: repoURL)
+        }
+
+        throw ActivationError.noProjectsFound(path: directory.path)
     }
 
     @discardableResult
@@ -122,6 +203,85 @@ struct ProjectRegistry {
     ) throws {
         var document = try load()
         let timestamp = now()
+        upsertProject(
+            in: &document,
+            repoURL: repoURL,
+            alias: alias,
+            provider: provider,
+            source: source,
+            activate: true,
+            preserveActivationSource: false,
+            timestamp: timestamp
+        )
+        try save(document)
+    }
+
+    private func registerWorkspaceRoot(
+        rootURL: URL,
+        childRepoURLs: [URL],
+        provider: String?
+    ) throws {
+        var document = try load()
+        let timestamp = now()
+        let childProjectIDs = childRepoURLs.map(\.path).sorted()
+
+        for childRepoURL in childRepoURLs {
+            upsertProject(
+                in: &document,
+                repoURL: childRepoURL,
+                alias: nil,
+                provider: nil,
+                source: .discovery,
+                activate: false,
+                preserveActivationSource: true,
+                timestamp: timestamp
+            )
+        }
+
+        let id = rootURL.path
+        let existing = document.workspaceRoots.first(where: { $0.id == id })
+        var record = existing ?? RegisteredWorkspaceRoot(
+            id: id,
+            rootPath: rootURL.path,
+            displayName: rootURL.lastPathComponent,
+            lastSeenAt: timestamp,
+            discoveredProjectIDs: childProjectIDs,
+            providers: [:]
+        )
+        record.rootPath = rootURL.path
+        record.displayName = rootURL.lastPathComponent
+        record.lastSeenAt = timestamp
+        record.discoveredProjectIDs = childProjectIDs
+
+        if let providerKey = normalizedProvider(provider) {
+            // Workspace roots and projects share provider-neutral metadata so
+            // Codex and Claude resolve the same registry state.
+            record.providers[providerKey] = ProjectProviderMetadata(
+                lastActivatedAt: timestamp,
+                lastActivationSource: .discovery
+            )
+        }
+
+        document.workspaceRoots.removeAll { $0.id == id }
+        document.workspaceRoots.append(record)
+        document.workspaceRoots.sort {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+        document.activeWorkspaceRootID = id
+        document.activeProjectID = nil
+        try save(document)
+    }
+
+    private func upsertProject(
+        in document: inout ProjectRegistryDocument,
+        repoURL: URL,
+        alias: String?,
+        provider: String?,
+        source: ProjectActivationSource,
+        activate: Bool,
+        preserveActivationSource: Bool,
+        timestamp: Date
+    ) {
         let id = repoURL.path
         let providerKey = normalizedProvider(provider)
         let existing = document.projects.first(where: { $0.id == id })
@@ -141,7 +301,9 @@ struct ProjectRegistry {
         record.alias = normalizedAlias
         record.displayName = normalizedAlias
         record.lastSeenAt = timestamp
-        record.lastActivationSource = source
+        if !preserveActivationSource || existing == nil {
+            record.lastActivationSource = source
+        }
         if let providerKey {
             // Codex and Claude both use this provider-neutral shape; callers
             // pass the provider label when known instead of using separate
@@ -155,8 +317,10 @@ struct ProjectRegistry {
         document.projects.removeAll { $0.id == id }
         document.projects.append(record)
         document.projects.sort { $0.alias.localizedCaseInsensitiveCompare($1.alias) == .orderedAscending }
-        document.activeProjectID = id
-        try save(document)
+        if activate {
+            document.activeProjectID = id
+            document.activeWorkspaceRootID = nil
+        }
     }
 
     private func save(_ document: ProjectRegistryDocument) throws {
@@ -167,23 +331,54 @@ struct ProjectRegistry {
     }
 
     private func resolveGitRepo(containing url: URL) throws -> URL {
+        let directory = try existingDirectory(url)
+        guard let repoURL = try gitRepoRoot(containing: directory) else {
+            throw ActivationError.notGitRepository(path: directory.path)
+        }
+        return repoURL
+    }
+
+    private func existingDirectory(_ url: URL) throws -> URL {
         let directory = url.standardizedFileURL.resolvingSymlinksInPath()
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
             throw ActivationError.notDirectory(path: directory.path)
         }
+        return directory
+    }
 
+    private func gitRepoRoot(containing url: URL) throws -> URL? {
+        let directory = try existingDirectory(url)
         let result = try runGit(["rev-parse", "--show-toplevel"], in: directory)
-        guard result.status == 0 else {
-            throw ActivationError.notGitRepository(path: directory.path)
-        }
+        guard result.status == 0 else { return nil }
 
         let path = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else {
-            throw ActivationError.notGitRepository(path: directory.path)
-        }
+        guard !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private func childGitRepos(under url: URL) throws -> [URL] {
+        let directory = try existingDirectory(url)
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        var seen = Set<String>()
+        var repos: [URL] = []
+
+        for entry in entries {
+            guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                  let repoURL = try gitRepoRoot(containing: entry),
+                  repoURL.path == entry.standardizedFileURL.resolvingSymlinksInPath().path,
+                  seen.insert(repoURL.path).inserted else {
+                continue
+            }
+            repos.append(repoURL)
+        }
+
+        return repos.sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }
     }
 
     private func runGit(_ arguments: [String], in directory: URL) throws -> (status: Int32, stdout: String) {
@@ -252,6 +447,7 @@ struct ProjectRegistry {
         case emptyProjectReference
         case notDirectory(path: String)
         case notGitRepository(path: String)
+        case noProjectsFound(path: String)
 
         var description: String {
             switch self {
@@ -261,6 +457,8 @@ struct ProjectRegistry {
                 return "project activation path is not a directory: \(path)"
             case .notGitRepository(let path):
                 return "project activation refused for non-git directory: \(path). Initialize git explicitly before activating it."
+            case .noProjectsFound(let path):
+                return "workspace discovery found no child git repositories at \(path). Select a git repo, choose a workspace folder containing git repos, or initialize git explicitly."
             }
         }
     }

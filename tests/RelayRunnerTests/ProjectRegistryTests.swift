@@ -193,6 +193,142 @@ final class ProjectRegistryTests: XCTestCase {
         XCTAssertNil(project)
     }
 
+    func testDiscoveryRegistersNonGitWorkspaceChildrenWithoutWorkspaceProject() throws {
+        let workspace = try makeTempDirectory(named: "dev")
+        let root = workspace.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = workspace.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = workspace.appendingPathComponent("tools", isDirectory: true)
+        try makeGitRepo(at: clientRepo)
+        try makeGitRepo(at: toolsRepo)
+
+        var timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let registry = ProjectRegistry(
+            fileURL: root.appendingPathComponent("projects.json"),
+            now: { timestamp }
+        )
+
+        let classification = try registry.registerDiscovery(at: workspace, provider: "Codex")
+        guard case .workspaceRoot(let rootPath, let childRepoPaths) = classification else {
+            return XCTFail("Expected workspace-root discovery.")
+        }
+        XCTAssertEqual(resolvedPath(rootPath), resolvedPath(workspace))
+        XCTAssertEqual(childRepoPaths.map { resolvedPath($0) }, [
+            resolvedPath(clientRepo),
+            resolvedPath(toolsRepo),
+        ])
+
+        timestamp = Date(timeIntervalSince1970: 1_700_000_060)
+        _ = try registry.registerDiscovery(at: workspace, provider: "Claude")
+
+        let document = try registry.load()
+        XCTAssertNil(document.activeProjectID)
+        XCTAssertEqual(document.activeWorkspaceRootID, resolvedPath(workspace))
+        let workspaceRecord = try XCTUnwrap(document.workspaceRoots.first)
+        XCTAssertEqual(workspaceRecord.rootPath, resolvedPath(workspace))
+        XCTAssertEqual(workspaceRecord.discoveredProjectIDs, [
+            resolvedPath(clientRepo) ?? clientRepo.path,
+            resolvedPath(toolsRepo) ?? toolsRepo.path,
+        ])
+        XCTAssertEqual(workspaceRecord.providers["codex"]?.lastActivationSource, .discovery)
+        XCTAssertEqual(workspaceRecord.providers["claude"]?.lastActivationSource, .discovery)
+        XCTAssertEqual(document.projects.map(\.repoPath), [
+            resolvedPath(clientRepo) ?? clientRepo.path,
+            resolvedPath(toolsRepo) ?? toolsRepo.path,
+        ])
+        XCTAssertTrue(document.projects.allSatisfy { $0.lastActivationSource == .discovery })
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: workspace.appendingPathComponent(".orchestrator").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: clientRepo.appendingPathComponent(".orchestrator").path
+        ))
+    }
+
+    func testDiscoveryTreatsSingleGitRepoAsActiveProject() throws {
+        let repo = try makeTempRepo(named: "mouse-assist")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let registry = ProjectRegistry(
+            fileURL: root.appendingPathComponent("projects.json"),
+            now: { timestamp }
+        )
+
+        let classification = try registry.registerDiscovery(at: repo, provider: "Claude")
+        guard case .singleProject(let repoPath) = classification else {
+            return XCTFail("Expected single-project discovery.")
+        }
+
+        XCTAssertEqual(resolvedPath(repoPath), resolvedPath(repo))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".orchestrator/config.toml").path
+        ))
+
+        let document = try registry.load()
+        XCTAssertNil(document.activeWorkspaceRootID)
+        let record = try XCTUnwrap(document.projects.first)
+        XCTAssertEqual(document.activeProjectID, record.id)
+        XCTAssertEqual(record.repoPath, resolvedPath(repo))
+        XCTAssertEqual(record.lastSeenAt, timestamp)
+        XCTAssertEqual(record.lastActivationSource, .programmatic)
+        XCTAssertEqual(record.providers["claude"]?.lastActivationSource, .programmatic)
+        XCTAssertTrue(document.workspaceRoots.isEmpty)
+    }
+
+    func testDiscoveryTreatsGitRepoWithChildReposAsWorkspaceRoot() throws {
+        let parentRepo = try makeTempRepo(named: "platform")
+        let root = parentRepo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let childRepo = parentRepo.appendingPathComponent("client-dashboard", isDirectory: true)
+        try makeGitRepo(at: childRepo)
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+
+        let classification = try registry.registerDiscovery(at: parentRepo, provider: "codex")
+        guard case .workspaceRoot(let rootPath, let childRepoPaths) = classification else {
+            return XCTFail("Expected parent repo to be classified as a workspace root.")
+        }
+
+        XCTAssertEqual(resolvedPath(rootPath), resolvedPath(parentRepo))
+        XCTAssertEqual(childRepoPaths.map { resolvedPath($0) }, [resolvedPath(childRepo)])
+
+        let document = try registry.load()
+        XCTAssertNil(document.activeProjectID)
+        XCTAssertEqual(document.activeWorkspaceRootID, resolvedPath(parentRepo))
+        XCTAssertEqual(document.workspaceRoots.first?.rootPath, resolvedPath(parentRepo))
+        XCTAssertEqual(document.projects.map(\.repoPath), [resolvedPath(childRepo) ?? childRepo.path])
+        XCTAssertNil(document.projects.first { $0.repoPath == resolvedPath(parentRepo) })
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: parentRepo.appendingPathComponent(".orchestrator").path
+        ))
+    }
+
+    func testDiscoveryRejectsNonGitFolderWithNoProjectsWithoutInitializingIt() throws {
+        let directory = try makeTempDirectory(named: "scratch-work")
+        let root = directory.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+
+        XCTAssertThrowsError(try registry.registerDiscovery(at: directory, provider: "codex")) { error in
+            XCTAssertEqual(
+                error as? ProjectRegistry.ActivationError,
+                .noProjectsFound(path: resolvedPath(directory) ?? directory.path)
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".git").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".orchestrator").path
+        ))
+        XCTAssertEqual(try registry.load(), .empty)
+    }
+
     func testActivationRejectsNonGitFolderWithoutInitializingIt() throws {
         let directory = try makeTempDirectory(named: "scratch-work")
         let root = directory.deletingLastPathComponent()
@@ -225,8 +361,13 @@ final class ProjectRegistryTests: XCTestCase {
 
     private func makeTempRepo(named name: String) throws -> URL {
         let repo = try makeTempDirectory(named: name)
-        try runGit(["init", "--quiet"], in: repo)
+        try makeGitRepo(at: repo)
         return repo
+    }
+
+    private func makeGitRepo(at url: URL) throws {
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try runGit(["init", "--quiet"], in: url)
     }
 
     private func makeTempDirectory(named name: String) throws -> URL {
