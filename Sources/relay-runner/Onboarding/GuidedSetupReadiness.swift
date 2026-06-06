@@ -26,14 +26,19 @@ struct GuidedSetupPlan {
             ),
             providerToolsItem(for: provider),
             Item(
+                id: "workspace-folder",
+                title: "Choose workspace folder",
+                detail: "Persist where Relay Runner starts \(provider.displayName) sessions and lets Program Manager discover child git repositories."
+            ),
+            Item(
                 id: "session-readiness",
                 title: "Check session launch readiness",
                 detail: "Verify the selected agent can start with Relay Runner's voice bridge command already queued."
             ),
             Item(
                 id: "board-readiness",
-                title: "Prepare the active repo board",
-                detail: "When the first session starts, initialize the repo-scoped .orchestrator board config from that session's working directory."
+                title: "Prepare project boards",
+                detail: "Use the selected workspace folder to find child repos or activate one repo without asking the model to classify the folder."
             ),
         ]
     }

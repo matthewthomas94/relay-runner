@@ -10,7 +10,7 @@ import SwiftUI
 ///    recorded → nothing shows…
 ///    *unless* the user has never started a session yet, in which case
 ///    the simplified flow lands on Ready ("All Set") so they pick a
-///    working directory before their first session.
+///    workspace folder before their first session.
 ///  * Subsequent launches with missing required setup → simplified flow
 ///    that starts at the first missing step.
 ///  * Relaunch after the app was killed mid-flow → simplified flow.
@@ -24,7 +24,7 @@ final class OnboardingController {
     /// Closure the Ready step calls to render live setup progress
     /// (e.g. "Loading speech model…") — nil means "finished".
     private let setupStatus: () -> String?
-    /// Closure that returns the current configured working directory
+    /// Closure that returns the current configured workspace folder
     /// (empty string = "use the user's home folder"). Read at the moment
     /// the window opens so the Ready-step picker can preload the
     /// previously-chosen value.
@@ -34,7 +34,9 @@ final class OnboardingController {
     /// Claude users get the right path.
     private let getAgentProvider: () -> GeneralConfig.AgentProvider
     private let setAgentProvider: (GeneralConfig.AgentProvider) -> Void
-    /// Closure that persists the user's chosen working directory back
+    private let getModel: () -> String
+    private let setModel: (String) -> Void
+    /// Closure that persists the user's chosen workspace folder back
     /// into AppConfig + ConfigManager. Called from the Ready step's Done
     /// button so a fresh path applies to the next voice session.
     private let setWorkingDirectory: (String) -> Void
@@ -75,7 +77,7 @@ final class OnboardingController {
     /// (either via the menu's Start Session, or by `/relay-bridge` from
     /// a Claude Code session). Until this exists, every launch re-shows
     /// the simplified onboarding so the user lands on the All Set screen
-    /// and explicitly picks a working directory before kicking off.
+    /// and explicitly picks a workspace folder before kicking off.
     private static let sessionRunFlagURL: URL = {
         let support = FileManager.default.urls(for: .applicationSupportDirectory,
                                                in: .userDomainMask).first!
@@ -102,14 +104,18 @@ final class OnboardingController {
          setupStatus: @escaping () -> String? = { nil },
          getWorkingDirectory: @escaping () -> String = { "" },
          getAgentProvider: @escaping () -> GeneralConfig.AgentProvider = { .codex },
+         getModel: @escaping () -> String = { GeneralConfig.defaultModel },
          setAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
+         setModel: @escaping (String) -> Void = { _ in },
          setWorkingDirectory: @escaping (String) -> Void = { _ in },
          startSession: @escaping () -> Void = {}) {
         self.permissions = permissions
         self.setupStatus = setupStatus
         self.getWorkingDirectory = getWorkingDirectory
         self.getAgentProvider = getAgentProvider
+        self.getModel = getModel
         self.setAgentProvider = setAgentProvider
+        self.setModel = setModel
         self.setWorkingDirectory = setWorkingDirectory
         self.startSession = startSession
     }
@@ -202,6 +208,7 @@ final class OnboardingController {
             setupStatus: setupStatus,
             initialWorkingDirectory: getWorkingDirectory(),
             initialAgentProvider: getAgentProvider(),
+            initialModel: getModel(),
             requiresAgentChoice: !hasChosenAgent,
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             resumeState: resumeState,
@@ -209,6 +216,7 @@ final class OnboardingController {
                 self?.setAgentProvider(provider)
                 self?.markAgentChoiceComplete()
             },
+            onSetModel: { [weak self] model in self?.setModel(model) },
             onSetWorkingDirectory: { [weak self] path in self?.setWorkingDirectory(path) },
             onStartSession: { [weak self] in self?.startSession() },
             onFinish: { [weak self] in self?.finish() }

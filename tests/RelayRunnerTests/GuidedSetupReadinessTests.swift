@@ -8,10 +8,14 @@ final class GuidedSetupReadinessTests: XCTestCase {
         let claude = GuidedSetupPlan.items(for: .claude)
 
         XCTAssertEqual(codex.count, claude.count)
+        XCTAssertTrue(codex.contains { $0.id == "workspace-folder" })
+        XCTAssertTrue(claude.contains { $0.id == "workspace-folder" })
         XCTAssertTrue(codex.contains { $0.detail.contains("Codex relay-bridge") })
         XCTAssertTrue(codex.contains { $0.detail.contains("MCP tool registration") })
+        XCTAssertTrue(codex.contains { $0.detail.contains("Program Manager discover") })
         XCTAssertTrue(claude.contains { $0.detail.contains("Claude /relay-bridge") })
         XCTAssertTrue(claude.contains { $0.detail.contains("MCP tool registration") })
+        XCTAssertTrue(claude.contains { $0.detail.contains("Program Manager discover") })
         XCTAssertEqual(GuidedSetupPlan(provider: .codex).primaryActionTitle, "Set Up Codex")
         XCTAssertEqual(GuidedSetupPlan(provider: .claude).primaryActionTitle, "Set Up Claude")
     }

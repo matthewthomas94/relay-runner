@@ -1,10 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// First-launch onboarding flow. Walks through agent choice, microphone
+/// First-launch onboarding flow. Walks through agent choice, workspace folder, microphone
 /// access, optional Input Monitoring, optional parent-app permission guidance,
 /// local Python setup, and agent sign-in.
 struct OnboardingView: View {
+    static let workspaceFolderTitle = "Workspace folder"
+    static let workspaceFolderHelpText = "New voice sessions start in this folder. Program Manager discovers child git repositories when this is a workspace."
 
     @Bindable var permissions: PermissionsManager
     let simplified: Bool
@@ -12,19 +14,21 @@ struct OnboardingView: View {
     /// non-nil on the Ready step, shown in place of "all set" so the user
     /// knows the app isn't fully ready yet.
     let setupStatus: () -> String?
-    /// Currently-configured working directory at the moment the window
+    /// Currently-configured workspace folder at the moment the window
     /// opens. Used to preload the Ready-step path picker so a returning
     /// user sees their last choice.
     let initialWorkingDirectory: String
     /// Configured primary coding agent at the moment the window opens.
     let initialAgentProvider: GeneralConfig.AgentProvider
+    let initialModel: String
     /// When true in the simplified upgrade flow, ask for the provider choice
     /// even if no other setup is missing.
     let requiresAgentChoice: Bool
     let requiresParentPermissionGuidance: Bool
     /// Persists the selected primary coding agent back to AppConfig.
     let onSetAgentProvider: (GeneralConfig.AgentProvider) -> Void
-    /// Persists the user's working-directory pick to AppConfig. Called
+    let onSetModel: (String) -> Void
+    /// Persists the user's workspace-folder pick to AppConfig. Called
     /// from the Ready step's Done button.
     let onSetWorkingDirectory: (String) -> Void
     /// Starts a voice session immediately. Wired to `AppState.newSession`.
@@ -47,7 +51,8 @@ struct OnboardingView: View {
     /// previous choice; an empty string means "use the home folder."
     @State private var workingDirectory: String
     @State private var selectedAgentProvider: GeneralConfig.AgentProvider
-    /// True once the user has actively chosen a working directory on
+    @State private var selectedModel: String
+    /// True once the user has actively chosen a workspace folder on
     /// this opening of the onboarding window — by clicking Browse… or
     /// Use Home Folder. The Done button stays disabled until then so we
     /// can guarantee an explicit pick rather than silently inheriting
@@ -69,10 +74,12 @@ struct OnboardingView: View {
          setupStatus: @escaping () -> String? = { nil },
          initialWorkingDirectory: String = "",
          initialAgentProvider: GeneralConfig.AgentProvider = .codex,
+         initialModel: String = GeneralConfig.defaultModel,
          requiresAgentChoice: Bool = false,
          requiresParentPermissionGuidance: Bool = false,
          resumeState: OnboardingResumeState.Snapshot? = nil,
          onSetAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
+         onSetModel: @escaping (String) -> Void = { _ in },
          onSetWorkingDirectory: @escaping (String) -> Void = { _ in },
          onStartSession: @escaping () -> Void = {},
          onFinish: @escaping () -> Void) {
@@ -81,13 +88,18 @@ struct OnboardingView: View {
         self.setupStatus = setupStatus
         self.initialWorkingDirectory = initialWorkingDirectory
         self.initialAgentProvider = initialAgentProvider
+        self.initialModel = initialModel
         self.requiresAgentChoice = requiresAgentChoice
         self.requiresParentPermissionGuidance = requiresParentPermissionGuidance
         self.onSetAgentProvider = onSetAgentProvider
+        self.onSetModel = onSetModel
         self.onSetWorkingDirectory = onSetWorkingDirectory
         self.onStartSession = onStartSession
         self.onFinish = onFinish
         let startingProvider = resumeState?.provider ?? initialAgentProvider
+        let startingModel = GeneralConfig.isModel(initialModel, validFor: startingProvider)
+            ? initialModel
+            : GeneralConfig.defaultModel
         let startingParentReviewed = resumeState?.parentPermissionsReviewed ?? false
         // Simplified flow (re-prompt after initial onboarding): jump to the
         // first missing setup item. Full flow starts at the welcome screen.
@@ -104,6 +116,7 @@ struct OnboardingView: View {
         _step = State(initialValue: initial)
         _workingDirectory = State(initialValue: initialWorkingDirectory)
         _selectedAgentProvider = State(initialValue: startingProvider)
+        _selectedModel = State(initialValue: startingModel)
         _agentSignedIn = State(initialValue: AgentAuth.isAuthenticated(for: startingProvider))
         _parentPermissionsReviewed = State(initialValue: startingParentReviewed)
     }
@@ -200,6 +213,10 @@ struct OnboardingView: View {
         .onChange(of: selectedAgentProvider) { _, _ in
             persistResume()
         }
+        .onChange(of: selectedModel) { _, new in
+            onSetModel(new)
+            persistResume()
+        }
         .onChange(of: parentPermissionsReviewed) { _, _ in
             persistResume()
         }
@@ -284,7 +301,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Let's get Relay Runner set up.")
                 .font(.title3)
-            Text("First choose the coding agent you want Relay Runner to launch. Then we'll handle the small amount of setup needed for voice.")
+            Text("First choose the coding agent, model, and workspace folder Relay Runner should use. Then we'll handle the small amount of setup needed for voice.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -293,9 +310,9 @@ struct OnboardingView: View {
 
     private var agentChoiceView: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Which coding agent should Relay Runner use first?")
+            Text("Which coding agent should Relay Runner start with?")
                 .font(.title3).bold()
-            Text("Start Session will open this agent by default. You can switch later in Settings.")
+            Text("Start Session will open this agent and model by default. You can switch later in Settings.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -312,6 +329,8 @@ struct OnboardingView: View {
                 )
             }
 
+            modelPicker
+            workingDirectoryPicker
             setupPlanView
 
             Text("macOS privacy permissions cannot be granted silently. The setup run opens the right prompt or Settings pane for each manual step, polls for Relay Runner permission changes, and continues when macOS reports the grant.")
@@ -354,13 +373,34 @@ struct OnboardingView: View {
         )
     }
 
+    private var modelPicker: some View {
+        HStack {
+            Text("Model")
+                .font(.callout).bold()
+            Spacer()
+            Picker("Model", selection: $selectedModel) {
+                ForEach(GeneralConfig.modelOptions(for: selectedAgentProvider)) { option in
+                    Text(option.label).tag(option.value)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 180)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.25))
+        )
+    }
+
     private func agentChoiceRow(provider: GeneralConfig.AgentProvider,
                                 title: String,
                                 detail: String) -> some View {
         Button {
-            selectedAgentProvider = provider
-            agentSignedIn = AgentAuth.isAuthenticated(for: provider)
-            onSetAgentProvider(provider)
+            selectAgentProvider(provider)
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: selectedAgentProvider == provider ? "checkmark.circle.fill" : "circle")
@@ -390,6 +430,16 @@ struct OnboardingView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private func selectAgentProvider(_ provider: GeneralConfig.AgentProvider) {
+        selectedAgentProvider = provider
+        if !GeneralConfig.isModel(selectedModel, validFor: provider) {
+            selectedModel = GeneralConfig.defaultModel
+        }
+        agentSignedIn = AgentAuth.isAuthenticated(for: provider)
+        onSetAgentProvider(provider)
+        onSetModel(selectedModel)
     }
 
     private func permissionView(for kind: PermissionKind) -> some View {
@@ -826,16 +876,16 @@ struct OnboardingView: View {
         )
     }
 
-    /// Path picker on the Ready step. The user must actively click
+    /// Path picker used by first-run setup and the Ready step. The user must actively click
     /// Browse… or Use Home Folder before the Done button enables —
     /// the requirement is that every session start has a deliberate
-    /// directory choice, not silently inherit whatever was last in
+    /// workspace choice, not silently inherit whatever was last in
     /// config. An empty `workingDirectory` string maps to "home" and
     /// is what `ProcessManager` already treats as the default.
     private var workingDirectoryPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Text("Where should the agent run from?")
+                Text(Self.workspaceFolderTitle)
                     .font(.callout).bold()
                 if !hasConfirmedWorkingDirectory {
                     Text("(required)")
@@ -843,7 +893,7 @@ struct OnboardingView: View {
                         .foregroundStyle(.orange)
                 }
             }
-            Text("New voice sessions start in this folder. You can change it later in Settings.")
+            Text(Self.workspaceFolderHelpText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -867,7 +917,7 @@ struct OnboardingView: View {
                             : Color.orange.opacity(0.45))
             )
             HStack(spacing: 8) {
-                Button("Choose Folder\u{2026}") { pickWorkingDirectory() }
+                Button("Choose Workspace\u{2026}") { pickWorkingDirectory() }
                 Button("Use Home Folder") { useHomeWorkingDirectory() }
             }
         }
@@ -893,7 +943,7 @@ struct OnboardingView: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Choose where the agent should run from"
+        panel.message = "Choose the workspace folder where Relay Runner should start sessions"
         if panel.runModal() == .OK, let url = panel.url {
             workingDirectory = url.path
             hasConfirmedWorkingDirectory = true
@@ -951,6 +1001,7 @@ struct OnboardingView: View {
                 beginGuidedSetup()
             }
                 .keyboardShortcut(.defaultAction)
+                .disabled(!hasConfirmedWorkingDirectory)
         case .microphone:
             switch permissions.microphone {
             case .granted:
@@ -1089,6 +1140,8 @@ struct OnboardingView: View {
 
     private func beginGuidedSetup() {
         onSetAgentProvider(selectedAgentProvider)
+        onSetModel(selectedModel)
+        onSetWorkingDirectory(workingDirectory)
         agentSignedIn = AgentAuth.isAuthenticated(for: selectedAgentProvider)
         venvInstaller.install()
         advance()
