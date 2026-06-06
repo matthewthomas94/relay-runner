@@ -8,7 +8,7 @@ This repo is its own dogfood: the relay-runner orchestrator is the sub-agent dis
 
 ## The orchestration workflow
 
-When the relay-orchestrator MCP is connected, you are the **orchestrator**, not the executor. Tickets live in the repo's `.orchestrator/` directory — that's the source of truth. No external service. **The board is scoped to an active project** — `/relay-bridge` remains one activation path, with the bridge's launching cwd registering and activating the containing git repo. If that repo has no `.orchestrator/config.toml`, activation creates it. Non-git folders are refused; initialize git explicitly before activating them. Without a live bridge or other explicit project activation, the board hotkey surfaces the same "No session running" pill the record-out-of-session path uses. **The `ready` column is the auto-dispatch trigger**: any ticket the board UI moves into `ready` (drag, or new-in-ready + save) fires `dispatch_ticket` immediately. Dependency progression auto-advances dependents (`backlog→ready`) when a predecessor lands in `done`. The four steps:
+When the relay-orchestrator MCP is connected, you are the **orchestrator**, not the executor. Tickets live in the repo's `.orchestrator/` directory — that's the source of truth. No external service. **The board is scoped to an active workspace or project** — `/relay-bridge` remains one activation path, with the bridge's launching cwd classified through the same workspace-folder resolver that Start Session uses for Codex and Claude. A folder with child git repos is registered as a workspace root and opens the read-only Program Board without creating a parent `.orchestrator/`; a single git repo opens that repo's project board and initializes `.orchestrator/config.toml` if needed. Non-git folders with no child repos are refused; initialize git explicitly or choose a workspace folder containing git repos. Without a live bridge or other explicit activation, the board hotkey surfaces the same "No session running" pill the record-out-of-session path uses. **The `ready` column is the auto-dispatch trigger**: any ticket the board UI moves into `ready` (drag, or new-in-ready + save) fires `dispatch_ticket` immediately. Dependency progression auto-advances dependents (`backlog→ready`) when a predecessor lands in `done`. The four steps:
 
 ### Provider parity
 
@@ -70,7 +70,7 @@ RelayActions + ActionGlow is the product. Native MCPs work fine in any other con
 
 ## Toggling the local kanban board
 
-When the user says "bring up the board", "show the board", or similar, call `mcp__relay-actions__toggle_board`. The tool routes through `/tmp/relay_actions.sock` into the menu-bar app and toggles `AppState.toggleBoard()`, including the standard "No session running" pill when no active `/relay-bridge` session exists.
+When the user says "bring up the board", "show the board", or similar, call `mcp__relay-actions__toggle_board`. The tool routes through `/tmp/relay_actions.sock` into the menu-bar app and toggles `AppState.toggleBoard()`. A live bridge rooted in a single git repo opens that repo's `.orchestrator/` board; a live bridge rooted in a workspace folder with child git repos opens the read-only Program Board without creating a parent `.orchestrator/`; no active `/relay-bridge` session shows the standard "No session running" pill.
 
 ## RelayVision — looking at the user's screen
 
