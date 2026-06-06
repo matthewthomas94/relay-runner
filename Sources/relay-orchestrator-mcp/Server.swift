@@ -23,6 +23,7 @@ final class MCPServer {
             GetRunTool(),
             CancelRunTool(),
             ProgramStatusTool(),
+            SessionCaptureTool(),
         ]
         var byName: [String: any MCPTool] = [:]
         for tool in registered {

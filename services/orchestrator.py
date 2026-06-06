@@ -41,6 +41,7 @@ from config import load_config
 from graphify_core import GraphifyCoreStore
 from graphify_ingest import ingest_registered_projects
 from program_status import build_program_status
+from session_capture import capture_session_review
 from tickets import scan_repo, write as write_ticket, all_deps_done
 
 PORT_FILE = Path("/tmp/relay_orchestrator.port")
@@ -1169,6 +1170,39 @@ class Daemon:
             limit=limit,
         )
 
+    def session_capture(
+        self,
+        *,
+        repo_path: str | None = None,
+        entries: list[dict[str, Any]] | None = None,
+        ticket_id: str | None = None,
+        run_id: int | str | None = None,
+        provider: str | None = None,
+        context: str | None = None,
+        capture_id: str | None = None,
+        source: str = "session_capture",
+    ) -> dict:
+        store = GraphifyCoreStore(self.graphify_path)
+        counts = ingest_registered_projects(
+            store,
+            registry_path=self.program_registry_path,
+            runs_db_path=self.runs.path,
+            index_files=False,
+        )
+        result = capture_session_review(
+            store,
+            repo_path=repo_path,
+            entries=entries,
+            ticket_id=ticket_id,
+            run_id=run_id,
+            provider=provider,
+            context=context,
+            capture_id=capture_id,
+            source=source,
+        )
+        result["ingest_counts"] = counts
+        return result
+
     def cancel_run(self, run_id: int, *, prune_worktree: bool = True) -> dict:
         run = self.runs.get(run_id)
         if not run:
@@ -1266,6 +1300,20 @@ class Handler(BaseHTTPRequestHandler):
                     provider=provider,
                     limit=limit,
                 )
+
+            if method == "POST" and segments == ["v1", "program", "capture"]:
+                body = _read_body(self)
+                result = self.daemon.session_capture(
+                    repo_path=body.get("repo_path"),
+                    entries=body.get("entries"),
+                    ticket_id=body.get("ticket_id"),
+                    run_id=body.get("run_id"),
+                    provider=body.get("provider"),
+                    context=body.get("context"),
+                    capture_id=body.get("capture_id"),
+                    source=body.get("source") or "session_capture",
+                )
+                return 201, result
 
             if method == "POST" and segments == ["v1", "runs"]:
                 body = _read_body(self)
