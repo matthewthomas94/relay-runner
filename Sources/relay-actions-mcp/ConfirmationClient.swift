@@ -31,6 +31,12 @@ enum BoardToggleOutcome {
     case menuBarUnavailable
 }
 
+enum ProjectActivationOutcome {
+    case activated(repoPath: String)
+    case failed(message: String)
+    case menuBarUnavailable
+}
+
 enum ConfirmationClient {
     static let socketPath = "/tmp/relay_actions.sock"
 
@@ -76,6 +82,35 @@ enum ConfirmationClient {
             return .menuBarUnavailable
         }
         return .delivered
+    }
+
+    static func requestProjectActivation(project: String, provider: String?) -> ProjectActivationOutcome {
+        var payload: [String: Any] = ["type": "activate_project", "project": project]
+        if let provider {
+            payload["provider"] = provider
+        }
+
+        guard let fd = openSocket() else { return .menuBarUnavailable }
+        defer { close(fd) }
+
+        guard sendJSONLine(fd: fd, payload: payload) else {
+            return .menuBarUnavailable
+        }
+
+        setShortReadTimeout(fd: fd)
+        guard let line = readLine(fd: fd),
+              let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let result = json["result"] as? String else {
+            return .menuBarUnavailable
+        }
+
+        if result == "ok", let repoPath = json["repo_path"] as? String {
+            return .activated(repoPath: repoPath)
+        }
+        if result == "error" {
+            return .failed(message: json["message"] as? String ?? "Project activation failed.")
+        }
+        return .menuBarUnavailable
     }
 
     /// Sent once on MCP server startup with the detected parent terminal/IDE

@@ -35,9 +35,9 @@ mkdir -p "$SERVICES_DIR"
 VOICE_FIFO="/tmp/voice_in.fifo"
 BRIDGE_SOCK="/tmp/voice_bridge.sock"
 # Records the cwd of whoever launched the bridge so the menu-bar app can
-# resolve "which repo is the active session pointed at" without a separate
-# registry. The menu-bar Board refuses to open unless this file resolves
-# to a git repo containing .orchestrator/.
+# resolve "which repo is the active session pointed at" as one project
+# activation path. The menu-bar app refuses non-git folders; existing git
+# repos get .orchestrator/config.toml initialized on activation if needed.
 BRIDGE_CWD_FILE="/tmp/voice_bridge.cwd"
 BRIDGE_RUNTIME_FILES=(
     "$VOICE_FIFO"

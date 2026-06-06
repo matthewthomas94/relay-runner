@@ -19,6 +19,10 @@ import Foundation
 /// 3. `{"type":"toggle_board"}` — request/reply command that toggles the
 ///    local kanban board through `AppState.toggleBoard()`.
 ///
+/// 4. `{"type":"activate_project","project":"<path-or-alias>","provider":"codex|claude"}`
+///    — request/reply command that registers and activates a project through
+///    the menu-bar app's project registry.
+///
 /// Stream socket (not datagram) so request/reply works on the same connection
 /// without connection-id juggling. Per-connection accept loop runs as long as
 /// the bus is started.
@@ -41,6 +45,7 @@ actor ActionsConfirmBus {
     /// from "user actually started voice."
     private let onParentPermissionRevoked: ((String, String) async -> Void)?
     private let onToggleBoard: (() async -> Void)?
+    private let onActivateProject: ((String, String?) async -> ProjectActivationReply)?
 
     /// Outstanding `propose_action` requests, keyed by request id. Value is
     /// the connection fd holding open the reply. When the user double-taps
@@ -66,10 +71,12 @@ actor ActionsConfirmBus {
 
     init(stateMachine: StateMachine,
          onParentPermissionRevoked: ((String, String) async -> Void)? = nil,
-         onToggleBoard: (() async -> Void)? = nil) {
+         onToggleBoard: (() async -> Void)? = nil,
+         onActivateProject: ((String, String?) async -> ProjectActivationReply)? = nil) {
         self.stateMachine = stateMachine
         self.onParentPermissionRevoked = onParentPermissionRevoked
         self.onToggleBoard = onToggleBoard
+        self.onActivateProject = onActivateProject
     }
 
     func start() {
@@ -211,6 +218,27 @@ actor ActionsConfirmBus {
             writeReply(fd: fd, requestId: "", result: "ok")
             close(fd)
 
+        case "activate_project":
+            guard let project = json["project"] as? String else {
+                writePayload(fd: fd, payload: [
+                    "result": "error",
+                    "message": "activate_project requires a project path or alias.",
+                ])
+                close(fd)
+                return
+            }
+            let provider = json["provider"] as? String
+            let reply = await onActivateProject?(project, provider) ?? .failed(
+                message: "Relay Runner cannot activate projects right now."
+            )
+            switch reply {
+            case .activated(let repoPath):
+                writePayload(fd: fd, payload: ["result": "ok", "repo_path": repoPath])
+            case .failed(let message):
+                writePayload(fd: fd, payload: ["result": "error", "message": message])
+            }
+            close(fd)
+
         case "propose":
             guard let id = json["id"] as? String,
                   let summary = json["summary"] as? String,
@@ -337,6 +365,10 @@ actor ActionsConfirmBus {
 
     private func writeReply(fd: Int32, requestId: String, result: String) {
         let payload: [String: Any] = ["id": requestId, "result": result]
+        writePayload(fd: fd, payload: payload)
+    }
+
+    private func writePayload(fd: Int32, payload: [String: Any]) {
         guard var data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
             return
         }
@@ -345,4 +377,9 @@ actor ActionsConfirmBus {
             send(fd, ptr.baseAddress, data.count, 0)
         }
     }
+}
+
+enum ProjectActivationReply {
+    case activated(repoPath: String)
+    case failed(message: String)
 }

@@ -71,7 +71,11 @@ final class BoardProjectConfigTests: XCTestCase {
         try Data().write(to: bridgeSocket)
         try Data(repo.path.utf8).write(to: bridgeCwd)
 
-        let project = ProjectResolver.resolve(bridgeSocket: bridgeSocket, bridgeCwdFile: bridgeCwd)
+        let project = ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            registry: makeRegistry(root: root)
+        )
 
         XCTAssertEqual(resolvedPath(project?.repoPath), resolvedPath(repo))
         XCTAssertEqual(
@@ -97,7 +101,11 @@ final class BoardProjectConfigTests: XCTestCase {
         try Data().write(to: bridgeSocket)
         try Data(repo.path.utf8).write(to: bridgeCwd)
 
-        let project = ProjectResolver.resolve(bridgeSocket: bridgeSocket, bridgeCwdFile: bridgeCwd)
+        let project = ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            registry: makeRegistry(root: root)
+        )
 
         XCTAssertEqual(resolvedPath(project?.repoPath), resolvedPath(repo))
         XCTAssertEqual(
@@ -134,7 +142,8 @@ final class BoardProjectConfigTests: XCTestCase {
 
         let project = try XCTUnwrap(ProjectResolver.resolve(
             bridgeSocket: bridgeSocket,
-            bridgeCwdFile: bridgeCwd
+            bridgeCwdFile: bridgeCwd,
+            registry: makeRegistry(root: root)
         ))
         let ticket = try TicketWriter.mint(in: project, status: .backlog, order: 10)
 
@@ -162,7 +171,11 @@ final class BoardProjectConfigTests: XCTestCase {
         try Data().write(to: bridgeSocket)
         try Data(subdirectory.path.utf8).write(to: bridgeCwd)
 
-        let project = ProjectResolver.resolve(bridgeSocket: bridgeSocket, bridgeCwdFile: bridgeCwd)
+        let project = ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            registry: makeRegistry(root: root)
+        )
 
         XCTAssertEqual(resolvedPath(project?.repoPath), resolvedPath(repo))
         XCTAssertFalse(FileManager.default.fileExists(
@@ -170,56 +183,33 @@ final class BoardProjectConfigTests: XCTestCase {
         ))
     }
 
-    func testResolveInitializesNonGitBridgeCwdAndCanMintTickets() throws {
-        let repo = try makeTempDirectory(named: "scratch-work")
-        let root = repo.deletingLastPathComponent()
+    func testResolveRejectsNonGitBridgeCwdWithoutInitializingIt() throws {
+        let directory = try makeTempDirectory(named: "scratch-work")
+        let root = directory.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
         let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
         try Data().write(to: bridgeSocket)
-        try Data(repo.path.utf8).write(to: bridgeCwd)
+        try Data(directory.path.utf8).write(to: bridgeCwd)
 
-        let project = try XCTUnwrap(ProjectResolver.resolve(
+        let project = ProjectResolver.resolve(
             bridgeSocket: bridgeSocket,
-            bridgeCwdFile: bridgeCwd
-        ))
-
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: repo.appendingPathComponent(".git").path
-        ))
-        XCTAssertEqual(
-            try String(
-                contentsOf: repo.appendingPathComponent(".orchestrator/config.toml"),
-                encoding: .utf8
-            ),
-            """
-            prefix = "SW"
-            next_id = 1
-
-            """
+            bridgeCwdFile: bridgeCwd,
+            registry: makeRegistry(root: root)
         )
 
-        let ticket = try TicketWriter.mint(in: project, status: .ready, order: 10)
-        XCTAssertEqual(ticket.id, "SW-1")
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: repo.appendingPathComponent(".orchestrator/SW-1.md").path
+        XCTAssertNil(project)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".git").path
         ))
-        XCTAssertEqual(
-            try String(
-                contentsOf: repo.appendingPathComponent(".orchestrator/config.toml"),
-                encoding: .utf8
-            ),
-            """
-            prefix = "SW"
-            next_id = 2
-
-            """
-        )
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".orchestrator").path
+        ))
     }
 
-    func testResolveInitializesFallbackPrefixForNonAlphanumericBridgeCwd() throws {
-        let repo = try makeTempDirectory(named: "!!!")
+    func testResolveInitializesFallbackPrefixForNonAlphanumericGitRepo() throws {
+        let repo = try makeTempRepo(named: "!!!")
         let root = repo.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -230,7 +220,8 @@ final class BoardProjectConfigTests: XCTestCase {
 
         let project = try XCTUnwrap(ProjectResolver.resolve(
             bridgeSocket: bridgeSocket,
-            bridgeCwdFile: bridgeCwd
+            bridgeCwdFile: bridgeCwd,
+            registry: makeRegistry(root: root)
         ))
         let ticket = try TicketWriter.mint(in: project, status: .backlog, order: 10)
 
@@ -262,7 +253,8 @@ final class BoardProjectConfigTests: XCTestCase {
         let project = ProjectResolver.resolve(
             bridgeSocket: bridgeSocket,
             bridgeCwdFile: bridgeCwd,
-            bridgeSessionAlive: { false }
+            bridgeSessionAlive: { false },
+            registry: makeRegistry(root: root)
         )
 
         XCTAssertNil(project)
@@ -322,6 +314,10 @@ final class BoardProjectConfigTests: XCTestCase {
         let repo = root.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
         return repo
+    }
+
+    private func makeRegistry(root: URL) -> ProjectRegistry {
+        ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
     }
 
     private func runGit(_ arguments: [String], in directory: URL) throws {

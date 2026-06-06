@@ -128,12 +128,10 @@ final class BoardOverlayController {
     func show() {
         guard !isVisible else { return }
 
-        // Board is scoped to the active /relay-bridge session — the bridge's
-        // cwd selects which repo's .orchestrator/ we render. No session,
-        // no project, no board. Reuse the same pill the rest of the app
-        // shows when a user tries to record out of session so the UX is
-        // consistent ("No session running / Double tap Option to start a
-        // new session"). AppState wires the handler at startup.
+        // Board is scoped to the active project. A live /relay-bridge cwd is
+        // the default activation path; explicit activation can also supply
+        // the project. If neither resolves, reuse the same pill the rest of
+        // the app shows when a user tries to record out of session.
         guard let project = ProjectResolver.resolve() else {
             noSessionHandler?()
             return

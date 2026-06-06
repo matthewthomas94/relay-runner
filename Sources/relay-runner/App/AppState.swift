@@ -323,6 +323,18 @@ final class AppState {
         boardOverlay.toggle()
     }
 
+    func activateProject(pathOrAlias: String, provider: String?) -> ProjectActivationReply {
+        do {
+            let project = try ProjectResolver.activateProject(
+                matching: pathOrAlias,
+                provider: provider
+            )
+            return .activated(repoPath: project.repoPath.path)
+        } catch {
+            return .failed(message: "\(error)")
+        }
+    }
+
     // MARK: - Bridge watchdog
 
     private func startBridgeWatchdog() {
@@ -494,6 +506,14 @@ final class AppState {
                 await MainActor.run {
                     self.toggleBoard()
                 }
+            },
+            onActivateProject: { [weak self] pathOrAlias, provider in
+                guard let self else {
+                    return .failed(message: "Relay Runner app state is unavailable.")
+                }
+                return await MainActor.run {
+                    self.activateProject(pathOrAlias: pathOrAlias, provider: provider)
+                }
             }
         )
         actionsBus = actions
@@ -526,10 +546,8 @@ final class AppState {
             return state.particleTheme
         }
         // Reuse the existing "no session" pill when the user tries to open
-        // the board without a /relay-bridge session. Same component the
-        // record-out-of-session path uses (StateMachine.showSessionPrompt
-        // → OverlayController renders .sessionPrompt as a TranscriptionPill
-        // with a 5s auto-dismiss).
+        // the board before any bridge or explicit project activation can
+        // resolve a project.
         boardOverlay.setNoSessionHandler { [weak self] in
             self?.showSessionPromptIfAllowed()
         }
