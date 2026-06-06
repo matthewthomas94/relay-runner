@@ -17,8 +17,10 @@ from graphify_core import (  # noqa: E402
     EDGE_CONTAINS,
     EDGE_DEPENDS_ON,
     EDGE_EXECUTES,
+    EDGE_MENTIONS_FILE,
     EDGE_USES_PROVIDER,
     NODE_AGENT_PROVIDER,
+    NODE_FILE,
     NODE_PROJECT,
     NODE_RUN,
     NODE_TICKET,
@@ -153,6 +155,96 @@ class GraphifyIngestTests(unittest.TestCase):
             ["MA-2"],
         )
 
+    def test_indexes_project_files_incrementally_and_searches_without_live_grep(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "graphify-index")
+        _write_ticket(
+            repo,
+            "GI-1",
+            "Index docs",
+            "ready",
+            body_text="The implementation should touch docs/plan.md for the file index.",
+        )
+        docs_dir = repo / "docs"
+        docs_dir.mkdir()
+        plan = docs_dir / "plan.md"
+        plan.write_text("# Plan\nRareGraphifyNeedle lives here.\n")
+        services_dir = repo / "services"
+        services_dir.mkdir()
+        worker = services_dir / "worker.py"
+        worker.write_text("def run():\n    return 'WorkerNeedle'\n")
+        ignored_dir = repo / ".git"
+        ignored_dir.mkdir()
+        (ignored_dir / "ignored.md").write_text("IgnoredNeedle")
+        deps_dir = repo / "node_modules" / "pkg"
+        deps_dir.mkdir(parents=True)
+        (deps_dir / "dep.js").write_text("DependencyNeedle")
+
+        registry_path = root / "projects.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "activeProjectID": str(repo.resolve()),
+                    "projects": [
+                        {
+                            "id": str(repo.resolve()),
+                            "repoPath": str(repo.resolve()),
+                            "alias": "graphify",
+                            "displayName": "Graphify Index",
+                            "providers": {"codex": {}, "claude": {}},
+                        }
+                    ],
+                }
+            )
+        )
+
+        store = self.make_store()
+        counts = ingest_registered_projects(store, registry_path=registry_path)
+        project = store.find_node(kind=NODE_PROJECT, stable_key=f"repo:{repo.resolve()}")
+        ticket = store.find_node(kind=NODE_TICKET, stable_key=f"repo:{repo.resolve()}:GI-1")
+        self.assertIsNotNone(project)
+        self.assertIsNotNone(ticket)
+        manifests = store.file_manifests(project_id=project["id"])
+
+        self.assertEqual(counts["files_indexed"], 2)
+        self.assertEqual([manifest["rel_path"] for manifest in manifests], ["docs/plan.md", "services/worker.py"])
+        plan_manifest = store.get_file_manifest(project_id=project["id"], rel_path="docs/plan.md")
+        self.assertEqual(plan_manifest["language"], "markdown")
+        self.assertEqual(plan_manifest["size_bytes"], plan.stat().st_size)
+        self.assertIsInstance(plan_manifest["mtime_ns"], int)
+        self.assertIsInstance(plan_manifest["indexed_at"], float)
+        self.assertEqual(store.search_files("RareGraphifyNeedle", project_id=project["id"])[0]["rel_path"], "docs/plan.md")
+        self.assertEqual(store.search_files("IgnoredNeedle", project_id=project["id"]), [])
+        self.assertEqual(store.search_files("DependencyNeedle", project_id=project["id"]), [])
+
+        file_node = store.get_node(plan_manifest["id"])
+        self.assertEqual(file_node["kind"], NODE_FILE)
+        self.assertIsNotNone(store.get_edge(src_id=project["id"], dst_id=file_node["id"], kind=EDGE_CONTAINS))
+        self.assertIsNotNone(store.get_edge(src_id=ticket["id"], dst_id=file_node["id"], kind=EDGE_MENTIONS_FILE))
+
+        unchanged_counts = ingest_registered_projects(store, registry_path=registry_path)
+        unchanged_manifest = store.get_file_manifest(project_id=project["id"], rel_path="docs/plan.md")
+        self.assertEqual(unchanged_counts["files_indexed"], 0)
+        self.assertEqual(unchanged_counts["files_unchanged"], 2)
+        self.assertEqual(unchanged_manifest["indexed_at"], plan_manifest["indexed_at"])
+
+        next_mtime = plan_manifest["mtime_ns"] + 1_000_000_000
+        plan.write_text("# Plan\nChangedGraphifyNeedle replaces the old text.\n")
+        os.utime(plan, ns=(next_mtime, next_mtime))
+        changed_counts = ingest_registered_projects(store, registry_path=registry_path)
+        self.assertEqual(changed_counts["files_indexed"], 1)
+        self.assertEqual(changed_counts["files_unchanged"], 1)
+        self.assertEqual(store.search_files("RareGraphifyNeedle", project_id=project["id"]), [])
+        self.assertEqual(store.search_files("ChangedGraphifyNeedle", project_id=project["id"])[0]["rel_path"], "docs/plan.md")
+
+        worker.unlink()
+        deleted_counts = ingest_registered_projects(store, registry_path=registry_path)
+        worker_manifest = store.get_file_manifest(project_id=project["id"], rel_path="services/worker.py")
+        self.assertEqual(deleted_counts["files_deleted"], 1)
+        self.assertIsNotNone(worker_manifest["deleted_at"])
+        self.assertEqual(store.search_files("WorkerNeedle", project_id=project["id"]), [])
+
 
 def _make_repo(root: Path, name: str) -> Path:
     repo = root / name
@@ -168,6 +260,7 @@ def _write_ticket(
     *,
     depends_on: list[str] | None = None,
     run_id: int | None = None,
+    body_text: str | None = None,
 ) -> Path:
     path = repo / ".orchestrator" / f"{ticket_id}.md"
     deps = "[" + ", ".join(depends_on or []) + "]"
@@ -185,7 +278,7 @@ canceled: false
 
 ## Description
 
-{title}
+{body_text or title}
 """
     )
     return path
