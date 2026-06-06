@@ -22,6 +22,7 @@ final class MCPServer {
             ListRunsTool(),
             GetRunTool(),
             CancelRunTool(),
+            ProgramStatusTool(),
         ]
         var byName: [String: any MCPTool] = [:]
         for tool in registered {

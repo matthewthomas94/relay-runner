@@ -155,6 +155,41 @@ class GraphifyIngestTests(unittest.TestCase):
             ["MA-2"],
         )
 
+    def test_can_skip_project_file_indexing_for_status_refresh(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "status-refresh")
+        _write_ticket(repo, "SR-1", "Summarize status", "ready")
+        docs_dir = repo / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "plan.md").write_text("# Plan\nStatusRefreshNeedle lives here.\n")
+
+        registry_path = root / "projects.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "activeProjectID": str(repo.resolve()),
+                    "projects": [
+                        {
+                            "id": str(repo.resolve()),
+                            "repoPath": str(repo.resolve()),
+                            "displayName": "Status Refresh",
+                        }
+                    ],
+                }
+            )
+        )
+
+        store = self.make_store()
+        counts = ingest_registered_projects(store, registry_path=registry_path, index_files=False)
+        project = store.find_node(kind=NODE_PROJECT, stable_key=f"repo:{repo.resolve()}")
+
+        self.assertEqual(counts["projects"], 1)
+        self.assertEqual(counts["tickets"], 1)
+        self.assertEqual(counts["files_indexed"], 0)
+        self.assertEqual(store.file_manifests(project_id=project["id"]), [])
+        self.assertEqual(store.search_files("StatusRefreshNeedle", project_id=project["id"]), [])
+
     def test_indexes_project_files_incrementally_and_searches_without_live_grep(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: _remove_tree(root))

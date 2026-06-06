@@ -31,6 +31,7 @@ def ingest_registered_projects(
     *,
     registry_path: str | Path,
     runs_db_path: str | Path | None = None,
+    index_files: bool = True,
 ) -> dict[str, int]:
     """Build the Graphify Core program graph from registered project sources.
 
@@ -127,14 +128,15 @@ def ingest_registered_projects(
                 )
                 counts["dependencies"] += 1
 
-        file_counts = _index_project_files(
-            store,
-            project=project,
-            repo_path=Path(repo_path),
-            ticket_nodes=list(repo_ticket_nodes.values()),
-        )
-        for key, value in file_counts.items():
-            counts[key] += value
+        if index_files:
+            file_counts = _index_project_files(
+                store,
+                project=project,
+                repo_path=Path(repo_path),
+                ticket_nodes=list(repo_ticket_nodes.values()),
+            )
+            for key, value in file_counts.items():
+                counts[key] += value
 
         tickets_by_repo[repo_path] = repo_ticket_nodes
 

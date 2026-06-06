@@ -161,6 +161,68 @@ struct CancelRunTool: MCPTool {
     }
 }
 
+// MARK: - program_status
+
+struct ProgramStatusTool: MCPTool {
+    let name = "program_status"
+    let description = """
+        Query cross-project Program Manager status from Graphify Core. Use this for voice/text questions like \
+        what all agents are doing, what is blocked across projects, what is awaiting merge, stale runs, \
+        project summary, or what to look at next. Responses are concise and include project names, paths, \
+        ticket IDs, and Codex/Claude provider labels when known.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "query": [
+                    "type": "string",
+                    "enum": [
+                        "active_work",
+                        "blocked_work",
+                        "awaiting_merge",
+                        "stale_runs",
+                        "summary",
+                        "next",
+                    ],
+                    "description": "Program status view to return. Defaults to summary.",
+                ],
+                "provider": [
+                    "type": "string",
+                    "enum": ["codex", "claude"],
+                    "description": "Optional provider filter. Codex and Claude use the same status schema.",
+                ],
+                "limit": [
+                    "type": "integer",
+                    "description": "Maximum rows to include in the spoken summary. Default: 8.",
+                ],
+            ],
+            "required": [],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        var query: [String] = []
+        if let statusQuery = arguments["query"] as? String, !statusQuery.isEmpty {
+            query.append("query=\(urlEscape(statusQuery))")
+        }
+        if let provider = arguments["provider"] as? String, !provider.isEmpty {
+            query.append("provider=\(urlEscape(provider))")
+        }
+        if let limit = arguments["limit"] as? Int {
+            query.append("limit=\(limit)")
+        }
+
+        let path = "/v1/program/status" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
+        let payload = try await DaemonClient.request(method: "GET", path: path)
+        if let object = payload as? [String: Any], let message = object["message"] as? String {
+            return [["type": "text", "text": message]]
+        }
+        return try toolTextContent(payload)
+    }
+}
+
 // MARK: - URL escaping
 
 private func urlEscape(_ s: String) -> String {

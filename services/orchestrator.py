@@ -38,6 +38,9 @@ from urllib.parse import parse_qs, urlparse
 # Reuse the existing config loader (sibling file).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
+from graphify_core import GraphifyCoreStore
+from graphify_ingest import ingest_registered_projects
+from program_status import build_program_status
 from tickets import scan_repo, write as write_ticket, all_deps_done
 
 PORT_FILE = Path("/tmp/relay_orchestrator.port")
@@ -54,6 +57,10 @@ def _data_root() -> Path:
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
     return base / "relay-runner" / "orchestrator"
+
+
+def _program_registry_path() -> Path:
+    return _data_root().parent / "program" / "projects.json"
 
 
 def _resolve_workspace_root(cfg_value: str) -> Path:
@@ -845,6 +852,8 @@ class Daemon:
 
         data = _data_root()
         self.runs = RunsStore(data / "runs.db", index_path=data / "runs.json")
+        self.graphify_path = data / "graphify.db"
+        self.program_registry_path = _program_registry_path()
 
         # MVP: single concurrency. Held during the dispatch claim → spawn window
         # (release immediately after spawn — the worker runs in its own thread).
@@ -1128,6 +1137,38 @@ class Daemon:
     def get_run(self, run_id: int) -> dict | None:
         return self.runs.get(run_id)
 
+    def program_status(
+        self,
+        *,
+        query: str | None = None,
+        provider: str | None = None,
+        limit: int = 8,
+    ) -> dict:
+        store = GraphifyCoreStore(self.graphify_path)
+        counts = ingest_registered_projects(
+            store,
+            registry_path=self.program_registry_path,
+            runs_db_path=self.runs.path,
+            index_files=False,
+        )
+        if counts["projects"] == 0:
+            return {
+                "query": query or "summary",
+                "provider": provider,
+                "message": (
+                    f"No registered projects found at {self.program_registry_path}. "
+                    "Activate a project by path or start a Relay bridge in a git repo, then ask again."
+                ),
+                "items": [],
+                "counts": {"projects": 0, "items": 0},
+            }
+        return build_program_status(
+            store,
+            query=query,
+            provider=provider,
+            limit=limit,
+        )
+
     def cancel_run(self, run_id: int, *, prune_worktree: bool = True) -> dict:
         run = self.runs.get(run_id)
         if not run:
@@ -1215,6 +1256,16 @@ class Handler(BaseHTTPRequestHandler):
                 state = (query.get("state") or [None])[0]
                 limit = int((query.get("limit") or ["100"])[0])
                 return 200, {"runs": self.daemon.list_runs(state=state, limit=limit)}
+
+            if method == "GET" and segments == ["v1", "program", "status"]:
+                status_query = (query.get("query") or ["summary"])[0]
+                provider = (query.get("provider") or [None])[0]
+                limit = int((query.get("limit") or ["8"])[0])
+                return 200, self.daemon.program_status(
+                    query=status_query,
+                    provider=provider,
+                    limit=limit,
+                )
 
             if method == "POST" and segments == ["v1", "runs"]:
                 body = _read_body(self)
