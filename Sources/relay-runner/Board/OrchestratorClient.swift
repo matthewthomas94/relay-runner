@@ -52,6 +52,49 @@ enum OrchestratorClient {
         return postRequest(path: "/v1/ready-sweep", payload: payload, port: port)
     }
 
+    static func fetchProgramDashboard(limit: Int = 20) async throws -> ProgramDashboardSnapshot {
+        async let summary = fetchProgramStatus(query: "summary", limit: limit)
+        async let active = fetchProgramStatus(query: "active_work", limit: limit)
+        async let ready = fetchProgramStatus(query: "ready_work", limit: limit)
+        async let blocked = fetchProgramStatus(query: "blocked_work", limit: limit)
+        async let awaitingMerge = fetchProgramStatus(query: "awaiting_merge", limit: limit)
+        return try await ProgramDashboardSnapshot(
+            summary: summary,
+            activeWork: active,
+            readyWork: ready,
+            blockedWork: blocked,
+            awaitingMerge: awaitingMerge
+        )
+    }
+
+    static func fetchProgramStatus(query: String, limit: Int = 20) async throws -> ProgramStatusResponse {
+        guard let req = programStatusRequest(query: query, limit: limit, port: readPort()) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        let (data, response) = try await URLSession.shared.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw OrchestratorClientError.badStatus(status, body)
+        }
+        do {
+            return try JSONDecoder().decode(ProgramStatusResponse.self, from: data)
+        } catch {
+            throw OrchestratorClientError.decodeFailed(error.localizedDescription)
+        }
+    }
+
+    static func programStatusRequest(query: String, limit: Int, port: Int) -> URLRequest? {
+        getRequest(
+            path: "/v1/program/status",
+            query: [
+                URLQueryItem(name: "query", value: query),
+                URLQueryItem(name: "limit", value: "\(limit)"),
+            ],
+            port: port
+        )
+    }
+
     private static func postRequest(path: String, payload: [String: Any], port: Int) -> URLRequest? {
         guard let url = URL(string: "http://127.0.0.1:\(port)\(path)"),
               let body = try? JSONSerialization.data(withJSONObject: payload, options: [.withoutEscapingSlashes]) else {
@@ -62,6 +105,20 @@ enum OrchestratorClient {
         req.timeoutInterval = 10
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
+        return req
+    }
+
+    private static func getRequest(path: String, query: [URLQueryItem], port: Int) -> URLRequest? {
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "127.0.0.1"
+        components.port = port
+        components.path = path
+        components.queryItems = query
+        guard let url = components.url else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 10
         return req
     }
 
@@ -86,5 +143,23 @@ enum OrchestratorClient {
             return port
         }
         return defaultPort
+    }
+}
+
+enum OrchestratorClientError: Error, LocalizedError, Equatable {
+    case invalidRequest
+    case badStatus(Int, String)
+    case decodeFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRequest:
+            return "Could not build orchestrator request."
+        case .badStatus(let status, let body):
+            let detail = body.isEmpty ? "No response body." : body
+            return "Orchestrator returned HTTP \(status). \(detail)"
+        case .decodeFailed(let message):
+            return "Could not decode orchestrator response: \(message)"
+        }
     }
 }

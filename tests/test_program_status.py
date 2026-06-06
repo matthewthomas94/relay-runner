@@ -70,6 +70,25 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertIn("RR-2", message)
         self.assertIn("blocked by RR-1", message)
 
+    def test_ready_work_excludes_blocked_and_awaiting_merge_tickets(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        ready = _ticket(store, project, "RR-1", "Ready to dispatch", "ready")
+        blocker = _ticket(store, project, "RR-2", "Finish dependency", "in_progress")
+        blocked = _ticket(store, project, "RR-3", "Blocked ready ticket", "ready")
+        awaiting = _ticket(store, project, "RR-4", "Awaiting review", "ready")
+        _run(store, project, ready, 101, "succeeded", "codex", model="gpt-5")
+        _run(store, project, awaiting, 102, "awaiting_merge", "claude", model="sonnet")
+        store.upsert_edge(src_id=blocker["id"], dst_id=blocked["id"], kind=EDGE_BLOCKS)
+
+        result = build_program_status(store, query="ready_work", now=2000.0)
+
+        self.assertEqual([item["ticket_id"] for item in result["items"]], ["RR-1"])
+        self.assertIn("Ready work: 1 ticket", result["message"])
+        self.assertIn("RR-1", result["message"])
+        self.assertNotIn("RR-3", result["message"])
+        self.assertNotIn("RR-4", result["message"])
+
     def test_no_projects_has_clear_indexing_message(self):
         store = self.make_store()
 
