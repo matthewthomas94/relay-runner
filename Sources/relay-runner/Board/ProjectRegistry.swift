@@ -204,6 +204,14 @@ struct ProjectRegistry {
         return ProjectResolver.LinkedProject(repoPath: repoURL)
     }
 
+    func activeWorkspaceRoot() throws -> RegisteredWorkspaceRoot? {
+        let document = try load()
+        guard let activeWorkspaceRootID = document.activeWorkspaceRootID else {
+            return nil
+        }
+        return document.workspaceRoots.first { $0.id == activeWorkspaceRootID }
+    }
+
     static func defaultFileURL() -> URL {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,

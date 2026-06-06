@@ -27,6 +27,7 @@ final class BoardOverlayController {
     /// Polls the daemon's runs-index file while the board is visible so live
     /// run state (In-progress placement + status pills) tracks within ~1s.
     private var runStatePollTimer: Timer?
+    private var currentProject: ProjectResolver.LinkedProject?
 
     /// Gesture state for the modifier-only ⌃⌥ hotkey. NSEvent doesn't have a
     /// native "hotkey is two modifiers and no letter" abstraction — we drive
@@ -49,6 +50,11 @@ final class BoardOverlayController {
     private var noSessionHandler: (() -> Void)?
     func setNoSessionHandler(_ handler: @escaping () -> Void) {
         self.noSessionHandler = handler
+    }
+
+    private var programBoardHandler: (() -> Void)?
+    func setProgramBoardHandler(_ handler: @escaping () -> Void) {
+        self.programBoardHandler = handler
     }
 
     deinit {
@@ -128,14 +134,21 @@ final class BoardOverlayController {
     func show() {
         guard !isVisible else { return }
 
-        // Board is scoped to the active project. A live /relay-bridge cwd is
-        // the default activation path; explicit activation can also supply
-        // the project. If neither resolves, reuse the same pill the rest of
-        // the app shows when a user tries to record out of session.
-        guard let project = ProjectResolver.resolve() else {
+        // Board routing follows the active workspace/project distinction: a
+        // single project opens its repo board, while a workspace root opens
+        // Program Board without creating a parent `.orchestrator/`.
+        let project: ProjectResolver.LinkedProject
+        switch ProjectResolver.resolveBoardRoute() {
+        case .project(let resolvedProject):
+            project = resolvedProject
+        case .programBoard:
+            programBoardHandler?()
+            return
+        case .unavailable:
             noSessionHandler?()
             return
         }
+        currentProject = project
 
         let p = panel ?? BoardOverlayPanel()
         if let screen = currentMouseScreen() {
@@ -184,6 +197,7 @@ final class BoardOverlayController {
             setPanelKeyEligible(false)
         }
         model.dragState = nil
+        currentProject = nil
         stopThemePoll()
         stopRunStatePoll()
         panel?.orderOut(nil)
@@ -250,7 +264,7 @@ final class BoardOverlayController {
     }
 
     private func commitEditor(_ draft: TicketDraft) {
-        guard let project = ProjectResolver.resolve() else { cancelEditor(); return }
+        guard let project = currentProject else { cancelEditor(); return }
         let trimmedTitle = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let titleToSave = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
         let withDescription = TicketWriter.ticket(
@@ -293,7 +307,7 @@ final class BoardOverlayController {
     }
 
     private func handleCreate(in status: Ticket.Status) {
-        guard let project = ProjectResolver.resolve() else { return }
+        guard let project = currentProject else { return }
         let existing = model.tickets.filter { $0.status == status }
         let nextOrder = (existing.map(\.order).max() ?? 0) + 10
         do {
@@ -311,7 +325,7 @@ final class BoardOverlayController {
     }
 
     private func handleDelete(_ ticket: Ticket) {
-        guard let project = ProjectResolver.resolve() else { return }
+        guard let project = currentProject else { return }
         do {
             try TicketWriter.delete(ticket.id, in: project)
         } catch {
@@ -326,7 +340,7 @@ final class BoardOverlayController {
     /// within the sorted column. Renumbers the column's `order` values so
     /// the new layout is stable on next load.
     private func handleDrop(ticketId: String, to status: Ticket.Status, insertIndex: Int) {
-        guard let project = ProjectResolver.resolve() else { return }
+        guard let project = currentProject else { return }
         guard let dragged = model.tickets.first(where: { $0.id == ticketId }) else { return }
 
         // Build the new column order. `insertIndex` is the index in the
@@ -403,12 +417,12 @@ final class BoardOverlayController {
     // MARK: - Helpers
 
     private func loadTickets() -> [Ticket] {
-        guard let project = ProjectResolver.resolve() else { return [] }
+        guard let project = currentProject else { return [] }
         return ProjectResolver.scanTickets(in: project)
     }
 
     private func loadRunStates() -> [String: RunState] {
-        guard let project = ProjectResolver.resolve() else { return [:] }
+        guard let project = currentProject else { return [:] }
         return RunStateStore.load(forRepo: project.repoPath)
     }
 
