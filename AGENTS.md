@@ -17,6 +17,14 @@ The user thinks of this session as the **orchestrator**, not the executor. Ticke
 
 A small change you can do inline in this session **without going through the board** is fine — dispatching has cold-start cost, eats agent quota, and offers no coordination. Promote to `ready` when the work is large enough that the round-trip pays off, or when you want an in-repo audit trail (ticket + run log) without writing it by hand.
 
+## Program Manager capture
+
+When the user wants to record a session review, project status, shipped work, started work, blockers, risks, ideas, decisions, or notes for program tracking, use the native `mcp__relay-orchestrator__session_capture` tool. Do not direct the user to the legacy PM-sync command or produce PM-sync YAML.
+
+Codex and Claude use the same capture schema. Pass concise structured entries and any relevant conversation context explicitly; the daemon does not scrape either provider's transcript history.
+
+Legacy `.pm/project-id` files are not required for Relay Runner program capture. Existing `.pm/` directories in user repos may remain for historical reference and should not be deleted automatically.
+
 ### Things to avoid
 
 - Don't drag tickets to `ready` casually — promotion equals dispatch. Refine first.
@@ -85,4 +93,4 @@ This rule overrides the generic "tier of tool" guidance the computer-use MCP inj
 - `docs/specs/relay-actions.md` — Relay Actions feature spec
 - `docs/specs/orchestrator-tickets.md` — local board ticket schema
 
-For the wider behavioral guidelines (Karpathy rules, project-ledger sync, etc.), see `~/.codex/AGENTS.md` — those still apply on top of this.
+For wider behavioral guidelines such as the Karpathy rules, see `~/.codex/AGENTS.md`; this repo's native Program Manager capture guidance overrides any older global PM-sync or project-ledger guidance.

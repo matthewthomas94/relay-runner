@@ -30,12 +30,14 @@ ACTIONS = [
 ]
 ORCHESTRATOR = [
     "orchestration-workflow",
+    "program-manager-capture",
     "recovery-401-auth",
     "naming",
 ]
 # Order the chunks appear in CLAUDE.md's generated block.
 CLAUDE_MD = [
     "orchestration-workflow",
+    "program-manager-capture",
     "recovery-401-auth",
     "relay-actions-vs-computer-use",
     "board-hotkey",
