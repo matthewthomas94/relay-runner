@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 NODE_PROJECT = "Project"
 NODE_INITIATIVE = "Initiative"
@@ -28,6 +29,7 @@ NODE_DECISION = "Decision"
 NODE_PROGRAM_EVENT = "ProgramEvent"
 NODE_IDEA = "Idea"
 NODE_STATUS = "Status"
+NODE_FILE = "File"
 
 EDGE_BELONGS_TO = "belongs_to"
 EDGE_CONTAINS = "contains"
@@ -37,6 +39,7 @@ EDGE_EXECUTES = "executes"
 EDGE_AWAITS_MERGE = "awaits_merge"
 EDGE_RELATED_TO = "related_to"
 EDGE_USES_PROVIDER = "uses_provider"
+EDGE_MENTIONS_FILE = "mentions_file"
 
 CORE_NODE_KINDS = frozenset(
     {
@@ -50,6 +53,7 @@ CORE_NODE_KINDS = frozenset(
         NODE_PROGRAM_EVENT,
         NODE_IDEA,
         NODE_STATUS,
+        NODE_FILE,
     }
 )
 
@@ -63,7 +67,14 @@ CORE_EDGE_KINDS = frozenset(
         EDGE_AWAITS_MERGE,
         EDGE_RELATED_TO,
         EDGE_USES_PROVIDER,
+        EDGE_MENTIONS_FILE,
     }
+)
+
+CODE_INDEX_EXTENSION_POINT = (
+    "Graphify's MVP code index is limited to file manifests and lexical text chunks. "
+    "Tree-sitter, SCIP, and vector indexes should add derived tables beside these "
+    "records instead of changing Program Manager graph semantics."
 )
 
 
@@ -98,6 +109,52 @@ class GraphifyCoreStore:
         ON graph_edges(kind, src_id);
     CREATE INDEX IF NOT EXISTS idx_graph_edges_kind_dst
         ON graph_edges(kind, dst_id);
+
+    CREATE TABLE IF NOT EXISTS file_manifest (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        rel_path TEXT NOT NULL,
+        language TEXT,
+        size_bytes INTEGER NOT NULL,
+        mtime_ns INTEGER,
+        content_hash TEXT,
+        indexed_at REAL NOT NULL,
+        deleted_at REAL,
+        UNIQUE(project_id, rel_path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_manifest_project_path
+        ON file_manifest(project_id, rel_path);
+
+    CREATE TABLE IF NOT EXISTS file_chunks (
+        id INTEGER PRIMARY KEY,
+        file_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        rel_path TEXT NOT NULL,
+        chunk_ordinal INTEGER NOT NULL,
+        start_line INTEGER,
+        end_line INTEGER,
+        text TEXT NOT NULL,
+        FOREIGN KEY(file_id) REFERENCES file_manifest(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_chunks_project_file
+        ON file_chunks(project_id, file_id);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS file_chunks_fts USING fts5(
+        text,
+        rel_path UNINDEXED,
+        project_id UNINDEXED,
+        content='file_chunks',
+        content_rowid='id'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS file_chunks_ai AFTER INSERT ON file_chunks BEGIN
+        INSERT INTO file_chunks_fts(rowid, text, rel_path, project_id)
+        VALUES (new.id, new.text, new.rel_path, new.project_id);
+    END;
+    CREATE TRIGGER IF NOT EXISTS file_chunks_ad AFTER DELETE ON file_chunks BEGIN
+        INSERT INTO file_chunks_fts(file_chunks_fts, rowid, text, rel_path, project_id)
+        VALUES ('delete', old.id, old.text, old.rel_path, old.project_id);
+    END;
     """
 
     def __init__(self, path: str | os.PathLike[str]):
@@ -415,6 +472,207 @@ class GraphifyCoreStore:
             if ticket["id"] in awaiting_ids or _normalize_key(_node_state(ticket)) in awaiting_states
         ]
 
+    def get_file_manifest(self, *, project_id: str, rel_path: str) -> dict[str, Any] | None:
+        project_id = _require_text(project_id, "project_id")
+        rel_path = _require_text(rel_path, "rel_path")
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM file_manifest WHERE project_id = ? AND rel_path = ?",
+                (project_id, rel_path),
+            ).fetchone()
+        return _file_manifest_from_row(row) if row else None
+
+    def file_manifests(
+        self,
+        *,
+        project_id: str | None = None,
+        include_deleted: bool = False,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if project_id is not None:
+            clauses.append("project_id = ?")
+            values.append(project_id)
+        if not include_deleted:
+            clauses.append("deleted_at IS NULL")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM file_manifest{where} ORDER BY project_id, rel_path",
+                values,
+            ).fetchall()
+        return [_file_manifest_from_row(row) for row in rows]
+
+    def upsert_file_index(
+        self,
+        *,
+        project_id: str,
+        rel_path: str,
+        language: str | None,
+        size_bytes: int,
+        mtime_ns: int | None,
+        chunks: Iterable[dict[str, Any]],
+        content_hash: str | None = None,
+    ) -> dict[str, Any]:
+        project_id = _require_text(project_id, "project_id")
+        rel_path = _require_text(rel_path, "rel_path")
+        file_id = _default_node_id(NODE_FILE, _file_stable_key(project_id, rel_path))
+        now = time.time()
+        manifest_body = {
+            "rel_path": rel_path,
+            "language": language,
+            "size_bytes": int(size_bytes),
+            "mtime_ns": mtime_ns,
+            "content_hash": content_hash,
+            "indexed_at": now,
+            "deleted_at": None,
+            "index_kind": "manifest_text",
+        }
+        file_node = self.upsert_node(
+            kind=NODE_FILE,
+            stable_key=_file_stable_key(project_id, rel_path),
+            project_id=project_id,
+            title=rel_path,
+            body=manifest_body,
+            node_id=file_id,
+        )
+        self.upsert_edge(src_id=file_node["id"], dst_id=project_id, kind=EDGE_BELONGS_TO)
+        self.upsert_edge(src_id=project_id, dst_id=file_node["id"], kind=EDGE_CONTAINS)
+
+        chunk_rows = list(chunks)
+        with self._conn() as conn:
+            conn.execute("BEGIN")
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO file_manifest(
+                        id, project_id, rel_path, language, size_bytes,
+                        mtime_ns, content_hash, indexed_at, deleted_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(project_id, rel_path) DO UPDATE SET
+                        id = excluded.id,
+                        language = excluded.language,
+                        size_bytes = excluded.size_bytes,
+                        mtime_ns = excluded.mtime_ns,
+                        content_hash = excluded.content_hash,
+                        indexed_at = excluded.indexed_at,
+                        deleted_at = NULL
+                    """,
+                    (
+                        file_node["id"],
+                        project_id,
+                        rel_path,
+                        language,
+                        int(size_bytes),
+                        mtime_ns,
+                        content_hash,
+                        now,
+                    ),
+                )
+                conn.execute("DELETE FROM file_chunks WHERE file_id = ?", (file_node["id"],))
+                for index, chunk in enumerate(chunk_rows):
+                    conn.execute(
+                        """
+                        INSERT INTO file_chunks(
+                            file_id, project_id, rel_path, chunk_ordinal,
+                            start_line, end_line, text
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            file_node["id"],
+                            project_id,
+                            rel_path,
+                            int(chunk.get("chunk_ordinal", index)),
+                            chunk.get("start_line"),
+                            chunk.get("end_line"),
+                            str(chunk.get("text") or ""),
+                        ),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return self.get_file_manifest(project_id=project_id, rel_path=rel_path) or manifest_body
+
+    def mark_missing_files_deleted(self, *, project_id: str, seen_rel_paths: set[str]) -> int:
+        project_id = _require_text(project_id, "project_id")
+        now = time.time()
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, rel_path
+                FROM file_manifest
+                WHERE project_id = ? AND deleted_at IS NULL
+                """,
+                (project_id,),
+            ).fetchall()
+            stale = [row for row in rows if row["rel_path"] not in seen_rel_paths]
+            if not stale:
+                return 0
+            conn.execute("BEGIN")
+            try:
+                for row in stale:
+                    conn.execute("DELETE FROM file_chunks WHERE file_id = ?", (row["id"],))
+                    conn.execute(
+                        "UPDATE file_manifest SET deleted_at = ? WHERE id = ?",
+                        (now, row["id"]),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return len(stale)
+
+    def search_files(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        match_query = _fts_query(query)
+        if not match_query:
+            return []
+
+        clauses = ["file_chunks_fts MATCH ?", "m.deleted_at IS NULL"]
+        values: list[Any] = [match_query]
+        if project_id is not None:
+            clauses.append("c.project_id = ?")
+            values.append(project_id)
+        values.append(int(limit))
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    c.file_id,
+                    c.project_id,
+                    c.rel_path,
+                    c.chunk_ordinal,
+                    c.start_line,
+                    c.end_line,
+                    c.text,
+                    m.language,
+                    m.size_bytes,
+                    m.mtime_ns,
+                    m.content_hash,
+                    m.indexed_at,
+                    bm25(file_chunks_fts) AS rank
+                FROM file_chunks_fts
+                JOIN file_chunks c ON c.id = file_chunks_fts.rowid
+                JOIN file_manifest m ON m.id = c.file_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY rank, c.rel_path, c.chunk_ordinal
+                LIMIT ?
+                """,
+                values,
+            ).fetchall()
+        return [_file_search_from_row(row) for row in rows]
+
 
 def _default_node_id(kind: str, stable_key: str) -> str:
     return f"{kind.lower()}:{stable_key}"
@@ -489,3 +747,47 @@ def _node_state(node: dict[str, Any]) -> str:
 
 def _normalize_key(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _file_stable_key(project_id: str, rel_path: str) -> str:
+    return f"{project_id}:{rel_path}"
+
+
+def _file_manifest_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "project_id": row["project_id"],
+        "rel_path": row["rel_path"],
+        "language": row["language"],
+        "size_bytes": row["size_bytes"],
+        "mtime_ns": row["mtime_ns"],
+        "content_hash": row["content_hash"],
+        "indexed_at": row["indexed_at"],
+        "deleted_at": row["deleted_at"],
+    }
+
+
+def _file_search_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "file_id": row["file_id"],
+        "project_id": row["project_id"],
+        "rel_path": row["rel_path"],
+        "chunk_ordinal": row["chunk_ordinal"],
+        "start_line": row["start_line"],
+        "end_line": row["end_line"],
+        "text": row["text"],
+        "language": row["language"],
+        "size_bytes": row["size_bytes"],
+        "mtime_ns": row["mtime_ns"],
+        "content_hash": row["content_hash"],
+        "indexed_at": row["indexed_at"],
+        "rank": row["rank"],
+    }
+
+
+_FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _fts_query(query: str) -> str:
+    tokens = _FTS_TOKEN_RE.findall(str(query or ""))
+    return " AND ".join(f'"{token}"' for token in tokens[:8])

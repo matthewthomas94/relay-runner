@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from graphify_core import (
     EDGE_CONTAINS,
     EDGE_DEPENDS_ON,
     EDGE_EXECUTES,
+    EDGE_MENTIONS_FILE,
     EDGE_USES_PROVIDER,
     NODE_AGENT_PROVIDER,
     NODE_PROJECT,
@@ -47,6 +49,9 @@ def ingest_registered_projects(
         "dependencies": 0,
         "runs": 0,
         "providers": 0,
+        "files_indexed": 0,
+        "files_unchanged": 0,
+        "files_deleted": 0,
     }
     projects_by_repo: dict[str, dict[str, Any]] = {}
     tickets_by_repo: dict[str, dict[str, dict[str, Any]]] = {}
@@ -122,6 +127,15 @@ def ingest_registered_projects(
                 )
                 counts["dependencies"] += 1
 
+        file_counts = _index_project_files(
+            store,
+            project=project,
+            repo_path=Path(repo_path),
+            ticket_nodes=list(repo_ticket_nodes.values()),
+        )
+        for key, value in file_counts.items():
+            counts[key] += value
+
         tickets_by_repo[repo_path] = repo_ticket_nodes
 
     for run in _read_runs(Path(runs_db_path)) if runs_db_path is not None else []:
@@ -188,6 +202,259 @@ def _load_registry(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+_IGNORED_CODE_INDEX_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".orchestrator",
+    ".relay",
+    ".build",
+    ".dart_tool",
+    ".gradle",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".swiftpm",
+    ".venv",
+    "__pycache__",
+    "build",
+    "DerivedData",
+    "dist",
+    "node_modules",
+    "Pods",
+    "target",
+    "vendor",
+}
+
+_INDEXABLE_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".css",
+    ".go",
+    ".h",
+    ".hpp",
+    ".html",
+    ".java",
+    ".js",
+    ".json",
+    ".jsx",
+    ".kt",
+    ".m",
+    ".md",
+    ".mm",
+    ".plist",
+    ".py",
+    ".rb",
+    ".rs",
+    ".scss",
+    ".sh",
+    ".sql",
+    ".swift",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+
+_INDEXABLE_NAMES = {
+    ".gitignore",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "Dockerfile",
+    "Makefile",
+    "Package.swift",
+    "README",
+    "README.md",
+}
+
+_LANGUAGE_BY_SUFFIX = {
+    ".c": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".css": "css",
+    ".go": "go",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".html": "html",
+    ".java": "java",
+    ".js": "javascript",
+    ".json": "json",
+    ".jsx": "javascript",
+    ".kt": "kotlin",
+    ".m": "objective-c",
+    ".md": "markdown",
+    ".mm": "objective-cpp",
+    ".plist": "plist",
+    ".py": "python",
+    ".rb": "ruby",
+    ".rs": "rust",
+    ".scss": "scss",
+    ".sh": "shell",
+    ".sql": "sql",
+    ".swift": "swift",
+    ".toml": "toml",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".txt": "text",
+    ".xml": "xml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+}
+
+_MAX_INDEX_BYTES = 1_000_000
+_CHUNK_LINES = 120
+
+
+def _index_project_files(
+    store: GraphifyCoreStore,
+    *,
+    project: dict[str, Any],
+    repo_path: Path,
+    ticket_nodes: list[dict[str, Any]],
+) -> dict[str, int]:
+    counts = {"files_indexed": 0, "files_unchanged": 0, "files_deleted": 0}
+    if not repo_path.is_dir():
+        return counts
+
+    seen: set[str] = set()
+    for path in _iter_indexable_files(repo_path):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_size > _MAX_INDEX_BYTES:
+            continue
+
+        rel_path = path.relative_to(repo_path).as_posix()
+        seen.add(rel_path)
+        mtime_ns = _mtime_ns(stat)
+        manifest = store.get_file_manifest(project_id=project["id"], rel_path=rel_path)
+        if (
+            manifest is not None
+            and manifest["deleted_at"] is None
+            and manifest["size_bytes"] == stat.st_size
+            and manifest["mtime_ns"] == mtime_ns
+        ):
+            counts["files_unchanged"] += 1
+            file_node = store.get_node(manifest["id"])
+            if file_node is not None:
+                _link_ticket_file_mentions(store, ticket_nodes, file_node=file_node, rel_path=rel_path)
+            continue
+
+        text = _read_text_file(path)
+        if text is None:
+            seen.discard(rel_path)
+            continue
+        manifest = store.upsert_file_index(
+            project_id=project["id"],
+            rel_path=rel_path,
+            language=_language_for_path(path),
+            size_bytes=stat.st_size,
+            mtime_ns=mtime_ns,
+            chunks=_chunk_text(text),
+        )
+        counts["files_indexed"] += 1
+        file_node = store.get_node(manifest["id"])
+        if file_node is not None:
+            _link_ticket_file_mentions(store, ticket_nodes, file_node=file_node, rel_path=rel_path)
+
+    counts["files_deleted"] = store.mark_missing_files_deleted(
+        project_id=project["id"],
+        seen_rel_paths=seen,
+    )
+    return counts
+
+
+def _iter_indexable_files(repo_path: Path):
+    for dirpath, dirnames, filenames in os.walk(repo_path):
+        dirnames[:] = [
+            dirname
+            for dirname in sorted(dirnames)
+            if dirname not in _IGNORED_CODE_INDEX_DIRS and not dirname.endswith(".app")
+        ]
+        for filename in sorted(filenames):
+            path = Path(dirpath) / filename
+            if path.is_symlink():
+                continue
+            if _is_indexable_path(path):
+                yield path
+
+
+def _is_indexable_path(path: Path) -> bool:
+    name = path.name
+    if name in _INDEXABLE_NAMES:
+        return True
+    if name.startswith("."):
+        return False
+    return path.suffix.lower() in _INDEXABLE_SUFFIXES
+
+
+def _read_text_file(path: Path) -> str | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if b"\0" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _chunk_text(text: str) -> list[dict[str, Any]]:
+    lines = text.splitlines()
+    chunks: list[dict[str, Any]] = []
+    for start in range(0, len(lines), _CHUNK_LINES):
+        chunk_lines = lines[start : start + _CHUNK_LINES]
+        chunks.append(
+            {
+                "chunk_ordinal": len(chunks),
+                "start_line": start + 1,
+                "end_line": start + len(chunk_lines),
+                "text": "\n".join(chunk_lines),
+            }
+        )
+    if not chunks and text:
+        chunks.append({"chunk_ordinal": 0, "start_line": 1, "end_line": 1, "text": text})
+    return chunks
+
+
+def _language_for_path(path: Path) -> str:
+    if path.name in {"Dockerfile", "Makefile"}:
+        return path.name.lower()
+    if path.name == "Package.swift":
+        return "swift"
+    return _LANGUAGE_BY_SUFFIX.get(path.suffix.lower(), "text")
+
+
+def _mtime_ns(stat: os.stat_result) -> int:
+    return int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)))
+
+
+def _link_ticket_file_mentions(
+    store: GraphifyCoreStore,
+    ticket_nodes: list[dict[str, Any]],
+    *,
+    file_node: dict[str, Any],
+    rel_path: str,
+) -> None:
+    for ticket_node in ticket_nodes:
+        body = ticket_node.get("body", {})
+        haystack = f"{ticket_node.get('title') or ''}\n{body.get('markdown') or ''}"
+        if rel_path in haystack:
+            store.upsert_edge(
+                src_id=ticket_node["id"],
+                dst_id=file_node["id"],
+                kind=EDGE_MENTIONS_FILE,
+                body={"source": "ticket_markdown", "rel_path": rel_path},
+            )
 
 
 def _repo_path(record: dict[str, Any]) -> str | None:
