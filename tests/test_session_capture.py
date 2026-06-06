@@ -123,6 +123,28 @@ class SessionCaptureTests(unittest.TestCase):
         self.assertEqual(ticket["body"]["ticket_id"], "CD-7")
         self.assertIsNotNone(store.get_edge(src_id=event["id"], dst_id=ticket["id"], kind=EDGE_RELATED_TO))
 
+    def test_capture_normalizes_claude_provider_metadata(self):
+        store = self.make_store()
+        repo = Path(tempfile.mkdtemp()) / "relay-runner"
+        self.addCleanup(lambda: _remove_tree(repo.parent))
+        repo.mkdir()
+
+        result = capture_session_review(
+            store,
+            repo_path=repo,
+            provider="Claude Code",
+            context="Claude parity workspace verification.",
+            capture_id="cap-claude-parity",
+            occurred_at=1000.0,
+            entries=[{"kind": "note", "title": "Claude capture verified"}],
+        )
+
+        event = store.find_node(kind=NODE_PROGRAM_EVENT, stable_key="capture:cap-claude-parity:0")
+        self.assertEqual(result["provider"], "claude")
+        self.assertIn("(claude)", result["message"])
+        self.assertEqual(event["body"]["provider_key"], "claude")
+        self.assertEqual(event["body"]["context"], "Claude parity workspace verification.")
+
 
 def _write_ticket(repo: Path, ticket_id: str, title: str, status: str) -> None:
     path = repo / ".orchestrator" / f"{ticket_id}.md"
