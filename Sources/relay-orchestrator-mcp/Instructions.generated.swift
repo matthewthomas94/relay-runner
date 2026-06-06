@@ -25,6 +25,14 @@ A small change you can do inline in this session **without going through the boa
 - Don't let a sub-agent edit `.orchestrator/` files other than its own ticket. That boundary is enforced in `services/orchestrator_workflow.md`. The daemon writes ticket files in exactly one case: flipping a dependent from `backlog` to `ready` after its predecessor finishes.
 - Don't ad-hoc fix the bundled `.app`'s scripts. The DMG-build action is the source of truth; commit fixes upstream and let the action rebuild.
 
+## Program Manager capture
+
+When the user wants to record a session review, project status, shipped work, started work, blockers, risks, ideas, decisions, or notes for program tracking, use the native `mcp__relay-orchestrator__session_capture` tool. Do not direct the user to the legacy PM-sync command or produce PM-sync YAML.
+
+Codex and Claude use the same capture schema. Pass concise structured entries and any relevant conversation context explicitly; the daemon does not scrape either provider's transcript history.
+
+Legacy `.pm/project-id` files are not required for Relay Runner program capture. Existing `.pm/` directories in user repos may remain for historical reference and should not be deleted automatically.
+
 ## Recovery patterns
 
 - **Codex worker fails with an authentication error.** Open a Terminal window with `codex login` running, wait for the user to finish sign-in, then re-dispatch the failed runs:

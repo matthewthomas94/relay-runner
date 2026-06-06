@@ -63,9 +63,9 @@ Voice equivalents work too: "what are the agents doing?", "how's MA-6?", "stop M
 
 ## Capture a session review
 
-Use `session_capture` to write end-of-session review notes directly into Graphify Core instead of emitting PM-sync YAML. The tool accepts a `repo_path`, optional `ticket_id` / `run_id` / `provider`, and structured `entries` whose `kind` can be `shipped`, `started`, `note`, `decision`, `blocker`, `risk`, `idea`, or `status`.
+Use `session_capture` to write end-of-session review notes directly into Graphify Core. This replaces the legacy PM-sync copy/paste YAML workflow; do not ask users to use the legacy PM-sync command for Relay Runner program tracking. The tool accepts a `repo_path`, optional `ticket_id` / `run_id` / `provider`, and structured `entries` whose `kind` can be `shipped`, `started`, `note`, `decision`, `blocker`, `risk`, `idea`, or `status`.
 
-Capture creates ProgramEvent, Decision, Risk, Idea, and Status nodes and links them to project, ticket, and run nodes when the repo, ticket, or run evidence is available. It does not require `.pm/project-id`; if the repo has `.orchestrator` ticket files, capture can use that evidence directly.
+Capture creates ProgramEvent, Decision, Risk, Idea, and Status nodes and links them to project, ticket, and run nodes when the repo, ticket, or run evidence is available. It does not require `.pm/project-id`; that file is legacy metadata, and if the repo has `.orchestrator` ticket files, capture can use that evidence directly. Existing `.pm/` directories in user repos are not deleted automatically and can remain for historical reference unless the user chooses a separate manual cleanup.
 
 Codex and Claude use the same capture schema. The daemon does not scrape either provider's transcript history, so the calling session should pass concise structured entries and any relevant conversation context explicitly.
 

@@ -228,10 +228,10 @@ struct ProgramStatusTool: MCPTool {
 struct SessionCaptureTool: MCPTool {
     let name = "session_capture"
     let description = """
-        Capture a meaningful work-session review directly into Graphify Core. Use this instead of PM-sync \
-        copy/paste YAML when the user wants to record shipped work, started work, blockers, ideas, decisions, \
-        status updates, or notes. The tool writes ProgramEvent, Decision, Risk, Idea, and Status nodes, then \
-        links them to project, ticket, and run nodes when repo_path, ticket_id, or run_id evidence is available. \
+        Capture a meaningful work-session review directly into Graphify Core. Use this in place of the legacy \
+        PM-sync copy/paste YAML workflow when the user wants to record shipped work, started work, blockers, \
+        ideas, decisions, status updates, or notes. The tool writes ProgramEvent, Decision, Risk, Idea, and \
+        Status nodes, then links them to project, ticket, and run nodes when repo_path, ticket_id, or run_id evidence is available. \
         Codex and Claude use the same schema; the daemon does not scrape either provider's transcript history, \
         so pass concise structured entries and any relevant conversation context explicitly.
         """
@@ -242,7 +242,7 @@ struct SessionCaptureTool: MCPTool {
             "properties": [
                 "repo_path": [
                     "type": "string",
-                    "description": "Absolute path to the repo/project being reviewed. Does not require .pm/project-id.",
+                    "description": "Absolute path to the repo/project being reviewed. Legacy .pm/project-id metadata is not required.",
                 ],
                 "entries": [
                     "type": "array",
