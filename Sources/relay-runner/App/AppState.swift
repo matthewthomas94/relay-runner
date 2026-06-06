@@ -42,17 +42,26 @@ final class AppState {
             setupStatus: { [weak self] in self?.setupStatusMessage },
             getWorkingDirectory: { [weak self] in self?.config.general.working_directory ?? "" },
             getAgentProvider: { [weak self] in self?.config.general.provider ?? .codex },
+            getModel: { [weak self] in self?.config.general.model ?? GeneralConfig.defaultModel },
             setAgentProvider: { [weak self] provider in
                 guard let self else { return }
                 var newConfig = self.config
                 newConfig.general.selectProvider(provider)
                 self.saveConfig(newConfig)
             },
+            setModel: { [weak self] model in
+                guard let self else { return }
+                var newConfig = self.config
+                newConfig.general.model = GeneralConfig.isModel(model, validFor: newConfig.general.provider)
+                    ? model
+                    : GeneralConfig.defaultModel
+                self.saveConfig(newConfig)
+            },
             setWorkingDirectory: { [weak self] path in
                 guard let self else { return }
                 var newConfig = self.config
                 newConfig.general.working_directory = path
-                self.saveConfig(newConfig)
+                self.saveConfig(newConfig, forceWorkspaceDiscovery: true)
             },
             startSession: { [weak self] in self?.newSession() }
         )
@@ -106,6 +115,11 @@ final class AppState {
 
     init() {
         self.config = ConfigManager.shared.load()
+        refreshConfiguredWorkspaceDiscoveryIfNeeded(
+            oldConfig: nil,
+            newConfig: config,
+            force: false
+        )
         // Watch privacy permissions continuously — macOS doesn't notify us
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
@@ -231,7 +245,7 @@ final class AppState {
         statusText = "Idle"
     }
 
-    func saveConfig(_ newConfig: AppConfig) {
+    func saveConfig(_ newConfig: AppConfig, forceWorkspaceDiscovery: Bool = false) {
         let oldConfig = config
         config = newConfig
 
@@ -240,6 +254,12 @@ final class AppState {
         } catch {
             NSLog("[RelayRunner] Failed to save config: \(error)")
         }
+
+        refreshConfiguredWorkspaceDiscoveryIfNeeded(
+            oldConfig: oldConfig,
+            newConfig: newConfig,
+            force: forceWorkspaceDiscovery
+        )
 
         // Hot-reload running services
         guard isRunning else { return }
@@ -265,6 +285,46 @@ final class AppState {
                 }
             }
         }
+    }
+
+    private func refreshConfiguredWorkspaceDiscoveryIfNeeded(
+        oldConfig: AppConfig?,
+        newConfig: AppConfig,
+        force: Bool
+    ) {
+        guard shouldRefreshWorkspaceDiscovery(
+            oldGeneral: oldConfig?.general,
+            newGeneral: newConfig.general,
+            force: force
+        ) else {
+            return
+        }
+
+        let url = WorkspaceFolder.url(from: newConfig.general.working_directory)
+        do {
+            _ = try WorkspaceFolder.refreshDiscovery(for: newConfig.general)
+        } catch {
+            NSLog("[RelayRunner] Workspace folder discovery skipped for \(url.path): \(error)")
+        }
+    }
+
+    private func shouldRefreshWorkspaceDiscovery(
+        oldGeneral: GeneralConfig?,
+        newGeneral: GeneralConfig,
+        force: Bool
+    ) -> Bool {
+        if force { return true }
+
+        let hasExplicitWorkspace = !newGeneral.working_directory
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+        guard let oldGeneral else {
+            return hasExplicitWorkspace
+        }
+        if oldGeneral.working_directory != newGeneral.working_directory {
+            return true
+        }
+        return hasExplicitWorkspace && oldGeneral.provider != newGeneral.provider
     }
 
     func newSession() {

@@ -329,6 +329,75 @@ final class ProjectRegistryTests: XCTestCase {
         XCTAssertEqual(try registry.load(), .empty)
     }
 
+    func testWorkspaceFolderRefreshDiscoversConfiguredWorkingDirectoryForBothProviders() throws {
+        let workspace = try makeTempDirectory(named: "dev")
+        let root = workspace.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = workspace.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = workspace.appendingPathComponent("tools", isDirectory: true)
+        try makeGitRepo(at: clientRepo)
+        try makeGitRepo(at: toolsRepo)
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+        var config = GeneralConfig()
+        config.provider = .codex
+        config.working_directory = workspace.path
+
+        let codexClassification = try WorkspaceFolder.refreshDiscovery(for: config, registry: registry)
+        guard case .workspaceRoot(let rootPath, let childRepoPaths) = codexClassification else {
+            return XCTFail("Expected configured workspace folder to discover child repos.")
+        }
+        XCTAssertEqual(resolvedPath(rootPath), resolvedPath(workspace))
+        XCTAssertEqual(childRepoPaths.map { resolvedPath($0) }, [
+            resolvedPath(clientRepo),
+            resolvedPath(toolsRepo),
+        ])
+
+        config.provider = .claude
+        _ = try WorkspaceFolder.refreshDiscovery(for: config, registry: registry)
+
+        let document = try registry.load()
+        XCTAssertNil(document.activeProjectID)
+        XCTAssertEqual(document.activeWorkspaceRootID, resolvedPath(workspace))
+        let workspaceRecord = try XCTUnwrap(document.workspaceRoots.first)
+        XCTAssertEqual(workspaceRecord.providers["codex"]?.lastActivationSource, .discovery)
+        XCTAssertEqual(workspaceRecord.providers["claude"]?.lastActivationSource, .discovery)
+        XCTAssertEqual(document.projects.map(\.repoPath), [
+            resolvedPath(clientRepo) ?? clientRepo.path,
+            resolvedPath(toolsRepo) ?? toolsRepo.path,
+        ])
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: workspace.appendingPathComponent(".orchestrator").path
+        ))
+    }
+
+    func testWorkspaceFolderRefreshMigratesLegacySingleRepoWorkingDirectory() throws {
+        let repo = try makeTempRepo(named: "relay-runner")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+        var config = GeneralConfig()
+        config.provider = .claude
+        config.working_directory = repo.path
+
+        let classification = try WorkspaceFolder.refreshDiscovery(for: config, registry: registry)
+        guard case .singleProject(let repoPath) = classification else {
+            return XCTFail("Expected legacy single-repo working_directory to activate one project.")
+        }
+
+        XCTAssertEqual(resolvedPath(repoPath), resolvedPath(repo))
+        let document = try registry.load()
+        XCTAssertNil(document.activeWorkspaceRootID)
+        let record = try XCTUnwrap(document.projects.first)
+        XCTAssertEqual(document.activeProjectID, record.id)
+        XCTAssertEqual(record.providers["claude"]?.lastActivationSource, .programmatic)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".orchestrator/config.toml").path
+        ))
+    }
+
     func testActivationRejectsNonGitFolderWithoutInitializingIt() throws {
         let directory = try makeTempDirectory(named: "scratch-work")
         let root = directory.deletingLastPathComponent()

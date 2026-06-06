@@ -1,6 +1,10 @@
 import SwiftUI
 
 struct GeneralSettingsTab: View {
+    static let workspaceFolderLabel = "Workspace folder"
+    static let workspaceFolderHelpText = "Start sessions in this folder. Program Manager discovers child git repositories when this is a workspace."
+    static let workspaceFolderPanelMessage = "Choose the workspace folder where Relay Runner should start sessions"
+
     @Binding var config: GeneralConfig
     @State private var skillInstalled = ProcessManager().isSkillInstalled
     @State private var showSkillSuccess = false
@@ -20,9 +24,15 @@ struct GeneralSettingsTab: View {
                 }
             }
 
-            HStack {
-                TextField("Working Directory", text: $config.working_directory, prompt: Text("~ (home)"))
-                Button("Browse\u{2026}") { pickDirectory() }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(Self.workspaceFolderLabel)
+                HStack {
+                    TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text("~ (home)"))
+                    Button("Browse\u{2026}") { pickDirectory() }
+                }
+                Text(Self.workspaceFolderHelpText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Toggle("Auto-start services on app launch", isOn: $config.auto_start)
@@ -90,7 +100,7 @@ struct GeneralSettingsTab: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Choose the working directory for new voice sessions"
+        panel.message = Self.workspaceFolderPanelMessage
         if panel.runModal() == .OK, let url = panel.url {
             config.working_directory = url.path
         }

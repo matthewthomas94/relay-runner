@@ -38,4 +38,24 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(config.command, "claude")
         XCTAssertEqual(config.model, GeneralConfig.defaultModel)
     }
+
+    func testWorkspaceFolderResolvesLegacyWorkingDirectoryValues() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+
+        XCTAssertEqual(WorkspaceFolder.url(from: "", homeDirectory: home).path, "/Users/example")
+        XCTAssertEqual(WorkspaceFolder.url(from: "~", homeDirectory: home).path, "/Users/example")
+        XCTAssertEqual(WorkspaceFolder.url(from: "~/dev", homeDirectory: home).path, "/Users/example/dev")
+        XCTAssertEqual(
+            WorkspaceFolder.url(from: "/Users/example/workspace", homeDirectory: home).path,
+            "/Users/example/workspace"
+        )
+    }
+
+    func testWorkspaceFolderSettingsCopyAvoidsProjectOnlyLanguage() {
+        XCTAssertEqual(GeneralSettingsTab.workspaceFolderLabel, "Workspace folder")
+        XCTAssertTrue(GeneralSettingsTab.workspaceFolderHelpText.contains("child git repositories"))
+        XCTAssertTrue(OnboardingView.workspaceFolderHelpText.contains("child git repositories"))
+        XCTAssertFalse(GeneralSettingsTab.workspaceFolderHelpText.contains("always a project"))
+        XCTAssertFalse(OnboardingView.workspaceFolderHelpText.contains("always a project"))
+    }
 }
