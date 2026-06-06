@@ -223,6 +223,104 @@ struct ProgramStatusTool: MCPTool {
     }
 }
 
+// MARK: - session_capture
+
+struct SessionCaptureTool: MCPTool {
+    let name = "session_capture"
+    let description = """
+        Capture a meaningful work-session review directly into Graphify Core. Use this instead of PM-sync \
+        copy/paste YAML when the user wants to record shipped work, started work, blockers, ideas, decisions, \
+        status updates, or notes. The tool writes ProgramEvent, Decision, Risk, Idea, and Status nodes, then \
+        links them to project, ticket, and run nodes when repo_path, ticket_id, or run_id evidence is available. \
+        Codex and Claude use the same schema; the daemon does not scrape either provider's transcript history, \
+        so pass concise structured entries and any relevant conversation context explicitly.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "repo_path": [
+                    "type": "string",
+                    "description": "Absolute path to the repo/project being reviewed. Does not require .pm/project-id.",
+                ],
+                "entries": [
+                    "type": "array",
+                    "description": "Structured capture entries. Supported kind values include shipped, started, note, decision, blocker, risk, idea, and status.",
+                    "items": [
+                        "type": "object",
+                        "properties": [
+                            "kind": [
+                                "type": "string",
+                                "enum": ["shipped", "started", "note", "decision", "blocker", "risk", "idea", "status"],
+                            ],
+                            "title": ["type": "string"],
+                            "summary": ["type": "string"],
+                            "body": ["type": "string"],
+                            "details": ["type": "string"],
+                            "ticket_id": ["type": "string"],
+                            "run_id": ["type": "integer"],
+                            "status": ["type": "string"],
+                        ],
+                        "required": ["kind"],
+                    ],
+                ],
+                "ticket_id": [
+                    "type": "string",
+                    "description": "Optional default ticket id to link entries to, e.g. RR-43.",
+                ],
+                "run_id": [
+                    "type": "integer",
+                    "description": "Optional default orchestrator run id to link entries to.",
+                ],
+                "provider": [
+                    "type": "string",
+                    "enum": ["codex", "claude"],
+                    "description": "Optional provider label for the session being captured.",
+                ],
+                "context": [
+                    "type": "string",
+                    "description": "Optional concise caller-supplied conversation context. Needed when provider transcript history is not otherwise available.",
+                ],
+                "capture_id": [
+                    "type": "string",
+                    "description": "Optional idempotency key for this review capture.",
+                ],
+            ],
+            "required": ["repo_path", "entries"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let entries = try requireEntries(arguments, "entries")
+        var body: [String: Any] = [
+            "repo_path": try requireString(arguments, "repo_path"),
+            "entries": entries,
+        ]
+        for key in ["ticket_id", "provider", "context", "capture_id"] {
+            if let value = arguments[key] as? String, !value.isEmpty {
+                body[key] = value
+            }
+        }
+        if arguments["run_id"] != nil {
+            body["run_id"] = try requireInt(arguments, "run_id")
+        }
+
+        let payload = try await DaemonClient.request(method: "POST", path: "/v1/program/capture", body: body)
+        if let object = payload as? [String: Any], let message = object["message"] as? String {
+            return [["type": "text", "text": message]]
+        }
+        return try toolTextContent(payload)
+    }
+
+    private func requireEntries(_ args: [String: Any], _ key: String) throws -> [[String: Any]] {
+        guard let entries = args[key] as? [[String: Any]], !entries.isEmpty else {
+            throw MCPToolError(message: "Missing or empty argument: \(key)")
+        }
+        return entries
+    }
+}
+
 // MARK: - URL escaping
 
 private func urlEscape(_ s: String) -> String {

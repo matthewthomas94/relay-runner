@@ -61,6 +61,14 @@ cancel_run --run_id=17             → SIGTERM the worker, prune the worktree
 
 Voice equivalents work too: "what are the agents doing?", "how's MA-6?", "stop MA-6".
 
+## Capture a session review
+
+Use `session_capture` to write end-of-session review notes directly into Graphify Core instead of emitting PM-sync YAML. The tool accepts a `repo_path`, optional `ticket_id` / `run_id` / `provider`, and structured `entries` whose `kind` can be `shipped`, `started`, `note`, `decision`, `blocker`, `risk`, `idea`, or `status`.
+
+Capture creates ProgramEvent, Decision, Risk, Idea, and Status nodes and links them to project, ticket, and run nodes when the repo, ticket, or run evidence is available. It does not require `.pm/project-id`; if the repo has `.orchestrator` ticket files, capture can use that evidence directly.
+
+Codex and Claude use the same capture schema. The daemon does not scrape either provider's transcript history, so the calling session should pass concise structured entries and any relevant conversation context explicitly.
+
 ## The intended workflow
 
 The orchestrator is designed around a four-step loop. The main Codex or Claude session is the *orchestrator* — it's the one talking to you and routing work — and each worker is a one-shot *sub-agent*.
