@@ -116,6 +116,30 @@ struct ProjectRegistry {
         return classification
     }
 
+    @discardableResult
+    func activateBridgeCwd(at path: URL, provider: String? = nil) throws -> ProjectResolver.LinkedProject? {
+        let classification = try classifyDiscoveryRoot(at: path)
+        switch classification {
+        case .workspaceRoot(let rootURL, let childRepoURLs):
+            try registerWorkspaceRoot(
+                rootURL: rootURL,
+                childRepoURLs: childRepoURLs,
+                provider: provider,
+                source: .bridgeCwd
+            )
+            return nil
+        case .singleProject(let repoURL):
+            try BoardProjectConfig.ensureExists(forRepoAt: repoURL)
+            try registerResolvedProject(
+                repoURL: repoURL,
+                alias: nil,
+                provider: provider,
+                source: .bridgeCwd
+            )
+            return ProjectResolver.LinkedProject(repoPath: repoURL)
+        }
+    }
+
     func classifyDiscoveryRoot(at path: URL) throws -> ProjectDiscoveryClassification {
         let directory = try existingDirectory(path)
         let childRepoURLs = try childGitRepos(under: directory)
@@ -219,7 +243,8 @@ struct ProjectRegistry {
     private func registerWorkspaceRoot(
         rootURL: URL,
         childRepoURLs: [URL],
-        provider: String?
+        provider: String?,
+        source: ProjectActivationSource = .discovery
     ) throws {
         var document = try load()
         let timestamp = now()
@@ -258,7 +283,7 @@ struct ProjectRegistry {
             // Codex and Claude resolve the same registry state.
             record.providers[providerKey] = ProjectProviderMetadata(
                 lastActivatedAt: timestamp,
-                lastActivationSource: .discovery
+                lastActivationSource: source
             )
         }
 

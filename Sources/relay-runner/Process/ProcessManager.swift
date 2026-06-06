@@ -241,35 +241,13 @@ final class ProcessManager {
         NSLog("[ProcessManager] Refreshing Relay skill files before launch.")
         installSkill()
 
-        let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
-        let modelFlag = Self.modelFlag(config.general.model, target: target)
         let launcher = "/tmp/voice_bridge_launch.command"
-        let cdLine = Self.cdLine(config.general.working_directory)
-        let launchLine = Self.agentLaunchLine(
-            binary: agentBinary,
+        let script = Self.launchScript(
+            relayBridge: relayBridge,
             target: target,
-            modelFlag: modelFlag,
-            bypassFlag: bypassFlag
+            agentBinary: agentBinary,
+            config: config
         )
-        let script = """
-        #!/bin/bash
-        \(Self.shellProfileSource())
-        # Ensure venv + deps + speech-model + relay skills are installed.
-        # relay-bridge short-circuits in well under a second when everything's
-        # already in place; on first run it does the full no-admin install.
-        # Either way, the user sees its progress in the Terminal that just
-        # opened.
-        '\(relayBridge)' --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }
-        # Keep common agent install locations on PATH for tools launched from
-        # this session. On fresh installs the relay-bridge install may have
-        # dropped a binary moments ago and the shell profile may not know yet.
-        export PATH="$HOME/.local/bin:$PATH"
-        \(cdLine)
-        # Interactive agent session with Relay Runner voice mode pre-fired.
-        \(launchLine)
-        echo ''
-        echo '[Relay Runner] Session ended.'
-        """
         try? script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
         let chmod = Process()
@@ -286,9 +264,54 @@ final class ProcessManager {
         launchInTerminal(command: launcher)
     }
 
-    private enum AgentTarget {
+    enum AgentTarget {
         case codex
         case claude
+
+        var providerMetadataValue: String {
+            switch self {
+            case .codex: return "codex"
+            case .claude: return "claude"
+            }
+        }
+    }
+
+    static func launchScript(
+        relayBridge: String,
+        target: AgentTarget,
+        agentBinary: String,
+        config: AppConfig,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String {
+        let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
+        let modelFlag = Self.modelFlag(config.general.model, target: target)
+        let cdLine = Self.cdLine(config.general.working_directory, homeDirectory: homeDirectory)
+        let launchLine = Self.agentLaunchLine(
+            binary: agentBinary,
+            target: target,
+            modelFlag: modelFlag,
+            bypassFlag: bypassFlag
+        )
+        return """
+        #!/bin/bash
+        \(Self.shellProfileSource())
+        # Ensure venv + deps + speech-model + relay skills are installed.
+        # relay-bridge short-circuits in well under a second when everything's
+        # already in place; on first run it does the full no-admin install.
+        # Either way, the user sees its progress in the Terminal that just
+        # opened.
+        \(Self.shellQuoted(relayBridge)) --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }
+        # Keep common agent install locations on PATH for tools launched from
+        # this session. On fresh installs the relay-bridge install may have
+        # dropped a binary moments ago and the shell profile may not know yet.
+        export PATH="$HOME/.local/bin:$PATH"
+        export RELAY_RUNNER_PROVIDER=\(Self.shellQuoted(target.providerMetadataValue))
+        \(cdLine)
+        # Interactive agent session with Relay Runner voice mode pre-fired.
+        \(launchLine)
+        echo ''
+        echo '[Relay Runner] Session ended.'
+        """
     }
 
     private static func target(for provider: GeneralConfig.AgentProvider) -> AgentTarget {
@@ -334,7 +357,7 @@ final class ProcessManager {
         case .claude: provider = .claude
         }
         guard GeneralConfig.isModel(v, validFor: provider) else { return "" }
-        return "--model '\(v)' "
+        return "--model \(Self.shellQuoted(v)) "
     }
 
     private static func bypassFlag(enabled: Bool, target: AgentTarget) -> String {
@@ -355,9 +378,9 @@ final class ProcessManager {
     ) -> String {
         switch target {
         case .codex:
-            return "'\(binary)' \(modelFlag)\(bypassFlag)'Use the relay-bridge skill now.'"
+            return "\(Self.shellQuoted(binary)) \(modelFlag)\(bypassFlag)\(Self.shellQuoted("Use the relay-bridge skill now."))"
         case .claude:
-            return "'\(binary)' \(modelFlag)\(bypassFlag)\"/relay-bridge\""
+            return "\(Self.shellQuoted(binary)) \(modelFlag)\(bypassFlag)\"/relay-bridge\""
         }
     }
 
@@ -452,11 +475,18 @@ final class ProcessManager {
         }
     }
 
-    /// Returns a `cd` line for the launcher script, or a comment if empty.
-    private static func cdLine(_ workingDirectory: String) -> String {
-        let trimmed = workingDirectory.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return "# no working directory configured" }
-        return "cd '\(trimmed)'"
+    /// Returns the `cd` line for the launcher script using the configured
+    /// workspace folder semantics, including the home directory fallback.
+    static func cdLine(
+        _ workingDirectory: String,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String {
+        let url = WorkspaceFolder.url(from: workingDirectory, homeDirectory: homeDirectory)
+        return "cd \(Self.shellQuoted(url.path))"
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     /// Returns shell commands to source the user's profile so PATH includes
