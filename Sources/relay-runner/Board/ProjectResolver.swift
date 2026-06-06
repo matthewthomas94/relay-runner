@@ -8,10 +8,10 @@ import Foundation
 /// the liveness check. When no bridge is live, an explicitly activated
 /// registry project can still back UI/MCP programmatic flows.
 ///
-/// If the bridge starts inside an existing git repo, the board uses that repo
-/// root, registers it, marks it active, and initializes `.orchestrator/config.toml`
-/// if needed. Non-git bridge cwd values are refused; callers must initialize git
-/// explicitly before activating them.
+/// Bridge cwd values run through the workspace/project classifier: a single
+/// repo activates that repo and initializes `.orchestrator/config.toml` when
+/// needed, while a workspace root records Program Manager discovery state
+/// without creating a parent board.
 enum ProjectResolver {
 
     /// Minimal value type the board passes around. The previous
@@ -23,11 +23,13 @@ enum ProjectResolver {
 
     private static let bridgeSocketPath = "/tmp/voice_bridge.sock"
     private static let bridgeCwdFilePath = "/tmp/voice_bridge.cwd"
+    private static let bridgeProviderFilePath = "/tmp/voice_bridge.provider"
 
     static func resolve() -> LinkedProject? {
         resolve(
             bridgeSocket: URL(fileURLWithPath: bridgeSocketPath),
             bridgeCwdFile: URL(fileURLWithPath: bridgeCwdFilePath),
+            bridgeProviderFile: URL(fileURLWithPath: bridgeProviderFilePath),
             bridgeSessionAlive: ProcessManager.activeRelaySessionAlive
         )
     }
@@ -35,6 +37,7 @@ enum ProjectResolver {
     static func resolve(
         bridgeSocket: URL,
         bridgeCwdFile: URL,
+        bridgeProviderFile: URL? = nil,
         bridgeSessionAlive: () -> Bool = { true },
         registry: ProjectRegistry = ProjectRegistry()
     ) -> LinkedProject? {
@@ -48,8 +51,9 @@ enum ProjectResolver {
             guard !path.isEmpty else { return nil }
 
             let cwdURL = URL(fileURLWithPath: path)
+            let provider = bridgeProviderFile.flatMap(readBridgeProvider)
             do {
-                return try registry.activateProject(at: cwdURL, source: .bridgeCwd)
+                return try registry.activateBridgeCwd(at: cwdURL, provider: provider)
             } catch {
                 NSLog("[relay-runner] failed to activate board project at \(cwdURL.path): \(error)")
                 return nil
@@ -62,6 +66,12 @@ enum ProjectResolver {
             NSLog("[relay-runner] failed to resolve active project: \(error)")
             return nil
         }
+    }
+
+    private static func readBridgeProvider(from url: URL) -> String? {
+        guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let provider = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return provider.isEmpty ? nil : provider
     }
 
     static func activateProject(

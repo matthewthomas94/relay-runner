@@ -144,6 +144,89 @@ final class ProjectRegistryTests: XCTestCase {
         XCTAssertEqual(record.lastActivationSource, .bridgeCwd)
     }
 
+    func testBridgeResolveRecordsProviderMetadataForCodexAndClaude() throws {
+        let repo = try makeTempRepo(named: "client-dashboard")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        let bridgeProvider = root.appendingPathComponent("voice_bridge.provider")
+        try Data().write(to: bridgeSocket)
+        try Data(repo.path.utf8).write(to: bridgeCwd)
+
+        var timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let registry = ProjectRegistry(
+            fileURL: root.appendingPathComponent("projects.json"),
+            now: { timestamp }
+        )
+
+        try Data("codex\n".utf8).write(to: bridgeProvider)
+        XCTAssertNotNil(ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            bridgeProviderFile: bridgeProvider,
+            registry: registry
+        ))
+
+        timestamp = Date(timeIntervalSince1970: 1_700_000_060)
+        try Data("Claude\n".utf8).write(to: bridgeProvider)
+        XCTAssertNotNil(ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            bridgeProviderFile: bridgeProvider,
+            registry: registry
+        ))
+
+        let record = try XCTUnwrap(try registry.load().projects.first)
+        XCTAssertEqual(record.providers["codex"]?.lastActivationSource, .bridgeCwd)
+        XCTAssertEqual(record.providers["codex"]?.lastActivatedAt, Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(record.providers["claude"]?.lastActivationSource, .bridgeCwd)
+        XCTAssertEqual(record.providers["claude"]?.lastActivatedAt, Date(timeIntervalSince1970: 1_700_000_060))
+    }
+
+    func testBridgeResolveClassifiesWorkspaceRootWithoutCreatingParentBoard() throws {
+        let workspace = try makeTempDirectory(named: "dev")
+        let root = workspace.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = workspace.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = workspace.appendingPathComponent("tools", isDirectory: true)
+        try makeGitRepo(at: clientRepo)
+        try makeGitRepo(at: toolsRepo)
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        let bridgeProvider = root.appendingPathComponent("voice_bridge.provider")
+        try Data().write(to: bridgeSocket)
+        try Data(workspace.path.utf8).write(to: bridgeCwd)
+        try Data("codex\n".utf8).write(to: bridgeProvider)
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+        let project = ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            bridgeProviderFile: bridgeProvider,
+            registry: registry
+        )
+
+        XCTAssertNil(project)
+        let document = try registry.load()
+        XCTAssertNil(document.activeProjectID)
+        XCTAssertEqual(document.activeWorkspaceRootID, resolvedPath(workspace))
+        XCTAssertEqual(document.workspaceRoots.first?.providers["codex"]?.lastActivationSource, .bridgeCwd)
+        XCTAssertEqual(document.projects.map(\.repoPath), [
+            resolvedPath(clientRepo) ?? clientRepo.path,
+            resolvedPath(toolsRepo) ?? toolsRepo.path,
+        ])
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: workspace.appendingPathComponent(".orchestrator").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: clientRepo.appendingPathComponent(".orchestrator").path
+        ))
+    }
+
     func testResolveUsesProgrammaticallyActiveProjectWithoutBridge() throws {
         let repo = try makeTempRepo(named: "client-dashboard")
         let root = repo.deletingLastPathComponent()
