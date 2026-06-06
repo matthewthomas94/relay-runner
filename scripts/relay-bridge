@@ -233,10 +233,41 @@ Do **not** announce changes that are just consequences of an action the user exp
 ### Step 1: Wait for voice input
 
 ```bash
-while [ ! -f /tmp/voice_cmd_ready ]; do sleep 0.2; touch /tmp/voice_bridge_heartbeat; [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }; done; cat /tmp/voice_cmd_ready; rm -f /tmp/voice_cmd_ready; (while sleep 2; do touch /tmp/voice_bridge_heartbeat; done) & echo $! > /tmp/voice_bridge_heartbeat.pid
+while [ ! -f /tmp/voice_cmd_ready ]; do
+    sleep 0.2
+    touch /tmp/voice_bridge_heartbeat
+    [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }
+done
+cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
+if mv /tmp/voice_cmd_ready "$cmd_tmp" 2>/dev/null; then
+    cat "$cmd_tmp"
+    rm -f "$cmd_tmp"
+else
+    rm -f "$cmd_tmp"
+    exit 0
+fi
+(while sleep 2; do touch /tmp/voice_bridge_heartbeat; done) & echo $! > /tmp/voice_bridge_heartbeat.pid
 ```
 
 This blocks until the user speaks via Caps Lock. If the voice bridge is killed (e.g. a new session was started), the loop exits. Once a command is read, a background heartbeat refresher is spawned so the app's watchdog doesn't reap the bridge during long Claude processing (multi-tool tasks, builds, agent spawns). The refresher is torn down in Step 3.
+
+### Step 1.5: Preemption checkpoints
+
+Relay messages are live steering input, not a serial queue. Newest intent wins for future work. Before starting each new shell command, MCP call, or high-stakes/irreversible action, and again before writing TTS, check whether a newer Relay message is waiting:
+
+```bash
+cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
+if [ -f /tmp/voice_cmd_ready ] && mv /tmp/voice_cmd_ready "$cmd_tmp" 2>/dev/null; then
+    cat "$cmd_tmp"
+    rm -f "$cmd_tmp"
+else
+    rm -f "$cmd_tmp"
+fi
+```
+
+If the checkpoint prints a normal user message, stop following the stale request and handle the new message as the active instruction. If it prints `__INTERRUPT__`, silently return to waiting. Do not start new high-stakes or irreversible actions from stale instructions after a newer message arrives. If an action already completed, report that honestly when responding to the newest message.
+
+Already-running shell commands and MCP calls cannot be forcibly preempted by the bridge. Let them return, interrupt them only when the user explicitly canceled, then run this checkpoint before any follow-up action. Codex and Claude use the same cooperative preemption contract; no provider-specific hard cancellation is assumed.
 
 ### Step 2: Process the input
 
@@ -277,7 +308,7 @@ Then send the TTS response. Keep it concise and conversational (strip markdown f
 echo 'YOUR_SPOKEN_RESPONSE' > /tmp/tts_in.fifo
 ```
 
-Important: Use single quotes and escape any single quotes in your response (`'` becomes `'\''`). Only send the spoken summary, not the full detailed response.
+Important: Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead. Use single quotes and escape any single quotes in your response (`'` becomes `'\''`). Only send the spoken summary, not the full detailed response.
 
 ### Step 4: Loop
 
@@ -433,8 +464,39 @@ cp /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 Wait for voice input:
 
 ```bash
-while [ ! -f /tmp/voice_cmd_ready ]; do sleep 0.2; touch /tmp/voice_bridge_heartbeat; [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }; done; cat /tmp/voice_cmd_ready; rm -f /tmp/voice_cmd_ready; (while sleep 2; do touch /tmp/voice_bridge_heartbeat; done) & echo $! > /tmp/voice_bridge_heartbeat.pid
+while [ ! -f /tmp/voice_cmd_ready ]; do
+    sleep 0.2
+    touch /tmp/voice_bridge_heartbeat
+    [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }
+done
+cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
+if mv /tmp/voice_cmd_ready "$cmd_tmp" 2>/dev/null; then
+    cat "$cmd_tmp"
+    rm -f "$cmd_tmp"
+else
+    rm -f "$cmd_tmp"
+    exit 0
+fi
+(while sleep 2; do touch /tmp/voice_bridge_heartbeat; done) & echo $! > /tmp/voice_bridge_heartbeat.pid
 ```
+
+Preemption checkpoints:
+
+Relay messages are live steering input, not a serial queue. Newest intent wins for future work. Before starting each new shell command, MCP call, or high-stakes/irreversible action, and again before writing TTS, check whether a newer Relay message is waiting:
+
+```bash
+cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
+if [ -f /tmp/voice_cmd_ready ] && mv /tmp/voice_cmd_ready "$cmd_tmp" 2>/dev/null; then
+    cat "$cmd_tmp"
+    rm -f "$cmd_tmp"
+else
+    rm -f "$cmd_tmp"
+fi
+```
+
+If the checkpoint prints a normal user message, stop following the stale request and handle the new message as the active instruction. If it prints `__INTERRUPT__`, silently return to waiting. Do not start new high-stakes or irreversible actions from stale instructions after a newer message arrives. If an action already completed, report that honestly when responding to the newest message.
+
+Already-running shell commands and MCP calls cannot be forcibly preempted by the bridge. Let them return, interrupt them only when the user explicitly canceled, then run this checkpoint before any follow-up action. Codex and Claude use the same cooperative preemption contract; no provider-specific hard cancellation is assumed.
 
 Interpret the text:
 - `__BRIDGE_DIED__`: say "Voice session ended." and stop.
@@ -472,7 +534,7 @@ Write only the spoken summary to TTS. Keep it to 1-3 conversational sentences, s
 echo 'YOUR_SPOKEN_RESPONSE' > /tmp/tts_in.fifo
 ```
 
-Then return to waiting.
+Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead. Then return to waiting.
 
 ## Cleanup
 
