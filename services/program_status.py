@@ -15,6 +15,7 @@ from graphify_core import (
 )
 
 QUERY_ACTIVE = "active_work"
+QUERY_READY = "ready_work"
 QUERY_BLOCKED = "blocked_work"
 QUERY_AWAITING_MERGE = "awaiting_merge"
 QUERY_STALE_RUNS = "stale_runs"
@@ -23,6 +24,7 @@ QUERY_NEXT = "next"
 
 PROGRAM_STATUS_QUERIES = (
     QUERY_ACTIVE,
+    QUERY_READY,
     QUERY_BLOCKED,
     QUERY_AWAITING_MERGE,
     QUERY_STALE_RUNS,
@@ -37,6 +39,9 @@ QUERY_ALIASES = {
     "active_work": QUERY_ACTIVE,
     "agents": QUERY_ACTIVE,
     "all_agents": QUERY_ACTIVE,
+    "ready": QUERY_READY,
+    "ready_work": QUERY_READY,
+    "ready_tickets": QUERY_READY,
     "blocked": QUERY_BLOCKED,
     "blocked_work": QUERY_BLOCKED,
     "awaiting": QUERY_AWAITING_MERGE,
@@ -98,6 +103,10 @@ def build_program_status(
     if query == QUERY_ACTIVE:
         items = [_run_item(ctx, run, "active") for run in _active_runs(ctx, provider_key)]
         return _response(query, provider_key, _items_text("Active work", "run", items, ctx, limit), items[:limit], ctx)
+
+    if query == QUERY_READY:
+        items = [_ticket_item(ctx, ticket, "ready") for ticket in _ready_tickets(ctx, provider_key)]
+        return _response(query, provider_key, _items_text("Ready work", "ticket", items, ctx, limit), items[:limit], ctx)
 
     if query == QUERY_BLOCKED:
         items = [_ticket_item(ctx, ticket, "blocked") for ticket in _blocked_tickets(ctx, provider_key)]
@@ -198,6 +207,19 @@ def _blocked_tickets(ctx: dict[str, Any], provider: str | None) -> list[dict[str
         ticket
         for ticket in sorted(ctx["tickets"], key=_ticket_sort_key)
         if (ticket["id"] in blocked_ids or _key(_ticket_state(ticket)) == "blocked")
+        and _ticket_matches_provider(ctx, ticket, provider)
+    ]
+
+
+def _ready_tickets(ctx: dict[str, Any], provider: str | None) -> list[dict[str, Any]]:
+    blocked_ids = set(ctx["blockers"]) | ctx["blocked_work"]
+    awaiting_ids = {ticket["id"] for ticket in _awaiting_merge_tickets(ctx, provider)}
+    return [
+        ticket
+        for ticket in sorted(ctx["tickets"], key=_ticket_sort_key)
+        if _key(_ticket_state(ticket)) == "ready"
+        and ticket["id"] not in blocked_ids
+        and ticket["id"] not in awaiting_ids
         and _ticket_matches_provider(ctx, ticket, provider)
     ]
 
@@ -347,6 +369,7 @@ def _items_text(
     if not items:
         empty = {
             QUERY_ACTIVE: "No active program runs",
+            QUERY_READY: "No ready work",
             QUERY_BLOCKED: "No blocked work",
             QUERY_AWAITING_MERGE: "No tickets awaiting merge",
             QUERY_STALE_RUNS: "No stale or stalled runs",

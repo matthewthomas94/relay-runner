@@ -32,6 +32,21 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(body["trigger"] as? String, "bridge-watchdog")
     }
 
+    func testProgramStatusRequestUsesProgramEndpoint() throws {
+        let request = try XCTUnwrap(OrchestratorClient.programStatusRequest(
+            query: "ready_work",
+            limit: 20,
+            port: 8123
+        ))
+
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(
+            request.url?.absoluteString,
+            "http://127.0.0.1:8123/v1/program/status?query=ready_work&limit=20"
+        )
+        XCTAssertNil(request.httpBody)
+    }
+
     private func jsonBody(_ request: URLRequest) throws -> [String: Any] {
         let data = try XCTUnwrap(request.httpBody)
         let decoded = try JSONSerialization.jsonObject(with: data)

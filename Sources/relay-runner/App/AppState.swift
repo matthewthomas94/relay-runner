@@ -70,6 +70,7 @@ final class AppState {
     let stateMachine = StateMachine()
     private var overlayController: OverlayController?
     @ObservationIgnored private let boardOverlay = BoardOverlayController()
+    @ObservationIgnored private let programBoardOverlay = ProgramBoardOverlayController()
     private var perimeterOverlay: PerimeterOverlayManager?
     private var eventBus: StateEventBus?
     private var actionsBus: ActionsConfirmBus?
@@ -323,6 +324,13 @@ final class AppState {
         boardOverlay.toggle()
     }
 
+    /// Show or hide the read-only cross-project Program Board. This uses the
+    /// orchestrator's Graphify Core status endpoint and does not require the
+    /// active project resolver.
+    func toggleProgramBoard() {
+        programBoardOverlay.toggle()
+    }
+
     func activateProject(pathOrAlias: String, provider: String?) -> ProjectActivationReply {
         do {
             let project = try ProjectResolver.activateProject(
@@ -550,6 +558,11 @@ final class AppState {
         // resolve a project.
         boardOverlay.setNoSessionHandler { [weak self] in
             self?.showSessionPromptIfAllowed()
+        }
+        programBoardOverlay.setThemeResolver { [weak self] in
+            guard let state = self?.stateMachine.state else { return nil }
+            if case .actionGlow = state { return .stt }
+            return state.particleTheme
         }
         // Perimeter overlay (purple band on every screen while
         // .actionGlow is active; pulses while a confirmation is pending).
