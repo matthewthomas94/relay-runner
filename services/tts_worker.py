@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -20,6 +21,30 @@ from config import load_config
 
 TTS_CONTROL_SOCK = os.environ.get("TTS_CONTROL_SOCK", "/tmp/tts_control.sock")
 VOICE_STATE_SOCK = "/tmp/voice_state.sock"
+
+
+_SENTENCE_END_RE = re.compile(r"[.!?]+[\"')\]]*(?=\s+|$)")
+
+
+def _sentence_chunks(text: str) -> list[str]:
+    """Split text into sentence-sized chunks while preserving all text."""
+    compact = re.sub(r"\s+", " ", text.strip())
+    if not compact:
+        return []
+
+    chunks: list[str] = []
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(compact):
+        end = match.end()
+        chunk = compact[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end
+
+    tail = compact[start:].strip()
+    if tail:
+        chunks.append(tail)
+    return chunks
 
 
 def _notify_state(state: str, **kwargs):
@@ -111,8 +136,9 @@ class TTSWorker:
         self._last_wav: str | None = None  # Path to last played WAV for replay
         self._last_unheard_text = ""
 
-        # Speculative TTS — generation runs in parallel with the pill so audio
-        # is already on disk by the time the user double-taps Option to play.
+        # Speculative TTS — generation runs in parallel with the pill so the
+        # first sentence chunk is already on disk by the time the user
+        # double-taps Option to play.
         # _spec_text is the text the slot currently belongs to; _spec_wav is
         # the synthesized file once ready; _spec_done flips to True when the
         # generator finishes (success or failure). Mutating any of these or
@@ -125,6 +151,7 @@ class TTSWorker:
         # Serializes Kokoro calls so a fallback _speak doesn't race a still-
         # running speculation thread inside the same in-process model.
         self._synth_lock = threading.Lock()
+        self._playback_generation = 0
 
         # Read initial config
         cfg = load_config()["tts"]
@@ -268,35 +295,45 @@ class TTSWorker:
         self._play_text(text)
 
     def _play_text(self, text: str):
-        self._playing = True
-        self._paused = False
+        chunks = _sentence_chunks(text)
+        if not chunks:
+            return
+
+        generation = self._begin_playback()
         _notify_state("preparing")
 
-        # Try the speculation cache first. If a matching WAV is already
-        # ready, skip synthesis entirely (cache hit — the win). If a matching
-        # gen is in flight, wait for it: the worst-case wait is bounded by
-        # the on-demand baseline because speculation started earlier than
-        # this tap. Falling back to _speak before the spec finishes would
-        # actually be slower (it'd serialize behind the in-flight Kokoro
-        # call via _synth_lock, then redo synthesis from scratch). We only
-        # fall back when the speculation slot doesn't match this text or
-        # the gen errored out.
-        wav = self._claim_speculation(text, timeout=30.0)
-        if wav:
-            t = threading.Thread(target=self._play_speculative_wav, args=(wav,), daemon=True)
-        else:
-            t = threading.Thread(target=self._speak, args=(text,), daemon=True)
+        t = threading.Thread(
+            target=self._speak_chunks,
+            args=(chunks, generation),
+            daemon=True,
+        )
         t.start()
 
+    def _begin_playback(self) -> int:
+        with self._lock:
+            self._playback_generation = getattr(self, "_playback_generation", 0) + 1
+            self._playing = True
+            self._paused = False
+            return self._playback_generation
+
+    def _playback_is_current(self, generation: int) -> bool:
+        return (
+            getattr(self, "_playback_generation", 0) == generation
+            and self._playing
+        )
+
     def pause(self):
+        self._playback_generation = getattr(self, "_playback_generation", 0) + 1
         self._paused = True
         proc = self._current_proc
         if proc and proc.poll() is None:
             proc.terminate()
+        self._playing = False
 
     def stop_playback(self):
         """Stop current audio playback without clearing pending text.
         Used by __TTS_STOP__ to kill audio while preserving queued TTS."""
+        self._playback_generation = getattr(self, "_playback_generation", 0) + 1
         proc = self._current_proc
         if proc and proc.poll() is None:
             proc.terminate()
@@ -341,22 +378,29 @@ class TTSWorker:
     def _play_wav(self, wav_path: str):
         """Play a WAV file with afplay."""
         try:
-            _notify_state("speaking")
-            cmd = ["afplay", wav_path]
-            if self._rate != 1.0:
-                cmd.extend(["-r", str(self._rate)])
-            self._current_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._current_proc.wait()
+            self._play_wav_blocking(wav_path)
         except Exception as e:
             print(f"[tts_worker] Replay error: {e}", file=sys.stderr)
         finally:
             self._playing = False
             self._current_proc = None
             _notify_state("idle")
+
+    def _play_wav_blocking(self, wav_path: str):
+        """Play a single WAV file with afplay."""
+        _notify_state("speaking")
+        cmd = ["afplay", wav_path]
+        if self._rate != 1.0:
+            cmd.extend(["-r", str(self._rate)])
+        self._current_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            self._current_proc.wait()
+        finally:
+            self._current_proc = None
 
     def _synthesize_to_wav(self, text: str) -> str | None:
         """Render `text` to a fresh WAV via Kokoro, return its path or None on failure.
@@ -394,53 +438,15 @@ class TTSWorker:
                 pass
             raise
 
-    def _speak(self, text: str):
-        """Synthesize and play speech using Kokoro."""
-        if not self._kokoro:
-            print(f"[tts_worker] Kokoro not loaded, skipping: {text[:80]}", file=sys.stderr)
-            self._playing = False
-            return
-
-        try:
-            wav_path = self._synthesize_to_wav(text)
-            if not wav_path:
-                return
-
-            # Keep previous WAV for replay, clean up the one before
-            old_wav = self._last_wav
-            self._last_wav = wav_path
-
-            if old_wav and old_wav != wav_path:
-                try:
-                    os.remove(old_wav)
-                except OSError:
-                    pass
-
-            # Play with afplay, using -r for playback rate (1.0 = normal, 2.0 = 2x)
-            _notify_state("speaking")
-            cmd = ["afplay", wav_path]
-            if self._rate != 1.0:
-                cmd.extend(["-r", str(self._rate)])
-            self._current_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._current_proc.wait()
-        except Exception as e:
-            print(f"[tts_worker] TTS error: {e}", file=sys.stderr)
-        finally:
-            self._playing = False
-            self._current_proc = None
-            _notify_state("idle")
-
     def _start_speculation(self, text: str):
         """Begin (or restart) speculative TTS gen for `text` in a daemon thread.
         No-op when the slot is already speculating on the same text or has it
         cached. Newer texts supersede older ones; the older thread's output is
         discarded when it returns."""
-        if not self._kokoro or not text:
+        chunks = _sentence_chunks(text)
+        if not self._kokoro or not chunks:
             return
+        text = chunks[0]
         with self._spec_cond:
             if self._spec_text == text and (self._spec_wav or not self._spec_done):
                 return
@@ -519,33 +525,168 @@ class TTSWorker:
             except OSError:
                 pass
 
-    def _play_speculative_wav(self, wav_path: str):
-        """Play a pre-generated speculative WAV. Mirrors _speak's playback
-        side-effects (last_wav for replay, state notifications)."""
+    def _speak_chunks(self, chunks: list[str], generation: int):
+        """Synthesize sentence chunks and play them in order."""
+        if not self._kokoro:
+            print(f"[tts_worker] Kokoro not loaded, skipping: {' '.join(chunks)[:80]}", file=sys.stderr)
+            self._finish_playback(generation)
+            return
+
+        played_wavs: list[str] = []
+        current_wav: str | None = None
+        next_thread: threading.Thread | None = None
+        next_result: dict[str, str | None] | None = None
+        completed = False
+
         try:
-            old_wav = self._last_wav
-            self._last_wav = wav_path
-            if old_wav and old_wav != wav_path:
-                try:
-                    os.remove(old_wav)
-                except OSError:
-                    pass
-            _notify_state("speaking")
-            cmd = ["afplay", wav_path]
-            if self._rate != 1.0:
-                cmd.extend(["-r", str(self._rate)])
-            self._current_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            current_wav = self._claim_speculation(chunks[0], timeout=30.0)
+            if not current_wav:
+                current_wav = self._synthesize_chunk(chunks[0], generation)
+
+            for index, _ in enumerate(chunks):
+                if not current_wav or not self._playback_is_current(generation):
+                    break
+
+                played_wavs.append(current_wav)
+                self._set_last_wav(current_wav, preserve_old=index > 0)
+
+                next_index = index + 1
+                if next_index < len(chunks):
+                    next_result = {"wav": None}
+                    next_thread = threading.Thread(
+                        target=self._synthesize_next_chunk,
+                        args=(chunks[next_index], generation, next_result),
+                        daemon=True,
+                    )
+                    next_thread.start()
+                else:
+                    next_result = None
+                    next_thread = None
+
+                self._play_wav_blocking(current_wav)
+
+                if not self._playback_is_current(generation):
+                    break
+
+                if next_thread and next_result is not None:
+                    next_thread.join()
+                    current_wav = next_result["wav"]
+                    next_thread = None
+                    next_result = None
+                else:
+                    current_wav = None
+
+            completed = (
+                self._playback_is_current(generation)
+                and len(played_wavs) == len(chunks)
             )
-            self._current_proc.wait()
+            if completed and len(played_wavs) > 1:
+                combined = self._combine_wavs(played_wavs)
+                if combined:
+                    self._last_wav = combined
+                    for wav in played_wavs:
+                        self._remove_wav(wav)
+                else:
+                    keep = self._last_wav
+                    for wav in played_wavs:
+                        if wav != keep:
+                            self._remove_wav(wav)
         except Exception as e:
-            print(f"[tts_worker] Speculative playback error: {e}", file=sys.stderr)
+            print(f"[tts_worker] TTS error: {e}", file=sys.stderr)
         finally:
+            if next_result and next_result.get("wav"):
+                self._remove_wav(next_result["wav"])
+            if current_wav and current_wav not in played_wavs and current_wav != self._last_wav:
+                self._remove_wav(current_wav)
+            if not completed:
+                keep = self._last_wav
+                for wav in played_wavs:
+                    if wav != keep:
+                        self._remove_wav(wav)
+            self._finish_playback(generation)
+
+    def _synthesize_chunk(self, text: str, generation: int) -> str | None:
+        try:
+            wav = self._synthesize_to_wav(text)
+        except Exception as e:
+            print(f"[tts_worker] TTS error: {e}", file=sys.stderr)
+            return None
+        if wav and not self._playback_is_current(generation):
+            self._remove_wav(wav)
+            return None
+        return wav
+
+    def _synthesize_next_chunk(
+        self,
+        text: str,
+        generation: int,
+        result: dict[str, str | None],
+    ):
+        result["wav"] = self._synthesize_chunk(text, generation)
+
+    def _finish_playback(self, generation: int):
+        if getattr(self, "_playback_generation", 0) == generation:
             self._playing = False
-            self._current_proc = None
+            self._paused = False
             _notify_state("idle")
+        elif not self._playing:
+            _notify_state("idle")
+        self._current_proc = None
+
+    def _set_last_wav(self, wav_path: str, preserve_old: bool = False):
+        old_wav = self._last_wav
+        self._last_wav = wav_path
+        if old_wav and old_wav != wav_path and not preserve_old:
+            self._remove_wav(old_wav)
+
+    def _combine_wavs(self, wav_paths: list[str]) -> str | None:
+        if not wav_paths:
+            return None
+        wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(wav_fd)
+        try:
+            with wave.open(wav_paths[0], "rb") as first:
+                params = (
+                    first.getnchannels(),
+                    first.getsampwidth(),
+                    first.getframerate(),
+                    first.getcomptype(),
+                    first.getcompname(),
+                )
+                frames = first.readframes(first.getnframes())
+
+            with wave.open(wav_path, "wb") as out:
+                out.setnchannels(params[0])
+                out.setsampwidth(params[1])
+                out.setframerate(params[2])
+                out.setcomptype(params[3], params[4])
+                out.writeframes(frames)
+                for path in wav_paths[1:]:
+                    with wave.open(path, "rb") as source:
+                        source_params = (
+                            source.getnchannels(),
+                            source.getsampwidth(),
+                            source.getframerate(),
+                            source.getcomptype(),
+                            source.getcompname(),
+                        )
+                        if source_params != params:
+                            self._remove_wav(wav_path)
+                            return None
+                        out.writeframes(source.readframes(source.getnframes()))
+            return wav_path
+        except Exception as e:
+            print(f"[tts_worker] WAV combine error: {e}", file=sys.stderr)
+            self._remove_wav(wav_path)
+            return None
+
+    def _remove_wav(self, wav_path: str | None):
+        if not wav_path:
+            return
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
 
     def _play_chime(self):
         if not os.path.exists(self._chime):
