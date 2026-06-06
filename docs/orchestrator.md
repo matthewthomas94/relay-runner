@@ -14,15 +14,15 @@ scripts/relay-orchestrator --status
 
 You should see a running daemon, a port file, and an installed plist.
 
-### 1. Open a `/relay-bridge` agent session in the repo
+### 1. Open a `/relay-bridge` agent session in a repo or workspace folder
 
-The board is scoped to whichever repo your active `/relay-bridge` agent session is rooted in. From a Codex or Claude session whose cwd is the project you want to work on:
+The board is scoped to whichever project or workspace folder your active `/relay-bridge` agent session is rooted in. From a Codex or Claude session whose cwd is the repo or workspace you want to work on:
 
 ```
 /relay-bridge
 ```
 
-The bridge records its launching cwd to `/tmp/voice_bridge.cwd` so the menu-bar app can activate the containing project. If that cwd is inside an existing git repo, the project registry stores the repo path, display name, last-seen time, and provider activation metadata, then the board uses the repo root. If the repo has no `.orchestrator/config.toml`, activation initializes it with a repo-derived prefix (`mouse-assist` -> `MA`) and `next_id = 1`. If the cwd is not inside a git repo yet, activation is refused; run `git init` yourself before activating the folder. Codex and Claude use the same activation model, with provider-specific metadata recorded under the provider label when the caller supplies one. Without a live bridge (no `/tmp/voice_bridge.sock`) or another explicit activation, the board's `⌃⌥` hotkey surfaces the same "No session running" pill that appears when you try to record voice out of session. Switching projects means stopping one bridge (or running `/relay-stop`) and starting another from the new repo's cwd, or using a programmatic activation path by repo path or known alias.
+The bridge records its launching cwd to `/tmp/voice_bridge.cwd` so the menu-bar app can classify the active location. If that cwd is a folder with child git repos, Relay Runner registers the folder as a workspace root, records the child projects, and opens the read-only Program Board. It does not create a parent `.orchestrator/`. If the cwd is a single git repo, the project registry stores the repo path, display name, last-seen time, and provider activation metadata, then the board uses the repo root. If the repo has no `.orchestrator/config.toml`, activation initializes it with a repo-derived prefix (`mouse-assist` -> `MA`) and `next_id = 1`. If the cwd is neither a git repo nor a workspace folder containing child repos, activation is refused; run `git init` yourself or select a folder that already contains git repos. Codex and Claude use the same activation model, with provider-specific metadata recorded under the provider label when the caller supplies one. Without a live bridge (no `/tmp/voice_bridge.sock`) or another explicit activation, the board's `⌃⌥` hotkey surfaces the same "No session running" pill that appears when you try to record voice out of session. Switching projects means stopping one bridge (or running `/relay-stop`) and starting another from the new repo or workspace cwd, or using a programmatic activation path by repo path or known alias.
 
 ### 2. Write a ticket
 
@@ -110,7 +110,15 @@ Tickets live as version-controlled markdown under `<repo>/.orchestrator/`. Reads
 
 ## Which board you see
 
-The active `/relay-bridge` agent session remains the common project picker: when the bridge starts, it writes its launching cwd to `/tmp/voice_bridge.cwd`; the menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` as liveness check), finds the containing git repo if one exists, registers and activates it, and renders the `.orchestrator/` inside it. For a fresh git repo, the first activation creates `.orchestrator/config.toml` and renders an empty board. If the cwd is not inside a git repo, activation is refused instead of running `git init`; initialize the folder explicitly first. Programmatic callers can activate a project by repo path or registered alias, and the Relay Actions MCP exposes the same path as `activate_project`, giving Codex, Claude, MCP, and UI code a provider-neutral activation model. With no live bridge or explicit activation, the board's `⌃⌥` hotkey shows the same "No session running" pill as the record-out-of-session path instead of opening. Switch projects by stopping one bridge (or `/relay-stop`) and starting another from the new repo's cwd, or by explicitly activating another registered repo.
+The active `/relay-bridge` agent session remains the common project picker: when the bridge starts, it writes its launching cwd to `/tmp/voice_bridge.cwd`; the menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` as liveness check) and classifies it through the active project registry.
+
+If the bridge cwd is a workspace folder with child git repos, the registry stores the workspace root and discovered projects, then the board opens the read-only Program Board. The workspace root does not get a parent `.orchestrator/`, and discovered child repos are not initialized just because they were discovered.
+
+If the bridge cwd is a single git repo, the registry activates that repo and renders the repo's `.orchestrator/` board. For a fresh git repo, first activation creates `.orchestrator/config.toml` and renders an empty board. If the cwd is not a git repo and contains no child git repos, activation is refused instead of running `git init`; initialize the folder explicitly first.
+
+The General setting is still stored as `working_directory` in `config.toml` for compatibility, but the UI now treats it as the workspace folder. Existing users migrate through the same resolver on app launch, provider change, or saved setting change: a legacy repo path becomes the active project board, while a legacy parent folder such as `/Users/matthewthomas/dev` becomes a workspace root if it contains child repos. Start Session launches both Codex and Claude from that configured folder and writes the same provider metadata shape (`codex` or `claude`) for board routing.
+
+Programmatic callers can activate a project by repo path or registered alias, and the Relay Actions MCP exposes the same path as `activate_project`, giving Codex, Claude, MCP, and UI code a provider-neutral activation model. With no live bridge or explicit activation, the board's `⌃⌥` hotkey shows the same "No session running" pill as the record-out-of-session path instead of opening. Switch projects by stopping one bridge (or `/relay-stop`) and starting another from the new repo or workspace cwd, or by explicitly activating another registered repo.
 
 The full file format is documented at [docs/specs/orchestrator-tickets.md](specs/orchestrator-tickets.md).
 
