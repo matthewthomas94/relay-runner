@@ -331,6 +331,25 @@ def _strip_markdown_for_tts(text: str) -> str:
     return re.sub(r"[*_`]", "", text)          # any remaining markers
 
 
+def _queue_tts_text(
+    text: str,
+    tts_queue: queue.Queue,
+    command_path: str = VOICE_CMD_FILE,
+) -> bool:
+    """Queue TTS unless a newer Relay command is already waiting."""
+    text = _strip_markdown_for_tts(text.strip()).strip()
+    if not text:
+        return False
+    if os.path.exists(command_path):
+        print(
+            "[voice_bridge] Dropping TTS because a newer voice command is pending.",
+            file=sys.stderr,
+        )
+        return False
+    tts_queue.put(text)
+    return True
+
+
 def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
     """Read text from TTS input FIFO and put on TTS queue (relay mode only)."""
     while not shutdown_event.is_set():
@@ -339,9 +358,7 @@ def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
                 for line in f:
                     if shutdown_event.is_set():
                         break
-                    text = _strip_markdown_for_tts(line.strip()).strip()
-                    if text:
-                        tts_queue.put(text)
+                    _queue_tts_text(line, tts_queue)
         except OSError:
             if not shutdown_event.is_set():
                 import time
@@ -474,12 +491,12 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                 pass
 
 
-def _write_cmd_file(text: str):
+def _write_cmd_file(text: str, path: str = VOICE_CMD_FILE):
     """Atomically write a voice command to the ready file."""
-    tmp = VOICE_CMD_FILE + ".tmp"
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
         f.write(text)
-    os.rename(tmp, VOICE_CMD_FILE)
+    os.rename(tmp, path)
 
 
 def main():
