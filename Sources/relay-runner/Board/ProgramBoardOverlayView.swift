@@ -552,18 +552,129 @@ private struct ProgramInlineBadge: View {
 
 private struct ProgramScrollWell<Content: View>: View {
     let content: Content
+    @State private var scrollMetrics = ProgramScrollMetrics()
+    @State private var isScrollThumbVisible = false
+    @State private var hideScrollThumbTask: Task<Void, Never>?
 
     init(@ViewBuilder content: () -> Content) {
         self.content = content()
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            content
-                .padding(6)
-                .padding(.trailing, 8)
+        GeometryReader { outerProxy in
+            ZStack(alignment: .topTrailing) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    content
+                        .padding(6)
+                        .padding(.trailing, 8)
+                        .background(
+                            GeometryReader { contentProxy in
+                                Color.clear.preference(
+                                    key: ProgramScrollMetricsKey.self,
+                                    value: ProgramScrollMetrics(
+                                        offset: -contentProxy.frame(in: .named("programScrollWell")).minY,
+                                        contentHeight: contentProxy.size.height,
+                                        viewportHeight: outerProxy.size.height
+                                    )
+                                )
+                            }
+                        )
+                }
+                .coordinateSpace(name: "programScrollWell")
+
+                ProgramScrollThumb(metrics: scrollMetrics, isVisible: isScrollThumbVisible)
+                    .padding(.trailing, 2)
+                    .allowsHitTesting(false)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onPreferenceChange(ProgramScrollMetricsKey.self) { updateScrollMetrics($0) }
+        .onDisappear {
+            hideScrollThumbTask?.cancel()
+            hideScrollThumbTask = nil
+        }
+    }
+
+    private func updateScrollMetrics(_ newMetrics: ProgramScrollMetrics) {
+        let oldMetrics = scrollMetrics
+        scrollMetrics = newMetrics
+        guard newMetrics.isScrollable else {
+            hideScrollThumbTask?.cancel()
+            hideScrollThumbTask = nil
+            isScrollThumbVisible = false
+            return
+        }
+        guard oldMetrics.isMeasured,
+              abs(newMetrics.offset - oldMetrics.offset) > 0.75 else {
+            return
+        }
+        revealScrollThumb()
+    }
+
+    private func revealScrollThumb() {
+        hideScrollThumbTask?.cancel()
+        withAnimation(.easeOut(duration: 0.12)) {
+            isScrollThumbVisible = true
+        }
+        hideScrollThumbTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.22)) {
+                isScrollThumbVisible = false
+            }
+            hideScrollThumbTask = nil
+        }
+    }
+}
+
+private struct ProgramScrollThumb: View {
+    let metrics: ProgramScrollMetrics
+    let isVisible: Bool
+
+    var body: some View {
+        if metrics.isScrollable {
+            Capsule()
+                .fill(ProgramBoardStyle.primaryText.opacity(0.32))
+                .frame(width: 4, height: metrics.thumbHeight)
+                .offset(y: metrics.thumbOffset)
+                .opacity(isVisible ? 1 : 0)
+        }
+    }
+}
+
+private struct ProgramScrollMetrics: Equatable {
+    var offset: CGFloat = 0
+    var contentHeight: CGFloat = 0
+    var viewportHeight: CGFloat = 0
+
+    var isMeasured: Bool {
+        contentHeight > 0 && viewportHeight > 0
+    }
+
+    var isScrollable: Bool {
+        contentHeight > viewportHeight + 1
+    }
+
+    var thumbHeight: CGFloat {
+        guard isScrollable else { return 0 }
+        let trackHeight = max(0, viewportHeight - 12)
+        return min(trackHeight, max(28, trackHeight * viewportHeight / contentHeight))
+    }
+
+    var thumbOffset: CGFloat {
+        guard isScrollable else { return 0 }
+        let trackHeight = max(0, viewportHeight - 12)
+        let maxScroll = max(1, contentHeight - viewportHeight)
+        let scroll = min(max(offset, 0), maxScroll)
+        return 6 + (trackHeight - thumbHeight) * scroll / maxScroll
+    }
+}
+
+private struct ProgramScrollMetricsKey: PreferenceKey {
+    static var defaultValue = ProgramScrollMetrics()
+
+    static func reduce(value: inout ProgramScrollMetrics, nextValue: () -> ProgramScrollMetrics) {
+        value = nextValue()
     }
 }
 
