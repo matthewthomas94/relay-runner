@@ -53,20 +53,78 @@ enum OrchestratorClient {
     }
 
     static func fetchProgramDashboard(limit: Int = 20) async throws -> ProgramDashboardSnapshot {
-        async let summary = fetchProgramStatus(query: "summary", limit: limit)
-        async let discovery = fetchProgramStatus(query: "discovery_work", limit: limit)
-        async let active = fetchProgramStatus(query: "active_work", limit: limit)
-        async let blocked = fetchProgramStatus(query: "blocked_work", limit: limit)
-        async let done = fetchProgramStatus(query: "done_work", limit: limit)
-        async let awaitingMerge = fetchProgramStatus(query: "awaiting_merge", limit: limit)
+        try await buildProgramDashboard(limit: limit) { query, limit in
+            try await fetchProgramStatus(query: query, limit: limit)
+        }
+    }
+
+    static func buildProgramDashboard(
+        limit: Int = 20,
+        fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse
+    ) async throws -> ProgramDashboardSnapshot {
+        async let summary = fetch("summary", limit)
+        async let active = fetch("active_work", limit)
+        async let blocked = fetch("blocked_work", limit)
+        async let awaitingMerge = fetch("awaiting_merge", limit)
+        let summaryResponse = try await summary
+        async let discovery = fetchProgramStatusWithFallback(
+            query: "discovery_work",
+            fallbackQuery: "ready_work",
+            limit: limit,
+            fetch: fetch
+        )
+        async let done = fetchProgramStatusOrEmpty(
+            query: "done_work",
+            limit: limit,
+            projectCount: summaryResponse.counts.projects,
+            fetch: fetch
+        )
         return try await ProgramDashboardSnapshot(
-            summary: summary,
+            summary: summaryResponse,
             discoveryWork: discovery,
             activeWork: active,
             blockedWork: blocked,
             doneWork: done,
             awaitingMerge: awaitingMerge
         )
+    }
+
+    private static func fetchProgramStatusWithFallback(
+        query: String,
+        fallbackQuery: String,
+        limit: Int,
+        fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse
+    ) async throws -> ProgramStatusResponse {
+        do {
+            return try await fetch(query, limit)
+        } catch {
+            guard OrchestratorClientError.isUnknownProgramStatusQuery(error) else {
+                throw error
+            }
+            return try await fetch(fallbackQuery, limit)
+        }
+    }
+
+    private static func fetchProgramStatusOrEmpty(
+        query: String,
+        limit: Int,
+        projectCount: Int,
+        fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse
+    ) async throws -> ProgramStatusResponse {
+        do {
+            return try await fetch(query, limit)
+        } catch {
+            guard OrchestratorClientError.isUnknownProgramStatusQuery(error) else {
+                throw error
+            }
+            return ProgramStatusResponse(
+                query: query,
+                provider: nil,
+                message: "No done work",
+                items: [],
+                counts: ProgramStatusCounts(projects: projectCount, items: 0)
+            )
+        }
     }
 
     static func fetchProgramStatus(query: String, limit: Int = 20) async throws -> ProgramStatusResponse {
@@ -152,6 +210,16 @@ enum OrchestratorClientError: Error, LocalizedError, Equatable {
     case invalidRequest
     case badStatus(Int, String)
     case decodeFailed(String)
+
+    static func isUnknownProgramStatusQuery(_ error: Error) -> Bool {
+        guard let clientError = error as? OrchestratorClientError else {
+            return false
+        }
+        if case .badStatus(400, let body) = clientError {
+            return body.localizedCaseInsensitiveContains("unknown program status query")
+        }
+        return false
+    }
 
     var errorDescription: String? {
         switch self {
