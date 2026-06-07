@@ -62,6 +62,10 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let blocked: Int?
     let awaitingMerge: Int?
     let staleRuns: Int?
+    let backlogTickets: Int?
+    let readyTickets: Int?
+    let inProgressTickets: Int?
+    let doneTickets: Int?
     let providers: [String]
     let providerHealth: [String]
 
@@ -95,6 +99,10 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         case blocked
         case awaitingMerge = "awaiting_merge"
         case staleRuns = "stale_runs"
+        case backlogTickets = "backlog_tickets"
+        case readyTickets = "ready_tickets"
+        case inProgressTickets = "in_progress_tickets"
+        case doneTickets = "done_tickets"
         case providers
         case providerHealth = "provider_health"
     }
@@ -118,6 +126,10 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         blocked = try values.decodeIfPresent(Int.self, forKey: .blocked)
         awaitingMerge = try values.decodeIfPresent(Int.self, forKey: .awaitingMerge)
         staleRuns = try values.decodeIfPresent(Int.self, forKey: .staleRuns)
+        backlogTickets = try values.decodeIfPresent(Int.self, forKey: .backlogTickets)
+        readyTickets = try values.decodeIfPresent(Int.self, forKey: .readyTickets)
+        inProgressTickets = try values.decodeIfPresent(Int.self, forKey: .inProgressTickets)
+        doneTickets = try values.decodeIfPresent(Int.self, forKey: .doneTickets)
         providers = try values.decodeIfPresent([String].self, forKey: .providers) ?? []
         providerHealth = try values.decodeIfPresent([String].self, forKey: .providerHealth) ?? []
     }

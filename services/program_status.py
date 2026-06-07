@@ -352,6 +352,7 @@ def _summary_items(
         if provider:
             tickets = [ticket for ticket in tickets if _ticket_matches_provider(ctx, ticket, provider)]
             runs = [run for run in runs if _run_matches_provider(run, provider)]
+        board_counts = _project_board_counts(ctx, tickets)
         items.append(
             {
                 "project": _project(project),
@@ -360,11 +361,49 @@ def _summary_items(
                 "blocked": sum(1 for ticket in tickets if ticket["id"] in blocked),
                 "awaiting_merge": sum(1 for ticket in tickets if ticket["id"] in awaiting),
                 "stale_runs": sum(1 for run in runs if run["id"] in stale),
+                **board_counts,
                 "providers": _project_provider_labels(project, runs, provider),
                 "provider_health": _provider_health(project, provider),
             }
         )
     return items
+
+
+def _project_board_counts(ctx: dict[str, Any], tickets: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        "backlog_tickets": 0,
+        "ready_tickets": 0,
+        "in_progress_tickets": 0,
+        "done_tickets": 0,
+    }
+    for ticket in tickets:
+        state = _project_board_state(ctx, ticket)
+        if state == "backlog":
+            counts["backlog_tickets"] += 1
+        elif state == "ready":
+            counts["ready_tickets"] += 1
+        elif state == "in_progress":
+            counts["in_progress_tickets"] += 1
+        elif state == "done":
+            counts["done_tickets"] += 1
+    return counts
+
+
+def _project_board_state(ctx: dict[str, Any], ticket: dict[str, Any]) -> str:
+    ticket_state = _key(_ticket_state(ticket))
+    latest_run = next(iter(ctx["runs_by_ticket"].get(ticket["id"], [])), None)
+    run_state = _run_state(latest_run)
+    if run_state in {"active", "stalled"}:
+        return "in_progress"
+    if run_state in {"awaiting_merge", "succeeded"} and ticket_state == "ready":
+        return "done"
+    if ticket_state in {"done", "closed", "completed", "awaitingmerge", "awaiting_merge"}:
+        return "done"
+    if ticket_state in {"inprogress", "in_progress"}:
+        return "in_progress"
+    if ticket_state == "ready":
+        return "ready"
+    return "backlog"
 
 
 def _run_item(ctx: dict[str, Any], run: dict[str, Any], status: str) -> dict[str, Any]:

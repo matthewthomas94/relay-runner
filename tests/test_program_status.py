@@ -130,6 +130,26 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual(result["items"], [])
         self.assertIn("No registered projects are indexed in Graphify Core", result["message"])
 
+    def test_summary_includes_project_board_overview_counts(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        _ticket(store, project, "RR-1", "Backlog work", "backlog")
+        _ticket(store, project, "RR-2", "Ready work", "ready")
+        active = _ticket(store, project, "RR-3", "Running work", "ready")
+        awaiting = _ticket(store, project, "RR-4", "Awaiting merge", "ready")
+        _ticket(store, project, "RR-5", "Finished work", "done")
+        _run(store, project, active, 101, "active", "codex", model="gpt-5")
+        _run(store, project, awaiting, 102, "awaiting_merge", "codex", model="gpt-5")
+
+        result = build_program_status(store, query="summary", now=2000.0)
+        item = result["items"][0]
+
+        self.assertEqual(item["backlog_tickets"], 1)
+        self.assertEqual(item["ready_tickets"], 1)
+        self.assertEqual(item["in_progress_tickets"], 1)
+        self.assertEqual(item["done_tickets"], 2)
+        self.assertEqual(item["awaiting_merge"], 1)
+
 
 def _project(
     store: GraphifyCoreStore,

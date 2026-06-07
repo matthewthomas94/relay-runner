@@ -17,6 +17,10 @@ final class ProgramBoardStatusTests: XCTestCase {
               "blocked": 1,
               "awaiting_merge": 1,
               "stale_runs": 0,
+              "backlog_tickets": 1,
+              "ready_tickets": 1,
+              "in_progress_tickets": 1,
+              "done_tickets": 1,
               "providers": ["Claude", "Codex"],
               "provider_health": []
             }
@@ -66,6 +70,10 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(snapshot.hasRegisteredProjects)
         XCTAssertTrue(snapshot.hasActiveWork)
         XCTAssertEqual(snapshot.projects.first?.providers, ["Claude", "Codex"])
+        XCTAssertEqual(snapshot.projects.first?.backlogTickets, 1)
+        XCTAssertEqual(snapshot.projects.first?.readyTickets, 1)
+        XCTAssertEqual(snapshot.projects.first?.inProgressTickets, 1)
+        XCTAssertEqual(snapshot.projects.first?.doneTickets, 1)
         XCTAssertEqual(snapshot.activeWork.items.map(\.provider), ["Codex/gpt-5", "Claude/sonnet"])
         XCTAssertEqual(snapshot.activeWork.items.first?.runID, "27")
     }

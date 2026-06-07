@@ -181,7 +181,11 @@ private struct ProgramMetricGrid: View {
             ProgramMetricTile(label: "Progress", value: "\(snapshot.inProgressItems.count)")
             ProgramMetricTile(label: "Blocked", value: "\(snapshot.blockedWork.items.count)")
             ProgramMetricTile(label: "Done", value: "\(snapshot.doneWork.items.count)")
-            ProgramMetricTile(label: "Merge", value: "\(snapshot.awaitingMerge.items.count)")
+            ProgramMetricTile(
+                label: "Awaiting merge",
+                value: "\(snapshot.awaitingMerge.items.count)",
+                help: "Agent work that has finished and is waiting to be merged back into its project."
+            )
         }
     }
 }
@@ -189,6 +193,7 @@ private struct ProgramMetricGrid: View {
 private struct ProgramMetricTile: View {
     let label: String
     let value: String
+    var help: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -206,6 +211,7 @@ private struct ProgramMetricTile: View {
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ProgramCardBackground(cornerRadius: 12))
+        .help(help ?? label)
     }
 }
 
@@ -234,12 +240,7 @@ private struct ProgramProjectCard: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            HStack(spacing: 6) {
-                ProjectCount(label: "open", value: item.openTickets)
-                ProjectCount(label: "active", value: item.activeRuns)
-                ProjectCount(label: "blocked", value: item.blocked)
-                ProjectCount(label: "merge", value: item.awaitingMerge)
-            }
+            ProjectBoardOverview(item: item)
 
             if let stale = item.staleRuns, stale > 0 {
                 Text("\(stale) stale")
@@ -263,17 +264,43 @@ private struct ProgramProjectCard: View {
     }
 }
 
+private struct ProjectBoardOverview: View {
+    let item: ProgramStatusItem
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10),
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
+            ProjectCount(label: "Backlog", value: item.backlogTickets ?? item.openTickets)
+            ProjectCount(label: "Ready", value: item.readyTickets)
+            ProjectCount(label: "In progress", value: item.inProgressTickets ?? item.activeRuns)
+            ProjectCount(label: "Done", value: item.doneTickets)
+        }
+        .help("Project board overview")
+    }
+}
+
 private struct ProjectCount: View {
     let label: String
     let value: Int?
 
     var body: some View {
-        Text("\(value ?? 0) \(label)")
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(ProgramBoardStyle.secondaryText)
-            .monospacedDigit()
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(label)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .lineLimit(1)
+            Text("\(value ?? 0)")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .minimumScaleFactor(0.8)
     }
 }
 
@@ -537,15 +564,6 @@ private struct ProgramScrollWell<Content: View>: View {
                 .padding(.trailing, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.black.opacity(0.18))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.white.opacity(0.07), lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
 
