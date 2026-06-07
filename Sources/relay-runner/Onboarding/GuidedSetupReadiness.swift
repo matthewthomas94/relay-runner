@@ -128,7 +128,7 @@ struct GuidedSetupReadiness: Equatable {
         guard voiceReady else { return [] }
         var items: [String] = []
         if inputMonitoring != .granted {
-            items.append("Input Monitoring is deferred, so non-Caps-Lock activation keys and the Control+Option board hotkey stay disabled.")
+            items.append("Input Monitoring is deferred, so non-Caps-Lock activation keys and the Control+Option+Command board hotkey stay disabled.")
         }
         if !parentPermissionsReviewed {
             items.append("Parent-app Accessibility and Screen Recording are deferred, so Relay Actions and Relay Vision may prompt again after the session starts.")

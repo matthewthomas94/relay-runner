@@ -149,7 +149,7 @@ Each repo owns its own `.orchestrator/` directory, its own prefix, and its own I
 
 **Workspace-folder migration.** The app-level config key remains `general.working_directory` for compatibility with existing installs, but the UI and resolver interpret it as a workspace folder. On app launch, provider change, and saved setting change, the configured path is refreshed through the same classifier used by Start Session and bridge cwd routing. A legacy single-repo value migrates to an active project and may initialize that repo's `.orchestrator/config.toml`; a legacy parent folder value migrates to a workspace root if it contains child git repos and must not create a parent `.orchestrator/`.
 
-Without a live bridge, the board's `⌃⌥` hotkey surfaces the same "No session running" pill that fires when the user tries to record voice out of session, rather than opening — better to teach the rule (and reuse a known UI surface) than to silently open the wrong project or no project at all.
+Without a live bridge, the board's `⌃⌥⌘` hotkey surfaces the same "No session running" pill that fires when the user tries to record voice out of session, rather than opening — better to teach the rule (and reuse a known UI surface) than to silently open the wrong project or no project at all.
 
 If the user switches projects (kills the bridge in repo A, launches a new one in repo B), the next toggle reflects repo B's `.orchestrator/`. A menu-bar-driven picker for browsing other repos' boards is a later enhancement, not part of the current implementation.
 

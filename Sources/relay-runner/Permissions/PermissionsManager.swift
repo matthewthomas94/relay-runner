@@ -26,7 +26,7 @@ enum PermissionStatus: Equatable {
 /// - Accessibility: enables media-pause when recording starts; required by
 ///   the Relay Actions MCP server to post CGEvents (clicks, keystrokes).
 /// - Input Monitoring: required to capture non-Caps-Lock global activation
-///   keys and the Control+Option board hotkey.
+///   keys and the Control+Option+Command board hotkey.
 /// - Screen Recording: required by the Relay Vision MCP server's
 ///   `screenshot` tool. Without it, the screenshot tool returns a clear
 ///   error string but the rest of the app keeps working.

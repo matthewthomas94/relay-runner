@@ -1323,7 +1323,7 @@ struct OnboardingView: View {
         case .accessibility:
             return "So Relay Runner can detect your Caps Lock (or configured trigger key) no matter which app you're using, it needs Accessibility access. This is also how it pauses media when you start talking."
         case .inputMonitoring:
-            return "Input Monitoring lets Relay Runner capture global keyboard events. It enables non-Caps-Lock activation keys and the Control+Option board hotkey; voice still works with microphone permission alone if you skip it."
+            return "Input Monitoring lets Relay Runner capture global keyboard events. It enables non-Caps-Lock activation keys and the Control+Option+Command board hotkey; voice still works with microphone permission alone if you skip it."
         case .screenRecording:
             return "Optional. Required only when you ask the agent to take a screenshot or walk through an app for UAT. Voice transcription and speech don't need it."
         }
@@ -1424,11 +1424,11 @@ struct OnboardingView: View {
         case .granted:
             return nil
         case .notDetermined:
-            return "Voice works with microphone permission alone. Grant Input Monitoring later to enable non-Caps-Lock activation keys and the Control+Option board hotkey."
+            return "Voice works with microphone permission alone. Grant Input Monitoring later to enable non-Caps-Lock activation keys and the Control+Option+Command board hotkey."
         case .denied:
-            return "Voice works with microphone permission alone. Restore Input Monitoring to re-enable non-Caps-Lock activation keys and the Control+Option board hotkey."
+            return "Voice works with microphone permission alone. Restore Input Monitoring to re-enable non-Caps-Lock activation keys and the Control+Option+Command board hotkey."
         case .restricted:
-            return "Voice works with microphone permission alone, but a device policy appears to block Input Monitoring. Ask IT to allow Relay Runner before global activation keys and the Control+Option board hotkey can work."
+            return "Voice works with microphone permission alone, but a device policy appears to block Input Monitoring. Ask IT to allow Relay Runner before global activation keys and the Control+Option+Command board hotkey can work."
         }
     }
 

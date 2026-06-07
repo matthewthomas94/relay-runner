@@ -321,7 +321,7 @@ private struct BoardColumnPanel: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
         .frame(width: 358, height: 633, alignment: .topLeading)
-        .background(PillGlassBackground(cornerRadius: 16))
+        .background(BoardGlassBackground(cornerRadius: 16))
         // Report frame for drag hit-testing. Placed after the background so
         // the geometry matches the visible panel rect.
         .background(
@@ -458,7 +458,7 @@ private struct NewTicketButton: View {
 ///   - Each tint / gradient / specular / border layer is applied via its own
 ///     `.overlay { ... }` so SwiftUI keeps them as sibling layers rather than
 ///     fusing them into one compositing group.
-private struct PillGlassBackground: View {
+struct BoardGlassBackground: View {
     let cornerRadius: CGFloat
 
     var body: some View {
@@ -830,7 +830,7 @@ private struct TicketEditorModal: View {
             }
             .padding(20)
             .frame(width: 520)
-            .background(PillGlassBackground(cornerRadius: 16))
+            .background(BoardGlassBackground(cornerRadius: 16))
             .shadow(color: Color.black.opacity(0.5), radius: 30, x: 0, y: 10)
             .onTapGesture { /* swallow */ }
             .onAppear { titleFocused = true }

@@ -214,10 +214,10 @@ struct StatusSettingsTab: View {
         case .denied where kind == .microphone:
             return "Denied — click Ask Again to show Apple's microphone prompt."
         case .denied where kind == .inputMonitoring:
-            return "Denied — global activation keys and the Control+Option board hotkey are disabled until restored."
+            return "Denied — global activation keys and the Control+Option+Command board hotkey are disabled until restored."
         case .denied:        return "Denied — open System Settings to allow."
         case .notDetermined where kind == .inputMonitoring:
-            return "Not set up — grant to enable global activation keys and the Control+Option board hotkey."
+            return "Not set up — grant to enable global activation keys and the Control+Option+Command board hotkey."
         case .notDetermined: return "Not yet requested."
         case .restricted:    return "Restricted by system policy."
         }

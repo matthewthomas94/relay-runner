@@ -29,13 +29,13 @@ final class BoardOverlayController {
     private var runStatePollTimer: Timer?
     private var currentProject: ProjectResolver.LinkedProject?
 
-    /// Gesture state for the modifier-only ⌃⌥ hotkey. NSEvent doesn't have a
-    /// native "hotkey is two modifiers and no letter" abstraction — we drive
-    /// it off `.flagsChanged` instead. Press Control+Option together, release
-    /// either to toggle. If any key is pressed while both modifiers are held
-    /// (e.g. ⌃⌥+Arrow for word-selection in text editors), `sawKeyDownDuringGesture`
-    /// aborts so the toggle doesn't fire on incidental modifier use.
-    private var bothModifiersHeld = false
+    /// Gesture state for the modifier-only ⌃⌥⌘ hotkey. NSEvent doesn't have a
+    /// native "hotkey is only modifiers and no letter" abstraction — we drive
+    /// it off `.flagsChanged` instead. Press Control+Option+Command together,
+    /// release any modifier to toggle. If any key is pressed while the chord is
+    /// held (e.g. ⌃⌥⌘+Arrow), `sawKeyDownDuringGesture` aborts so the toggle
+    /// doesn't fire on incidental modifier use.
+    private var boardChordHeld = false
     private var sawKeyDownDuringGesture = false
 
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
@@ -64,10 +64,10 @@ final class BoardOverlayController {
         runStatePollTimer?.invalidate()
     }
 
-    /// Install global keyboard hooks: ⌃⌥ (Control+Option pressed together,
-    /// no letter) toggles the board (works from any app); Esc dismisses while
-    /// the board is visible. Both rely on Relay Runner's Input Monitoring
-    /// permission.
+    /// Install global keyboard hooks: ⌃⌥⌘ (Control+Option+Command pressed
+    /// together, no letter) toggles the routed board surface (works from any
+    /// app); Esc dismisses while the board is visible. Both rely on Relay
+    /// Runner's Input Monitoring permission.
     ///
     /// Call once from `AppState.startOverlay` — `BoardOverlayController` is
     /// long-lived for the app's lifetime.
@@ -91,10 +91,10 @@ final class BoardOverlayController {
         case .flagsChanged:
             handleFlagsChanged(event)
         case .keyDown:
-            // Any keypress while both modifiers are held aborts the gesture —
-            // ⌃⌥+Arrow word-selection, ⌃⌥+Click for option-click-with-control,
-            // etc., should NOT fire the board toggle.
-            if bothModifiersHeld { sawKeyDownDuringGesture = true }
+            // Any keypress while the board chord is held aborts the gesture:
+            // Chord+Arrow/window shortcuts, etc., should NOT fire the board
+            // toggle.
+            if boardChordHeld { sawKeyDownDuringGesture = true }
             // Esc: cancel an open editor first, otherwise dismiss the board.
             if event.keyCode == 53, isVisible {
                 DispatchQueue.main.async { [weak self] in
@@ -109,18 +109,18 @@ final class BoardOverlayController {
 
     private func handleFlagsChanged(_ event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let hasBoth = flags.contains([.control, .option])
-        if hasBoth && !bothModifiersHeld {
-            // Both modifiers just became simultaneously held — start the
+        let hasBoardChord = flags.contains([.control, .option, .command])
+        if hasBoardChord && !boardChordHeld {
+            // The board chord just became simultaneously held — start the
             // gesture window. The toggle doesn't fire yet; we wait for
             // release to make sure no key was pressed in the interim.
-            bothModifiersHeld = true
+            boardChordHeld = true
             sawKeyDownDuringGesture = false
-        } else if !hasBoth && bothModifiersHeld {
-            // One or both modifiers released — gesture ends. Fire only if no
-            // key intercepted (i.e. this was a clean ⌃⌥-tap, not the start of
-            // a longer combo like ⌃⌥+Arrow).
-            bothModifiersHeld = false
+        } else if !hasBoardChord && boardChordHeld {
+            // One or more modifiers released — gesture ends. Fire only if no
+            // key intercepted (i.e. this was a clean ⌃⌥⌘ tap, not the start of
+            // a longer shortcut).
+            boardChordHeld = false
             if !sawKeyDownDuringGesture {
                 DispatchQueue.main.async { [weak self] in self?.toggle() }
             }

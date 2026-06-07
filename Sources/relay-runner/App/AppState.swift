@@ -378,17 +378,11 @@ final class AppState {
         sttEngine?.toggleRecording()
     }
 
-    /// Show or hide the kanban-board overlay. Reads tickets from the linked
-    /// project's `.orchestrator/` on each show.
+    /// Show or hide the routed board overlay. Single-project sessions read
+    /// tickets from that repo's `.orchestrator/`; workspace sessions open the
+    /// read-only Program Board.
     func toggleBoard() {
         boardOverlay.toggle()
-    }
-
-    /// Show or hide the read-only cross-project Program Board. This uses the
-    /// orchestrator's Graphify Core status endpoint and does not require the
-    /// active project resolver.
-    func toggleProgramBoard() {
-        programBoardOverlay.toggle()
     }
 
     func activateProject(pathOrAlias: String, provider: String?) -> ProjectActivationReply {
@@ -597,7 +591,7 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Board overlay — install global ⌃⌥ / Esc hotkeys only once macOS has
+        // Board overlay — install global ⌃⌥⌘ / Esc hotkeys only once macOS has
         // already granted Input Monitoring. The menu and MCP toggle still work
         // without that optional permission, and deferring avoids a TCC prompt
         // during first launch.
