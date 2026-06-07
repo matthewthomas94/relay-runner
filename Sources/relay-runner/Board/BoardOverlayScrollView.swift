@@ -25,11 +25,14 @@ struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
 
 final class BoardOverlayScrollContainer: NSView {
     private let scrollView = NSScrollView()
+    private let documentView = BoardOverlayScrollDocumentView()
     private let hostingView: NSHostingView<AnyView>
     private let thumbView = NSView()
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
     private var hideWorkItem: DispatchWorkItem?
+    private var lastLaidOutWidth: CGFloat = 0
+    private var lastLaidOutHeight: CGFloat = 0
 
     init(rootView: AnyView) {
         hostingView = NSHostingView(rootView: rootView)
@@ -81,8 +84,8 @@ final class BoardOverlayScrollContainer: NSView {
 
     func update(rootView: AnyView) {
         hostingView.rootView = rootView
-        needsLayout = true
-        layoutSubtreeIfNeeded()
+        layoutDocument(force: true)
+        updateThumbFrame()
     }
 
     private func setup() {
@@ -95,9 +98,10 @@ final class BoardOverlayScrollContainer: NSView {
         scrollView.autohidesScrollers = true
         scrollView.scrollerStyle = .overlay
         scrollView.contentView.postsBoundsChangedNotifications = true
-        scrollView.documentView = hostingView
+        scrollView.documentView = documentView
         addSubview(scrollView)
 
+        documentView.addSubview(hostingView)
         hostingView.translatesAutoresizingMaskIntoConstraints = true
 
         thumbView.wantsLayer = true
@@ -120,14 +124,27 @@ final class BoardOverlayScrollContainer: NSView {
     }
 
     private func layoutDocument() {
+        layoutDocument(force: false)
+    }
+
+    private func layoutDocument(force: Bool) {
         let viewport = scrollView.contentView.bounds.size
         guard viewport.width > 0 else { return }
+        if !force,
+           abs(viewport.width - lastLaidOutWidth) < 0.5,
+           lastLaidOutHeight > 0 {
+            return
+        }
         hostingView.frame = CGRect(origin: .zero, size: CGSize(width: viewport.width, height: 1))
         let fittingHeight = hostingView.fittingSize.height
-        hostingView.frame = CGRect(
+        let documentHeight = max(viewport.height, fittingHeight)
+        documentView.frame = CGRect(
             origin: .zero,
-            size: CGSize(width: viewport.width, height: max(viewport.height, fittingHeight))
+            size: CGSize(width: viewport.width, height: documentHeight)
         )
+        hostingView.frame = documentView.bounds
+        lastLaidOutWidth = viewport.width
+        lastLaidOutHeight = documentHeight
     }
 
     @objc private func contentBoundsDidChange() {
@@ -148,7 +165,7 @@ final class BoardOverlayScrollContainer: NSView {
     }
 
     private var contentHeight: CGFloat {
-        hostingView.frame.height
+        documentView.frame.height
     }
 
     private var scrollOffset: CGFloat {
@@ -210,4 +227,8 @@ final class BoardOverlayScrollContainer: NSView {
         hideWorkItem?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
+}
+
+final class BoardOverlayScrollDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }
