@@ -54,15 +54,17 @@ enum OrchestratorClient {
 
     static func fetchProgramDashboard(limit: Int = 20) async throws -> ProgramDashboardSnapshot {
         async let summary = fetchProgramStatus(query: "summary", limit: limit)
+        async let discovery = fetchProgramStatus(query: "discovery_work", limit: limit)
         async let active = fetchProgramStatus(query: "active_work", limit: limit)
-        async let ready = fetchProgramStatus(query: "ready_work", limit: limit)
         async let blocked = fetchProgramStatus(query: "blocked_work", limit: limit)
+        async let done = fetchProgramStatus(query: "done_work", limit: limit)
         async let awaitingMerge = fetchProgramStatus(query: "awaiting_merge", limit: limit)
         return try await ProgramDashboardSnapshot(
             summary: summary,
+            discoveryWork: discovery,
             activeWork: active,
-            readyWork: ready,
             blockedWork: blocked,
+            doneWork: done,
             awaitingMerge: awaitingMerge
         )
     }

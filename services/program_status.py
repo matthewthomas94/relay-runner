@@ -15,18 +15,22 @@ from graphify_core import (
 )
 
 QUERY_ACTIVE = "active_work"
+QUERY_DISCOVERY = "discovery_work"
 QUERY_READY = "ready_work"
 QUERY_BLOCKED = "blocked_work"
 QUERY_AWAITING_MERGE = "awaiting_merge"
+QUERY_DONE = "done_work"
 QUERY_STALE_RUNS = "stale_runs"
 QUERY_SUMMARY = "summary"
 QUERY_NEXT = "next"
 
 PROGRAM_STATUS_QUERIES = (
     QUERY_ACTIVE,
+    QUERY_DISCOVERY,
     QUERY_READY,
     QUERY_BLOCKED,
     QUERY_AWAITING_MERGE,
+    QUERY_DONE,
     QUERY_STALE_RUNS,
     QUERY_SUMMARY,
     QUERY_NEXT,
@@ -39,6 +43,10 @@ QUERY_ALIASES = {
     "active_work": QUERY_ACTIVE,
     "agents": QUERY_ACTIVE,
     "all_agents": QUERY_ACTIVE,
+    "discovery": QUERY_DISCOVERY,
+    "discovery_work": QUERY_DISCOVERY,
+    "backlog": QUERY_DISCOVERY,
+    "planned": QUERY_DISCOVERY,
     "ready": QUERY_READY,
     "ready_work": QUERY_READY,
     "ready_tickets": QUERY_READY,
@@ -47,6 +55,10 @@ QUERY_ALIASES = {
     "awaiting": QUERY_AWAITING_MERGE,
     "awaiting_merge": QUERY_AWAITING_MERGE,
     "merge": QUERY_AWAITING_MERGE,
+    "done": QUERY_DONE,
+    "done_work": QUERY_DONE,
+    "closed": QUERY_DONE,
+    "completed": QUERY_DONE,
     "stale": QUERY_STALE_RUNS,
     "stale_runs": QUERY_STALE_RUNS,
     "stalled": QUERY_STALE_RUNS,
@@ -104,6 +116,10 @@ def build_program_status(
         items = [_run_item(ctx, run, "active") for run in _active_runs(ctx, provider_key)]
         return _response(query, provider_key, _items_text("Active work", "run", items, ctx, limit), items[:limit], ctx)
 
+    if query == QUERY_DISCOVERY:
+        items = [_ticket_item(ctx, ticket, "discovery") for ticket in _discovery_tickets(ctx, provider_key)]
+        return _response(query, provider_key, _items_text("Discovery", "ticket", items, ctx, limit), items[:limit], ctx)
+
     if query == QUERY_READY:
         items = [_ticket_item(ctx, ticket, "ready") for ticket in _ready_tickets(ctx, provider_key)]
         return _response(query, provider_key, _items_text("Ready work", "ticket", items, ctx, limit), items[:limit], ctx)
@@ -124,6 +140,10 @@ def build_program_status(
             items[:limit],
             ctx,
         )
+
+    if query == QUERY_DONE:
+        items = [_ticket_item(ctx, ticket, "done") for ticket in _done_tickets(ctx, provider_key)]
+        return _response(query, provider_key, _items_text("Done work", "ticket", items, ctx, limit), items[:limit], ctx)
 
     if query == QUERY_STALE_RUNS:
         items = [
@@ -224,6 +244,25 @@ def _ready_tickets(ctx: dict[str, Any], provider: str | None) -> list[dict[str, 
     ]
 
 
+def _discovery_tickets(ctx: dict[str, Any], provider: str | None) -> list[dict[str, Any]]:
+    blocked_ids = set(ctx["blockers"]) | ctx["blocked_work"]
+    awaiting_ids = {ticket["id"] for ticket in _awaiting_merge_tickets(ctx, provider)}
+    active_ticket_ids = {
+        ticket["id"]
+        for run in _active_runs(ctx, provider)
+        if (ticket := ctx["ticket_by_run"].get(run["id"]))
+    }
+    return [
+        ticket
+        for ticket in sorted(ctx["tickets"], key=_ticket_sort_key)
+        if _key(_ticket_state(ticket)) in {"backlog", "ready", "discovery"}
+        and ticket["id"] not in blocked_ids
+        and ticket["id"] not in awaiting_ids
+        and ticket["id"] not in active_ticket_ids
+        and _ticket_matches_provider(ctx, ticket, provider)
+    ]
+
+
 def _awaiting_merge_tickets(ctx: dict[str, Any], provider: str | None) -> list[dict[str, Any]]:
     ticket_ids = set(ctx["awaiting_merge"]) | {
         ticket["id"]
@@ -240,6 +279,15 @@ def _awaiting_merge_tickets(ctx: dict[str, Any], provider: str | None) -> list[d
         ticket
         for ticket in sorted(ctx["tickets"], key=_ticket_sort_key)
         if ticket["id"] in ticket_ids and _ticket_matches_provider(ctx, ticket, provider)
+    ]
+
+
+def _done_tickets(ctx: dict[str, Any], provider: str | None) -> list[dict[str, Any]]:
+    return [
+        ticket
+        for ticket in sorted(ctx["tickets"], key=_ticket_sort_key)
+        if _key(_ticket_state(ticket)) in {"done", "closed", "completed"}
+        and _ticket_matches_provider(ctx, ticket, provider)
     ]
 
 
@@ -369,9 +417,11 @@ def _items_text(
     if not items:
         empty = {
             QUERY_ACTIVE: "No active program runs",
+            QUERY_DISCOVERY: "No discovery work",
             QUERY_READY: "No ready work",
             QUERY_BLOCKED: "No blocked work",
             QUERY_AWAITING_MERGE: "No tickets awaiting merge",
+            QUERY_DONE: "No done work",
             QUERY_STALE_RUNS: "No stale or stalled runs",
             QUERY_NEXT: "No immediate program attention items",
         }.get(_key(title), f"No {title.lower()}")

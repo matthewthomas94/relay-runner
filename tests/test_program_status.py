@@ -89,6 +89,38 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertNotIn("RR-3", result["message"])
         self.assertNotIn("RR-4", result["message"])
 
+    def test_discovery_work_includes_backlog_and_ready_without_active_or_blocked_items(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        backlog = _ticket(store, project, "RR-1", "Shape program lane", "backlog")
+        ready = _ticket(store, project, "RR-2", "Ready but not active", "ready")
+        active = _ticket(store, project, "RR-3", "Running now", "ready")
+        blocker = _ticket(store, project, "RR-4", "Blocking work", "in_progress")
+        blocked = _ticket(store, project, "RR-5", "Blocked discovery", "backlog")
+        done = _ticket(store, project, "RR-6", "Already done", "done")
+        _run(store, project, active, 101, "active", "codex", model="gpt-5")
+        store.upsert_edge(src_id=blocker["id"], dst_id=blocked["id"], kind=EDGE_BLOCKS)
+
+        result = build_program_status(store, query="discovery_work", now=2000.0)
+
+        self.assertEqual([item["ticket_id"] for item in result["items"]], ["RR-1", "RR-2"])
+        self.assertIn("Discovery: 2 tickets", result["message"])
+        self.assertNotIn("RR-3", result["message"])
+        self.assertNotIn("RR-5", result["message"])
+        self.assertNotIn("RR-6", result["message"])
+
+    def test_done_work_includes_done_tickets(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        _ticket(store, project, "RR-1", "Finished work", "done")
+        _ticket(store, project, "RR-2", "Open work", "ready")
+
+        result = build_program_status(store, query="done_work", now=2000.0)
+
+        self.assertEqual([item["ticket_id"] for item in result["items"]], ["RR-1"])
+        self.assertIn("Done work: 1 ticket", result["message"])
+        self.assertNotIn("RR-2", result["message"])
+
     def test_no_projects_has_clear_indexing_message(self):
         store = self.make_store()
 

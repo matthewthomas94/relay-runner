@@ -3,19 +3,26 @@ import SwiftUI
 
 struct ProgramDashboardSnapshot: Equatable {
     let summary: ProgramStatusResponse
+    let discoveryWork: ProgramStatusResponse
     let activeWork: ProgramStatusResponse
-    let readyWork: ProgramStatusResponse
     let blockedWork: ProgramStatusResponse
+    let doneWork: ProgramStatusResponse
     let awaitingMerge: ProgramStatusResponse
 
     var projects: [ProgramStatusItem] { summary.items }
     var projectCount: Int { summary.counts.projects }
+    var inProgressItems: [ProgramStatusItem] {
+        var seen = Set<String>()
+        return (activeWork.items + awaitingMerge.items).filter { item in
+            seen.insert(item.id).inserted
+        }
+    }
     var hasRegisteredProjects: Bool { projectCount > 0 }
     var hasActiveWork: Bool {
-        !activeWork.items.isEmpty ||
-            !readyWork.items.isEmpty ||
+        !discoveryWork.items.isEmpty ||
+            !inProgressItems.isEmpty ||
             !blockedWork.items.isEmpty ||
-            !awaitingMerge.items.isEmpty
+            !doneWork.items.isEmpty
     }
 }
 

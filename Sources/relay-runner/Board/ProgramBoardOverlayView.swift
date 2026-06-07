@@ -44,31 +44,27 @@ private struct ProgramBoardContent: View {
                         onDismiss: onDismiss
                     )
                     ProgramWorkColumnPanel(
-                        title: "Active",
-                        emptyText: "No active runs",
-                        tint: ProgramBoardStyle.green,
-                        items: snapshot.activeWork.items,
+                        title: "Discovery",
+                        emptyText: "No discovery work",
+                        items: snapshot.discoveryWork.items,
                         theme: model.theme
                     )
                     ProgramWorkColumnPanel(
-                        title: "Ready",
-                        emptyText: "No ready work",
-                        tint: ProgramBoardStyle.purple,
-                        items: snapshot.readyWork.items,
+                        title: "In progress",
+                        emptyText: "No active work",
+                        items: snapshot.inProgressItems,
                         theme: model.theme
                     )
                     ProgramWorkColumnPanel(
                         title: "Blocked",
                         emptyText: "No blocked work",
-                        tint: ProgramBoardStyle.red,
                         items: snapshot.blockedWork.items,
                         theme: model.theme
                     )
                     ProgramWorkColumnPanel(
-                        title: "Awaiting merge",
-                        emptyText: "No merge queue",
-                        tint: ProgramBoardStyle.amber,
-                        items: snapshot.awaitingMerge.items,
+                        title: "Done",
+                        emptyText: "No done work",
+                        items: snapshot.doneWork.items,
                         theme: model.theme
                     )
                 }
@@ -128,7 +124,7 @@ private struct ProgramOverviewColumn: View {
 
             ProgramSectionHeader(title: "Projects", count: snapshot.projects.count)
 
-            ScrollView {
+            ProgramScrollWell {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(snapshot.projects) { item in
                         ProgramProjectCard(item: item)
@@ -180,11 +176,12 @@ private struct ProgramMetricGrid: View {
 
     var body: some View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-            ProgramMetricTile(label: "Projects", value: "\(snapshot.projectCount)", tint: ProgramBoardStyle.blue)
-            ProgramMetricTile(label: "Active", value: "\(snapshot.activeWork.items.count)", tint: ProgramBoardStyle.green)
-            ProgramMetricTile(label: "Ready", value: "\(snapshot.readyWork.items.count)", tint: ProgramBoardStyle.purple)
-            ProgramMetricTile(label: "Blocked", value: "\(snapshot.blockedWork.items.count)", tint: ProgramBoardStyle.red)
-            ProgramMetricTile(label: "Merge", value: "\(snapshot.awaitingMerge.items.count)", tint: ProgramBoardStyle.amber)
+            ProgramMetricTile(label: "Projects", value: "\(snapshot.projectCount)")
+            ProgramMetricTile(label: "Discovery", value: "\(snapshot.discoveryWork.items.count)")
+            ProgramMetricTile(label: "Progress", value: "\(snapshot.inProgressItems.count)")
+            ProgramMetricTile(label: "Blocked", value: "\(snapshot.blockedWork.items.count)")
+            ProgramMetricTile(label: "Done", value: "\(snapshot.doneWork.items.count)")
+            ProgramMetricTile(label: "Merge", value: "\(snapshot.awaitingMerge.items.count)")
         }
     }
 }
@@ -192,20 +189,13 @@ private struct ProgramMetricGrid: View {
 private struct ProgramMetricTile: View {
     let label: String
     let value: String
-    let tint: Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(tint)
-                    .frame(width: 6, height: 6)
-                    .opacity(0.9)
-                Text(label)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    .lineLimit(1)
-            }
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+                .lineLimit(1)
             Text(value)
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
@@ -290,16 +280,12 @@ private struct ProjectCount: View {
 private struct ProgramWorkColumnPanel: View {
     let title: String
     let emptyText: String
-    let tint: Color
     let items: [ProgramStatusItem]
     let theme: ParticleFieldRenderer.Theme?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 8) {
-                Circle()
-                    .fill(tint)
-                    .frame(width: 7, height: 7)
                 Text(title)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
@@ -313,11 +299,10 @@ private struct ProgramWorkColumnPanel: View {
             }
             .padding(.bottom, 4)
 
-            if items.isEmpty {
-                ProgramColumnEmpty(text: emptyText)
-                    .frame(maxHeight: .infinity, alignment: .top)
-            } else {
-                ScrollView {
+            ProgramScrollWell {
+                if items.isEmpty {
+                    ProgramColumnEmpty(text: emptyText)
+                } else {
                     LazyVStack(alignment: .leading, spacing: 6) {
                         ForEach(items) { item in
                             ProgramWorkCard(item: item)
@@ -325,7 +310,6 @@ private struct ProgramWorkColumnPanel: View {
                     }
                 }
             }
-
             Spacer(minLength: 0)
         }
         .programColumnChrome(width: 270, theme: theme)
@@ -349,10 +333,16 @@ private struct ProgramWorkCard: View {
                     .multilineTextAlignment(.leading)
             }
 
-            Text(item.project?.name ?? "Unknown project")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-                .lineLimit(1)
+            HStack(alignment: .center, spacing: 6) {
+                Text(item.project?.name ?? "Unknown project")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if item.isAwaitingMerge {
+                    ProgramInlineBadge(label: "Awaiting merge")
+                }
+            }
 
             let details = detailParts
             if !details.isEmpty {
@@ -424,7 +414,6 @@ private struct ProgramColumnEmpty: View {
             .foregroundStyle(ProgramBoardStyle.mutedText)
             .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
             .padding(.horizontal, 10)
-            .background(ProgramCardBackground(cornerRadius: 16))
     }
 }
 
@@ -518,6 +507,48 @@ private struct ProgramCardBackground: View {
     }
 }
 
+private struct ProgramInlineBadge: View {
+    let label: String
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(ProgramBoardStyle.secondaryText)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.white.opacity(0.08)))
+            .overlay(Capsule().stroke(Color.white.opacity(0.10), lineWidth: 0.5))
+            .fixedSize()
+    }
+}
+
+private struct ProgramScrollWell<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            content
+                .padding(6)
+                .padding(.trailing, 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.black.opacity(0.18))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.white.opacity(0.07), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
 private struct ProgramBoardColumnChrome: ViewModifier {
     let width: CGFloat
     let theme: ParticleFieldRenderer.Theme?
@@ -552,15 +583,19 @@ private extension View {
     }
 }
 
+private extension ProgramStatusItem {
+    var isAwaitingMerge: Bool {
+        [status, runState, ticketState]
+            .compactMap { $0?.programStateKey }
+            .contains("awaiting_merge")
+    }
+}
+
 private enum ProgramBoardStyle {
     static let primaryText = Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0)
     static let secondaryText = Color(.sRGB, red: 203 / 255, green: 213 / 255, blue: 225 / 255, opacity: 0.78)
     static let mutedText = Color(.sRGB, red: 148 / 255, green: 163 / 255, blue: 184 / 255, opacity: 0.82)
-    static let green = Color(.sRGB, red: 52 / 255, green: 211 / 255, blue: 153 / 255, opacity: 1.0)
-    static let amber = Color(.sRGB, red: 245 / 255, green: 180 / 255, blue: 40 / 255, opacity: 1.0)
     static let red = Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 1.0)
-    static let blue = Color(.sRGB, red: 96 / 255, green: 165 / 255, blue: 250 / 255, opacity: 1.0)
-    static let purple = Color(.sRGB, red: 198 / 255, green: 191 / 255, blue: 249 / 255, opacity: 1.0)
 }
 
 private extension String {
@@ -568,5 +603,12 @@ private extension String {
         replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")
             .capitalized
+    }
+
+    var programStateKey: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
     }
 }

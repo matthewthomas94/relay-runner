@@ -54,12 +54,12 @@ final class ProgramBoardStatusTests: XCTestCase {
           "counts": {"projects": 1, "items": 2}
         }
         """)
-        let empty = emptyResponse(query: "ready_work")
         let snapshot = ProgramDashboardSnapshot(
             summary: summary,
+            discoveryWork: emptyResponse(query: "discovery_work"),
             activeWork: active,
-            readyWork: empty,
             blockedWork: emptyResponse(query: "blocked_work"),
+            doneWork: emptyResponse(query: "done_work"),
             awaitingMerge: emptyResponse(query: "awaiting_merge")
         )
 
