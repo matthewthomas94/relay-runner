@@ -295,7 +295,7 @@ private struct BoardColumnPanel: View {
             }
             .padding(.bottom, 4)
 
-            ScrollView {
+            BoardOverlayScrollView {
                 VStack(spacing: 6) {
                     ForEach(Array(tickets.enumerated()), id: \.element.id) { idx, ticket in
                         VStack(spacing: 0) {
