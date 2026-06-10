@@ -44,6 +44,9 @@ BRIDGE_RUNTIME_FILES=(
     "$VOICE_FIFO"
     "$BRIDGE_SOCK"
     "/tmp/voice_cmd_ready"
+    "/tmp/voice_cmd_ready.meta"
+    "/tmp/voice_command_state.json"
+    "/tmp/voice_cmd_claimed.json"
     "/tmp/tts_in.fifo"
     "/tmp/tts_control.sock"
     "/tmp/voice_bridge_heartbeat"
@@ -158,7 +161,7 @@ If not running, tell the user to start the Relay Runner menu bar app, then try `
 RELAY_CWD=$(pwd)
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 : > /tmp/voice_bridge.log
 RELAY_BRIDGE='__RELAY_BRIDGE__'
 RELAY_PROVIDER=claude
@@ -242,11 +245,15 @@ while [ ! -f /tmp/voice_cmd_ready ]; do
     [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }
 done
 cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
+meta_tmp="$cmd_tmp.meta"
 if mv /tmp/voice_cmd_ready "$cmd_tmp" 2>/dev/null; then
+    if [ -f /tmp/voice_cmd_ready.meta ] && mv /tmp/voice_cmd_ready.meta "$meta_tmp" 2>/dev/null; then
+        cp "$meta_tmp" /tmp/voice_cmd_claimed.json
+    fi
     cat "$cmd_tmp"
-    rm -f "$cmd_tmp"
+    rm -f "$cmd_tmp" "$meta_tmp"
 else
-    rm -f "$cmd_tmp"
+    rm -f "$cmd_tmp" "$meta_tmp"
     exit 0
 fi
 (while sleep 2; do touch /tmp/voice_bridge_heartbeat; done) & echo $! > /tmp/voice_bridge_heartbeat.pid
@@ -260,17 +267,23 @@ Relay messages are live steering input, not a serial queue. Newest intent wins f
 
 ```bash
 cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
+meta_tmp="$cmd_tmp.meta"
 if [ -f /tmp/voice_cmd_ready ] && mv /tmp/voice_cmd_ready "$cmd_tmp" 2>/dev/null; then
+    if [ -f /tmp/voice_cmd_ready.meta ] && mv /tmp/voice_cmd_ready.meta "$meta_tmp" 2>/dev/null; then
+        cp "$meta_tmp" /tmp/voice_cmd_claimed.json
+    fi
     cat "$cmd_tmp"
-    rm -f "$cmd_tmp"
+    rm -f "$cmd_tmp" "$meta_tmp"
 else
-    rm -f "$cmd_tmp"
+    rm -f "$cmd_tmp" "$meta_tmp"
 fi
 ```
 
 If the checkpoint prints a normal user message, stop following the stale request and handle the new message as the active instruction. If it prints `__INTERRUPT__`, silently return to waiting. Do not start new high-stakes or irreversible actions from stale instructions after a newer message arrives. If an action already completed, report that honestly when responding to the newest message.
 
 Already-running shell commands and MCP calls cannot be forcibly preempted by the bridge. Let them return, interrupt them only when the user explicitly canceled, then run this checkpoint before any follow-up action. Codex and Claude use the same cooperative preemption contract; no provider-specific hard cancellation is assumed.
+
+Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claimed.json`. Treat that seq/id as the authority for any ticket edit, ticket creation, dispatch, or TTS response from this command. Relay-orchestrator dispatches carry that metadata and the daemon rejects them if `/tmp/voice_command_state.json` names a newer command.
 
 ### Step 2: Process the input
 
@@ -291,7 +304,7 @@ After generating your response, tear down the background heartbeat refresher spa
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 touch /tmp/voice_bridge_heartbeat
 if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
-    rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+    rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
     RELAY_CWD=$(pwd)
     RELAY_BRIDGE='__RELAY_BRIDGE__'
     RELAY_PROVIDER=claude
@@ -311,13 +324,28 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
 fi
 ```
 
-Then send the TTS response. Keep it concise and conversational (strip markdown formatting, code blocks, and verbose explanations — speak the key points):
+Then send the TTS response with the claimed Relay command metadata. Keep it concise and conversational (strip markdown formatting, code blocks, and verbose explanations — speak the key points):
 
 ```bash
-echo 'YOUR_SPOKEN_RESPONSE' > /tmp/tts_in.fifo
+python3 - <<'PY' > /tmp/tts_in.fifo
+import json
+from pathlib import Path
+
+payload = {"text": "YOUR_SPOKEN_RESPONSE"}
+claim_path = Path("/tmp/voice_cmd_claimed.json")
+if claim_path.is_file():
+    try:
+        claim = json.loads(claim_path.read_text())
+        for key in ("relay_command_seq", "relay_command_id"):
+            if key in claim:
+                payload[key] = claim[key]
+    except (OSError, json.JSONDecodeError):
+        pass
+print(json.dumps(payload))
+PY
 ```
 
-Important: Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead. Use single quotes and escape any single quotes in your response (`'` becomes `'\''`). Only send the spoken summary, not the full detailed response.
+Important: Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead. Only send the spoken summary, not the full detailed response.
 
 ### Step 4: Loop
 
@@ -330,7 +358,7 @@ When the session ends (user says "stop listening", "exit voice", or similar), cl
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 launchctl remove com.relay.voicebridge 2>/dev/null || true
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 
 ## Important Notes
@@ -359,7 +387,7 @@ Stop the voice I/O bridge for this Claude session. Use this to end a `/relay-bri
 ```bash
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 
 2. Confirm it's stopped:
@@ -404,7 +432,7 @@ If not running, tell the user to start the Relay Runner menu bar app, then stop.
 ```bash
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 RELAY_CWD=$(pwd)
 : > /tmp/voice_bridge.log
 RELAY_BRIDGE='__RELAY_BRIDGE__'
@@ -480,11 +508,15 @@ while [ ! -f /tmp/voice_cmd_ready ]; do
     [ -S /tmp/voice_bridge.sock ] || { echo "__BRIDGE_DIED__"; exit 0; }
 done
 cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
+meta_tmp="$cmd_tmp.meta"
 if mv /tmp/voice_cmd_ready "$cmd_tmp" 2>/dev/null; then
+    if [ -f /tmp/voice_cmd_ready.meta ] && mv /tmp/voice_cmd_ready.meta "$meta_tmp" 2>/dev/null; then
+        cp "$meta_tmp" /tmp/voice_cmd_claimed.json
+    fi
     cat "$cmd_tmp"
-    rm -f "$cmd_tmp"
+    rm -f "$cmd_tmp" "$meta_tmp"
 else
-    rm -f "$cmd_tmp"
+    rm -f "$cmd_tmp" "$meta_tmp"
     exit 0
 fi
 (while sleep 2; do touch /tmp/voice_bridge_heartbeat; done) & echo $! > /tmp/voice_bridge_heartbeat.pid
@@ -496,17 +528,23 @@ Relay messages are live steering input, not a serial queue. Newest intent wins f
 
 ```bash
 cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
+meta_tmp="$cmd_tmp.meta"
 if [ -f /tmp/voice_cmd_ready ] && mv /tmp/voice_cmd_ready "$cmd_tmp" 2>/dev/null; then
+    if [ -f /tmp/voice_cmd_ready.meta ] && mv /tmp/voice_cmd_ready.meta "$meta_tmp" 2>/dev/null; then
+        cp "$meta_tmp" /tmp/voice_cmd_claimed.json
+    fi
     cat "$cmd_tmp"
-    rm -f "$cmd_tmp"
+    rm -f "$cmd_tmp" "$meta_tmp"
 else
-    rm -f "$cmd_tmp"
+    rm -f "$cmd_tmp" "$meta_tmp"
 fi
 ```
 
 If the checkpoint prints a normal user message, stop following the stale request and handle the new message as the active instruction. If it prints `__INTERRUPT__`, silently return to waiting. Do not start new high-stakes or irreversible actions from stale instructions after a newer message arrives. If an action already completed, report that honestly when responding to the newest message.
 
 Already-running shell commands and MCP calls cannot be forcibly preempted by the bridge. Let them return, interrupt them only when the user explicitly canceled, then run this checkpoint before any follow-up action. Codex and Claude use the same cooperative preemption contract; no provider-specific hard cancellation is assumed.
+
+Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claimed.json`. Treat that seq/id as the authority for any ticket edit, ticket creation, dispatch, or TTS response from this command. Relay-orchestrator dispatches carry that metadata and the daemon rejects them if `/tmp/voice_command_state.json` names a newer command.
 
 Interpret the text:
 - `__BRIDGE_DIED__`: say "Voice session ended." and stop.
@@ -524,7 +562,7 @@ After your response, stop the heartbeat refresher and ensure the bridge is alive
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 touch /tmp/voice_bridge_heartbeat
 if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
-    rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+    rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
     RELAY_CWD=$(pwd)
     RELAY_BRIDGE='__RELAY_BRIDGE__'
     RELAY_PROVIDER=codex
@@ -544,10 +582,25 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
 fi
 ```
 
-Write only the spoken summary to TTS. Keep it to 1-3 conversational sentences, strip markdown/code details, and escape single quotes:
+Write only the spoken summary to TTS, tagged with the claimed Relay command metadata. Keep it to 1-3 conversational sentences and strip markdown/code details:
 
 ```bash
-echo 'YOUR_SPOKEN_RESPONSE' > /tmp/tts_in.fifo
+python3 - <<'PY' > /tmp/tts_in.fifo
+import json
+from pathlib import Path
+
+payload = {"text": "YOUR_SPOKEN_RESPONSE"}
+claim_path = Path("/tmp/voice_cmd_claimed.json")
+if claim_path.is_file():
+    try:
+        claim = json.loads(claim_path.read_text())
+        for key in ("relay_command_seq", "relay_command_id"):
+            if key in claim:
+                payload[key] = claim[key]
+    except (OSError, json.JSONDecodeError):
+        pass
+print(json.dumps(payload))
+PY
 ```
 
 Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead. Then return to waiting.
@@ -559,7 +612,7 @@ When the session ends:
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 launchctl remove com.relay.voicebridge 2>/dev/null || true
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 CODEX_BRIDGE_MD_EOF
         local tmp="$codex_bridge_md.tmp"
@@ -580,7 +633,7 @@ Stop the voice I/O bridge for this Codex session.
 ```bash
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1 && echo "bridge: STILL RUNNING" || echo "bridge: stopped"
 ```
 

@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -57,6 +58,62 @@ class ReadySweeperTests(unittest.TestCase):
             "context": None,
             "source": "board-drop",
         }])
+
+    def test_direct_runs_route_forwards_relay_command_metadata_when_present(self):
+        calls: list[dict] = []
+
+        class FakeDaemon:
+            def dispatch(self, **kwargs):
+                calls.append(kwargs)
+                return {"already_active": False, "run": {"id": 12}}
+
+        handler = object.__new__(Handler)
+        handler.daemon = FakeDaemon()
+        original_read_body = orchestrator._read_body
+        orchestrator._read_body = lambda _: {
+            "ticket_id": "RR-1",
+            "repo_path": "/repo",
+            "source": "voice",
+            "relay_command_seq": 2,
+            "relay_command_id": "second",
+        }
+        try:
+            status, payload = Handler._route(handler, "POST", "/v1/runs")
+        finally:
+            orchestrator._read_body = original_read_body
+
+        self.assertEqual(status, 202)
+        self.assertEqual(payload["run"]["id"], 12)
+        self.assertEqual(calls, [{
+            "ticket_id": "RR-1",
+            "repo_path": "/repo",
+            "context": None,
+            "source": "voice",
+            "relay_command_seq": 2,
+            "relay_command_id": "second",
+        }])
+
+    def test_stale_relay_dispatch_is_rejected_before_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "voice_command_state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 2,
+                "relay_command_id": "second",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            daemon = object.__new__(Daemon)
+            try:
+                with self.assertRaisesRegex(ValueError, "stale Relay command"):
+                    Daemon.dispatch(
+                        daemon,
+                        ticket_id="RR-1",
+                        repo_path="/repo",
+                        relay_command_seq=1,
+                        relay_command_id="first",
+                    )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
 
     def test_sweeper_dispatches_stale_ready_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:

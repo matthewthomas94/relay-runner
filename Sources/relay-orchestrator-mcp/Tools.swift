@@ -18,6 +18,26 @@ private func requireInt(_ args: [String: Any], _ key: String) throws -> Int {
     throw MCPToolError(message: "Missing or invalid integer argument: \(key)")
 }
 
+private func optionalInt(_ value: Any?) -> Int? {
+    if let i = value as? Int { return i }
+    if let n = value as? NSNumber { return n.intValue }
+    if let s = value as? String { return Int(s) }
+    return nil
+}
+
+private func claimedRelayCommand() -> (seq: Int, id: String)? {
+    let url = URL(fileURLWithPath: "/tmp/voice_cmd_claimed.json")
+    guard FileManager.default.fileExists(atPath: "/tmp/voice_command_state.json"),
+          let data = try? Data(contentsOf: url),
+          let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let seq = optionalInt(raw["relay_command_seq"]),
+          let id = raw["relay_command_id"] as? String,
+          !id.isEmpty else {
+        return nil
+    }
+    return (seq, id)
+}
+
 private func proxy(method: String, path: String, body: [String: Any]? = nil) async throws -> [[String: Any]] {
     do {
         let payload = try await DaemonClient.request(method: method, path: path, body: body)
@@ -55,6 +75,14 @@ struct DispatchTicketTool: MCPTool {
                     "type": "string",
                     "description": "Optional caller-supplied context for the sub-agent. Sub-agents have no memory of the dispatching session — pass background that doesn't fit cleanly in the ticket body (recent decisions, related runs, constraints). Rendered into the worker's workflow prompt under 'Additional context from the dispatcher'.",
                 ],
+                "relay_command_seq": [
+                    "type": "integer",
+                    "description": "Optional Relay voice command sequence. When present, the daemon rejects dispatch if a newer voice command has superseded it.",
+                ],
+                "relay_command_id": [
+                    "type": "string",
+                    "description": "Optional Relay voice command id paired with relay_command_seq.",
+                ],
             ],
             "required": ["ticket_id", "repo_path"],
         ]
@@ -67,6 +95,15 @@ struct DispatchTicketTool: MCPTool {
         ]
         if let ctx = arguments["context"] as? String, !ctx.isEmpty {
             body["context"] = ctx
+        }
+        if let seq = optionalInt(arguments["relay_command_seq"]),
+           let id = arguments["relay_command_id"] as? String,
+           !id.isEmpty {
+            body["relay_command_seq"] = seq
+            body["relay_command_id"] = id
+        } else if let claimed = claimedRelayCommand() {
+            body["relay_command_seq"] = claimed.seq
+            body["relay_command_id"] = claimed.id
         }
         return try await proxy(method: "POST", path: "/v1/runs", body: body)
     }

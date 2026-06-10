@@ -46,6 +46,7 @@ from session_capture import capture_session_review
 from tickets import scan_repo, write as write_ticket, all_deps_done
 
 PORT_FILE = Path("/tmp/relay_orchestrator.port")
+RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
 DEFAULT_PORT = 7634
 
 
@@ -175,6 +176,34 @@ _TEMPLATE_RE = re.compile(r"\{\{\s*([\w_]+)\s*\}\}")
 def render_template(template: str, **vars: Any) -> str:
     """Tiny `{{key}}` renderer. Missing keys → empty string. No escaping (we trust the template)."""
     return _TEMPLATE_RE.sub(lambda m: str(vars.get(m.group(1).strip(), "")), template)
+
+
+def _relay_command_current(relay_command_seq: int | str | None, relay_command_id: str | None) -> bool:
+    if relay_command_seq is None or not relay_command_id:
+        return False
+    try:
+        current = json.loads(RELAY_COMMAND_STATE_FILE.read_text())
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(current, dict):
+        return False
+    try:
+        current_seq = int(current.get("relay_command_seq"))
+        expected_seq = int(relay_command_seq)
+    except (TypeError, ValueError):
+        return False
+    return (
+        current_seq == expected_seq
+        and str(current.get("relay_command_id") or "") == str(relay_command_id)
+    )
+
+
+def _validate_relay_command(relay_command_seq: Any, relay_command_id: Any) -> None:
+    if relay_command_seq is None and not relay_command_id:
+        return
+    if _relay_command_current(relay_command_seq, str(relay_command_id or "")):
+        return
+    raise ValueError("stale Relay command: a newer voice command has superseded this action")
 
 
 # -- live activity summary (RR-12) ------------------------------------------
@@ -975,12 +1004,21 @@ class Daemon:
                 return out[len("origin/"):]
         return "main"
 
-    def dispatch(self, *, ticket_id: str, repo_path: str,
-                 context: str | None = None, source: str = "direct") -> dict:
+    def dispatch(
+        self,
+        *,
+        ticket_id: str,
+        repo_path: str,
+        context: str | None = None,
+        source: str = "direct",
+        relay_command_seq: int | str | None = None,
+        relay_command_id: str | None = None,
+    ) -> dict:
         if not ticket_id:
             raise ValueError("ticket_id is required")
         if not repo_path:
             raise ValueError("repo_path is required")
+        _validate_relay_command(relay_command_seq, relay_command_id)
 
         repo = Path(repo_path).expanduser().resolve()
         if not repo.is_dir() or not (repo / ".git").exists():
@@ -1400,12 +1438,17 @@ class Handler(BaseHTTPRequestHandler):
 
             if method == "POST" and segments == ["v1", "runs"]:
                 body = _read_body(self)
-                result = self.daemon.dispatch(
-                    ticket_id=body.get("ticket_id", ""),
-                    repo_path=body.get("repo_path", ""),
-                    context=body.get("context"),
-                    source=body.get("source") or "direct",
-                )
+                dispatch_args: dict[str, Any] = {
+                    "ticket_id": body.get("ticket_id", ""),
+                    "repo_path": body.get("repo_path", ""),
+                    "context": body.get("context"),
+                    "source": body.get("source") or "direct",
+                }
+                if body.get("relay_command_seq") is not None:
+                    dispatch_args["relay_command_seq"] = body.get("relay_command_seq")
+                if body.get("relay_command_id"):
+                    dispatch_args["relay_command_id"] = body.get("relay_command_id")
+                result = self.daemon.dispatch(**dispatch_args)
                 return (200 if result["already_active"] else 202), result
 
             if method == "POST" and segments == ["v1", "ready-sweep"]:

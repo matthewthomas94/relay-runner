@@ -18,6 +18,8 @@ Relay Runner supports multiple agent providers, especially Codex and Claude. Whe
 
 Every substantive voice or text command that asks for repo/project work must resolve to an explicit command action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. The foreground Codex/Claude session shapes tickets and dispatches workers; it does not perform substantive implementation directly unless the user explicitly asks to keep the work inline. Internal controls such as `__TTS_STOP__`, `__PLAY__`, `__REPLAY__`, `__INTERRUPT__`, and `__CANCEL__` are deliberate no-ticket control actions.
 
+Relay voice commands carry a newest-intent seq/id in `/tmp/voice_command_state.json`; claimed commands copy their metadata to `/tmp/voice_cmd_claimed.json`. Treat that metadata as the authority for ticket creation, ticket edits, dispatches, and TTS responses. If the current state file names a newer command than the one you claimed, stop the stale action and handle the newer command. Already-running shell commands and MCP calls may finish when hard cancellation is unavailable, but every follow-up action must checkpoint and obey newest intent. Codex and Claude share this contract; no provider gets a weaker stale-action policy.
+
 The user-facing response should name the action outcome: created ticket, edited ticket, dispatched worker, waiting on target-project choice, or control action handled.
 
 1. **Discuss.** Talk through the work. Surface assumptions, push back, propose alternatives — think before coding.

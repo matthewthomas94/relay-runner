@@ -51,6 +51,32 @@ class CommandActionsTests(unittest.TestCase):
             self.assertIn("ticket_id: RR-3", prompt)
             self.assertIn("Do not perform substantive source-code implementation directly", prompt)
 
+    def test_relay_command_metadata_is_recorded_on_created_ticket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orch = repo / ".orchestrator"
+            orch.mkdir()
+            (orch / "config.toml").write_text('prefix = "RR"\nnext_id = 3\n')
+            relay_command = {
+                "relay_command_seq": 7,
+                "relay_command_id": "cmd-7",
+            }
+
+            action = resolve_command_action(
+                "fix the login retry bug",
+                repo_path=repo,
+                relay_command=relay_command,
+            )
+
+            ticket_text = (orch / "RR-3.md").read_text()
+            prompt = format_command_for_agent(action)
+            self.assertIn("## Relay command", ticket_text)
+            self.assertIn("- sequence: 7", ticket_text)
+            self.assertIn("- id: cmd-7", ticket_text)
+            self.assertIn("relay_command_seq: 7", prompt)
+            self.assertIn("relay_command_id: cmd-7", prompt)
+            self.assertIn("pass relay_command_seq and relay_command_id", prompt)
+
     def test_existing_ticket_dispatch_attaches_to_ticket(self):
         action = classify_command("dispatch rr-7 to a worker")
 
@@ -78,4 +104,3 @@ class CommandActionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
