@@ -32,6 +32,18 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(body["trigger"] as? String, "bridge-watchdog")
     }
 
+    func testProgramReadySweepRequestUsesProgramSweepEndpoint() throws {
+        let request = try XCTUnwrap(OrchestratorClient.programReadySweepRequest(
+            trigger: "program-board-refresh",
+            port: 8123
+        ))
+
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:8123/v1/program/ready-sweep")
+        let body = try jsonBody(request)
+        XCTAssertEqual(body["trigger"] as? String, "program-board-refresh")
+    }
+
     func testProgramStatusRequestUsesProgramEndpoint() throws {
         let request = try XCTUnwrap(OrchestratorClient.programStatusRequest(
             query: "ready_work",
@@ -47,39 +59,29 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertNil(request.httpBody)
     }
 
-    func testProgramDashboardFallsBackWhenDaemonDoesNotKnowNewLaneQueries() async throws {
+    func testProgramDashboardFetchesCanonicalBoardLanes() async throws {
         let snapshot = try await OrchestratorClient.buildProgramDashboard(limit: 20) { query, _ in
             switch query {
             case "summary":
                 return self.response(query: query, message: "Summary", projects: 2)
-            case "active_work", "blocked_work", "awaiting_merge":
+            case "backlog_lane", "ready_lane", "in_progress_lane", "done_lane", "awaiting_merge":
                 return self.response(query: query, message: "Supported")
-            case "ready_work":
-                return self.response(query: query, message: "Ready fallback", itemCount: 1)
-            case "discovery_work", "done_work":
-                throw OrchestratorClientError.badStatus(
-                    400,
-                    #"{"error":"unknown program status query '\#(query)'"}"#
-                )
             default:
                 XCTFail("Unexpected query: \(query)")
                 return self.response(query: query, message: "Unexpected")
             }
         }
 
-        XCTAssertEqual(snapshot.discoveryWork.query, "ready_work")
-        XCTAssertEqual(snapshot.discoveryWork.message, "Ready fallback")
-        XCTAssertEqual(snapshot.discoveryWork.counts.items, 1)
-        XCTAssertEqual(snapshot.doneWork.query, "done_work")
-        XCTAssertEqual(snapshot.doneWork.message, "No done work")
-        XCTAssertEqual(snapshot.doneWork.counts.projects, 2)
-        XCTAssertTrue(snapshot.doneWork.items.isEmpty)
+        XCTAssertEqual(snapshot.backlogWork.query, "backlog_lane")
+        XCTAssertEqual(snapshot.readyWork.query, "ready_lane")
+        XCTAssertEqual(snapshot.inProgressWork.query, "in_progress_lane")
+        XCTAssertEqual(snapshot.doneWork.query, "done_lane")
     }
 
     func testProgramDashboardStillSurfacesNonQueryErrors() async throws {
         do {
             _ = try await OrchestratorClient.buildProgramDashboard(limit: 20) { query, _ in
-                if query == "discovery_work" {
+                if query == "backlog_lane" {
                     throw OrchestratorClientError.badStatus(500, "daemon failed")
                 }
                 return self.response(query: query, message: "Supported")

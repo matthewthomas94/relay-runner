@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -15,10 +16,14 @@ from orchestrator import Daemon, Handler  # noqa: E402
 
 
 class FakeRuns:
-    def __init__(self, active: dict[str, dict] | None = None):
+    def __init__(self, active: dict[str | tuple[str, str], dict] | None = None):
         self.active = active or {}
 
-    def find_active(self, ticket_id: str) -> dict | None:
+    def find_active(self, ticket_id: str, repo_path: str | None = None) -> dict | None:
+        if repo_path is not None:
+            active = self.active.get((ticket_id, str(Path(repo_path).resolve())))
+            if active:
+                return active
         return self.active.get(ticket_id)
 
 
@@ -105,6 +110,90 @@ class ReadySweeperTests(unittest.TestCase):
             self.assertEqual(reasons["RR-4"], "canceled")
             self.assertEqual(reasons["RR-5"], "dependencies_not_done")
             self.assertEqual(reasons["RR-6"], "run_id_present")
+
+    def test_program_sweeper_dispatches_registered_projects_without_parent_board(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_a = root / "repo-a"
+            repo_b = root / "repo-b"
+            self.make_repo(repo_a)
+            self.make_repo(repo_b)
+            self.write_ticket(repo_a, "RR-1", status="ready")
+            self.write_ticket(repo_b, "RR-1", status="ready")
+
+            registry = root / "projects.json"
+            registry.write_text(json.dumps({
+                "activeWorkspaceRootID": str(root.resolve()),
+                "workspaceRoots": [{"id": str(root.resolve()), "rootPath": str(root.resolve())}],
+                "projects": [
+                    {"id": str(repo_a.resolve()), "repoPath": str(repo_a.resolve())},
+                    {"id": str(repo_b.resolve()), "repoPath": str(repo_b.resolve())},
+                ],
+            }))
+
+            daemon = object.__new__(Daemon)
+            daemon.program_registry_path = registry
+            daemon.runs = FakeRuns()
+            calls: list[dict] = []
+
+            def fake_dispatch(**kwargs):
+                calls.append(kwargs)
+                return {"already_active": False, "run": {"id": len(calls)}}
+
+            daemon.dispatch = fake_dispatch
+
+            result = Daemon.sweep_program_ready_tickets(
+                daemon,
+                trigger="program-board-refresh",
+            )
+
+            self.assertFalse((root / ".orchestrator").exists())
+            self.assertEqual(
+                calls,
+                [
+                    {"ticket_id": "RR-1", "repo_path": str(repo_a.resolve()), "source": "ready-sweeper"},
+                    {"ticket_id": "RR-1", "repo_path": str(repo_b.resolve()), "source": "ready-sweeper"},
+                ],
+            )
+            self.assertEqual(
+                result["dispatched"],
+                [
+                    {"repo_path": str(repo_a.resolve()), "ticket_id": "RR-1", "run_id": 1},
+                    {"repo_path": str(repo_b.resolve()), "ticket_id": "RR-1", "run_id": 2},
+                ],
+            )
+
+    def test_repo_scoped_active_run_does_not_block_same_ticket_id_in_another_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_a = root / "repo-a"
+            repo_b = root / "repo-b"
+            self.make_repo(repo_a)
+            self.make_repo(repo_b)
+            self.write_ticket(repo_a, "RR-1", status="ready")
+            self.write_ticket(repo_b, "RR-1", status="ready")
+
+            daemon = object.__new__(Daemon)
+            daemon.runs = FakeRuns(active={
+                ("RR-1", str(repo_a.resolve())): {"id": 99},
+            })
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs) or {
+                "already_active": False,
+                "run": {"id": 42},
+            }
+
+            first = Daemon.sweep_ready_tickets(daemon, repo_path=str(repo_a), trigger="test")
+            second = Daemon.sweep_ready_tickets(daemon, repo_path=str(repo_b), trigger="test")
+
+            self.assertEqual(first["dispatched"], [])
+            self.assertEqual(first["skipped"][0]["reason"], "already_active")
+            self.assertEqual(second["dispatched"], [{"ticket_id": "RR-1", "run_id": 42}])
+            self.assertEqual(calls, [{
+                "ticket_id": "RR-1",
+                "repo_path": str(repo_b.resolve()),
+                "source": "ready-sweeper",
+            }])
 
     def make_repo(self, repo: Path) -> None:
         (repo / ".git").mkdir(parents=True)

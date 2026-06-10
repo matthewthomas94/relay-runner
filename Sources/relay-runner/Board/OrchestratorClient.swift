@@ -35,6 +35,16 @@ enum OrchestratorClient {
         post(req, label: "ready-sweep")
     }
 
+    /// Ask the daemon to scan every registered project and dispatch eligible
+    /// ready tickets without opening each project board.
+    static func sweepProgramReadyTickets(trigger: String) {
+        guard let req = programReadySweepRequest(trigger: trigger, port: readPort()) else {
+            NSLog("[orchestrator-client] could not build program ready-sweep request")
+            return
+        }
+        post(req, label: "program-ready-sweep")
+    }
+
     static func dispatchRequest(ticketId: String, repoPath: String, source: String, port: Int) -> URLRequest? {
         let payload: [String: Any] = [
             "ticket_id": ticketId,
@@ -52,8 +62,17 @@ enum OrchestratorClient {
         return postRequest(path: "/v1/ready-sweep", payload: payload, port: port)
     }
 
+    static func programReadySweepRequest(trigger: String, port: Int) -> URLRequest? {
+        postRequest(
+            path: "/v1/program/ready-sweep",
+            payload: ["trigger": trigger],
+            port: port
+        )
+    }
+
     static func fetchProgramDashboard(limit: Int = 20) async throws -> ProgramDashboardSnapshot {
-        try await buildProgramDashboard(limit: limit) { query, limit in
+        await sweepProgramReadyTicketsBeforeDashboard(trigger: "program-board-refresh")
+        return try await buildProgramDashboard(limit: limit) { query, limit in
             try await fetchProgramStatus(query: query, limit: limit)
         }
     }
@@ -63,67 +82,36 @@ enum OrchestratorClient {
         fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse
     ) async throws -> ProgramDashboardSnapshot {
         async let summary = fetch("summary", limit)
-        async let active = fetch("active_work", limit)
-        async let blocked = fetch("blocked_work", limit)
+        async let backlog = fetch("backlog_lane", limit)
+        async let ready = fetch("ready_lane", limit)
+        async let inProgress = fetch("in_progress_lane", limit)
+        async let done = fetch("done_lane", limit)
         async let awaitingMerge = fetch("awaiting_merge", limit)
         let summaryResponse = try await summary
-        async let discovery = fetchProgramStatusWithFallback(
-            query: "discovery_work",
-            fallbackQuery: "ready_work",
-            limit: limit,
-            fetch: fetch
-        )
-        async let done = fetchProgramStatusOrEmpty(
-            query: "done_work",
-            limit: limit,
-            projectCount: summaryResponse.counts.projects,
-            fetch: fetch
-        )
         return try await ProgramDashboardSnapshot(
             summary: summaryResponse,
-            discoveryWork: discovery,
-            activeWork: active,
-            blockedWork: blocked,
+            backlogWork: backlog,
+            readyWork: ready,
+            inProgressWork: inProgress,
             doneWork: done,
             awaitingMerge: awaitingMerge
         )
     }
 
-    private static func fetchProgramStatusWithFallback(
-        query: String,
-        fallbackQuery: String,
-        limit: Int,
-        fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse
-    ) async throws -> ProgramStatusResponse {
-        do {
-            return try await fetch(query, limit)
-        } catch {
-            guard OrchestratorClientError.isUnknownProgramStatusQuery(error) else {
-                throw error
-            }
-            return try await fetch(fallbackQuery, limit)
+    private static func sweepProgramReadyTicketsBeforeDashboard(trigger: String) async {
+        guard let req = programReadySweepRequest(trigger: trigger, port: readPort()) else {
+            NSLog("[orchestrator-client] could not build program ready-sweep request")
+            return
         }
-    }
-
-    private static func fetchProgramStatusOrEmpty(
-        query: String,
-        limit: Int,
-        projectCount: Int,
-        fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse
-    ) async throws -> ProgramStatusResponse {
         do {
-            return try await fetch(query, limit)
-        } catch {
-            guard OrchestratorClientError.isUnknownProgramStatusQuery(error) else {
-                throw error
+            let (data, response) = try await URLSession.shared.data(for: req)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status >= 400 {
+                let msg = String(data: data, encoding: .utf8) ?? "(no body)"
+                NSLog("[orchestrator-client] program-ready-sweep HTTP \(status): \(msg.prefix(200))")
             }
-            return ProgramStatusResponse(
-                query: query,
-                provider: nil,
-                message: "No done work",
-                items: [],
-                counts: ProgramStatusCounts(projects: projectCount, items: 0)
-            )
+        } catch {
+            NSLog("[orchestrator-client] program-ready-sweep failed: \(error.localizedDescription)")
         }
     }
 
@@ -210,16 +198,6 @@ enum OrchestratorClientError: Error, LocalizedError, Equatable {
     case invalidRequest
     case badStatus(Int, String)
     case decodeFailed(String)
-
-    static func isUnknownProgramStatusQuery(_ error: Error) -> Bool {
-        guard let clientError = error as? OrchestratorClientError else {
-            return false
-        }
-        if case .badStatus(400, let body) = clientError {
-            return body.localizedCaseInsensitiveContains("unknown program status query")
-        }
-        return false
-    }
 
     var errorDescription: String? {
         switch self {

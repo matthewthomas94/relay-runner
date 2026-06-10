@@ -77,7 +77,6 @@ class ProgramStatusTests(unittest.TestCase):
         blocker = _ticket(store, project, "RR-2", "Finish dependency", "in_progress")
         blocked = _ticket(store, project, "RR-3", "Blocked ready ticket", "ready")
         awaiting = _ticket(store, project, "RR-4", "Awaiting review", "ready")
-        _run(store, project, ready, 101, "succeeded", "codex", model="gpt-5")
         _run(store, project, awaiting, 102, "awaiting_merge", "claude", model="sonnet")
         store.upsert_edge(src_id=blocker["id"], dst_id=blocked["id"], kind=EDGE_BLOCKS)
 
@@ -120,6 +119,35 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual([item["ticket_id"] for item in result["items"]], ["RR-1"])
         self.assertIn("Done work: 1 ticket", result["message"])
         self.assertNotIn("RR-2", result["message"])
+
+    def test_board_lane_queries_mirror_project_board_run_placement(self):
+        store = self.make_store()
+        project = _project(
+            store,
+            "/tmp/relay-runner",
+            "Relay Runner",
+            providers={"codex": {}, "claude": {}},
+        )
+        _ticket(store, project, "RR-1", "Backlog work", "backlog")
+        _ticket(store, project, "RR-2", "Ready work", "ready")
+        active = _ticket(store, project, "RR-3", "Running work", "ready")
+        awaiting = _ticket(store, project, "RR-4", "Awaiting merge", "ready")
+        _ticket(store, project, "RR-5", "Manual progress", "in_progress")
+        _ticket(store, project, "RR-6", "Finished work", "done")
+        _run(store, project, active, 101, "active", "codex", model="gpt-5")
+        _run(store, project, awaiting, 102, "succeeded", "claude", model="sonnet")
+
+        backlog = build_program_status(store, query="backlog_lane", now=2000.0)
+        ready = build_program_status(store, query="ready_lane", now=2000.0)
+        in_progress = build_program_status(store, query="in_progress_lane", now=2000.0)
+        done = build_program_status(store, query="done_lane", now=2000.0)
+
+        self.assertEqual([item["ticket_id"] for item in backlog["items"]], ["RR-1"])
+        self.assertEqual([item["ticket_id"] for item in ready["items"]], ["RR-2"])
+        self.assertEqual([item["ticket_id"] for item in in_progress["items"]], ["RR-3", "RR-5"])
+        self.assertEqual([item["ticket_id"] for item in done["items"]], ["RR-4", "RR-6"])
+        self.assertEqual(done["items"][0]["run_state"], "awaiting_merge")
+        self.assertEqual(done["items"][0]["provider"], "Claude/sonnet")
 
     def test_no_projects_has_clear_indexing_message(self):
         store = self.make_store()
@@ -196,6 +224,9 @@ def _run(
     *,
     model: str,
 ) -> dict:
+    program_state = state
+    if state in {"succeeded", "success", "done"} and ticket["body"].get("state") != "done":
+        program_state = "awaiting_merge"
     run = store.upsert_node(
         kind=NODE_RUN,
         stable_key=f"run:{run_id}",
@@ -205,8 +236,10 @@ def _run(
             "run_id": run_id,
             "ticket_id": ticket["body"]["ticket_id"],
             "state": state,
+            "program_state": program_state,
             "provider_key": provider,
             "model_alias": model,
+            "branch": f"relay/{ticket['body']['ticket_id'].lower()}",
             "started_at": float(run_id),
         },
     )

@@ -28,11 +28,11 @@ final class ProgramBoardStatusTests: XCTestCase {
           "counts": {"projects": 1, "items": 1}
         }
         """)
-        let active = try decode("""
+        let inProgress = try decode("""
         {
-          "query": "active_work",
+          "query": "in_progress_lane",
           "provider": null,
-          "message": "Active work: 2 runs across 1 indexed project.",
+          "message": "In progress: 2 tickets across 1 indexed project.",
           "items": [
             {
               "project": {"name": "Relay Runner", "path": "/repo/relay-runner"},
@@ -60,10 +60,10 @@ final class ProgramBoardStatusTests: XCTestCase {
         """)
         let snapshot = ProgramDashboardSnapshot(
             summary: summary,
-            discoveryWork: emptyResponse(query: "discovery_work"),
-            activeWork: active,
-            blockedWork: emptyResponse(query: "blocked_work"),
-            doneWork: emptyResponse(query: "done_work"),
+            backlogWork: emptyResponse(query: "backlog_lane"),
+            readyWork: emptyResponse(query: "ready_lane"),
+            inProgressWork: inProgress,
+            doneWork: emptyResponse(query: "done_lane"),
             awaitingMerge: emptyResponse(query: "awaiting_merge")
         )
 
@@ -74,8 +74,8 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.projects.first?.readyTickets, 1)
         XCTAssertEqual(snapshot.projects.first?.inProgressTickets, 1)
         XCTAssertEqual(snapshot.projects.first?.doneTickets, 1)
-        XCTAssertEqual(snapshot.activeWork.items.map(\.provider), ["Codex/gpt-5", "Claude/sonnet"])
-        XCTAssertEqual(snapshot.activeWork.items.first?.runID, "27")
+        XCTAssertEqual(snapshot.inProgressWork.items.map(\.provider), ["Codex/gpt-5", "Claude/sonnet"])
+        XCTAssertEqual(snapshot.inProgressWork.items.first?.runID, "27")
     }
 
     private func decode(_ json: String) throws -> ProgramStatusResponse {

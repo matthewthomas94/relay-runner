@@ -44,21 +44,21 @@ private struct ProgramBoardContent: View {
                         onDismiss: onDismiss
                     )
                     ProgramWorkColumnPanel(
-                        title: "Discovery",
-                        emptyText: "No discovery work",
-                        items: snapshot.discoveryWork.items,
+                        title: "Backlog",
+                        emptyText: "No backlog work",
+                        items: snapshot.backlogWork.items,
+                        theme: model.theme
+                    )
+                    ProgramWorkColumnPanel(
+                        title: "Ready",
+                        emptyText: "No ready work",
+                        items: snapshot.readyWork.items,
                         theme: model.theme
                     )
                     ProgramWorkColumnPanel(
                         title: "In progress",
                         emptyText: "No active work",
-                        items: snapshot.inProgressItems,
-                        theme: model.theme
-                    )
-                    ProgramWorkColumnPanel(
-                        title: "Blocked",
-                        emptyText: "No blocked work",
-                        items: snapshot.blockedWork.items,
+                        items: snapshot.inProgressWork.items,
                         theme: model.theme
                     )
                     ProgramWorkColumnPanel(
@@ -177,9 +177,9 @@ private struct ProgramMetricGrid: View {
     var body: some View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
             ProgramMetricTile(label: "Projects", value: "\(snapshot.projectCount)")
-            ProgramMetricTile(label: "Discovery", value: "\(snapshot.discoveryWork.items.count)")
-            ProgramMetricTile(label: "Progress", value: "\(snapshot.inProgressItems.count)")
-            ProgramMetricTile(label: "Blocked", value: "\(snapshot.blockedWork.items.count)")
+            ProgramMetricTile(label: "Backlog", value: "\(snapshot.backlogWork.items.count)")
+            ProgramMetricTile(label: "Ready", value: "\(snapshot.readyWork.items.count)")
+            ProgramMetricTile(label: "Progress", value: "\(snapshot.inProgressWork.items.count)")
             ProgramMetricTile(label: "Done", value: "\(snapshot.doneWork.items.count)")
             ProgramMetricTile(
                 label: "Awaiting merge",
@@ -400,6 +400,8 @@ private struct ProgramWorkCard: View {
         }
         if let runID = item.runID {
             parts.append("run \(runID)")
+        } else if let branch = item.branch, !branch.isEmpty {
+            parts.append(branch)
         }
         if let provider = item.provider {
             parts.append(provider)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import os
 import re
@@ -62,6 +63,32 @@ def _data_root() -> Path:
 
 def _program_registry_path() -> Path:
     return _data_root().parent / "program" / "projects.json"
+
+
+def _registered_project_repo_paths(registry_path: Path) -> list[str]:
+    try:
+        payload = json.loads(registry_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    projects = payload.get("projects") if isinstance(payload, dict) else None
+    if not isinstance(projects, list):
+        return []
+
+    repo_paths: list[str] = []
+    seen: set[str] = set()
+    for record in projects:
+        if not isinstance(record, dict):
+            continue
+        raw = record.get("repoPath") or record.get("id")
+        repo_path = str(raw or "").strip()
+        if not repo_path:
+            continue
+        resolved = str(Path(repo_path).expanduser().resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        repo_paths.append(resolved)
+    return repo_paths
 
 
 def _resolve_workspace_root(cfg_value: str) -> Path:
@@ -131,6 +158,15 @@ def sanitize_identifier(identifier: str) -> str:
     if not s:
         raise ValueError(f"Invalid identifier: {identifier!r}")
     return s
+
+
+def workspace_slug(repo_path: str, ticket_id: str) -> str:
+    """Stable worktree directory name scoped by repo, then ticket."""
+    repo = Path(repo_path)
+    repo_name = sanitize_identifier(repo.name or "repo")
+    ticket = sanitize_identifier(ticket_id)
+    digest = hashlib.sha1(str(repo.resolve()).encode("utf-8")).hexdigest()[:8]
+    return f"{repo_name}-{digest}-{ticket}"
 
 
 _TEMPLATE_RE = re.compile(r"\{\{\s*([\w_]+)\s*\}\}")
@@ -440,13 +476,19 @@ class RunsStore:
                 ).fetchall()
             return [dict(r) for r in rows]
 
-    def find_active(self, ticket_id: str) -> dict | None:
+    def find_active(self, ticket_id: str, repo_path: str | None = None) -> dict | None:
         ph = ",".join("?" * len(self.ACTIVE_STATES))
+        params: list[Any] = [ticket_id, *self.ACTIVE_STATES]
+        repo_clause = ""
+        if repo_path is not None:
+            repo_clause = "AND repo_path = ? "
+            params.append(str(Path(repo_path).expanduser().resolve()))
         with self._conn() as c:
             row = c.execute(
                 f"SELECT * FROM runs WHERE ticket_id = ? AND state IN ({ph}) "
+                f"{repo_clause}"
                 "ORDER BY id DESC LIMIT 1",
-                (ticket_id, *self.ACTIVE_STATES),
+                params,
             ).fetchone()
             return dict(row) if row else None
 
@@ -462,12 +504,17 @@ class RunsStore:
             )
             return cur.rowcount
 
-    def next_attempt(self, ticket_id: str) -> int:
+    def next_attempt(self, ticket_id: str, repo_path: str | None = None) -> int:
         """Returns the attempt number to use for a new run on this ticket (1 if none, max+1 otherwise)."""
+        params: list[Any] = [ticket_id]
+        repo_clause = ""
+        if repo_path is not None:
+            repo_clause = "AND repo_path = ? "
+            params.append(str(Path(repo_path).expanduser().resolve()))
         with self._conn() as c:
             row = c.execute(
-                "SELECT MAX(attempt) AS a FROM runs WHERE ticket_id = ?",
-                (ticket_id,),
+                f"SELECT MAX(attempt) AS a FROM runs WHERE ticket_id = ? {repo_clause}",
+                params,
             ).fetchone()
             if row and row["a"]:
                 return int(row["a"]) + 1
@@ -634,6 +681,7 @@ class Worker:
             return
 
         try:
+            log.write(f"[orchestrator] provider={self.agent_kind}\n")
             cmd = self._command()
             try:
                 self.proc = subprocess.Popen(
@@ -943,12 +991,12 @@ class Daemon:
 
         sanitized = sanitize_identifier(ticket_id)
         branch = f"{self.branch_prefix}{sanitized}"
-        workspace_path = self.workspace_root / sanitized
+        workspace_path = self.workspace_root / workspace_slug(str(repo), ticket_id)
         log_path = workspace_path / ".relay" / "run.log"
         base_branch = self._resolve_default_branch(str(repo))
 
         with self._dispatch_lock:
-            existing = self.runs.find_active(ticket_id)
+            existing = self.runs.find_active(ticket_id, repo_path=str(repo))
             if existing:
                 print(
                     f"[orchestrator] dispatch skipped for {ticket_id} from {source}: "
@@ -978,7 +1026,7 @@ class Daemon:
                 raise
 
             # Pre-existing attempts: bump attempt number for THIS ticket.
-            attempt = self.runs.next_attempt(ticket_id)
+            attempt = self.runs.next_attempt(ticket_id, repo_path=str(repo))
 
             run_id = self.runs.insert(
                 ticket_id=ticket_id,
@@ -1092,7 +1140,7 @@ class Daemon:
                 skip(ticket, "dependencies_not_done")
                 continue
 
-            existing = self.runs.find_active(ticket["id"])
+            existing = self.runs.find_active(ticket["id"], repo_path=str(repo))
             if existing:
                 skip(ticket, "already_active", run_id=existing["id"])
                 continue
@@ -1128,6 +1176,41 @@ class Daemon:
         return {
             "repo_path": str(repo),
             "trigger": trigger,
+            "dispatched": dispatched,
+            "skipped": skipped,
+        }
+
+    def sweep_program_ready_tickets(self, *, trigger: str | None = None) -> dict:
+        """Reconcile ready tickets across every registered project.
+
+        Program Board refresh uses this instead of requiring each project board
+        to be opened. Each ticket still dispatches through `dispatch()`, so
+        Codex/Claude launch behavior and active-run idempotency stay shared.
+        """
+        projects: list[dict[str, Any]] = []
+        dispatched: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for repo_path in _registered_project_repo_paths(self.program_registry_path):
+            try:
+                result = self.sweep_ready_tickets(
+                    repo_path=repo_path,
+                    trigger=trigger or "program-ready-sweep",
+                )
+            except (ValueError, RuntimeError) as e:
+                entry = {"repo_path": repo_path, "error": str(e)}
+                projects.append(entry)
+                skipped.append(entry)
+                continue
+
+            projects.append(result)
+            for item in result.get("dispatched", []):
+                dispatched.append({"repo_path": result["repo_path"], **item})
+            for item in result.get("skipped", []):
+                skipped.append({"repo_path": result["repo_path"], **item})
+
+        return {
+            "trigger": trigger,
+            "projects": projects,
             "dispatched": dispatched,
             "skipped": skipped,
         }
@@ -1329,6 +1412,13 @@ class Handler(BaseHTTPRequestHandler):
                 body = _read_body(self)
                 result = self.daemon.sweep_ready_tickets(
                     repo_path=body.get("repo_path", ""),
+                    trigger=body.get("trigger"),
+                )
+                return 200, result
+
+            if method == "POST" and segments == ["v1", "program", "ready-sweep"]:
+                body = _read_body(self)
+                result = self.daemon.sweep_program_ready_tickets(
                     trigger=body.get("trigger"),
                 )
                 return 200, result
