@@ -98,6 +98,9 @@ final class AppState {
     /// Has the bridge for the current menu-started session been observed alive at least once?
     /// Used to distinguish "still starting up" from "came up and then died".
     private var sessionBridgeSeen = false
+    private var bridgeRecoveryInFlight = false
+    private var lastBridgeRecoveryAt: Date = .distantPast
+    private static let bridgeRecoveryCooldown: TimeInterval = 15
     /// Per-bridge-session flag for the per-parent permissions wizard. False at
     /// startup and after any bridge death; flipped true once the watchdog has
     /// either surfaced the wizard for this session or confirmed the parent is
@@ -111,7 +114,7 @@ final class AppState {
     /// (the /relay-bridge slash command). The watchdog flips bridgeAliveCache
     /// within ~3 seconds of an external bridge coming up, so /relay-bridge
     /// users see the menu reflect their session promptly.
-    var hasActiveSession: Bool { menuSessionActive || bridgeAliveCache }
+    var hasActiveSession: Bool { menuSessionActive || bridgeAliveCache || bridgeRecoveryInFlight }
 
     init() {
         self.config = ConfigManager.shared.load()
@@ -223,6 +226,7 @@ final class AppState {
         processManager.killBridge()
         menuSessionActive = false
         bridgeAliveCache = false
+        bridgeRecoveryInFlight = false
         statusText = "Ready"
         // Bridge events (processing/speaking/messageWaiting) are sticky on the
         // state machine — without an explicit reset, killing the bridge mid-
@@ -237,6 +241,7 @@ final class AppState {
         guard isRunning else { return }
         stopBridgeWatchdog()
         menuSessionActive = false
+        bridgeRecoveryInFlight = false
         stopOverlay()
         sttEngine?.stop()
         sttEngine = nil
@@ -406,22 +411,54 @@ final class AppState {
         bridgeWatchdog = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             guard let self, self.isRunning else { return }
             let daemonAlive = self.processManager.bridgeAlive()
-            let alive = daemonAlive && self.processManager.bridgeConsumerAlive()
+            let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
+            let alive = daemonAlive && consumerAlive
             let wasAlive = self.bridgeAliveCache
-            self.bridgeAliveCache = alive
+            let elapsed = Date().timeIntervalSince(self.sessionStartTime)
+            let action = Self.bridgeWatchdogAction(
+                menuSessionActive: self.menuSessionActive,
+                daemonAlive: daemonAlive,
+                consumerAlive: consumerAlive,
+                wasAlive: wasAlive,
+                sessionBridgeSeen: self.sessionBridgeSeen,
+                elapsedSinceSessionStart: elapsed
+            )
 
-            // Reap orphaned relay bridges quietly. A live daemon without a
-            // consumer is not a usable session, but surfacing the no-session
-            // pill from a polling path is noisy; wait for an explicit record
-            // or board attempt before teaching the recovery action.
-            if daemonAlive && !alive {
-                NSLog("[AppState] Relay bridge orphaned (consumer heartbeat stale), killing")
+            switch action {
+            case .reapOrphan:
+                NSLog("[AppState] Relay bridge orphaned before any active session, killing")
                 self.processManager.killBridge()
                 self.bridgeAliveCache = false
                 self.menuSessionActive = false
                 self.sessionBridgeSeen = false
                 self.statusText = "Ready"
                 return
+            case .keepDaemon:
+                // A busy Codex/Claude turn can stop touching the consumer
+                // heartbeat while git/build work continues. Keep the daemon
+                // alive so TTS and queued voice input can recover.
+                self.bridgeAliveCache = true
+                if self.statusText != "Session" {
+                    self.statusText = "Session"
+                }
+                return
+            case .waitForLaunch:
+                self.bridgeAliveCache = true
+                return
+            case .recoverDaemon:
+                self.bridgeAliveCache = false
+                if self.startBridgeRecovery(reason: wasAlive ? "bridge-lost" : "menu-session-lost") {
+                    return
+                }
+                NSLog("[AppState] Bridge died but no recovery context was available")
+                self.menuSessionActive = false
+                self.sessionBridgeSeen = false
+                self.statusText = "Ready"
+                return
+            case .markDead:
+                self.bridgeAliveCache = false
+            case .alive:
+                self.bridgeAliveCache = true
             }
 
             // Track externally-started bridges (e.g. /relay-bridge)
@@ -466,28 +503,85 @@ final class AppState {
                 self.sessionBridgeSeen = true
             }
 
-            if self.menuSessionActive && !alive {
-                // Only declare dead once we've actually seen the bridge alive
-                // (real death), or after a generous absolute timeout (true
-                // launch failure — covers cold starts where Kokoro load +
-                // venv setup can easily exceed the old 15s grace).
-                let elapsed = Date().timeIntervalSince(self.sessionStartTime)
-                if self.sessionBridgeSeen || elapsed > 90 {
-                    NSLog("[AppState] Menu-started session bridge died, reverting to awareness")
-                    self.menuSessionActive = false
-                    self.sessionBridgeSeen = false
-                    self.statusText = "Ready"
-                    // Don't auto-show the session prompt overlay — wait until
-                    // the user actually tries to record (Caps Lock path in
-                    // sttPollTimer fires it then).
-                }
-            } else if wasAlive && !alive && !self.menuSessionActive {
+            if wasAlive && !alive && !self.menuSessionActive {
                 // Relay-bridge session ended externally — same idea: update
                 // status quietly, let the prompt fire on next Caps Lock.
                 NSLog("[AppState] Relay bridge died, reverting to awareness")
                 self.statusText = "Ready"
             }
         }
+    }
+
+    enum BridgeWatchdogAction: Equatable {
+        case alive
+        case keepDaemon
+        case waitForLaunch
+        case recoverDaemon
+        case reapOrphan
+        case markDead
+    }
+
+    static func bridgeWatchdogAction(
+        menuSessionActive: Bool,
+        daemonAlive: Bool,
+        consumerAlive: Bool,
+        wasAlive: Bool,
+        sessionBridgeSeen: Bool,
+        elapsedSinceSessionStart: TimeInterval
+    ) -> BridgeWatchdogAction {
+        if daemonAlive && consumerAlive {
+            return .alive
+        }
+        if daemonAlive && !consumerAlive {
+            return (menuSessionActive || wasAlive) ? .keepDaemon : .reapOrphan
+        }
+        if menuSessionActive {
+            if sessionBridgeSeen || elapsedSinceSessionStart > 90 {
+                return .recoverDaemon
+            }
+            return .waitForLaunch
+        }
+        return wasAlive ? .recoverDaemon : .markDead
+    }
+
+    @discardableResult
+    private func startBridgeRecovery(reason: String) -> Bool {
+        if bridgeRecoveryInFlight { return true }
+        guard let context = processManager.bridgeRecoveryContext(fallbackConfig: menuSessionActive ? config : nil) else {
+            return false
+        }
+        let now = Date()
+        if now.timeIntervalSince(lastBridgeRecoveryAt) < Self.bridgeRecoveryCooldown {
+            return true
+        }
+
+        bridgeRecoveryInFlight = true
+        lastBridgeRecoveryAt = now
+        statusText = "Session reconnecting"
+        NSLog("[AppState] Relaunching voice bridge daemon for \(context.workingDirectory) reason=\(reason)")
+
+        let processManager = self.processManager
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let recovered = processManager.relaunchBridgeDaemon(context: context)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.bridgeRecoveryInFlight = false
+                if recovered {
+                    self.bridgeAliveCache = true
+                    self.sessionStartTime = Date()
+                    self.sessionBridgeSeen = false
+                    self.statusText = "Session"
+                    NSLog("[AppState] Voice bridge daemon recovery succeeded")
+                } else {
+                    self.bridgeAliveCache = false
+                    self.menuSessionActive = false
+                    self.sessionBridgeSeen = false
+                    self.statusText = "Ready"
+                    NSLog("[AppState] Voice bridge daemon recovery failed")
+                }
+            }
+        }
+        return true
     }
 
     private func showSessionPromptIfAllowed(now: Date = Date()) {
@@ -656,15 +750,16 @@ final class AppState {
             // Also detect orphaned relay bridges (process alive but no consumer).
             if justStartedRecording {
                 let bridgeProcessUp = self.processManager.bridgeAlive()
-                let bridgeUp = bridgeProcessUp && self.processManager.bridgeConsumerAlive()
-                self.bridgeAliveCache = bridgeUp
-                if !bridgeUp {
-                    if bridgeProcessUp {
-                        self.processManager.killBridge()
+                if bridgeProcessUp {
+                    self.bridgeAliveCache = true
+                } else {
+                    self.bridgeAliveCache = false
+                    let recovering = self.startBridgeRecovery(reason: "recording-start")
+                    if !recovering {
+                        self.menuSessionActive = false
+                        self.showSessionPromptIfAllowed()
                     }
-                    self.menuSessionActive = false
                     engine.cancelRecording()
-                    self.showSessionPromptIfAllowed()
                     self.wasRecording = false
                     return
                 }
