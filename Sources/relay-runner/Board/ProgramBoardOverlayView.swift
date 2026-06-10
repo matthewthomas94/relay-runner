@@ -123,7 +123,7 @@ private struct ProgramOverviewColumn: View {
             )
 
             BoardOverlayScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 6) {
                     ForEach(snapshot.projects) { item in
                         ProgramProjectCard(
                             item: item,
@@ -393,7 +393,7 @@ private struct ProgramWorkColumnPanel: View {
                 if items.isEmpty {
                     ProgramColumnEmpty(text: emptyText)
                 } else {
-                    LazyVStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 6) {
                         ForEach(items) { item in
                             ProgramWorkCard(item: item, showsProjectContext: showsProjectContext)
                         }
