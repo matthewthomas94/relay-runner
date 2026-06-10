@@ -8,6 +8,7 @@ final class ProcessManager {
     private static let voiceCommandPath = "/tmp/voice_cmd_ready"
     private static let heartbeatPath = "/tmp/voice_bridge_heartbeat"
     private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
+    private static let bridgeProviderPath = "/tmp/voice_bridge.provider"
     private static let pendingVoiceCommandTimeout: TimeInterval = 10
     private static let staleHeartbeatTimeout: TimeInterval = 30
     private static let missingHeartbeatGrace: TimeInterval = 30
@@ -20,6 +21,7 @@ final class ProcessManager {
         heartbeatPath,
         "/tmp/voice_bridge_heartbeat.pid",
         bridgeCwdPath,
+        bridgeProviderPath,
         "/tmp/relay_board_now.txt",
         "/tmp/relay_board_prev.txt",
     ]
@@ -178,6 +180,88 @@ final class ProcessManager {
               let attrs = try? fm.attributesOfItem(atPath: path),
               let modified = attrs[.modificationDate] as? Date else { return nil }
         return modified
+    }
+
+    struct BridgeRecoveryContext: Equatable {
+        let workingDirectory: String
+        let provider: String?
+    }
+
+    func bridgeRecoveryContext(fallbackConfig: AppConfig? = nil) -> BridgeRecoveryContext? {
+        if let context = Self.bridgeRecoveryContext(
+            cwdFile: URL(fileURLWithPath: Self.bridgeCwdPath),
+            providerFile: URL(fileURLWithPath: Self.bridgeProviderPath)
+        ) {
+            return context
+        }
+
+        guard let fallbackConfig else { return nil }
+        return BridgeRecoveryContext(
+            workingDirectory: WorkspaceFolder.url(from: fallbackConfig.general.working_directory).path,
+            provider: fallbackConfig.general.provider.rawValue
+        )
+    }
+
+    static func bridgeRecoveryContext(cwdFile: URL, providerFile: URL?) -> BridgeRecoveryContext? {
+        guard let rawCwd = try? String(contentsOf: cwdFile, encoding: .utf8) else {
+            return nil
+        }
+        let cwd = rawCwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cwd.isEmpty else { return nil }
+
+        let provider = providerFile
+            .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        return BridgeRecoveryContext(workingDirectory: cwd, provider: provider)
+    }
+
+    @discardableResult
+    func relaunchBridgeDaemon(context: BridgeRecoveryContext) -> Bool {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", Self.bridgeRecoveryScript(relayBridge: bundledRelayBridge.path, context: context)]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus == 0 && Self.bridgeDaemonAlive()
+        } catch {
+            NSLog("[ProcessManager] Failed to relaunch voice bridge: \(error)")
+            return false
+        }
+    }
+
+    static func bridgeRecoveryScript(relayBridge: String, context: BridgeRecoveryContext) -> String {
+        let provider = context.provider ?? ""
+        return """
+        set +e
+        RELAY_CWD=\(shellQuoted(context.workingDirectory))
+        RELAY_BRIDGE=\(shellQuoted(relayBridge))
+        RELAY_PROVIDER=\(shellQuoted(provider))
+        launchctl remove com.relay.voicebridge 2>/dev/null || true
+        [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
+        pkill -f '[v]oice_bridge.py' 2>/dev/null || true
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        : >> /tmp/voice_bridge.log
+        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" >> /tmp/voice_bridge.log 2>&1 || true
+        for _ in $(seq 1 20); do
+            [ -S /tmp/voice_bridge.sock ] && exit 0
+            launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
+            sleep 0.5
+        done
+        [ -S /tmp/voice_bridge.sock ] && exit 0
+        echo "[relay-runner] app watchdog launchctl recovery did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+        launchctl remove com.relay.voicebridge 2>/dev/null || true
+        if [ -n "$RELAY_PROVIDER" ]; then
+            (cd "$RELAY_CWD" && RELAY_RUNNER_PROVIDER="$RELAY_PROVIDER" nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &)
+        else
+            (cd "$RELAY_CWD" && env -u RELAY_RUNNER_PROVIDER nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &)
+        fi
+        for _ in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && exit 0; sleep 0.5; done
+        exit 1
+        """
     }
 
     /// Kill any running voice_bridge process (but leave the terminal window open).
