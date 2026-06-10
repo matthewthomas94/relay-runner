@@ -52,7 +52,7 @@ struct ProgramDashboardSnapshot: Equatable {
     }
 }
 
-enum ProgramBoardLane: CaseIterable, Identifiable, Equatable {
+enum ProgramBoardLane: CaseIterable, Identifiable, Equatable, Hashable {
     case backlog
     case ready
     case inProgress
@@ -76,6 +76,96 @@ enum ProgramBoardLane: CaseIterable, Identifiable, Equatable {
         case .inProgress: "No active tickets"
         case .done: "No done tickets"
         }
+    }
+
+    var ticketStatus: Ticket.Status {
+        switch self {
+        case .backlog: .backlog
+        case .ready: .ready
+        case .inProgress: .inProgress
+        case .done: .done
+        }
+    }
+}
+
+struct ProgramBoardDropRequest: Equatable {
+    let ticketID: String
+    let repoPath: String
+    let targetStatus: Ticket.Status
+    let shouldDispatch: Bool
+}
+
+struct ProgramBoardDropTarget: Equatable {
+    let lane: ProgramBoardLane
+    let isValid: Bool
+}
+
+struct ProgramBoardDragState: Equatable {
+    let item: ProgramStatusItem
+    let sourceLane: ProgramBoardLane
+    var location: CGPoint
+    var target: ProgramBoardDropTarget?
+}
+
+enum ProgramBoardDropPolicy {
+    static func request(
+        for item: ProgramStatusItem,
+        sourceLane: ProgramBoardLane,
+        targetLane: ProgramBoardLane
+    ) -> ProgramBoardDropRequest? {
+        guard sourceLane != targetLane,
+              item.isProgramBoardDraggable,
+              let ticketID = cleaned(item.ticketID),
+              let repoPath = cleaned(item.project?.path) else {
+            return nil
+        }
+        if targetLane == .ready && !item.blockedBy.isEmpty {
+            return nil
+        }
+        return ProgramBoardDropRequest(
+            ticketID: ticketID,
+            repoPath: repoPath,
+            targetStatus: targetLane.ticketStatus,
+            shouldDispatch: sourceLane != .ready && targetLane == .ready
+        )
+    }
+
+    static func validateResolvedDrop(
+        request: ProgramBoardDropRequest,
+        ticket: Ticket,
+        allTickets: [Ticket]
+    ) -> ProgramBoardDropRequest? {
+        guard ticket.id == request.ticketID,
+              !ticket.canceled,
+              ticket.runId == nil,
+              ticket.status != request.targetStatus else {
+            return nil
+        }
+        if request.targetStatus == .ready,
+           !allDependenciesDone(for: ticket, in: allTickets) {
+            return nil
+        }
+        return ProgramBoardDropRequest(
+            ticketID: request.ticketID,
+            repoPath: request.repoPath,
+            targetStatus: request.targetStatus,
+            shouldDispatch: ticket.status != .ready && request.targetStatus == .ready
+        )
+    }
+
+    private static func allDependenciesDone(for ticket: Ticket, in allTickets: [Ticket]) -> Bool {
+        let byID = Dictionary(uniqueKeysWithValues: allTickets.map { ($0.id, $0) })
+        for dependencyID in ticket.dependsOn {
+            guard byID[dependencyID]?.status == .done else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func cleaned(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty || trimmed == "unknown" ? nil : trimmed
     }
 }
 
@@ -439,21 +529,6 @@ struct ProgramTicketDetail: Equatable, Identifiable {
     }
 }
 
-extension ProgramStatusItem {
-    var isAwaitingMerge: Bool {
-        programStateKeys.contains("awaiting_merge")
-    }
-
-    var hasActiveWorker: Bool {
-        programStateKeys.contains("active")
-    }
-
-    private var programStateKeys: [String] {
-        [status, runState, ticketState]
-            .compactMap { $0?.programStateKey }
-    }
-}
-
 @Observable
 final class ProgramBoardViewModel {
     var snapshot: ProgramDashboardSnapshot?
@@ -462,7 +537,8 @@ final class ProgramBoardViewModel {
     var theme: ParticleFieldRenderer.Theme?
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?
-
+    var dragState: ProgramBoardDragState?
+    var columnFrames: [ProgramBoardLane: CGRect] = [:]
     var isLoading: Bool { reloadState.isLoading }
 
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
@@ -531,6 +607,28 @@ final class ProgramBoardViewModel {
         selectedTicketDetail = nil
     }
 
+    func dropRequest(
+        for item: ProgramStatusItem,
+        sourceLane: ProgramBoardLane,
+        targetLane: ProgramBoardLane
+    ) -> ProgramBoardDropRequest? {
+        ProgramBoardDropPolicy.request(for: item, sourceLane: sourceLane, targetLane: targetLane)
+    }
+
+    func dropTarget(
+        at location: CGPoint,
+        for item: ProgramStatusItem,
+        sourceLane: ProgramBoardLane
+    ) -> ProgramBoardDropTarget? {
+        guard let (lane, _) = columnFrames.first(where: { $0.value.contains(location) }) else {
+            return nil
+        }
+        return ProgramBoardDropTarget(
+            lane: lane,
+            isValid: dropRequest(for: item, sourceLane: sourceLane, targetLane: lane) != nil
+        )
+    }
+
     @MainActor
     private func finishReload(snapshot: ProgramDashboardSnapshot) {
         self.snapshot = snapshot
@@ -566,5 +664,26 @@ extension String {
             .lowercased()
             .replacingOccurrences(of: "-", with: "_")
             .replacingOccurrences(of: " ", with: "_")
+    }
+}
+
+extension ProgramStatusItem {
+    var isAwaitingMerge: Bool {
+        programStateKeys.contains("awaiting_merge")
+    }
+
+    var hasActiveWorker: Bool {
+        programStateKeys.contains("active")
+    }
+
+    var isProgramBoardDraggable: Bool {
+        project?.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
+            ticketID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
+            !hasActiveWorker &&
+            !isAwaitingMerge
+    }
+
+    private var programStateKeys: [String] {
+        [status, runState, ticketState].compactMap { $0?.programStateKey }
     }
 }

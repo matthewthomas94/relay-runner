@@ -6,6 +6,7 @@ struct ProgramBoardOverlayView: View {
     let onDismiss: () -> Void
     let onRefresh: () -> Void
     let onOpenProject: (String) -> Void
+    let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
         ZStack {
@@ -18,14 +19,64 @@ struct ProgramBoardOverlayView: View {
                     model: model,
                     onRefresh: onRefresh,
                     onDismiss: onDismiss,
-                    onOpenProject: onOpenProject
+                    onOpenProject: onOpenProject,
+                    onDrop: onDrop
                 )
                 .padding(.top, 89)
 
                 Spacer(minLength: 0)
             }
+
+            if let drag = model.dragState {
+                ProgramWorkCard(
+                    item: drag.item,
+                    lane: drag.sourceLane,
+                    isSelected: false,
+                    showsProjectContext: true,
+                    onSelect: {}
+                )
+                    .frame(width: 246)
+                    .opacity(0.95)
+                    .scaleEffect(1.03)
+                    .shadow(color: Color.black.opacity(0.55), radius: 22, x: 0, y: 14)
+                    .position(drag.location)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
         }
+        .coordinateSpace(name: "programBoard")
         .ignoresSafeArea()
+        .onPreferenceChange(ProgramColumnFramesKey.self) { model.columnFrames = $0 }
+    }
+}
+
+private struct ProgramColumnFramesKey: PreferenceKey {
+    typealias Value = [ProgramBoardLane: CGRect]
+    static var defaultValue: Value = [:]
+    static func reduce(value: inout Value, nextValue: () -> Value) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+private struct ProgramGrabCursor: ViewModifier {
+    let dragging: Bool
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        content.onHover { hovering in
+            guard enabled else { return }
+            if hovering {
+                (dragging ? NSCursor.closedHand : NSCursor.openHand).push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+    }
+}
+
+private extension View {
+    func programGrabCursor(dragging: Bool, enabled: Bool) -> some View {
+        modifier(ProgramGrabCursor(dragging: dragging, enabled: enabled))
     }
 }
 
@@ -34,6 +85,7 @@ private struct ProgramBoardContent: View {
     let onRefresh: () -> Void
     let onDismiss: () -> Void
     let onOpenProject: (String) -> Void
+    let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
         if let snapshot = model.snapshot {
@@ -54,12 +106,11 @@ private struct ProgramBoardContent: View {
                         )
                         ForEach(ProgramBoardLane.allCases) { lane in
                             ProgramWorkColumnPanel(
+                                model: model,
                                 lane: lane,
-                                items: model.ticketItems(in: lane),
-                                selectedTicketID: model.selectedTicketDetail?.id,
                                 showsProjectContext: model.isAllSelected,
                                 theme: model.theme,
-                                onSelectTicket: model.selectTicket
+                                onDrop: onDrop
                             )
                         }
                     }
@@ -382,12 +433,22 @@ private struct ProjectCount: View {
 }
 
 private struct ProgramWorkColumnPanel: View {
+    @Bindable var model: ProgramBoardViewModel
     let lane: ProgramBoardLane
-    let items: [ProgramStatusItem]
-    let selectedTicketID: String?
     let showsProjectContext: Bool
     let theme: ParticleFieldRenderer.Theme?
-    let onSelectTicket: (ProgramStatusItem) -> Void
+    let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
+
+    private var items: [ProgramStatusItem] {
+        model.ticketItems(in: lane)
+    }
+
+    private var activeTarget: ProgramBoardDropTarget? {
+        guard let target = model.dragState?.target, target.lane == lane else {
+            return nil
+        }
+        return target
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -406,17 +467,20 @@ private struct ProgramWorkColumnPanel: View {
             .padding(.bottom, 4)
 
             BoardOverlayScrollView {
+                ProgramDropIndicator(target: activeTarget)
                 if items.isEmpty {
                     ProgramColumnEmpty(text: lane.emptyText)
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(items) { item in
-                            ProgramWorkCard(
+                            DraggableProgramWorkCard(
+                                model: model,
                                 item: item,
                                 lane: lane,
-                                isSelected: selectedTicketID == item.id,
+                                isSelected: model.selectedTicketDetail?.id == item.id,
                                 showsProjectContext: showsProjectContext,
-                                onSelect: { onSelectTicket(item) }
+                                onSelect: { model.selectTicket(item) },
+                                onDrop: onDrop
                             )
                         }
                     }
@@ -425,6 +489,93 @@ private struct ProgramWorkColumnPanel: View {
             Spacer(minLength: 0)
         }
         .programColumnChrome(width: 270, theme: theme)
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: ProgramColumnFramesKey.self,
+                    value: [lane: proxy.frame(in: .named("programBoard"))]
+                )
+            }
+        )
+    }
+}
+
+private struct ProgramDropIndicator: View {
+    let target: ProgramBoardDropTarget?
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 2)
+            .fill(indicatorColor)
+            .frame(height: 3)
+            .padding(.horizontal, 4)
+            .padding(.bottom, 4)
+            .animation(.easeOut(duration: 0.10), value: target)
+            .help(target?.isValid == false ? "Cannot drop this ticket here" : "Drop ticket here")
+    }
+
+    private var indicatorColor: Color {
+        guard let target else { return Color.clear }
+        return target.isValid ? Color.white.opacity(0.55) : ProgramBoardStyle.red.opacity(0.75)
+    }
+}
+
+private struct DraggableProgramWorkCard: View {
+    @Bindable var model: ProgramBoardViewModel
+    let item: ProgramStatusItem
+    let lane: ProgramBoardLane
+    let isSelected: Bool
+    let showsProjectContext: Bool
+    let onSelect: () -> Void
+    let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
+
+    private var isBeingDragged: Bool {
+        model.dragState?.item.id == item.id
+    }
+
+    private var canDrag: Bool {
+        item.isProgramBoardDraggable
+    }
+
+    var body: some View {
+        ProgramWorkCard(
+            item: item,
+            lane: lane,
+            isSelected: isSelected,
+            showsProjectContext: showsProjectContext,
+            onSelect: onSelect
+        )
+            .opacity(isBeingDragged ? 0.25 : 1.0)
+            .contentShape(Rectangle())
+            .programGrabCursor(dragging: isBeingDragged, enabled: canDrag)
+            .gesture(
+                DragGesture(minimumDistance: 5, coordinateSpace: .named("programBoard"))
+                    .onChanged { value in
+                        guard canDrag else { return }
+                        if model.dragState == nil {
+                            model.dragState = ProgramBoardDragState(
+                                item: item,
+                                sourceLane: lane,
+                                location: value.location,
+                                target: nil
+                            )
+                        } else {
+                            model.dragState?.location = value.location
+                        }
+                        model.dragState?.target = model.dropTarget(
+                            at: value.location,
+                            for: item,
+                            sourceLane: lane
+                        )
+                    }
+                    .onEnded { _ in
+                        guard canDrag else { return }
+                        if let target = model.dragState?.target, target.isValid {
+                            onDrop(item, lane, target.lane)
+                        }
+                        model.dragState = nil
+                    }
+            )
+            .help(canDrag ? "Drag ticket to another lane" : "This ticket cannot be dragged while a worker owns its state")
     }
 }
 
