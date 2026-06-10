@@ -77,6 +77,12 @@ enum OrchestratorClient {
         }
     }
 
+    static func fetchProgramStatusOverlay(limit: Int = 6) async throws -> ProgramStatusOverlayMessage {
+        try await buildProgramStatusOverlay(limit: limit) { query, limit in
+            try await fetchProgramStatus(query: query, limit: limit)
+        }
+    }
+
     static func buildProgramDashboard(
         limit: Int = 20,
         fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse
@@ -94,6 +100,18 @@ enum OrchestratorClient {
             readyWork: ready,
             inProgressWork: inProgress,
             doneWork: done,
+            awaitingMerge: awaitingMerge
+        )
+    }
+
+    static func buildProgramStatusOverlay(
+        limit: Int = 6,
+        fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse
+    ) async throws -> ProgramStatusOverlayMessage {
+        async let active = fetch("in_progress_lane", limit)
+        async let awaitingMerge = fetch("awaiting_merge", limit)
+        return try await ProgramStatusOverlayFormatter.message(
+            active: active,
             awaitingMerge: awaitingMerge
         )
     }

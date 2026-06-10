@@ -85,6 +85,7 @@ final class AppState {
     private var actionsBus: ActionsConfirmBus?
     private var sttPollTimer: Timer?
     private var bridgeWatchdog: Timer?
+    private var programStatusTask: Task<Void, Never>?
     /// True while a menu-started terminal session owns the bridge.
     private var menuSessionActive = false
     /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
@@ -375,6 +376,28 @@ final class AppState {
         SocketClient.ttsSend(cmd)
     }
 
+    func showProgramStatus() {
+        if overlayController == nil { startOverlay() }
+        stateMachine.showProgramStatus(title: "Program Status", body: "Loading program status...")
+
+        programStatusTask?.cancel()
+        programStatusTask = Task { [weak self] in
+            do {
+                let message = try await OrchestratorClient.fetchProgramStatusOverlay()
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self, title = message.title, body = message.body] in
+                    self?.stateMachine.showProgramStatus(title: title, body: body)
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                let message = ProgramStatusOverlayFormatter.errorMessage(for: error)
+                await MainActor.run { [weak self, title = message.title, body = message.body] in
+                    self?.stateMachine.showProgramStatus(title: title, body: body)
+                }
+            }
+        }
+    }
+
     func toggleRecording() {
         guard permissions.microphone == .granted else {
             permissions.requestMicrophonePrompt { _ in }
@@ -634,6 +657,8 @@ final class AppState {
     // MARK: - Overlay management
 
     private func startOverlay() {
+        guard overlayController == nil else { return }
+
         // State event bus (listens for Python service state)
         let bus = StateEventBus(stateMachine: stateMachine)
         eventBus = bus
@@ -779,6 +804,9 @@ final class AppState {
     }
 
     private func stopOverlay() {
+        programStatusTask?.cancel()
+        programStatusTask = nil
+
         sttPollTimer?.invalidate()
         sttPollTimer = nil
 

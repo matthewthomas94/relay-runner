@@ -95,6 +95,20 @@ final class OrchestratorClientTests: XCTestCase {
         }
     }
 
+    func testProgramStatusOverlayFetchesLocalLanesWithoutProviderPromptOrTTS() async throws {
+        let recorder = QueryRecorder()
+
+        let message = try await OrchestratorClient.buildProgramStatusOverlay(limit: 6) { query, limit in
+            await recorder.record(query: query, limit: limit)
+            return self.response(query: query, message: "No work")
+        }
+
+        let queries = await recorder.queries
+        XCTAssertEqual(Set(queries.map(\.query)), ["in_progress_lane", "awaiting_merge"])
+        XCTAssertEqual(Set(queries.map(\.limit)), [6])
+        XCTAssertEqual(message.body, "No active workers or tickets awaiting merge.")
+    }
+
     private func jsonBody(_ request: URLRequest) throws -> [String: Any] {
         let data = try XCTUnwrap(request.httpBody)
         let decoded = try JSONSerialization.jsonObject(with: data)
@@ -114,5 +128,13 @@ final class OrchestratorClientTests: XCTestCase {
             items: [],
             counts: ProgramStatusCounts(projects: projects, items: itemCount)
         )
+    }
+}
+
+private actor QueryRecorder {
+    private(set) var queries: [(query: String, limit: Int)] = []
+
+    func record(query: String, limit: Int) {
+        queries.append((query, limit))
     }
 }

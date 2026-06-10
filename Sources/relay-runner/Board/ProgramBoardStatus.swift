@@ -20,6 +20,93 @@ struct ProgramDashboardSnapshot: Equatable {
     }
 }
 
+struct ProgramStatusOverlayMessage: Equatable {
+    let title: String
+    let body: String
+}
+
+enum ProgramStatusOverlayFormatter {
+    static func message(
+        active: ProgramStatusResponse,
+        awaitingMerge: ProgramStatusResponse
+    ) -> ProgramStatusOverlayMessage {
+        let activeItems = active.items
+        let awaitingItems = awaitingMerge.items
+
+        guard !activeItems.isEmpty || !awaitingItems.isEmpty else {
+            return ProgramStatusOverlayMessage(
+                title: "Program Status",
+                body: "No active workers or tickets awaiting merge."
+            )
+        }
+
+        var lines: [String] = []
+        append(items: activeItems, label: "Active", fallbackState: "active", to: &lines)
+        append(items: awaitingItems, label: "Awaiting merge", fallbackState: "awaiting merge", to: &lines)
+        return ProgramStatusOverlayMessage(title: "Program Status", body: lines.joined(separator: "\n"))
+    }
+
+    static func errorMessage(for error: Error) -> ProgramStatusOverlayMessage {
+        if let urlError = error as? URLError, isDaemonUnavailable(urlError) {
+            return ProgramStatusOverlayMessage(
+                title: "Program status unavailable",
+                body: "Relay Runner orchestrator is not reachable."
+            )
+        }
+
+        let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        return ProgramStatusOverlayMessage(
+            title: "Program status error",
+            body: detail.isEmpty ? "Could not load program status." : detail
+        )
+    }
+
+    private static func append(
+        items: [ProgramStatusItem],
+        label: String,
+        fallbackState: String,
+        to lines: inout [String]
+    ) {
+        guard !items.isEmpty else { return }
+        lines.append("\(label):")
+        lines.append(contentsOf: items.map { line(for: $0, fallbackState: fallbackState) })
+    }
+
+    private static func line(for item: ProgramStatusItem, fallbackState: String) -> String {
+        let project = cleaned(item.project?.name) ?? "Unknown project"
+        let ticketID = cleaned(item.ticketID) ?? "No ticket"
+        let title = cleaned(item.title).map(compactTitle) ?? "Untitled"
+        let provider = cleaned(item.provider) ?? "provider unknown"
+        let state = humanState(cleaned(item.runState) ?? cleaned(item.status) ?? fallbackState)
+        let run = cleaned(item.runID).map { ", run \($0)" } ?? ""
+        return "\(project) \(ticketID) - \(title) (\(provider), \(state)\(run))"
+    }
+
+    private static func cleaned(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func compactTitle(_ title: String) -> String {
+        let limit = 80
+        guard title.count > limit else { return title }
+        return String(title.prefix(limit - 3)) + "..."
+    }
+
+    private static func humanState(_ state: String) -> String {
+        state.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private static func isDaemonUnavailable(_ error: URLError) -> Bool {
+        switch error.code {
+        case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .notConnectedToInternet, .timedOut:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 struct ProgramStatusResponse: Decodable, Equatable {
     let query: String
     let provider: String?
