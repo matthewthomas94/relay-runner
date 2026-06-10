@@ -206,6 +206,89 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil), [])
     }
 
+    func testProgramStatusOverlayFormatsActiveAndAwaitingMergeWorkers() throws {
+        let active = try decode("""
+        {
+          "query": "in_progress_lane",
+          "provider": null,
+          "message": "In progress: 1 ticket.",
+          "items": [
+            {
+              "project": {"name": "Relay Runner", "path": "/repo/relay-runner"},
+              "ticket_id": "RR-58",
+              "title": "Show program status in response overlay",
+              "run_id": 46,
+              "run_state": "active",
+              "provider": "Codex/gpt-5"
+            }
+          ],
+          "counts": {"projects": 1, "items": 1}
+        }
+        """)
+        let awaitingMerge = try decode("""
+        {
+          "query": "awaiting_merge",
+          "provider": null,
+          "message": "Awaiting merge: 1 ticket.",
+          "items": [
+            {
+              "project": {"name": "Desktop Tools", "path": "/repo/desktop-tools"},
+              "ticket_id": "DT-12",
+              "title": "Check Claude parity",
+              "run_id": 52,
+              "run_state": "awaiting_merge",
+              "provider": "Claude/sonnet"
+            }
+          ],
+          "counts": {"projects": 2, "items": 1}
+        }
+        """)
+
+        let message = ProgramStatusOverlayFormatter.message(
+            active: active,
+            awaitingMerge: awaitingMerge
+        )
+
+        XCTAssertEqual(message.title, "Program Status")
+        XCTAssertTrue(message.body.contains("Active:"))
+        XCTAssertTrue(message.body.contains("Relay Runner RR-58 - Show program status in response overlay"))
+        XCTAssertTrue(message.body.contains("Codex/gpt-5, active, run 46"))
+        XCTAssertTrue(message.body.contains("Awaiting merge:"))
+        XCTAssertTrue(message.body.contains("Desktop Tools DT-12 - Check Claude parity"))
+        XCTAssertTrue(message.body.contains("Claude/sonnet, awaiting merge, run 52"))
+    }
+
+    func testProgramStatusOverlayFormatsEmptyState() {
+        let message = ProgramStatusOverlayFormatter.message(
+            active: emptyResponse(query: "in_progress_lane"),
+            awaitingMerge: emptyResponse(query: "awaiting_merge")
+        )
+
+        XCTAssertEqual(message.title, "Program Status")
+        XCTAssertEqual(message.body, "No active workers or tickets awaiting merge.")
+    }
+
+    func testProgramStatusOverlayFormatsUnavailableDaemonState() {
+        let message = ProgramStatusOverlayFormatter.errorMessage(
+            for: URLError(.cannotConnectToHost)
+        )
+
+        XCTAssertEqual(message.title, "Program status unavailable")
+        XCTAssertEqual(message.body, "Relay Runner orchestrator is not reachable.")
+    }
+
+    func testProgramStatusStateDoesNotUseTTSMessagePreview() {
+        let stateMachine = StateMachine()
+
+        stateMachine.showProgramStatus(title: "Program Status", body: "Local status")
+
+        XCTAssertEqual(
+            stateMachine.state,
+            .programStatus(title: "Program Status", body: "Local status")
+        )
+        XCTAssertNil(stateMachine.messagePreview)
+    }
+
     private func decode(_ json: String) throws -> ProgramStatusResponse {
         let data = try XCTUnwrap(json.data(using: .utf8))
         return try JSONDecoder().decode(ProgramStatusResponse.self, from: data)

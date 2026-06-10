@@ -32,6 +32,7 @@ enum OverlayState: Equatable {
     case speaking
     case paused
     case sessionPrompt   // No session running — prompt user to start one
+    case programStatus(title: String, body: String)
     /// RelayActionsMCP has fired at least one tool recently. Triggers the
     /// purple perimeter overlay. `awaitingConfirmation` is non-nil while a
     /// `propose_action(risk: medium|high)` is blocked waiting on the user's
@@ -48,7 +49,7 @@ enum OverlayState: Equatable {
             return nil
         case .listening, .recording:
             return .stt
-        case .processing, .messageWaiting, .preparing, .speaking:
+        case .processing, .messageWaiting, .preparing, .speaking, .programStatus:
             return .tts
         }
     }
@@ -60,7 +61,7 @@ enum OverlayState: Equatable {
             return .stt
         case .cancelled(.tts):
             return .tts
-        case .processing, .messageWaiting, .preparing, .speaking, .actionGlow:
+        case .processing, .messageWaiting, .preparing, .speaking, .programStatus, .actionGlow:
             return .tts
         default:
             return .tts
@@ -195,6 +196,18 @@ final class StateMachine: @unchecked Sendable {
 
     func dismissSessionPrompt() {
         if case .sessionPrompt = state {
+            state = .idle
+        }
+    }
+
+    func showProgramStatus(title: String, body: String) {
+        state = .programStatus(title: title, body: body)
+        partialTranscription = ""
+        messagePreview = nil
+    }
+
+    func dismissProgramStatus() {
+        if case .programStatus = state {
             state = .idle
         }
     }

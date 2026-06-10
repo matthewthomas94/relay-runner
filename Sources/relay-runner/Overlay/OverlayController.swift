@@ -136,7 +136,8 @@ final class OverlayController {
     /// Drives the pill toward .idle for states that should fade themselves out
     /// after a fixed window: .sent / .cancelled (acknowledge then disappear),
     /// .processing (brief "Thinking…" beat, then get out of the way until TTS
-    /// arrives), and .sessionPrompt (long "no session" hint).
+    /// arrives), .sessionPrompt (long "no session" hint), and local
+    /// program-status responses.
     private func tickAutoDismiss(_ sm: StateMachine) {
         let state = sm.state
         guard let timeout = Self.autoDismissTimeout(for: state) else {
@@ -166,6 +167,8 @@ final class OverlayController {
             sm.dismissProcessing()
         case .sessionPrompt:
             sm.dismissSessionPrompt()
+        case .programStatus:
+            sm.dismissProgramStatus()
         default:
             break
         }
@@ -179,6 +182,8 @@ final class OverlayController {
             return 1.0
         case .sessionPrompt:
             return 5.0
+        case .programStatus:
+            return 6.0
         default:
             return nil
         }
@@ -272,6 +277,11 @@ final class OverlayController {
                     theme: .stt,
                     suppressShadow: true
                 )
+            }
+
+        case .programStatus(let title, let body):
+            if state != lastAppliedState {
+                pill.showFull(title: title, body: body, theme: .tts)
             }
 
         default:
