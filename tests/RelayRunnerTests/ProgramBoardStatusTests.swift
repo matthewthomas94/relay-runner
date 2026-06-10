@@ -191,6 +191,180 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1", "TL-1"])
     }
 
+    func testProgramBoardTicketDetailResolvesChildTicketFileFromAllProjects() throws {
+        let root = try temporaryDirectory()
+        let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
+        try writeTicket(
+            repo: clientRepo,
+            id: "CD-1",
+            title: "Client backlog",
+            status: "backlog",
+            dependsOn: ["CD-0"],
+            body: """
+            ## Description
+
+            Prepare the client dashboard ticket for implementation.
+
+            ## Acceptance criteria
+
+            - [ ] User can inspect the dashboard ticket.
+            """
+        )
+        let item = try ticketItem(
+            projectName: "Client Dashboard",
+            path: clientRepo.path,
+            ticketID: "CD-1",
+            title: "Client backlog",
+            status: "backlog",
+            dependsOn: ["CD-0"],
+            runID: 41,
+            runState: "active",
+            branch: "relay/cd-1",
+            provider: "Codex/gpt-5"
+        )
+        let model = ProgramBoardViewModel()
+        model.snapshot = ProgramDashboardSnapshot(
+            summary: response(
+                query: "summary",
+                items: [try projectItem(name: "Client Dashboard", path: clientRepo.path, backlog: 1)]
+            ),
+            backlogWork: response(query: "backlog_lane", items: [item]),
+            readyWork: emptyResponse(query: "ready_lane"),
+            inProgressWork: emptyResponse(query: "in_progress_lane"),
+            doneWork: emptyResponse(query: "done_lane"),
+            awaitingMerge: emptyResponse(query: "awaiting_merge")
+        )
+
+        model.selectTicket(item)
+        let detail = try XCTUnwrap(model.selectedTicketDetail)
+
+        XCTAssertEqual(detail.identity?.projectPath, clientRepo.path)
+        XCTAssertEqual(detail.identity?.ticketID, "CD-1")
+        XCTAssertEqual(
+            detail.ticketPath,
+            clientRepo
+                .appendingPathComponent(".orchestrator", isDirectory: true)
+                .appendingPathComponent("CD-1.md")
+                .path
+        )
+        XCTAssertEqual(detail.description, "Prepare the client dashboard ticket for implementation.")
+        XCTAssertTrue(detail.acceptanceCriteria?.contains("User can inspect the dashboard ticket.") == true)
+        XCTAssertEqual(detail.ticket?.dependsOn, ["CD-0"])
+        XCTAssertEqual(detail.item.branch, "relay/cd-1")
+        XCTAssertEqual(detail.item.provider, "Codex/gpt-5")
+        XCTAssertEqual(detail.item.runID, "41")
+    }
+
+    func testProgramBoardFilteredSelectionResolvesOwningChildRepoForClaudeTicket() throws {
+        let root = try temporaryDirectory()
+        let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = root.appendingPathComponent("tools", isDirectory: true)
+        try writeTicket(
+            repo: clientRepo,
+            id: "CD-1",
+            title: "Client backlog",
+            status: "backlog",
+            body: "## Description\n\nClient work."
+        )
+        try writeTicket(
+            repo: toolsRepo,
+            id: "TL-1",
+            title: "Tools backlog",
+            status: "backlog",
+            body: """
+            ## Description
+
+            Tools work.
+
+            ## Acceptance criteria
+
+            - [ ] Tooling work is inspectable.
+            """
+        )
+        let clientItem = try ticketItem(
+            projectName: "Client Dashboard",
+            path: clientRepo.path,
+            ticketID: "CD-1",
+            title: "Client backlog",
+            status: "backlog",
+            provider: "Codex/gpt-5"
+        )
+        let toolsItem = try ticketItem(
+            projectName: "Tools",
+            path: toolsRepo.path,
+            ticketID: "TL-1",
+            title: "Tools backlog",
+            status: "backlog",
+            blockedBy: ["TL-0"],
+            runID: 52,
+            runState: "awaiting_merge",
+            branch: "relay/tl-1",
+            provider: "Claude/sonnet"
+        )
+        let model = ProgramBoardViewModel()
+        model.snapshot = ProgramDashboardSnapshot(
+            summary: response(
+                query: "summary",
+                projects: 2,
+                items: [
+                    try projectItem(name: "Client Dashboard", path: clientRepo.path, backlog: 1),
+                    try projectItem(name: "Tools", path: toolsRepo.path, backlog: 1),
+                ]
+            ),
+            backlogWork: response(query: "backlog_lane", projects: 2, items: [clientItem, toolsItem]),
+            readyWork: emptyResponse(query: "ready_lane", projects: 2),
+            inProgressWork: emptyResponse(query: "in_progress_lane", projects: 2),
+            doneWork: emptyResponse(query: "done_lane", projects: 2),
+            awaitingMerge: emptyResponse(query: "awaiting_merge", projects: 2)
+        )
+
+        model.selectProject(path: toolsRepo.path)
+        let filteredItem = try XCTUnwrap(model.ticketItems(in: .backlog).first)
+        model.selectTicket(filteredItem)
+        let detail = try XCTUnwrap(model.selectedTicketDetail)
+
+        XCTAssertEqual(filteredItem.ticketID, "TL-1")
+        XCTAssertEqual(detail.identity?.projectPath, toolsRepo.path)
+        XCTAssertEqual(
+            detail.ticketPath,
+            toolsRepo
+                .appendingPathComponent(".orchestrator", isDirectory: true)
+                .appendingPathComponent("TL-1.md")
+                .path
+        )
+        XCTAssertTrue(detail.acceptanceCriteria?.contains("Tooling work is inspectable.") == true)
+        XCTAssertEqual(detail.item.blockedBy, ["TL-0"])
+        XCTAssertTrue(detail.item.isAwaitingMerge)
+        XCTAssertEqual(detail.item.branch, "relay/tl-1")
+        XCTAssertEqual(detail.item.provider, "Claude/sonnet")
+        XCTAssertEqual(detail.item.runID, "52")
+    }
+
+    func testProgramBoardTicketDetailReportsMissingChildTicketFile() throws {
+        let root = try temporaryDirectory()
+        let missingRepo = root.appendingPathComponent("missing-project", isDirectory: true)
+        let item = try ticketItem(
+            projectName: "Missing",
+            path: missingRepo.path,
+            ticketID: "MP-1",
+            title: "Missing file",
+            status: "backlog"
+        )
+
+        let detail = ProgramTicketDetail.load(item: item)
+
+        XCTAssertEqual(detail.identity?.ticketID, "MP-1")
+        XCTAssertEqual(
+            detail.ticketPath,
+            missingRepo
+                .appendingPathComponent(".orchestrator", isDirectory: true)
+                .appendingPathComponent("MP-1.md")
+                .path
+        )
+        XCTAssertNil(detail.ticket)
+        XCTAssertTrue(detail.unavailableMessage?.contains("Ticket file was not found") == true)
+    }
+
     func testProgramBoardEmptySnapshotHasNoTicketLanes() {
         let snapshot = ProgramDashboardSnapshot(
             summary: emptyResponse(query: "summary", projects: 0),
@@ -347,6 +521,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         blockedBy: [String] = [],
         runID: Int? = nil,
         runState: String? = nil,
+        branch: String? = nil,
         provider: String? = nil
     ) throws -> ProgramStatusItem {
         var object: [String: Any] = [
@@ -364,6 +539,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         if let runState {
             object["run_state"] = runState
         }
+        if let branch {
+            object["branch"] = branch
+        }
         if let provider {
             object["provider"] = provider
         }
@@ -373,5 +551,42 @@ final class ProgramBoardStatusTests: XCTestCase {
     private func decodeItem(_ object: [String: Any]) throws -> ProgramStatusItem {
         let data = try JSONSerialization.data(withJSONObject: object)
         return try JSONDecoder().decode(ProgramStatusItem.self, from: data)
+    }
+
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("relay-runner-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func writeTicket(
+        repo: URL,
+        id: String,
+        title: String,
+        status: String,
+        dependsOn: [String] = [],
+        body: String
+    ) throws {
+        let dir = repo.appendingPathComponent(".orchestrator", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let contents = """
+        ---
+        id: \(id)
+        title: \(title)
+        status: \(status)
+        priority: medium
+        depends_on: [\(dependsOn.joined(separator: ", "))]
+        run_id: null
+        canceled: false
+        ---
+
+        \(body)
+        """
+        try contents.write(
+            to: dir.appendingPathComponent("\(id).md"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 }
