@@ -107,6 +107,55 @@ final class OrchestratorClientTests: XCTestCase {
         }
     }
 
+    func testProgramDashboardRefreshesStaleDaemonSchemaAndRetries() async throws {
+        let recorder = SchemaRefreshRecorder()
+
+        let snapshot = try await OrchestratorClient.fetchProgramDashboardRefreshingStaleDaemon(
+            limit: 20,
+            fetch: { query, _ in
+                if !(await recorder.wasRefreshed()), Self.isBoardLaneQuery(query) {
+                    throw Self.staleSchemaError(query: query)
+                }
+                return self.response(query: query, message: "Supported")
+            },
+            refreshDaemon: {
+                await recorder.refresh(with: .restarted)
+            }
+        )
+
+        let refreshCount = await recorder.refreshCount()
+        XCTAssertEqual(refreshCount, 1)
+        XCTAssertEqual(snapshot.backlogWork.query, "backlog_lane")
+        XCTAssertEqual(snapshot.readyWork.query, "ready_lane")
+        XCTAssertEqual(snapshot.inProgressWork.query, "in_progress_lane")
+        XCTAssertEqual(snapshot.doneWork.query, "done_lane")
+    }
+
+    func testProgramDashboardDefersStaleDaemonRestartWhileWorkersAreActive() async throws {
+        let recorder = SchemaRefreshRecorder()
+
+        do {
+            _ = try await OrchestratorClient.fetchProgramDashboardRefreshingStaleDaemon(
+                limit: 20,
+                fetch: { query, _ in
+                    if Self.isBoardLaneQuery(query) {
+                        throw Self.staleSchemaError(query: query)
+                    }
+                    return self.response(query: query, message: "Supported")
+                },
+                refreshDaemon: {
+                    await recorder.refresh(with: .deferredActiveRuns)
+                }
+            )
+            XCTFail("Expected stale daemon refresh to defer")
+        } catch OrchestratorClientError.daemonRefreshDeferred {
+            let refreshCount = await recorder.refreshCount()
+            XCTAssertEqual(refreshCount, 1)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testProgramStatusOverlayFetchesLocalLanesWithoutProviderPromptOrTTS() async throws {
         let recorder = QueryRecorder()
 
@@ -141,6 +190,17 @@ final class OrchestratorClientTests: XCTestCase {
             counts: ProgramStatusCounts(projects: projects, items: itemCount)
         )
     }
+
+    private static func isBoardLaneQuery(_ query: String) -> Bool {
+        ["backlog_lane", "ready_lane", "in_progress_lane", "done_lane"].contains(query)
+    }
+
+    private static func staleSchemaError(query: String) -> OrchestratorClientError {
+        .badStatus(
+            400,
+            #"{"error":"unknown program status query "\#(query)"; expected one of active_work, ready_work, blocked_work, awaiting_merge, stale_runs, summary, next"}"#
+        )
+    }
 }
 
 private actor LimitRecorder {
@@ -160,5 +220,22 @@ private actor QueryRecorder {
 
     func record(query: String, limit: Int) {
         queries.append((query, limit))
+    }
+}
+
+private actor SchemaRefreshRecorder {
+    private var count = 0
+
+    func wasRefreshed() -> Bool {
+        count > 0
+    }
+
+    func refresh(with result: OrchestratorDaemonRefreshResult) -> OrchestratorDaemonRefreshResult {
+        count += 1
+        return result
+    }
+
+    func refreshCount() -> Int {
+        count
     }
 }

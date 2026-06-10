@@ -72,8 +72,43 @@ enum OrchestratorClient {
 
     static func fetchProgramDashboard(limit: Int = 0) async throws -> ProgramDashboardSnapshot {
         await sweepProgramReadyTicketsBeforeDashboard(trigger: "program-board-refresh")
-        return try await buildProgramDashboard(limit: limit) { query, limit in
-            try await fetchProgramStatus(query: query, limit: limit)
+        return try await fetchProgramDashboardRefreshingStaleDaemon(
+            limit: limit,
+            fetch: { query, limit in
+                try await fetchProgramStatus(query: query, limit: limit)
+            },
+            refreshDaemon: {
+                await restartOrchestratorDaemonIfIdle()
+            }
+        )
+    }
+
+    static func fetchProgramDashboardRefreshingStaleDaemon(
+        limit: Int = 0,
+        fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse,
+        refreshDaemon: @escaping () async -> OrchestratorDaemonRefreshResult
+    ) async throws -> ProgramDashboardSnapshot {
+        do {
+            return try await buildProgramDashboard(limit: limit, fetch: fetch)
+        } catch {
+            guard shouldRefreshDaemon(for: error) else { throw error }
+            switch await refreshDaemon() {
+            case .restarted:
+                do {
+                    return try await buildProgramDashboard(limit: limit, fetch: fetch)
+                } catch {
+                    if shouldRefreshDaemon(for: error) {
+                        throw OrchestratorClientError.daemonRefreshFailed(
+                            "Relay Runner restarted the orchestrator, but it still reports an older Program Board schema."
+                        )
+                    }
+                    throw error
+                }
+            case .deferredActiveRuns:
+                throw OrchestratorClientError.daemonRefreshDeferred
+            case .failed(let message):
+                throw OrchestratorClientError.daemonRefreshFailed(message)
+            }
         }
     }
 
@@ -202,6 +237,59 @@ enum OrchestratorClient {
         }.resume()
     }
 
+    private static func shouldRefreshDaemon(for error: Error) -> Bool {
+        guard let clientError = error as? OrchestratorClientError,
+              case OrchestratorClientError.badStatus(400, let body) = clientError else { return false }
+        let lower = body.lowercased()
+        guard lower.contains("unknown program status query") else { return false }
+        return lower.contains("backlog_lane")
+            || lower.contains("ready_lane")
+            || lower.contains("in_progress_lane")
+            || lower.contains("done_lane")
+    }
+
+    private static func restartOrchestratorDaemonIfIdle() async -> OrchestratorDaemonRefreshResult {
+        await Task.detached {
+            let script = relayOrchestratorScript()
+            guard FileManager.default.isExecutableFile(atPath: script.path) else {
+                return .failed("Relay Runner could not find the bundled relay-orchestrator launcher.")
+            }
+
+            let proc = Process()
+            proc.executableURL = script
+            proc.arguments = ["--restart-if-idle"]
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+            } catch {
+                return .failed("Relay Runner could not restart the orchestrator: \(error.localizedDescription)")
+            }
+
+            switch proc.terminationStatus {
+            case 0:
+                return .restarted
+            case 75:
+                return .deferredActiveRuns
+            default:
+                return .failed(
+                    "relay-orchestrator --restart-if-idle failed with exit code \(proc.terminationStatus)."
+                )
+            }
+        }.value
+    }
+
+    private static func relayOrchestratorScript() -> URL {
+        let bundled = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/SharedSupport/scripts/relay-orchestrator")
+        if FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("scripts/relay-orchestrator")
+    }
+
     private static func readPort() -> Int {
         if let raw = try? String(contentsOfFile: portFile, encoding: .utf8),
            let port = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -212,10 +300,18 @@ enum OrchestratorClient {
     }
 }
 
+enum OrchestratorDaemonRefreshResult: Equatable {
+    case restarted
+    case deferredActiveRuns
+    case failed(String)
+}
+
 enum OrchestratorClientError: Error, LocalizedError, Equatable {
     case invalidRequest
     case badStatus(Int, String)
     case decodeFailed(String)
+    case daemonRefreshDeferred
+    case daemonRefreshFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -226,6 +322,15 @@ enum OrchestratorClientError: Error, LocalizedError, Equatable {
             return "Orchestrator returned HTTP \(status). \(detail)"
         case .decodeFailed(let message):
             return "Could not decode orchestrator response: \(message)"
+        case .daemonRefreshDeferred:
+            return (
+                "Relay Runner needs to restart the orchestrator to load the bundled Program Board schema, "
+                + "but active workers are running. Refresh again after those workers finish."
+            )
+        case .daemonRefreshFailed(let message):
+            return message.isEmpty
+                ? "Relay Runner could not restart the orchestrator."
+                : message
         }
     }
 }
