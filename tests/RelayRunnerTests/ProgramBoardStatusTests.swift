@@ -150,6 +150,26 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.ticketItems(in: .done, selectedProjectPath: clientPath).map(\.provider), ["Codex/gpt-5"])
         XCTAssertTrue(snapshot.containsProject(path: toolsPath))
         XCTAssertEqual(snapshot.projectName(for: toolsPath), "Tools")
+
+        let model = ProgramBoardViewModel()
+        model.snapshot = snapshot
+        let allProjectsRequest = try XCTUnwrap(model.dropRequest(
+            for: snapshot.ticketItems(in: .backlog, selectedProjectPath: nil)[1],
+            sourceLane: .backlog,
+            targetLane: .done
+        ))
+        XCTAssertEqual(allProjectsRequest.ticketID, "TL-1")
+        XCTAssertEqual(allProjectsRequest.repoPath, toolsPath)
+
+        model.selectProject(path: clientPath)
+        let selectedProjectRequest = try XCTUnwrap(model.dropRequest(
+            for: model.ticketItems(in: .backlog)[0],
+            sourceLane: .backlog,
+            targetLane: .ready
+        ))
+        XCTAssertEqual(selectedProjectRequest.ticketID, "CD-1")
+        XCTAssertEqual(selectedProjectRequest.repoPath, clientPath)
+        XCTAssertTrue(selectedProjectRequest.shouldDispatch)
     }
 
     func testProgramBoardViewModelSelectionRestoresAllTicketsWithoutReload() throws {
@@ -204,6 +224,113 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(snapshot.hasRegisteredProjects)
         XCTAssertFalse(snapshot.hasActiveWork)
         XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil), [])
+    }
+
+    func testProgramBoardDropRequestRejectsInvalidTargetsAndOwnedWorkerStates() throws {
+        let model = ProgramBoardViewModel()
+        let backlog = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-1",
+            title: "Backlog",
+            status: "backlog"
+        )
+        XCTAssertNil(model.dropRequest(for: backlog, sourceLane: .backlog, targetLane: .backlog))
+
+        let missingProject = try ticketItem(
+            projectName: "Unknown",
+            path: "unknown",
+            ticketID: "RR-2",
+            title: "Missing project",
+            status: "backlog"
+        )
+        XCTAssertNil(model.dropRequest(for: missingProject, sourceLane: .backlog, targetLane: .ready))
+
+        let active = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-3",
+            title: "Active",
+            status: "in progress",
+            runID: 51,
+            runState: "active",
+            provider: "Codex/gpt-5"
+        )
+        XCTAssertNil(model.dropRequest(for: active, sourceLane: .inProgress, targetLane: .done))
+
+        let blocked = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-5",
+            title: "Blocked",
+            status: "backlog",
+            blockedBy: ["RR-4"]
+        )
+        XCTAssertNil(model.dropRequest(for: blocked, sourceLane: .backlog, targetLane: .ready))
+
+        let awaiting = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-4",
+            title: "Awaiting merge",
+            status: "done",
+            runID: 52,
+            runState: "awaiting_merge",
+            provider: "Claude/sonnet"
+        )
+        XCTAssertNil(model.dropRequest(for: awaiting, sourceLane: .done, targetLane: .backlog))
+    }
+
+    func testProgramBoardResolvedDropRequiresSatisfiedReadyDependencies() {
+        let dependencyBacklog = ticket(id: "RR-1", status: .backlog)
+        let dependencyDone = ticket(id: "RR-1", status: .done)
+        let blocked = ticket(id: "RR-2", status: .backlog, dependsOn: ["RR-1"])
+        let request = ProgramBoardDropRequest(
+            ticketID: "RR-2",
+            repoPath: "/repo/relay-runner",
+            targetStatus: .ready,
+            shouldDispatch: true
+        )
+
+        XCTAssertNil(ProgramBoardDropPolicy.validateResolvedDrop(
+            request: request,
+            ticket: blocked,
+            allTickets: [dependencyBacklog, blocked]
+        ))
+
+        let validated = ProgramBoardDropPolicy.validateResolvedDrop(
+            request: request,
+            ticket: blocked,
+            allTickets: [dependencyDone, blocked]
+        )
+        XCTAssertEqual(validated?.ticketID, "RR-2")
+        XCTAssertEqual(validated?.targetStatus, .ready)
+        XCTAssertTrue(validated?.shouldDispatch == true)
+    }
+
+    func testProgramBoardResolvedDropRejectsNoOpCanceledAndClaimedTickets() {
+        let request = ProgramBoardDropRequest(
+            ticketID: "RR-1",
+            repoPath: "/repo/relay-runner",
+            targetStatus: .ready,
+            shouldDispatch: true
+        )
+
+        XCTAssertNil(ProgramBoardDropPolicy.validateResolvedDrop(
+            request: request,
+            ticket: ticket(id: "RR-1", status: .ready),
+            allTickets: []
+        ))
+        XCTAssertNil(ProgramBoardDropPolicy.validateResolvedDrop(
+            request: request,
+            ticket: ticket(id: "RR-1", status: .backlog, canceled: true),
+            allTickets: []
+        ))
+        XCTAssertNil(ProgramBoardDropPolicy.validateResolvedDrop(
+            request: request,
+            ticket: ticket(id: "RR-1", status: .backlog, runId: 51),
+            allTickets: []
+        ))
     }
 
     func testProgramStatusOverlayFormatsActiveAndAwaitingMergeWorkers() throws {
@@ -373,5 +500,26 @@ final class ProgramBoardStatusTests: XCTestCase {
     private func decodeItem(_ object: [String: Any]) throws -> ProgramStatusItem {
         let data = try JSONSerialization.data(withJSONObject: object)
         return try JSONDecoder().decode(ProgramStatusItem.self, from: data)
+    }
+
+    private func ticket(
+        id: String,
+        status: Ticket.Status,
+        dependsOn: [String] = [],
+        canceled: Bool = false,
+        runId: Int? = nil
+    ) -> Ticket {
+        Ticket(
+            id: id,
+            title: id,
+            status: status,
+            priority: .medium,
+            dependsOn: dependsOn,
+            runId: runId,
+            canceled: canceled,
+            order: 0,
+            description: nil,
+            body: ""
+        )
     }
 }
