@@ -87,6 +87,10 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             script.count("Run the preemption checkpoint immediately before"),
             2,
         )
+        self.assertEqual(
+            script.count("Codex and Claude follow the same command-action contract"),
+            2,
+        )
         self.assertGreaterEqual(
             script.count("cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1"),
             4,

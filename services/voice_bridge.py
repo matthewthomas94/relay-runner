@@ -21,7 +21,9 @@ import stat
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
+from command_actions import format_command_for_agent, resolve_command_action
 from config import load_config
 from tts_worker import TTSWorker
 
@@ -470,11 +472,16 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                 if slash_match:
                     text = "/" + slash_match.group(1).replace(" ", "-")
 
-                # Skip TTS for new voice input, write command for the agent
+                # Skip TTS for new voice input, write an explicit command
+                # action for the foreground orchestrator session.
                 tts_worker.skip()
                 _notify_state("processing", prompt=text[:200])
-                _write_cmd_file(text)
-                print(f"[voice_bridge] Voice command ready: {text}", file=sys.stderr)
+                action = resolve_command_action(text, repo_path=Path.cwd())
+                _write_cmd_file(format_command_for_agent(action))
+                print(
+                    f"[voice_bridge] Voice command ready: {action.outcome}",
+                    file=sys.stderr,
+                )
 
     except KeyboardInterrupt:
         pass

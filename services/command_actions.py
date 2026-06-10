@@ -1,0 +1,286 @@
+"""Relay command action classification and ticket capture.
+
+The foreground Codex or Claude session is the orchestrator. This module keeps
+voice/text command handling explicit before implementation starts: controls are
+intentional no-ticket actions, ticket references attach to existing work, and
+new project-work requests can be captured as backlog tickets.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import re
+
+
+CONTROL_COMMANDS = {
+    "__TTS_STOP__": "tts_stop",
+    "__PLAY__": "play",
+    "__REPLAY__": "replay",
+    "__INTERRUPT__": "interrupt",
+    "__CANCEL__": "cancel",
+}
+
+TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
+DISPATCH_RE = re.compile(
+    r"\b(dispatch|delegate|hand\s+off|kick\s+off|start|run|spin\s+up|work\s+on)\b",
+    re.IGNORECASE,
+)
+INSPECT_RE = re.compile(
+    r"\b(status|state|how'?s|how\s+is|what'?s|what\s+is|show|summarize|check)\b",
+    re.IGNORECASE,
+)
+INLINE_RE = re.compile(
+    r"\b(inline|in\s+this\s+session|do\s+it\s+here|don'?t\s+dispatch|without\s+(a\s+)?ticket)\b",
+    re.IGNORECASE,
+)
+WORK_RE = re.compile(
+    r"\b(add|build|change|clean\s+up|create|debug|delete|design|fix|implement|"
+    r"install|make|migrate|refactor|remove|repair|ship|test|update|wire|write)\b",
+    re.IGNORECASE,
+)
+PREFIX_RE = re.compile(r'^\s*prefix\s*=\s*["\']?([A-Za-z][A-Za-z0-9]*)["\']?\s*$', re.MULTILINE)
+NEXT_ID_RE = re.compile(r"^(\s*next_id\s*=\s*)(\d+)(\s*)$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class CommandAction:
+    kind: str
+    source_text: str
+    requires_ticket: bool = False
+    ticket_id: str | None = None
+    ticket_path: str | None = None
+    repo_path: str | None = None
+    reason: str = ""
+
+    @property
+    def outcome(self) -> str:
+        if self.kind == "create_ticket" and self.ticket_id:
+            return f"created ticket {self.ticket_id}"
+        if self.kind == "dispatch_ticket" and self.ticket_id:
+            return f"dispatch ticket {self.ticket_id}"
+        if self.kind == "update_ticket" and self.ticket_id:
+            return f"edit ticket {self.ticket_id}"
+        if self.kind == "inspect_ticket" and self.ticket_id:
+            return f"inspect ticket {self.ticket_id}"
+        if self.kind == "inline_work":
+            return "inline work explicitly requested"
+        if self.kind == "needs_project":
+            return "waiting on target-project choice"
+        if self.kind == "control":
+            return f"control action {self.reason}"
+        return "normal conversation"
+
+
+def is_control_command(text: str) -> bool:
+    value = (text or "").strip()
+    return value in CONTROL_COMMANDS or value.startswith("__STATUS__:")
+
+
+def classify_command(text: str) -> CommandAction:
+    source = (text or "").strip()
+    if is_control_command(source):
+        reason = CONTROL_COMMANDS.get(source, "status")
+        return CommandAction(kind="control", source_text=source, reason=reason)
+
+    if INLINE_RE.search(source):
+        return CommandAction(kind="inline_work", source_text=source)
+
+    ticket_id = _extract_ticket_id(source)
+    if ticket_id:
+        if DISPATCH_RE.search(source):
+            return CommandAction(
+                kind="dispatch_ticket",
+                source_text=source,
+                requires_ticket=True,
+                ticket_id=ticket_id,
+            )
+        if INSPECT_RE.search(source):
+            return CommandAction(
+                kind="inspect_ticket",
+                source_text=source,
+                requires_ticket=True,
+                ticket_id=ticket_id,
+            )
+        return CommandAction(
+            kind="update_ticket",
+            source_text=source,
+            requires_ticket=True,
+            ticket_id=ticket_id,
+        )
+
+    if WORK_RE.search(source):
+        return CommandAction(kind="create_ticket", source_text=source, requires_ticket=True)
+
+    return CommandAction(kind="conversation", source_text=source)
+
+
+def resolve_command_action(text: str, repo_path: str | Path | None = None) -> CommandAction:
+    action = classify_command(text)
+    if action.kind != "create_ticket":
+        return _with_repo(action, repo_path)
+
+    repo = Path(repo_path or Path.cwd()).expanduser().resolve()
+    orch_dir = repo / ".orchestrator"
+    config_path = orch_dir / "config.toml"
+    if not orch_dir.is_dir() or not config_path.is_file():
+        return CommandAction(
+            kind="needs_project",
+            source_text=action.source_text,
+            requires_ticket=True,
+            repo_path=str(repo),
+            reason=".orchestrator/config.toml not found",
+        )
+
+    try:
+        ticket_id, ticket_path = create_ticket_for_command(repo, action.source_text)
+    except (OSError, ValueError) as e:
+        return CommandAction(
+            kind="needs_project",
+            source_text=action.source_text,
+            requires_ticket=True,
+            repo_path=str(repo),
+            reason=str(e),
+        )
+    return CommandAction(
+        kind="create_ticket",
+        source_text=action.source_text,
+        requires_ticket=True,
+        ticket_id=ticket_id,
+        ticket_path=str(ticket_path),
+        repo_path=str(repo),
+    )
+
+
+def create_ticket_for_command(repo_path: str | Path, source_text: str) -> tuple[str, Path]:
+    repo = Path(repo_path).expanduser().resolve()
+    orch_dir = repo / ".orchestrator"
+    config_path = orch_dir / "config.toml"
+    config_text = config_path.read_text()
+    prefix, next_id = _read_ticket_config(config_text)
+
+    ticket_number = next_id
+    while True:
+        ticket_id = f"{prefix}-{ticket_number}"
+        ticket_path = orch_dir / f"{ticket_id}.md"
+        if not ticket_path.exists():
+            break
+        ticket_number += 1
+
+    ticket_path.write_text(_ticket_body(ticket_id, source_text))
+    _write_next_id(config_path, config_text, ticket_number + 1)
+    return ticket_id, ticket_path
+
+
+def format_command_for_agent(action: CommandAction) -> str:
+    if action.kind in {"conversation", "control"}:
+        return action.source_text
+
+    if action.kind == "inline_work":
+        return (
+            f"{action.source_text}\n\n"
+            "Relay Runner command action:\n"
+            "- action: inline_work\n"
+            "- ticket_id: null\n"
+            "- outcome_to_report: inline work explicitly requested\n"
+        )
+
+    lines = [
+        "Relay Runner command action:",
+        f"- action: {action.kind}",
+        f"- ticket_id: {action.ticket_id or 'null'}",
+        f"- outcome_to_report: {action.outcome}",
+    ]
+    if action.ticket_path:
+        lines.append(f"- ticket_path: {action.ticket_path}")
+    if action.repo_path:
+        lines.append(f"- repo_path: {action.repo_path}")
+    if action.reason:
+        lines.append(f"- reason: {action.reason}")
+
+    lines.extend(
+        [
+            "",
+            "Orchestrator contract:",
+            "- You are the foreground orchestrator, not the implementation worker.",
+            "- Do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
+            "- Resolve this action first: create/refine/commit the ticket, edit the existing ticket, dispatch a ready worker, or ask for the target project.",
+            "- Your user-facing response must name the action outcome, such as created ticket, edited ticket, dispatched worker, or waiting on a target-project choice.",
+        ]
+    )
+
+    if action.kind == "create_ticket":
+        lines.append("- A backlog ticket has already been written for this command; review it before dispatch.")
+    elif action.kind == "dispatch_ticket":
+        lines.append("- Dispatch the named ticket through relay-orchestrator; do not implement the ticket yourself.")
+    elif action.kind == "update_ticket":
+        lines.append("- Edit the named ticket so it can survive a cold worker run; dispatch only if it is ready.")
+    elif action.kind == "inspect_ticket":
+        lines.append("- Inspect/report ticket or run state; do not implement the ticket yourself.")
+    elif action.kind == "needs_project":
+        lines.append("- No ticket was created because no active project board was found; ask the user which repo/project should own the work.")
+
+    lines.extend(["", "Source command:", action.source_text])
+    return "\n".join(lines)
+
+
+def _with_repo(action: CommandAction, repo_path: str | Path | None) -> CommandAction:
+    if repo_path is None:
+        return action
+    data = dict(action.__dict__)
+    data["repo_path"] = str(Path(repo_path).expanduser().resolve())
+    return CommandAction(**data)
+
+
+def _extract_ticket_id(text: str) -> str | None:
+    match = TICKET_ID_RE.search(text or "")
+    return match.group(1).upper() if match else None
+
+
+def _read_ticket_config(config_text: str) -> tuple[str, int]:
+    prefix_match = PREFIX_RE.search(config_text)
+    next_match = NEXT_ID_RE.search(config_text)
+    if not prefix_match or not next_match:
+        raise ValueError("invalid .orchestrator/config.toml: expected prefix and next_id")
+    return prefix_match.group(1).upper(), int(next_match.group(2))
+
+
+def _write_next_id(config_path: Path, config_text: str, next_id: int) -> None:
+    if NEXT_ID_RE.search(config_text):
+        updated = NEXT_ID_RE.sub(lambda m: f"{m.group(1)}{next_id}{m.group(3)}", config_text, count=1)
+    else:
+        updated = config_text.rstrip() + f"\nnext_id = {next_id}\n"
+    config_path.write_text(updated if updated.endswith("\n") else updated + "\n")
+
+
+def _ticket_body(ticket_id: str, source_text: str) -> str:
+    title = _title_from_command(source_text)
+    quote = "\n".join(f"> {line}" if line else ">" for line in source_text.splitlines())
+    return (
+        "---\n"
+        f"id: {ticket_id}\n"
+        f"title: {title}\n"
+        "status: backlog\n"
+        "priority: medium\n"
+        "depends_on: []\n"
+        "run_id: null\n"
+        "canceled: false\n"
+        "---\n\n"
+        "## Description\n\n"
+        "Relay Runner captured this command as project work before implementation started:\n\n"
+        f"{quote}\n\n"
+        "The foreground session should refine this ticket before dispatch if the worker would need more context.\n\n"
+        "## Acceptance criteria\n\n"
+        "- [ ] The ticket contains enough context for a worker to complete the change in one pass.\n"
+        "- [ ] Implementation work is dispatched to a worker, unless the user explicitly asks to keep it inline.\n"
+    )
+
+
+def _title_from_command(text: str) -> str:
+    title = re.sub(r"\s+", " ", (text or "").strip())
+    title = re.sub(r"^(please|can you|could you|let'?s|we need to)\s+", "", title, flags=re.IGNORECASE)
+    if not title:
+        title = "Captured Relay command"
+    if len(title) > 76:
+        title = title[:73].rstrip() + "..."
+    return title[:1].upper() + title[1:]
