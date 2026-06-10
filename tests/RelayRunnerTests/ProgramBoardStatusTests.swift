@@ -191,6 +191,50 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1", "TL-1"])
     }
 
+    func testProgramBoardViewModelReloadUsesDashboardFetcherForAllAndSelectedScopes() async throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let snapshot = try programBoardSnapshot(clientPath: clientPath, toolsPath: toolsPath)
+        let spy = ProgramDashboardFetchSpy(results: [.success(snapshot)], delayNanoseconds: 10_000_000)
+        let model = ProgramBoardViewModel(fetchDashboard: spy.fetch)
+
+        let allTask = model.reload()
+        XCTAssertEqual(model.reloadState, .loading)
+        await allTask.value
+
+        XCTAssertEqual(spy.callCount, 1)
+        XCTAssertEqual(model.reloadState, .succeeded)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1", "TL-1"])
+
+        model.selectProject(path: toolsPath)
+        await model.reload().value
+
+        XCTAssertEqual(spy.callCount, 2)
+        XCTAssertEqual(model.selectedScopeTitle, "Tools")
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1"])
+    }
+
+    func testProgramBoardViewModelReloadFailureKeepsPreviousDataVisible() async throws {
+        let previous = try programBoardSnapshot(
+            clientPath: "/repo/client-dashboard",
+            toolsPath: "/repo/tools"
+        )
+        let spy = ProgramDashboardFetchSpy(results: [
+            .failure(ProgramBoardTestError(message: "daemon unavailable")),
+        ])
+        let model = ProgramBoardViewModel(fetchDashboard: spy.fetch)
+        model.snapshot = previous
+
+        await model.reload().value
+
+        XCTAssertEqual(spy.callCount, 1)
+        XCTAssertEqual(model.snapshot, previous)
+        XCTAssertEqual(model.errorMessage, "daemon unavailable")
+        XCTAssertEqual(model.reloadState, .failed("daemon unavailable"))
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1", "TL-1"])
+    }
+
     func testProgramBoardEmptySnapshotHasNoTicketLanes() {
         let snapshot = ProgramDashboardSnapshot(
             summary: emptyResponse(query: "summary", projects: 0),
@@ -318,6 +362,31 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
     }
 
+    private func programBoardSnapshot(clientPath: String, toolsPath: String) throws -> ProgramDashboardSnapshot {
+        ProgramDashboardSnapshot(
+            summary: response(
+                query: "summary",
+                projects: 2,
+                items: [
+                    try projectItem(name: "Client Dashboard", path: clientPath),
+                    try projectItem(name: "Tools", path: toolsPath),
+                ]
+            ),
+            backlogWork: response(
+                query: "backlog_lane",
+                projects: 2,
+                items: [
+                    try ticketItem(projectName: "Client Dashboard", path: clientPath, ticketID: "CD-1", title: "Client backlog", status: "backlog"),
+                    try ticketItem(projectName: "Tools", path: toolsPath, ticketID: "TL-1", title: "Tools backlog", status: "backlog"),
+                ]
+            ),
+            readyWork: emptyResponse(query: "ready_lane", projects: 2),
+            inProgressWork: emptyResponse(query: "in_progress_lane", projects: 2),
+            doneWork: emptyResponse(query: "done_lane", projects: 2),
+            awaitingMerge: emptyResponse(query: "awaiting_merge", projects: 2)
+        )
+    }
+
     private func projectItem(
         name: String,
         path: String,
@@ -374,4 +443,44 @@ final class ProgramBoardStatusTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: object)
         return try JSONDecoder().decode(ProgramStatusItem.self, from: data)
     }
+}
+
+private final class ProgramDashboardFetchSpy {
+    private let lock = NSLock()
+    private var results: [Result<ProgramDashboardSnapshot, Error>]
+    private let delayNanoseconds: UInt64
+    private var calls = 0
+
+    init(results: [Result<ProgramDashboardSnapshot, Error>], delayNanoseconds: UInt64 = 0) {
+        self.results = results
+        self.delayNanoseconds = delayNanoseconds
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
+    }
+
+    func fetch() async throws -> ProgramDashboardSnapshot {
+        let result = nextResult()
+
+        if delayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: delayNanoseconds)
+        }
+        return try result.get()
+    }
+
+    private func nextResult() -> Result<ProgramDashboardSnapshot, Error> {
+        lock.lock()
+        defer { lock.unlock() }
+        calls += 1
+        return results.count > 1 ? results.removeFirst() : results[0]
+    }
+}
+
+private struct ProgramBoardTestError: LocalizedError {
+    let message: String
+
+    var errorDescription: String? { message }
 }

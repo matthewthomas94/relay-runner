@@ -40,7 +40,7 @@ private struct ProgramBoardContent: View {
                         selectedProjectPath: model.selectedProjectPath,
                         selectedScopeTitle: model.selectedScopeTitle,
                         errorMessage: model.errorMessage,
-                        isLoading: model.isLoading,
+                        reloadState: model.reloadState,
                         theme: model.theme,
                         onSelectAll: model.selectAllProjects,
                         onSelectProject: model.selectProject,
@@ -59,8 +59,8 @@ private struct ProgramBoardContent: View {
             } else {
                 ProgramStatePanel(
                     title: "No registered projects",
-                    detail: snapshot.summary.message,
-                    isLoading: model.isLoading,
+                    detail: model.errorMessage ?? snapshot.summary.message,
+                    reloadState: model.reloadState,
                     theme: model.theme,
                     onRefresh: onRefresh,
                     onDismiss: onDismiss
@@ -70,7 +70,7 @@ private struct ProgramBoardContent: View {
             ProgramStatePanel(
                 title: "Loading program status",
                 detail: nil,
-                isLoading: true,
+                reloadState: model.reloadState,
                 theme: model.theme,
                 onRefresh: onRefresh,
                 onDismiss: onDismiss
@@ -79,7 +79,7 @@ private struct ProgramBoardContent: View {
             ProgramStatePanel(
                 title: "Program status unavailable",
                 detail: model.errorMessage,
-                isLoading: false,
+                reloadState: model.reloadState,
                 theme: model.theme,
                 onRefresh: onRefresh,
                 onDismiss: onDismiss
@@ -93,7 +93,7 @@ private struct ProgramOverviewColumn: View {
     let selectedProjectPath: String?
     let selectedScopeTitle: String
     let errorMessage: String?
-    let isLoading: Bool
+    let reloadState: ProgramBoardReloadState
     let theme: ParticleFieldRenderer.Theme?
     let onSelectAll: () -> Void
     let onSelectProject: (String) -> Void
@@ -103,7 +103,7 @@ private struct ProgramOverviewColumn: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             ProgramBoardTitleBar(
-                isLoading: isLoading,
+                reloadState: reloadState,
                 onRefresh: onRefresh,
                 onDismiss: onDismiss
             )
@@ -144,28 +144,25 @@ private struct ProgramOverviewColumn: View {
 }
 
 private struct ProgramBoardTitleBar: View {
-    let isLoading: Bool
+    let reloadState: ProgramBoardReloadState
     let onRefresh: () -> Void
     let onDismiss: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Program Board")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                Text("Workspace status")
+                HStack(alignment: .center, spacing: 6) {
+                    Text("Program Board")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                    ProgramReloadButton(state: reloadState, action: onRefresh)
+                }
+                Text(reloadState.statusText)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    .foregroundStyle(reloadState.isFailure ? ProgramBoardStyle.red : ProgramBoardStyle.secondaryText)
+                    .lineLimit(1)
             }
             Spacer(minLength: 0)
-            if isLoading {
-                ProgressView()
-                    .scaleEffect(0.62)
-                    .controlSize(.small)
-                    .frame(width: 24, height: 24)
-            }
-            ProgramIconButton(systemName: "arrow.clockwise", help: "Refresh program status", action: onRefresh)
             ProgramIconButton(systemName: "xmark", help: "Close Program Board", action: onDismiss)
         }
     }
@@ -576,7 +573,7 @@ private struct ProgramColumnEmpty: View {
 private struct ProgramStatePanel: View {
     let title: String
     let detail: String?
-    let isLoading: Bool
+    let reloadState: ProgramBoardReloadState
     let theme: ParticleFieldRenderer.Theme?
     let onRefresh: () -> Void
     let onDismiss: () -> Void
@@ -584,7 +581,7 @@ private struct ProgramStatePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             ProgramBoardTitleBar(
-                isLoading: isLoading,
+                reloadState: reloadState,
                 onRefresh: onRefresh,
                 onDismiss: onDismiss
             )
@@ -647,6 +644,34 @@ private struct ProgramIconButton: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+}
+
+private struct ProgramReloadButton: View {
+    let state: ProgramBoardReloadState
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if state.isLoading {
+                    ProgressView()
+                        .scaleEffect(0.58)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: state.iconName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(state.iconColor)
+                }
+            }
+            .frame(width: 22, height: 22)
+            .background(Circle().fill(Color.white.opacity(0.10)))
+            .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(state.isLoading)
+        .help(state.helpText)
     }
 }
 
@@ -742,11 +767,67 @@ private extension ProgramBoardLane {
     }
 }
 
+private extension ProgramBoardReloadState {
+    var statusText: String {
+        switch self {
+        case .idle:
+            return "Workspace status"
+        case .loading:
+            return "Refreshing..."
+        case .succeeded:
+            return "Updated"
+        case .failed:
+            return "Refresh failed"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .idle, .loading:
+            return "arrow.clockwise"
+        case .succeeded:
+            return "checkmark"
+        case .failed:
+            return "exclamationmark"
+        }
+    }
+
+    var iconColor: Color {
+        switch self {
+        case .succeeded:
+            return ProgramBoardStyle.green
+        case .failed:
+            return ProgramBoardStyle.red
+        case .idle, .loading:
+            return ProgramBoardStyle.primaryText
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .idle:
+            return "Refresh program status"
+        case .loading:
+            return "Refreshing program status"
+        case .succeeded:
+            return "Program status updated"
+        case .failed(let message):
+            return "Refresh failed: \(message)"
+        }
+    }
+
+    var isFailure: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+}
+
 private enum ProgramBoardStyle {
     static let primaryText = Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0)
     static let secondaryText = Color(.sRGB, red: 203 / 255, green: 213 / 255, blue: 225 / 255, opacity: 0.78)
     static let mutedText = Color(.sRGB, red: 148 / 255, green: 163 / 255, blue: 184 / 255, opacity: 0.82)
     static let red = Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 1.0)
+    static let green = Color(.sRGB, red: 52 / 255, green: 211 / 255, blue: 153 / 255, opacity: 1.0)
 }
 
 private extension String {
