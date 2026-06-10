@@ -71,6 +71,18 @@ enum ProgramBoardLane: CaseIterable, Identifiable, Equatable {
     }
 }
 
+enum ProgramBoardReloadState: Equatable {
+    case idle
+    case loading
+    case succeeded
+    case failed(String)
+
+    var isLoading: Bool {
+        if case .loading = self { return true }
+        return false
+    }
+}
+
 struct ProgramStatusOverlayMessage: Equatable {
     let title: String
     let body: String
@@ -292,24 +304,35 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
 @Observable
 final class ProgramBoardViewModel {
     var snapshot: ProgramDashboardSnapshot?
-    var isLoading = false
+    var reloadState: ProgramBoardReloadState = .idle
     var errorMessage: String?
     var theme: ParticleFieldRenderer.Theme?
     var selectedProjectPath: String?
 
+    var isLoading: Bool { reloadState.isLoading }
+
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
+    @ObservationIgnored private var fetchDashboard: () async throws -> ProgramDashboardSnapshot
+
+    init(fetchDashboard: @escaping () async throws -> ProgramDashboardSnapshot = {
+        try await OrchestratorClient.fetchProgramDashboard()
+    }) {
+        self.fetchDashboard = fetchDashboard
+    }
 
     deinit {
         reloadTask?.cancel()
     }
 
-    func reload() {
+    @discardableResult
+    func reload() -> Task<Void, Never> {
         reloadTask?.cancel()
-        isLoading = true
+        reloadState = .loading
         errorMessage = nil
-        reloadTask = Task { [weak self] in
+        let fetchDashboard = fetchDashboard
+        let task = Task { [weak self] in
             do {
-                let snapshot = try await OrchestratorClient.fetchProgramDashboard()
+                let snapshot = try await fetchDashboard()
                 guard !Task.isCancelled else { return }
                 await self?.finishReload(snapshot: snapshot)
             } catch {
@@ -318,6 +341,8 @@ final class ProgramBoardViewModel {
                 await self?.finishReload(errorMessage: message)
             }
         }
+        reloadTask = task
+        return task
     }
 
     var isAllSelected: Bool {
@@ -347,12 +372,12 @@ final class ProgramBoardViewModel {
         if let selectedProjectPath, !snapshot.containsProject(path: selectedProjectPath) {
             self.selectedProjectPath = nil
         }
-        isLoading = false
+        reloadState = .succeeded
     }
 
     @MainActor
     private func finishReload(errorMessage: String) {
         self.errorMessage = errorMessage
-        isLoading = false
+        reloadState = .failed(errorMessage)
     }
 }
