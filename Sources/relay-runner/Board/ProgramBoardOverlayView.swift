@@ -49,8 +49,7 @@ private struct ProgramBoardContent: View {
                     )
                     ForEach(ProgramBoardLane.allCases) { lane in
                         ProgramWorkColumnPanel(
-                            title: lane.title,
-                            emptyText: lane.emptyText,
+                            lane: lane,
                             items: model.ticketItems(in: lane),
                             showsProjectContext: model.isAllSelected,
                             theme: model.theme
@@ -367,8 +366,7 @@ private struct ProjectCount: View {
 }
 
 private struct ProgramWorkColumnPanel: View {
-    let title: String
-    let emptyText: String
+    let lane: ProgramBoardLane
     let items: [ProgramStatusItem]
     let showsProjectContext: Bool
     let theme: ParticleFieldRenderer.Theme?
@@ -376,7 +374,7 @@ private struct ProgramWorkColumnPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 8) {
-                Text(title)
+                Text(lane.title)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                     .lineLimit(1)
@@ -391,11 +389,11 @@ private struct ProgramWorkColumnPanel: View {
 
             BoardOverlayScrollView {
                 if items.isEmpty {
-                    ProgramColumnEmpty(text: emptyText)
+                    ProgramColumnEmpty(text: lane.emptyText)
                 } else {
                     LazyVStack(alignment: .leading, spacing: 6) {
                         ForEach(items) { item in
-                            ProgramWorkCard(item: item, showsProjectContext: showsProjectContext)
+                            ProgramWorkCard(item: item, lane: lane, showsProjectContext: showsProjectContext)
                         }
                     }
                 }
@@ -408,51 +406,62 @@ private struct ProgramWorkColumnPanel: View {
 
 private struct ProgramWorkCard: View {
     let item: ProgramStatusItem
+    let lane: ProgramBoardLane
     let showsProjectContext: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(item.ticketID ?? "No ticket")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(ProgramBoardStyle.secondaryText)
-                            .lineLimit(1)
-                        Text(item.title ?? "Untitled work")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(ProgramBoardStyle.primaryText)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                    }
-                    if showsProjectContext {
-                        ProjectContextLine(project: item.project)
-                    }
-                }
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(projectName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(showsProjectContext ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Text(ticketID)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
                 Spacer(minLength: 0)
-                if let priority = item.priority, !priority.isEmpty {
+
+                if let priority = cleaned(item.priority) {
                     ProgramInlineBadge(label: priority.displayLabel)
                 }
             }
 
-            if item.isAwaitingMerge || item.hasActiveWorker {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            let badges = stateBadges
+            if !badges.isEmpty {
                 HStack(alignment: .center, spacing: 6) {
-                    if item.isAwaitingMerge {
-                        ProgramInlineBadge(label: "Awaiting merge")
-                    }
-                    if item.hasActiveWorker {
-                        ProgramInlineBadge(label: "Active")
+                    ForEach(badges, id: \.self) { label in
+                        ProgramInlineBadge(label: label)
                     }
                     Spacer(minLength: 0)
                 }
             }
 
-            let details = detailParts
-            if !details.isEmpty {
-                Text(details.joined(separator: "  "))
-                    .font(.system(size: 10, weight: .regular))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+            if let dependencyText {
+                Text(dependencyText)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(item.blockedBy.isEmpty ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.red)
                     .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+
+            if let statusText {
+                Text(statusText)
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
             }
 
             if let lastError = item.lastError, !lastError.isEmpty {
@@ -467,55 +476,87 @@ private struct ProgramWorkCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ProgramCardBackground(cornerRadius: 16))
         .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
+        .help(cardHelp)
     }
 
-    private var detailParts: [String] {
+    private var projectName: String {
+        cleaned(item.project?.name) ?? "Unknown project"
+    }
+
+    private var ticketID: String {
+        cleaned(item.ticketID) ?? "No ticket"
+    }
+
+    private var title: String {
+        cleaned(item.title) ?? "Untitled work"
+    }
+
+    private var stateBadges: [String] {
+        var labels: [String] = []
+        if item.isAwaitingMerge {
+            labels.append("Awaiting merge")
+        } else if item.hasActiveWorker {
+            labels.append("Active worker")
+        }
+        if !item.blockedBy.isEmpty {
+            labels.append("Blocked")
+        }
+        return labels
+    }
+
+    private var dependencyText: String? {
         var parts: [String] = []
-        if let status = item.status {
-            parts.append(status.displayLabel)
-        }
-        if let runState = item.runState,
-           runState.programStateKey != (item.status?.programStateKey ?? "") {
-            parts.append(runState.displayLabel)
-        } else if item.status == nil, let ticketState = item.ticketState {
-            parts.append(ticketState.displayLabel)
-        }
-        if let runID = item.runID {
-            parts.append("run \(runID)")
-        } else if let branch = item.branch, !branch.isEmpty {
-            parts.append(branch)
-        }
-        if let provider = item.provider {
-            parts.append(provider)
-        }
         if !item.blockedBy.isEmpty {
             parts.append("blocked by \(item.blockedBy.joined(separator: ", "))")
         }
         if !item.dependsOn.isEmpty {
             parts.append("depends on \(item.dependsOn.joined(separator: ", "))")
         }
-        if let activity = item.activity, !activity.isEmpty {
+        return parts.isEmpty ? nil : parts.joined(separator: "  ")
+    }
+
+    private var statusText: String? {
+        var parts: [String] = []
+        if let state = visibleStateLabel {
+            parts.append(state)
+        }
+        if let runID = cleaned(item.runID) {
+            parts.append("run \(runID)")
+        }
+        if let branch = cleaned(item.branch) {
+            parts.append(branch)
+        }
+        if let provider = cleaned(item.provider) {
+            parts.append(provider)
+        }
+        if let activity = cleaned(item.activity) {
             parts.append(activity)
         }
-        return parts
+        return parts.isEmpty ? nil : parts.joined(separator: "  ")
     }
-}
 
-private struct ProjectContextLine: View {
-    let project: ProgramStatusProject?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(project?.name ?? "Unknown project")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-                .lineLimit(1)
-            Text(project?.path ?? "unknown")
-                .font(.system(size: 9, weight: .regular, design: .monospaced))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-                .lineLimit(1)
-                .truncationMode(.middle)
+    private var visibleStateLabel: String? {
+        for state in [item.runState, item.ticketState, item.status] {
+            guard let state = cleaned(state) else { continue }
+            let key = state.programStateKey
+            guard !lane.redundantStateKeys.contains(key) else { continue }
+            guard key != "active", key != "awaiting_merge" else { continue }
+            return state.displayLabel
         }
+        return nil
+    }
+
+    private var cardHelp: String {
+        var parts = [projectName, ticketID, title]
+        if let path = cleaned(item.project?.path) {
+            parts.append(path)
+        }
+        return parts.joined(separator: " - ")
+    }
+
+    private func cleaned(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -528,6 +569,7 @@ private struct ProgramColumnEmpty: View {
             .foregroundStyle(ProgramBoardStyle.mutedText)
             .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
             .padding(.horizontal, 10)
+            .background(ProgramCardBackground(cornerRadius: 14))
     }
 }
 
@@ -682,6 +724,21 @@ private extension ProgramStatusItem {
         [status, runState, ticketState]
             .compactMap { $0?.programStateKey }
             .contains("active")
+    }
+}
+
+private extension ProgramBoardLane {
+    var redundantStateKeys: Set<String> {
+        switch self {
+        case .backlog:
+            return ["backlog"]
+        case .ready:
+            return ["ready"]
+        case .inProgress:
+            return ["in_progress"]
+        case .done:
+            return ["done"]
+        }
     }
 }
 
