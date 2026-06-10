@@ -7,6 +7,7 @@
 #   relay-orchestrator --uninstall    # Reverse --install
 #   relay-orchestrator --start        # Load the launchd plist (start daemon in background)
 #   relay-orchestrator --stop         # Unload the launchd plist (stop daemon)
+#   relay-orchestrator --restart-if-idle  # Restart launchd daemon only when no workers are active
 #   relay-orchestrator --status       # Print quick status (process, port, recent log)
 #
 # The daemon is the Symphony-style sub-agent orchestrator at services/orchestrator.py.
@@ -30,6 +31,7 @@ PORT_FILE="/tmp/relay_orchestrator.port"
 
 PLIST_LABEL="com.relay.orchestrator"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
+LAUNCHCTL_SERVICE="gui/$(id -u)/${PLIST_LABEL}"
 
 CMDS_DIR="$HOME/.claude/commands"
 DISPATCH_MD="$CMDS_DIR/relay-dispatch.md"
@@ -386,8 +388,82 @@ launchctl_load() {
     fi
 }
 
+launchctl_loaded() {
+    launchctl print "$LAUNCHCTL_SERVICE" >/dev/null 2>&1
+}
+
+active_worker_count() {
+    local db="$ORCH_DIR/runs.db"
+    if [ ! -f "$db" ]; then
+        echo 0
+        return 0
+    fi
+    "$VENV_PYTHON" - "$db" <<'PY'
+import sqlite3
+import sys
+
+db = sys.argv[1]
+try:
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT COUNT(*) FROM runs WHERE state IN ('Claimed', 'Running')"
+    ).fetchone()
+except sqlite3.OperationalError as exc:
+    if "no such table" in str(exc).lower():
+        print(0)
+        sys.exit(0)
+    print(f"unknown: {exc}", file=sys.stderr)
+    sys.exit(2)
+else:
+    print(int(row[0] if row else 0))
+PY
+}
+
+wait_for_health() {
+    local port
+    for _ in $(seq 1 30); do
+        if [ -f "$PORT_FILE" ]; then
+            port="$(cat "$PORT_FILE" 2>/dev/null || true)"
+        else
+            port=""
+        fi
+        if [ -n "$port" ] \
+           && curl -fsS --max-time 1 "http://127.0.0.1:${port}/v1/health" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+launchctl_restart_if_idle() {
+    if [ ! -f "$PLIST_PATH" ]; then
+        write_plist
+    fi
+
+    if ! launchctl_loaded; then
+        launchctl_load
+        wait_for_health
+        return $?
+    fi
+
+    local active
+    if ! active="$(active_worker_count)"; then
+        echo "[relay-orchestrator] restart deferred: could not verify active worker state." >&2
+        return 75
+    fi
+    if [ "${active:-0}" -gt 0 ]; then
+        echo "[relay-orchestrator] restart deferred: ${active} active worker(s)." >&2
+        return 75
+    fi
+
+    launchctl kickstart -k "$LAUNCHCTL_SERVICE" >/dev/null 2>&1 || true
+    echo "[relay-orchestrator] daemon restarted via kickstart."
+    wait_for_health
+}
+
 launchctl_unload() {
-    launchctl bootout "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null || true
+    launchctl bootout "$LAUNCHCTL_SERVICE" 2>/dev/null || true
     echo "[relay-orchestrator] daemon unloaded."
 }
 
@@ -420,7 +496,15 @@ cmd_install() {
     install_skills if-missing
     register_mcp
     write_plist
-    launchctl_load
+    set +e
+    launchctl_restart_if_idle
+    local restart_rc=$?
+    set -e
+    if [ "$restart_rc" -eq 75 ]; then
+        echo "[relay-orchestrator] install complete; daemon restart deferred until active workers finish."
+    elif [ "$restart_rc" -ne 0 ]; then
+        return "$restart_rc"
+    fi
     echo
     echo "[relay-orchestrator] install complete. Try:"
     echo "    relay-orchestrator --status"
@@ -446,6 +530,7 @@ case "$mode" in
     --install)            shift || true; cmd_install   "$@" ;;
     --uninstall)          shift || true; cmd_uninstall "$@" ;;
     --start)              shift || true; ensure_venv; launchctl_load ;;
+    --restart-if-idle)    shift || true; ensure_venv; launchctl_restart_if_idle ;;
     --stop)               shift || true; launchctl_unload ;;
     --status)             shift || true; cmd_status ;;
     --install-skills)     shift || true; install_skills force ;;
