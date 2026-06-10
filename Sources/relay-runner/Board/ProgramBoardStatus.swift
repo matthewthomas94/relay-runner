@@ -18,6 +18,57 @@ struct ProgramDashboardSnapshot: Equatable {
             !inProgressWork.items.isEmpty ||
             !doneWork.items.isEmpty
     }
+
+    func ticketItems(in lane: ProgramBoardLane, selectedProjectPath: String?) -> [ProgramStatusItem] {
+        let items: [ProgramStatusItem]
+        switch lane {
+        case .backlog:
+            items = backlogWork.items
+        case .ready:
+            items = readyWork.items
+        case .inProgress:
+            items = inProgressWork.items
+        case .done:
+            items = doneWork.items
+        }
+        guard let selectedProjectPath else { return items }
+        return items.filter { $0.project?.path == selectedProjectPath }
+    }
+
+    func containsProject(path: String) -> Bool {
+        projects.contains { $0.project?.path == path }
+    }
+
+    func projectName(for path: String) -> String? {
+        projects.first { $0.project?.path == path }?.project?.name
+    }
+}
+
+enum ProgramBoardLane: CaseIterable, Identifiable, Equatable {
+    case backlog
+    case ready
+    case inProgress
+    case done
+
+    var id: String { title }
+
+    var title: String {
+        switch self {
+        case .backlog: "Backlog"
+        case .ready: "Ready"
+        case .inProgress: "In progress"
+        case .done: "Done"
+        }
+    }
+
+    var emptyText: String {
+        switch self {
+        case .backlog: "No backlog tickets"
+        case .ready: "No ready tickets"
+        case .inProgress: "No active tickets"
+        case .done: "No done tickets"
+        }
+    }
 }
 
 struct ProgramStatusResponse: Decodable, Equatable {
@@ -43,6 +94,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let ticketID: String?
     let title: String?
     let status: String?
+    let priority: String?
     let ticketState: String?
     let runID: String?
     let runState: String?
@@ -50,6 +102,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let branch: String?
     let activity: String?
     let lastError: String?
+    let dependsOn: [String]
     let blockedBy: [String]
     let openTickets: Int?
     let activeRuns: Int?
@@ -80,6 +133,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         case ticketID = "ticket_id"
         case title
         case status
+        case priority
         case ticketState = "ticket_state"
         case runID = "run_id"
         case runState = "run_state"
@@ -87,6 +141,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         case branch
         case activity
         case lastError = "last_error"
+        case dependsOn = "depends_on"
         case blockedBy = "blocked_by"
         case openTickets = "open_tickets"
         case activeRuns = "active_runs"
@@ -107,6 +162,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         ticketID = try values.decodeIfPresent(String.self, forKey: .ticketID)
         title = try values.decodeIfPresent(String.self, forKey: .title)
         status = try values.decodeIfPresent(String.self, forKey: .status)
+        priority = try values.decodeIfPresent(String.self, forKey: .priority)
         ticketState = try values.decodeIfPresent(String.self, forKey: .ticketState)
         runID = Self.lossyString(values, forKey: .runID)
         runState = try values.decodeIfPresent(String.self, forKey: .runState)
@@ -114,6 +170,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         branch = try values.decodeIfPresent(String.self, forKey: .branch)
         activity = try values.decodeIfPresent(String.self, forKey: .activity)
         lastError = try values.decodeIfPresent(String.self, forKey: .lastError)
+        dependsOn = try values.decodeIfPresent([String].self, forKey: .dependsOn) ?? []
         blockedBy = try values.decodeIfPresent([String].self, forKey: .blockedBy) ?? []
         openTickets = try values.decodeIfPresent(Int.self, forKey: .openTickets)
         activeRuns = try values.decodeIfPresent(Int.self, forKey: .activeRuns)
@@ -151,6 +208,7 @@ final class ProgramBoardViewModel {
     var isLoading = false
     var errorMessage: String?
     var theme: ParticleFieldRenderer.Theme?
+    var selectedProjectPath: String?
 
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
 
@@ -175,9 +233,33 @@ final class ProgramBoardViewModel {
         }
     }
 
+    var isAllSelected: Bool {
+        selectedProjectPath == nil
+    }
+
+    var selectedScopeTitle: String {
+        guard let selectedProjectPath else { return "All tickets" }
+        return snapshot?.projectName(for: selectedProjectPath) ?? "Selected project"
+    }
+
+    func selectAllProjects() {
+        selectedProjectPath = nil
+    }
+
+    func selectProject(path: String) {
+        selectedProjectPath = path
+    }
+
+    func ticketItems(in lane: ProgramBoardLane) -> [ProgramStatusItem] {
+        snapshot?.ticketItems(in: lane, selectedProjectPath: selectedProjectPath) ?? []
+    }
+
     @MainActor
     private func finishReload(snapshot: ProgramDashboardSnapshot) {
         self.snapshot = snapshot
+        if let selectedProjectPath, !snapshot.containsProject(path: selectedProjectPath) {
+            self.selectedProjectPath = nil
+        }
         isLoading = false
     }
 

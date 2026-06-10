@@ -129,7 +129,7 @@ class ProgramStatusTests(unittest.TestCase):
             providers={"codex": {}, "claude": {}},
         )
         _ticket(store, project, "RR-1", "Backlog work", "backlog")
-        _ticket(store, project, "RR-2", "Ready work", "ready")
+        _ticket(store, project, "RR-2", "Ready work", "ready", priority="high", depends_on=["RR-1"])
         active = _ticket(store, project, "RR-3", "Running work", "ready")
         awaiting = _ticket(store, project, "RR-4", "Awaiting merge", "ready")
         _ticket(store, project, "RR-5", "Manual progress", "in_progress")
@@ -146,8 +146,28 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual([item["ticket_id"] for item in ready["items"]], ["RR-2"])
         self.assertEqual([item["ticket_id"] for item in in_progress["items"]], ["RR-3", "RR-5"])
         self.assertEqual([item["ticket_id"] for item in done["items"]], ["RR-4", "RR-6"])
+        self.assertEqual(ready["items"][0]["priority"], "high")
+        self.assertEqual(ready["items"][0]["depends_on"], ["RR-1"])
         self.assertEqual(done["items"][0]["run_state"], "awaiting_merge")
         self.assertEqual(done["items"][0]["provider"], "Claude/sonnet")
+
+    def test_zero_limit_returns_all_board_lane_items_across_projects(self):
+        store = self.make_store()
+        client = _project(store, "/tmp/client-dashboard", "Client Dashboard")
+        tools = _project(store, "/tmp/tools", "Tools")
+        for index in range(1, 18):
+            _ticket(store, client, f"CD-{index}", "Client backlog", "backlog")
+        for index in range(1, 10):
+            _ticket(store, tools, f"TL-{index}", "Tools backlog", "backlog")
+
+        result = build_program_status(store, query="backlog_lane", limit=0, now=2000.0)
+
+        self.assertEqual(result["counts"], {"projects": 2, "items": 26})
+        self.assertEqual(len(result["items"]), 26)
+        self.assertEqual(
+            {item["project"]["path"] for item in result["items"]},
+            {"/tmp/client-dashboard", "/tmp/tools"},
+        )
 
     def test_no_projects_has_clear_indexing_message(self):
         store = self.make_store()
@@ -204,13 +224,21 @@ def _ticket(
     ticket_id: str,
     title: str,
     state: str,
+    *,
+    priority: str = "medium",
+    depends_on: list[str] | None = None,
 ) -> dict:
     return store.upsert_node(
         kind=NODE_TICKET,
         stable_key=f"{project['stable_key']}:{ticket_id}",
         project_id=project["id"],
         title=title,
-        body={"ticket_id": ticket_id, "state": state},
+        body={
+            "ticket_id": ticket_id,
+            "state": state,
+            "priority": priority,
+            "depends_on": depends_on or [],
+        },
     )
 
 

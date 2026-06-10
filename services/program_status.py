@@ -115,7 +115,8 @@ def build_program_status(
 ) -> dict[str, Any]:
     query = normalize_program_status_query(query)
     provider_key = _provider_key(provider)
-    limit = max(1, min(int(limit or 8), 20))
+    raw_limit = int(limit if limit is not None else 8)
+    item_limit = None if raw_limit <= 0 else max(1, min(raw_limit, 500))
     now = time.time() if now is None else now
     ctx = _context(store)
 
@@ -131,35 +132,35 @@ def build_program_status(
 
     if query == QUERY_ACTIVE:
         items = [_run_item(ctx, run, "active") for run in _active_runs(ctx, provider_key)]
-        return _response(query, provider_key, _items_text("Active work", "run", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Active work", "run", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_BACKLOG_LANE:
         items = [_ticket_item(ctx, ticket, "backlog") for ticket in _board_lane_tickets(ctx, provider_key, "backlog")]
-        return _response(query, provider_key, _items_text("Backlog", "ticket", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Backlog", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_READY_LANE:
         items = [_ticket_item(ctx, ticket, "ready") for ticket in _board_lane_tickets(ctx, provider_key, "ready")]
-        return _response(query, provider_key, _items_text("Ready", "ticket", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Ready", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_IN_PROGRESS_LANE:
         items = [_ticket_item(ctx, ticket, "in progress") for ticket in _board_lane_tickets(ctx, provider_key, "in_progress")]
-        return _response(query, provider_key, _items_text("In progress", "ticket", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("In progress", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_DONE_LANE:
         items = [_ticket_item(ctx, ticket, "done") for ticket in _board_lane_tickets(ctx, provider_key, "done")]
-        return _response(query, provider_key, _items_text("Done", "ticket", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Done", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_DISCOVERY:
         items = [_ticket_item(ctx, ticket, "discovery") for ticket in _discovery_tickets(ctx, provider_key)]
-        return _response(query, provider_key, _items_text("Discovery", "ticket", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Discovery", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_READY:
         items = [_ticket_item(ctx, ticket, "ready") for ticket in _ready_tickets(ctx, provider_key)]
-        return _response(query, provider_key, _items_text("Ready work", "ticket", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Ready work", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_BLOCKED:
         items = [_ticket_item(ctx, ticket, "blocked") for ticket in _blocked_tickets(ctx, provider_key)]
-        return _response(query, provider_key, _items_text("Blocked work", "ticket", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Blocked work", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_AWAITING_MERGE:
         items = [
@@ -169,28 +170,28 @@ def build_program_status(
         return _response(
             query,
             provider_key,
-            _items_text("Awaiting merge", "ticket", items, ctx, limit),
-            items[:limit],
+            _items_text("Awaiting merge", "ticket", items, ctx, item_limit),
+            _limit_items(items, item_limit),
             ctx,
         )
 
     if query == QUERY_DONE:
         items = [_ticket_item(ctx, ticket, "done") for ticket in _done_tickets(ctx, provider_key)]
-        return _response(query, provider_key, _items_text("Done work", "ticket", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Done work", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_STALE_RUNS:
         items = [
             _run_item(ctx, run, reason)
             for run, reason in _stale_runs(ctx, provider_key, now, stale_after_seconds)
         ]
-        return _response(query, provider_key, _items_text("Stale runs", "run", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Stale runs", "run", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_NEXT:
         items = _attention_items(ctx, provider_key, now, stale_after_seconds)
-        return _response(query, provider_key, _items_text("Next attention", "item", items, ctx, limit), items[:limit], ctx)
+        return _response(query, provider_key, _items_text("Next attention", "item", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     items = _summary_items(ctx, provider_key, now, stale_after_seconds)
-    return _response(query, provider_key, _summary_text(items, provider_key), items[:limit], ctx)
+    return _response(query, provider_key, _summary_text(items, provider_key), _limit_items(items, item_limit), ctx)
 
 
 def _context(store: GraphifyCoreStore) -> dict[str, Any]:
@@ -457,6 +458,8 @@ def _run_item(ctx: dict[str, Any], run: dict[str, Any], status: str) -> dict[str
         "ticket_id": _run_ticket_id(run) or (ticket and _ticket_id(ticket)),
         "title": ticket.get("title") if ticket else run.get("title"),
         "status": status,
+        "priority": _ticket_priority(ticket) if ticket else None,
+        "depends_on": _ticket_depends_on(ticket) if ticket else [],
         "run_id": body.get("run_id"),
         "run_state": _run_state(run),
         "provider": _run_provider(run),
@@ -476,6 +479,7 @@ def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> di
         "ticket_id": _ticket_id(ticket),
         "title": ticket.get("title"),
         "status": status,
+        "priority": _ticket_priority(ticket),
         "ticket_state": _ticket_state(ticket),
         "run_id": latest_run.get("body", {}).get("run_id") if latest_run else None,
         "run_state": _run_state(latest_run) if latest_run else None,
@@ -483,9 +487,14 @@ def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> di
         "branch": latest_run.get("body", {}).get("branch") if latest_run else None,
         "activity": latest_run.get("body", {}).get("activity") if latest_run else None,
         "last_error": latest_run.get("body", {}).get("last_error") if latest_run else None,
+        "depends_on": _ticket_depends_on(ticket),
         "blocked_by": [ticket_id for ticket_id in blockers if ticket_id],
         "ticket_node_id": ticket["id"],
     }
+
+
+def _limit_items(items: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
+    return items if limit is None else items[:limit]
 
 
 def _items_text(
@@ -493,7 +502,7 @@ def _items_text(
     noun: str,
     items: list[dict[str, Any]],
     ctx: dict[str, Any],
-    limit: int,
+    limit: int | None,
 ) -> str:
     if not items:
         empty = {
@@ -507,7 +516,7 @@ def _items_text(
             QUERY_NEXT: "No immediate program attention items",
         }.get(_key(title), f"No {title.lower()}")
         return f"{empty} across {_plural(len(ctx['projects']), 'indexed project')}."
-    shown = items[:limit]
+    shown = items if limit is None else items[:limit]
     lines = [f"{title}: {_plural(len(items), noun)} across {_plural(len(ctx['projects']), 'indexed project')}."]
     lines.extend(_item_line(item) for item in shown)
     if len(items) > len(shown):
@@ -595,6 +604,20 @@ def _run_state(run: dict[str, Any] | None) -> str:
 def _ticket_state(ticket: dict[str, Any]) -> str:
     body = ticket.get("body", {})
     return str(body.get("state") or body.get("status") or "")
+
+
+def _ticket_priority(ticket: dict[str, Any]) -> str | None:
+    priority = ticket.get("body", {}).get("priority")
+    return str(priority).strip() if priority else None
+
+
+def _ticket_depends_on(ticket: dict[str, Any]) -> list[str]:
+    raw = ticket.get("body", {}).get("depends_on") or []
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item)]
+    return []
 
 
 def _run_provider(run: dict[str, Any] | None) -> str | None:

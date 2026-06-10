@@ -78,6 +78,18 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(snapshot.doneWork.query, "done_lane")
     }
 
+    func testProgramDashboardDefaultsToAllLaneItems() async throws {
+        let recorder = LimitRecorder()
+        _ = try await OrchestratorClient.buildProgramDashboard { query, limit in
+            await recorder.append(limit)
+            return self.response(query: query, message: "Supported")
+        }
+
+        let requestedLimits = await recorder.values()
+        XCTAssertEqual(requestedLimits.count, 6)
+        XCTAssertTrue(requestedLimits.allSatisfy { $0 == 0 })
+    }
+
     func testProgramDashboardStillSurfacesNonQueryErrors() async throws {
         do {
             _ = try await OrchestratorClient.buildProgramDashboard(limit: 20) { query, _ in
@@ -114,5 +126,17 @@ final class OrchestratorClientTests: XCTestCase {
             items: [],
             counts: ProgramStatusCounts(projects: projects, items: itemCount)
         )
+    }
+}
+
+private actor LimitRecorder {
+    private var recorded: [Int] = []
+
+    func append(_ value: Int) {
+        recorded.append(value)
+    }
+
+    func values() -> [Int] {
+        recorded
     }
 }
