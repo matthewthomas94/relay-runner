@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from command_actions import format_command_for_agent, resolve_command_action
@@ -268,7 +269,125 @@ class LegacyDirectVoiceBridge:
 
 
 VOICE_CMD_FILE = "/tmp/voice_cmd_ready"
+VOICE_CMD_META_FILE = "/tmp/voice_cmd_ready.meta"
+VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
+VOICE_COMMAND_CLAIM_FILE = "/tmp/voice_cmd_claimed.json"
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
+
+
+def _read_json_file(path: str) -> dict:
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _atomic_write_json(path: str, payload: dict) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, sort_keys=True)
+    os.rename(tmp, path)
+
+
+def _begin_relay_command(source_text: str, state_path: str = VOICE_COMMAND_STATE_FILE) -> dict:
+    """Record a new newest-intent generation as soon as voice input arrives."""
+    previous = _read_json_file(state_path)
+    try:
+        seq = int(previous.get("relay_command_seq") or 0) + 1
+    except (TypeError, ValueError):
+        seq = 1
+    metadata = {
+        "relay_command_seq": seq,
+        "relay_command_id": f"{os.getpid()}-{time.time_ns()}-{seq}",
+        "source_text": source_text,
+        "received_at": time.time(),
+        "action": "received",
+    }
+    _atomic_write_json(state_path, metadata)
+    return metadata
+
+
+def _metadata_for_action(action, relay_command: dict) -> dict:
+    metadata = dict(relay_command)
+    metadata.update({
+        "action": action.kind,
+        "outcome": action.outcome,
+        "requires_ticket": action.requires_ticket,
+    })
+    if action.ticket_id:
+        metadata["ticket_id"] = action.ticket_id
+    if action.ticket_path:
+        metadata["ticket_path"] = action.ticket_path
+    if action.repo_path:
+        metadata["repo_path"] = action.repo_path
+    if action.reason:
+        metadata["reason"] = action.reason
+    return metadata
+
+
+def _discard_pending_command(
+    command_path: str = VOICE_CMD_FILE,
+    meta_path: str = VOICE_CMD_META_FILE,
+) -> None:
+    """Undo file-backed effects for an unclaimed command being superseded."""
+    if not os.path.exists(command_path):
+        return
+    metadata = _read_json_file(meta_path)
+    if metadata.get("action") == "create_ticket":
+        ticket_path = metadata.get("ticket_path")
+        if ticket_path:
+            try:
+                os.unlink(str(ticket_path))
+                print(
+                    f"[voice_bridge] Removed stale unclaimed ticket {ticket_path}.",
+                    file=sys.stderr,
+                )
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                print(
+                    f"[voice_bridge] Could not remove stale ticket {ticket_path}: {e}",
+                    file=sys.stderr,
+                )
+    try:
+        os.unlink(meta_path)
+    except OSError:
+        pass
+
+
+def _publish_command(
+    text: str,
+    metadata: dict,
+    command_path: str = VOICE_CMD_FILE,
+    meta_path: str = VOICE_CMD_META_FILE,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> None:
+    """Publish a Relay command and sidecar metadata as the newest intent."""
+    _discard_pending_command(command_path=command_path, meta_path=meta_path)
+    _atomic_write_json(meta_path, metadata)
+    _atomic_write_json(state_path, metadata)
+    _write_cmd_file(text, path=command_path)
+
+
+def _relay_command_current(
+    relay_command_seq: int | str | None,
+    relay_command_id: str | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    if relay_command_seq is None or not relay_command_id:
+        return False
+    current = _read_json_file(state_path)
+    try:
+        current_seq = int(current.get("relay_command_seq"))
+        expected_seq = int(relay_command_seq)
+    except (TypeError, ValueError):
+        return False
+    return (
+        current_seq == expected_seq
+        and str(current.get("relay_command_id") or "") == str(relay_command_id)
+    )
 
 
 def _parse_args() -> dict:
@@ -333,15 +452,44 @@ def _strip_markdown_for_tts(text: str) -> str:
     return re.sub(r"[*_`]", "", text)          # any remaining markers
 
 
+def _parse_tts_payload(raw: str) -> tuple[str, int | None, str | None]:
+    """Accept plain text or JSON lines tagged with Relay command metadata."""
+    text = raw.strip()
+    if not text:
+        return "", None, None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return text, None, None
+    if not isinstance(payload, dict) or "text" not in payload:
+        return text, None, None
+    command_seq = payload.get("relay_command_seq")
+    try:
+        command_seq = int(command_seq) if command_seq is not None else None
+    except (TypeError, ValueError):
+        command_seq = None
+    command_id = payload.get("relay_command_id")
+    return str(payload.get("text") or ""), command_seq, str(command_id) if command_id else None
+
+
 def _queue_tts_text(
     text: str,
     tts_queue: queue.Queue,
     command_path: str = VOICE_CMD_FILE,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
 ) -> bool:
     """Queue TTS unless a newer Relay command is already waiting."""
+    text, command_seq, command_id = _parse_tts_payload(text)
     text = _strip_markdown_for_tts(text.strip()).strip()
     if not text:
         return False
+    if command_seq is not None or command_id:
+        if not _relay_command_current(command_seq, command_id, state_path=state_path):
+            print(
+                "[voice_bridge] Dropping TTS because its Relay command was superseded.",
+                file=sys.stderr,
+            )
+            return False
     if os.path.exists(command_path):
         print(
             "[voice_bridge] Dropping TTS because a newer voice command is pending.",
@@ -370,7 +518,7 @@ def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
 def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
     """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
     # Create TTS input FIFO
-    for path in [TTS_IN_FIFO, VOICE_CMD_FILE]:
+    for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE]:
         try:
             os.unlink(path)
         except OSError:
@@ -448,12 +596,20 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
 
                 if text == "__INTERRUPT__":
                     tts_worker.stop_playback()
-                    _write_cmd_file("__INTERRUPT__")
+                    relay_command = _begin_relay_command(text)
+                    _publish_command(
+                        "__INTERRUPT__",
+                        {**relay_command, "action": "control", "outcome": "control action interrupt"},
+                    )
                     continue
 
                 if text == "__CANCEL__":
                     tts_worker.skip()
-                    _write_cmd_file("__INTERRUPT__")
+                    relay_command = _begin_relay_command(text)
+                    _publish_command(
+                        "__INTERRUPT__",
+                        {**relay_command, "action": "control", "outcome": "control action cancel"},
+                    )
                     continue
 
                 if text == "__PLAY__":
@@ -476,8 +632,16 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                 # action for the foreground orchestrator session.
                 tts_worker.skip()
                 _notify_state("processing", prompt=text[:200])
-                action = resolve_command_action(text, repo_path=Path.cwd())
-                _write_cmd_file(format_command_for_agent(action))
+                relay_command = _begin_relay_command(text)
+                action = resolve_command_action(
+                    text,
+                    repo_path=Path.cwd(),
+                    relay_command=relay_command,
+                )
+                _publish_command(
+                    format_command_for_agent(action),
+                    _metadata_for_action(action, relay_command),
+                )
                 print(
                     f"[voice_bridge] Voice command ready: {action.outcome}",
                     file=sys.stderr,
@@ -491,7 +655,7 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                 os.close(fifo_fd)
             except OSError:
                 pass
-        for path in [TTS_IN_FIFO, VOICE_CMD_FILE]:
+        for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE]:
             try:
                 os.unlink(path)
             except OSError:

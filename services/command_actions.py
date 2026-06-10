@@ -52,6 +52,8 @@ class CommandAction:
     ticket_path: str | None = None
     repo_path: str | None = None
     reason: str = ""
+    relay_command_id: str | None = None
+    relay_command_seq: int | None = None
 
     @property
     def outcome(self) -> str:
@@ -115,10 +117,14 @@ def classify_command(text: str) -> CommandAction:
     return CommandAction(kind="conversation", source_text=source)
 
 
-def resolve_command_action(text: str, repo_path: str | Path | None = None) -> CommandAction:
+def resolve_command_action(
+    text: str,
+    repo_path: str | Path | None = None,
+    relay_command: dict | None = None,
+) -> CommandAction:
     action = classify_command(text)
     if action.kind != "create_ticket":
-        return _with_repo(action, repo_path)
+        return _with_relay(_with_repo(action, repo_path), relay_command)
 
     repo = Path(repo_path or Path.cwd()).expanduser().resolve()
     orch_dir = repo / ".orchestrator"
@@ -130,10 +136,13 @@ def resolve_command_action(text: str, repo_path: str | Path | None = None) -> Co
             requires_ticket=True,
             repo_path=str(repo),
             reason=".orchestrator/config.toml not found",
+            **_relay_fields(relay_command),
         )
 
     try:
-        ticket_id, ticket_path = create_ticket_for_command(repo, action.source_text)
+        ticket_id, ticket_path = create_ticket_for_command(
+            repo, action.source_text, relay_command=relay_command
+        )
     except (OSError, ValueError) as e:
         return CommandAction(
             kind="needs_project",
@@ -141,6 +150,7 @@ def resolve_command_action(text: str, repo_path: str | Path | None = None) -> Co
             requires_ticket=True,
             repo_path=str(repo),
             reason=str(e),
+            **_relay_fields(relay_command),
         )
     return CommandAction(
         kind="create_ticket",
@@ -149,10 +159,15 @@ def resolve_command_action(text: str, repo_path: str | Path | None = None) -> Co
         ticket_id=ticket_id,
         ticket_path=str(ticket_path),
         repo_path=str(repo),
+        **_relay_fields(relay_command),
     )
 
 
-def create_ticket_for_command(repo_path: str | Path, source_text: str) -> tuple[str, Path]:
+def create_ticket_for_command(
+    repo_path: str | Path,
+    source_text: str,
+    relay_command: dict | None = None,
+) -> tuple[str, Path]:
     repo = Path(repo_path).expanduser().resolve()
     orch_dir = repo / ".orchestrator"
     config_path = orch_dir / "config.toml"
@@ -167,7 +182,7 @@ def create_ticket_for_command(repo_path: str | Path, source_text: str) -> tuple[
             break
         ticket_number += 1
 
-    ticket_path.write_text(_ticket_body(ticket_id, source_text))
+    ticket_path.write_text(_ticket_body(ticket_id, source_text, relay_command=relay_command))
     _write_next_id(config_path, config_text, ticket_number + 1)
     return ticket_id, ticket_path
 
@@ -177,12 +192,14 @@ def format_command_for_agent(action: CommandAction) -> str:
         return action.source_text
 
     if action.kind == "inline_work":
+        metadata = _relay_prompt_lines(action)
         return (
             f"{action.source_text}\n\n"
             "Relay Runner command action:\n"
             "- action: inline_work\n"
             "- ticket_id: null\n"
             "- outcome_to_report: inline work explicitly requested\n"
+            f"{metadata}"
         )
 
     lines = [
@@ -197,6 +214,7 @@ def format_command_for_agent(action: CommandAction) -> str:
         lines.append(f"- repo_path: {action.repo_path}")
     if action.reason:
         lines.append(f"- reason: {action.reason}")
+    lines.extend(_relay_prompt_lines(action).splitlines())
 
     lines.extend(
         [
@@ -205,6 +223,8 @@ def format_command_for_agent(action: CommandAction) -> str:
             "- You are the foreground orchestrator, not the implementation worker.",
             "- Do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
             "- Resolve this action first: create/refine/commit the ticket, edit the existing ticket, dispatch a ready worker, or ask for the target project.",
+            "- Relay command metadata is the stale-action guard. Before creating, editing, or dispatching tickets, and before TTS, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
+            "- When dispatching through relay-orchestrator, pass relay_command_seq and relay_command_id when they are present.",
             "- Your user-facing response must name the action outcome, such as created ticket, edited ticket, dispatched worker, or waiting on a target-project choice.",
         ]
     )
@@ -232,6 +252,42 @@ def _with_repo(action: CommandAction, repo_path: str | Path | None) -> CommandAc
     return CommandAction(**data)
 
 
+def _with_relay(action: CommandAction, relay_command: dict | None) -> CommandAction:
+    fields = _relay_fields(relay_command)
+    if not fields:
+        return action
+    data = dict(action.__dict__)
+    data.update(fields)
+    return CommandAction(**data)
+
+
+def _relay_fields(relay_command: dict | None) -> dict:
+    if not relay_command:
+        return {}
+    result: dict = {}
+    command_id = relay_command.get("relay_command_id")
+    command_seq = relay_command.get("relay_command_seq")
+    if command_id:
+        result["relay_command_id"] = str(command_id)
+    if command_seq is not None:
+        try:
+            result["relay_command_seq"] = int(command_seq)
+        except (TypeError, ValueError):
+            pass
+    return result
+
+
+def _relay_prompt_lines(action: CommandAction) -> str:
+    lines = []
+    if action.relay_command_seq is not None:
+        lines.append(f"- relay_command_seq: {action.relay_command_seq}")
+    if action.relay_command_id:
+        lines.append(f"- relay_command_id: {action.relay_command_id}")
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
 def _extract_ticket_id(text: str) -> str | None:
     match = TICKET_ID_RE.search(text or "")
     return match.group(1).upper() if match else None
@@ -253,9 +309,22 @@ def _write_next_id(config_path: Path, config_text: str, next_id: int) -> None:
     config_path.write_text(updated if updated.endswith("\n") else updated + "\n")
 
 
-def _ticket_body(ticket_id: str, source_text: str) -> str:
+def _ticket_body(
+    ticket_id: str,
+    source_text: str,
+    relay_command: dict | None = None,
+) -> str:
     title = _title_from_command(source_text)
     quote = "\n".join(f"> {line}" if line else ">" for line in source_text.splitlines())
+    relay_fields = _relay_fields(relay_command)
+    relay_section = ""
+    if relay_fields:
+        relay_section = "\n## Relay command\n\n"
+        if relay_fields.get("relay_command_seq") is not None:
+            relay_section += f"- sequence: {relay_fields['relay_command_seq']}\n"
+        if relay_fields.get("relay_command_id"):
+            relay_section += f"- id: {relay_fields['relay_command_id']}\n"
+        relay_section += "- Newer Relay commands supersede stale ticket edits and dispatches.\n"
     return (
         "---\n"
         f"id: {ticket_id}\n"
@@ -270,6 +339,7 @@ def _ticket_body(ticket_id: str, source_text: str) -> str:
         "Relay Runner captured this command as project work before implementation started:\n\n"
         f"{quote}\n\n"
         "The foreground session should refine this ticket before dispatch if the worker would need more context.\n\n"
+        f"{relay_section}"
         "## Acceptance criteria\n\n"
         "- [ ] The ticket contains enough context for a worker to complete the change in one pass.\n"
         "- [ ] Implementation work is dispatched to a worker, unless the user explicitly asks to keep it inline.\n"
