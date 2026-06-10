@@ -2,19 +2,25 @@ import AppKit
 import SwiftUI
 
 /// Read-only Program Board overlay. Unlike `BoardOverlayController`, this
-/// surface is not scoped to `ProjectResolver.resolve()` and never reads or
-/// mutates the active project's `.orchestrator/` files directly.
+/// surface is not scoped to `ProjectResolver.resolve()`. Ticket details resolve
+/// through owning child project paths from program status; the workspace root
+/// still never gets a parent `.orchestrator/`.
 final class ProgramBoardOverlayController {
 
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
     private let model = ProgramBoardViewModel()
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
+    private var openProjectHandler: ((String) -> Void)?
     private var themePollTimer: Timer?
     private var statusPollTimer: Timer?
 
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
         self.themeResolver = resolver
+    }
+
+    func setOpenProjectHandler(_ handler: @escaping (String) -> Void) {
+        self.openProjectHandler = handler
     }
 
     deinit {
@@ -40,7 +46,8 @@ final class ProgramBoardOverlayController {
         let hosting = NSHostingView(rootView: ProgramBoardOverlayView(
             model: model,
             onDismiss: { [weak self] in self?.hide() },
-            onRefresh: { [weak self] in self?.model.reload() }
+            onRefresh: { [weak self] in self?.model.reload() },
+            onOpenProject: { [weak self] repoPath in self?.openProjectHandler?(repoPath) }
         ))
         hosting.frame = p.frame
         hosting.autoresizingMask = [.width, .height]

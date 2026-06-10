@@ -148,6 +148,16 @@ final class BoardOverlayController {
             noSessionHandler?()
             return
         }
+        present(project: project)
+    }
+
+    func show(project: ProjectResolver.LinkedProject) {
+        if isVisible { hide() }
+        present(project: project)
+    }
+
+    private func present(project: ProjectResolver.LinkedProject) {
+        guard !isVisible else { return }
         currentProject = project
 
         let p = panel ?? BoardOverlayPanel()

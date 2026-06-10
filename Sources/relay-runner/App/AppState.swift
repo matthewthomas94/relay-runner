@@ -740,6 +740,16 @@ final class AppState {
             if case .actionGlow = state { return .stt }
             return state.particleTheme
         }
+        programBoardOverlay.setOpenProjectHandler { [weak self] repoPath in
+            guard let self else { return }
+            let project = ProjectResolver.LinkedProject(
+                repoPath: URL(fileURLWithPath: repoPath)
+                    .standardizedFileURL
+                    .resolvingSymlinksInPath()
+            )
+            self.programBoardOverlay.hide()
+            self.boardOverlay.show(project: project)
+        }
         // Perimeter overlay (purple band on every screen while
         // .actionGlow is active; pulses while a confirmation is pending).
         let perimeter = PerimeterOverlayManager()

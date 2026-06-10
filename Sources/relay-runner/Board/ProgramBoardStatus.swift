@@ -35,12 +35,20 @@ struct ProgramDashboardSnapshot: Equatable {
         return items.filter { $0.project?.path == selectedProjectPath }
     }
 
+    func ticketItem(matching id: String) -> ProgramStatusItem? {
+        allTicketItems.first { $0.id == id }
+    }
+
     func containsProject(path: String) -> Bool {
         projects.contains { $0.project?.path == path }
     }
 
     func projectName(for path: String) -> String? {
         projects.first { $0.project?.path == path }?.project?.name
+    }
+
+    private var allTicketItems: [ProgramStatusItem] {
+        backlogWork.items + readyWork.items + inProgressWork.items + doneWork.items
     }
 }
 
@@ -301,6 +309,151 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     }
 }
 
+struct ProgramTicketIdentity: Equatable {
+    let projectName: String?
+    let projectPath: String
+    let ticketID: String
+
+    var ticketURL: URL {
+        URL(fileURLWithPath: projectPath)
+            .appendingPathComponent(".orchestrator", isDirectory: true)
+            .appendingPathComponent("\(ticketID).md")
+    }
+
+    var ticketPath: String { ticketURL.path }
+
+    init?(item: ProgramStatusItem) {
+        guard let projectPath = Self.clean(item.project?.path),
+              let ticketID = Self.clean(item.ticketID) else {
+            return nil
+        }
+        self.projectName = Self.clean(item.project?.name)
+        self.projectPath = projectPath
+        self.ticketID = ticketID
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+struct ProgramTicketDetail: Equatable, Identifiable {
+    let item: ProgramStatusItem
+    let identity: ProgramTicketIdentity?
+    let ticket: Ticket?
+    let ticketPath: String?
+    let description: String?
+    let acceptanceCriteria: String?
+    let unavailableMessage: String?
+
+    var id: String { item.id }
+
+    var title: String {
+        Self.clean(ticket?.title) ?? Self.clean(item.title) ?? "Untitled work"
+    }
+
+    var projectName: String {
+        Self.clean(identity?.projectName) ?? Self.clean(item.project?.name) ?? "Unknown project"
+    }
+
+    static func load(
+        item: ProgramStatusItem,
+        fileManager: FileManager = .default
+    ) -> ProgramTicketDetail {
+        guard let identity = ProgramTicketIdentity(item: item) else {
+            return ProgramTicketDetail(
+                item: item,
+                identity: nil,
+                ticket: nil,
+                ticketPath: nil,
+                description: nil,
+                acceptanceCriteria: nil,
+                unavailableMessage: "Ticket identity is unavailable for this Program Board item."
+            )
+        }
+
+        let ticketPath = identity.ticketPath
+        guard fileManager.fileExists(atPath: ticketPath) else {
+            return ProgramTicketDetail(
+                item: item,
+                identity: identity,
+                ticket: nil,
+                ticketPath: ticketPath,
+                description: nil,
+                acceptanceCriteria: nil,
+                unavailableMessage: "Ticket file was not found at \(ticketPath)."
+            )
+        }
+
+        do {
+            let contents = try String(contentsOfFile: ticketPath, encoding: .utf8)
+            let ticket = try TicketParser.parse(contents: contents)
+            return ProgramTicketDetail(
+                item: item,
+                identity: identity,
+                ticket: ticket,
+                ticketPath: ticketPath,
+                description: TicketParser.extractFullDescription(ticket.body),
+                acceptanceCriteria: Self.section(named: "Acceptance criteria", in: ticket.body),
+                unavailableMessage: nil
+            )
+        } catch {
+            return ProgramTicketDetail(
+                item: item,
+                identity: identity,
+                ticket: nil,
+                ticketPath: ticketPath,
+                description: nil,
+                acceptanceCriteria: nil,
+                unavailableMessage: "Ticket file could not be read: \(error)."
+            )
+        }
+    }
+
+    private static func section(named heading: String, in body: String) -> String? {
+        let target = heading.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let lines = body.components(separatedBy: "\n")
+        guard let headingIndex = lines.firstIndex(where: { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
+            return trimmed == "## \(target)" || trimmed.hasPrefix("## \(target) ")
+        }) else {
+            return nil
+        }
+
+        var collected: [String] = []
+        for line in lines[(headingIndex + 1)...] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#") { break }
+            collected.append(line)
+        }
+
+        let joined = collected.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+extension ProgramStatusItem {
+    var isAwaitingMerge: Bool {
+        programStateKeys.contains("awaiting_merge")
+    }
+
+    var hasActiveWorker: Bool {
+        programStateKeys.contains("active")
+    }
+
+    private var programStateKeys: [String] {
+        [status, runState, ticketState]
+            .compactMap { $0?.programStateKey }
+    }
+}
+
 @Observable
 final class ProgramBoardViewModel {
     var snapshot: ProgramDashboardSnapshot?
@@ -308,6 +461,7 @@ final class ProgramBoardViewModel {
     var errorMessage: String?
     var theme: ParticleFieldRenderer.Theme?
     var selectedProjectPath: String?
+    var selectedTicketDetail: ProgramTicketDetail?
 
     var isLoading: Bool { reloadState.isLoading }
 
@@ -360,10 +514,21 @@ final class ProgramBoardViewModel {
 
     func selectProject(path: String) {
         selectedProjectPath = path
+        if selectedTicketDetail?.identity?.projectPath != path {
+            selectedTicketDetail = nil
+        }
     }
 
     func ticketItems(in lane: ProgramBoardLane) -> [ProgramStatusItem] {
         snapshot?.ticketItems(in: lane, selectedProjectPath: selectedProjectPath) ?? []
+    }
+
+    func selectTicket(_ item: ProgramStatusItem) {
+        selectedTicketDetail = ProgramTicketDetail.load(item: item)
+    }
+
+    func clearSelectedTicket() {
+        selectedTicketDetail = nil
     }
 
     @MainActor
@@ -372,6 +537,13 @@ final class ProgramBoardViewModel {
         if let selectedProjectPath, !snapshot.containsProject(path: selectedProjectPath) {
             self.selectedProjectPath = nil
         }
+        if let selectedTicketDetail {
+            if let refreshedItem = snapshot.ticketItem(matching: selectedTicketDetail.id) {
+                self.selectedTicketDetail = ProgramTicketDetail.load(item: refreshedItem)
+            } else {
+                self.selectedTicketDetail = nil
+            }
+        }
         reloadState = .succeeded
     }
 
@@ -379,5 +551,20 @@ final class ProgramBoardViewModel {
     private func finishReload(errorMessage: String) {
         self.errorMessage = errorMessage
         reloadState = .failed(errorMessage)
+    }
+}
+
+extension String {
+    var displayLabel: String {
+        replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
+    }
+
+    var programStateKey: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
     }
 }
