@@ -39,6 +39,8 @@ final class ProgramBoardStatusTests: XCTestCase {
               "ticket_id": "RR-1",
               "title": "Build Program Board",
               "status": "active",
+              "priority": "high",
+              "depends_on": ["RR-0"],
               "run_id": 27,
               "run_state": "active",
               "provider": "Codex/gpt-5",
@@ -76,6 +78,132 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.projects.first?.doneTickets, 1)
         XCTAssertEqual(snapshot.inProgressWork.items.map(\.provider), ["Codex/gpt-5", "Claude/sonnet"])
         XCTAssertEqual(snapshot.inProgressWork.items.first?.runID, "27")
+        XCTAssertEqual(snapshot.inProgressWork.items.first?.priority, "high")
+        XCTAssertEqual(snapshot.inProgressWork.items.first?.dependsOn, ["RR-0"])
+    }
+
+    func testProjectSelectionFiltersCanonicalTicketLanesAcrossProjects() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let snapshot = ProgramDashboardSnapshot(
+            summary: response(
+                query: "summary",
+                projects: 2,
+                items: [
+                    try projectItem(name: "Client Dashboard", path: clientPath, backlog: 1, ready: 1, done: 1),
+                    try projectItem(name: "Tools", path: toolsPath, backlog: 1, inProgress: 1),
+                ]
+            ),
+            backlogWork: response(
+                query: "backlog_lane",
+                projects: 2,
+                items: [
+                    try ticketItem(projectName: "Client Dashboard", path: clientPath, ticketID: "CD-1", title: "Client backlog", status: "backlog"),
+                    try ticketItem(projectName: "Tools", path: toolsPath, ticketID: "TL-1", title: "Tools backlog", status: "backlog"),
+                ]
+            ),
+            readyWork: response(
+                query: "ready_lane",
+                projects: 2,
+                items: [
+                    try ticketItem(projectName: "Client Dashboard", path: clientPath, ticketID: "CD-2", title: "Client ready", status: "ready"),
+                ]
+            ),
+            inProgressWork: response(
+                query: "in_progress_lane",
+                projects: 2,
+                items: [
+                    try ticketItem(
+                        projectName: "Tools",
+                        path: toolsPath,
+                        ticketID: "TL-2",
+                        title: "Tools active",
+                        status: "in progress",
+                        runID: 41,
+                        runState: "active",
+                        provider: "Claude/sonnet"
+                    ),
+                ]
+            ),
+            doneWork: response(
+                query: "done_lane",
+                projects: 2,
+                items: [
+                    try ticketItem(
+                        projectName: "Client Dashboard",
+                        path: clientPath,
+                        ticketID: "CD-3",
+                        title: "Client done",
+                        status: "done",
+                        runState: "awaiting_merge",
+                        provider: "Codex/gpt-5"
+                    ),
+                ]
+            ),
+            awaitingMerge: emptyResponse(query: "awaiting_merge", projects: 2)
+        )
+
+        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil).map(\.ticketID), ["CD-1", "TL-1"])
+        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: clientPath).map(\.ticketID), ["CD-1"])
+        XCTAssertEqual(snapshot.ticketItems(in: .ready, selectedProjectPath: toolsPath).map(\.ticketID), [])
+        XCTAssertEqual(snapshot.ticketItems(in: .inProgress, selectedProjectPath: toolsPath).map(\.provider), ["Claude/sonnet"])
+        XCTAssertEqual(snapshot.ticketItems(in: .done, selectedProjectPath: clientPath).map(\.provider), ["Codex/gpt-5"])
+        XCTAssertTrue(snapshot.containsProject(path: toolsPath))
+        XCTAssertEqual(snapshot.projectName(for: toolsPath), "Tools")
+    }
+
+    func testProgramBoardViewModelSelectionRestoresAllTicketsWithoutReload() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let snapshot = ProgramDashboardSnapshot(
+            summary: response(
+                query: "summary",
+                projects: 2,
+                items: [
+                    try projectItem(name: "Client Dashboard", path: clientPath),
+                    try projectItem(name: "Tools", path: toolsPath),
+                ]
+            ),
+            backlogWork: response(
+                query: "backlog_lane",
+                projects: 2,
+                items: [
+                    try ticketItem(projectName: "Client Dashboard", path: clientPath, ticketID: "CD-1", title: "Client backlog", status: "backlog"),
+                    try ticketItem(projectName: "Tools", path: toolsPath, ticketID: "TL-1", title: "Tools backlog", status: "backlog"),
+                ]
+            ),
+            readyWork: emptyResponse(query: "ready_lane", projects: 2),
+            inProgressWork: emptyResponse(query: "in_progress_lane", projects: 2),
+            doneWork: emptyResponse(query: "done_lane", projects: 2),
+            awaitingMerge: emptyResponse(query: "awaiting_merge", projects: 2)
+        )
+        let model = ProgramBoardViewModel()
+        model.snapshot = snapshot
+
+        model.selectProject(path: toolsPath)
+        XCTAssertFalse(model.isAllSelected)
+        XCTAssertEqual(model.selectedScopeTitle, "Tools")
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1"])
+
+        model.selectAllProjects()
+        XCTAssertTrue(model.isAllSelected)
+        XCTAssertEqual(model.selectedScopeTitle, "All tickets")
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1", "TL-1"])
+    }
+
+    func testProgramBoardEmptySnapshotHasNoTicketLanes() {
+        let snapshot = ProgramDashboardSnapshot(
+            summary: emptyResponse(query: "summary", projects: 0),
+            backlogWork: emptyResponse(query: "backlog_lane", projects: 0),
+            readyWork: emptyResponse(query: "ready_lane", projects: 0),
+            inProgressWork: emptyResponse(query: "in_progress_lane", projects: 0),
+            doneWork: emptyResponse(query: "done_lane", projects: 0),
+            awaitingMerge: emptyResponse(query: "awaiting_merge", projects: 0)
+        )
+
+        XCTAssertFalse(snapshot.hasRegisteredProjects)
+        XCTAssertFalse(snapshot.hasActiveWork)
+        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil), [])
     }
 
     private func decode(_ json: String) throws -> ProgramStatusResponse {
@@ -83,13 +211,84 @@ final class ProgramBoardStatusTests: XCTestCase {
         return try JSONDecoder().decode(ProgramStatusResponse.self, from: data)
     }
 
-    private func emptyResponse(query: String) -> ProgramStatusResponse {
+    private func response(
+        query: String,
+        projects: Int = 1,
+        items: [ProgramStatusItem]
+    ) -> ProgramStatusResponse {
+        ProgramStatusResponse(
+            query: query,
+            provider: nil,
+            message: "Response.",
+            items: items,
+            counts: ProgramStatusCounts(projects: projects, items: items.count)
+        )
+    }
+
+    private func emptyResponse(query: String, projects: Int = 1) -> ProgramStatusResponse {
         ProgramStatusResponse(
             query: query,
             provider: nil,
             message: "No work.",
             items: [],
-            counts: ProgramStatusCounts(projects: 1, items: 0)
+            counts: ProgramStatusCounts(projects: projects, items: 0)
         )
+    }
+
+    private func projectItem(
+        name: String,
+        path: String,
+        backlog: Int = 0,
+        ready: Int = 0,
+        inProgress: Int = 0,
+        done: Int = 0
+    ) throws -> ProgramStatusItem {
+        try decodeItem([
+            "project": ["name": name, "path": path],
+            "backlog_tickets": backlog,
+            "ready_tickets": ready,
+            "in_progress_tickets": inProgress,
+            "done_tickets": done,
+            "providers": ["Codex", "Claude"],
+        ])
+    }
+
+    private func ticketItem(
+        projectName: String,
+        path: String,
+        ticketID: String,
+        title: String,
+        status: String,
+        priority: String = "medium",
+        dependsOn: [String] = [],
+        blockedBy: [String] = [],
+        runID: Int? = nil,
+        runState: String? = nil,
+        provider: String? = nil
+    ) throws -> ProgramStatusItem {
+        var object: [String: Any] = [
+            "project": ["name": projectName, "path": path],
+            "ticket_id": ticketID,
+            "title": title,
+            "status": status,
+            "priority": priority,
+            "depends_on": dependsOn,
+            "blocked_by": blockedBy,
+        ]
+        if let runID {
+            object["run_id"] = runID
+        }
+        if let runState {
+            object["run_state"] = runState
+        }
+        if let provider {
+            object["provider"] = provider
+        }
+        return try decodeItem(object)
+    }
+
+    private func decodeItem(_ object: [String: Any]) throws -> ProgramStatusItem {
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try JSONDecoder().decode(ProgramStatusItem.self, from: data)
     }
 }

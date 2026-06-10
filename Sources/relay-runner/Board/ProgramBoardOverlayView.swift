@@ -37,36 +37,25 @@ private struct ProgramBoardContent: View {
                 HStack(alignment: .top, spacing: 12) {
                     ProgramOverviewColumn(
                         snapshot: snapshot,
+                        selectedProjectPath: model.selectedProjectPath,
+                        selectedScopeTitle: model.selectedScopeTitle,
                         errorMessage: model.errorMessage,
                         isLoading: model.isLoading,
                         theme: model.theme,
+                        onSelectAll: model.selectAllProjects,
+                        onSelectProject: model.selectProject,
                         onRefresh: onRefresh,
                         onDismiss: onDismiss
                     )
-                    ProgramWorkColumnPanel(
-                        title: "Backlog",
-                        emptyText: "No backlog work",
-                        items: snapshot.backlogWork.items,
-                        theme: model.theme
-                    )
-                    ProgramWorkColumnPanel(
-                        title: "Ready",
-                        emptyText: "No ready work",
-                        items: snapshot.readyWork.items,
-                        theme: model.theme
-                    )
-                    ProgramWorkColumnPanel(
-                        title: "In progress",
-                        emptyText: "No active work",
-                        items: snapshot.inProgressWork.items,
-                        theme: model.theme
-                    )
-                    ProgramWorkColumnPanel(
-                        title: "Done",
-                        emptyText: "No done work",
-                        items: snapshot.doneWork.items,
-                        theme: model.theme
-                    )
+                    ForEach(ProgramBoardLane.allCases) { lane in
+                        ProgramWorkColumnPanel(
+                            title: lane.title,
+                            emptyText: lane.emptyText,
+                            items: model.ticketItems(in: lane),
+                            showsProjectContext: model.isAllSelected,
+                            theme: model.theme
+                        )
+                    }
                 }
             } else {
                 ProgramStatePanel(
@@ -102,9 +91,13 @@ private struct ProgramBoardContent: View {
 
 private struct ProgramOverviewColumn: View {
     let snapshot: ProgramDashboardSnapshot
+    let selectedProjectPath: String?
+    let selectedScopeTitle: String
     let errorMessage: String?
     let isLoading: Bool
     let theme: ParticleFieldRenderer.Theme?
+    let onSelectAll: () -> Void
+    let onSelectProject: (String) -> Void
     let onRefresh: () -> Void
     let onDismiss: () -> Void
 
@@ -122,12 +115,25 @@ private struct ProgramOverviewColumn: View {
 
             ProgramMetricGrid(snapshot: snapshot)
 
-            ProgramSectionHeader(title: "Projects", count: snapshot.projects.count)
+            ProgramProjectFilterHeader(
+                count: snapshot.projects.count,
+                selectedScopeTitle: selectedScopeTitle,
+                isAllSelected: selectedProjectPath == nil,
+                onSelectAll: onSelectAll
+            )
 
             BoardOverlayScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(snapshot.projects) { item in
-                        ProgramProjectCard(item: item)
+                        ProgramProjectCard(
+                            item: item,
+                            isSelected: selectedProjectPath == item.project?.path,
+                            onSelect: {
+                                if let path = item.project?.path {
+                                    onSelectProject(path)
+                                }
+                            }
+                        )
                     }
                 }
             }
@@ -215,52 +221,108 @@ private struct ProgramMetricTile: View {
     }
 }
 
-private struct ProgramProjectCard: View {
-    let item: ProgramStatusItem
+private struct ProgramProjectFilterHeader: View {
+    let count: Int
+    let selectedScopeTitle: String
+    let isAllSelected: Bool
+    let onSelectAll: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(item.project?.name ?? "Unknown project")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if !item.providers.isEmpty {
-                    Text(item.providers.joined(separator: ", "))
-                        .font(.system(size: 9, weight: .semibold))
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("Projects")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                    Text("\(count)")
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
+                        .monospacedDigit()
+                }
+                Text(selectedScopeTitle)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Button(action: onSelectAll) {
+                Text("All")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isAllSelected ? ProgramBoardStyle.primaryText : ProgramBoardStyle.secondaryText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(isAllSelected ? 0.16 : 0.07))
+                    )
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(isAllSelected ? 0.25 : 0.10), lineWidth: 0.5)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Show tickets from all projects")
+        }
+    }
+}
+
+private struct ProgramProjectCard: View {
+    let item: ProgramStatusItem
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(item.project?.name ?? "Unknown project")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if !item.providers.isEmpty {
+                        Text(item.providers.joined(separator: ", "))
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(ProgramBoardStyle.secondaryText)
+                            .lineLimit(1)
+                    }
+                }
+
+                Text(item.project?.path ?? "unknown")
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                ProjectBoardOverview(item: item)
+
+                if let stale = item.staleRuns, stale > 0 {
+                    Text("\(stale) stale")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(ProgramBoardStyle.red)
                         .lineLimit(1)
                 }
+
+                if !item.providerHealth.isEmpty {
+                    Text(item.providerHealth.joined(separator: "  "))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(ProgramBoardStyle.red)
+                        .lineLimit(2)
+                }
             }
-
-            Text(item.project?.path ?? "unknown")
-                .font(.system(size: 10, weight: .regular, design: .monospaced))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-                .lineLimit(1)
-                .truncationMode(.middle)
-
-            ProjectBoardOverview(item: item)
-
-            if let stale = item.staleRuns, stale > 0 {
-                Text("\(stale) stale")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(ProgramBoardStyle.red)
-                    .lineLimit(1)
-            }
-
-            if !item.providerHealth.isEmpty {
-                Text(item.providerHealth.joined(separator: "  "))
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(ProgramBoardStyle.red)
-                    .lineLimit(2)
-            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ProgramCardBackground(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.white.opacity(isSelected ? 0.28 : 0), lineWidth: 0.75)
+            )
+            .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ProgramCardBackground(cornerRadius: 16))
-        .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
+        .buttonStyle(.plain)
+        .disabled(item.project?.path == nil)
+        .help("Show tickets for \(item.project?.name ?? "this project")")
     }
 }
 
@@ -308,6 +370,7 @@ private struct ProgramWorkColumnPanel: View {
     let title: String
     let emptyText: String
     let items: [ProgramStatusItem]
+    let showsProjectContext: Bool
     let theme: ParticleFieldRenderer.Theme?
 
     var body: some View {
@@ -332,7 +395,7 @@ private struct ProgramWorkColumnPanel: View {
                 } else {
                     LazyVStack(alignment: .leading, spacing: 6) {
                         ForEach(items) { item in
-                            ProgramWorkCard(item: item)
+                            ProgramWorkCard(item: item, showsProjectContext: showsProjectContext)
                         }
                     }
                 }
@@ -345,29 +408,42 @@ private struct ProgramWorkColumnPanel: View {
 
 private struct ProgramWorkCard: View {
     let item: ProgramStatusItem
+    let showsProjectContext: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(item.ticketID ?? "No ticket")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    .lineLimit(1)
-                Text(item.title ?? "Untitled work")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(item.ticketID ?? "No ticket")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(ProgramBoardStyle.secondaryText)
+                            .lineLimit(1)
+                        Text(item.title ?? "Untitled work")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(ProgramBoardStyle.primaryText)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                    if showsProjectContext {
+                        ProjectContextLine(project: item.project)
+                    }
+                }
+                Spacer(minLength: 0)
+                if let priority = item.priority, !priority.isEmpty {
+                    ProgramInlineBadge(label: priority.displayLabel)
+                }
             }
 
-            HStack(alignment: .center, spacing: 6) {
-                Text(item.project?.name ?? "Unknown project")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if item.isAwaitingMerge {
-                    ProgramInlineBadge(label: "Awaiting merge")
+            if item.isAwaitingMerge || item.hasActiveWorker {
+                HStack(alignment: .center, spacing: 6) {
+                    if item.isAwaitingMerge {
+                        ProgramInlineBadge(label: "Awaiting merge")
+                    }
+                    if item.hasActiveWorker {
+                        ProgramInlineBadge(label: "Active")
+                    }
+                    Spacer(minLength: 0)
                 }
             }
 
@@ -395,8 +471,14 @@ private struct ProgramWorkCard: View {
 
     private var detailParts: [String] {
         var parts: [String] = []
-        if let status = item.status ?? item.runState ?? item.ticketState {
+        if let status = item.status {
             parts.append(status.displayLabel)
+        }
+        if let runState = item.runState,
+           runState.programStateKey != (item.status?.programStateKey ?? "") {
+            parts.append(runState.displayLabel)
+        } else if item.status == nil, let ticketState = item.ticketState {
+            parts.append(ticketState.displayLabel)
         }
         if let runID = item.runID {
             parts.append("run \(runID)")
@@ -409,6 +491,9 @@ private struct ProgramWorkCard: View {
         if !item.blockedBy.isEmpty {
             parts.append("blocked by \(item.blockedBy.joined(separator: ", "))")
         }
+        if !item.dependsOn.isEmpty {
+            parts.append("depends on \(item.dependsOn.joined(separator: ", "))")
+        }
         if let activity = item.activity, !activity.isEmpty {
             parts.append(activity)
         }
@@ -416,20 +501,20 @@ private struct ProgramWorkCard: View {
     }
 }
 
-private struct ProgramSectionHeader: View {
-    let title: String
-    let count: Int
+private struct ProjectContextLine: View {
+    let project: ProgramStatusProject?
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ProgramBoardStyle.primaryText)
-            Text("\(count)")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(ProgramBoardStyle.secondaryText)
-                .monospacedDigit()
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(project?.name ?? "Unknown project")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .lineLimit(1)
+            Text(project?.path ?? "unknown")
+                .font(.system(size: 9, weight: .regular, design: .monospaced))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 }
@@ -591,6 +676,12 @@ private extension ProgramStatusItem {
         [status, runState, ticketState]
             .compactMap { $0?.programStateKey }
             .contains("awaiting_merge")
+    }
+
+    var hasActiveWorker: Bool {
+        [status, runState, ticketState]
+            .compactMap { $0?.programStateKey }
+            .contains("active")
     }
 }
 

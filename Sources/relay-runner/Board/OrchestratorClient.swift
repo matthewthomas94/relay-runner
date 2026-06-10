@@ -70,7 +70,7 @@ enum OrchestratorClient {
         )
     }
 
-    static func fetchProgramDashboard(limit: Int = 20) async throws -> ProgramDashboardSnapshot {
+    static func fetchProgramDashboard(limit: Int = 0) async throws -> ProgramDashboardSnapshot {
         await sweepProgramReadyTicketsBeforeDashboard(trigger: "program-board-refresh")
         return try await buildProgramDashboard(limit: limit) { query, limit in
             try await fetchProgramStatus(query: query, limit: limit)
@@ -78,7 +78,7 @@ enum OrchestratorClient {
     }
 
     static func buildProgramDashboard(
-        limit: Int = 20,
+        limit: Int = 0,
         fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse
     ) async throws -> ProgramDashboardSnapshot {
         async let summary = fetch("summary", limit)
