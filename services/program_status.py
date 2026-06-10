@@ -15,6 +15,10 @@ from graphify_core import (
 )
 
 QUERY_ACTIVE = "active_work"
+QUERY_BACKLOG_LANE = "backlog_lane"
+QUERY_READY_LANE = "ready_lane"
+QUERY_IN_PROGRESS_LANE = "in_progress_lane"
+QUERY_DONE_LANE = "done_lane"
 QUERY_DISCOVERY = "discovery_work"
 QUERY_READY = "ready_work"
 QUERY_BLOCKED = "blocked_work"
@@ -26,6 +30,10 @@ QUERY_NEXT = "next"
 
 PROGRAM_STATUS_QUERIES = (
     QUERY_ACTIVE,
+    QUERY_BACKLOG_LANE,
+    QUERY_READY_LANE,
+    QUERY_IN_PROGRESS_LANE,
+    QUERY_DONE_LANE,
     QUERY_DISCOVERY,
     QUERY_READY,
     QUERY_BLOCKED,
@@ -43,10 +51,19 @@ QUERY_ALIASES = {
     "active_work": QUERY_ACTIVE,
     "agents": QUERY_ACTIVE,
     "all_agents": QUERY_ACTIVE,
+    "backlog_lane": QUERY_BACKLOG_LANE,
+    "board_backlog": QUERY_BACKLOG_LANE,
+    "ready_lane": QUERY_READY_LANE,
+    "board_ready": QUERY_READY_LANE,
+    "in_progress": QUERY_IN_PROGRESS_LANE,
+    "in_progress_lane": QUERY_IN_PROGRESS_LANE,
+    "board_in_progress": QUERY_IN_PROGRESS_LANE,
+    "done_lane": QUERY_DONE_LANE,
+    "board_done": QUERY_DONE_LANE,
     "discovery": QUERY_DISCOVERY,
     "discovery_work": QUERY_DISCOVERY,
-    "backlog": QUERY_DISCOVERY,
     "planned": QUERY_DISCOVERY,
+    "backlog": QUERY_BACKLOG_LANE,
     "ready": QUERY_READY,
     "ready_work": QUERY_READY,
     "ready_tickets": QUERY_READY,
@@ -115,6 +132,22 @@ def build_program_status(
     if query == QUERY_ACTIVE:
         items = [_run_item(ctx, run, "active") for run in _active_runs(ctx, provider_key)]
         return _response(query, provider_key, _items_text("Active work", "run", items, ctx, limit), items[:limit], ctx)
+
+    if query == QUERY_BACKLOG_LANE:
+        items = [_ticket_item(ctx, ticket, "backlog") for ticket in _board_lane_tickets(ctx, provider_key, "backlog")]
+        return _response(query, provider_key, _items_text("Backlog", "ticket", items, ctx, limit), items[:limit], ctx)
+
+    if query == QUERY_READY_LANE:
+        items = [_ticket_item(ctx, ticket, "ready") for ticket in _board_lane_tickets(ctx, provider_key, "ready")]
+        return _response(query, provider_key, _items_text("Ready", "ticket", items, ctx, limit), items[:limit], ctx)
+
+    if query == QUERY_IN_PROGRESS_LANE:
+        items = [_ticket_item(ctx, ticket, "in progress") for ticket in _board_lane_tickets(ctx, provider_key, "in_progress")]
+        return _response(query, provider_key, _items_text("In progress", "ticket", items, ctx, limit), items[:limit], ctx)
+
+    if query == QUERY_DONE_LANE:
+        items = [_ticket_item(ctx, ticket, "done") for ticket in _board_lane_tickets(ctx, provider_key, "done")]
+        return _response(query, provider_key, _items_text("Done", "ticket", items, ctx, limit), items[:limit], ctx)
 
     if query == QUERY_DISCOVERY:
         items = [_ticket_item(ctx, ticket, "discovery") for ticket in _discovery_tickets(ctx, provider_key)]
@@ -218,6 +251,15 @@ def _active_runs(ctx: dict[str, Any], provider: str | None) -> list[dict[str, An
         run
         for run in sorted(ctx["runs"], key=_run_sort_key, reverse=True)
         if _run_state(run) == "active" and _run_matches_provider(run, provider)
+    ]
+
+
+def _board_lane_tickets(ctx: dict[str, Any], provider: str | None, lane: str) -> list[dict[str, Any]]:
+    return [
+        ticket
+        for ticket in sorted(ctx["tickets"], key=_ticket_sort_key)
+        if _project_board_state(ctx, ticket) == lane
+        and _ticket_matches_provider(ctx, ticket, provider)
     ]
 
 
