@@ -276,7 +276,12 @@ Already-running shell commands and MCP calls cannot be forcibly preempted by the
 
 - If the text is `__BRIDGE_DIED__`, the voice session was ended (another session was started, or the bridge was stopped). Say "Voice session ended." and stop the loop — do NOT go back to Step 1. Clean up and return to normal operation.
 - If the text is `__INTERRUPT__`, **silently** go back to Step 1. Do NOT generate any text response, do NOT write to `/tmp/tts_in.fifo`, do NOT acknowledge in any user-visible way. Cancel means the user wants silence — speaking again would just give them another message to cancel, which loops.
-- Otherwise, treat the text as a normal user message. Respond naturally and helpfully, as you would to any typed message.
+- Otherwise, resolve the text as a Relay command action before doing work. Codex and Claude follow the same command-action contract:
+  - Internal controls (`__TTS_STOP__`, `__PLAY__`, `__REPLAY__`, `__INTERRUPT__`, `__CANCEL__`) are deliberate no-ticket actions.
+  - Repo/project work must create a new ticket or attach to an existing ticket before implementation starts.
+  - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
+  - The foreground session is the orchestrator; do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
+  - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, or waiting on a target-project choice.
 
 ### Step 3: Speak your response
 
@@ -332,7 +337,7 @@ pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_br
 
 - You are in a normal Claude session with full tool access. Voice input is just another way for the user to send messages.
 - Speak concisely. TTS responses should be 1-3 sentences summarizing what you did or what you found. The user can read the full detail in the conversation.
-- If the user asks you to run commands, edit files, or do anything you'd normally do, do it. Then speak a brief summary of what happened.
+- If the user asks you to run commands, edit files, or do project work, first resolve the command action above. Do the implementation inline only when the command explicitly asks for inline work.
 - The relay daemon handles Caps Lock detection, STT, and TTS playback. You just read commands and write responses.
 BRIDGE_MD_EOF
         # Substitute the relay-bridge absolute path. Use | as the sed
@@ -506,7 +511,12 @@ Already-running shell commands and MCP calls cannot be forcibly preempted by the
 Interpret the text:
 - `__BRIDGE_DIED__`: say "Voice session ended." and stop.
 - `__INTERRUPT__`: silently return to waiting. Do not respond or write TTS.
-- Otherwise, treat it as the user's message and help normally.
+- Otherwise, resolve it as a Relay command action before doing work. Codex and Claude follow the same command-action contract:
+  - Internal controls (`__TTS_STOP__`, `__PLAY__`, `__REPLAY__`, `__INTERRUPT__`, `__CANCEL__`) are deliberate no-ticket actions.
+  - Repo/project work must create a new ticket or attach to an existing ticket before implementation starts.
+  - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
+  - The foreground session is the orchestrator; do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
+  - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, or waiting on a target-project choice.
 
 After your response, stop the heartbeat refresher and ensure the bridge is alive:
 
