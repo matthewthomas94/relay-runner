@@ -2,24 +2,28 @@ import Foundation
 import Sparkle
 
 @MainActor
-final class RelayUpdaterController {
-    private let standardUpdaterController: SPUStandardUpdaterController?
+final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
+    private var standardUpdaterController: SPUStandardUpdaterController?
+    private let prepareForRelaunch: () -> Void
 
     init(
         installerContext: RelayInstallerContext?,
-        bundleURL: URL = Bundle.main.bundleURL
+        bundleURL: URL = Bundle.main.bundleURL,
+        prepareForRelaunch: @escaping () -> Void = {}
     ) {
+        self.prepareForRelaunch = prepareForRelaunch
+        super.init()
+
         guard Self.shouldStartAutomatically(
             installerContext: installerContext,
             bundleURL: bundleURL
         ) else {
-            standardUpdaterController = nil
             return
         }
 
         standardUpdaterController = SPUStandardUpdaterController(
             startingUpdater: true,
-            updaterDelegate: nil,
+            updaterDelegate: self,
             userDriverDelegate: nil
         )
     }
@@ -32,10 +36,35 @@ final class RelayUpdaterController {
         standardUpdaterController.checkForUpdates(nil)
     }
 
+    func prepareForSparkleRelaunch() {
+        NSLog("[RelayRunner] Sparkle will relaunch Relay Runner; stopping bundled services first.")
+        prepareForRelaunch()
+    }
+
+    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        prepareForSparkleRelaunch()
+    }
+
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        NSLog("[RelayRunner] Sparkle update failed: \(error.localizedDescription)")
+    }
+
     nonisolated static func shouldStartAutomatically(
         installerContext: RelayInstallerContext?,
-        bundleURL: URL
+        bundleURL: URL,
+        applicationsURL: URL = URL(fileURLWithPath: "/Applications", isDirectory: true)
     ) -> Bool {
-        installerContext == nil && bundleURL.pathExtension == "app"
+        guard installerContext == nil,
+              bundleURL.pathExtension == "app",
+              bundleURL.lastPathComponent == RelayInstallerContext.bundleName else {
+            return false
+        }
+        let installed = applicationsURL
+            .appendingPathComponent(RelayInstallerContext.bundleName, isDirectory: true)
+        return normalizedPath(bundleURL) == normalizedPath(installed)
+    }
+
+    private nonisolated static func normalizedPath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 }

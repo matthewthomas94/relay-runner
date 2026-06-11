@@ -55,6 +55,8 @@ Sparkle compares `CFBundleVersion`, not `CFBundleShortVersionString`. Every publ
 
 `scripts/build-dmg.sh` signs the nested Sparkle framework, helper binaries, main executable, and outer app bundle before creating `RelayRunner.zip`. When `SIGN_IDENTITY` and `NOTARY_PROFILE` are set, CI submits both `RelayRunner.dmg` and `RelayRunner.zip` to Apple notary service.
 
+For the old-version to new-version update checklist, service lifecycle checks, Codex/Claude active-session behavior, and TCC attribution checks, see `docs/verification/RR-68-ota-update-lifecycle.md`.
+
 The current workflow submits notarization asynchronously. Before promoting a release broadly, check:
 
 ```bash
