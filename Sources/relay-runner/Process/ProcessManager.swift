@@ -544,6 +544,9 @@ final class ProcessManager {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: python)
         proc.arguments = [script, "--voice", name, "--text", text]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        proc.environment = environment
         proc.standardOutput = FileHandle.nullDevice
         let errPipe = Pipe()
         proc.standardError = errPipe

@@ -69,6 +69,7 @@ CONFIG_PATH="$CONFIG_DIR/relay-runner/config.toml"
 
 # Export PROJECT_ROOT so the slash command can find us
 export PROJECT_ROOT
+export PYTHONDONTWRITEBYTECODE=1
 
 # -- Parse our own flags before passing the rest to voice_bridge.py --
 # --venv-only: run only the venv bootstrap below, then exit. Used by

@@ -23,6 +23,7 @@ USER_DATA_DIR="$HOME/Library/Application Support/relay-runner"
 SERVICES_DIR="$USER_DATA_DIR/services"
 RELOCATABLE_PYTHON="$USER_DATA_DIR/python/bin/python3"
 VENV_PYTHON="$SERVICES_DIR/.venv/bin/python"
+export PYTHONDONTWRITEBYTECODE=1
 
 ORCH_DIR="$USER_DATA_DIR/orchestrator"
 LOG_FILE="/tmp/relay_orchestrator.log"
@@ -361,6 +362,8 @@ write_plist() {
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
     </dict>
 </dict>
 </plist>
