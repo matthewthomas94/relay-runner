@@ -80,6 +80,10 @@ struct MenuBarView: View {
         }
         .keyboardShortcut(",")
 
+        Button("Check for Updates\u{2026}") {
+            appState.checkForUpdates()
+        }
+
         Button("Quit Relay Runner") {
             appState.stopServices()
             NSApplication.shared.terminate(nil)

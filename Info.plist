@@ -18,6 +18,19 @@
     <string>4</string>
     <key>CFBundleShortVersionString</key>
     <string>0.4.0</string>
+    <!-- Placeholder feed/key until release CI generates the real Sparkle appcast and EdDSA key. -->
+    <key>SUFeedURL</key>
+    <string>https://updates.relayrunner.app/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>LORldNflpZEdwXs4OhcYDo+bpUKPmzXmJjI2fr3n97c=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
