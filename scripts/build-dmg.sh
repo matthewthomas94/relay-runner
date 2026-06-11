@@ -39,6 +39,14 @@ BUILD_DIR="$PROJECT_ROOT/.build/$CONFIG"
 DIST_DIR="$PROJECT_ROOT/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
 
+remove_tree() {
+    local path="$1"
+    if [ -e "$path" ]; then
+        chmod -R u+w "$path" 2>/dev/null || true
+        rm -rf "$path"
+    fi
+}
+
 submit_notarization() {
     local path="$1"
     local label="$2"
@@ -70,7 +78,7 @@ echo "==> Building ($CONFIG)..."
 swift build -c "$CONFIG"
 
 echo "==> Creating app bundle..."
-rm -rf "$APP_DIR"
+remove_tree "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Frameworks"
 mkdir -p "$APP_DIR/Contents/Resources"
@@ -160,6 +168,11 @@ for f in voice_bridge.py command_actions.py tts_worker.py tts_filter.py config.p
         cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"
     fi
 done
+find "$APP_DIR/Contents/SharedSupport/services" -name "__pycache__" -type d -prune -exec rm -rf {} +
+# Python services run from the signed app bundle. Keep the shipped source
+# directory read-only so older launchers cannot add __pycache__ files and
+# invalidate the bundle after Sparkle installs an update.
+chmod -R a-w "$APP_DIR/Contents/SharedSupport/services"
 
 # Scripts
 cp "$PROJECT_ROOT/scripts/relay-bridge" "$APP_DIR/Contents/SharedSupport/scripts/"
@@ -290,14 +303,14 @@ if [ "$ZIP_SIZE_BYTES" -lt 1000000 ]; then
 fi
 
 ZIP_CHECK_DIR="$DIST_DIR/.sparkle-zip-check"
-rm -rf "$ZIP_CHECK_DIR"
+remove_tree "$ZIP_CHECK_DIR"
 mkdir -p "$ZIP_CHECK_DIR"
 ditto -x -k "$SPARKLE_ZIP" "$ZIP_CHECK_DIR"
 if [ ! -d "$ZIP_CHECK_DIR/$APP_NAME.app" ]; then
     echo "error: Sparkle zip does not contain $APP_NAME.app at the archive root." >&2
     exit 1
 fi
-rm -rf "$ZIP_CHECK_DIR"
+remove_tree "$ZIP_CHECK_DIR"
 
 echo "==> Creating DMG..."
 rm -f "$DIST_DIR/$DMG_NAME.dmg"
@@ -379,7 +392,7 @@ if [ "${RELAY_SKIP_APPLICATIONS_REFRESH:-0}" = "1" ]; then
     echo "==> Skipping installed app refresh (RELAY_SKIP_APPLICATIONS_REFRESH=1)."
 elif [ -d "$INSTALLED" ]; then
     echo "==> Updating installed copy at $INSTALLED..."
-    rm -rf "$INSTALLED"
+    remove_tree "$INSTALLED"
     cp -R "$APP_DIR" "$INSTALLED"
     mdimport "$INSTALLED"
 fi
