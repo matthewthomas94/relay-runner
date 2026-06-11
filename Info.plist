@@ -18,7 +18,7 @@
     <string>4</string>
     <key>CFBundleShortVersionString</key>
     <string>0.4.0</string>
-    <!-- Placeholder feed/key until release CI generates the real Sparkle appcast and EdDSA key. -->
+    <!-- Sparkle update feed and EdDSA public key. Keep these in sync with docs/release-updates.md. -->
     <key>SUFeedURL</key>
     <string>https://updates.relayrunner.app/appcast.xml</string>
     <key>SUPublicEDKey</key>
