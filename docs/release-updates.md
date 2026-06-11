@@ -7,7 +7,7 @@ Relay Runner ships two release artifacts:
 
 The app is configured with:
 
-- `SUFeedURL`: `https://github.com/matthewthomas94/relay-runner/releases/latest/download/appcast.xml`
+- `SUFeedURL`: `https://github.com/matthewthomas94/relay-runner-updates/releases/latest/download/appcast.xml`
 - `SUPublicEDKey`: `a7hLtPfE0+/AM/igmohxiCV/GXonRJKUPuAzScAeXPo=`
 
 `SPARKLE_ED_PRIVATE_KEY` must match the committed `SUPublicEDKey`. Before the first OTA release, generate the production key pair with Sparkle's `generate_keys`, commit the public key in `Info.plist`, and store the exported private key in GitHub Actions as `SPARKLE_ED_PRIVATE_KEY`.
@@ -24,21 +24,22 @@ Tagged releases fail early unless all release secrets are present:
 - `NOTARY_TEAM_ID`: Apple Developer Team ID.
 - `NOTARY_PASSWORD`: app-specific password for `notarytool`.
 - `SPARKLE_ED_PRIVATE_KEY`: Sparkle EdDSA private key that matches `SUPublicEDKey`.
+- `UPDATE_REPO_TOKEN`: GitHub token with permission to publish releases to `matthewthomas94/relay-runner-updates`.
 
 Pull requests and normal `main` pushes do not require these secrets. They build ad-hoc package artifacts so packaging regressions still surface, but they do not generate or publish an appcast.
 
 ## Feed Hosting
 
-The tag workflow attaches `RelayRunner.dmg`, `RelayRunner.zip`, and `appcast.xml` to the GitHub Release. Installed apps read the feed through GitHub's stable latest-release asset URL:
+The tag workflow attaches `RelayRunner.dmg`, `RelayRunner.zip`, and `appcast.xml` to the private source repo release and to the public update-only repo release. Installed apps read the feed through the public repo's stable latest-release asset URL:
 
 ```text
-https://github.com/matthewthomas94/relay-runner/releases/latest/download/appcast.xml
+https://github.com/matthewthomas94/relay-runner-updates/releases/latest/download/appcast.xml
 ```
 
 When generating a tagged release, CI sets `SPARKLE_DOWNLOAD_URL_PREFIX` to that tag's release download URL:
 
 ```text
-https://github.com/matthewthomas94/relay-runner/releases/download/<tag>/
+https://github.com/matthewthomas94/relay-runner-updates/releases/download/<tag>/
 ```
 
 That keeps old appcast entries stable even after a newer release becomes `latest`. Do not rename `RelayRunner.zip` after appcast generation because Sparkle signs the archive URL, length, and archive content into the feed.

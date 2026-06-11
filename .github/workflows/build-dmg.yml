@@ -43,9 +43,10 @@ jobs:
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          UPDATE_REPO_TOKEN: ${{ secrets.UPDATE_REPO_TOKEN }}
         run: |
           missing=0
-          for name in SIGN_CERT_P12 SIGN_CERT_PASSWORD KEYCHAIN_PASSWORD SIGN_IDENTITY NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD SPARKLE_ED_PRIVATE_KEY; do
+          for name in SIGN_CERT_P12 SIGN_CERT_PASSWORD KEYCHAIN_PASSWORD SIGN_IDENTITY NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD SPARKLE_ED_PRIVATE_KEY UPDATE_REPO_TOKEN; do
             if [ -z "${!name:-}" ]; then
               echo "::error::$name secret is required for tagged releases."
               missing=1
@@ -159,8 +160,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
-          SPARKLE_APPCAST_URL: https://github.com/${{ github.repository }}/releases/latest/download/appcast.xml
-          SPARKLE_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/
+          SPARKLE_APPCAST_URL: https://github.com/matthewthomas94/relay-runner-updates/releases/latest/download/appcast.xml
+          SPARKLE_DOWNLOAD_URL_PREFIX: https://github.com/matthewthomas94/relay-runner-updates/releases/download/${{ github.ref_name }}/
         run: ./scripts/generate-appcast.sh
 
       - name: Upload Sparkle appcast as artifact
@@ -175,6 +176,20 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          files: |
+            dist/RelayRunner.dmg
+            dist/RelayRunner.zip
+            dist/appcast.xml
+
+      - name: Upload public Sparkle update artifacts
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: matthewthomas94/relay-runner-updates
+          token: ${{ secrets.UPDATE_REPO_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          make_latest: true
           files: |
             dist/RelayRunner.dmg
             dist/RelayRunner.zip
