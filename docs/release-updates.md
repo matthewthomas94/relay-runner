@@ -53,20 +53,20 @@ Sparkle compares `CFBundleVersion`, not `CFBundleShortVersionString`. Every publ
 
 ## Signing And Notarization
 
-`scripts/build-dmg.sh` signs the nested Sparkle framework, helper binaries, main executable, and outer app bundle before creating `RelayRunner.zip`. When `SIGN_IDENTITY` and `NOTARY_PROFILE` are set, CI submits both `RelayRunner.dmg` and `RelayRunner.zip` to Apple notary service.
+`scripts/build-dmg.sh` signs the nested Sparkle framework, helper binaries, main executable, and outer app bundle, waits for app notarization, and staples the app before creating `RelayRunner.zip`. When `SIGN_IDENTITY` and `NOTARY_PROFILE` are set, CI also waits for DMG notarization and staples `RelayRunner.dmg` before publishing release assets.
 
 For the old-version to new-version update checklist, service lifecycle checks, Codex/Claude active-session behavior, and TCC attribution checks, see `docs/verification/RR-68-ota-update-lifecycle.md`.
 
-The current workflow submits notarization asynchronously. Before promoting a release broadly, check:
+Before promoting a release broadly, confirm the tag workflow completed notarization and asset upload:
 
 ```bash
-xcrun notarytool history --keychain-profile relay-runner-notary
+gh run list --workflow build-dmg.yml --limit 5
 ```
 
-If the DMG is accepted and you need offline-friendly first install, staple the DMG before redistributing it:
+Downloaded artifacts should pass Gatekeeper assessment:
 
 ```bash
-xcrun stapler staple dist/RelayRunner.dmg
+spctl -a -vv -t exec '/Applications/Relay Runner.app'
 ```
 
 ## Sparkle Key Rotation
