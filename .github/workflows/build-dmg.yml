@@ -25,12 +25,33 @@ permissions:
 
 jobs:
   build:
-    name: Build macOS DMG
+    name: Build macOS release artifacts
     runs-on: macos-15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate tag release secrets
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SIGN_CERT_P12: ${{ secrets.SIGN_CERT_P12 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          missing=0
+          for name in SIGN_CERT_P12 SIGN_CERT_PASSWORD KEYCHAIN_PASSWORD SIGN_IDENTITY NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD SPARKLE_ED_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name secret is required for tagged releases."
+              missing=1
+            fi
+          done
+          exit "$missing"
 
       - name: Select Xcode version
         # FluidAudio >= 0.9.0 ships a swift-tools-version:6.0 manifest,
@@ -119,21 +140,42 @@ jobs:
             --team-id "$NOTARY_TEAM_ID" \
             --password "$NOTARY_PASSWORD"
 
-      - name: Build and package DMG
+      - name: Build and package release artifacts
         env:
           SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
           NOTARY_PROFILE: ${{ secrets.NOTARY_APPLE_ID != '' && 'relay-runner-notary' || '' }}
         run: ./scripts/build-dmg.sh
 
-      - name: Upload DMG as artifact
+      - name: Upload package artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: RelayRunner-dmg
-          path: dist/RelayRunner.dmg
+          name: RelayRunner-packages
+          path: |
+            dist/RelayRunner.dmg
+            dist/RelayRunner.zip
           if-no-files-found: error
 
-      - name: Upload DMG to release
+      - name: Generate Sparkle appcast
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          SPARKLE_APPCAST_URL: https://github.com/${{ github.repository }}/releases/latest/download/appcast.xml
+          SPARKLE_DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/
+        run: ./scripts/generate-appcast.sh
+
+      - name: Upload Sparkle appcast as artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: RelayRunner-appcast
+          path: dist/appcast.xml
+          if-no-files-found: error
+
+      - name: Upload release artifacts
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/RelayRunner.dmg
+          files: |
+            dist/RelayRunner.dmg
+            dist/RelayRunner.zip
+            dist/appcast.xml

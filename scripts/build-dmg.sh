@@ -1,9 +1,9 @@
 #!/bin/bash
-# build-dmg.sh — Build Relay Runner.app and package into a DMG.
+# build-dmg.sh — Build Relay Runner.app and package release archives.
 #
 # Usage:
-#   ./scripts/build-dmg.sh              # Release build + DMG
-#   ./scripts/build-dmg.sh --debug      # Debug build + DMG
+#   ./scripts/build-dmg.sh              # Release build + DMG + Sparkle zip
+#   ./scripts/build-dmg.sh --debug      # Debug build + DMG + Sparkle zip
 #
 # Signing & notarisation are opt-in via environment variables so local
 # dev builds don't fail when no cert is installed:
@@ -27,6 +27,7 @@ cd "$PROJECT_ROOT"
 APP_NAME="Relay Runner"
 BUNDLE_ID="com.relayrunner.app"
 DMG_NAME="RelayRunner"
+SPARKLE_ZIP_NAME="RelayRunner"
 
 CONFIG="release"
 if [[ "${1:-}" == "--debug" ]]; then
@@ -199,14 +200,36 @@ if [ -n "$SIGN_IDENTITY" ]; then
         --entitlements "$ENTITLEMENTS" \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR"
-    # Verify. `--deep --strict` catches unsigned nested components that
-    # would otherwise be rejected at notarisation / Gatekeeper time.
-    codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 else
     echo "  (no SIGN_IDENTITY set — ad-hoc sign only; this build cannot be"
     echo "   distributed outside this Mac)"
     codesign --force --deep --sign - "$APP_DIR"
 fi
+# Verify. `--deep --strict` catches unsigned nested components that
+# would otherwise be rejected at notarisation / Gatekeeper time.
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+
+echo "==> Creating Sparkle update archive..."
+SPARKLE_ZIP="$DIST_DIR/$SPARKLE_ZIP_NAME.zip"
+rm -f "$SPARKLE_ZIP"
+(cd "$DIST_DIR" && ditto -c -k --keepParent --sequesterRsrc --zlibCompressionLevel 9 \
+    "$APP_NAME.app" "$SPARKLE_ZIP_NAME.zip")
+
+ZIP_SIZE_BYTES=$(stat -f%z "$SPARKLE_ZIP")
+if [ "$ZIP_SIZE_BYTES" -lt 1000000 ]; then
+    echo "error: created Sparkle zip is unexpectedly small (${ZIP_SIZE_BYTES} bytes); packaging failed." >&2
+    exit 1
+fi
+
+ZIP_CHECK_DIR="$DIST_DIR/.sparkle-zip-check"
+rm -rf "$ZIP_CHECK_DIR"
+mkdir -p "$ZIP_CHECK_DIR"
+ditto -x -k "$SPARKLE_ZIP" "$ZIP_CHECK_DIR"
+if [ ! -d "$ZIP_CHECK_DIR/$APP_NAME.app" ]; then
+    echo "error: Sparkle zip does not contain $APP_NAME.app at the archive root." >&2
+    exit 1
+fi
+rm -rf "$ZIP_CHECK_DIR"
 
 echo "==> Creating DMG..."
 rm -f "$DIST_DIR/$DMG_NAME.dmg"
@@ -268,15 +291,15 @@ if [ -n "$SIGN_IDENTITY" ]; then
 fi
 
 # Notarisation: Apple needs to scan the signed DMG before macOS will run
-# it without Gatekeeper prompts on other machines. We skip when there's
-# no signing identity (ad-hoc builds aren't notarisable) or no notarytool
-# profile.
+# it without Gatekeeper prompts on other machines; Sparkle update archives
+# need the same trust path. We skip when there's no signing identity
+# (ad-hoc builds aren't notarisable) or no notarytool profile.
 #
 # We submit and return immediately (no `--wait`, no `stapler staple`).
 # Apple's notary queue can take hours-to-days for fresh team IDs, and
-# blocking CI on it doesn't change the outcome. The DMG ships signed but
-# unstapled; Gatekeeper does an online notarisation check on first launch
-# (slower cold start but works once Apple processes the submission).
+# blocking CI on it doesn't change the outcome. The artifacts ship signed
+# but unstapled; Gatekeeper does an online notarisation check on first launch
+# or update (slower cold start but works once Apple processes the submission).
 # Once the submission shows "Accepted" in
 # `xcrun notarytool history --keychain-profile <profile>`, run
 # `xcrun stapler staple` against the DMG and redistribute for a faster
@@ -286,13 +309,16 @@ if [ -n "$SIGN_IDENTITY" ] && [ -n "$NOTARY_PROFILE" ]; then
     echo "==> Submitting DMG for notarisation (profile: $NOTARY_PROFILE)..."
     xcrun notarytool submit "$DIST_DIR/$DMG_NAME.dmg" \
         --keychain-profile "$NOTARY_PROFILE"
+    echo "==> Submitting Sparkle zip for notarisation (profile: $NOTARY_PROFILE)..."
+    xcrun notarytool submit "$SPARKLE_ZIP" \
+        --keychain-profile "$NOTARY_PROFILE"
     echo "==> Submission queued. Track status with:"
     echo "      xcrun notarytool history --keychain-profile $NOTARY_PROFILE"
-    echo "    Once 'Accepted', staple with:"
+    echo "    Once the DMG is 'Accepted', staple with:"
     echo "      xcrun stapler staple \"$DIST_DIR/$DMG_NAME.dmg\""
 elif [ -n "$SIGN_IDENTITY" ]; then
     echo "  (SIGN_IDENTITY set but NOTARY_PROFILE unset — skipping notarisation."
-    echo "   The DMG is signed but not notarised, so Gatekeeper will warn users.)"
+    echo "   The DMG and Sparkle zip are signed but not notarised, so Gatekeeper will warn users.)"
 fi
 
 # If the app is already installed under /Applications, refresh it so this
@@ -311,5 +337,7 @@ echo ""
 echo "==> Done!"
 echo "    App:  $APP_DIR"
 echo "    DMG:  $DIST_DIR/$DMG_NAME.dmg"
+echo "    Zip:  $SPARKLE_ZIP"
 echo ""
 echo "    Size: $(du -sh "$DIST_DIR/$DMG_NAME.dmg" | cut -f1)"
+echo "    Zip:  $(du -sh "$SPARKLE_ZIP" | cut -f1)"
