@@ -8,7 +8,7 @@ Relay Runner ships two release artifacts:
 The app is configured with:
 
 - `SUFeedURL`: `https://github.com/matthewthomas94/relay-runner/releases/latest/download/appcast.xml`
-- `SUPublicEDKey`: `LORldNflpZEdwXs4OhcYDo+bpUKPmzXmJjI2fr3n97c=`
+- `SUPublicEDKey`: `a7hLtPfE0+/AM/igmohxiCV/GXonRJKUPuAzScAeXPo=`
 
 `SPARKLE_ED_PRIVATE_KEY` must match the committed `SUPublicEDKey`. Before the first OTA release, generate the production key pair with Sparkle's `generate_keys`, commit the public key in `Info.plist`, and store the exported private key in GitHub Actions as `SPARKLE_ED_PRIVATE_KEY`.
 

@@ -22,7 +22,7 @@
     <key>SUFeedURL</key>
     <string>https://github.com/matthewthomas94/relay-runner/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
-    <string>LORldNflpZEdwXs4OhcYDo+bpUKPmzXmJjI2fr3n97c=</string>
+    <string>a7hLtPfE0+/AM/igmohxiCV/GXonRJKUPuAzScAeXPo=</string>
     <key>SUEnableAutomaticChecks</key>
     <true/>
     <key>SUAutomaticallyUpdate</key>
