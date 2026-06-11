@@ -106,6 +106,10 @@ enum OrchestratorClient {
                 }
             case .deferredActiveRuns:
                 throw OrchestratorClientError.daemonRefreshDeferred
+            case .notInstalled:
+                throw OrchestratorClientError.daemonRefreshFailed(
+                    "Relay Runner could not find the installed orchestrator launch agent."
+                )
             case .failed(let message):
                 throw OrchestratorClientError.daemonRefreshFailed(message)
             }
@@ -116,6 +120,13 @@ enum OrchestratorClient {
         try await buildProgramStatusOverlay(limit: limit) { query, limit in
             try await fetchProgramStatus(query: query, limit: limit)
         }
+    }
+
+    static func refreshBundledOrchestratorDaemonIfIdle() async -> OrchestratorDaemonRefreshResult {
+        guard orchestratorDaemonInstalled() else {
+            return .notInstalled
+        }
+        return await restartOrchestratorDaemonIfIdle()
     }
 
     static func buildProgramDashboard(
@@ -290,6 +301,15 @@ enum OrchestratorClient {
             .appendingPathComponent("scripts/relay-orchestrator")
     }
 
+    private static func orchestratorDaemonInstalled() -> Bool {
+        if FileManager.default.fileExists(atPath: portFile) {
+            return true
+        }
+        let plist = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.relay.orchestrator.plist")
+        return FileManager.default.fileExists(atPath: plist.path)
+    }
+
     private static func readPort() -> Int {
         if let raw = try? String(contentsOfFile: portFile, encoding: .utf8),
            let port = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -303,6 +323,7 @@ enum OrchestratorClient {
 enum OrchestratorDaemonRefreshResult: Equatable {
     case restarted
     case deferredActiveRuns
+    case notInstalled
     case failed(String)
 }
 

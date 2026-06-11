@@ -29,7 +29,10 @@ struct RelayRunnerApp: App {
         _ = _installSIGPIPEHandler
         let context = RelayInstallerContext.current()
         let updaterController = context == nil
-            ? RelayUpdaterController(installerContext: context)
+            ? RelayUpdaterController(
+                installerContext: context,
+                prepareForRelaunch: { ProcessManager().stopServices() }
+            )
             : nil
         _updaterController = State(initialValue: updaterController)
         _appState = State(initialValue: context == nil ? AppState(

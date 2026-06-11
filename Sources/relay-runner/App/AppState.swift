@@ -9,6 +9,10 @@ final class AppState {
 
     private(set) var sttEngine: STTEngine?
     @ObservationIgnored private let checkForUpdatesAction: @MainActor () -> Void
+    @ObservationIgnored private let refreshBundledOrchestratorDaemon: () async -> OrchestratorDaemonRefreshResult
+    @ObservationIgnored private let refreshBundledServicesOnLaunch: Bool
+
+    var serviceLifecycleMessage: String?
 
     /// Populated when STTEngine.start() throws — surfaces a human-readable
     /// failure in the menu bar with a Retry Setup action. Nil when STT is
@@ -118,8 +122,19 @@ final class AppState {
     /// users see the menu reflect their session promptly.
     var hasActiveSession: Bool { menuSessionActive || bridgeAliveCache || bridgeRecoveryInFlight }
 
-    init(checkForUpdates: @escaping @MainActor () -> Void = {}) {
+    init(
+        checkForUpdates: @escaping @MainActor () -> Void = {},
+        bundleURL: URL = Bundle.main.bundleURL,
+        refreshBundledOrchestratorDaemon: @escaping () async -> OrchestratorDaemonRefreshResult = {
+            await OrchestratorClient.refreshBundledOrchestratorDaemonIfIdle()
+        }
+    ) {
         self.checkForUpdatesAction = checkForUpdates
+        self.refreshBundledOrchestratorDaemon = refreshBundledOrchestratorDaemon
+        self.refreshBundledServicesOnLaunch = RelayUpdaterController.shouldStartAutomatically(
+            installerContext: nil,
+            bundleURL: bundleURL
+        )
         self.config = ConfigManager.shared.load()
         refreshConfiguredWorkspaceDiscoveryIfNeeded(
             oldConfig: nil,
@@ -160,12 +175,54 @@ final class AppState {
                 self.statusText = "Microphone permission needed"
             }
             self.onboarding.showIfNeeded()
+            if self.refreshBundledServicesOnLaunch {
+                self.refreshBundledServicesAfterLaunch()
+            }
         }
     }
 
     func checkForUpdates() {
         Task { @MainActor [checkForUpdatesAction] in
             checkForUpdatesAction()
+        }
+    }
+
+    static func serviceLifecycleMessage(for result: OrchestratorDaemonRefreshResult) -> String? {
+        switch result {
+        case .restarted:
+            return nil
+        case .notInstalled:
+            return nil
+        case .deferredActiveRuns:
+            return (
+                "Bundled service refresh deferred until active orchestrator workers finish. "
+                + "Quit and reopen Relay Runner after they finish."
+            )
+        case .failed(let message):
+            return message.isEmpty
+                ? "Bundled service refresh failed. Quit and reopen Relay Runner to retry."
+                : "Bundled service refresh failed: \(message)"
+        }
+    }
+
+    private func refreshBundledServicesAfterLaunch() {
+        Task { [weak self, refreshBundledOrchestratorDaemon] in
+            let result = await refreshBundledOrchestratorDaemon()
+            let message = Self.serviceLifecycleMessage(for: result)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.serviceLifecycleMessage = message
+                switch result {
+                case .restarted:
+                    NSLog("[RelayRunner] Bundled orchestrator daemon refreshed after app launch.")
+                case .notInstalled:
+                    NSLog("[RelayRunner] Bundled orchestrator refresh skipped; launch agent is not installed.")
+                case .deferredActiveRuns:
+                    NSLog("[RelayRunner] Bundled orchestrator refresh deferred because active workers are running.")
+                case .failed(let message):
+                    NSLog("[RelayRunner] Bundled orchestrator refresh failed: \(message)")
+                }
+            }
         }
     }
 

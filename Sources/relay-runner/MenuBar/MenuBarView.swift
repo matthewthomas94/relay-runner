@@ -22,6 +22,10 @@ struct MenuBarView: View {
             Divider()
             Text("Setup: \(status)")
         }
+        if let message = appState.serviceLifecycleMessage {
+            Divider()
+            Text(message)
+        }
         if let translation = appState.sttEngineErrorTranslation {
             Divider()
             Text("\u{26A0} \(translation.headline)")
