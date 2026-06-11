@@ -23,11 +23,20 @@ private let _installSIGPIPEHandler: Void = {
 @main
 struct RelayRunnerApp: App {
     @State private var appState: AppState?
+    @State private var updaterController: RelayUpdaterController?
 
     init() {
         _ = _installSIGPIPEHandler
         let context = RelayInstallerContext.current()
-        _appState = State(initialValue: context == nil ? AppState() : nil)
+        let updaterController = context == nil
+            ? RelayUpdaterController(installerContext: context)
+            : nil
+        _updaterController = State(initialValue: updaterController)
+        _appState = State(initialValue: context == nil ? AppState(
+            checkForUpdates: { [weak updaterController] in
+                updaterController?.checkForUpdates()
+            }
+        ) : nil)
 
         if let context {
             DispatchQueue.main.async {

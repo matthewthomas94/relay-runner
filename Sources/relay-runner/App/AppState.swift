@@ -8,6 +8,7 @@ final class AppState {
     var statusText = "Idle"
 
     private(set) var sttEngine: STTEngine?
+    @ObservationIgnored private let checkForUpdatesAction: @MainActor () -> Void
 
     /// Populated when STTEngine.start() throws — surfaces a human-readable
     /// failure in the menu bar with a Retry Setup action. Nil when STT is
@@ -117,7 +118,8 @@ final class AppState {
     /// users see the menu reflect their session promptly.
     var hasActiveSession: Bool { menuSessionActive || bridgeAliveCache || bridgeRecoveryInFlight }
 
-    init() {
+    init(checkForUpdates: @escaping @MainActor () -> Void = {}) {
+        self.checkForUpdatesAction = checkForUpdates
         self.config = ConfigManager.shared.load()
         refreshConfiguredWorkspaceDiscoveryIfNeeded(
             oldConfig: nil,
@@ -158,6 +160,12 @@ final class AppState {
                 self.statusText = "Microphone permission needed"
             }
             self.onboarding.showIfNeeded()
+        }
+    }
+
+    func checkForUpdates() {
+        Task { @MainActor [checkForUpdatesAction] in
+            checkForUpdatesAction()
         }
     }
 

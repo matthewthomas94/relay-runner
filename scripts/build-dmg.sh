@@ -43,12 +43,27 @@ swift build -c "$CONFIG"
 echo "==> Creating app bundle..."
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
+mkdir -p "$APP_DIR/Contents/Frameworks"
 mkdir -p "$APP_DIR/Contents/Resources"
 mkdir -p "$APP_DIR/Contents/SharedSupport/services"
 mkdir -p "$APP_DIR/Contents/SharedSupport/scripts"
 
 # Binary
 cp "$BUILD_DIR/relay-runner" "$APP_DIR/Contents/MacOS/relay-runner"
+
+# Sparkle framework for in-app updates. SwiftPM keeps binary target artifacts
+# outside the app bundle, so copy the resolved framework into the standard
+# runtime location before signing the bundle.
+SPARKLE_FRAMEWORK="$(find "$PROJECT_ROOT/.build/artifacts" "$BUILD_DIR" \
+    -maxdepth 8 -type d -name "Sparkle.framework" -print -quit 2>/dev/null || true)"
+if [ -z "$SPARKLE_FRAMEWORK" ]; then
+    echo "error: Sparkle.framework not found after swift build" >&2
+    exit 1
+fi
+ditto "$SPARKLE_FRAMEWORK" "$APP_DIR/Contents/Frameworks/Sparkle.framework"
+if ! otool -l "$APP_DIR/Contents/MacOS/relay-runner" | grep -q "@executable_path/../Frameworks"; then
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_DIR/Contents/MacOS/relay-runner"
+fi
 
 # Helper binary: Relay Actions MCP server. Spawned by `claude` (not by the
 # menu-bar app) when a session is active and the MCP entry registered by
