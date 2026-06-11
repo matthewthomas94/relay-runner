@@ -7,8 +7,10 @@ Relay Runner ships two release artifacts:
 
 The app is configured with:
 
-- `SUFeedURL`: `https://updates.relayrunner.app/appcast.xml`
+- `SUFeedURL`: `https://github.com/matthewthomas94/relay-runner/releases/latest/download/appcast.xml`
 - `SUPublicEDKey`: `LORldNflpZEdwXs4OhcYDo+bpUKPmzXmJjI2fr3n97c=`
+
+`SPARKLE_ED_PRIVATE_KEY` must match the committed `SUPublicEDKey`. Before the first OTA release, generate the production key pair with Sparkle's `generate_keys`, commit the public key in `Info.plist`, and store the exported private key in GitHub Actions as `SPARKLE_ED_PRIVATE_KEY`.
 
 ## GitHub Secrets
 
@@ -27,14 +29,21 @@ Pull requests and normal `main` pushes do not require these secrets. They build 
 
 ## Feed Hosting
 
-The tag workflow attaches `RelayRunner.dmg`, `RelayRunner.zip`, and `appcast.xml` to the GitHub Release. The update host must also publish these files at the stable feed origin:
+The tag workflow attaches `RelayRunner.dmg`, `RelayRunner.zip`, and `appcast.xml` to the GitHub Release. Installed apps read the feed through GitHub's stable latest-release asset URL:
 
 ```text
-https://updates.relayrunner.app/appcast.xml
-https://updates.relayrunner.app/RelayRunner.zip
+https://github.com/matthewthomas94/relay-runner/releases/latest/download/appcast.xml
 ```
 
-Keep `SPARKLE_DOWNLOAD_URL_PREFIX` set to `https://updates.relayrunner.app/` when generating the appcast. Do not rename `RelayRunner.zip` after appcast generation because Sparkle signs the archive URL, length, and archive content into the feed.
+When generating a tagged release, CI sets `SPARKLE_DOWNLOAD_URL_PREFIX` to that tag's release download URL:
+
+```text
+https://github.com/matthewthomas94/relay-runner/releases/download/<tag>/
+```
+
+That keeps old appcast entries stable even after a newer release becomes `latest`. Do not rename `RelayRunner.zip` after appcast generation because Sparkle signs the archive URL, length, and archive content into the feed.
+
+If Relay Runner later moves to a branded update domain, change `SUFeedURL`, `SPARKLE_APPCAST_URL`, and `SPARKLE_DOWNLOAD_URL_PREFIX` together and keep the old feed URL live long enough for installed apps to cross the bridge.
 
 ## Version Monotonicity
 

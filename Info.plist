@@ -20,7 +20,7 @@
     <string>0.4.0</string>
     <!-- Sparkle update feed and EdDSA public key. Keep these in sync with docs/release-updates.md. -->
     <key>SUFeedURL</key>
-    <string>https://updates.relayrunner.app/appcast.xml</string>
+    <string>https://github.com/matthewthomas94/relay-runner/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
     <string>LORldNflpZEdwXs4OhcYDo+bpUKPmzXmJjI2fr3n97c=</string>
     <key>SUEnableAutomaticChecks</key>
