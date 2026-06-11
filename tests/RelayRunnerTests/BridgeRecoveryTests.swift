@@ -59,6 +59,21 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
+    func testWatchdogSuppressesRecoveryDuringSparkleRelaunch() {
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: false,
+                daemonAlive: false,
+                consumerAlive: false,
+                wasAlive: true,
+                sessionBridgeSeen: false,
+                elapsedSinceSessionStart: 0,
+                recoverySuppressed: true
+            ),
+            .markDead
+        )
+    }
+
     func testWatchdogStillReapsPreexistingOrphanDaemon() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(

@@ -86,6 +86,16 @@ final class ProcessManager {
         return repoLocal
     }
 
+    private var bundledRelayOrchestrator: URL {
+        let bundled = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/SharedSupport/scripts/relay-orchestrator")
+        if FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("scripts/relay-orchestrator")
+    }
+
     // MARK: - Bridge lifecycle
 
     func bridgeAlive() -> Bool {
@@ -295,6 +305,43 @@ final class ProcessManager {
             proc.waitUntilExit()
         }
         Self.removeBridgeRuntimeFiles()
+    }
+
+    func stopServicesForBundleReplacement() {
+        stopServices()
+        stopBundledOrchestrator()
+        Self.killProcesses(matching: bundledServicesDir.path)
+        Self.removeBridgeRuntimeFiles()
+    }
+
+    private func stopBundledOrchestrator() {
+        guard FileManager.default.isExecutableFile(atPath: bundledRelayOrchestrator.path) else { return }
+        let proc = Process()
+        proc.executableURL = bundledRelayOrchestrator
+        proc.arguments = ["--stop"]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            NSLog("[ProcessManager] Failed to stop relay-orchestrator before bundle replacement: \(error)")
+        }
+    }
+
+    private static func killProcesses(matching pattern: String) {
+        guard !pattern.isEmpty else { return }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        proc.arguments = ["-f", pattern]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            NSLog("[ProcessManager] Failed to kill bundled service processes matching \(pattern): \(error)")
+        }
     }
 
     /// Launch the configured agent in a new terminal tab and have it start

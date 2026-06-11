@@ -1,6 +1,10 @@
 import Foundation
 import Sparkle
 
+extension Notification.Name {
+    static let relayRunnerWillRelaunchForUpdate = Notification.Name("relayRunnerWillRelaunchForUpdate")
+}
+
 @MainActor
 final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
     private var standardUpdaterController: SPUStandardUpdaterController?
@@ -38,6 +42,7 @@ final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
 
     func prepareForSparkleRelaunch() {
         NSLog("[RelayRunner] Sparkle will relaunch Relay Runner; stopping bundled services first.")
+        NotificationCenter.default.post(name: .relayRunnerWillRelaunchForUpdate, object: nil)
         prepareForRelaunch()
     }
 

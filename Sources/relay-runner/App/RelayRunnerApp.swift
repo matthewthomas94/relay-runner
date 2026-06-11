@@ -31,7 +31,7 @@ struct RelayRunnerApp: App {
         let updaterController = context == nil
             ? RelayUpdaterController(
                 installerContext: context,
-                prepareForRelaunch: { ProcessManager().stopServices() }
+                prepareForRelaunch: { ProcessManager().stopServicesForBundleReplacement() }
             )
             : nil
         _updaterController = State(initialValue: updaterController)

@@ -107,6 +107,8 @@ final class AppState {
     private var bridgeRecoveryInFlight = false
     private var lastBridgeRecoveryAt: Date = .distantPast
     private static let bridgeRecoveryCooldown: TimeInterval = 15
+    private var bridgeRecoverySuppressedForUpdate = false
+    @ObservationIgnored private var updateRelaunchObserver: NSObjectProtocol?
     /// Per-bridge-session flag for the per-parent permissions wizard. False at
     /// startup and after any bridge death; flipped true once the watchdog has
     /// either surfaced the wizard for this session or confirmed the parent is
@@ -136,6 +138,13 @@ final class AppState {
             bundleURL: bundleURL
         )
         self.config = ConfigManager.shared.load()
+        self.updateRelaunchObserver = NotificationCenter.default.addObserver(
+            forName: .relayRunnerWillRelaunchForUpdate,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.prepareForSparkleRelaunch()
+        }
         refreshConfiguredWorkspaceDiscoveryIfNeeded(
             oldConfig: nil,
             newConfig: config,
@@ -178,6 +187,12 @@ final class AppState {
             if self.refreshBundledServicesOnLaunch {
                 self.refreshBundledServicesAfterLaunch()
             }
+        }
+    }
+
+    deinit {
+        if let updateRelaunchObserver {
+            NotificationCenter.default.removeObserver(updateRelaunchObserver)
         }
     }
 
@@ -314,6 +329,18 @@ final class AppState {
         processManager.stopServices()
         isRunning = false
         statusText = "Idle"
+    }
+
+    func prepareForSparkleRelaunch() {
+        bridgeRecoverySuppressedForUpdate = true
+        stopBridgeWatchdog()
+        menuSessionActive = false
+        bridgeAliveCache = false
+        bridgeRecoveryInFlight = false
+        sessionBridgeSeen = false
+        statusText = "Updating"
+        sttEngine?.cancelRecording()
+        processManager.stopServicesForBundleReplacement()
     }
 
     func saveConfig(_ newConfig: AppConfig, forceWorkspaceDiscovery: Bool = false) {
@@ -509,7 +536,8 @@ final class AppState {
                 consumerAlive: consumerAlive,
                 wasAlive: wasAlive,
                 sessionBridgeSeen: self.sessionBridgeSeen,
-                elapsedSinceSessionStart: elapsed
+                elapsedSinceSessionStart: elapsed,
+                recoverySuppressed: self.bridgeRecoverySuppressedForUpdate
             )
 
             switch action {
@@ -615,8 +643,12 @@ final class AppState {
         consumerAlive: Bool,
         wasAlive: Bool,
         sessionBridgeSeen: Bool,
-        elapsedSinceSessionStart: TimeInterval
+        elapsedSinceSessionStart: TimeInterval,
+        recoverySuppressed: Bool = false
     ) -> BridgeWatchdogAction {
+        if recoverySuppressed {
+            return .markDead
+        }
         if daemonAlive && consumerAlive {
             return .alive
         }
@@ -634,6 +666,7 @@ final class AppState {
 
     @discardableResult
     private func startBridgeRecovery(reason: String) -> Bool {
+        if bridgeRecoverySuppressedForUpdate { return false }
         if bridgeRecoveryInFlight { return true }
         guard let context = processManager.bridgeRecoveryContext(fallbackConfig: menuSessionActive ? config : nil) else {
             return false
