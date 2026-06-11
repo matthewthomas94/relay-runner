@@ -39,6 +39,33 @@ BUILD_DIR="$PROJECT_ROOT/.build/$CONFIG"
 DIST_DIR="$PROJECT_ROOT/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
 
+submit_notarization() {
+    local path="$1"
+    local label="$2"
+    local log_path="$DIST_DIR/notary-$label.log"
+    local submit_failed=0
+    rm -f "$log_path"
+
+    if ! xcrun notarytool submit "$path" \
+        --keychain-profile "$NOTARY_PROFILE" \
+        --wait 2>&1 | tee "$log_path"; then
+        submit_failed=1
+    fi
+
+    local submission_id=""
+    submission_id="$(awk '/id:/ { print $2 }' "$log_path" | tail -n 1)"
+
+    if [ "$submit_failed" -ne 0 ] || ! grep -q "status: Accepted" "$log_path"; then
+        echo "error: notarisation failed for $path" >&2
+        if [ -n "$submission_id" ]; then
+            echo "==> Notary log for $submission_id" >&2
+            xcrun notarytool log "$submission_id" \
+                --keychain-profile "$NOTARY_PROFILE" || true
+        fi
+        exit 1
+    fi
+}
+
 echo "==> Building ($CONFIG)..."
 swift build -c "$CONFIG"
 
@@ -175,8 +202,23 @@ if [ -n "$SIGN_IDENTITY" ]; then
     # shell script, plus any dylibs / frameworks SPM dropped into the bundle.
     echo "  identity: $SIGN_IDENTITY"
     # Any embedded frameworks / dylibs (FluidAudio ships .dylibs via SPM plugins).
-    find "$APP_DIR/Contents" \( -name "*.dylib" -o -name "*.framework" \) -print0 \
-        | while IFS= read -r -d '' f; do
+    # Sparkle's framework also contains nested apps, XPC services, and helper
+    # executables. Sign all nested code deepest-first so the enclosing bundle
+    # seals are created after their children have Developer ID signatures.
+    {
+        find "$APP_DIR/Contents/Frameworks" \
+            \( -name "*.app" -o -name "*.xpc" -o -name "*.framework" -o -name "*.dylib" \) \
+            -print
+        find "$APP_DIR/Contents/Frameworks" -type f -perm +111 -print | while IFS= read -r f; do
+            if file "$f" | grep -q 'Mach-O'; then
+                printf '%s\n' "$f"
+            fi
+        done
+    } | awk '{ print length($0) "\t" $0 }' \
+        | sort -rn \
+        | cut -f2- \
+        | awk '!seen[$0]++' \
+        | while IFS= read -r f; do
             codesign --force --timestamp --options runtime \
                 --sign "$SIGN_IDENTITY" "$f"
           done
@@ -223,9 +265,7 @@ if [ -n "$SIGN_IDENTITY" ] && [ -n "$NOTARY_PROFILE" ]; then
         "$APP_NAME.app" "$(basename "$APP_NOTARY_ZIP")")
 
     echo "==> Submitting app for notarisation (profile: $NOTARY_PROFILE)..."
-    xcrun notarytool submit "$APP_NOTARY_ZIP" \
-        --keychain-profile "$NOTARY_PROFILE" \
-        --wait
+    submit_notarization "$APP_NOTARY_ZIP" "app"
 
     echo "==> Stapling app notarisation ticket..."
     xcrun stapler staple "$APP_DIR"
@@ -323,9 +363,7 @@ fi
 # first-install downloads pass Gatekeeper without a slow online lookup.
 if [ -n "$SIGN_IDENTITY" ] && [ -n "$NOTARY_PROFILE" ]; then
     echo "==> Submitting DMG for notarisation (profile: $NOTARY_PROFILE)..."
-    xcrun notarytool submit "$DIST_DIR/$DMG_NAME.dmg" \
-        --keychain-profile "$NOTARY_PROFILE" \
-        --wait
+    submit_notarization "$DIST_DIR/$DMG_NAME.dmg" "dmg"
     echo "==> Stapling DMG notarisation ticket..."
     xcrun stapler staple "$DIST_DIR/$DMG_NAME.dmg"
     xcrun stapler validate "$DIST_DIR/$DMG_NAME.dmg"
