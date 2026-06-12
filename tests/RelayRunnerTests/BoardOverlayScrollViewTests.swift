@@ -12,9 +12,9 @@ final class BoardOverlayScrollViewTests: XCTestCase {
 
         let views = try scrollViews(in: container)
         XCTAssertEqual(views.documentView.frame.height, views.scrollView.contentView.bounds.height, accuracy: 0.5)
-        XCTAssertGreaterThan(views.hostingView.frame.minY, 0)
+        XCTAssertGreaterThanOrEqual(views.hostingView.frame.minY, 28)
         XCTAssertEqual(views.hostingView.frame.height, 40, accuracy: 0.5)
-        XCTAssertGreaterThan(views.documentView.frame.maxY, views.hostingView.frame.maxY)
+        XCTAssertGreaterThanOrEqual(views.documentView.frame.maxY - views.hostingView.frame.maxY, 28)
     }
 
     func testTallContentExpandsDocumentForScrollingWithReachableEdges() throws {
@@ -24,7 +24,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
 
         let views = try scrollViews(in: container)
         XCTAssertGreaterThan(views.documentView.frame.height, views.scrollView.contentView.bounds.height)
-        XCTAssertGreaterThan(views.hostingView.frame.minY, 0)
+        XCTAssertGreaterThanOrEqual(views.hostingView.frame.minY, 28)
         XCTAssertEqual(views.hostingView.frame.height, 520, accuracy: 0.5)
         XCTAssertEqual(
             views.hostingView.frame.minY,
@@ -43,6 +43,29 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertEqual(views.documentView.frame.height, 300, accuracy: 0.5)
     }
 
+    func testScrollContainerUsesVisibleColumnBodyHeightInSwiftUILayout() throws {
+        let host = NSHostingView(rootView:
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Done")
+                    .frame(height: 32)
+                BoardOverlayScrollView {
+                    Rectangle().frame(height: 1_200)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+            .frame(width: 270, height: 633, alignment: .topLeading)
+        )
+        host.frame = CGRect(x: 0, y: 0, width: 270, height: 633)
+        host.layoutSubtreeIfNeeded()
+
+        let container = try XCTUnwrap(findScrollContainer(in: host))
+        let expectedMaxHeight = CGFloat(633 - 18 * 2 - 32 - 16) + 0.5
+        XCTAssertLessThanOrEqual(container.frame.height, expectedMaxHeight)
+        XCTAssertGreaterThan(container.frame.height, CGFloat(500))
+    }
+
     private func layout(_ container: BoardOverlayScrollContainer, width: CGFloat, height: CGFloat) {
         container.frame = CGRect(x: 0, y: 0, width: width, height: height)
         container.layout()
@@ -57,5 +80,17 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         let documentView = try XCTUnwrap(scrollView.documentView)
         let hostingView = try XCTUnwrap(documentView.subviews.first)
         return (scrollView, documentView, hostingView)
+    }
+
+    private func findScrollContainer(in view: NSView) -> BoardOverlayScrollContainer? {
+        if let container = view as? BoardOverlayScrollContainer {
+            return container
+        }
+        for subview in view.subviews {
+            if let container = findScrollContainer(in: subview) {
+                return container
+            }
+        }
+        return nil
     }
 }

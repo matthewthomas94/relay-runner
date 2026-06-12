@@ -34,7 +34,7 @@ final class BoardOverlayScrollContainer: NSView {
     private var lastLaidOutWidth: CGFloat = 0
     private var lastViewportHeight: CGFloat = 0
     private var lastLaidOutHeight: CGFloat = 0
-    private let verticalContentInset: CGFloat = 8
+    private let verticalContentInset: CGFloat = 28
 
     init(rootView: AnyView) {
         hostingView = NSHostingView(rootView: rootView)
