@@ -52,14 +52,14 @@ struct Ticket: Identifiable, Equatable {
         self.body = body
     }
 
-    enum Status: String, CaseIterable, Equatable {
+    enum Status: String, CaseIterable, Equatable, Hashable {
         case backlog
         case ready
         case inProgress = "in_progress"
         case done
     }
 
-    enum Priority: String, Equatable {
+    enum Priority: String, CaseIterable, Equatable, Hashable {
         case urgent
         case high
         case medium
@@ -197,8 +197,20 @@ enum TicketParser {
     /// absent. Used by the editor — `extractDescription` is the card-summary
     /// counterpart and only returns the first paragraph.
     static func extractFullDescription(_ body: String) -> String? {
+        extractSection(named: "Description", in: body)
+    }
+
+    static func extractAcceptanceCriteria(_ body: String) -> String? {
+        extractSection(named: "Acceptance criteria", in: body)
+    }
+
+    static func replaceAcceptanceCriteria(in body: String, with newAcceptanceCriteria: String) -> String {
+        replaceSection(named: "Acceptance criteria", in: body, with: newAcceptanceCriteria, insertAtTop: false)
+    }
+
+    static func extractSection(named heading: String, in body: String) -> String? {
         let lines = body.components(separatedBy: "\n")
-        guard let headingIdx = lines.firstIndex(where: { isDescriptionHeading($0) }) else {
+        guard let headingIdx = lines.firstIndex(where: { isHeading($0, named: heading) }) else {
             return nil
         }
         var collected: [String] = []
@@ -236,8 +248,67 @@ enum TicketParser {
     }
 
     private static func isDescriptionHeading(_ line: String) -> Bool {
+        isHeading(line, named: "Description")
+    }
+
+    private static func isHeading(_ line: String, named heading: String) -> Bool {
         let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
-        return trimmed == "## description" || trimmed.hasPrefix("## description ")
+        let target = heading.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed == "## \(target)" || trimmed.hasPrefix("## \(target) ")
+    }
+
+    private static func replaceSection(
+        named heading: String,
+        in body: String,
+        with newContent: String,
+        insertAtTop: Bool
+    ) -> String {
+        let trimmed = newContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = body.components(separatedBy: "\n")
+
+        if let headingIdx = lines.firstIndex(where: { isHeading($0, named: heading) }) {
+            var endIdx = lines.count
+            for i in (headingIdx + 1)..<lines.count {
+                let t = lines[i].trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("#") { endIdx = i; break }
+            }
+
+            var rebuilt: [String] = Array(lines[..<headingIdx])
+            if !trimmed.isEmpty {
+                rebuilt.append("## \(heading)")
+                rebuilt.append("")
+                rebuilt.append(trimmed)
+                rebuilt.append("")
+            }
+            var tail = Array(lines[endIdx...])
+            while tail.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                tail.removeFirst()
+            }
+            if !tail.isEmpty { rebuilt.append(contentsOf: tail) }
+            return rebuilt.joined(separator: "\n")
+        }
+
+        guard !trimmed.isEmpty else { return body }
+
+        if insertAtTop {
+            var rebuilt: [String] = ["## \(heading)", "", trimmed, ""]
+            var trimmedLines = lines
+            while trimmedLines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                trimmedLines.removeFirst()
+            }
+            rebuilt.append(contentsOf: trimmedLines)
+            return rebuilt.joined(separator: "\n")
+        }
+
+        var rebuilt = lines
+        while rebuilt.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            rebuilt.removeLast()
+        }
+        if !rebuilt.isEmpty { rebuilt.append("") }
+        rebuilt.append("## \(heading)")
+        rebuilt.append("")
+        rebuilt.append(trimmed)
+        return rebuilt.joined(separator: "\n")
     }
 
     // MARK: - Helpers

@@ -79,7 +79,10 @@ struct TicketDraft: Identifiable, Equatable {
     /// Canceling that modal deletes the file instead of leaving an orphan.
     let isNew: Bool
     var title: String
+    var status: Ticket.Status
+    var priority: Ticket.Priority
     var description: String
+    var acceptanceCriteria: String
     var id: String { editorId }
 }
 
@@ -232,10 +235,13 @@ struct BoardOverlayView: View {
             if let draft = model.editing {
                 TicketEditorModal(
                     draft: draft,
-                    onCommit: { title, description in
+                    onCommit: { title, status, priority, description, acceptanceCriteria in
                         var updated = draft
                         updated.title = title
                         updated.description = description
+                        updated.status = status
+                        updated.priority = priority
+                        updated.acceptanceCriteria = acceptanceCriteria
                         onCommit(updated)
                     },
                     onCancel: onCancel,
@@ -722,17 +728,32 @@ private struct RunStatusPill: View {
 /// with the modal; the parent only learns about changes on Save.
 private struct TicketEditorModal: View {
     let original: Ticket
-    let onCommit: (_ title: String, _ description: String) -> Void
+    let onCommit: (
+        _ title: String,
+        _ status: Ticket.Status,
+        _ priority: Ticket.Priority,
+        _ description: String,
+        _ acceptanceCriteria: String
+    ) -> Void
     let onCancel: () -> Void
     let onDelete: () -> Void
 
     @State private var title: String
+    @State private var status: Ticket.Status
+    @State private var priority: Ticket.Priority
     @State private var description: String
+    @State private var acceptanceCriteria: String
     @FocusState private var titleFocused: Bool
 
     init(
         draft: TicketDraft,
-        onCommit: @escaping (String, String) -> Void,
+        onCommit: @escaping (
+            _ title: String,
+            _ status: Ticket.Status,
+            _ priority: Ticket.Priority,
+            _ description: String,
+            _ acceptanceCriteria: String
+        ) -> Void,
         onCancel: @escaping () -> Void,
         onDelete: @escaping () -> Void
     ) {
@@ -741,7 +762,10 @@ private struct TicketEditorModal: View {
         self.onCancel = onCancel
         self.onDelete = onDelete
         self._title = State(initialValue: draft.title)
+        self._status = State(initialValue: draft.status)
+        self._priority = State(initialValue: draft.priority)
         self._description = State(initialValue: draft.description)
+        self._acceptanceCriteria = State(initialValue: draft.acceptanceCriteria)
     }
 
     var body: some View {
@@ -782,6 +806,36 @@ private struct TicketEditorModal: View {
                     .focused($titleFocused)
                     .lineLimit(1...3)
 
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Status")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.55))
+                            .textCase(.uppercase)
+                        Picker("Status", selection: $status) {
+                            ForEach(Ticket.Status.allCases, id: \.rawValue) { status in
+                                Text(status.rawValue.displayLabel).tag(status)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Priority")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.55))
+                            .textCase(.uppercase)
+                        Picker("Priority", selection: $priority) {
+                            ForEach(Ticket.Priority.allCases, id: \.rawValue) { priority in
+                                Text(priority.rawValue.displayLabel).tag(priority)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                    }
+                    Spacer(minLength: 0)
+                }
+
                 Divider()
                     .background(Color.white.opacity(0.12))
 
@@ -805,6 +859,26 @@ private struct TicketEditorModal: View {
                             .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
                     )
 
+                Text("Acceptance criteria")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.55))
+                    .textCase(.uppercase)
+
+                TextEditor(text: $acceptanceCriteria)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.90))
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 120, maxHeight: 220)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.black.opacity(0.30))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                    )
+
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
                     Button("Cancel", action: onCancel)
@@ -818,7 +892,7 @@ private struct TicketEditorModal: View {
                         )
                         .contentShape(Capsule())
                         .pointingHandCursor()
-                    Button("Save") { onCommit(title, description) }
+                    Button("Save") { onCommit(title, status, priority, description, acceptanceCriteria) }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.plain)
                         .padding(.horizontal, 14)

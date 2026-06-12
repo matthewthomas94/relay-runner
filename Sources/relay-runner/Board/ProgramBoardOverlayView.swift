@@ -9,6 +9,9 @@ struct ProgramBoardOverlayView: View {
     let onCreateStart: (ProgramBoardLane) -> Void
     let onCreateCommit: (ProgramBoardCreateRequest) -> Void
     let onCreateCancel: () -> Void
+    let onEditStart: (ProgramTicketDetail) -> Void
+    let onEditCommit: (ProgramBoardEditRequest) -> Void
+    let onEditCancel: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -16,7 +19,9 @@ struct ProgramBoardOverlayView: View {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if model.creating != nil {
+                    if model.editing != nil {
+                        onEditCancel()
+                    } else if model.creating != nil {
                         onCreateCancel()
                     } else {
                         onDismiss()
@@ -30,6 +35,7 @@ struct ProgramBoardOverlayView: View {
                     onDismiss: onDismiss,
                     onOpenProject: onOpenProject,
                     onCreateStart: onCreateStart,
+                    onEditStart: onEditStart,
                     onDrop: onDrop
                 )
                 .padding(.top, 89)
@@ -43,7 +49,8 @@ struct ProgramBoardOverlayView: View {
                     lane: drag.sourceLane,
                     isSelected: false,
                     showsProjectContext: true,
-                    onSelect: {}
+                    onSelect: {},
+                    onEdit: {}
                 )
                     .frame(width: 246)
                     .opacity(0.95)
@@ -69,6 +76,25 @@ struct ProgramBoardOverlayView: View {
                     onCancel: onCreateCancel
                 )
                 .id("\(draft.lane.id)-\(draft.selectedProjectPath ?? "all")")
+                .transition(.opacity)
+            }
+
+            if let draft = model.editing {
+                ProgramTicketEditModal(
+                    draft: draft,
+                    makeRequest: { title, status, priority, description, acceptanceCriteria in
+                        model.editRequest(
+                            title: title,
+                            status: status,
+                            priority: priority,
+                            description: description,
+                            acceptanceCriteria: acceptanceCriteria
+                        )
+                    },
+                    onCommit: onEditCommit,
+                    onCancel: onEditCancel
+                )
+                .id(draft.id)
                 .transition(.opacity)
             }
         }
@@ -114,6 +140,7 @@ private struct ProgramBoardContent: View {
     let onDismiss: () -> Void
     let onOpenProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
+    let onEditStart: (ProgramTicketDetail) -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -141,6 +168,7 @@ private struct ProgramBoardContent: View {
                                 theme: model.theme,
                                 canCreate: !model.projectTargets.isEmpty,
                                 onCreate: { onCreateStart(lane) },
+                                onEdit: { item in onEditStart(ProgramTicketDetail.load(item: item)) },
                                 onDrop: onDrop
                             )
                         }
@@ -151,6 +179,7 @@ private struct ProgramBoardContent: View {
                             detail: detail,
                             theme: model.theme,
                             onClose: model.clearSelectedTicket,
+                            onEdit: { onEditStart(detail) },
                             onOpenProject: onOpenProject
                         )
                         .padding(.top, 18)
@@ -470,6 +499,7 @@ private struct ProgramWorkColumnPanel: View {
     let theme: ParticleFieldRenderer.Theme?
     let canCreate: Bool
     let onCreate: () -> Void
+    let onEdit: (ProgramStatusItem) -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     private var items: [ProgramStatusItem] {
@@ -520,6 +550,7 @@ private struct ProgramWorkColumnPanel: View {
                                 isSelected: model.selectedTicketDetail?.id == item.id,
                                 showsProjectContext: showsProjectContext,
                                 onSelect: { model.selectTicket(item) },
+                                onEdit: { onEdit(item) },
                                 onDrop: onDrop
                             )
                         }
@@ -566,6 +597,7 @@ private struct DraggableProgramWorkCard: View {
     let isSelected: Bool
     let showsProjectContext: Bool
     let onSelect: () -> Void
+    let onEdit: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     private var isBeingDragged: Bool {
@@ -582,7 +614,8 @@ private struct DraggableProgramWorkCard: View {
             lane: lane,
             isSelected: isSelected,
             showsProjectContext: showsProjectContext,
-            onSelect: onSelect
+            onSelect: onSelect,
+            onEdit: onEdit
         )
             .opacity(isBeingDragged ? 0.25 : 1.0)
             .contentShape(Rectangle())
@@ -625,81 +658,89 @@ private struct ProgramWorkCard: View {
     let isSelected: Bool
     let showsProjectContext: Bool
     let onSelect: () -> Void
+    let onEdit: () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Text(projectName)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(showsProjectContext ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.mutedText)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(projectName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(showsProjectContext ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-                    Text(ticketID)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                Text(ticketID)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
 
+                Spacer(minLength: 0)
+
+                if let priority = cleaned(item.priority) {
+                    ProgramInlineBadge(label: priority.displayLabel)
+                }
+
+                ProgramIconButton(
+                    systemName: "square.and.pencil",
+                    help: editHelp,
+                    action: onEdit
+                )
+                .disabled(!canEdit)
+                .opacity(canEdit ? 1.0 : 0.45)
+            }
+
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            let badges = stateBadges
+            if !badges.isEmpty {
+                HStack(alignment: .center, spacing: 6) {
+                    ForEach(badges, id: \.self) { label in
+                        ProgramInlineBadge(label: label)
+                    }
                     Spacer(minLength: 0)
-
-                    if let priority = cleaned(item.priority) {
-                        ProgramInlineBadge(label: priority.displayLabel)
-                    }
-                }
-
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                let badges = stateBadges
-                if !badges.isEmpty {
-                    HStack(alignment: .center, spacing: 6) {
-                        ForEach(badges, id: \.self) { label in
-                            ProgramInlineBadge(label: label)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
-
-                if let dependencyText {
-                    Text(dependencyText)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(item.blockedBy.isEmpty ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.red)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
-
-                if let statusText {
-                    Text(statusText)
-                        .font(.system(size: 10, weight: .regular))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
-
-                if let lastError = item.lastError, !lastError.isEmpty {
-                    Text(lastError)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(ProgramBoardStyle.red)
-                        .lineLimit(2)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ProgramCardBackground(cornerRadius: 16))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.white.opacity(isSelected ? 0.28 : 0), lineWidth: 0.75)
-            )
-            .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
+
+            if let dependencyText {
+                Text(dependencyText)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(item.blockedBy.isEmpty ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.red)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+
+            if let statusText {
+                Text(statusText)
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+
+            if let lastError = item.lastError, !lastError.isEmpty {
+                Text(lastError)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(ProgramBoardStyle.red)
+                    .lineLimit(2)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ProgramCardBackground(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.white.opacity(isSelected ? 0.28 : 0), lineWidth: 0.75)
+        )
+        .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
         .help(cardHelp)
     }
 
@@ -778,6 +819,14 @@ private struct ProgramWorkCard: View {
         return parts.joined(separator: " - ")
     }
 
+    private var canEdit: Bool {
+        ProgramTicketIdentity(item: item) != nil
+    }
+
+    private var editHelp: String {
+        canEdit ? "Edit ticket" : "Ticket identity is unavailable"
+    }
+
     private func cleaned(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
@@ -788,6 +837,7 @@ private struct ProgramTicketDetailPanel: View {
     let detail: ProgramTicketDetail
     let theme: ParticleFieldRenderer.Theme?
     let onClose: () -> Void
+    let onEdit: () -> Void
     let onOpenProject: (String) -> Void
 
     var body: some View {
@@ -824,6 +874,14 @@ private struct ProgramTicketDetailPanel: View {
             }
 
             HStack(alignment: .center, spacing: 8) {
+                ProgramDetailActionButton(
+                    systemName: "square.and.pencil",
+                    title: "Edit",
+                    disabled: detail.ticket == nil,
+                    help: detail.ticket == nil ? "Ticket file is unavailable" : "Edit child ticket"
+                ) {
+                    onEdit()
+                }
                 ProgramDetailActionButton(
                     systemName: "rectangle.stack",
                     title: "Copy ID",
@@ -1032,6 +1090,194 @@ private struct ProgramDetailActionButton: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .help(help)
+    }
+}
+
+private struct ProgramTicketEditModal: View {
+    let draft: ProgramBoardEditDraft
+    let makeRequest: (
+        _ title: String,
+        _ status: Ticket.Status,
+        _ priority: Ticket.Priority,
+        _ description: String,
+        _ acceptanceCriteria: String
+    ) -> ProgramBoardEditRequest?
+    let onCommit: (ProgramBoardEditRequest) -> Void
+    let onCancel: () -> Void
+
+    @State private var title: String
+    @State private var status: Ticket.Status
+    @State private var priority: Ticket.Priority
+    @State private var description: String
+    @State private var acceptanceCriteria: String
+    @FocusState private var titleFocused: Bool
+
+    init(
+        draft: ProgramBoardEditDraft,
+        makeRequest: @escaping (
+            _ title: String,
+            _ status: Ticket.Status,
+            _ priority: Ticket.Priority,
+            _ description: String,
+            _ acceptanceCriteria: String
+        ) -> ProgramBoardEditRequest?,
+        onCommit: @escaping (ProgramBoardEditRequest) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.draft = draft
+        self.makeRequest = makeRequest
+        self.onCommit = onCommit
+        self.onCancel = onCancel
+        self._title = State(initialValue: draft.title)
+        self._status = State(initialValue: draft.status)
+        self._priority = State(initialValue: draft.priority)
+        self._description = State(initialValue: draft.description)
+        self._acceptanceCriteria = State(initialValue: draft.acceptanceCriteria)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .contentShape(Rectangle())
+                .onTapGesture { onCancel() }
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text(draft.identity.ticketID)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    ProgramIconButton(systemName: "xmark", help: "Cancel edit", action: onCancel)
+                }
+
+                Text(draft.identity.projectPath)
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                TextField("Title", text: $title, axis: .vertical)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .textFieldStyle(.plain)
+                    .focused($titleFocused)
+                    .lineLimit(1...3)
+
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Status")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
+                            .textCase(.uppercase)
+                        Picker("Status", selection: $status) {
+                            ForEach(Ticket.Status.allCases, id: \.rawValue) { status in
+                                Text(status.rawValue.displayLabel).tag(status)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Priority")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
+                            .textCase(.uppercase)
+                        Picker("Priority", selection: $priority) {
+                            ForEach(Ticket.Priority.allCases, id: \.rawValue) { priority in
+                                Text(priority.rawValue.displayLabel).tag(priority)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                Divider()
+                    .background(Color.white.opacity(0.12))
+
+                ProgramEditTextArea(
+                    title: "Description",
+                    text: $description,
+                    minHeight: 130,
+                    maxHeight: 220
+                )
+
+                ProgramEditTextArea(
+                    title: "Acceptance criteria",
+                    text: $acceptanceCriteria,
+                    minHeight: 130,
+                    maxHeight: 220
+                )
+
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    Button("Cancel", action: onCancel)
+                        .keyboardShortcut(.cancelAction)
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
+                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        .contentShape(Capsule())
+                    Button("Save") {
+                        if let request = currentRequest {
+                            onCommit(request)
+                        }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.plain)
+                    .disabled(currentRequest == nil)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(Color.white.opacity(currentRequest == nil ? 0.45 : 1.0))
+                    .background(Capsule().fill(Color.white.opacity(currentRequest == nil ? 0.08 : 0.20)))
+                    .contentShape(Capsule())
+                }
+            }
+            .padding(20)
+            .frame(width: 560)
+            .background(BoardGlassBackground(cornerRadius: 16))
+            .shadow(color: Color.black.opacity(0.5), radius: 30, x: 0, y: 10)
+            .onTapGesture { }
+            .onAppear { titleFocused = true }
+        }
+    }
+
+    private var currentRequest: ProgramBoardEditRequest? {
+        makeRequest(title, status, priority, description, acceptanceCriteria)
+    }
+}
+
+private struct ProgramEditTextArea: View {
+    let title: String
+    @Binding var text: String
+    let minHeight: CGFloat
+    let maxHeight: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .textCase(.uppercase)
+
+            TextEditor(text: $text)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: minHeight, maxHeight: maxHeight)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.black.opacity(0.30))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                )
+        }
     }
 }
 

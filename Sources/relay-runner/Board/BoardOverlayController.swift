@@ -263,7 +263,10 @@ final class BoardOverlayController {
             original: ticket,
             isNew: isNew,
             title: ticket.title,
-            description: fullDescription
+            status: ticket.status,
+            priority: ticket.priority,
+            description: fullDescription,
+            acceptanceCriteria: TicketParser.extractAcceptanceCriteria(ticket.body) ?? ""
         )
         setPanelKeyEligible(true)
     }
@@ -287,13 +290,14 @@ final class BoardOverlayController {
         let titleToSave = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
         let withDescription = TicketWriter.ticket(
             draft.original,
-            withDescription: draft.description
+            withDescription: draft.description,
+            acceptanceCriteria: draft.acceptanceCriteria
         )
         let updated = Ticket(
             id: withDescription.id,
             title: titleToSave,
-            status: withDescription.status,
-            priority: withDescription.priority,
+            status: draft.status,
+            priority: draft.priority,
             dependsOn: withDescription.dependsOn,
             runId: withDescription.runId,
             canceled: withDescription.canceled,

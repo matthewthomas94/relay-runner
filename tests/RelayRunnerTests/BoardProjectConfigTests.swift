@@ -198,7 +198,10 @@ final class BoardProjectConfigTests: XCTestCase {
             original: draft,
             isNew: true,
             title: draft.title,
-            description: TicketParser.extractFullDescription(draft.body) ?? ""
+            status: draft.status,
+            priority: draft.priority,
+            description: TicketParser.extractFullDescription(draft.body) ?? "",
+            acceptanceCriteria: TicketParser.extractAcceptanceCriteria(draft.body) ?? ""
         )
 
         XCTAssertTrue(editorDraft.isNew)

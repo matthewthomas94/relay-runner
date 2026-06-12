@@ -110,8 +110,18 @@ enum TicketWriter {
 
     /// Returns a ticket with a replaced description paragraph (body
     /// preserved). Used by the editor flow before calling `save`.
-    static func ticket(_ ticket: Ticket, withDescription newDescription: String) -> Ticket {
-        let newBody = TicketParser.replaceDescription(in: ticket.body, with: newDescription)
+    static func ticket(
+        _ ticket: Ticket,
+        withDescription newDescription: String,
+        acceptanceCriteria newAcceptanceCriteria: String? = nil
+    ) -> Ticket {
+        var newBody = TicketParser.replaceDescription(in: ticket.body, with: newDescription)
+        if let newAcceptanceCriteria {
+            newBody = TicketParser.replaceAcceptanceCriteria(
+                in: newBody,
+                with: newAcceptanceCriteria
+            )
+        }
         let summary = TicketParser.extractDescription(newBody)
         return Ticket(
             id: ticket.id,
