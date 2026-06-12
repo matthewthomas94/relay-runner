@@ -47,6 +47,7 @@ def ingest_registered_projects(
     counts = {
         "projects": 0,
         "tickets": 0,
+        "tickets_deleted": 0,
         "dependencies": 0,
         "runs": 0,
         "providers": 0,
@@ -111,6 +112,12 @@ def ingest_registered_projects(
             counts["tickets"] += 1
             store.upsert_edge(src_id=ticket_node["id"], dst_id=project["id"], kind=EDGE_BELONGS_TO)
             store.upsert_edge(src_id=project["id"], dst_id=ticket_node["id"], kind=EDGE_CONTAINS)
+
+        counts["tickets_deleted"] += _delete_missing_ticket_nodes(
+            store,
+            project=project,
+            seen_ticket_ids=set(repo_ticket_nodes),
+        )
 
         for ticket in tickets:
             ticket_node = repo_ticket_nodes.get(ticket["id"])
@@ -476,6 +483,22 @@ def _project_key(repo_path: str) -> str:
 
 def _ticket_key(repo_path: str, ticket_id: str) -> str:
     return f"{_project_key(repo_path)}:{ticket_id}"
+
+
+def _delete_missing_ticket_nodes(
+    store: GraphifyCoreStore,
+    *,
+    project: dict[str, Any],
+    seen_ticket_ids: set[str],
+) -> int:
+    seen_stable_keys = {f"{project['stable_key']}:{ticket_id}" for ticket_id in seen_ticket_ids}
+    deleted = 0
+    for node in store.nodes(kind=NODE_TICKET, project_id=project["id"]):
+        if node["stable_key"] in seen_stable_keys:
+            continue
+        if store.delete_node(node["id"]):
+            deleted += 1
+    return deleted
 
 
 def _ticket_state(ticket: dict[str, Any]) -> str:

@@ -27,6 +27,7 @@ from graphify_core import (  # noqa: E402
     GraphifyCoreStore,
 )
 from graphify_ingest import ingest_registered_projects  # noqa: E402
+from program_status import build_program_status  # noqa: E402
 
 
 class GraphifyIngestTests(unittest.TestCase):
@@ -189,6 +190,60 @@ class GraphifyIngestTests(unittest.TestCase):
         self.assertEqual(counts["files_indexed"], 0)
         self.assertEqual(store.file_manifests(project_id=project["id"]), [])
         self.assertEqual(store.search_files("StatusRefreshNeedle", project_id=project["id"]), [])
+
+    def test_prunes_deleted_ticket_nodes_so_run_history_does_not_restore_board_cards(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "program-board")
+        deleted_ticket_path = _write_ticket(repo, "PB-1", "Deleted active work", "ready", run_id=301)
+        _write_ticket(repo, "PB-2", "Live backlog work", "backlog")
+
+        registry_path = root / "projects.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "activeProjectID": str(repo.resolve()),
+                    "projects": [
+                        {
+                            "id": str(repo.resolve()),
+                            "repoPath": str(repo.resolve()),
+                            "displayName": "Program Board",
+                            "providers": {"codex": {}, "claude": {}},
+                        }
+                    ],
+                }
+            )
+        )
+        runs_db = root / "runs.db"
+        _write_runs_db(
+            runs_db,
+            [_run_row(root, 301, "PB-1", repo, "Running", "codex")],
+        )
+
+        store = self.make_store()
+        ingest_registered_projects(store, registry_path=registry_path, runs_db_path=runs_db)
+        deleted_node = store.find_node(kind=NODE_TICKET, stable_key=f"repo:{repo.resolve()}:PB-1")
+        self.assertIsNotNone(deleted_node)
+
+        deleted_ticket_path.unlink()
+        counts = ingest_registered_projects(store, registry_path=registry_path, runs_db_path=runs_db)
+
+        self.assertEqual(counts["tickets"], 1)
+        self.assertEqual(counts["tickets_deleted"], 1)
+        self.assertIsNone(store.find_node(kind=NODE_TICKET, stable_key=f"repo:{repo.resolve()}:PB-1"))
+        self.assertEqual(store.edges(kind=EDGE_EXECUTES, dst_id=deleted_node["id"]), [])
+        self.assertEqual(
+            [ticket["body"]["ticket_id"] for ticket in store.nodes(kind=NODE_TICKET)],
+            ["PB-2"],
+        )
+
+        backlog = build_program_status(store, query="backlog_lane", limit=0, now=2000.0)
+        in_progress = build_program_status(store, query="in_progress_lane", limit=0, now=2000.0)
+
+        self.assertEqual([item["ticket_id"] for item in backlog["items"]], ["PB-2"])
+        self.assertEqual(in_progress["items"], [])
+        self.assertNotIn("PB-1", backlog["message"])
+        self.assertNotIn("PB-1", in_progress["message"])
 
     def test_indexes_project_files_incrementally_and_searches_without_live_grep(self):
         root = Path(tempfile.mkdtemp())
