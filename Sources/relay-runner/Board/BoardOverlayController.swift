@@ -203,8 +203,7 @@ final class BoardOverlayController {
         guard isVisible else { return }
         // Cancel any open edit so reopening the board lands on a clean view.
         if model.editing != nil {
-            model.editing = nil
-            setPanelKeyEligible(false)
+            cancelEditor()
         }
         model.dragState = nil
         currentProject = nil
@@ -255,13 +254,14 @@ final class BoardOverlayController {
 
     // MARK: - Editor / mutation handlers
 
-    private func openEditor(for ticket: Ticket) {
+    private func openEditor(for ticket: Ticket, isNew: Bool = false) {
         // Pull the full description (all paragraphs until the next heading)
         // so the editor round-trips multi-paragraph content cleanly.
         let fullDescription = TicketParser.extractFullDescription(ticket.body) ?? ""
         model.editing = TicketDraft(
             editorId: ticket.id,
             original: ticket,
+            isNew: isNew,
             title: ticket.title,
             description: fullDescription
         )
@@ -269,6 +269,14 @@ final class BoardOverlayController {
     }
 
     private func cancelEditor() {
+        if let draft = model.editing, draft.isNew, let project = currentProject {
+            do {
+                try TicketWriter.delete(draft.original.id, in: project)
+            } catch {
+                NSLog("[relay-runner] failed to delete new ticket draft \(draft.original.id): \(error)")
+            }
+            model.tickets = loadTickets()
+        }
         model.editing = nil
         setPanelKeyEligible(false)
     }
@@ -289,6 +297,7 @@ final class BoardOverlayController {
             dependsOn: withDescription.dependsOn,
             runId: withDescription.runId,
             canceled: withDescription.canceled,
+            draft: false,
             order: withDescription.order,
             description: withDescription.description,
             body: withDescription.body
@@ -307,7 +316,7 @@ final class BoardOverlayController {
         // on a fresh ticket; the worker isn't useful until the user supplies
         // a real title/description, so we wait for the save. Daemon's
         // find_active makes the call idempotent.
-        if updated.status == .ready {
+        if updated.status == .ready && !updated.draft {
             OrchestratorClient.dispatchTicket(
                 ticketId: updated.id,
                 repoPath: project.repoPath.path,
@@ -318,17 +327,15 @@ final class BoardOverlayController {
 
     private func handleCreate(in status: Ticket.Status) {
         guard let project = currentProject else { return }
-        let existing = model.tickets.filter { $0.status == status }
-        let nextOrder = (existing.map(\.order).max() ?? 0) + 10
         do {
-            let ticket = try TicketWriter.mint(
+            let ticket = try TicketWriter.mintDraft(
                 in: project,
                 status: status,
-                title: "Untitled",
-                order: nextOrder
+                existingTickets: model.tickets,
+                title: "Untitled"
             )
             model.tickets = loadTickets()
-            openEditor(for: ticket)
+            openEditor(for: ticket, isNew: true)
         } catch {
             NSLog("[relay-runner] failed to mint ticket: \(error)")
         }
@@ -369,6 +376,7 @@ final class BoardOverlayController {
             dependsOn: dragged.dependsOn,
             runId: dragged.runId,
             canceled: dragged.canceled,
+            draft: dragged.draft,
             order: dragged.order,
             description: dragged.description,
             body: dragged.body
@@ -388,6 +396,7 @@ final class BoardOverlayController {
                 dependsOn: t.dependsOn,
                 runId: t.runId,
                 canceled: t.canceled,
+                draft: t.draft,
                 order: newOrder,
                 description: t.description,
                 body: t.body
@@ -405,7 +414,7 @@ final class BoardOverlayController {
         // The daemon's find_active short-circuits repeats, so even a drag-out-
         // then-drag-back is safe, but limiting the trigger to genuine
         // backlog/in_progress/done → ready transitions keeps logs clean.
-        if dragged.status != .ready && status == .ready {
+        if dragged.status != .ready && status == .ready && !dragged.draft {
             OrchestratorClient.dispatchTicket(
                 ticketId: dragged.id,
                 repoPath: project.repoPath.path,

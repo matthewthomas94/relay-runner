@@ -8,6 +8,10 @@ struct Ticket: Identifiable, Equatable {
     let dependsOn: [String]
     let runId: Int?
     let canceled: Bool
+    /// Board-created tickets are written before the editor opens so they get a
+    /// real id immediately. While `draft` is true, the daemon must not sweep a
+    /// ready ticket into a worker; saving the editor clears the flag.
+    let draft: Bool
     /// Sort key within a column. Lower = higher in the list. Optional in the
     /// on-disk schema — missing `order` falls back to the numeric portion of
     /// the ticket id (so existing tickets keep their RR-1, RR-2, … sequence
@@ -21,6 +25,32 @@ struct Ticket: Identifiable, Equatable {
     /// `---`). Held so the editor can round-trip non-Description sections like
     /// `## Acceptance criteria` without throwing them away on save.
     let body: String
+
+    init(
+        id: String,
+        title: String,
+        status: Status,
+        priority: Priority,
+        dependsOn: [String],
+        runId: Int?,
+        canceled: Bool,
+        draft: Bool = false,
+        order: Int,
+        description: String?,
+        body: String
+    ) {
+        self.id = id
+        self.title = title
+        self.status = status
+        self.priority = priority
+        self.dependsOn = dependsOn
+        self.runId = runId
+        self.canceled = canceled
+        self.draft = draft
+        self.order = order
+        self.description = description
+        self.body = body
+    }
 
     enum Status: String, CaseIterable, Equatable {
         case backlog
@@ -80,6 +110,7 @@ enum TicketParser {
         let depsRaw   = try requireString(fields, "depends_on")
         let runIdRaw  = try requireString(fields, "run_id")
         let cancelRaw = try requireString(fields, "canceled")
+        let draftRaw  = fields["draft"]
 
         guard let status = Ticket.Status(rawValue: statusRaw) else {
             throw TicketParseError.invalidEnum(field: "status", value: statusRaw)
@@ -95,7 +126,8 @@ enum TicketParser {
             priority: priority,
             dependsOn: parseList(depsRaw),
             runId: parseOptionalInt(runIdRaw),
-            canceled: try parseBool(cancelRaw),
+            canceled: try parseBool(cancelRaw, field: "canceled"),
+            draft: try draftRaw.map { try parseBool($0, field: "draft") } ?? false,
             order: parseOrder(fields["order"], fallbackFrom: id),
             description: extractDescription(body),
             body: body
@@ -266,11 +298,11 @@ enum TicketParser {
         return Int(raw)
     }
 
-    private static func parseBool(_ raw: String) throws -> Bool {
+    private static func parseBool(_ raw: String, field: String) throws -> Bool {
         switch raw.lowercased() {
         case "true":  return true
         case "false": return false
-        default: throw TicketParseError.invalidType(field: "canceled", value: raw)
+        default: throw TicketParseError.invalidType(field: field, value: raw)
         }
     }
 }

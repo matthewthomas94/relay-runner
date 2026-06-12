@@ -139,6 +139,7 @@ final class ProgramBoardOverlayController {
             dependsOn: current.dependsOn,
             runId: current.runId,
             canceled: current.canceled,
+            draft: current.draft,
             order: current.order,
             description: current.description,
             body: current.body
@@ -151,7 +152,7 @@ final class ProgramBoardOverlayController {
             return
         }
 
-        if request.shouldDispatch {
+        if request.shouldDispatch && !updated.draft {
             OrchestratorClient.dispatchTicket(
                 ticketId: request.ticketID,
                 repoPath: project.repoPath.path,

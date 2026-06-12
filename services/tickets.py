@@ -94,6 +94,11 @@ def parse(contents: str) -> dict[str, Any]:
         raise TicketParseError(f"invalid canceled: {canceled_raw!r}")
     canceled = canceled_raw == "true"
 
+    draft_raw = raw.get("draft", "false").lower()
+    if draft_raw not in ("true", "false"):
+        raise TicketParseError(f"invalid draft: {draft_raw!r}")
+    draft = draft_raw == "true"
+
     run_id_raw = require("run_id")
     run_id: int | None
     if run_id_raw.lower() in ("null", ""):
@@ -112,6 +117,7 @@ def parse(contents: str) -> dict[str, Any]:
         "depends_on": _parse_list(require("depends_on")),
         "run_id": run_id,
         "canceled": canceled,
+        "draft": draft,
         "order": int(raw.get("order", "0") or "0"),
         "body": body,
         "_raw_fields": raw,  # preserves any extra fields on round-trip
