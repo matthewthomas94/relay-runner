@@ -72,7 +72,7 @@ final class ProgramBoardOverlayController {
 
     func hide() {
         guard isVisible else { return }
-        model.dragState = nil
+        model.endDrag()
         model.cancelCreate()
         model.cancelEdit()
         setPanelKeyEligible(false)

@@ -117,7 +117,14 @@ struct ProgramBoardDragState: Equatable {
     let item: ProgramStatusItem
     let sourceLane: ProgramBoardLane
     var location: CGPoint
-    var target: ProgramBoardDropTarget?
+    var cardCenterOffset: CGSize
+
+    var cardCenter: CGPoint {
+        CGPoint(
+            x: location.x + cardCenterOffset.width,
+            y: location.y + cardCenterOffset.height
+        )
+    }
 }
 
 struct ProgramBoardProjectTarget: Equatable, Identifiable {
@@ -809,7 +816,9 @@ final class ProgramBoardViewModel {
     var selectedTicketDetail: ProgramTicketDetail?
     var creating: ProgramBoardCreateDraft?
     var editing: ProgramBoardEditDraft?
-    var dragState: ProgramBoardDragState?
+    var dragItemID: String?
+    var dragTarget: ProgramBoardDropTarget?
+    var dragPreview: ProgramBoardDragState?
     var columnFrames: [ProgramBoardLane: CGRect] = [:]
     var isLoading: Bool { reloadState.isLoading }
 
@@ -973,6 +982,36 @@ final class ProgramBoardViewModel {
             lane: lane,
             isValid: dropRequest(for: item, sourceLane: sourceLane, targetLane: lane) != nil
         )
+    }
+
+    func beginDrag(
+        item: ProgramStatusItem,
+        sourceLane: ProgramBoardLane,
+        location: CGPoint,
+        cardCenterOffset: CGSize,
+        target: ProgramBoardDropTarget?
+    ) {
+        dragItemID = item.id
+        dragTarget = target
+        dragPreview = ProgramBoardDragState(
+            item: item,
+            sourceLane: sourceLane,
+            location: location,
+            cardCenterOffset: cardCenterOffset
+        )
+    }
+
+    func updateDrag(location: CGPoint, target: ProgramBoardDropTarget?) {
+        dragPreview?.location = location
+        if dragTarget != target {
+            dragTarget = target
+        }
+    }
+
+    func endDrag() {
+        dragItemID = nil
+        dragTarget = nil
+        dragPreview = nil
     }
 
     func reportDropFailure(_ message: String) {

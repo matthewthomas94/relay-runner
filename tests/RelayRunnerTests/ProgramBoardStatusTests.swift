@@ -866,6 +866,49 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertNil(model.dropRequest(for: awaiting, sourceLane: .done, targetLane: .backlog))
     }
 
+    func testProgramBoardDragPreviewPreservesGrabOffsetAndSeparatesTarget() throws {
+        let model = ProgramBoardViewModel()
+        let item = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-1",
+            title: "Drag me",
+            status: "backlog"
+        )
+        let validTarget = ProgramBoardDropTarget(lane: .ready, isValid: true)
+
+        model.beginDrag(
+            item: item,
+            sourceLane: .backlog,
+            location: CGPoint(x: 120, y: 80),
+            cardCenterOffset: CGSize(width: 35, height: -18),
+            target: validTarget
+        )
+
+        XCTAssertEqual(model.dragItemID, item.id)
+        XCTAssertEqual(model.dragTarget, validTarget)
+        XCTAssertEqual(model.dragPreview?.cardCenter, CGPoint(x: 155, y: 62))
+
+        model.updateDrag(
+            location: CGPoint(x: 150, y: 110),
+            target: ProgramBoardDropTarget(lane: .done, isValid: true)
+        )
+
+        XCTAssertEqual(model.dragTarget?.lane, .done)
+        XCTAssertEqual(model.dragPreview?.cardCenter, CGPoint(x: 185, y: 92))
+
+        model.updateDrag(location: CGPoint(x: 160, y: 120), target: model.dragTarget)
+
+        XCTAssertEqual(model.dragTarget?.lane, .done)
+        XCTAssertEqual(model.dragPreview?.cardCenter, CGPoint(x: 195, y: 102))
+
+        model.endDrag()
+
+        XCTAssertNil(model.dragItemID)
+        XCTAssertNil(model.dragTarget)
+        XCTAssertNil(model.dragPreview)
+    }
+
     func testProgramBoardResolvedDropRequiresSatisfiedReadyDependencies() {
         let dependencyBacklog = ticket(id: "RR-1", status: .backlog)
         let dependencyDone = ticket(id: "RR-1", status: .done)

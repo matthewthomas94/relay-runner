@@ -43,23 +43,7 @@ struct ProgramBoardOverlayView: View {
                 Spacer(minLength: 0)
             }
 
-            if let drag = model.dragState {
-                ProgramWorkCard(
-                    item: drag.item,
-                    lane: drag.sourceLane,
-                    isSelected: false,
-                    showsProjectContext: true,
-                    onSelect: {},
-                    onEdit: {}
-                )
-                    .frame(width: 246)
-                    .opacity(0.95)
-                    .scaleEffect(1.03)
-                    .shadow(color: Color.black.opacity(0.55), radius: 22, x: 0, y: 14)
-                    .position(drag.location)
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
-            }
+            ProgramDragPreviewLayer(model: model)
 
             if let draft = model.creating {
                 ProgramTicketCreateModal(
@@ -109,6 +93,39 @@ private struct ProgramColumnFramesKey: PreferenceKey {
     static var defaultValue: Value = [:]
     static func reduce(value: inout Value, nextValue: () -> Value) {
         value.merge(nextValue()) { $1 }
+    }
+}
+
+private struct ProgramCardFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
+
+private struct ProgramDragPreviewLayer: View {
+    @Bindable var model: ProgramBoardViewModel
+
+    var body: some View {
+        if let drag = model.dragPreview {
+            ProgramWorkCard(
+                item: drag.item,
+                lane: drag.sourceLane,
+                isSelected: false,
+                showsProjectContext: true,
+                onSelect: {},
+                onEdit: {}
+            )
+            .frame(width: 246)
+            .opacity(0.95)
+            .scaleEffect(1.03)
+            .shadow(color: Color.black.opacity(0.55), radius: 22, x: 0, y: 14)
+            .position(drag.cardCenter)
+            .allowsHitTesting(false)
+            .transaction { transaction in
+                transaction.animation = nil
+            }
+        }
     }
 }
 
@@ -535,7 +552,7 @@ private struct ProgramWorkColumnPanel: View {
     }
 
     private var activeTarget: ProgramBoardDropTarget? {
-        guard let target = model.dragState?.target, target.lane == lane else {
+        guard let target = model.dragTarget, target.lane == lane else {
             return nil
         }
         return target
@@ -627,9 +644,10 @@ private struct DraggableProgramWorkCard: View {
     let onSelect: () -> Void
     let onEdit: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
+    @State private var cardFrame: CGRect = .zero
 
     private var isBeingDragged: Bool {
-        model.dragState?.item.id == item.id
+        model.dragItemID == item.id
     }
 
     private var canDrag: Bool {
@@ -646,37 +664,63 @@ private struct DraggableProgramWorkCard: View {
             onEdit: onEdit
         )
             .opacity(isBeingDragged ? 0.25 : 1.0)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: ProgramCardFrameKey.self,
+                        value: proxy.frame(in: .named("programBoard"))
+                    )
+                }
+            )
+            .onPreferenceChange(ProgramCardFrameKey.self) { cardFrame = $0 }
             .contentShape(Rectangle())
             .programGrabCursor(dragging: isBeingDragged, enabled: canDrag)
             .gesture(
                 DragGesture(minimumDistance: 5, coordinateSpace: .named("programBoard"))
                     .onChanged { value in
                         guard canDrag else { return }
-                        if model.dragState == nil {
-                            model.dragState = ProgramBoardDragState(
-                                item: item,
-                                sourceLane: lane,
-                                location: value.location,
-                                target: nil
-                            )
-                        } else {
-                            model.dragState?.location = value.location
-                        }
-                        model.dragState?.target = model.dropTarget(
+                        let target = model.dropTarget(
                             at: value.location,
                             for: item,
                             sourceLane: lane
                         )
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            if model.dragItemID == nil {
+                                model.beginDrag(
+                                    item: item,
+                                    sourceLane: lane,
+                                    location: value.location,
+                                    cardCenterOffset: cardCenterOffset(startLocation: value.startLocation),
+                                    target: target
+                                )
+                            } else {
+                                model.updateDrag(location: value.location, target: target)
+                            }
+                        }
                     }
                     .onEnded { _ in
                         guard canDrag else { return }
-                        if let target = model.dragState?.target, target.isValid {
+                        if let target = model.dragTarget, target.isValid {
                             onDrop(item, lane, target.lane)
                         }
-                        model.dragState = nil
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            model.endDrag()
+                        }
                     }
             )
             .help(canDrag ? "Drag ticket to another lane" : "This ticket cannot be dragged while a worker owns its state")
+    }
+
+    private func cardCenterOffset(startLocation: CGPoint) -> CGSize {
+        guard cardFrame != .zero else { return .zero }
+        return CGSize(
+            width: cardFrame.midX - startLocation.x,
+            height: cardFrame.midY - startLocation.y
+        )
     }
 }
 
