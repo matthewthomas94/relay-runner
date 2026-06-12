@@ -73,6 +73,7 @@ struct RelayRunnerApp: App {
                                 .offset(x: 2, y: -2)
                         }
                     }
+                    .background(SettingsOpenerRegistrationView())
             } else {
                 EmptyView()
             }
@@ -85,5 +86,19 @@ struct RelayRunnerApp: App {
                 EmptyView()
             }
         }
+    }
+}
+
+private struct SettingsOpenerRegistrationView: View {
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear {
+                SettingsPresenter.register {
+                    openSettings()
+                }
+            }
     }
 }
