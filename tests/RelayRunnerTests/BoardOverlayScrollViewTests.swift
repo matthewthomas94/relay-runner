@@ -5,26 +5,42 @@ import XCTest
 
 @MainActor
 final class BoardOverlayScrollViewTests: XCTestCase {
-    func testShortContentStaysTopAlignedWhileDocumentFillsViewport() throws {
+    func testShortContentKeepsInsetEdgesWhileDocumentFillsViewport() throws {
         let container = BoardOverlayScrollContainer(rootView: AnyView(Rectangle().frame(height: 40)))
 
         layout(container, width: 200, height: 300)
 
         let views = try scrollViews(in: container)
         XCTAssertEqual(views.documentView.frame.height, views.scrollView.contentView.bounds.height, accuracy: 0.5)
-        XCTAssertEqual(views.hostingView.frame.minY, 0, accuracy: 0.5)
+        XCTAssertGreaterThan(views.hostingView.frame.minY, 0)
         XCTAssertEqual(views.hostingView.frame.height, 40, accuracy: 0.5)
+        XCTAssertGreaterThan(views.documentView.frame.maxY, views.hostingView.frame.maxY)
     }
 
-    func testTallContentExpandsDocumentForScrolling() throws {
+    func testTallContentExpandsDocumentForScrollingWithReachableEdges() throws {
         let container = BoardOverlayScrollContainer(rootView: AnyView(Rectangle().frame(height: 520)))
 
         layout(container, width: 200, height: 300)
 
         let views = try scrollViews(in: container)
         XCTAssertGreaterThan(views.documentView.frame.height, views.scrollView.contentView.bounds.height)
-        XCTAssertEqual(views.hostingView.frame.minY, 0, accuracy: 0.5)
-        XCTAssertEqual(views.hostingView.frame.height, views.documentView.frame.height, accuracy: 0.5)
+        XCTAssertGreaterThan(views.hostingView.frame.minY, 0)
+        XCTAssertEqual(views.hostingView.frame.height, 520, accuracy: 0.5)
+        XCTAssertEqual(
+            views.hostingView.frame.minY,
+            views.documentView.frame.maxY - views.hostingView.frame.maxY,
+            accuracy: 0.5
+        )
+    }
+
+    func testViewportHeightChangeRelayoutsDocumentBounds() throws {
+        let container = BoardOverlayScrollContainer(rootView: AnyView(Rectangle().frame(height: 40)))
+
+        layout(container, width: 200, height: 120)
+        layout(container, width: 200, height: 300)
+
+        let views = try scrollViews(in: container)
+        XCTAssertEqual(views.documentView.frame.height, 300, accuracy: 0.5)
     }
 
     private func layout(_ container: BoardOverlayScrollContainer, width: CGFloat, height: CGFloat) {
