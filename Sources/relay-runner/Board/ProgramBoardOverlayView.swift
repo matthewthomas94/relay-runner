@@ -12,6 +12,7 @@ struct ProgramBoardOverlayView: View {
     let onEditStart: (ProgramTicketDetail) -> Void
     let onEditCommit: (ProgramBoardEditRequest) -> Void
     let onEditCancel: () -> Void
+    let onDelete: (ProgramBoardDeleteRequest) -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -36,6 +37,7 @@ struct ProgramBoardOverlayView: View {
                     onOpenProject: onOpenProject,
                     onCreateStart: onCreateStart,
                     onEditStart: onEditStart,
+                    onDelete: onDelete,
                     onDrop: onDrop
                 )
                 .padding(.top, 89)
@@ -76,7 +78,8 @@ struct ProgramBoardOverlayView: View {
                         )
                     },
                     onCommit: onEditCommit,
-                    onCancel: onEditCancel
+                    onCancel: onEditCancel,
+                    onDelete: onDelete
                 )
                 .id(draft.id)
                 .transition(.opacity)
@@ -186,6 +189,7 @@ private struct ProgramBoardContent: View {
     let onOpenProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
     let onEditStart: (ProgramTicketDetail) -> Void
+    let onDelete: (ProgramBoardDeleteRequest) -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -225,6 +229,7 @@ private struct ProgramBoardContent: View {
                             theme: model.theme,
                             onClose: model.clearSelectedTicket,
                             onEdit: { onEditStart(detail) },
+                            onDelete: onDelete,
                             onOpenProject: onOpenProject
                         )
                         .padding(.top, 18)
@@ -910,6 +915,7 @@ private struct ProgramTicketDetailPanel: View {
     let theme: ParticleFieldRenderer.Theme?
     let onClose: () -> Void
     let onEdit: () -> Void
+    let onDelete: (ProgramBoardDeleteRequest) -> Void
     let onOpenProject: (String) -> Void
 
     var body: some View {
@@ -953,6 +959,17 @@ private struct ProgramTicketDetailPanel: View {
                     help: detail.ticket == nil ? "Ticket file is unavailable" : "Edit child ticket"
                 ) {
                     onEdit()
+                }
+                ProgramDetailActionButton(
+                    systemName: "trash",
+                    title: "Delete",
+                    disabled: deleteRequest == nil,
+                    help: deleteRequest == nil ? "Ticket file is unavailable" : "Delete child ticket",
+                    destructive: true
+                ) {
+                    if let deleteRequest {
+                        onDelete(deleteRequest)
+                    }
                 }
                 ProgramDetailActionButton(
                     systemName: "rectangle.stack",
@@ -1015,6 +1032,17 @@ private struct ProgramTicketDetailPanel: View {
         .shadow(color: ProgramBoardColumnChrome.shadowColor(for: theme), radius: 22, x: 0, y: -6)
         .contentShape(Rectangle())
         .onTapGesture { }
+    }
+
+    private var deleteRequest: ProgramBoardDeleteRequest? {
+        guard let identity = detail.identity,
+              detail.ticket != nil else {
+            return nil
+        }
+        return ProgramBoardDeleteRequest(
+            repoPath: identity.projectPath,
+            ticketID: identity.ticketID
+        )
     }
 
     private var metadataRows: [ProgramDetailRow] {
@@ -1141,6 +1169,7 @@ private struct ProgramDetailActionButton: View {
     let title: String
     let disabled: Bool
     let help: String
+    var destructive = false
     let action: () -> Void
 
     var body: some View {
@@ -1153,7 +1182,7 @@ private struct ProgramDetailActionButton: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
-            .foregroundStyle(ProgramBoardStyle.primaryText.opacity(disabled ? 0.45 : 0.95))
+            .foregroundStyle(foregroundStyle)
             .padding(.horizontal, 9)
             .frame(height: 26)
             .background(Capsule().fill(Color.white.opacity(disabled ? 0.04 : 0.10)))
@@ -1163,6 +1192,13 @@ private struct ProgramDetailActionButton: View {
         .disabled(disabled)
         .programButtonCursor(enabled: !disabled)
         .help(help)
+    }
+
+    private var foregroundStyle: Color {
+        if disabled {
+            return ProgramBoardStyle.primaryText.opacity(0.45)
+        }
+        return destructive ? ProgramBoardStyle.red : ProgramBoardStyle.primaryText.opacity(0.95)
     }
 }
 
@@ -1177,6 +1213,7 @@ private struct ProgramTicketEditModal: View {
     ) -> ProgramBoardEditRequest?
     let onCommit: (ProgramBoardEditRequest) -> Void
     let onCancel: () -> Void
+    let onDelete: (ProgramBoardDeleteRequest) -> Void
 
     @State private var title: String
     @State private var status: Ticket.Status
@@ -1195,12 +1232,14 @@ private struct ProgramTicketEditModal: View {
             _ acceptanceCriteria: String
         ) -> ProgramBoardEditRequest?,
         onCommit: @escaping (ProgramBoardEditRequest) -> Void,
-        onCancel: @escaping () -> Void
+        onCancel: @escaping () -> Void,
+        onDelete: @escaping (ProgramBoardDeleteRequest) -> Void
     ) {
         self.draft = draft
         self.makeRequest = makeRequest
         self.onCommit = onCommit
         self.onCancel = onCancel
+        self.onDelete = onDelete
         self._title = State(initialValue: draft.title)
         self._status = State(initialValue: draft.status)
         self._priority = State(initialValue: draft.priority)
@@ -1221,6 +1260,13 @@ private struct ProgramTicketEditModal: View {
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .lineLimit(1)
                     Spacer(minLength: 0)
+                    ProgramIconButton(
+                        systemName: "trash",
+                        help: "Delete ticket",
+                        iconColor: ProgramBoardStyle.red
+                    ) {
+                        onDelete(deleteRequest)
+                    }
                     ProgramIconButton(systemName: "xmark", help: "Cancel edit", action: onCancel)
                 }
 
@@ -1322,6 +1368,13 @@ private struct ProgramTicketEditModal: View {
 
     private var currentRequest: ProgramBoardEditRequest? {
         makeRequest(title, status, priority, description, acceptanceCriteria)
+    }
+
+    private var deleteRequest: ProgramBoardDeleteRequest {
+        ProgramBoardDeleteRequest(
+            repoPath: draft.identity.projectPath,
+            ticketID: draft.identity.ticketID
+        )
     }
 }
 
@@ -1570,13 +1623,26 @@ private struct ProgramErrorStrip: View {
 private struct ProgramIconButton: View {
     let systemName: String
     let help: String
+    let iconColor: Color
     let action: () -> Void
+
+    init(
+        systemName: String,
+        help: String,
+        iconColor: Color = ProgramBoardStyle.primaryText,
+        action: @escaping () -> Void
+    ) {
+        self.systemName = systemName
+        self.help = help
+        self.iconColor = iconColor
+        self.action = action
+    }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(ProgramBoardStyle.primaryText)
+                .foregroundStyle(iconColor)
                 .frame(width: 22, height: 22)
                 .background(Circle().fill(Color.white.opacity(0.10)))
                 .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))

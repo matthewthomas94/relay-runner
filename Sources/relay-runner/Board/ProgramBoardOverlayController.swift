@@ -53,6 +53,7 @@ final class ProgramBoardOverlayController {
             onEditStart: { [weak self] detail in self?.beginEdit(detail: detail) },
             onEditCommit: { [weak self] request in self?.commitEdit(request) },
             onEditCancel: { [weak self] in self?.cancelEdit() },
+            onDelete: { [weak self] request in self?.handleDelete(request) },
             onDrop: { [weak self] item, sourceLane, targetLane in
                 self?.handleDrop(item: item, from: sourceLane, to: targetLane)
             }
@@ -169,6 +170,18 @@ final class ProgramBoardOverlayController {
             NSLog("[relay-runner] failed to save program ticket \(request.ticketID) in \(request.repoPath): \(error)")
         }
         model.cancelEdit()
+        setPanelKeyEligible(false)
+        model.reload()
+    }
+
+    private func handleDelete(_ request: ProgramBoardDeleteRequest) {
+        do {
+            _ = try ProgramBoardTicketDeleter.delete(request)
+        } catch {
+            NSLog("[relay-runner] failed to delete program ticket \(request.ticketID) in \(request.repoPath): \(error)")
+        }
+        model.cancelEdit()
+        model.clearSelectedTicket()
         setPanelKeyEligible(false)
         model.reload()
     }

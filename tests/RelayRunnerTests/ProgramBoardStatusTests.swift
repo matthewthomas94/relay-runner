@@ -796,6 +796,63 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: missingPath))
     }
 
+    func testProgramBoardTicketDeleterDeletesOnlyOwningChildTicket() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = root.appendingPathComponent("tools", isDirectory: true)
+        try writeTicket(
+            repo: clientRepo,
+            id: "CD-1",
+            title: "Client backlog",
+            status: "backlog",
+            body: "## Description\n\nClient work."
+        )
+        try writeTicket(
+            repo: toolsRepo,
+            id: "TL-1",
+            title: "Tools backlog",
+            status: "backlog",
+            body: "## Description\n\nTools work."
+        )
+
+        let result = try ProgramBoardTicketDeleter.delete(ProgramBoardDeleteRequest(
+            repoPath: toolsRepo.path,
+            ticketID: "TL-1"
+        ))
+
+        XCTAssertEqual(result.ticketID, "TL-1")
+        XCTAssertEqual(result.repoPath, toolsRepo.path)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: clientRepo.appendingPathComponent(".orchestrator/CD-1.md").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: toolsRepo.appendingPathComponent(".orchestrator/TL-1.md").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(".orchestrator").path
+        ))
+    }
+
+    func testProgramBoardTicketDeleterTreatsMissingTicketAsNoOpWithoutCreatingPlaceholder() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let repo = root.appendingPathComponent("tools", isDirectory: true)
+        try writeConfig(repo: repo, prefix: "TL", nextID: 2)
+        let missingPath = repo.appendingPathComponent(".orchestrator/TL-1.md").path
+
+        let result = try ProgramBoardTicketDeleter.delete(ProgramBoardDeleteRequest(
+            repoPath: repo.path,
+            ticketID: "TL-1"
+        ))
+
+        XCTAssertEqual(result.ticketID, "TL-1")
+        XCTAssertEqual(result.repoPath, repo.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingPath))
+    }
+
     func testProgramBoardEmptySnapshotHasNoTicketLanes() {
         let snapshot = ProgramDashboardSnapshot(
             summary: emptyResponse(query: "summary", projects: 0),

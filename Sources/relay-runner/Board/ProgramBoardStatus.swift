@@ -183,6 +183,16 @@ struct ProgramBoardEditResult: Equatable {
     let shouldDispatch: Bool
 }
 
+struct ProgramBoardDeleteRequest: Equatable {
+    let repoPath: String
+    let ticketID: String
+}
+
+struct ProgramBoardDeleteResult: Equatable {
+    let ticketID: String
+    let repoPath: String
+}
+
 enum ProgramBoardDropPolicy {
     static func request(
         for item: ProgramStatusItem,
@@ -464,6 +474,20 @@ enum ProgramBoardTicketEditor {
         return ProgramBoardEditResult(
             ticket: updated,
             shouldDispatch: current.status != .ready && updated.status == .ready && !updated.draft
+        )
+    }
+}
+
+enum ProgramBoardTicketDeleter {
+    static func delete(_ request: ProgramBoardDeleteRequest) throws -> ProgramBoardDeleteResult {
+        let repoURL = URL(fileURLWithPath: request.repoPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let project = ProjectResolver.LinkedProject(repoPath: repoURL)
+        try TicketWriter.delete(request.ticketID, in: project)
+        return ProgramBoardDeleteResult(
+            ticketID: request.ticketID,
+            repoPath: project.repoPath.path
         )
     }
 }
