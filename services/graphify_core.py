@@ -236,6 +236,12 @@ class GraphifyCoreStore:
             ).fetchone()
         return _node_from_row(row) if row else None
 
+    def delete_node(self, node_id: str) -> bool:
+        node_id = _require_text(node_id, "node_id")
+        with self._conn() as conn:
+            cursor = conn.execute("DELETE FROM graph_nodes WHERE id = ?", (node_id,))
+        return cursor.rowcount > 0
+
     def nodes(self, *, kind: str | None = None, project_id: str | None = None) -> list[dict[str, Any]]:
         clauses: list[str] = []
         values: list[Any] = []
