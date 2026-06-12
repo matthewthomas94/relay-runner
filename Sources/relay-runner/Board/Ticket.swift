@@ -14,10 +14,13 @@ struct Ticket: Identifiable, Equatable {
     let draft: Bool
     /// Sort key within a column. Lower = higher in the list. Optional in the
     /// on-disk schema — missing `order` falls back to the numeric portion of
-    /// the ticket id (so existing tickets keep their RR-1, RR-2, … sequence
+    /// the ticket id (so existing tickets keep their RR-1, RR-2, ... sequence
     /// without a migration). The board still writes this on drag-drop, but
-    /// display order is newest-first by ticket id so recent work stays visible.
+    /// display order is driven by the ticket file's modification time.
     let order: Int
+    /// Owning ticket file's modification time. Nil for tickets that have not
+    /// been scanned from disk yet.
+    let modifiedAt: Date?
     /// First paragraph after `## Description` in the body. Nil when the ticket
     /// has no description section. Cards may further clip this if it overflows.
     let description: String?
@@ -36,6 +39,7 @@ struct Ticket: Identifiable, Equatable {
         canceled: Bool,
         draft: Bool = false,
         order: Int,
+        modifiedAt: Date? = nil,
         description: String?,
         body: String
     ) {
@@ -48,6 +52,7 @@ struct Ticket: Identifiable, Equatable {
         self.canceled = canceled
         self.draft = draft
         self.order = order
+        self.modifiedAt = modifiedAt
         self.description = description
         self.body = body
     }
@@ -69,14 +74,39 @@ struct Ticket: Identifiable, Equatable {
 
 extension Ticket {
     static func newestFirst(_ lhs: Ticket, _ rhs: Ticket) -> Bool {
-        let left = ticketNumber(lhs.id)
-        let right = ticketNumber(rhs.id)
-        if left != right { return left > right }
-        if lhs.id != rhs.id { return lhs.id > rhs.id }
-        return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+        newestFirst(
+            lhsModifiedAt: lhs.modifiedAt,
+            lhsID: lhs.id,
+            lhsTitle: lhs.title,
+            rhsModifiedAt: rhs.modifiedAt,
+            rhsID: rhs.id,
+            rhsTitle: rhs.title
+        )
     }
 
-    private static func ticketNumber(_ id: String) -> Int {
+    static func newestFirst(
+        lhsModifiedAt: Date?,
+        lhsID: String?,
+        lhsTitle: String?,
+        rhsModifiedAt: Date?,
+        rhsID: String?,
+        rhsTitle: String?
+    ) -> Bool {
+        if let lhsModifiedAt, let rhsModifiedAt, lhsModifiedAt != rhsModifiedAt {
+            return lhsModifiedAt > rhsModifiedAt
+        }
+
+        let left = ticketNumber(lhsID)
+        let right = ticketNumber(rhsID)
+        if left != right { return left > right }
+        let leftID = lhsID ?? ""
+        let rightID = rhsID ?? ""
+        if leftID != rightID { return leftID > rightID }
+        return (lhsTitle ?? "").localizedStandardCompare(rhsTitle ?? "") == .orderedAscending
+    }
+
+    private static func ticketNumber(_ id: String?) -> Int {
+        guard let id else { return Int.min }
         guard let dash = id.lastIndex(of: "-"),
               let number = Int(id[id.index(after: dash)...]) else {
             return Int.min
@@ -97,7 +127,7 @@ enum TicketParser {
     /// Parse a single ticket file's contents. Returns the ticket on success,
     /// or throws. Per spec: callers should log+skip on failure so one bad
     /// file doesn't take down the board.
-    static func parse(contents: String) throws -> Ticket {
+    static func parse(contents: String, modifiedAt: Date? = nil) throws -> Ticket {
         guard let (frontmatter, body) = split(contents) else {
             throw TicketParseError.missingFrontmatter
         }
@@ -129,6 +159,7 @@ enum TicketParser {
             canceled: try parseBool(cancelRaw, field: "canceled"),
             draft: try draftRaw.map { try parseBool($0, field: "draft") } ?? false,
             order: parseOrder(fields["order"], fallbackFrom: id),
+            modifiedAt: modifiedAt,
             description: extractDescription(body),
             body: body
         )

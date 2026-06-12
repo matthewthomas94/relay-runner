@@ -45,6 +45,11 @@ final class BoardViewModel {
         runStates[ticket.id]
     }
 
+    func tickets(in status: Ticket.Status) -> [Ticket] {
+        tickets.filter { effectiveStatus(for: $0) == status }
+            .sorted(by: Ticket.newestFirst)
+    }
+
     /// Hit-test `location` against the cached frames. Returns the column + the
     /// insertion index a drop at this point would land at, excluding the
     /// dragged ticket from the index calculation.
@@ -273,8 +278,7 @@ private struct BoardColumnPanel: View {
     private var tickets: [Ticket] {
         // Placement honors the live-run override (a worker can pull a `ready`
         // ticket into "In progress") rather than the raw ticket-file status.
-        model.tickets.filter { model.effectiveStatus(for: $0) == spec.status }
-            .sorted(by: Ticket.newestFirst)
+        model.tickets(in: spec.status)
     }
 
     /// Index inside this column where the active drag would land, or `nil`
