@@ -649,6 +649,74 @@ final class ProgramBoardStatusTests: XCTestCase {
         ))
     }
 
+    func testProgramBoardTicketMoverWritesOwningRepoAndRoutesReadyDispatch() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let child = root.appendingPathComponent("child-repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try writeTicket(repo: root, id: "RR-1", title: "Parent copy", status: "backlog", body: "Parent body")
+        try writeTicket(repo: child, id: "RR-1", title: "Child work", status: "backlog", body: "Child body")
+
+        let result = try ProgramBoardTicketMover.move(ProgramBoardDropRequest(
+            ticketID: "RR-1",
+            repoPath: child.path,
+            targetStatus: .ready,
+            shouldDispatch: true
+        ))
+
+        let childPath = child.standardizedFileURL.resolvingSymlinksInPath().path
+        XCTAssertEqual(result.ticket.status, .ready)
+        XCTAssertEqual(
+            result.dispatchRequest,
+            ProgramBoardDispatchRequest(ticketID: "RR-1", repoPath: childPath, source: "board-drop")
+        )
+        XCTAssertEqual(try readTicket(repo: child, id: "RR-1").status, .ready)
+        XCTAssertEqual(try readTicket(repo: root, id: "RR-1").status, .backlog)
+
+        let dispatch = try XCTUnwrap(result.dispatchRequest)
+        let request = try XCTUnwrap(OrchestratorClient.dispatchRequest(
+            ticketId: dispatch.ticketID,
+            repoPath: dispatch.repoPath,
+            source: dispatch.source,
+            port: 8123
+        ))
+        XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:8123/v1/runs")
+        let body = try jsonBody(request)
+        XCTAssertEqual(body["ticket_id"] as? String, "RR-1")
+        XCTAssertEqual(body["repo_path"] as? String, childPath)
+        XCTAssertEqual(body["source"] as? String, "board-drop")
+    }
+
+    func testProgramBoardTicketMoverRejectsInvalidResolvedDropWithoutChangingFile() throws {
+        let repo = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try writeTicket(
+            repo: repo,
+            id: "RR-2",
+            title: "Blocked work",
+            status: "backlog",
+            dependsOn: ["RR-1"],
+            body: "Blocked body"
+        )
+        let ticketURL = repo
+            .appendingPathComponent(".orchestrator", isDirectory: true)
+            .appendingPathComponent("RR-2.md")
+        let before = try String(contentsOf: ticketURL)
+
+        XCTAssertThrowsError(try ProgramBoardTicketMover.move(ProgramBoardDropRequest(
+            ticketID: "RR-2",
+            repoPath: repo.path,
+            targetStatus: .ready,
+            shouldDispatch: true
+        ))) { error in
+            guard case ProgramBoardDropError.rejected(let ticketID) = error else {
+                return XCTFail("Expected rejected drop, got \(error)")
+            }
+            XCTAssertEqual(ticketID, "RR-2")
+        }
+        XCTAssertEqual(try String(contentsOf: ticketURL), before)
+    }
+
     func testProgramStatusOverlayFormatsActiveAndAwaitingMergeWorkers() throws {
         let active = try decode("""
         {
@@ -847,11 +915,25 @@ final class ProgramBoardStatusTests: XCTestCase {
         return try JSONDecoder().decode(ProgramStatusItem.self, from: data)
     }
 
+    private func jsonBody(_ request: URLRequest) throws -> [String: Any] {
+        let data = try XCTUnwrap(request.httpBody)
+        let decoded = try JSONSerialization.jsonObject(with: data)
+        return try XCTUnwrap(decoded as? [String: Any])
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("relay-runner-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private func readTicket(repo: URL, id: String) throws -> Ticket {
+        let url = repo
+            .appendingPathComponent(".orchestrator", isDirectory: true)
+            .appendingPathComponent("\(id).md")
+        let contents = try String(contentsOf: url)
+        return try TicketParser.parse(contents: contents)
     }
 
     private func writeTicket(

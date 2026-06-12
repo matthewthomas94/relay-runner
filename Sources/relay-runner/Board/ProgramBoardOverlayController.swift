@@ -151,50 +151,22 @@ final class ProgramBoardOverlayController {
             return
         }
 
-        let repoURL = URL(fileURLWithPath: unresolved.repoPath)
-            .standardizedFileURL
-            .resolvingSymlinksInPath()
-        let project = ProjectResolver.LinkedProject(repoPath: repoURL)
-        let allTickets = ProjectResolver.scanTickets(in: project)
-        guard let current = allTickets.first(where: { $0.id == unresolved.ticketID }),
-              let request = ProgramBoardDropPolicy.validateResolvedDrop(
-                  request: unresolved,
-                  ticket: current,
-                  allTickets: allTickets
-              ) else {
-            model.reload()
-            return
-        }
-
-        let updated = Ticket(
-            id: current.id,
-            title: current.title,
-            status: request.targetStatus,
-            priority: current.priority,
-            dependsOn: current.dependsOn,
-            runId: current.runId,
-            canceled: current.canceled,
-            draft: current.draft,
-            order: current.order,
-            description: current.description,
-            body: current.body
-        )
         do {
-            try TicketWriter.save(updated, in: project)
-        } catch {
-            NSLog("[relay-runner] failed to move program ticket \(current.id): \(error)")
+            let result = try ProgramBoardTicketMover.move(unresolved)
+            if let dispatch = result.dispatchRequest {
+                OrchestratorClient.dispatchTicket(
+                    ticketId: dispatch.ticketID,
+                    repoPath: dispatch.repoPath,
+                    source: dispatch.source
+                )
+            }
             model.reload()
-            return
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            NSLog("[relay-runner] failed to move program ticket \(unresolved.ticketID): \(message)")
+            model.reload()
+            model.reportDropFailure(message)
         }
-
-        if request.shouldDispatch && !updated.draft {
-            OrchestratorClient.dispatchTicket(
-                ticketId: request.ticketID,
-                repoPath: project.repoPath.path,
-                source: "board-drop"
-            )
-        }
-        model.reload()
     }
 
     private func setPanelKeyEligible(_ enabled: Bool) {

@@ -95,6 +95,17 @@ struct ProgramBoardDropRequest: Equatable {
     let shouldDispatch: Bool
 }
 
+struct ProgramBoardDispatchRequest: Equatable {
+    let ticketID: String
+    let repoPath: String
+    let source: String
+}
+
+struct ProgramBoardDropResult: Equatable {
+    let ticket: Ticket
+    let dispatchRequest: ProgramBoardDispatchRequest?
+}
+
 struct ProgramBoardDropTarget: Equatable {
     let lane: ProgramBoardLane
     let isValid: Bool
@@ -194,6 +205,77 @@ enum ProgramBoardDropPolicy {
     private static func cleaned(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty || trimmed == "unknown" ? nil : trimmed
+    }
+}
+
+enum ProgramBoardDropError: LocalizedError {
+    case missingTicket(ticketID: String, repoPath: String)
+    case rejected(ticketID: String)
+    case saveFailed(ticketID: String, underlying: Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingTicket(let ticketID, let repoPath):
+            return "\(ticketID) was not found in \(repoPath)."
+        case .rejected(let ticketID):
+            return "\(ticketID) cannot be moved to that lane."
+        case .saveFailed(let ticketID, let underlying):
+            return "\(ticketID) could not be saved: \(underlying.localizedDescription)"
+        }
+    }
+}
+
+enum ProgramBoardTicketMover {
+    static func move(
+        _ request: ProgramBoardDropRequest,
+        dispatchSource: String = "board-drop"
+    ) throws -> ProgramBoardDropResult {
+        let repoURL = URL(fileURLWithPath: request.repoPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let project = ProjectResolver.LinkedProject(repoPath: repoURL)
+        let allTickets = ProjectResolver.scanTickets(in: project)
+        guard let current = allTickets.first(where: { $0.id == request.ticketID }) else {
+            throw ProgramBoardDropError.missingTicket(ticketID: request.ticketID, repoPath: request.repoPath)
+        }
+        guard let resolved = ProgramBoardDropPolicy.validateResolvedDrop(
+            request: request,
+            ticket: current,
+            allTickets: allTickets
+        ) else {
+            throw ProgramBoardDropError.rejected(ticketID: request.ticketID)
+        }
+
+        let updated = Ticket(
+            id: current.id,
+            title: current.title,
+            status: resolved.targetStatus,
+            priority: current.priority,
+            dependsOn: current.dependsOn,
+            runId: current.runId,
+            canceled: current.canceled,
+            draft: current.draft,
+            order: current.order,
+            description: current.description,
+            body: current.body
+        )
+        do {
+            try TicketWriter.save(updated, in: project)
+        } catch {
+            throw ProgramBoardDropError.saveFailed(ticketID: current.id, underlying: error)
+        }
+
+        let dispatchRequest: ProgramBoardDispatchRequest?
+        if resolved.shouldDispatch && !updated.draft {
+            dispatchRequest = ProgramBoardDispatchRequest(
+                ticketID: resolved.ticketID,
+                repoPath: project.repoPath.path,
+                source: dispatchSource
+            )
+        } else {
+            dispatchRequest = nil
+        }
+        return ProgramBoardDropResult(ticket: updated, dispatchRequest: dispatchRequest)
     }
 }
 
@@ -753,6 +835,10 @@ final class ProgramBoardViewModel {
             lane: lane,
             isValid: dropRequest(for: item, sourceLane: sourceLane, targetLane: lane) != nil
         )
+    }
+
+    func reportDropFailure(_ message: String) {
+        errorMessage = message
     }
 
     @MainActor
