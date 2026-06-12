@@ -118,7 +118,12 @@ struct ProjectRegistry {
 
     @discardableResult
     func activateBridgeCwd(at path: URL, provider: String? = nil) throws -> ProjectResolver.LinkedProject? {
-        let classification = try classifyDiscoveryRoot(at: path)
+        let directory = try existingDirectory(path)
+        if try activeWorkspaceRootContainsDescendant(directory) {
+            return nil
+        }
+
+        let classification = try classifyDiscoveryRoot(at: directory)
         switch classification {
         case .workspaceRoot(let rootURL, let childRepoURLs):
             try registerWorkspaceRoot(
@@ -210,6 +215,20 @@ struct ProjectRegistry {
             return nil
         }
         return document.workspaceRoots.first { $0.id == activeWorkspaceRootID }
+    }
+
+    private func activeWorkspaceRootContainsDescendant(_ directory: URL) throws -> Bool {
+        let document = try load()
+        guard let activeWorkspaceRootID = document.activeWorkspaceRootID,
+              let root = document.workspaceRoots.first(where: { $0.id == activeWorkspaceRootID }),
+              !root.discoveredProjectIDs.isEmpty else {
+            return false
+        }
+
+        let rootURL = URL(fileURLWithPath: root.rootPath, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        return Self.isDescendant(directory, of: rootURL)
     }
 
     static func defaultFileURL() -> URL {
@@ -450,6 +469,14 @@ struct ProjectRegistry {
     private func matchesAlias(_ project: RegisteredProject, query: String) -> Bool {
         project.alias.caseInsensitiveCompare(query) == .orderedSame ||
             project.displayName.caseInsensitiveCompare(query) == .orderedSame
+    }
+
+    private static func isDescendant(_ directory: URL, of root: URL) -> Bool {
+        let directoryPath = directory.standardizedFileURL.resolvingSymlinksInPath().path
+        let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
+        guard directoryPath != rootPath else { return false }
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        return directoryPath.hasPrefix(prefix)
     }
 
     private static func fileURL(fromProjectReference value: String) -> URL {

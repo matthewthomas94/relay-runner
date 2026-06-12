@@ -292,6 +292,63 @@ final class ProjectRegistryTests: XCTestCase {
         ))
     }
 
+    func testBoardRouteKeepsConfiguredWorkspaceWhenChildRepoBridgeIsLive() throws {
+        let workspace = try makeTempDirectory(named: "dev")
+        let root = workspace.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = workspace.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = workspace.appendingPathComponent("tools", isDirectory: true)
+        try makeGitRepo(at: clientRepo)
+        try makeGitRepo(at: toolsRepo)
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+        var config = GeneralConfig()
+        config.working_directory = workspace.path
+        for provider in GeneralConfig.AgentProvider.allCases {
+            config.provider = provider
+            _ = try WorkspaceFolder.refreshDiscovery(for: config, registry: registry)
+        }
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        let bridgeProvider = root.appendingPathComponent("voice_bridge.provider")
+        try Data().write(to: bridgeSocket)
+        try Data(clientRepo.path.utf8).write(to: bridgeCwd)
+
+        for provider in ["codex", "Claude"] {
+            try Data("\(provider)\n".utf8).write(to: bridgeProvider)
+            XCTAssertNil(ProjectResolver.resolve(
+                bridgeSocket: bridgeSocket,
+                bridgeCwdFile: bridgeCwd,
+                bridgeProviderFile: bridgeProvider,
+                registry: registry
+            ))
+
+            let route = ProjectResolver.resolveBoardRoute(
+                bridgeSocket: bridgeSocket,
+                bridgeCwdFile: bridgeCwd,
+                bridgeProviderFile: bridgeProvider,
+                registry: registry
+            )
+            guard case .programBoard = route else {
+                return XCTFail("Expected configured workspace to keep Program Board route for \(provider).")
+            }
+        }
+
+        let document = try registry.load()
+        XCTAssertNil(document.activeProjectID)
+        XCTAssertEqual(document.activeWorkspaceRootID, resolvedPath(workspace))
+        XCTAssertEqual(document.workspaceRoots.first?.providers["codex"]?.lastActivationSource, .discovery)
+        XCTAssertEqual(document.workspaceRoots.first?.providers["claude"]?.lastActivationSource, .discovery)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: workspace.appendingPathComponent(".orchestrator").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: clientRepo.appendingPathComponent(".orchestrator").path
+        ))
+    }
+
     func testBoardRoutePrefersWorkspaceRootForAmbiguousParentRepo() throws {
         let parentRepo = try makeTempRepo(named: "platform")
         let root = parentRepo.deletingLastPathComponent()
