@@ -211,6 +211,99 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1", "TL-1"])
     }
 
+    func testProgramBoardCreateFlowRequiresProjectWhenAllSelectedAndPreselectsFilteredProject() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let snapshot = try programBoardSnapshot(clientPath: clientPath, toolsPath: toolsPath)
+        let model = ProgramBoardViewModel()
+        model.snapshot = snapshot
+
+        model.beginCreate(in: .backlog)
+        XCTAssertNil(model.creating?.selectedProjectPath)
+        XCTAssertNil(model.createRequest(
+            selectedProjectPath: nil,
+            title: "  New client work  ",
+            description: "Describe it."
+        ))
+
+        let allProjectsRequest = try XCTUnwrap(model.createRequest(
+            selectedProjectPath: toolsPath,
+            title: "  New tools work  ",
+            description: "Build the tools flow."
+        ))
+        XCTAssertEqual(allProjectsRequest.repoPath, toolsPath)
+        XCTAssertEqual(allProjectsRequest.status, .backlog)
+        XCTAssertEqual(allProjectsRequest.title, "New tools work")
+        XCTAssertFalse(allProjectsRequest.shouldDispatch)
+
+        model.selectProject(path: clientPath)
+        model.beginCreate(in: .ready)
+        XCTAssertEqual(model.creating?.selectedProjectPath, clientPath)
+        let selectedProjectRequest = try XCTUnwrap(model.createRequest(
+            selectedProjectPath: model.creating?.selectedProjectPath,
+            title: "",
+            description: "Ready work."
+        ))
+        XCTAssertEqual(selectedProjectRequest.repoPath, clientPath)
+        XCTAssertEqual(selectedProjectRequest.status, .ready)
+        XCTAssertEqual(selectedProjectRequest.title, "Untitled")
+        XCTAssertTrue(selectedProjectRequest.shouldDispatch)
+    }
+
+    func testProgramBoardTicketCreatorWritesOnlySelectedProjectAndClearsDraft() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = root.appendingPathComponent("tools", isDirectory: true)
+        try writeConfig(repo: clientRepo, prefix: "CD", nextID: 3)
+        try writeConfig(repo: toolsRepo, prefix: "TL", nextID: 7)
+
+        let request = ProgramBoardCreateRequest(
+            repoPath: toolsRepo.path,
+            status: .ready,
+            title: "Build tools flow",
+            description: "Implement the selected project flow."
+        )
+        let result = try ProgramBoardTicketCreator.create(request)
+
+        XCTAssertEqual(result.ticket.id, "TL-7")
+        XCTAssertEqual(result.ticket.status, .ready)
+        XCTAssertFalse(result.ticket.draft)
+        XCTAssertTrue(result.shouldDispatch)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(".orchestrator").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: clientRepo.appendingPathComponent(".orchestrator/CD-3.md").path
+        ))
+        XCTAssertEqual(
+            try String(contentsOf: clientRepo.appendingPathComponent(".orchestrator/config.toml"), encoding: .utf8),
+            """
+            prefix = "CD"
+            next_id = 3
+
+            """
+        )
+        XCTAssertEqual(
+            try String(contentsOf: toolsRepo.appendingPathComponent(".orchestrator/config.toml"), encoding: .utf8),
+            """
+            prefix = "TL"
+            next_id = 8
+
+            """
+        )
+
+        let ticketContents = try String(
+            contentsOf: toolsRepo.appendingPathComponent(".orchestrator/TL-7.md"),
+            encoding: .utf8
+        )
+        let ticket = try TicketParser.parse(contents: ticketContents)
+        XCTAssertEqual(ticket.title, "Build tools flow")
+        XCTAssertEqual(ticket.description, "Implement the selected project flow.")
+        XCTAssertFalse(ticket.draft)
+    }
+
     func testProgramBoardViewModelReloadUsesDashboardFetcherForAllAndSelectedScopes() async throws {
         let clientPath = "/repo/client-dashboard"
         let toolsPath = "/repo/tools"
@@ -781,6 +874,21 @@ final class ProgramBoardStatusTests: XCTestCase {
         """
         try contents.write(
             to: dir.appendingPathComponent("\(id).md"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private func writeConfig(repo: URL, prefix: String, nextID: Int) throws {
+        let dir = repo.appendingPathComponent(".orchestrator", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let contents = """
+        prefix = "\(prefix)"
+        next_id = \(nextID)
+
+        """
+        try contents.write(
+            to: dir.appendingPathComponent("config.toml"),
             atomically: true,
             encoding: .utf8
         )
