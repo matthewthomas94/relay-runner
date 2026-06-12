@@ -653,7 +653,7 @@ final class AppState {
             return .alive
         }
         if daemonAlive && !consumerAlive {
-            return (menuSessionActive || wasAlive) ? .keepDaemon : .reapOrphan
+            return menuSessionActive ? .keepDaemon : .reapOrphan
         }
         if menuSessionActive {
             if sessionBridgeSeen || elapsedSinceSessionStart > 90 {
@@ -661,7 +661,7 @@ final class AppState {
             }
             return .waitForLaunch
         }
-        return wasAlive ? .recoverDaemon : .markDead
+        return .markDead
     }
 
     @discardableResult
@@ -887,7 +887,8 @@ final class AppState {
                     self.bridgeAliveCache = true
                 } else {
                     self.bridgeAliveCache = false
-                    let recovering = self.startBridgeRecovery(reason: "recording-start")
+                    let recovering = self.menuSessionActive
+                        && self.startBridgeRecovery(reason: "recording-start")
                     if !recovering {
                         self.menuSessionActive = false
                         self.showSessionPromptIfAllowed()

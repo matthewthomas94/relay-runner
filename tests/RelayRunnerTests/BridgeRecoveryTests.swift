@@ -45,7 +45,7 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
-    func testWatchdogRecoversExternalDaemonThatWasAlive() {
+    func testWatchdogMarksExternalDaemonDeadWithoutRecovery() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(
                 menuSessionActive: false,
@@ -55,7 +55,21 @@ final class BridgeRecoveryTests: XCTestCase {
                 sessionBridgeSeen: false,
                 elapsedSinceSessionStart: 0
             ),
-            .recoverDaemon
+            .markDead
+        )
+    }
+
+    func testWatchdogReapsExternalDaemonWhenConsumerDisappears() {
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: false,
+                daemonAlive: true,
+                consumerAlive: false,
+                wasAlive: true,
+                sessionBridgeSeen: false,
+                elapsedSinceSessionStart: 0
+            ),
+            .reapOrphan
         )
     }
 
