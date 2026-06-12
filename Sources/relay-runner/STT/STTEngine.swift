@@ -27,6 +27,8 @@ final class STTEngine: @unchecked Sendable {
     private let stepMs = 500
     private let minSamples: Int      // 1 second minimum
     private let keepSamples: Int     // 200ms overlap
+    private let recordingChunkSamples: Int
+    private let recordingKeepSamples: Int
     private let pollMs = 50
 
     private let vadThresholds: [String: Float] = ["low": 0.01, "medium": 0.004, "high": 0.001]
@@ -54,6 +56,8 @@ final class STTEngine: @unchecked Sendable {
         self.gesture = CapsLockGesture(activationKey: config.activation_key)
         self.minSamples = sampleRate      // 1 second
         self.keepSamples = sampleRate * 200 / 1000  // 200ms
+        self.recordingChunkSamples = sampleRate * 25
+        self.recordingKeepSamples = sampleRate
     }
 
     /// Inject the modal-confirmation hooks for Relay Actions `propose_action`
@@ -162,8 +166,7 @@ final class STTEngine: @unchecked Sendable {
     func cancelRecording() {
         guard isRecording else { return }
         gesture.reset()
-        audioBuffer.accepting = false
-        audioBuffer.clear()
+        resetRecordingBuffer()
         isRecording = false
         partialTranscription = ""
     }
@@ -178,8 +181,15 @@ final class STTEngine: @unchecked Sendable {
         isRecording = false
         partialTranscription = ""
         statusMessage = ""
+        resetRecordingBuffer()
         gesture.reset()
         NSLog("[STTEngine] Stopped.")
+    }
+
+    private func resetRecordingBuffer() {
+        audioBuffer.accepting = false
+        audioBuffer.clear()
+        audioBuffer.setMaxSamples(AudioBuffer.defaultMaxSamples)
     }
 
     // MARK: - Always-on mode
@@ -219,39 +229,41 @@ final class STTEngine: @unchecked Sendable {
     private let mediaSettleMs = 500
 
     private func runCapsLockMode() async throws {
-        var currentSegment = ""
+        var transcript = TranscriptAccumulator()
         var transcribeCounter = 0
         var mediaSettleDeadline: Date?
 
         // Don't accumulate audio while idle — saves memory over long sessions
-        audioBuffer.accepting = false
+        resetRecordingBuffer()
 
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
 
             // Poll gesture detector
-            if let event = gesture.poll(currentSegment: currentSegment) {
+            if let event = gesture.poll(currentSegment: transcript.transcript) {
                 switch event {
                 case .startRecording:
                     // Kill TTS playback immediately (but don't notify Claude yet —
                     // that waits until after settle to avoid breaking double-tap play)
                     FIFOWriter.write("__TTS_STOP__")
+                    audioBuffer.setMaxSamples(nil)
                     audioBuffer.accepting = true
                     audioBuffer.clear()
-                    currentSegment = ""
+                    transcript.reset()
                     mediaSettleDeadline = Date().addingTimeInterval(Double(mediaSettleMs) / 1000)
                     isRecording = true
                     partialTranscription = "Preparing\u{2026}"
                     NSLog("[STTEngine] Settling (\(mediaSettleMs)ms for media pause)")
                     FIFOWriter.write("__STATUS__:preparing...")
 
-                case .stopRecording(let text):
-                    if FIFOWriter.write(text) {
-                        NSLog("[STTEngine] >> \(text)")
+                case .stopRecording(_):
+                    if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
+                        if FIFOWriter.write(finalText) {
+                            NSLog("[STTEngine] >> \(finalText)")
+                        }
                     }
-                    currentSegment = ""
-                    audioBuffer.accepting = false
-                    audioBuffer.clear()
+                    transcript.reset()
+                    resetRecordingBuffer()
                     isRecording = false
                     partialTranscription = ""
                     mediaSettleDeadline = nil
@@ -259,20 +271,24 @@ final class STTEngine: @unchecked Sendable {
                 case .cancel:
                     FIFOWriter.write("__CANCEL__")
                     NSLog("[STTEngine] Cancelled (2x Ctrl)")
-                    currentSegment = ""
-                    audioBuffer.accepting = false
-                    audioBuffer.clear()
+                    transcript.reset()
+                    resetRecordingBuffer()
                     isRecording = false
                     wasCancelled = true
                     partialTranscription = ""
                     mediaSettleDeadline = nil
 
                 case .interrupt:
-                    FIFOWriter.write("__INTERRUPT__")
-                    NSLog("[STTEngine] >> __INTERRUPT__")
-                    currentSegment = ""
-                    audioBuffer.accepting = false
-                    audioBuffer.clear()
+                    if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
+                        if FIFOWriter.write(finalText) {
+                            NSLog("[STTEngine] >> \(finalText)")
+                        }
+                    } else {
+                        FIFOWriter.write("__INTERRUPT__")
+                        NSLog("[STTEngine] >> __INTERRUPT__")
+                    }
+                    transcript.reset()
+                    resetRecordingBuffer()
                     isRecording = false
                     partialTranscription = ""
                     mediaSettleDeadline = nil
@@ -325,19 +341,39 @@ final class STTEngine: @unchecked Sendable {
             let audio = audioBuffer.get()
             guard audio.count >= minSamples else { continue }
 
-            // Transcribe (no VAD gate — user explicitly activated recording)
-            guard let manager = asrManager else { continue }
-            let result = try await manager.transcribe(audio, source: .microphone)
-            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
+            guard let text = try await transcribeMeaningfulText(audio) else { continue }
 
-            let lower = text.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " ."))
-            guard !hallucinations.contains(lower) else { continue }
+            transcript.refine(text)
+            let renderedTranscript = transcript.transcript
+            partialTranscription = renderedTranscript
+            NSLog("[STTEngine] (refining) \(renderedTranscript)")
+            FIFOWriter.write("__STATUS__:(refining) \(renderedTranscript)")
 
-            currentSegment = text
-            partialTranscription = text
-            NSLog("[STTEngine] (refining) \(text)")
-            FIFOWriter.write("__STATUS__:(refining) \(text)")
+            if audio.count >= recordingChunkSamples {
+                transcript.commitLiveSegment()
+                audioBuffer.discardPrefix(upTo: audio.count, keeping: recordingKeepSamples)
+                partialTranscription = transcript.transcript
+            }
         }
+    }
+
+    private func finalizeRecordingTranscript(into transcript: inout TranscriptAccumulator) async throws -> String? {
+        let audio = audioBuffer.get()
+        if audio.count >= minSamples, let text = try await transcribeMeaningfulText(audio) {
+            transcript.refine(text)
+        }
+        return transcript.hasTranscript ? transcript.transcript : nil
+    }
+
+    private func transcribeMeaningfulText(_ audio: [Float]) async throws -> String? {
+        guard let manager = asrManager else { return nil }
+        let result = try await manager.transcribe(audio, source: .microphone)
+        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+
+        let lower = text.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+        guard !hallucinations.contains(lower) else { return nil }
+
+        return text
     }
 }
