@@ -70,7 +70,7 @@ struct MenuBarView: View {
         Divider()
 
         Button("Show Board") { appState.toggleBoard() }
-        Button("Show Program Status") { appState.showProgramStatus() }
+        Button("Show Status") { appState.showProgramStatus() }
 
         Button("Settings\u{2026}") {
             openSettings()
