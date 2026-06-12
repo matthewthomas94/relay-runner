@@ -148,6 +148,34 @@ struct ProgramBoardCreateResult: Equatable {
     let shouldDispatch: Bool
 }
 
+struct ProgramBoardEditDraft: Equatable, Identifiable {
+    let detail: ProgramTicketDetail
+    let identity: ProgramTicketIdentity
+    let original: Ticket
+    var title: String
+    var status: Ticket.Status
+    var priority: Ticket.Priority
+    var description: String
+    var acceptanceCriteria: String
+
+    var id: String { identity.ticketPath }
+}
+
+struct ProgramBoardEditRequest: Equatable {
+    let repoPath: String
+    let ticketID: String
+    let title: String
+    let status: Ticket.Status
+    let priority: Ticket.Priority
+    let description: String
+    let acceptanceCriteria: String
+}
+
+struct ProgramBoardEditResult: Equatable {
+    let ticket: Ticket
+    let shouldDispatch: Bool
+}
+
 enum ProgramBoardDropPolicy {
     static func request(
         for item: ProgramStatusItem,
@@ -336,6 +364,99 @@ enum ProgramBoardTicketCreator {
         return ProgramBoardCreateResult(
             ticket: updated,
             shouldDispatch: request.shouldDispatch
+        )
+    }
+}
+
+enum ProgramBoardEditPolicy {
+    static func draft(from detail: ProgramTicketDetail) -> ProgramBoardEditDraft? {
+        guard let identity = detail.identity,
+              let ticket = detail.ticket else {
+            return nil
+        }
+        return ProgramBoardEditDraft(
+            detail: detail,
+            identity: identity,
+            original: ticket,
+            title: ticket.title,
+            status: ticket.status,
+            priority: ticket.priority,
+            description: TicketParser.extractFullDescription(ticket.body) ?? "",
+            acceptanceCriteria: TicketParser.extractAcceptanceCriteria(ticket.body) ?? ""
+        )
+    }
+
+    static func request(
+        draft: ProgramBoardEditDraft,
+        title: String,
+        status: Ticket.Status,
+        priority: Ticket.Priority,
+        description: String,
+        acceptanceCriteria: String
+    ) -> ProgramBoardEditRequest {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ProgramBoardEditRequest(
+            repoPath: draft.identity.projectPath,
+            ticketID: draft.identity.ticketID,
+            title: trimmedTitle.isEmpty ? "Untitled" : trimmedTitle,
+            status: status,
+            priority: priority,
+            description: description,
+            acceptanceCriteria: acceptanceCriteria
+        )
+    }
+}
+
+enum ProgramBoardEditError: Error, Equatable {
+    case missingTicketFile(String)
+    case ticketIDMismatch(expected: String, found: String)
+}
+
+enum ProgramBoardTicketEditor {
+    static func save(
+        _ request: ProgramBoardEditRequest,
+        fileManager: FileManager = .default
+    ) throws -> ProgramBoardEditResult {
+        let repoURL = URL(fileURLWithPath: request.repoPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let project = ProjectResolver.LinkedProject(repoPath: repoURL)
+        let ticketURL = ProjectResolver.ticketsDirectory(in: project)
+            .appendingPathComponent("\(request.ticketID).md")
+
+        guard fileManager.fileExists(atPath: ticketURL.path) else {
+            throw ProgramBoardEditError.missingTicketFile(ticketURL.path)
+        }
+
+        let contents = try String(contentsOf: ticketURL, encoding: .utf8)
+        let current = try TicketParser.parse(contents: contents)
+        guard current.id == request.ticketID else {
+            throw ProgramBoardEditError.ticketIDMismatch(expected: request.ticketID, found: current.id)
+        }
+
+        let withBody = TicketWriter.ticket(
+            current,
+            withDescription: request.description,
+            acceptanceCriteria: request.acceptanceCriteria
+        )
+        let updated = Ticket(
+            id: withBody.id,
+            title: request.title,
+            status: request.status,
+            priority: request.priority,
+            dependsOn: withBody.dependsOn,
+            runId: withBody.runId,
+            canceled: withBody.canceled,
+            draft: withBody.draft,
+            order: withBody.order,
+            description: withBody.description,
+            body: withBody.body
+        )
+
+        try TicketWriter.save(updated, in: project)
+        return ProgramBoardEditResult(
+            ticket: updated,
+            shouldDispatch: current.status != .ready && updated.status == .ready && !updated.draft
         )
     }
 }
@@ -656,7 +777,7 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticket: ticket,
                 ticketPath: ticketPath,
                 description: TicketParser.extractFullDescription(ticket.body),
-                acceptanceCriteria: Self.section(named: "Acceptance criteria", in: ticket.body),
+                acceptanceCriteria: TicketParser.extractAcceptanceCriteria(ticket.body),
                 unavailableMessage: nil
             )
         } catch {
@@ -670,28 +791,6 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 unavailableMessage: "Ticket file could not be read: \(error)."
             )
         }
-    }
-
-    private static func section(named heading: String, in body: String) -> String? {
-        let target = heading.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let lines = body.components(separatedBy: "\n")
-        guard let headingIndex = lines.firstIndex(where: { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
-            return trimmed == "## \(target)" || trimmed.hasPrefix("## \(target) ")
-        }) else {
-            return nil
-        }
-
-        var collected: [String] = []
-        for line in lines[(headingIndex + 1)...] {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("#") { break }
-            collected.append(line)
-        }
-
-        let joined = collected.joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return joined.isEmpty ? nil : joined
     }
 
     private static func clean(_ value: String?) -> String? {
@@ -709,6 +808,7 @@ final class ProgramBoardViewModel {
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?
     var creating: ProgramBoardCreateDraft?
+    var editing: ProgramBoardEditDraft?
     var dragState: ProgramBoardDragState?
     var columnFrames: [ProgramBoardLane: CGRect] = [:]
     var isLoading: Bool { reloadState.isLoading }
@@ -775,6 +875,9 @@ final class ProgramBoardViewModel {
         if selectedTicketDetail?.identity?.projectPath != path {
             selectedTicketDetail = nil
         }
+        if editing?.identity.projectPath != path {
+            editing = nil
+        }
     }
 
     func ticketItems(in lane: ProgramBoardLane) -> [ProgramStatusItem] {
@@ -796,10 +899,25 @@ final class ProgramBoardViewModel {
             selectedProjectPath: selectedProjectPath
         )
         selectedTicketDetail = nil
+        editing = nil
     }
 
     func cancelCreate() {
         creating = nil
+    }
+
+    func beginEdit(item: ProgramStatusItem) {
+        beginEdit(detail: ProgramTicketDetail.load(item: item))
+    }
+
+    func beginEdit(detail: ProgramTicketDetail) {
+        selectedTicketDetail = detail
+        creating = nil
+        editing = ProgramBoardEditPolicy.draft(from: detail)
+    }
+
+    func cancelEdit() {
+        editing = nil
     }
 
     func createRequest(
@@ -814,6 +932,24 @@ final class ProgramBoardViewModel {
             title: title,
             description: description,
             projects: projectTargets
+        )
+    }
+
+    func editRequest(
+        title: String,
+        status: Ticket.Status,
+        priority: Ticket.Priority,
+        description: String,
+        acceptanceCriteria: String
+    ) -> ProgramBoardEditRequest? {
+        guard let editing else { return nil }
+        return ProgramBoardEditPolicy.request(
+            draft: editing,
+            title: title,
+            status: status,
+            priority: priority,
+            description: description,
+            acceptanceCriteria: acceptanceCriteria
         )
     }
 

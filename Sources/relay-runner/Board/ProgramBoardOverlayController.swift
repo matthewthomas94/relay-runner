@@ -50,6 +50,9 @@ final class ProgramBoardOverlayController {
             onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
             onCreateCommit: { [weak self] request in self?.commitCreate(request) },
             onCreateCancel: { [weak self] in self?.cancelCreate() },
+            onEditStart: { [weak self] detail in self?.beginEdit(detail: detail) },
+            onEditCommit: { [weak self] request in self?.commitEdit(request) },
+            onEditCancel: { [weak self] in self?.cancelEdit() },
             onDrop: { [weak self] item, sourceLane, targetLane in
                 self?.handleDrop(item: item, from: sourceLane, to: targetLane)
             }
@@ -71,6 +74,7 @@ final class ProgramBoardOverlayController {
         guard isVisible else { return }
         model.dragState = nil
         model.cancelCreate()
+        model.cancelEdit()
         setPanelKeyEligible(false)
         stopThemePoll()
         stopStatusPoll()
@@ -99,6 +103,7 @@ final class ProgramBoardOverlayController {
         stopStatusPoll()
         statusPollTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             guard let self, self.isVisible else { return }
+            guard self.model.editing == nil else { return }
             self.model.reload()
         }
     }
@@ -134,6 +139,36 @@ final class ProgramBoardOverlayController {
             NSLog("[relay-runner] failed to create program ticket in \(request.repoPath): \(error)")
         }
         model.cancelCreate()
+        setPanelKeyEligible(false)
+        model.reload()
+    }
+
+    private func beginEdit(detail: ProgramTicketDetail) {
+        model.beginEdit(detail: detail)
+        if model.editing != nil {
+            setPanelKeyEligible(true)
+        }
+    }
+
+    private func cancelEdit() {
+        model.cancelEdit()
+        setPanelKeyEligible(false)
+    }
+
+    private func commitEdit(_ request: ProgramBoardEditRequest) {
+        do {
+            let result = try ProgramBoardTicketEditor.save(request)
+            if result.shouldDispatch {
+                OrchestratorClient.dispatchTicket(
+                    ticketId: result.ticket.id,
+                    repoPath: request.repoPath,
+                    source: "program-board-save"
+                )
+            }
+        } catch {
+            NSLog("[relay-runner] failed to save program ticket \(request.ticketID) in \(request.repoPath): \(error)")
+        }
+        model.cancelEdit()
         setPanelKeyEligible(false)
         model.reload()
     }

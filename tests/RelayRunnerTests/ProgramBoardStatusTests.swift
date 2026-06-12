@@ -616,6 +616,186 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(detail.unavailableMessage?.contains("Ticket file was not found") == true)
     }
 
+    func testProgramBoardEditRequestRoutesAllAndFilteredItemsToOwningChildRepo() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = root.appendingPathComponent("tools", isDirectory: true)
+        try writeTicket(
+            repo: clientRepo,
+            id: "CD-1",
+            title: "Client backlog",
+            status: "backlog",
+            body: "## Description\n\nClient work."
+        )
+        try writeTicket(
+            repo: toolsRepo,
+            id: "TL-1",
+            title: "Tools backlog",
+            status: "backlog",
+            body: """
+            ## Description
+
+            Tools work.
+
+            ## Acceptance criteria
+
+            - [ ] Tooling work is editable.
+            """
+        )
+        let snapshot = try programBoardSnapshot(clientPath: clientRepo.path, toolsPath: toolsRepo.path)
+        let model = ProgramBoardViewModel()
+        model.snapshot = snapshot
+
+        let allProjectsItem = try XCTUnwrap(snapshot.ticketItems(
+            in: .backlog,
+            selectedProjectPath: nil
+        ).first { $0.ticketID == "TL-1" })
+        model.beginEdit(item: allProjectsItem)
+        let allProjectsRequest = try XCTUnwrap(model.editRequest(
+            title: "  Updated tools  ",
+            status: .ready,
+            priority: .high,
+            description: "Updated tools work.",
+            acceptanceCriteria: "- [ ] Updated tools criteria."
+        ))
+        XCTAssertEqual(allProjectsRequest.repoPath, toolsRepo.path)
+        XCTAssertEqual(allProjectsRequest.ticketID, "TL-1")
+        XCTAssertEqual(allProjectsRequest.title, "Updated tools")
+        XCTAssertEqual(allProjectsRequest.status, .ready)
+        XCTAssertEqual(allProjectsRequest.priority, .high)
+
+        model.cancelEdit()
+        model.selectProject(path: clientRepo.path)
+        let filteredItem = try XCTUnwrap(model.ticketItems(in: .backlog).first)
+        model.beginEdit(item: filteredItem)
+        let filteredRequest = try XCTUnwrap(model.editRequest(
+            title: "",
+            status: .done,
+            priority: .low,
+            description: "Client done.",
+            acceptanceCriteria: ""
+        ))
+        XCTAssertEqual(filteredRequest.repoPath, clientRepo.path)
+        XCTAssertEqual(filteredRequest.ticketID, "CD-1")
+        XCTAssertEqual(filteredRequest.title, "Untitled")
+
+        let missingIdentity = try ticketItem(
+            projectName: "Missing",
+            path: "",
+            ticketID: "MS-1",
+            title: "Missing owner",
+            status: "backlog"
+        )
+        model.beginEdit(item: missingIdentity)
+        XCTAssertNil(model.editing)
+        XCTAssertNil(model.editRequest(
+            title: "No owner",
+            status: .backlog,
+            priority: .medium,
+            description: "",
+            acceptanceCriteria: ""
+        ))
+    }
+
+    func testProgramBoardTicketEditorSavesOnlyOwningChildTicketAndEditableFields() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = root.appendingPathComponent("tools", isDirectory: true)
+        try writeTicket(
+            repo: clientRepo,
+            id: "CD-1",
+            title: "Client backlog",
+            status: "backlog",
+            body: "## Description\n\nClient work."
+        )
+        try writeTicket(
+            repo: toolsRepo,
+            id: "TL-1",
+            title: "Tools backlog",
+            status: "backlog",
+            dependsOn: ["TL-0"],
+            body: """
+            ## Description
+
+            Tools work.
+
+            ## Acceptance criteria
+
+            - [ ] Tooling work is editable.
+
+            ## Notes
+
+            Preserve this section.
+            """
+        )
+
+        let request = ProgramBoardEditRequest(
+            repoPath: toolsRepo.path,
+            ticketID: "TL-1",
+            title: "Updated tools",
+            status: .ready,
+            priority: .urgent,
+            description: "Updated tools work.\n\nSecond paragraph.",
+            acceptanceCriteria: "- [x] Tooling work is editable.\n- [ ] Program Board refreshes."
+        )
+        let result = try ProgramBoardTicketEditor.save(request)
+
+        XCTAssertEqual(result.ticket.id, "TL-1")
+        XCTAssertEqual(result.ticket.status, .ready)
+        XCTAssertEqual(result.ticket.priority, .urgent)
+        XCTAssertTrue(result.shouldDispatch)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(".orchestrator").path
+        ))
+        XCTAssertTrue(
+            try String(contentsOf: clientRepo.appendingPathComponent(".orchestrator/CD-1.md"), encoding: .utf8)
+                .contains("title: Client backlog")
+        )
+
+        let savedContents = try String(
+            contentsOf: toolsRepo.appendingPathComponent(".orchestrator/TL-1.md"),
+            encoding: .utf8
+        )
+        let saved = try TicketParser.parse(contents: savedContents)
+        XCTAssertEqual(saved.title, "Updated tools")
+        XCTAssertEqual(saved.status, .ready)
+        XCTAssertEqual(saved.priority, .urgent)
+        XCTAssertEqual(saved.dependsOn, ["TL-0"])
+        XCTAssertEqual(TicketParser.extractFullDescription(saved.body), "Updated tools work.\n\nSecond paragraph.")
+        XCTAssertEqual(
+            TicketParser.extractAcceptanceCriteria(saved.body),
+            "- [x] Tooling work is editable.\n- [ ] Program Board refreshes."
+        )
+        XCTAssertTrue(saved.body.contains("## Notes\n\nPreserve this section."))
+    }
+
+    func testProgramBoardTicketEditorRejectsMissingTicketWithoutCreatingPlaceholder() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let repo = root.appendingPathComponent("tools", isDirectory: true)
+        try writeConfig(repo: repo, prefix: "TL", nextID: 2)
+        let missingPath = repo.appendingPathComponent(".orchestrator/TL-1.md").path
+        let request = ProgramBoardEditRequest(
+            repoPath: repo.path,
+            ticketID: "TL-1",
+            title: "Should not save",
+            status: .backlog,
+            priority: .medium,
+            description: "No file exists.",
+            acceptanceCriteria: "- [ ] Do not create."
+        )
+
+        XCTAssertThrowsError(try ProgramBoardTicketEditor.save(request)) { error in
+            XCTAssertEqual(error as? ProgramBoardEditError, .missingTicketFile(missingPath))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingPath))
+    }
+
     func testProgramBoardEmptySnapshotHasNoTicketLanes() {
         let snapshot = ProgramDashboardSnapshot(
             summary: emptyResponse(query: "summary", projects: 0),
