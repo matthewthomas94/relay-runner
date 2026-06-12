@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private let resourceBundle: Bundle = {
@@ -22,12 +23,14 @@ private let _installSIGPIPEHandler: Void = {
 
 @main
 struct RelayRunnerApp: App {
+    @NSApplicationDelegateAdaptor(RelayRunnerAppDelegate.self) private var appDelegate
     @State private var appState: AppState?
     @State private var updaterController: RelayUpdaterController?
 
     init() {
         _ = _installSIGPIPEHandler
         let context = RelayInstallerContext.current()
+        appDelegate.handlesDockReopenWithSettings = context == nil
         let updaterController = context == nil
             ? RelayUpdaterController(
                 installerContext: context,

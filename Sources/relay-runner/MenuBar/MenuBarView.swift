@@ -73,13 +73,8 @@ struct MenuBarView: View {
         Button("Show Program Status") { appState.showProgramStatus() }
 
         Button("Settings\u{2026}") {
-            openSettings()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                NSApp.activate(ignoringOtherApps: true)
-                // Bring settings window to front (skip overlay panels which ignore mouse)
-                for window in NSApp.windows where window.isVisible && !window.ignoresMouseEvents {
-                    window.orderFrontRegardless()
-                }
+            SettingsPresenter.open {
+                openSettings()
             }
         }
         .keyboardShortcut(",")
