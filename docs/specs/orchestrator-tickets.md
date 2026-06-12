@@ -79,6 +79,7 @@ Free-form prose explaining the work.
 | `depends_on`  | list of `id`s  | yes      | May be `[]`. Cycles are invalid (validated at parse time).                                  |
 | `run_id`      | integer / null | yes      | Set by the daemon when dispatched. Persists after completion as an audit-trail back-link.   |
 | `canceled`    | boolean        | yes      | A flag, not a column. Default `false`. Canceled tickets stay in their existing column.      |
+| `draft`       | boolean        | no       | Temporary board-created editor state. `ready` drafts are visible but not auto-dispatched until saved. Omitted when false. |
 
 Anything else under `---` is ignored, leaving room for future fields without breaking old parsers.
 
@@ -124,6 +125,7 @@ Cancellation does **not** move the ticket to a new column. It flips `canceled: t
 The daemon refuses to dispatch a ticket that:
 
 - Is not in `ready`.
+- Has `draft: true` because the board editor has not saved it yet.
 - Has unsatisfied `depends_on` (any predecessor not `done`).
 - Already has a non-null `run_id` whose run is `Claimed | Running`.
 

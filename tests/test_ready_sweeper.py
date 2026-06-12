@@ -168,6 +168,23 @@ class ReadySweeperTests(unittest.TestCase):
             self.assertEqual(reasons["RR-5"], "dependencies_not_done")
             self.assertEqual(reasons["RR-6"], "run_id_present")
 
+    def test_sweeper_skips_board_created_draft_ticket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", draft=True)
+
+            daemon = object.__new__(Daemon)
+            daemon.runs = FakeRuns()
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs)
+
+            result = Daemon.sweep_ready_tickets(daemon, repo_path=str(repo), trigger="test")
+
+            self.assertEqual(calls, [])
+            self.assertEqual(result["dispatched"], [])
+            self.assertEqual(result["skipped"], [{"ticket_id": "RR-1", "reason": "draft"}])
+
     def test_program_sweeper_dispatches_registered_projects_without_parent_board(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -265,9 +282,11 @@ class ReadySweeperTests(unittest.TestCase):
         canceled: bool = False,
         depends_on: list[str] | None = None,
         run_id: int | None = None,
+        draft: bool = False,
     ) -> None:
         deps = ", ".join(depends_on or [])
         run_value = "null" if run_id is None else str(run_id)
+        draft_line = "draft: true\n" if draft else ""
         (repo / ".orchestrator" / f"{ticket_id}.md").write_text(
             f"""---
 id: {ticket_id}
@@ -277,7 +296,7 @@ priority: medium
 depends_on: [{deps}]
 run_id: {run_value}
 canceled: {str(canceled).lower()}
----
+{draft_line}---
 
 ## Description
 

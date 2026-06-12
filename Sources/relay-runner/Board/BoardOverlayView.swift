@@ -75,6 +75,9 @@ struct TicketDraft: Identifiable, Equatable {
     let editorId: String
     /// The ticket as it sits on disk right now. We diff against this on save.
     let original: Ticket
+    /// True only for a ticket minted by the currently-open creation modal.
+    /// Canceling that modal deletes the file instead of leaving an orphan.
+    let isNew: Bool
     var title: String
     var description: String
     var id: String { editorId }

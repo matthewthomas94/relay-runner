@@ -1171,6 +1171,9 @@ class Daemon:
             if ticket["canceled"]:
                 skip(ticket, "canceled")
                 continue
+            if ticket.get("draft"):
+                skip(ticket, "draft")
+                continue
             if ticket["run_id"] is not None:
                 skip(ticket, "run_id_present", run_id=ticket["run_id"])
                 continue

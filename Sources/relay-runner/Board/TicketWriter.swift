@@ -24,7 +24,8 @@ enum TicketWriter {
         in project: ProjectResolver.LinkedProject,
         status: Ticket.Status,
         title: String = "Untitled",
-        order: Int
+        order: Int,
+        draft: Bool = false
     ) throws -> Ticket {
         let dir = ProjectResolver.ticketsDirectory(in: project)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -40,6 +41,7 @@ enum TicketWriter {
             dependsOn: [],
             runId: nil,
             canceled: false,
+            draft: draft,
             order: order,
             description: nil,
             body: ""
@@ -47,6 +49,29 @@ enum TicketWriter {
 
         try save(ticket, in: project)
         return ticket
+    }
+
+    /// Mint a board-editing draft. The ticket file is real immediately, but
+    /// the daemon's ready sweeper skips it until the editor save clears
+    /// `draft`, which keeps create-in-ready from dispatching too early.
+    static func mintDraft(
+        in project: ProjectResolver.LinkedProject,
+        status: Ticket.Status,
+        existingTickets: [Ticket],
+        title: String = "Untitled"
+    ) throws -> Ticket {
+        try mint(
+            in: project,
+            status: status,
+            title: title,
+            order: nextOrder(for: status, in: existingTickets),
+            draft: true
+        )
+    }
+
+    static func nextOrder(for status: Ticket.Status, in tickets: [Ticket]) -> Int {
+        let existing = tickets.filter { $0.status == status }
+        return (existing.map(\.order).max() ?? 0) + 10
     }
 
     // MARK: - Save / delete
@@ -96,6 +121,7 @@ enum TicketWriter {
             dependsOn: ticket.dependsOn,
             runId: ticket.runId,
             canceled: ticket.canceled,
+            draft: ticket.draft,
             order: ticket.order,
             description: summary,
             body: newBody
@@ -114,6 +140,9 @@ enum TicketWriter {
         out += "run_id: \(ticket.runId.map { String($0) } ?? "null")\n"
         out += "canceled: \(ticket.canceled)\n"
         out += "order: \(ticket.order)\n"
+        if ticket.draft {
+            out += "draft: true\n"
+        }
         out += "---\n"
         if !ticket.body.hasPrefix("\n") { out += "\n" }
         out += ticket.body
