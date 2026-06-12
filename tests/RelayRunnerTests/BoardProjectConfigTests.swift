@@ -105,6 +105,58 @@ final class BoardProjectConfigTests: XCTestCase {
         )
     }
 
+    func testMintDraftClaimsSelectedProjectNextIdWithoutMutatingPeerProject() throws {
+        let clientRepo = try makeTempRepo(named: "client-dashboard")
+        let root = clientRepo.deletingLastPathComponent()
+        let toolsRepo = root.appendingPathComponent("tools", isDirectory: true)
+        try FileManager.default.createDirectory(at: toolsRepo, withIntermediateDirectories: true)
+        try runGit(["init", "--quiet"], in: toolsRepo)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try writeConfig(repo: clientRepo, prefix: "CD", nextID: 5)
+        try writeConfig(repo: toolsRepo, prefix: "TL", nextID: 11)
+
+        let project = ProjectResolver.LinkedProject(repoPath: clientRepo)
+        let ticket = try TicketWriter.mintDraft(
+            in: project,
+            status: .backlog,
+            existingTickets: [
+                makeTicket(id: "CD-4", status: .backlog, order: 10),
+            ],
+            title: "Client ticket"
+        )
+
+        XCTAssertEqual(ticket.id, "CD-5")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: clientRepo.appendingPathComponent(".orchestrator/CD-5.md").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: toolsRepo.appendingPathComponent(".orchestrator/TL-11.md").path
+        ))
+        XCTAssertEqual(
+            try String(
+                contentsOf: clientRepo.appendingPathComponent(".orchestrator/config.toml"),
+                encoding: .utf8
+            ),
+            """
+            prefix = "CD"
+            next_id = 6
+
+            """
+        )
+        XCTAssertEqual(
+            try String(
+                contentsOf: toolsRepo.appendingPathComponent(".orchestrator/config.toml"),
+                encoding: .utf8
+            ),
+            """
+            prefix = "TL"
+            next_id = 11
+
+            """
+        )
+    }
+
     func testSavingDraftClearsDraftFlagWhenTicketIsNoLongerDraft() throws {
         let repo = try makeTempRepo(named: "mouse-assist")
         defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
@@ -133,6 +185,65 @@ final class BoardProjectConfigTests: XCTestCase {
         )
         XCTAssertFalse(contents.contains("draft:"))
         XCTAssertFalse(try TicketParser.parse(contents: contents).draft)
+    }
+
+    func testProjectBoardCreatedDraftCanBeSavedAndDeleted() throws {
+        let repo = try makeTempRepo(named: "mouse-assist")
+        defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
+
+        let project = ProjectResolver.LinkedProject(repoPath: repo)
+        let draft = try TicketWriter.mintDraft(in: project, status: .backlog, existingTickets: [])
+        let editorDraft = TicketDraft(
+            editorId: draft.id,
+            original: draft,
+            isNew: true,
+            title: draft.title,
+            description: TicketParser.extractFullDescription(draft.body) ?? ""
+        )
+
+        XCTAssertTrue(editorDraft.isNew)
+        XCTAssertEqual(editorDraft.editorId, "MA-1")
+        XCTAssertTrue(editorDraft.original.draft)
+
+        let withDescription = TicketWriter.ticket(
+            editorDraft.original,
+            withDescription: "Write the project-board ticket."
+        )
+        let saved = Ticket(
+            id: withDescription.id,
+            title: "Project-board ticket",
+            status: withDescription.status,
+            priority: withDescription.priority,
+            dependsOn: withDescription.dependsOn,
+            runId: withDescription.runId,
+            canceled: withDescription.canceled,
+            draft: false,
+            order: withDescription.order,
+            description: withDescription.description,
+            body: withDescription.body
+        )
+
+        try TicketWriter.save(saved, in: project)
+
+        let savedContents = try String(
+            contentsOf: repo.appendingPathComponent(".orchestrator/MA-1.md"),
+            encoding: .utf8
+        )
+        let parsedSaved = try TicketParser.parse(contents: savedContents)
+        XCTAssertEqual(parsedSaved.title, "Project-board ticket")
+        XCTAssertEqual(parsedSaved.description, "Write the project-board ticket.")
+        XCTAssertFalse(parsedSaved.draft)
+
+        let deleteDraft = try TicketWriter.mintDraft(
+            in: project,
+            status: .backlog,
+            existingTickets: [parsedSaved]
+        )
+        try TicketWriter.delete(deleteDraft.id, in: project)
+
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".orchestrator/\(deleteDraft.id).md").path
+        ))
     }
 
     func testResolveInitializesFreshGitRepoFromBridgeCwd() throws {
@@ -392,6 +503,21 @@ final class BoardProjectConfigTests: XCTestCase {
         let repo = root.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
         return repo
+    }
+
+    private func writeConfig(repo: URL, prefix: String, nextID: Int) throws {
+        let dir = repo.appendingPathComponent(".orchestrator", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let contents = """
+        prefix = "\(prefix)"
+        next_id = \(nextID)
+
+        """
+        try contents.write(
+            to: dir.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     private func makeRegistry(root: URL) -> ProjectRegistry {
