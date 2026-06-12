@@ -22,9 +22,12 @@ struct MenuBarView: View {
             Divider()
             Text("Setup: \(status)")
         }
-        if let message = appState.serviceLifecycleMessage {
+        if let serviceStatus = MenuBarServiceLifecycleStatus(appState.serviceLifecycleMessage) {
             Divider()
-            Text(message)
+            Button(serviceStatus.label) {
+                appState.showServiceLifecycleDetail(serviceStatus.detail)
+            }
+            .help(serviceStatus.detail)
         }
         if let translation = appState.sttEngineErrorTranslation {
             Divider()
