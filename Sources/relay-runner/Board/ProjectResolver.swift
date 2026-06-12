@@ -160,7 +160,7 @@ enum ProjectResolver {
         let dir = ticketsDirectory(in: project)
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: dir,
-            includingPropertiesForKeys: nil,
+            includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
             return []
@@ -168,8 +168,9 @@ enum ProjectResolver {
         var tickets: [Ticket] = []
         for url in entries where url.pathExtension == "md" {
             guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let modifiedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
             do {
-                tickets.append(try TicketParser.parse(contents: contents))
+                tickets.append(try TicketParser.parse(contents: contents, modifiedAt: modifiedAt))
             } catch {
                 NSLog("[relay-runner] skipping ticket \(url.lastPathComponent): \(error)")
             }

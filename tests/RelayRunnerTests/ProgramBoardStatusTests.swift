@@ -143,7 +143,7 @@ final class ProgramBoardStatusTests: XCTestCase {
             awaitingMerge: emptyResponse(query: "awaiting_merge", projects: 2)
         )
 
-        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil).map(\.ticketID), ["CD-1", "TL-1"])
+        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil).map(\.ticketID), ["TL-1", "CD-1"])
         XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: clientPath).map(\.ticketID), ["CD-1"])
         XCTAssertEqual(snapshot.ticketItems(in: .ready, selectedProjectPath: toolsPath).map(\.ticketID), [])
         XCTAssertEqual(snapshot.ticketItems(in: .inProgress, selectedProjectPath: toolsPath).map(\.provider), ["Claude/sonnet"])
@@ -154,7 +154,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         let model = ProgramBoardViewModel()
         model.snapshot = snapshot
         let allProjectsRequest = try XCTUnwrap(model.dropRequest(
-            for: snapshot.ticketItems(in: .backlog, selectedProjectPath: nil)[1],
+            for: snapshot.ticketItems(in: .backlog, selectedProjectPath: nil)[0],
             sourceLane: .backlog,
             targetLane: .done
         ))
@@ -170,6 +170,95 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(selectedProjectRequest.ticketID, "CD-1")
         XCTAssertEqual(selectedProjectRequest.repoPath, clientPath)
         XCTAssertTrue(selectedProjectRequest.shouldDispatch)
+    }
+
+    func testProgramBoardTicketLanesSortByOwningTicketFileModifiedAt() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = root.appendingPathComponent("tools", isDirectory: true)
+        try FileManager.default.createDirectory(at: clientRepo, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: toolsRepo, withIntermediateDirectories: true)
+
+        try writeTicket(repo: clientRepo, id: "CD-90", title: "Old client backlog", status: "backlog", body: "")
+        try writeTicket(repo: clientRepo, id: "CD-1", title: "Recent client backlog", status: "backlog", body: "")
+        try writeTicket(repo: toolsRepo, id: "TL-8", title: "Middle tools backlog", status: "backlog", body: "")
+
+        try setModifiedAt(
+            Date(timeIntervalSince1970: 1_700_000_000),
+            forTicket: "CD-90",
+            in: clientRepo
+        )
+        try setModifiedAt(
+            Date(timeIntervalSince1970: 1_700_000_900),
+            forTicket: "CD-1",
+            in: clientRepo
+        )
+        try setModifiedAt(
+            Date(timeIntervalSince1970: 1_700_000_500),
+            forTicket: "TL-8",
+            in: toolsRepo
+        )
+
+        let snapshot = ProgramDashboardSnapshot(
+            summary: response(
+                query: "summary",
+                projects: 2,
+                items: [
+                    try projectItem(name: "Client Dashboard", path: clientRepo.path),
+                    try projectItem(name: "Tools", path: toolsRepo.path),
+                ]
+            ),
+            backlogWork: response(
+                query: "backlog_lane",
+                projects: 2,
+                items: [
+                    try ticketItem(projectName: "Client Dashboard", path: clientRepo.path, ticketID: "CD-90", title: "Old client backlog", status: "backlog"),
+                    try ticketItem(projectName: "Tools", path: toolsRepo.path, ticketID: "TL-8", title: "Middle tools backlog", status: "backlog"),
+                    try ticketItem(projectName: "Client Dashboard", path: clientRepo.path, ticketID: "CD-1", title: "Recent client backlog", status: "backlog"),
+                ]
+            ),
+            readyWork: emptyResponse(query: "ready_lane", projects: 2),
+            inProgressWork: emptyResponse(query: "in_progress_lane", projects: 2),
+            doneWork: emptyResponse(query: "done_lane", projects: 2),
+            awaitingMerge: emptyResponse(query: "awaiting_merge", projects: 2)
+        )
+
+        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil).map(\.ticketID), ["CD-1", "TL-8", "CD-90"])
+        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: clientRepo.path).map(\.ticketID), ["CD-1", "CD-90"])
+    }
+
+    func testProgramBoardTicketLanesFallBackToNumericIdWhenModifiedAtTies() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("client-dashboard", isDirectory: true)
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+
+        try writeTicket(repo: repo, id: "CD-90", title: "High id", status: "backlog", body: "")
+        try writeTicket(repo: repo, id: "CD-1", title: "Low id", status: "backlog", body: "")
+        let modifiedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try setModifiedAt(modifiedAt, forTicket: "CD-90", in: repo)
+        try setModifiedAt(modifiedAt, forTicket: "CD-1", in: repo)
+
+        let snapshot = ProgramDashboardSnapshot(
+            summary: response(
+                query: "summary",
+                items: [try projectItem(name: "Client Dashboard", path: repo.path)]
+            ),
+            backlogWork: response(
+                query: "backlog_lane",
+                items: [
+                    try ticketItem(projectName: "Client Dashboard", path: repo.path, ticketID: "CD-1", title: "Low id", status: "backlog"),
+                    try ticketItem(projectName: "Client Dashboard", path: repo.path, ticketID: "CD-90", title: "High id", status: "backlog"),
+                ]
+            ),
+            readyWork: emptyResponse(query: "ready_lane"),
+            inProgressWork: emptyResponse(query: "in_progress_lane"),
+            doneWork: emptyResponse(query: "done_lane"),
+            awaitingMerge: emptyResponse(query: "awaiting_merge")
+        )
+
+        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil).map(\.ticketID), ["CD-90", "CD-1"])
     }
 
     func testProgramBoardViewModelSelectionRestoresAllTicketsWithoutReload() throws {
@@ -208,7 +297,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         model.selectAllProjects()
         XCTAssertTrue(model.isAllSelected)
         XCTAssertEqual(model.selectedScopeTitle, "All tickets")
-        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1", "TL-1"])
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
     }
 
     func testProgramBoardCreateFlowRequiresProjectWhenAllSelectedAndPreselectsFilteredProject() throws {
@@ -323,7 +412,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(spy.callCount, 1)
         XCTAssertEqual(model.reloadState, .succeeded)
         XCTAssertNil(model.errorMessage)
-        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1", "TL-1"])
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
 
         model.selectProject(path: toolsPath)
         await model.reload().value
@@ -350,7 +439,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.snapshot, previous)
         XCTAssertEqual(model.errorMessage, "daemon unavailable")
         XCTAssertEqual(model.reloadState, .failed("daemon unavailable"))
-        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1", "TL-1"])
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
     }
 
     func testProgramBoardTicketDetailResolvesChildTicketFileFromAllProjects() throws {
@@ -897,6 +986,11 @@ final class ProgramBoardStatusTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
+    }
+
+    private func setModifiedAt(_ date: Date, forTicket id: String, in repo: URL) throws {
+        let path = repo.appendingPathComponent(".orchestrator/\(id).md").path
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: path)
     }
 
     private func ticket(

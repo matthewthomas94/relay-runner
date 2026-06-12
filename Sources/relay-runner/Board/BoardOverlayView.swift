@@ -279,6 +279,8 @@ private struct BoardColumnPanel: View {
     let onDrop: (String, Ticket.Status, Int) -> Void
 
     private var tickets: [Ticket] {
+        // Placement honors the live-run override (a worker can pull a `ready`
+        // ticket into "In progress") rather than the raw ticket-file status.
         model.tickets(in: spec.status)
     }
 

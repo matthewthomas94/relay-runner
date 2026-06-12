@@ -468,10 +468,40 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertEqual(tickets.sorted(by: Ticket.newestFirst).map(\.id), ["RR-30", "RR-2", "RR-1"])
     }
 
+    func testProjectBoardLaneSortsByTicketFileModifiedAtDescending() throws {
+        let repo = try makeTempRepo(named: "mouse-assist")
+        defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
+
+        let oldTicket = try writeTicket(repo: repo, id: "MA-90", status: .backlog)
+        let recentTicket = try writeTicket(repo: repo, id: "MA-1", status: .backlog)
+        let olderDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let recentDate = Date(timeIntervalSince1970: 1_700_000_600)
+        try FileManager.default.setAttributes([.modificationDate: olderDate], ofItemAtPath: oldTicket.path)
+        try FileManager.default.setAttributes([.modificationDate: recentDate], ofItemAtPath: recentTicket.path)
+
+        let project = ProjectResolver.LinkedProject(repoPath: repo)
+        let model = BoardViewModel()
+        model.tickets = ProjectResolver.scanTickets(in: project)
+
+        XCTAssertEqual(model.tickets(in: .backlog).map(\.id), ["MA-1", "MA-90"])
+    }
+
+    func testTicketNewestFirstFallsBackToNumericIdWhenModifiedAtTies() {
+        let modifiedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let tickets = [
+            makeTicket(id: "RR-1", order: 30, modifiedAt: modifiedAt),
+            makeTicket(id: "RR-30", order: 10, modifiedAt: modifiedAt),
+            makeTicket(id: "RR-2", order: 20, modifiedAt: modifiedAt),
+        ]
+
+        XCTAssertEqual(tickets.sorted(by: Ticket.newestFirst).map(\.id), ["RR-30", "RR-2", "RR-1"])
+    }
+
     private func makeTicket(
         id: String,
         status: Ticket.Status = .backlog,
-        order: Int
+        order: Int,
+        modifiedAt: Date? = nil
     ) -> Ticket {
         Ticket(
             id: id,
@@ -482,6 +512,7 @@ final class BoardProjectConfigTests: XCTestCase {
             runId: nil,
             canceled: false,
             order: order,
+            modifiedAt: modifiedAt,
             description: nil,
             body: ""
         )
@@ -518,6 +549,33 @@ final class BoardProjectConfigTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
+    }
+
+    private func writeTicket(
+        repo: URL,
+        id: String,
+        status: Ticket.Status
+    ) throws -> URL {
+        let dir = repo.appendingPathComponent(".orchestrator", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("\(id).md")
+        let contents = """
+        ---
+        id: \(id)
+        title: \(id)
+        status: \(status.rawValue)
+        priority: medium
+        depends_on: []
+        run_id: null
+        canceled: false
+        ---
+
+        ## Description
+
+        \(id)
+        """
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        return url
     }
 
     private func makeRegistry(root: URL) -> ProjectRegistry {

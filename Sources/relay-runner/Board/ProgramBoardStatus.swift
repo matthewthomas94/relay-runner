@@ -31,8 +31,10 @@ struct ProgramDashboardSnapshot: Equatable {
         case .done:
             items = doneWork.items
         }
-        guard let selectedProjectPath else { return items }
-        return items.filter { $0.project?.path == selectedProjectPath }
+        let filtered = selectedProjectPath.map { path in
+            items.filter { $0.project?.path == path }
+        } ?? items
+        return filtered.sorted(by: ProgramStatusItem.newestTicketFileFirst)
     }
 
     func ticketItem(matching id: String) -> ProgramStatusItem? {
@@ -806,6 +808,17 @@ private func clean(_ value: String?) -> String? {
 }
 
 extension ProgramStatusItem {
+    static func newestTicketFileFirst(_ lhs: ProgramStatusItem, _ rhs: ProgramStatusItem) -> Bool {
+        Ticket.newestFirst(
+            lhsModifiedAt: lhs.ticketFileModifiedAt,
+            lhsID: lhs.ticketID,
+            lhsTitle: lhs.title,
+            rhsModifiedAt: rhs.ticketFileModifiedAt,
+            rhsID: rhs.ticketID,
+            rhsTitle: rhs.title
+        )
+    }
+
     var isAwaitingMerge: Bool {
         programStateKeys.contains("awaiting_merge")
     }
@@ -823,5 +836,10 @@ extension ProgramStatusItem {
 
     private var programStateKeys: [String] {
         [status, runState, ticketState].compactMap { $0?.programStateKey }
+    }
+
+    private var ticketFileModifiedAt: Date? {
+        guard let identity = ProgramTicketIdentity(item: self) else { return nil }
+        return (try? identity.ticketURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 }
