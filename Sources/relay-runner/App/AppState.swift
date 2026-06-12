@@ -494,6 +494,11 @@ final class AppState {
         }
     }
 
+    func showServiceLifecycleDetail(_ message: String) {
+        if overlayController == nil { startOverlay() }
+        stateMachine.showProgramStatus(title: "Service Status", body: message)
+    }
+
     func toggleRecording() {
         guard permissions.microphone == .granted else {
             permissions.requestMicrophonePrompt { _ in }
