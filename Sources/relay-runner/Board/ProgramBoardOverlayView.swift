@@ -128,9 +128,37 @@ private struct ProgramGrabCursor: ViewModifier {
     }
 }
 
+private struct ProgramButtonCursor: ViewModifier {
+    let enabled: Bool
+    @State private var isPushed = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovering in
+                if hovering {
+                    guard !isPushed else { return }
+                    (enabled ? NSCursor.pointingHand : NSCursor.arrow).push()
+                    isPushed = true
+                } else if isPushed {
+                    NSCursor.pop()
+                    isPushed = false
+                }
+            }
+            .onDisappear {
+                guard isPushed else { return }
+                NSCursor.pop()
+                isPushed = false
+            }
+    }
+}
+
 private extension View {
     func programGrabCursor(dragging: Bool, enabled: Bool) -> some View {
         modifier(ProgramGrabCursor(dragging: dragging, enabled: enabled))
+    }
+
+    func programButtonCursor(enabled: Bool = true) -> some View {
+        modifier(ProgramButtonCursor(enabled: enabled))
     }
 }
 
@@ -1089,6 +1117,7 @@ private struct ProgramDetailActionButton: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+        .programButtonCursor(enabled: !disabled)
         .help(help)
     }
 }
@@ -1221,6 +1250,7 @@ private struct ProgramTicketEditModal: View {
                         .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
                         .background(Capsule().fill(Color.white.opacity(0.08)))
                         .contentShape(Capsule())
+                        .programButtonCursor()
                     Button("Save") {
                         if let request = currentRequest {
                             onCommit(request)
@@ -1234,6 +1264,7 @@ private struct ProgramTicketEditModal: View {
                     .foregroundStyle(Color.white.opacity(currentRequest == nil ? 0.45 : 1.0))
                     .background(Capsule().fill(Color.white.opacity(currentRequest == nil ? 0.08 : 0.20)))
                     .contentShape(Capsule())
+                    .programButtonCursor(enabled: currentRequest != nil)
                 }
             }
             .padding(20)
@@ -1387,6 +1418,7 @@ private struct ProgramTicketCreateModal: View {
                         .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
                         .background(Capsule().fill(Color.white.opacity(0.08)))
                         .contentShape(Capsule())
+                        .programButtonCursor()
                     Button("Save") {
                         if let request = makeRequest(selectedProjectPath, title, description) {
                             onCommit(request)
@@ -1400,6 +1432,7 @@ private struct ProgramTicketCreateModal: View {
                     .foregroundStyle(Color.white.opacity(canSave ? 1.0 : 0.45))
                     .background(Capsule().fill(Color.white.opacity(canSave ? 0.20 : 0.08)))
                     .contentShape(Capsule())
+                    .programButtonCursor(enabled: canSave)
                 }
             }
             .padding(20)
@@ -1506,6 +1539,7 @@ private struct ProgramIconButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .programButtonCursor()
         .help(help)
     }
 }
@@ -1534,6 +1568,7 @@ private struct ProgramReloadButton: View {
         }
         .buttonStyle(.plain)
         .disabled(state.isLoading)
+        .programButtonCursor(enabled: !state.isLoading)
         .help(state.helpText)
     }
 }
