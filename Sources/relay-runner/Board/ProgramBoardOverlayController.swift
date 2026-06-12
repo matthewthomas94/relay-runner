@@ -47,6 +47,9 @@ final class ProgramBoardOverlayController {
             onDismiss: { [weak self] in self?.hide() },
             onRefresh: { [weak self] in self?.model.reload() },
             onOpenProject: { [weak self] repoPath in self?.openProjectHandler?(repoPath) },
+            onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
+            onCreateCommit: { [weak self] request in self?.commitCreate(request) },
+            onCreateCancel: { [weak self] in self?.cancelCreate() },
             onDrop: { [weak self] item, sourceLane, targetLane in
                 self?.handleDrop(item: item, from: sourceLane, to: targetLane)
             }
@@ -67,6 +70,8 @@ final class ProgramBoardOverlayController {
     func hide() {
         guard isVisible else { return }
         model.dragState = nil
+        model.cancelCreate()
+        setPanelKeyEligible(false)
         stopThemePoll()
         stopStatusPoll()
         panel?.orderOut(nil)
@@ -101,6 +106,36 @@ final class ProgramBoardOverlayController {
     private func stopStatusPoll() {
         statusPollTimer?.invalidate()
         statusPollTimer = nil
+    }
+
+    private func beginCreate(in lane: ProgramBoardLane) {
+        model.beginCreate(in: lane)
+        if model.creating != nil {
+            setPanelKeyEligible(true)
+        }
+    }
+
+    private func cancelCreate() {
+        model.cancelCreate()
+        setPanelKeyEligible(false)
+    }
+
+    private func commitCreate(_ request: ProgramBoardCreateRequest) {
+        do {
+            let result = try ProgramBoardTicketCreator.create(request)
+            if result.shouldDispatch {
+                OrchestratorClient.dispatchTicket(
+                    ticketId: result.ticket.id,
+                    repoPath: request.repoPath,
+                    source: "program-board-save"
+                )
+            }
+        } catch {
+            NSLog("[relay-runner] failed to create program ticket in \(request.repoPath): \(error)")
+        }
+        model.cancelCreate()
+        setPanelKeyEligible(false)
+        model.reload()
     }
 
     private func handleDrop(
@@ -160,6 +195,16 @@ final class ProgramBoardOverlayController {
             )
         }
         model.reload()
+    }
+
+    private func setPanelKeyEligible(_ enabled: Bool) {
+        guard let panel else { return }
+        panel.keyEligible = enabled
+        if enabled {
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            panel.resignKey()
+        }
     }
 
     private func currentMouseScreen() -> NSScreen? {

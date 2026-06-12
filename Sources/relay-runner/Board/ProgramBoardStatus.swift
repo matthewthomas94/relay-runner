@@ -107,6 +107,34 @@ struct ProgramBoardDragState: Equatable {
     var target: ProgramBoardDropTarget?
 }
 
+struct ProgramBoardProjectTarget: Equatable, Identifiable {
+    let name: String
+    let path: String
+
+    var id: String { path }
+}
+
+struct ProgramBoardCreateDraft: Equatable {
+    let lane: ProgramBoardLane
+    let selectedProjectPath: String?
+
+    var status: Ticket.Status { lane.ticketStatus }
+}
+
+struct ProgramBoardCreateRequest: Equatable {
+    let repoPath: String
+    let status: Ticket.Status
+    let title: String
+    let description: String
+
+    var shouldDispatch: Bool { status == .ready }
+}
+
+struct ProgramBoardCreateResult: Equatable {
+    let ticket: Ticket
+    let shouldDispatch: Bool
+}
+
 enum ProgramBoardDropPolicy {
     static func request(
         for item: ProgramStatusItem,
@@ -166,6 +194,65 @@ enum ProgramBoardDropPolicy {
     private static func cleaned(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty || trimmed == "unknown" ? nil : trimmed
+    }
+}
+
+enum ProgramBoardCreatePolicy {
+    static func request(
+        draft: ProgramBoardCreateDraft,
+        selectedProjectPath: String?,
+        title: String,
+        description: String,
+        projects: [ProgramBoardProjectTarget]
+    ) -> ProgramBoardCreateRequest? {
+        guard let selectedProjectPath,
+              projects.contains(where: { $0.path == selectedProjectPath }) else {
+            return nil
+        }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ProgramBoardCreateRequest(
+            repoPath: selectedProjectPath,
+            status: draft.status,
+            title: trimmedTitle.isEmpty ? "Untitled" : trimmedTitle,
+            description: description
+        )
+    }
+}
+
+enum ProgramBoardTicketCreator {
+    static func create(_ request: ProgramBoardCreateRequest) throws -> ProgramBoardCreateResult {
+        let repoURL = URL(fileURLWithPath: request.repoPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let project = ProjectResolver.LinkedProject(repoPath: repoURL)
+        let draft = try TicketWriter.mintDraft(
+            in: project,
+            status: request.status,
+            existingTickets: ProjectResolver.scanTickets(in: project),
+            title: "Untitled"
+        )
+        let withDescription = TicketWriter.ticket(
+            draft,
+            withDescription: request.description
+        )
+        let updated = Ticket(
+            id: withDescription.id,
+            title: request.title,
+            status: withDescription.status,
+            priority: withDescription.priority,
+            dependsOn: withDescription.dependsOn,
+            runId: withDescription.runId,
+            canceled: withDescription.canceled,
+            draft: false,
+            order: withDescription.order,
+            description: withDescription.description,
+            body: withDescription.body
+        )
+        try TicketWriter.save(updated, in: project)
+        return ProgramBoardCreateResult(
+            ticket: updated,
+            shouldDispatch: request.shouldDispatch
+        )
     }
 }
 
@@ -537,6 +624,7 @@ final class ProgramBoardViewModel {
     var theme: ParticleFieldRenderer.Theme?
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?
+    var creating: ProgramBoardCreateDraft?
     var dragState: ProgramBoardDragState?
     var columnFrames: [ProgramBoardLane: CGRect] = [:]
     var isLoading: Bool { reloadState.isLoading }
@@ -584,6 +672,16 @@ final class ProgramBoardViewModel {
         return snapshot?.projectName(for: selectedProjectPath) ?? "Selected project"
     }
 
+    var projectTargets: [ProgramBoardProjectTarget] {
+        snapshot?.projects.compactMap { item in
+            guard let path = clean(item.project?.path) else { return nil }
+            return ProgramBoardProjectTarget(
+                name: clean(item.project?.name) ?? path,
+                path: path
+            )
+        } ?? []
+    }
+
     func selectAllProjects() {
         selectedProjectPath = nil
     }
@@ -605,6 +703,34 @@ final class ProgramBoardViewModel {
 
     func clearSelectedTicket() {
         selectedTicketDetail = nil
+    }
+
+    func beginCreate(in lane: ProgramBoardLane) {
+        guard !projectTargets.isEmpty else { return }
+        creating = ProgramBoardCreateDraft(
+            lane: lane,
+            selectedProjectPath: selectedProjectPath
+        )
+        selectedTicketDetail = nil
+    }
+
+    func cancelCreate() {
+        creating = nil
+    }
+
+    func createRequest(
+        selectedProjectPath: String?,
+        title: String,
+        description: String
+    ) -> ProgramBoardCreateRequest? {
+        guard let creating else { return nil }
+        return ProgramBoardCreatePolicy.request(
+            draft: creating,
+            selectedProjectPath: selectedProjectPath,
+            title: title,
+            description: description,
+            projects: projectTargets
+        )
     }
 
     func dropRequest(
@@ -634,6 +760,13 @@ final class ProgramBoardViewModel {
         self.snapshot = snapshot
         if let selectedProjectPath, !snapshot.containsProject(path: selectedProjectPath) {
             self.selectedProjectPath = nil
+        }
+        if let creating {
+            if projectTargets.isEmpty {
+                self.creating = nil
+            } else if let path = creating.selectedProjectPath, !snapshot.containsProject(path: path) {
+                self.creating = nil
+            }
         }
         if let selectedTicketDetail {
             if let refreshedItem = snapshot.ticketItem(matching: selectedTicketDetail.id) {
@@ -665,6 +798,11 @@ extension String {
             .replacingOccurrences(of: "-", with: "_")
             .replacingOccurrences(of: " ", with: "_")
     }
+}
+
+private func clean(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
 }
 
 extension ProgramStatusItem {

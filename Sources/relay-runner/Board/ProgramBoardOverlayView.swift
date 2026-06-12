@@ -6,13 +6,22 @@ struct ProgramBoardOverlayView: View {
     let onDismiss: () -> Void
     let onRefresh: () -> Void
     let onOpenProject: (String) -> Void
+    let onCreateStart: (ProgramBoardLane) -> Void
+    let onCreateCommit: (ProgramBoardCreateRequest) -> Void
+    let onCreateCancel: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
-                .onTapGesture { onDismiss() }
+                .onTapGesture {
+                    if model.creating != nil {
+                        onCreateCancel()
+                    } else {
+                        onDismiss()
+                    }
+                }
 
             VStack(spacing: 0) {
                 ProgramBoardContent(
@@ -20,6 +29,7 @@ struct ProgramBoardOverlayView: View {
                     onRefresh: onRefresh,
                     onDismiss: onDismiss,
                     onOpenProject: onOpenProject,
+                    onCreateStart: onCreateStart,
                     onDrop: onDrop
                 )
                 .padding(.top, 89)
@@ -42,6 +52,24 @@ struct ProgramBoardOverlayView: View {
                     .position(drag.location)
                     .allowsHitTesting(false)
                     .transition(.opacity)
+            }
+
+            if let draft = model.creating {
+                ProgramTicketCreateModal(
+                    draft: draft,
+                    projects: model.projectTargets,
+                    makeRequest: { selectedProjectPath, title, description in
+                        model.createRequest(
+                            selectedProjectPath: selectedProjectPath,
+                            title: title,
+                            description: description
+                        )
+                    },
+                    onCommit: onCreateCommit,
+                    onCancel: onCreateCancel
+                )
+                .id("\(draft.lane.id)-\(draft.selectedProjectPath ?? "all")")
+                .transition(.opacity)
             }
         }
         .coordinateSpace(name: "programBoard")
@@ -85,6 +113,7 @@ private struct ProgramBoardContent: View {
     let onRefresh: () -> Void
     let onDismiss: () -> Void
     let onOpenProject: (String) -> Void
+    let onCreateStart: (ProgramBoardLane) -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -110,6 +139,8 @@ private struct ProgramBoardContent: View {
                                 lane: lane,
                                 showsProjectContext: model.isAllSelected,
                                 theme: model.theme,
+                                canCreate: !model.projectTargets.isEmpty,
+                                onCreate: { onCreateStart(lane) },
                                 onDrop: onDrop
                             )
                         }
@@ -437,6 +468,8 @@ private struct ProgramWorkColumnPanel: View {
     let lane: ProgramBoardLane
     let showsProjectContext: Bool
     let theme: ParticleFieldRenderer.Theme?
+    let canCreate: Bool
+    let onCreate: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     private var items: [ProgramStatusItem] {
@@ -463,6 +496,13 @@ private struct ProgramWorkColumnPanel: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ProgramBoardStyle.secondaryText)
                     .monospacedDigit()
+                if canCreate {
+                    ProgramIconButton(
+                        systemName: "plus",
+                        help: "New \(lane.title.lowercased()) ticket",
+                        action: onCreate
+                    )
+                }
             }
             .padding(.bottom, 4)
 
@@ -992,6 +1032,145 @@ private struct ProgramDetailActionButton: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .help(help)
+    }
+}
+
+private struct ProgramTicketCreateModal: View {
+    let draft: ProgramBoardCreateDraft
+    let projects: [ProgramBoardProjectTarget]
+    let makeRequest: (_ selectedProjectPath: String?, _ title: String, _ description: String) -> ProgramBoardCreateRequest?
+    let onCommit: (ProgramBoardCreateRequest) -> Void
+    let onCancel: () -> Void
+
+    @State private var selectedProjectPath: String?
+    @State private var title: String
+    @State private var description: String
+    @FocusState private var titleFocused: Bool
+
+    init(
+        draft: ProgramBoardCreateDraft,
+        projects: [ProgramBoardProjectTarget],
+        makeRequest: @escaping (_ selectedProjectPath: String?, _ title: String, _ description: String) -> ProgramBoardCreateRequest?,
+        onCommit: @escaping (ProgramBoardCreateRequest) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.draft = draft
+        self.projects = projects
+        self.makeRequest = makeRequest
+        self.onCommit = onCommit
+        self.onCancel = onCancel
+        self._selectedProjectPath = State(initialValue: draft.selectedProjectPath)
+        self._title = State(initialValue: "")
+        self._description = State(initialValue: "")
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .contentShape(Rectangle())
+                .onTapGesture { onCancel() }
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text(draft.lane.title)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    ProgramIconButton(systemName: "xmark", help: "Cancel new ticket", action: onCancel)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Project")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .textCase(.uppercase)
+                    Picker("Project", selection: $selectedProjectPath) {
+                        Text("Select project").tag(nil as String?)
+                        ForEach(projects) { project in
+                            Text(project.name).tag(project.path as String?)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+
+                    Text(selectedProject?.path ?? "Select project")
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                TextField("Title", text: $title, axis: .vertical)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .textFieldStyle(.plain)
+                    .focused($titleFocused)
+                    .lineLimit(1...3)
+
+                Divider()
+                    .background(Color.white.opacity(0.12))
+
+                Text("Description")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .textCase(.uppercase)
+
+                TextEditor(text: $description)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 160, maxHeight: 280)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.black.opacity(0.30))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                    )
+
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    Button("Cancel", action: onCancel)
+                        .keyboardShortcut(.cancelAction)
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
+                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        .contentShape(Capsule())
+                    Button("Save") {
+                        if let request = makeRequest(selectedProjectPath, title, description) {
+                            onCommit(request)
+                        }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.plain)
+                    .disabled(makeRequest(selectedProjectPath, title, description) == nil)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(Color.white.opacity(canSave ? 1.0 : 0.45))
+                    .background(Capsule().fill(Color.white.opacity(canSave ? 0.20 : 0.08)))
+                    .contentShape(Capsule())
+                }
+            }
+            .padding(20)
+            .frame(width: 520)
+            .background(BoardGlassBackground(cornerRadius: 16))
+            .shadow(color: Color.black.opacity(0.5), radius: 30, x: 0, y: 10)
+            .onTapGesture { }
+            .onAppear { titleFocused = true }
+        }
+    }
+
+    private var selectedProject: ProgramBoardProjectTarget? {
+        projects.first { $0.path == selectedProjectPath }
+    }
+
+    private var canSave: Bool {
+        makeRequest(selectedProjectPath, title, description) != nil
     }
 }
 
