@@ -225,6 +225,11 @@ final class ProgramBoardStatusTests: XCTestCase {
             title: "  New client work  ",
             description: "Describe it."
         ))
+        XCTAssertNil(model.createRequest(
+            selectedProjectPath: "/repo/unknown",
+            title: "Unknown work",
+            description: "This should not mint."
+        ))
 
         let allProjectsRequest = try XCTUnwrap(model.createRequest(
             selectedProjectPath: toolsPath,
