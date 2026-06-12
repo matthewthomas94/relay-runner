@@ -142,7 +142,10 @@ final class BoardOverlayScrollContainer: NSView {
             origin: .zero,
             size: CGSize(width: viewport.width, height: documentHeight)
         )
-        hostingView.frame = documentView.bounds
+        hostingView.frame = CGRect(
+            origin: .zero,
+            size: CGSize(width: viewport.width, height: fittingHeight)
+        )
         lastLaidOutWidth = viewport.width
         lastLaidOutHeight = documentHeight
     }
