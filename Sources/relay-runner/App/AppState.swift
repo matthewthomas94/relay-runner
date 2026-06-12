@@ -551,8 +551,9 @@ final class AppState {
                 return
             case .keepDaemon:
                 // A busy Codex/Claude turn can stop touching the consumer
-                // heartbeat while git/build work continues. Keep the daemon
-                // alive so TTS and queued voice input can recover.
+                // heartbeat while git/build work continues. Keep an already
+                // observed session daemon alive so TTS and queued voice input
+                // can recover.
                 self.bridgeAliveCache = true
                 if self.statusText != "Session" {
                     self.statusText = "Session"
@@ -653,7 +654,7 @@ final class AppState {
             return .alive
         }
         if daemonAlive && !consumerAlive {
-            return menuSessionActive ? .keepDaemon : .reapOrphan
+            return (menuSessionActive || wasAlive) ? .keepDaemon : .reapOrphan
         }
         if menuSessionActive {
             if sessionBridgeSeen || elapsedSinceSessionStart > 90 {
