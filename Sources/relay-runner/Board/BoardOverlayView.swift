@@ -45,6 +45,14 @@ final class BoardViewModel {
         runStates[ticket.id]
     }
 
+    /// Tickets rendered in a lane, honoring live-run placement overrides
+    /// rather than only the raw ticket-file status.
+    func tickets(in status: Ticket.Status) -> [Ticket] {
+        tickets
+            .filter { effectiveStatus(for: $0) == status }
+            .sorted(by: Ticket.newestFirst)
+    }
+
     /// Hit-test `location` against the cached frames. Returns the column + the
     /// insertion index a drop at this point would land at, excluding the
     /// dragged ticket from the index calculation.
@@ -271,10 +279,7 @@ private struct BoardColumnPanel: View {
     let onDrop: (String, Ticket.Status, Int) -> Void
 
     private var tickets: [Ticket] {
-        // Placement honors the live-run override (a worker can pull a `ready`
-        // ticket into "In progress") rather than the raw ticket-file status.
-        model.tickets.filter { model.effectiveStatus(for: $0) == spec.status }
-            .sorted(by: Ticket.newestFirst)
+        model.tickets(in: spec.status)
     }
 
     /// Index inside this column where the active drag would land, or `nil`
@@ -293,6 +298,10 @@ private struct BoardColumnPanel: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0))
                 Spacer(minLength: 0)
+                Text("\(tickets.count)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.65))
+                    .monospacedDigit()
                 NewTicketButton(action: onCreate)
                     .help("New ticket in \(spec.title)")
             }

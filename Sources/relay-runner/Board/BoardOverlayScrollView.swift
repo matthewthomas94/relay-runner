@@ -32,7 +32,9 @@ final class BoardOverlayScrollContainer: NSView {
     private var isHovering = false
     private var hideWorkItem: DispatchWorkItem?
     private var lastLaidOutWidth: CGFloat = 0
+    private var lastViewportHeight: CGFloat = 0
     private var lastLaidOutHeight: CGFloat = 0
+    private let verticalContentInset: CGFloat = 8
 
     init(rootView: AnyView) {
         hostingView = NSHostingView(rootView: rootView)
@@ -132,21 +134,24 @@ final class BoardOverlayScrollContainer: NSView {
         guard viewport.width > 0 else { return }
         if !force,
            abs(viewport.width - lastLaidOutWidth) < 0.5,
+           abs(viewport.height - lastViewportHeight) < 0.5,
            lastLaidOutHeight > 0 {
             return
         }
         hostingView.frame = CGRect(origin: .zero, size: CGSize(width: viewport.width, height: 1))
         let fittingHeight = hostingView.fittingSize.height
-        let documentHeight = max(viewport.height, fittingHeight)
+        let contentHeight = fittingHeight + verticalContentInset * 2
+        let documentHeight = max(viewport.height, contentHeight)
         documentView.frame = CGRect(
             origin: .zero,
             size: CGSize(width: viewport.width, height: documentHeight)
         )
         hostingView.frame = CGRect(
-            origin: .zero,
+            origin: CGPoint(x: 0, y: verticalContentInset),
             size: CGSize(width: viewport.width, height: fittingHeight)
         )
         lastLaidOutWidth = viewport.width
+        lastViewportHeight = viewport.height
         lastLaidOutHeight = documentHeight
     }
 
