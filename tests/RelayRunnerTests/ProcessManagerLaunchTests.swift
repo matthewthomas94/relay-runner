@@ -18,6 +18,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         )
 
         XCTAssertTrue(codexScript.contains("'/Relay Runner/relay-bridge' --venv-only"))
+        XCTAssertTrue(codexScript.contains("rm -f /tmp/voice_bridge_stop_requested"))
         XCTAssertTrue(codexScript.contains("export RELAY_RUNNER_PROVIDER='codex'"))
         XCTAssertTrue(codexScript.contains("cd '/Users/example/dev workspace'"))
         XCTAssertTrue(codexScript.contains(

@@ -34,6 +34,7 @@ RELOCATABLE_PYTHON="$RELOCATABLE_PYTHON_DIR/bin/python3"
 mkdir -p "$SERVICES_DIR"
 VOICE_FIFO="/tmp/voice_in.fifo"
 BRIDGE_SOCK="/tmp/voice_bridge.sock"
+BRIDGE_STOP_REQUESTED_FILE="/tmp/voice_bridge_stop_requested"
 # Records the cwd of whoever launched the bridge so the menu-bar app can
 # classify the active session as either a workspace root or a project repo.
 # Single-project repos get .orchestrator/config.toml initialized on
@@ -162,6 +163,7 @@ If not running, tell the user to start the Relay Runner menu bar app, then try `
 RELAY_CWD=$(pwd)
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
+rm -f /tmp/voice_bridge_stop_requested
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 : > /tmp/voice_bridge.log
 RELAY_BRIDGE='__RELAY_BRIDGE__'
@@ -304,7 +306,13 @@ After generating your response, tear down the background heartbeat refresher spa
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 touch /tmp/voice_bridge_heartbeat
+if [ -f /tmp/voice_bridge_stop_requested ]; then
+    exit 0
+fi
 if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
+    if [ -f /tmp/voice_bridge_stop_requested ]; then
+        exit 0
+    fi
     rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
     RELAY_CWD=$(pwd)
     RELAY_BRIDGE='__RELAY_BRIDGE__'
@@ -359,6 +367,7 @@ When the session ends (user says "stop listening", "exit voice", or similar), cl
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 launchctl remove com.relay.voicebridge 2>/dev/null || true
+: > /tmp/voice_bridge_stop_requested
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 
@@ -388,6 +397,7 @@ Stop the voice I/O bridge for this Claude session. Use this to end a `/relay-bri
 ```bash
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
+: > /tmp/voice_bridge_stop_requested
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 
@@ -433,6 +443,7 @@ If not running, tell the user to start the Relay Runner menu bar app, then stop.
 ```bash
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
+rm -f /tmp/voice_bridge_stop_requested
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 RELAY_CWD=$(pwd)
 : > /tmp/voice_bridge.log
@@ -562,7 +573,13 @@ After your response, stop the heartbeat refresher and ensure the bridge is alive
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 touch /tmp/voice_bridge_heartbeat
+if [ -f /tmp/voice_bridge_stop_requested ]; then
+    exit 0
+fi
 if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
+    if [ -f /tmp/voice_bridge_stop_requested ]; then
+        exit 0
+    fi
     rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
     RELAY_CWD=$(pwd)
     RELAY_BRIDGE='__RELAY_BRIDGE__'
@@ -613,6 +630,7 @@ When the session ends:
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 launchctl remove com.relay.voicebridge 2>/dev/null || true
+: > /tmp/voice_bridge_stop_requested
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 CODEX_BRIDGE_MD_EOF
@@ -634,6 +652,7 @@ Stop the voice I/O bridge for this Codex session.
 ```bash
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
+: > /tmp/voice_bridge_stop_requested
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1 && echo "bridge: STILL RUNNING" || echo "bridge: stopped"
 ```
@@ -758,6 +777,10 @@ fi
 # -- Kill any existing bridge (only one voice session at a time) --
 # Skipped under --venv-only so onboarding doesn't tear down a running
 # session just to install dependencies in the background.
+if ! $VENV_ONLY; then
+    rm -f "$BRIDGE_STOP_REQUESTED_FILE"
+fi
+
 if ! $VENV_ONLY && { [ -S "$BRIDGE_SOCK" ] || pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; }; then
     if pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
         echo "[relay-bridge] Stopping previous voice session..."

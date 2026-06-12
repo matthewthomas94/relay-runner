@@ -88,6 +88,34 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
+    func testWatchdogReapsDaemonWhenSessionStopWasRequested() {
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: true,
+                daemonAlive: true,
+                consumerAlive: true,
+                wasAlive: true,
+                sessionBridgeSeen: true,
+                elapsedSinceSessionStart: 120,
+                stopRequested: true
+            ),
+            .reapOrphan
+        )
+
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: true,
+                daemonAlive: false,
+                consumerAlive: false,
+                wasAlive: true,
+                sessionBridgeSeen: true,
+                elapsedSinceSessionStart: 120,
+                stopRequested: true
+            ),
+            .markDead
+        )
+    }
+
     func testWatchdogStillReapsPreexistingOrphanDaemon() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(
@@ -143,6 +171,10 @@ final class BridgeRecoveryTests: XCTestCase {
             XCTAssertTrue(script.contains("RELAY_PROVIDER='\(provider)'"))
             XCTAssertTrue(script.contains("export RELAY_RUNNER_PROVIDER=\"$3\""))
             XCTAssertTrue(script.contains("exec \"$2\" --relay"))
+            XCTAssertTrue(script.contains("[ -f /tmp/voice_bridge_stop_requested ] && exit 1"))
+            XCTAssertTrue(script.contains("/tmp/voice_cmd_ready.meta"))
+            XCTAssertTrue(script.contains("/tmp/voice_command_state.json"))
+            XCTAssertTrue(script.contains("/tmp/voice_cmd_claimed.json"))
             XCTAssertTrue(script.contains("RELAY_RUNNER_PROVIDER=\"$RELAY_PROVIDER\" nohup \"$RELAY_BRIDGE\" --relay"))
         }
     }

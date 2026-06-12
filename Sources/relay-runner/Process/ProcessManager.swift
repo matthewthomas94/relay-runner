@@ -6,9 +6,14 @@ final class ProcessManager {
     private var bridgeProcess: Process?
     private static let bridgeSocketPath = "/tmp/voice_bridge.sock"
     private static let voiceCommandPath = "/tmp/voice_cmd_ready"
+    private static let voiceCommandMetaPath = "/tmp/voice_cmd_ready.meta"
+    private static let voiceCommandStatePath = "/tmp/voice_command_state.json"
+    private static let voiceCommandClaimedPath = "/tmp/voice_cmd_claimed.json"
     private static let heartbeatPath = "/tmp/voice_bridge_heartbeat"
+    private static let bridgeStopRequestedPath = "/tmp/voice_bridge_stop_requested"
     private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
     private static let bridgeProviderPath = "/tmp/voice_bridge.provider"
+    private static let bridgeLaunchdLabel = "com.relay.voicebridge"
     private static let pendingVoiceCommandTimeout: TimeInterval = 10
     private static let staleHeartbeatTimeout: TimeInterval = 30
     private static let missingHeartbeatGrace: TimeInterval = 30
@@ -16,6 +21,9 @@ final class ProcessManager {
         "/tmp/voice_in.fifo",
         bridgeSocketPath,
         voiceCommandPath,
+        voiceCommandMetaPath,
+        voiceCommandStatePath,
+        voiceCommandClaimedPath,
         "/tmp/tts_in.fifo",
         "/tmp/tts_control.sock",
         heartbeatPath,
@@ -132,6 +140,14 @@ final class ProcessManager {
         Self.relayConsumerAlive()
     }
 
+    func bridgeStopRequested() -> Bool {
+        Self.bridgeStopRequested()
+    }
+
+    func clearBridgeStopRequested() {
+        Self.clearBridgeStopRequested()
+    }
+
     static func relayConsumerAlive() -> Bool {
         relayConsumerAlive(
             voiceCommandPath: voiceCommandPath,
@@ -228,6 +244,8 @@ final class ProcessManager {
 
     @discardableResult
     func relaunchBridgeDaemon(context: BridgeRecoveryContext) -> Bool {
+        guard !Self.bridgeStopRequested() else { return false }
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
         proc.arguments = ["-c", Self.bridgeRecoveryScript(relayBridge: bundledRelayBridge.path, context: context)]
@@ -252,9 +270,11 @@ final class ProcessManager {
         RELAY_PROVIDER=\(shellQuoted(provider))
         launchctl remove com.relay.voicebridge 2>/dev/null || true
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
+        [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         pkill -f '[v]oice_bridge.py' 2>/dev/null || true
-        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
         : >> /tmp/voice_bridge.log
+        [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" >> /tmp/voice_bridge.log 2>&1 || true
         for _ in $(seq 1 20); do
             [ -S /tmp/voice_bridge.sock ] && exit 0
@@ -275,7 +295,12 @@ final class ProcessManager {
     }
 
     /// Kill any running voice_bridge process (but leave the terminal window open).
-    func killBridge() {
+    func killBridge(stopRequested: Bool = false) {
+        if stopRequested {
+            Self.markBridgeStopRequested()
+        }
+
+        Self.removeLaunchdBridgeJob()
         if bridgeAlive() {
             SocketClient.bridgeSend("shutdown")
             Thread.sleep(forTimeInterval: 0.5)
@@ -288,9 +313,14 @@ final class ProcessManager {
             proc.waitUntilExit()
         }
         Self.removeBridgeRuntimeFiles()
+        if stopRequested {
+            Self.markBridgeStopRequested()
+        }
     }
 
     func stopServices() {
+        Self.markBridgeStopRequested()
+        Self.removeLaunchdBridgeJob()
         // Ask bridge to shut down gracefully
         if bridgeAlive() {
             SocketClient.bridgeSend("shutdown")
@@ -305,6 +335,7 @@ final class ProcessManager {
             proc.waitUntilExit()
         }
         Self.removeBridgeRuntimeFiles()
+        Self.markBridgeStopRequested()
     }
 
     func stopServicesForBundleReplacement() {
@@ -356,6 +387,8 @@ final class ProcessManager {
     /// otherwise relay startup is silently treated as a literal prompt;
     /// we self-heal by reinstalling them if they've gone missing.
     func launchNewSession(config: AppConfig) {
+        Self.clearBridgeStopRequested()
+
         let configPath = ConfigManager.shared.configPath.path
         let relayBridge = bundledRelayBridge.path
         let target = Self.target(for: config.general.provider)
@@ -431,6 +464,7 @@ final class ProcessManager {
         # already in place; on first run it does the full no-admin install.
         # Either way, the user sees its progress in the Terminal that just
         # opened.
+        rm -f /tmp/voice_bridge_stop_requested
         \(Self.shellQuoted(relayBridge)) --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }
         # Keep common agent install locations on PATH for tools launched from
         # this session. On fresh installs the relay-bridge install may have
@@ -650,6 +684,32 @@ final class ProcessManager {
         let fm = FileManager.default
         for path in bridgeRuntimePaths {
             try? fm.removeItem(atPath: path)
+        }
+    }
+
+    private static func bridgeStopRequested() -> Bool {
+        FileManager.default.fileExists(atPath: bridgeStopRequestedPath)
+    }
+
+    private static func markBridgeStopRequested() {
+        _ = FileManager.default.createFile(atPath: bridgeStopRequestedPath, contents: Data())
+    }
+
+    private static func clearBridgeStopRequested() {
+        try? FileManager.default.removeItem(atPath: bridgeStopRequestedPath)
+    }
+
+    private static func removeLaunchdBridgeJob() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        proc.arguments = ["remove", bridgeLaunchdLabel]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            NSLog("[ProcessManager] Failed to remove voice bridge launchd job: \(error)")
         }
     }
 

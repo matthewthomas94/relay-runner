@@ -184,6 +184,14 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             script.count("voice_cmd_claimed.json"),
             8,
         )
+        self.assertGreaterEqual(
+            script.count("voice_bridge_stop_requested"),
+            10,
+        )
+        self.assertEqual(
+            script.count("if [ -f /tmp/voice_bridge_stop_requested ]; then"),
+            4,
+        )
 
 
 if __name__ == "__main__":

@@ -304,10 +304,13 @@ final class AppState {
 
     /// End the active voice session and revert to awareness mode.
     func endSession() {
-        processManager.killBridge()
+        processManager.killBridge(stopRequested: true)
         menuSessionActive = false
         bridgeAliveCache = false
         bridgeRecoveryInFlight = false
+        sessionBridgeSeen = false
+        sessionStartTime = .distantPast
+        wizardShownForCurrentBridgeSession = false
         statusText = "Ready"
         // Bridge events (processing/speaking/messageWaiting) are sticky on the
         // state machine — without an explicit reset, killing the bridge mid-
@@ -438,6 +441,7 @@ final class AppState {
         // up so they can retry without onboarding nagging them again.
         onboarding.markSessionRun()
         // Kill any existing voice bridge so only one session is active
+        processManager.clearBridgeStopRequested()
         processManager.killBridge()
         menuSessionActive = true
         sessionStartTime = Date()
@@ -537,6 +541,7 @@ final class AppState {
                 wasAlive: wasAlive,
                 sessionBridgeSeen: self.sessionBridgeSeen,
                 elapsedSinceSessionStart: elapsed,
+                stopRequested: self.processManager.bridgeStopRequested(),
                 recoverySuppressed: self.bridgeRecoverySuppressedForUpdate
             )
 
@@ -645,8 +650,12 @@ final class AppState {
         wasAlive: Bool,
         sessionBridgeSeen: Bool,
         elapsedSinceSessionStart: TimeInterval,
+        stopRequested: Bool = false,
         recoverySuppressed: Bool = false
     ) -> BridgeWatchdogAction {
+        if stopRequested {
+            return daemonAlive ? .reapOrphan : .markDead
+        }
         if recoverySuppressed {
             return .markDead
         }
@@ -668,6 +677,7 @@ final class AppState {
     @discardableResult
     private func startBridgeRecovery(reason: String) -> Bool {
         if bridgeRecoverySuppressedForUpdate { return false }
+        if processManager.bridgeStopRequested() { return false }
         if bridgeRecoveryInFlight { return true }
         guard let context = processManager.bridgeRecoveryContext(fallbackConfig: menuSessionActive ? config : nil) else {
             return false
@@ -688,6 +698,17 @@ final class AppState {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.bridgeRecoveryInFlight = false
+                if self.processManager.bridgeStopRequested() {
+                    if recovered {
+                        self.processManager.killBridge(stopRequested: true)
+                    }
+                    self.bridgeAliveCache = false
+                    self.menuSessionActive = false
+                    self.sessionBridgeSeen = false
+                    self.statusText = "Ready"
+                    NSLog("[AppState] Voice bridge recovery ignored because session stop was requested")
+                    return
+                }
                 if recovered {
                     self.bridgeAliveCache = true
                     self.sessionStartTime = Date()
