@@ -12,9 +12,9 @@ final class BoardOverlayScrollViewTests: XCTestCase {
 
         let views = try scrollViews(in: container)
         XCTAssertEqual(views.documentView.frame.height, views.scrollView.contentView.bounds.height, accuracy: 0.5)
-        XCTAssertGreaterThanOrEqual(views.hostingView.frame.minY, 28)
+        XCTAssertEqual(views.hostingView.frame.minY, 0, accuracy: 0.5)
         XCTAssertEqual(views.hostingView.frame.height, 40, accuracy: 0.5)
-        XCTAssertGreaterThanOrEqual(views.documentView.frame.maxY - views.hostingView.frame.maxY, 28)
+        XCTAssertGreaterThanOrEqual(views.documentView.frame.maxY - views.hostingView.frame.maxY, 0)
     }
 
     func testTallContentExpandsDocumentForScrollingWithReachableEdges() throws {
@@ -24,13 +24,47 @@ final class BoardOverlayScrollViewTests: XCTestCase {
 
         let views = try scrollViews(in: container)
         XCTAssertGreaterThan(views.documentView.frame.height, views.scrollView.contentView.bounds.height)
-        XCTAssertGreaterThanOrEqual(views.hostingView.frame.minY, 28)
+        XCTAssertEqual(views.hostingView.frame.minY, 0, accuracy: 0.5)
         XCTAssertEqual(views.hostingView.frame.height, 520, accuracy: 0.5)
         XCTAssertEqual(
-            views.hostingView.frame.minY,
-            views.documentView.frame.maxY - views.hostingView.frame.maxY,
+            views.hostingView.frame.maxY,
+            views.documentView.frame.maxY,
             accuracy: 0.5
         )
+    }
+
+    func testScrollContainerUsesTopOriginWhenScrolledToBeginning() throws {
+        let container = BoardOverlayScrollContainer(rootView: AnyView(Rectangle().frame(height: 520)))
+
+        layout(container, width: 200, height: 300)
+
+        let views = try scrollViews(in: container)
+        XCTAssertTrue(views.scrollView.contentView.isFlipped)
+
+        views.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 120))
+        views.scrollView.reflectScrolledClipView(views.scrollView.contentView)
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, 120, accuracy: 0.5)
+
+        views.scrollView.contentView.scroll(to: .zero)
+        views.scrollView.reflectScrolledClipView(views.scrollView.contentView)
+
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(views.hostingView.frame.minY, views.scrollView.documentVisibleRect.minY)
+    }
+
+    func testViewportGrowthClampsScrollOffsetIntoReachableRange() throws {
+        let container = BoardOverlayScrollContainer(rootView: AnyView(Rectangle().frame(height: 520)))
+
+        layout(container, width: 200, height: 120)
+        let views = try scrollViews(in: container)
+        let smallMaxOffset = views.documentView.frame.height - views.scrollView.contentView.bounds.height
+        views.scrollView.contentView.scroll(to: NSPoint(x: 0, y: smallMaxOffset))
+        views.scrollView.reflectScrolledClipView(views.scrollView.contentView)
+
+        layout(container, width: 200, height: 300)
+
+        let largeMaxOffset = views.documentView.frame.height - views.scrollView.contentView.bounds.height
+        XCTAssertLessThanOrEqual(views.scrollView.documentVisibleRect.minY, largeMaxOffset + 0.5)
     }
 
     func testViewportHeightChangeRelayoutsDocumentBounds() throws {

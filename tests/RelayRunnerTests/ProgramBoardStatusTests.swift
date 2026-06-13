@@ -966,6 +966,45 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertNil(model.dragPreview)
     }
 
+    func testProgramBoardDragOffsetUsesReportedCardFrame() {
+        let offset = ProgramBoardDragState.cardCenterOffset(
+            cardFrame: CGRect(x: 100, y: 50, width: 246, height: 90),
+            startLocation: CGPoint(x: 126, y: 70)
+        )
+
+        XCTAssertEqual(offset, CGSize(width: 97, height: 25))
+        XCTAssertEqual(
+            ProgramBoardDragState.cardCenterOffset(cardFrame: nil, startLocation: CGPoint(x: 126, y: 70)),
+            .zero
+        )
+    }
+
+    func testProgramBoardDropTargetUsesColumnFrameCoordinates() throws {
+        let model = ProgramBoardViewModel()
+        let item = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-1",
+            title: "Drag me",
+            status: "backlog"
+        )
+        model.columnFrames = [
+            .backlog: CGRect(x: 100, y: 50, width: 270, height: 633),
+            .ready: CGRect(x: 390, y: 50, width: 270, height: 633),
+            .done: CGRect(x: 970, y: 50, width: 270, height: 633),
+        ]
+
+        XCTAssertEqual(
+            model.dropTarget(at: CGPoint(x: 430, y: 180), for: item, sourceLane: .backlog),
+            ProgramBoardDropTarget(lane: .ready, isValid: true)
+        )
+        XCTAssertEqual(
+            model.dropTarget(at: CGPoint(x: 180, y: 180), for: item, sourceLane: .backlog),
+            ProgramBoardDropTarget(lane: .backlog, isValid: false)
+        )
+        XCTAssertNil(model.dropTarget(at: CGPoint(x: 30, y: 180), for: item, sourceLane: .backlog))
+    }
+
     func testProgramBoardResolvedDropRequiresSatisfiedReadyDependencies() {
         let dependencyBacklog = ticket(id: "RR-1", status: .backlog)
         let dependencyDone = ticket(id: "RR-1", status: .done)

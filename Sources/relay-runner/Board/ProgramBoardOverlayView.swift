@@ -88,6 +88,7 @@ struct ProgramBoardOverlayView: View {
         .coordinateSpace(name: "programBoard")
         .ignoresSafeArea()
         .onPreferenceChange(ProgramColumnFramesKey.self) { model.columnFrames = $0 }
+        .onPreferenceChange(ProgramCardFramesKey.self) { model.cardFrames = $0 }
     }
 }
 
@@ -99,10 +100,11 @@ private struct ProgramColumnFramesKey: PreferenceKey {
     }
 }
 
-private struct ProgramCardFrameKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        value = nextValue()
+private struct ProgramCardFramesKey: PreferenceKey {
+    typealias Value = [String: CGRect]
+    static var defaultValue: Value = [:]
+    static func reduce(value: inout Value, nextValue: () -> Value) {
+        value.merge(nextValue()) { $1 }
     }
 }
 
@@ -586,23 +588,25 @@ private struct ProgramWorkColumnPanel: View {
             }
             .padding(.bottom, 4)
 
-            BoardOverlayScrollView {
-                ProgramDropIndicator(target: activeTarget)
-                if items.isEmpty {
-                    ProgramColumnEmpty(text: lane.emptyText)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(items) { item in
-                            DraggableProgramWorkCard(
-                                model: model,
-                                item: item,
-                                lane: lane,
-                                isSelected: model.selectedTicketDetail?.id == item.id,
-                                showsProjectContext: showsProjectContext,
-                                onSelect: { model.selectTicket(item) },
-                                onEdit: { onEdit(item) },
-                                onDrop: onDrop
-                            )
+            ProgramColumnTicketScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ProgramDropIndicator(target: activeTarget)
+                    if items.isEmpty {
+                        ProgramColumnEmpty(text: lane.emptyText)
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(items) { item in
+                                DraggableProgramWorkCard(
+                                    model: model,
+                                    item: item,
+                                    lane: lane,
+                                    isSelected: model.selectedTicketDetail?.id == item.id,
+                                    showsProjectContext: showsProjectContext,
+                                    onSelect: { model.selectTicket(item) },
+                                    onEdit: { onEdit(item) },
+                                    onDrop: onDrop
+                                )
+                            }
                         }
                     }
                 }
@@ -618,6 +622,22 @@ private struct ProgramWorkColumnPanel: View {
                 )
             }
         )
+    }
+}
+
+private struct ProgramColumnTicketScrollView<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            content
+                .padding(.horizontal, 6)
+                .padding(.vertical, 28)
+                .padding(.trailing, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: .infinity)
+        .clipped()
     }
 }
 
@@ -649,7 +669,6 @@ private struct DraggableProgramWorkCard: View {
     let onSelect: () -> Void
     let onEdit: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
-    @State private var cardFrame: CGRect = .zero
 
     private var isBeingDragged: Bool {
         model.dragItemID == item.id
@@ -672,12 +691,11 @@ private struct DraggableProgramWorkCard: View {
             .background(
                 GeometryReader { proxy in
                     Color.clear.preference(
-                        key: ProgramCardFrameKey.self,
-                        value: proxy.frame(in: .named("programBoard"))
+                        key: ProgramCardFramesKey.self,
+                        value: [item.id: proxy.frame(in: .named("programBoard"))]
                     )
                 }
             )
-            .onPreferenceChange(ProgramCardFrameKey.self) { cardFrame = $0 }
             .contentShape(Rectangle())
             .programGrabCursor(dragging: isBeingDragged, enabled: canDrag)
             .gesture(
@@ -721,10 +739,9 @@ private struct DraggableProgramWorkCard: View {
     }
 
     private func cardCenterOffset(startLocation: CGPoint) -> CGSize {
-        guard cardFrame != .zero else { return .zero }
-        return CGSize(
-            width: cardFrame.midX - startLocation.x,
-            height: cardFrame.midY - startLocation.y
+        ProgramBoardDragState.cardCenterOffset(
+            cardFrame: model.cardFrames[item.id],
+            startLocation: startLocation
         )
     }
 }

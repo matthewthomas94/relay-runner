@@ -100,7 +100,27 @@ struct TicketDraft: Identifiable, Equatable {
 struct DragState: Equatable {
     let ticket: Ticket
     var location: CGPoint
+    var cardCenterOffset: CGSize
     var insertTarget: DropTarget?
+
+    static func cardCenterOffset(cardFrame: CGRect?, startLocation: CGPoint) -> CGSize {
+        guard let cardFrame,
+              cardFrame.width > 0,
+              cardFrame.height > 0 else {
+            return .zero
+        }
+        return CGSize(
+            width: cardFrame.midX - startLocation.x,
+            height: cardFrame.midY - startLocation.y
+        )
+    }
+
+    var cardCenter: CGPoint {
+        CGPoint(
+            x: location.x + cardCenterOffset.width,
+            y: location.y + cardCenterOffset.height
+        )
+    }
 }
 
 struct DropTarget: Equatable {
@@ -235,7 +255,7 @@ struct BoardOverlayView: View {
                     .opacity(0.95)
                     .scaleEffect(1.03)
                     .shadow(color: Color.black.opacity(0.55), radius: 22, x: 0, y: 14)
-                    .position(drag.location)
+                    .position(drag.cardCenter)
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
@@ -315,7 +335,7 @@ private struct BoardColumnPanel: View {
             }
             .padding(.bottom, 4)
 
-            BoardOverlayScrollView {
+            BoardColumnTicketScrollView {
                 VStack(spacing: 6) {
                     ForEach(Array(tickets.enumerated()), id: \.element.id) { idx, ticket in
                         VStack(spacing: 0) {
@@ -374,6 +394,22 @@ private struct BoardColumnPanel: View {
     }
 }
 
+private struct BoardColumnTicketScrollView<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            content
+                .padding(.horizontal, 6)
+                .padding(.vertical, 28)
+                .padding(.trailing, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: .infinity)
+        .clipped()
+    }
+}
+
 /// Thin white bar that shows where a drop would land. Visible only when the
 /// drag's hover index matches the slot this indicator sits in.
 private struct DropIndicator: View {
@@ -426,6 +462,10 @@ private struct DraggableTicketCard: View {
                             model.dragState = DragState(
                                 ticket: ticket,
                                 location: value.location,
+                                cardCenterOffset: DragState.cardCenterOffset(
+                                    cardFrame: model.cardFrames[ticket.id],
+                                    startLocation: value.startLocation
+                                ),
                                 insertTarget: nil
                             )
                         } else {

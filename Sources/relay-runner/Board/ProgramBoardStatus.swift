@@ -119,6 +119,18 @@ struct ProgramBoardDragState: Equatable {
     var location: CGPoint
     var cardCenterOffset: CGSize
 
+    static func cardCenterOffset(cardFrame: CGRect?, startLocation: CGPoint) -> CGSize {
+        guard let cardFrame,
+              cardFrame.width > 0,
+              cardFrame.height > 0 else {
+            return .zero
+        }
+        return CGSize(
+            width: cardFrame.midX - startLocation.x,
+            height: cardFrame.midY - startLocation.y
+        )
+    }
+
     var cardCenter: CGPoint {
         CGPoint(
             x: location.x + cardCenterOffset.width,
@@ -844,6 +856,7 @@ final class ProgramBoardViewModel {
     var dragTarget: ProgramBoardDropTarget?
     var dragPreview: ProgramBoardDragState?
     var columnFrames: [ProgramBoardLane: CGRect] = [:]
+    var cardFrames: [String: CGRect] = [:]
     var isLoading: Bool { reloadState.isLoading }
 
     @ObservationIgnored private var reloadTask: Task<Void, Never>?

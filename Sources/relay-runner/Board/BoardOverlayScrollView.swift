@@ -18,7 +18,8 @@ struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
 
     private var scrollContent: some View {
         content
-            .padding(6)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 28)
             .padding(.trailing, 12)
     }
 }
@@ -34,7 +35,6 @@ final class BoardOverlayScrollContainer: NSView {
     private var lastLaidOutWidth: CGFloat = 0
     private var lastViewportHeight: CGFloat = 0
     private var lastLaidOutHeight: CGFloat = 0
-    private let verticalContentInset: CGFloat = 28
 
     init(rootView: AnyView) {
         hostingView = NSHostingView(rootView: rootView)
@@ -93,6 +93,7 @@ final class BoardOverlayScrollContainer: NSView {
     private func setup() {
         wantsLayer = true
 
+        scrollView.contentView = BoardOverlayScrollClipView()
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = false
@@ -140,19 +141,30 @@ final class BoardOverlayScrollContainer: NSView {
         }
         hostingView.frame = CGRect(origin: .zero, size: CGSize(width: viewport.width, height: 1))
         let fittingHeight = hostingView.fittingSize.height
-        let contentHeight = fittingHeight + verticalContentInset * 2
-        let documentHeight = max(viewport.height, contentHeight)
+        let documentHeight = max(viewport.height, fittingHeight)
         documentView.frame = CGRect(
             origin: .zero,
             size: CGSize(width: viewport.width, height: documentHeight)
         )
         hostingView.frame = CGRect(
-            origin: CGPoint(x: 0, y: verticalContentInset),
+            origin: .zero,
             size: CGSize(width: viewport.width, height: fittingHeight)
         )
+        clampScrollOffset(documentHeight: documentHeight, viewportHeight: viewport.height)
         lastLaidOutWidth = viewport.width
         lastViewportHeight = viewport.height
         lastLaidOutHeight = documentHeight
+    }
+
+    private func clampScrollOffset(documentHeight: CGFloat, viewportHeight: CGFloat) {
+        let maxOffset = max(0, documentHeight - viewportHeight)
+        let currentOrigin = scrollView.contentView.bounds.origin
+        let clampedY = min(max(currentOrigin.y, 0), maxOffset)
+        guard abs(currentOrigin.y - clampedY) > 0.5 || abs(currentOrigin.x) > 0.5 else {
+            return
+        }
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: clampedY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     @objc private func contentBoundsDidChange() {
@@ -239,4 +251,16 @@ final class BoardOverlayScrollContainer: NSView {
 
 final class BoardOverlayScrollDocumentView: NSView {
     override var isFlipped: Bool { true }
+}
+
+final class BoardOverlayScrollClipView: NSClipView {
+    override var isFlipped: Bool { true }
+
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var rect = super.constrainBoundsRect(proposedBounds)
+        guard let documentView else { return rect }
+        rect.origin.x = 0
+        rect.origin.y = min(max(rect.origin.y, 0), max(0, documentView.frame.height - rect.height))
+        return rect
+    }
 }

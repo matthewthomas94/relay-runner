@@ -21,6 +21,53 @@ final class BoardViewModelTests: XCTestCase {
         XCTAssertEqual(model.tickets(in: .done).map(\.id), ["RR-4", "RR-3"])
     }
 
+    func testProjectBoardDragOffsetUsesReportedCardFrame() {
+        let offset = DragState.cardCenterOffset(
+            cardFrame: CGRect(x: 100, y: 50, width: 310, height: 82),
+            startLocation: CGPoint(x: 126, y: 70)
+        )
+        let state = DragState(
+            ticket: ticket(id: "RR-1", status: .backlog),
+            location: CGPoint(x: 220, y: 180),
+            cardCenterOffset: offset,
+            insertTarget: nil
+        )
+
+        XCTAssertEqual(offset, CGSize(width: 129, height: 21))
+        XCTAssertEqual(state.cardCenter, CGPoint(x: 349, y: 201))
+        XCTAssertEqual(
+            DragState.cardCenterOffset(cardFrame: nil, startLocation: CGPoint(x: 126, y: 70)),
+            .zero
+        )
+    }
+
+    func testProjectBoardDropTargetUsesColumnFrameCoordinates() {
+        let model = BoardViewModel()
+        model.tickets = [
+            ticket(id: "RR-1", status: .backlog),
+            ticket(id: "RR-2", status: .ready),
+            ticket(id: "RR-3", status: .ready),
+        ]
+        model.columnFrames = [
+            .backlog: CGRect(x: 100, y: 50, width: 358, height: 633),
+            .ready: CGRect(x: 480, y: 50, width: 358, height: 633),
+        ]
+        model.cardFrames = [
+            "RR-2": CGRect(x: 520, y: 120, width: 310, height: 80),
+            "RR-3": CGRect(x: 520, y: 230, width: 310, height: 80),
+        ]
+
+        XCTAssertEqual(
+            model.computeInsertTarget(at: CGPoint(x: 540, y: 130), draggedId: "RR-1"),
+            DropTarget(status: .ready, index: 0)
+        )
+        XCTAssertEqual(
+            model.computeInsertTarget(at: CGPoint(x: 540, y: 350), draggedId: "RR-1"),
+            DropTarget(status: .ready, index: 2)
+        )
+        XCTAssertNil(model.computeInsertTarget(at: CGPoint(x: 40, y: 130), draggedId: "RR-1"))
+    }
+
     private func ticket(id: String, status: Ticket.Status) -> Ticket {
         Ticket(
             id: id,
