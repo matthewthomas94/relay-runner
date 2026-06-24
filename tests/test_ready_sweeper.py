@@ -185,6 +185,32 @@ class ReadySweeperTests(unittest.TestCase):
             self.assertEqual(result["dispatched"], [])
             self.assertEqual(result["skipped"], [{"ticket_id": "RR-1", "reason": "draft"}])
 
+    def test_dependency_progression_dispatches_already_queued_dependent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="done")
+            self.write_ticket(repo, "RR-2", status="ready", depends_on=["RR-1"])
+
+            daemon = object.__new__(Daemon)
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs) or {
+                "already_active": False,
+                "run": {"id": 42},
+            }
+
+            Daemon._progress_dependents(
+                daemon,
+                repo_path=str(repo),
+                finished_ticket_id="RR-1",
+            )
+
+            self.assertEqual(calls, [{
+                "ticket_id": "RR-2",
+                "repo_path": str(repo),
+                "source": "dependency-progression",
+            }])
+
     def test_program_sweeper_dispatches_registered_projects_without_parent_board(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

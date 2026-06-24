@@ -140,7 +140,7 @@ def build_program_status(
 
     if query == QUERY_READY_LANE:
         items = [_ticket_item(ctx, ticket, "ready") for ticket in _board_lane_tickets(ctx, provider_key, "ready")]
-        return _response(query, provider_key, _items_text("Ready", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
+        return _response(query, provider_key, _items_text("Queued", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_IN_PROGRESS_LANE:
         items = [_ticket_item(ctx, ticket, "in progress") for ticket in _board_lane_tickets(ctx, provider_key, "in_progress")]
@@ -156,7 +156,7 @@ def build_program_status(
 
     if query == QUERY_READY:
         items = [_ticket_item(ctx, ticket, "ready") for ticket in _ready_tickets(ctx, provider_key)]
-        return _response(query, provider_key, _items_text("Ready work", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
+        return _response(query, provider_key, _items_text("Queued work", "ticket", items, ctx, item_limit), _limit_items(items, item_limit), ctx)
 
     if query == QUERY_BLOCKED:
         items = [_ticket_item(ctx, ticket, "blocked") for ticket in _blocked_tickets(ctx, provider_key)]
@@ -269,19 +269,21 @@ def _blocked_tickets(ctx: dict[str, Any], provider: str | None) -> list[dict[str
     return [
         ticket
         for ticket in sorted(ctx["tickets"], key=_ticket_sort_key)
-        if (ticket["id"] in blocked_ids or _key(_ticket_state(ticket)) == "blocked")
+        if (
+            ticket["id"] in blocked_ids
+            or _unsatisfied_dependencies(ctx, ticket)
+            or _key(_ticket_state(ticket)) == "blocked"
+        )
         and _ticket_matches_provider(ctx, ticket, provider)
     ]
 
 
 def _ready_tickets(ctx: dict[str, Any], provider: str | None) -> list[dict[str, Any]]:
-    blocked_ids = set(ctx["blockers"]) | ctx["blocked_work"]
     awaiting_ids = {ticket["id"] for ticket in _awaiting_merge_tickets(ctx, provider)}
     return [
         ticket
         for ticket in sorted(ctx["tickets"], key=_ticket_sort_key)
         if _key(_ticket_state(ticket)) == "ready"
-        and ticket["id"] not in blocked_ids
         and ticket["id"] not in awaiting_ids
         and _ticket_matches_provider(ctx, ticket, provider)
     ]
@@ -473,7 +475,10 @@ def _run_item(ctx: dict[str, Any], run: dict[str, Any], status: str) -> dict[str
 
 def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> dict[str, Any]:
     latest_run = next(iter(ctx["runs_by_ticket"].get(ticket["id"], [])), None)
-    blockers = [_ticket_id(blocker) for blocker in ctx["blockers"].get(ticket["id"], [])]
+    blockers = _unique_labels(
+        [_ticket_id(blocker) for blocker in ctx["blockers"].get(ticket["id"], [])]
+        + _unsatisfied_dependencies(ctx, ticket)
+    )
     return {
         "project": _project(ctx["projects_by_id"].get(ticket.get("project_id"))),
         "ticket_id": _ticket_id(ticket),
@@ -488,13 +493,41 @@ def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> di
         "activity": latest_run.get("body", {}).get("activity") if latest_run else None,
         "last_error": latest_run.get("body", {}).get("last_error") if latest_run else None,
         "depends_on": _ticket_depends_on(ticket),
-        "blocked_by": [ticket_id for ticket_id in blockers if ticket_id],
+        "blocked_by": blockers,
         "ticket_node_id": ticket["id"],
     }
 
 
 def _limit_items(items: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
     return items if limit is None else items[:limit]
+
+
+def _unsatisfied_dependencies(ctx: dict[str, Any], ticket: dict[str, Any]) -> list[str]:
+    deps = _ticket_depends_on(ticket)
+    if not deps:
+        return []
+    tickets_by_id = {
+        _ticket_id(candidate): candidate
+        for candidate in ctx["tickets"]
+        if candidate.get("project_id") == ticket.get("project_id")
+    }
+    waiting: list[str] = []
+    for dep_id in deps:
+        dep = tickets_by_id.get(dep_id)
+        if dep is None or _key(_ticket_state(dep)) not in {"done", "closed", "completed"}:
+            waiting.append(dep_id)
+    return waiting
+
+
+def _unique_labels(labels: list[str | None]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for label in labels:
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        unique.append(label)
+    return unique
 
 
 def _items_text(
@@ -508,7 +541,7 @@ def _items_text(
         empty = {
             QUERY_ACTIVE: "No active program runs",
             QUERY_DISCOVERY: "No discovery work",
-            QUERY_READY: "No ready work",
+            QUERY_READY: "No queued work",
             QUERY_BLOCKED: "No blocked work",
             QUERY_AWAITING_MERGE: "No tickets awaiting merge",
             QUERY_DONE: "No done work",
@@ -555,7 +588,7 @@ def _item_line(item: dict[str, Any]) -> str:
     if item.get("provider"):
         details.append(item["provider"])
     if item.get("blocked_by"):
-        details.append("blocked by " + ", ".join(item["blocked_by"]))
+        details.append("waiting on " + ", ".join(item["blocked_by"]))
     if item.get("activity"):
         details.append(str(item["activity"]))
     if item.get("last_error") and item.get("status") in {"stalled", "failed"}:

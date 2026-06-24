@@ -130,10 +130,9 @@ final class ProgramBoardOverlayController {
         do {
             let result = try ProgramBoardTicketCreator.create(request)
             if result.shouldDispatch {
-                OrchestratorClient.dispatchTicket(
-                    ticketId: result.ticket.id,
+                OrchestratorClient.sweepReadyTickets(
                     repoPath: request.repoPath,
-                    source: "program-board-save"
+                    trigger: "program-board-save"
                 )
             }
         } catch {
@@ -160,10 +159,9 @@ final class ProgramBoardOverlayController {
         do {
             let result = try ProgramBoardTicketEditor.save(request)
             if result.shouldDispatch {
-                OrchestratorClient.dispatchTicket(
-                    ticketId: result.ticket.id,
+                OrchestratorClient.sweepReadyTickets(
                     repoPath: request.repoPath,
-                    source: "program-board-save"
+                    trigger: "program-board-save"
                 )
             }
         } catch {
@@ -202,10 +200,9 @@ final class ProgramBoardOverlayController {
         do {
             let result = try ProgramBoardTicketMover.move(unresolved)
             if let dispatch = result.dispatchRequest {
-                OrchestratorClient.dispatchTicket(
-                    ticketId: dispatch.ticketID,
+                OrchestratorClient.sweepReadyTickets(
                     repoPath: dispatch.repoPath,
-                    source: dispatch.source
+                    trigger: dispatch.source
                 )
             }
             model.reload()

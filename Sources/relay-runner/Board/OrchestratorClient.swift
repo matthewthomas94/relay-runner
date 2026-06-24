@@ -24,7 +24,7 @@ enum OrchestratorClient {
         post(req, label: "dispatch \(ticketId)")
     }
 
-    /// Ask the daemon to scan the active repo and dispatch stale ready tickets.
+    /// Ask the daemon to scan the active repo and dispatch eligible queued tickets.
     /// This is intentionally repo-scoped and provider-neutral: the daemon still
     /// creates workers through the same dispatch path as board drag/save.
     static func sweepReadyTickets(repoPath: String, trigger: String) {
@@ -36,7 +36,7 @@ enum OrchestratorClient {
     }
 
     /// Ask the daemon to scan every registered project and dispatch eligible
-    /// ready tickets without opening each project board.
+    /// queued tickets without opening each project board.
     static func sweepProgramReadyTickets(trigger: String) {
         guard let req = programReadySweepRequest(trigger: trigger, port: readPort()) else {
             NSLog("[orchestrator-client] could not build program ready-sweep request")

@@ -55,12 +55,11 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertIn("Claude/sonnet", claude["message"])
         self.assertNotIn("Codex/gpt-5", claude["message"])
 
-    def test_blocked_work_includes_project_path_ticket_id_and_blocker(self):
+    def test_blocked_work_includes_project_path_ticket_id_and_waiting_dependency(self):
         store = self.make_store()
         project = _project(store, "/tmp/relay-runner", "Relay Runner")
         blocker = _ticket(store, project, "RR-1", "Finish dependency", "in_progress")
-        blocked = _ticket(store, project, "RR-2", "Ship dependent", "ready")
-        store.upsert_edge(src_id=blocker["id"], dst_id=blocked["id"], kind=EDGE_BLOCKS)
+        _ticket(store, project, "RR-2", "Ship dependent", "ready", depends_on=["RR-1"])
 
         result = build_program_status(store, query="blocked_work", now=2000.0)
         message = result["message"]
@@ -68,24 +67,26 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertIn("Blocked work: 1 ticket", message)
         self.assertIn("Relay Runner (/tmp/relay-runner)", message)
         self.assertIn("RR-2", message)
-        self.assertIn("blocked by RR-1", message)
+        self.assertIn("waiting on RR-1", message)
 
-    def test_ready_work_excludes_blocked_and_awaiting_merge_tickets(self):
+    def test_queued_work_includes_dependency_waiting_and_excludes_awaiting_merge_tickets(self):
         store = self.make_store()
         project = _project(store, "/tmp/relay-runner", "Relay Runner")
         ready = _ticket(store, project, "RR-1", "Ready to dispatch", "ready")
         blocker = _ticket(store, project, "RR-2", "Finish dependency", "in_progress")
-        blocked = _ticket(store, project, "RR-3", "Blocked ready ticket", "ready")
+        blocked = _ticket(store, project, "RR-3", "Blocked ready ticket", "ready", depends_on=["RR-2"])
         awaiting = _ticket(store, project, "RR-4", "Awaiting review", "ready")
         _run(store, project, awaiting, 102, "awaiting_merge", "claude", model="sonnet")
         store.upsert_edge(src_id=blocker["id"], dst_id=blocked["id"], kind=EDGE_BLOCKS)
 
         result = build_program_status(store, query="ready_work", now=2000.0)
 
-        self.assertEqual([item["ticket_id"] for item in result["items"]], ["RR-1"])
-        self.assertIn("Ready work: 1 ticket", result["message"])
+        self.assertEqual([item["ticket_id"] for item in result["items"]], ["RR-1", "RR-3"])
+        self.assertEqual(result["items"][1]["blocked_by"], ["RR-2"])
+        self.assertIn("Queued work: 2 tickets", result["message"])
         self.assertIn("RR-1", result["message"])
-        self.assertNotIn("RR-3", result["message"])
+        self.assertIn("RR-3", result["message"])
+        self.assertIn("waiting on RR-2", result["message"])
         self.assertNotIn("RR-4", result["message"])
 
     def test_discovery_work_includes_backlog_and_ready_without_active_or_blocked_items(self):
@@ -129,7 +130,7 @@ class ProgramStatusTests(unittest.TestCase):
             providers={"codex": {}, "claude": {}},
         )
         _ticket(store, project, "RR-1", "Backlog work", "backlog")
-        _ticket(store, project, "RR-2", "Ready work", "ready", priority="high", depends_on=["RR-1"])
+        _ticket(store, project, "RR-2", "Queued work", "ready", priority="high", depends_on=["RR-1"])
         active = _ticket(store, project, "RR-3", "Running work", "ready")
         awaiting = _ticket(store, project, "RR-4", "Awaiting merge", "ready")
         _ticket(store, project, "RR-5", "Manual progress", "in_progress")
@@ -148,6 +149,8 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual([item["ticket_id"] for item in done["items"]], ["RR-4", "RR-6"])
         self.assertEqual(ready["items"][0]["priority"], "high")
         self.assertEqual(ready["items"][0]["depends_on"], ["RR-1"])
+        self.assertEqual(ready["items"][0]["blocked_by"], ["RR-1"])
+        self.assertIn("Queued: 1 ticket", ready["message"])
         self.assertEqual(done["items"][0]["run_state"], "awaiting_merge")
         self.assertEqual(done["items"][0]["provider"], "Claude/sonnet")
 
@@ -182,7 +185,7 @@ class ProgramStatusTests(unittest.TestCase):
         store = self.make_store()
         project = _project(store, "/tmp/relay-runner", "Relay Runner")
         _ticket(store, project, "RR-1", "Backlog work", "backlog")
-        _ticket(store, project, "RR-2", "Ready work", "ready")
+        _ticket(store, project, "RR-2", "Queued work", "ready")
         active = _ticket(store, project, "RR-3", "Running work", "ready")
         awaiting = _ticket(store, project, "RR-4", "Awaiting merge", "ready")
         _ticket(store, project, "RR-5", "Finished work", "done")

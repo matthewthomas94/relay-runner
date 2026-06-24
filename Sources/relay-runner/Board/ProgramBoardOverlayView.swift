@@ -362,7 +362,7 @@ private struct ProgramMetricGrid: View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
             ProgramMetricTile(label: "Projects", value: "\(snapshot.projectCount)")
             ProgramMetricTile(label: "Backlog", value: "\(snapshot.backlogWork.items.count)")
-            ProgramMetricTile(label: "Ready", value: "\(snapshot.readyWork.items.count)")
+            ProgramMetricTile(label: "Queued", value: "\(snapshot.readyWork.items.count)")
             ProgramMetricTile(label: "Progress", value: "\(snapshot.inProgressWork.items.count)")
             ProgramMetricTile(label: "Done", value: "\(snapshot.doneWork.items.count)")
             ProgramMetricTile(
@@ -515,7 +515,7 @@ private struct ProjectBoardOverview: View {
     var body: some View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
             ProjectCount(label: "Backlog", value: item.backlogTickets ?? item.openTickets)
-            ProjectCount(label: "Ready", value: item.readyTickets)
+            ProjectCount(label: "Queued", value: item.readyTickets)
             ProjectCount(label: "In progress", value: item.inProgressTickets ?? item.activeRuns)
             ProjectCount(label: "Done", value: item.doneTickets)
         }
@@ -858,7 +858,7 @@ private struct ProgramWorkCard: View {
             labels.append("Active worker")
         }
         if !item.blockedBy.isEmpty {
-            labels.append("Blocked")
+            labels.append("Waiting")
         }
         return labels
     }
@@ -866,7 +866,7 @@ private struct ProgramWorkCard: View {
     private var dependencyText: String? {
         var parts: [String] = []
         if !item.blockedBy.isEmpty {
-            parts.append("blocked by \(item.blockedBy.joined(separator: ", "))")
+            parts.append("waiting on \(item.blockedBy.joined(separator: ", "))")
         }
         if !item.dependsOn.isEmpty {
             parts.append("depends on \(item.dependsOn.joined(separator: ", "))")
@@ -1077,7 +1077,7 @@ private struct ProgramTicketDetailPanel: View {
             rows.append(ProgramDetailRow(label: "Depends on", value: ticket.dependsOn.joined(separator: ", ")))
         }
         if !detail.item.blockedBy.isEmpty {
-            rows.append(ProgramDetailRow(label: "Blocked by", value: detail.item.blockedBy.joined(separator: ", ")))
+            rows.append(ProgramDetailRow(label: "Waiting on", value: detail.item.blockedBy.joined(separator: ", ")))
         }
         append("Activity", detail.item.activity, to: &rows, prettify: false)
         append("Last error", detail.item.lastError, to: &rows, prettify: false)

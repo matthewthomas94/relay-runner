@@ -99,13 +99,13 @@ A `ready` ticket for provider-facing work should make provider parity explicit: 
 Four columns, fixed:
 
 ```
-Backlog → Ready → In Progress → Done
+Backlog → Queued → In Progress → Done
 ```
 
 | Status        | Meaning                                                                                     |
 |---------------|---------------------------------------------------------------------------------------------|
 | `backlog`     | Idea captured. Not yet refined or estimated. Often no acceptance criteria.                  |
-| `ready`       | Refined. Has acceptance criteria. Ready to be dispatched.                                   |
+| `ready`       | Refined queued work. The on-disk value stays `ready`; board UI labels this lane "Queued".   |
 | `in_progress` | Daemon has dispatched it; a `relay/<id>` worktree exists; `run_id` is stamped.              |
 | `done`        | Sub-agent's branch was merged into the working branch.                                      |
 
@@ -113,7 +113,7 @@ Backlog → Ready → In Progress → Done
 
 | Transition                    | Actor                       | Trigger                                  |
 |-------------------------------|-----------------------------|------------------------------------------|
-| `backlog → ready`             | Human via board drag/edit, OR daemon auto-progression | Promoting a card to `ready` is the auto-dispatch trigger — the board calls `dispatch_ticket` the moment a card lands there (drag, or new-in-ready + save). The daemon also flips `backlog → ready` on dependents when a predecessor reaches `done` (then dispatches them in turn). |
+| `backlog → ready`             | Human via board drag/edit, OR daemon auto-progression | Promoting a card into the Queued lane writes `status: ready`. The board asks the daemon to sweep queued work; dependency-gated queued tickets remain visible and waiting until all predecessors are `done`. The daemon also flips `backlog → ready` on dependents when a predecessor reaches `done` (then dispatches eligible queued tickets in turn). |
 | `ready → in_progress`         | Sub-agent                   | Worker's first step after `dispatch_ticket` claims the run; the worker stamps `run_id` and commits the frontmatter change. |
 | `in_progress → done`          | Sub-agent                   | Worker flips status and appends `## Run log` before exiting; commit lands on the worker's branch and reaches the board when the branch is merged. |
 | any → `canceled: true`        | Daemon or human             | `cancel_run` called, or manual cancel.      |
@@ -218,5 +218,5 @@ Shipped:
 1. **Schema** *(this doc)* — file format and lifecycle.
 2. **Board UI** — SwiftUI overlay in the menu bar app reads `.orchestrator/`, renders four-column board, supports new/edit/delete and drag-between-columns.
 3. **Dispatch wiring** — `mcp__relay-orchestrator__dispatch_ticket(ticket_id, repo_path)` reads `<repo>/.orchestrator/<ticket_id>.md` and spawns a sub-agent. The worker flips `status` to `in_progress` (stamping `run_id`) at the start of the run and to `done` (with an appended `## Run log` section) before exiting; both changes are committed to the worker's branch.
-4. **Auto-dispatch on `ready`** — the board calls `dispatch_ticket` automatically whenever a card lands in the `ready` column (via drag, or new-in-ready followed by editor save). The daemon's `find_active` makes the call idempotent, so re-promoting a ticket that's already running is a no-op.
-5. **Dependency auto-progression** — when a worker reaches `Succeeded`, the daemon scans the repo's `.orchestrator/` for tickets whose `depends_on` includes the just-finished ticket. Any dependent in `backlog` with all of its other deps also `done` gets its frontmatter flipped to `ready` and dispatched. This is the only path where the daemon writes ticket files — sub-agents own their own ticket; the daemon owns inter-ticket gating.
+4. **Auto-dispatch on queued work** — the board asks the daemon to sweep queued work whenever a card lands in the `ready` schema lane (via drag, or new-in-queued followed by editor save). The sweeper dispatches only tickets whose dependencies are done; dependency-gated queued tickets remain in the lane with a waiting marker.
+5. **Dependency auto-progression** — when a worker reaches `Succeeded`, the daemon scans the repo's `.orchestrator/` for tickets whose `depends_on` includes the just-finished ticket. Any dependent in `backlog` with all of its other deps also `done` gets its frontmatter flipped to `ready`; dependents already in `ready` stay queued. Eligible queued dependents are then dispatched. This is the only path where the daemon writes ticket files — sub-agents own their own ticket; the daemon owns inter-ticket gating.

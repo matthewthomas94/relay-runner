@@ -222,7 +222,7 @@ def format_command_for_agent(action: CommandAction) -> str:
             "Orchestrator contract:",
             "- You are the foreground orchestrator, not the implementation worker.",
             "- Do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
-            "- Resolve this action first: create/refine/commit the ticket, edit the existing ticket, dispatch a ready worker, or ask for the target project.",
+            "- Resolve this action first: create/refine/commit the ticket, edit the existing ticket, dispatch queued work, or ask for the target project.",
             "- Relay command metadata is the stale-action guard. Before creating, editing, or dispatching tickets, and before TTS, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
             "- When dispatching through relay-orchestrator, pass relay_command_seq and relay_command_id when they are present.",
             "- Your user-facing response must name the action outcome, such as created ticket, edited ticket, dispatched worker, or waiting on a target-project choice.",

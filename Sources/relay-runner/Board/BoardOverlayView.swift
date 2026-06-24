@@ -53,6 +53,19 @@ final class BoardViewModel {
             .sorted(by: Ticket.newestFirst)
     }
 
+    /// Unsatisfied predecessors for a queued ticket. Missing predecessor files
+    /// count as waiting so dependency-gated work does not silently dispatch.
+    func waitingOn(for ticket: Ticket) -> [String] {
+        guard effectiveStatus(for: ticket) == .ready, !ticket.dependsOn.isEmpty else {
+            return []
+        }
+        let byID = Dictionary(uniqueKeysWithValues: tickets.map { ($0.id, $0) })
+        return ticket.dependsOn.filter { dependencyID in
+            guard let dependency = byID[dependencyID] else { return true }
+            return dependency.status != .done
+        }
+    }
+
     /// Hit-test `location` against the cached frames. Returns the column + the
     /// insertion index a drop at this point would land at, excluding the
     /// dragged ticket from the index calculation.
@@ -207,7 +220,7 @@ struct BoardOverlayView: View {
 
     private let columns: [BoardColumnSpec] = [
         BoardColumnSpec(status: .backlog,    title: "Backlog"),
-        BoardColumnSpec(status: .ready,      title: "Ready"),
+        BoardColumnSpec(status: .ready,      title: "Queued"),
         BoardColumnSpec(status: .inProgress, title: "In progress"),
         BoardColumnSpec(status: .done,       title: "Done"),
     ]
@@ -440,7 +453,8 @@ private struct DraggableTicketCard: View {
 
     var body: some View {
         TicketCard(ticket: ticket, pill: model.pill(for: ticket),
-                   activityRun: model.activityRun(for: ticket))
+                   activityRun: model.activityRun(for: ticket),
+                   waitingOn: model.waitingOn(for: ticket))
             .opacity(isBeingDragged ? 0.25 : 1.0)
             .background(
                 GeometryReader { proxy in
@@ -605,6 +619,7 @@ private struct TicketCard: View {
     /// Live run backing the activity chip (RR-12). The chip is subordinate to
     /// the pill — it adds "what the agent is doing now", not the primary state.
     var activityRun: RunState? = nil
+    var waitingOn: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -617,6 +632,8 @@ private struct TicketCard: View {
                 Spacer(minLength: 0)
                 if let pill {
                     RunStatusPill(pill: pill)
+                } else if !waitingOn.isEmpty {
+                    DependencyWaitingBadge()
                 } else if ticket.status == .inProgress && ticket.runId != nil {
                     AgentActivityBadge(activity: .building)
                 }
@@ -629,6 +646,14 @@ private struct TicketCard: View {
                         ActivityChip(text: text)
                     }
                 }
+            }
+            if !waitingOn.isEmpty {
+                Text("Waiting on \(waitingOn.joined(separator: ", "))")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color(.sRGB, red: 245 / 255, green: 180 / 255, blue: 40 / 255, opacity: 0.95))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .help("Waiting on \(waitingOn.joined(separator: ", "))")
             }
             if let description = ticket.description {
                 Text(description)
@@ -648,6 +673,31 @@ private struct TicketCard: View {
         )
         .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
         .opacity(ticket.canceled ? 0.45 : 1.0)
+    }
+}
+
+private struct DependencyWaitingBadge: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(Color(.sRGB, red: 245 / 255, green: 180 / 255, blue: 40 / 255, opacity: 1.0))
+                .frame(width: 6, height: 6)
+                .opacity(0.9)
+            Text("Waiting")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.08))
+        )
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+        )
+        .fixedSize()
     }
 }
 
