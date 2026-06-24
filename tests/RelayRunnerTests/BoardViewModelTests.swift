@@ -68,13 +68,36 @@ final class BoardViewModelTests: XCTestCase {
         XCTAssertNil(model.computeInsertTarget(at: CGPoint(x: 40, y: 130), draggedId: "RR-1"))
     }
 
-    private func ticket(id: String, status: Ticket.Status) -> Ticket {
+    func testProjectBoardQueuedTicketReportsUnsatisfiedDependencies() {
+        let model = BoardViewModel()
+        model.tickets = [
+            ticket(id: "RR-1", status: .backlog),
+            ticket(id: "RR-2", status: .ready, dependsOn: ["RR-1", "RR-missing"]),
+            ticket(id: "RR-3", status: .done),
+            ticket(id: "RR-4", status: .ready, dependsOn: ["RR-3"]),
+            ticket(id: "RR-5", status: .ready),
+            ticket(id: "RR-6", status: .ready, dependsOn: ["RR-5"]),
+        ]
+        model.runStates = [
+            "RR-5": runState(ticketId: "RR-5", state: "Succeeded", runId: 45),
+        ]
+
+        XCTAssertEqual(model.waitingOn(for: model.tickets[1]), ["RR-1", "RR-missing"])
+        XCTAssertEqual(model.waitingOn(for: model.tickets[3]), [])
+        XCTAssertEqual(model.waitingOn(for: model.tickets[5]), ["RR-5"])
+    }
+
+    private func ticket(
+        id: String,
+        status: Ticket.Status,
+        dependsOn: [String] = []
+    ) -> Ticket {
         Ticket(
             id: id,
             title: id,
             status: status,
             priority: .medium,
-            dependsOn: [],
+            dependsOn: dependsOn,
             runId: nil,
             canceled: false,
             order: 0,

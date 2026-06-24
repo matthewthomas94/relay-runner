@@ -315,16 +315,15 @@ final class BoardOverlayController {
         setPanelKeyEligible(false)
         model.tickets = loadTickets()
 
-        // Auto-dispatch when the saved ticket is in `ready`. Covers
-        // "create-in-ready-then-type-title": handleCreate opens the editor
+        // Reconcile queued tickets after save. Covers
+        // "create-in-queued-then-type-title": handleCreate opens the editor
         // on a fresh ticket; the worker isn't useful until the user supplies
-        // a real title/description, so we wait for the save. Daemon's
-        // find_active makes the call idempotent.
+        // a real title/description, so we wait for the save. The daemon skips
+        // dependency-gated queued tickets until their predecessors are done.
         if updated.status == .ready && !updated.draft {
-            OrchestratorClient.dispatchTicket(
-                ticketId: updated.id,
+            OrchestratorClient.sweepReadyTickets(
                 repoPath: project.repoPath.path,
-                source: "board-save"
+                trigger: "board-save"
             )
         }
     }
@@ -413,16 +412,14 @@ final class BoardOverlayController {
         }
         model.tickets = loadTickets()
 
-        // Auto-dispatch when this drop transitioned the dragged ticket INTO
-        // ready (not when reordering within ready, not when moving out of ready).
-        // The daemon's find_active short-circuits repeats, so even a drag-out-
-        // then-drag-back is safe, but limiting the trigger to genuine
-        // backlog/in_progress/done → ready transitions keeps logs clean.
+        // Reconcile queued tickets when this drop transitioned the dragged
+        // ticket INTO ready (not when reordering within ready, not when moving
+        // out of ready). The daemon dispatches only dependency-satisfied
+        // tickets, so dependency-gated work stays queued without a failed run.
         if dragged.status != .ready && status == .ready && !dragged.draft {
-            OrchestratorClient.dispatchTicket(
-                ticketId: dragged.id,
+            OrchestratorClient.sweepReadyTickets(
                 repoPath: project.repoPath.path,
-                source: "board-drop"
+                trigger: "board-drop"
             )
         }
     }

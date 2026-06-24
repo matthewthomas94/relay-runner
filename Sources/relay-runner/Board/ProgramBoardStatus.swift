@@ -65,7 +65,7 @@ enum ProgramBoardLane: CaseIterable, Identifiable, Equatable, Hashable {
     var title: String {
         switch self {
         case .backlog: "Backlog"
-        case .ready: "Ready"
+        case .ready: "Queued"
         case .inProgress: "In progress"
         case .done: "Done"
         }
@@ -74,7 +74,7 @@ enum ProgramBoardLane: CaseIterable, Identifiable, Equatable, Hashable {
     var emptyText: String {
         switch self {
         case .backlog: "No backlog tickets"
-        case .ready: "No ready tickets"
+        case .ready: "No queued tickets"
         case .inProgress: "No active tickets"
         case .done: "No done tickets"
         }
@@ -217,9 +217,6 @@ enum ProgramBoardDropPolicy {
               let repoPath = cleaned(item.project?.path) else {
             return nil
         }
-        if targetLane == .ready && !item.blockedBy.isEmpty {
-            return nil
-        }
         return ProgramBoardDropRequest(
             ticketID: ticketID,
             repoPath: repoPath,
@@ -239,19 +236,16 @@ enum ProgramBoardDropPolicy {
               ticket.status != request.targetStatus else {
             return nil
         }
-        if request.targetStatus == .ready,
-           !allDependenciesDone(for: ticket, in: allTickets) {
-            return nil
-        }
+        let dependenciesDone = allDependenciesDone(for: ticket, in: allTickets)
         return ProgramBoardDropRequest(
             ticketID: request.ticketID,
             repoPath: request.repoPath,
             targetStatus: request.targetStatus,
-            shouldDispatch: ticket.status != .ready && request.targetStatus == .ready
+            shouldDispatch: ticket.status != .ready && request.targetStatus == .ready && dependenciesDone
         )
     }
 
-    private static func allDependenciesDone(for ticket: Ticket, in allTickets: [Ticket]) -> Bool {
+    static func allDependenciesDone(for ticket: Ticket, in allTickets: [Ticket]) -> Bool {
         let byID = Dictionary(uniqueKeysWithValues: allTickets.map { ($0.id, $0) })
         for dependencyID in ticket.dependsOn {
             guard byID[dependencyID]?.status == .done else {
@@ -483,9 +477,13 @@ enum ProgramBoardTicketEditor {
         )
 
         try TicketWriter.save(updated, in: project)
+        let refreshed = [updated] + ProjectResolver.scanTickets(in: project).filter { $0.id != updated.id }
         return ProgramBoardEditResult(
             ticket: updated,
-            shouldDispatch: current.status != .ready && updated.status == .ready && !updated.draft
+            shouldDispatch: current.status != .ready
+                && updated.status == .ready
+                && !updated.draft
+                && ProgramBoardDropPolicy.allDependenciesDone(for: updated, in: refreshed)
         )
     }
 }

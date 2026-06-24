@@ -1118,21 +1118,24 @@ class Daemon:
             print(f"[orchestrator] dep-progression error for {run['ticket_id']}: {e}", file=sys.stderr)
 
     def _progress_dependents(self, *, repo_path: str, finished_ticket_id: str) -> None:
-        """When a ticket completes, scan dependents and dispatch any backlog
-        tickets whose deps are now fully satisfied. Flips status to 'ready'
-        on disk before dispatching — the daemon writing ticket files is the
-        deliberate exception to 'sub-agents own the ticket file'.
+        """When a ticket completes, dispatch queued dependents whose deps are done.
+
+        Backlog dependents are still promoted to the on-disk `ready` schema
+        value first. Dependents already in `ready` stay queued until this path
+        sees every predecessor done, then use the same provider-neutral
+        dispatch chokepoint as manually queued work.
         """
         repo = Path(repo_path)
         all_tickets = scan_repo(repo)
         dependents = [t for t in all_tickets if finished_ticket_id in t["depends_on"]]
         for dep in dependents:
-            if dep["status"] != "backlog":
+            if dep["status"] == "backlog":
+                dep["status"] = "ready"
+                write_ticket(dep["_path"], dep)
+            elif dep["status"] != "ready":
                 continue
             if not all_deps_done(dep, all_tickets):
                 continue
-            dep["status"] = "ready"
-            write_ticket(dep["_path"], dep)
             try:
                 self.dispatch(ticket_id=dep["id"], repo_path=str(repo), source="dependency-progression")
             except ValueError as e:
@@ -1141,7 +1144,7 @@ class Daemon:
                 print(f"[orchestrator] auto-dispatch declined for {dep['id']}: {e}", file=sys.stderr)
 
     def sweep_ready_tickets(self, *, repo_path: str, trigger: str | None = None) -> dict:
-        """Reconcile a repo board and dispatch eligible stale ready tickets.
+        """Reconcile a repo board and dispatch eligible queued tickets.
 
         The app calls this repeatedly for the active project. It deliberately
         re-enters `dispatch()` for worker creation so Codex/Claude provider
@@ -1222,7 +1225,7 @@ class Daemon:
         }
 
     def sweep_program_ready_tickets(self, *, trigger: str | None = None) -> dict:
-        """Reconcile ready tickets across every registered project.
+        """Reconcile queued tickets across every registered project.
 
         Program Board refresh uses this instead of requiring each project board
         to be opened. Each ticket still dispatches through `dispatch()`, so

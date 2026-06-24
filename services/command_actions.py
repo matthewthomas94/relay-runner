@@ -199,7 +199,7 @@ def format_command_for_agent(action: CommandAction) -> str:
             "Orchestrator contract:",
             "- You are the foreground orchestrator, not the implementation worker.",
             "- Do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
-            "- Resolve this action first: classify it as non-work, ask for the target project, create/refine/commit the ticket in the resolved project, edit an existing ticket, or dispatch a ready worker.",
+            "- Resolve this action first: classify it as non-work, ask for the target project, create/refine/commit the ticket in the resolved project, edit an existing ticket, or dispatch queued work.",
             "- Raw Relay command captures are private metadata, not board cards; do not copy raw transcript text into a visible ticket unless it has been refined into actionable project work.",
             "- Relay command metadata is the stale-action guard. Before creating, editing, or dispatching tickets, and before TTS, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
             "- When dispatching through relay-orchestrator, pass relay_command_seq and relay_command_id when they are present.",

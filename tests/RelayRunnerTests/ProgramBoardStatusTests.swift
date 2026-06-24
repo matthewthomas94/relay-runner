@@ -336,7 +336,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         let selectedProjectRequest = try XCTUnwrap(model.createRequest(
             selectedProjectPath: model.creating?.selectedProjectPath,
             title: "",
-            description: "Ready work."
+            description: "Queued work."
         ))
         XCTAssertEqual(selectedProjectRequest.repoPath, clientPath)
         XCTAssertEqual(selectedProjectRequest.status, .ready)
@@ -747,7 +747,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(result.ticket.id, "TL-1")
         XCTAssertEqual(result.ticket.status, .ready)
         XCTAssertEqual(result.ticket.priority, .urgent)
-        XCTAssertTrue(result.shouldDispatch)
+        XCTAssertFalse(result.shouldDispatch)
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: root.appendingPathComponent(".orchestrator").path
         ))
@@ -908,7 +908,13 @@ final class ProgramBoardStatusTests: XCTestCase {
             status: "backlog",
             blockedBy: ["RR-4"]
         )
-        XCTAssertNil(model.dropRequest(for: blocked, sourceLane: .backlog, targetLane: .ready))
+        let blockedRequest = try XCTUnwrap(model.dropRequest(
+            for: blocked,
+            sourceLane: .backlog,
+            targetLane: .ready
+        ))
+        XCTAssertEqual(blockedRequest.ticketID, "RR-5")
+        XCTAssertEqual(blockedRequest.targetStatus, .ready)
 
         let awaiting = try ticketItem(
             projectName: "Relay Runner",
@@ -1005,7 +1011,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertNil(model.dropTarget(at: CGPoint(x: 30, y: 180), for: item, sourceLane: .backlog))
     }
 
-    func testProgramBoardResolvedDropRequiresSatisfiedReadyDependencies() {
+    func testProgramBoardResolvedDropQueuesUnsatisfiedReadyDependenciesWithoutDispatch() {
         let dependencyBacklog = ticket(id: "RR-1", status: .backlog)
         let dependencyDone = ticket(id: "RR-1", status: .done)
         let blocked = ticket(id: "RR-2", status: .backlog, dependsOn: ["RR-1"])
@@ -1016,11 +1022,14 @@ final class ProgramBoardStatusTests: XCTestCase {
             shouldDispatch: true
         )
 
-        XCTAssertNil(ProgramBoardDropPolicy.validateResolvedDrop(
+        let queued = ProgramBoardDropPolicy.validateResolvedDrop(
             request: request,
             ticket: blocked,
             allTickets: [dependencyBacklog, blocked]
-        ))
+        )
+        XCTAssertEqual(queued?.ticketID, "RR-2")
+        XCTAssertEqual(queued?.targetStatus, .ready)
+        XCTAssertFalse(queued?.shouldDispatch == true)
 
         let validated = ProgramBoardDropPolicy.validateResolvedDrop(
             request: request,
@@ -1095,6 +1104,31 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(body["source"] as? String, "board-drop")
     }
 
+    func testProgramBoardTicketMoverQueuesUnsatisfiedDependenciesWithoutDispatch() throws {
+        let repo = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try writeTicket(repo: repo, id: "RR-1", title: "Dependency", status: "backlog", body: "Dependency body")
+        try writeTicket(
+            repo: repo,
+            id: "RR-2",
+            title: "Dependent",
+            status: "backlog",
+            dependsOn: ["RR-1"],
+            body: "Dependent body"
+        )
+
+        let result = try ProgramBoardTicketMover.move(ProgramBoardDropRequest(
+            ticketID: "RR-2",
+            repoPath: repo.path,
+            targetStatus: .ready,
+            shouldDispatch: true
+        ))
+
+        XCTAssertEqual(result.ticket.status, .ready)
+        XCTAssertNil(result.dispatchRequest)
+        XCTAssertEqual(try readTicket(repo: repo, id: "RR-2").status, .ready)
+    }
+
     func testProgramBoardTicketMoverRejectsInvalidResolvedDropWithoutChangingFile() throws {
         let repo = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: repo) }
@@ -1102,8 +1136,7 @@ final class ProgramBoardStatusTests: XCTestCase {
             repo: repo,
             id: "RR-2",
             title: "Blocked work",
-            status: "backlog",
-            dependsOn: ["RR-1"],
+            status: "ready",
             body: "Blocked body"
         )
         let ticketURL = repo
