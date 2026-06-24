@@ -85,6 +85,7 @@ final class AppState {
     private var overlayController: OverlayController?
     @ObservationIgnored private let boardOverlay = BoardOverlayController()
     @ObservationIgnored private let programBoardOverlay = ProgramBoardOverlayController()
+    @ObservationIgnored private let notchStatusController = NotchStatusController()
     private var perimeterOverlay: PerimeterOverlayManager?
     private var eventBus: StateEventBus?
     private var actionsBus: ActionsConfirmBus?
@@ -92,9 +93,13 @@ final class AppState {
     private var bridgeWatchdog: Timer?
     private var programStatusTask: Task<Void, Never>?
     /// True while a menu-started terminal session owns the bridge.
-    private var menuSessionActive = false
+    private var menuSessionActive = false {
+        didSet { syncNotchStatusSurface() }
+    }
     /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
-    private var bridgeAliveCache = false
+    private var bridgeAliveCache = false {
+        didSet { syncNotchStatusSurface() }
+    }
     private var wasRecording = false
     /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
     private var sessionPromptCapsState = false
@@ -104,7 +109,9 @@ final class AppState {
     /// Has the bridge for the current menu-started session been observed alive at least once?
     /// Used to distinguish "still starting up" from "came up and then died".
     private var sessionBridgeSeen = false
-    private var bridgeRecoveryInFlight = false
+    private var bridgeRecoveryInFlight = false {
+        didSet { syncNotchStatusSurface() }
+    }
     private var lastBridgeRecoveryAt: Date = .distantPast
     private static let bridgeRecoveryCooldown: TimeInterval = 15
     private var bridgeRecoverySuppressedForUpdate = false
@@ -123,6 +130,10 @@ final class AppState {
     /// within ~3 seconds of an external bridge coming up, so /relay-bridge
     /// users see the menu reflect their session promptly.
     var hasActiveSession: Bool { menuSessionActive || bridgeAliveCache || bridgeRecoveryInFlight }
+
+    private func syncNotchStatusSurface() {
+        notchStatusController.setActive(hasActiveSession)
+    }
 
     init(
         checkForUpdates: @escaping @MainActor () -> Void = {},

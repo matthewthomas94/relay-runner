@@ -1,17 +1,6 @@
 import AppKit
 import SwiftUI
 
-private let resourceBundle: Bundle = {
-    // When running from a .app bundle, resources live at Contents/Resources/.
-    // SPM's default Bundle.module looks next to the executable, which doesn't
-    // match the macOS .app layout — fall through to that only in dev builds.
-    if let url = Bundle.main.resourceURL?.appendingPathComponent("relay-runner_relay-runner.bundle"),
-       let bundle = Bundle(url: url) {
-        return bundle
-    }
-    return .module
-}()
-
 /// Ignore SIGPIPE process-wide. Any write to a closed socket or FIFO will
 /// surface as an EPIPE return value at the call site, which we already
 /// check — without this, the kernel kills the whole process the moment a
@@ -63,7 +52,7 @@ struct RelayRunnerApp: App {
                 // Red dot badge signals a missing permission — per PRD this is a
                 // passive indicator, not a nag. The menu dropdown has the "Fix"
                 // actions; this just makes the user notice something's wrong.
-                Image(appState.hasActiveSession ? "TrayIconActive" : "TrayIcon", bundle: resourceBundle)
+                Image(appState.hasActiveSession ? "TrayIconActive" : "TrayIcon", bundle: RelayRunnerResources.bundle)
                     .renderingMode(.original)
                     .overlay(alignment: .topTrailing) {
                         if !appState.permissions.allGranted {
