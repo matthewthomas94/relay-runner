@@ -112,7 +112,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             ))
             self.assertEqual(tts_queue.get_nowait(), "fresh response")
 
-    def test_newer_pending_command_removes_unclaimed_created_ticket(self):
+    def test_newer_pending_project_work_does_not_create_visible_tickets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir) / "repo"
             orch = repo / ".orchestrator"
@@ -121,8 +121,13 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
             meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
             state_path = os.path.join(temp_dir, "voice_command_state.json")
+            event_path = os.path.join(temp_dir, "voice_command_events.jsonl")
 
-            first_meta = voice_bridge._begin_relay_command("fix the login bug", state_path)
+            first_meta = voice_bridge._begin_relay_command(
+                "fix the login bug",
+                state_path,
+                event_log_path=event_path,
+            )
             first_action = voice_bridge.resolve_command_action(
                 "fix the login bug",
                 repo_path=repo,
@@ -136,9 +141,14 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 state_path=state_path,
             )
 
-            self.assertTrue((orch / "RR-3.md").exists())
+            self.assertFalse((orch / "RR-3.md").exists())
+            self.assertEqual((orch / "config.toml").read_text(), 'prefix = "RR"\nnext_id = 3\n')
 
-            second_meta = voice_bridge._begin_relay_command("fix the signup bug", state_path)
+            second_meta = voice_bridge._begin_relay_command(
+                "fix the signup bug",
+                state_path,
+                event_log_path=event_path,
+            )
             second_action = voice_bridge.resolve_command_action(
                 "fix the signup bug",
                 repo_path=repo,
@@ -153,11 +163,41 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             )
 
             self.assertFalse((orch / "RR-3.md").exists())
-            self.assertTrue((orch / "RR-4.md").exists())
+            self.assertFalse((orch / "RR-4.md").exists())
+            self.assertEqual((orch / "config.toml").read_text(), 'prefix = "RR"\nnext_id = 3\n')
             with open(command_path) as f:
-                self.assertIn("ticket_id: RR-4", f.read())
+                command = f.read()
+            self.assertIn("ticket_id: null", command)
+            self.assertIn("No visible ticket has been written yet", command)
             meta = json.loads(Path(meta_path).read_text())
-            self.assertEqual(meta["ticket_id"], "RR-4")
+            self.assertNotIn("ticket_id", meta)
+            self.assertEqual(meta["action"], "create_ticket")
+            self.assertEqual(meta["relay_command_seq"], 2)
+            events = [json.loads(line) for line in Path(event_path).read_text().splitlines()]
+            self.assertEqual([event["source_text"] for event in events], [
+                "fix the login bug",
+                "fix the signup bug",
+            ])
+
+    def test_private_command_event_log_is_bounded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            event_path = os.path.join(temp_dir, "voice_command_events.jsonl")
+
+            for idx in range(4):
+                voice_bridge._record_private_command_capture(
+                    {
+                        "relay_command_seq": idx + 1,
+                        "relay_command_id": f"cmd-{idx + 1}",
+                        "received_at": float(idx),
+                        "source_text": f"command {idx + 1}",
+                        "action": "received",
+                    },
+                    event_log_path=event_path,
+                    limit=2,
+                )
+
+            events = [json.loads(line) for line in Path(event_path).read_text().splitlines()]
+            self.assertEqual([event["relay_command_seq"] for event in events], [3, 4])
 
     def test_generated_provider_skills_share_preemption_contract(self):
         script_path = os.path.join(ROOT, "scripts", "relay-bridge")

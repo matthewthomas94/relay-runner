@@ -272,6 +272,8 @@ VOICE_CMD_FILE = "/tmp/voice_cmd_ready"
 VOICE_CMD_META_FILE = "/tmp/voice_cmd_ready.meta"
 VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
 VOICE_COMMAND_CLAIM_FILE = "/tmp/voice_cmd_claimed.json"
+VOICE_COMMAND_EVENT_LOG = os.environ.get("VOICE_COMMAND_EVENT_LOG", "/tmp/relay_command_events.jsonl")
+VOICE_COMMAND_EVENT_LIMIT = 200
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
 
 
@@ -291,7 +293,55 @@ def _atomic_write_json(path: str, payload: dict) -> None:
     os.rename(tmp, path)
 
 
-def _begin_relay_command(source_text: str, state_path: str = VOICE_COMMAND_STATE_FILE) -> dict:
+def _command_event_limit() -> int:
+    try:
+        return max(1, int(os.environ.get("VOICE_COMMAND_EVENT_LIMIT", VOICE_COMMAND_EVENT_LIMIT)))
+    except (TypeError, ValueError):
+        return VOICE_COMMAND_EVENT_LIMIT
+
+
+def _record_private_command_capture(
+    metadata: dict,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
+    limit: int | None = None,
+) -> None:
+    """Append a bounded private command event outside visible board files."""
+    if not event_log_path:
+        return
+    limit = max(1, int(limit or _command_event_limit()))
+    event = {
+        "relay_command_seq": metadata.get("relay_command_seq"),
+        "relay_command_id": metadata.get("relay_command_id"),
+        "received_at": metadata.get("received_at"),
+        "source_text": metadata.get("source_text"),
+        "action": metadata.get("action", "received"),
+    }
+    if metadata.get("provider"):
+        event["provider"] = metadata["provider"]
+    try:
+        existing: list[str] = []
+        if os.path.exists(event_log_path):
+            with open(event_log_path) as f:
+                existing = [line.rstrip("\n") for line in f if line.strip()]
+        existing = existing[-(limit - 1):] if limit > 1 else []
+        tmp = event_log_path + ".tmp"
+        parent = os.path.dirname(event_log_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tmp, "w") as f:
+            for line in existing:
+                f.write(line + "\n")
+            f.write(json.dumps(event, sort_keys=True) + "\n")
+        os.replace(tmp, event_log_path)
+    except (OSError, TypeError, ValueError) as e:
+        print(f"[voice_bridge] Could not record private command event: {e}", file=sys.stderr)
+
+
+def _begin_relay_command(
+    source_text: str,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
+) -> dict:
     """Record a new newest-intent generation as soon as voice input arrives."""
     previous = _read_json_file(state_path)
     try:
@@ -305,7 +355,11 @@ def _begin_relay_command(source_text: str, state_path: str = VOICE_COMMAND_STATE
         "received_at": time.time(),
         "action": "received",
     }
+    provider = os.environ.get("RELAY_RUNNER_PROVIDER", "").strip()
+    if provider:
+        metadata["provider"] = provider
     _atomic_write_json(state_path, metadata)
+    _record_private_command_capture(metadata, event_log_path=event_log_path)
     return metadata
 
 

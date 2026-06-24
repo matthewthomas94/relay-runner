@@ -13,6 +13,7 @@ sys.path.insert(0, SERVICES)
 from command_actions import (  # noqa: E402
     CONTROL_COMMANDS,
     classify_command,
+    create_ticket_for_command,
     format_command_for_agent,
     resolve_command_action,
 )
@@ -30,7 +31,7 @@ class CommandActionsTests(unittest.TestCase):
                 self.assertEqual(action.reason, reason)
                 self.assertEqual(format_command_for_agent(action), command)
 
-    def test_new_project_work_creates_backlog_ticket(self):
+    def test_new_project_work_defers_visible_ticket_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = repo / ".orchestrator"
@@ -40,18 +41,19 @@ class CommandActionsTests(unittest.TestCase):
             action = resolve_command_action("fix the login retry bug", repo_path=repo)
 
             self.assertEqual(action.kind, "create_ticket")
-            self.assertEqual(action.ticket_id, "RR-3")
-            self.assertTrue((orch / "RR-3.md").is_file())
-            self.assertIn("status: backlog", (orch / "RR-3.md").read_text())
-            self.assertIn("> fix the login retry bug", (orch / "RR-3.md").read_text())
-            self.assertEqual((orch / "config.toml").read_text(), 'prefix = "RR"\nnext_id = 4\n')
+            self.assertTrue(action.requires_ticket)
+            self.assertIsNone(action.ticket_id)
+            self.assertIsNone(action.ticket_path)
+            self.assertFalse((orch / "RR-3.md").exists())
+            self.assertEqual((orch / "config.toml").read_text(), 'prefix = "RR"\nnext_id = 3\n')
 
             prompt = format_command_for_agent(action)
             self.assertIn("action: create_ticket", prompt)
-            self.assertIn("ticket_id: RR-3", prompt)
+            self.assertIn("ticket_id: null", prompt)
+            self.assertIn("No visible ticket has been written yet", prompt)
             self.assertIn("Do not perform substantive source-code implementation directly", prompt)
 
-    def test_relay_command_metadata_is_recorded_on_created_ticket(self):
+    def test_relay_command_metadata_is_preserved_without_visible_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = repo / ".orchestrator"
@@ -68,14 +70,36 @@ class CommandActionsTests(unittest.TestCase):
                 relay_command=relay_command,
             )
 
-            ticket_text = (orch / "RR-3.md").read_text()
             prompt = format_command_for_agent(action)
-            self.assertIn("## Relay command", ticket_text)
-            self.assertIn("- sequence: 7", ticket_text)
-            self.assertIn("- id: cmd-7", ticket_text)
+            self.assertFalse((orch / "RR-3.md").exists())
+            self.assertEqual(action.relay_command_seq, 7)
+            self.assertEqual(action.relay_command_id, "cmd-7")
             self.assertIn("relay_command_seq: 7", prompt)
             self.assertIn("relay_command_id: cmd-7", prompt)
             self.assertIn("pass relay_command_seq and relay_command_id", prompt)
+
+    def test_explicit_refined_ticket_creation_targets_resolved_child_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            parent_orch = workspace / ".orchestrator"
+            parent_orch.mkdir()
+            (parent_orch / "config.toml").write_text('prefix = "DE"\nnext_id = 12\n')
+
+            child = workspace / "relay-runner"
+            child_orch = child / ".orchestrator"
+            child_orch.mkdir(parents=True)
+            (child_orch / "config.toml").write_text('prefix = "RR"\nnext_id = 3\n')
+
+            ticket_id, ticket_path = create_ticket_for_command(
+                child,
+                "Fix login retries after the foreground orchestrator resolved relay-runner.",
+            )
+
+            self.assertEqual(ticket_id, "RR-3")
+            self.assertEqual(ticket_path, child_orch.resolve() / "RR-3.md")
+            self.assertTrue(ticket_path.exists())
+            self.assertFalse((parent_orch / "DE-12.md").exists())
+            self.assertEqual((parent_orch / "config.toml").read_text(), 'prefix = "DE"\nnext_id = 12\n')
 
     def test_existing_ticket_dispatch_attaches_to_ticket(self):
         action = classify_command("dispatch rr-7 to a worker")
@@ -92,14 +116,15 @@ class CommandActionsTests(unittest.TestCase):
         self.assertTrue(action.requires_ticket)
         self.assertEqual(action.ticket_id, "RR-8")
 
-    def test_work_without_project_waits_on_target_choice(self):
+    def test_work_without_project_still_avoids_board_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
             action = resolve_command_action("implement the sidebar", repo_path=tmp)
 
-            self.assertEqual(action.kind, "needs_project")
+            self.assertEqual(action.kind, "create_ticket")
             self.assertTrue(action.requires_ticket)
             self.assertIsNone(action.ticket_id)
-            self.assertIn("waiting on target-project choice", format_command_for_agent(action))
+            self.assertFalse((Path(tmp) / ".orchestrator").exists())
+            self.assertIn("No visible ticket has been written yet", format_command_for_agent(action))
 
 
 if __name__ == "__main__":
