@@ -10,6 +10,22 @@ struct PermissionAppTarget: Identifiable, Equatable {
     }
 }
 
+struct PermissionAppGoalRow: Identifiable, Equatable {
+    let displayName: String
+    let bundleURL: URL?
+    let enabled: Bool
+
+    var id: String {
+        bundleURL?.path ?? displayName
+    }
+
+    var fallbackInitial: String {
+        displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            .first
+            .map { String($0).uppercased() } ?? "?"
+    }
+}
+
 struct PermissionAppDragGuide: View {
     let title: String
     let settingsPane: String
@@ -87,6 +103,7 @@ struct PermissionAppDragGuide: View {
             Text(target.displayName)
                 .font(.caption)
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color(nsColor: .controlBackgroundColor))
@@ -101,6 +118,12 @@ struct PermissionAppDragGuide: View {
         tile
     }
 
+    static func goalRows(for targets: [PermissionAppTarget]) -> [PermissionAppGoalRow] {
+        targets.map {
+            PermissionAppGoalRow(displayName: $0.displayName, bundleURL: $0.bundleURL, enabled: true)
+        }
+    }
+
     private var permissionListMock: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(settingsPane)
@@ -111,9 +134,9 @@ struct PermissionAppDragGuide: View {
 
             Divider()
 
-            mockPermissionRow(icon: "app", name: "App 1", enabled: true)
-            mockPermissionRow(icon: "app", name: "App 2", enabled: true)
-            mockPermissionRow(icon: "app", name: "App 3", enabled: true)
+            ForEach(Self.goalRows(for: targets)) { row in
+                mockPermissionRow(row)
+            }
 
             HStack(spacing: 4) {
                 Image(systemName: "plus")
@@ -139,21 +162,18 @@ struct PermissionAppDragGuide: View {
         )
     }
 
-    private func mockPermissionRow(icon: String, name: String, enabled: Bool) -> some View {
+    private func mockPermissionRow(_ row: PermissionAppGoalRow) -> some View {
         HStack(spacing: 7) {
-            Image(systemName: icon)
-                .font(.caption)
-                .frame(width: 18, height: 18)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-            Text(name)
+            permissionRowIcon(row)
+            Text(row.displayName)
                 .font(.caption)
                 .lineLimit(1)
-            Spacer()
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Capsule()
-                .fill(enabled ? Color.accentColor : Color.secondary.opacity(0.35))
+                .fill(row.enabled ? Color.accentColor : Color.secondary.opacity(0.35))
                 .frame(width: 24, height: 13)
-                .overlay(alignment: enabled ? .trailing : .leading) {
+                .overlay(alignment: row.enabled ? .trailing : .leading) {
                     Circle()
                         .fill(Color.white)
                         .frame(width: 9, height: 9)
@@ -164,6 +184,25 @@ struct PermissionAppDragGuide: View {
         .padding(.vertical, 6)
         .overlay(alignment: .bottom) {
             Divider()
+        }
+    }
+
+    @ViewBuilder
+    private func permissionRowIcon(_ row: PermissionAppGoalRow) -> some View {
+        if let bundleURL = row.bundleURL {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: bundleURL.path))
+                .resizable()
+                .scaledToFit()
+                .frame(width: 18, height: 18)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        } else {
+            Text(row.fallbackInitial)
+                .font(.caption2).bold()
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 18, height: 18)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
         }
     }
 
