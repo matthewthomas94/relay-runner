@@ -1,9 +1,10 @@
-"""Relay command action classification and ticket capture.
+"""Relay command action classification.
 
 The foreground Codex or Claude session is the orchestrator. This module keeps
 voice/text command handling explicit before implementation starts: controls are
 intentional no-ticket actions, ticket references attach to existing work, and
-new project-work requests can be captured as backlog tickets.
+new project-work requests are handed to the foreground session for target
+resolution and refined ticket creation.
 """
 
 from __future__ import annotations
@@ -59,6 +60,8 @@ class CommandAction:
     def outcome(self) -> str:
         if self.kind == "create_ticket" and self.ticket_id:
             return f"created ticket {self.ticket_id}"
+        if self.kind == "create_ticket":
+            return "project work needs refined ticket"
         if self.kind == "dispatch_ticket" and self.ticket_id:
             return f"dispatch ticket {self.ticket_id}"
         if self.kind == "update_ticket" and self.ticket_id:
@@ -127,38 +130,12 @@ def resolve_command_action(
         return _with_relay(_with_repo(action, repo_path), relay_command)
 
     repo = Path(repo_path or Path.cwd()).expanduser().resolve()
-    orch_dir = repo / ".orchestrator"
-    config_path = orch_dir / "config.toml"
-    if not orch_dir.is_dir() or not config_path.is_file():
-        return CommandAction(
-            kind="needs_project",
-            source_text=action.source_text,
-            requires_ticket=True,
-            repo_path=str(repo),
-            reason=".orchestrator/config.toml not found",
-            **_relay_fields(relay_command),
-        )
-
-    try:
-        ticket_id, ticket_path = create_ticket_for_command(
-            repo, action.source_text, relay_command=relay_command
-        )
-    except (OSError, ValueError) as e:
-        return CommandAction(
-            kind="needs_project",
-            source_text=action.source_text,
-            requires_ticket=True,
-            repo_path=str(repo),
-            reason=str(e),
-            **_relay_fields(relay_command),
-        )
     return CommandAction(
         kind="create_ticket",
         source_text=action.source_text,
         requires_ticket=True,
-        ticket_id=ticket_id,
-        ticket_path=str(ticket_path),
         repo_path=str(repo),
+        reason="visible ticket creation is deferred until the foreground orchestrator resolves the target project and refines the work",
         **_relay_fields(relay_command),
     )
 
@@ -222,15 +199,16 @@ def format_command_for_agent(action: CommandAction) -> str:
             "Orchestrator contract:",
             "- You are the foreground orchestrator, not the implementation worker.",
             "- Do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
-            "- Resolve this action first: create/refine/commit the ticket, edit the existing ticket, dispatch a ready worker, or ask for the target project.",
+            "- Resolve this action first: classify it as non-work, ask for the target project, create/refine/commit the ticket in the resolved project, edit an existing ticket, or dispatch a ready worker.",
+            "- Raw Relay command captures are private metadata, not board cards; do not copy raw transcript text into a visible ticket unless it has been refined into actionable project work.",
             "- Relay command metadata is the stale-action guard. Before creating, editing, or dispatching tickets, and before TTS, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
             "- When dispatching through relay-orchestrator, pass relay_command_seq and relay_command_id when they are present.",
-            "- Your user-facing response must name the action outcome, such as created ticket, edited ticket, dispatched worker, or waiting on a target-project choice.",
+            "- Your user-facing response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.",
         ]
     )
 
     if action.kind == "create_ticket":
-        lines.append("- A backlog ticket has already been written for this command; review it before dispatch.")
+        lines.append("- No visible ticket has been written yet; resolve the target project and create a refined ticket only if this is actionable project work.")
     elif action.kind == "dispatch_ticket":
         lines.append("- Dispatch the named ticket through relay-orchestrator; do not implement the ticket yourself.")
     elif action.kind == "update_ticket":
@@ -336,9 +314,9 @@ def _ticket_body(
         "canceled: false\n"
         "---\n\n"
         "## Description\n\n"
-        "Relay Runner captured this command as project work before implementation started:\n\n"
+        "The foreground orchestrator prepared this project-work ticket:\n\n"
         f"{quote}\n\n"
-        "The foreground session should refine this ticket before dispatch if the worker would need more context.\n\n"
+        "Refine this ticket before dispatch if the worker would need more context.\n\n"
         f"{relay_section}"
         "## Acceptance criteria\n\n"
         "- [ ] The ticket contains enough context for a worker to complete the change in one pass.\n"
