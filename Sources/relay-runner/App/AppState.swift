@@ -179,7 +179,7 @@ final class AppState {
                         self.restartSTTForRecovery()
                     }
                 } else if kind == .inputMonitoring {
-                    self.boardOverlay.installGlobalHotkeys()
+                    self.boardOverlay.installGlobalDismissHotkey()
                     self.restartSTTForRecovery()
                 }
             }
@@ -846,12 +846,12 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Board overlay — install global double-tap Shift / Esc hotkeys only
-        // once macOS has already granted Input Monitoring. The menu and MCP
-        // toggle still work without that optional permission, and deferring
-        // avoids a TCC prompt during first launch.
+        // Board overlay — install Esc dismissal only once macOS has already
+        // granted Input Monitoring. The double-tap Shift board trigger is
+        // emitted by the STT gesture monitor so it shares the same recovery
+        // path as Option/Control activation gestures.
         if permissions.inputMonitoring == .granted {
-            boardOverlay.installGlobalHotkeys()
+            boardOverlay.installGlobalDismissHotkey()
         }
         boardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
@@ -898,6 +898,11 @@ final class AppState {
 
             let nowRecording = engine.isRecording
             let justStartedRecording = nowRecording && !self.wasRecording
+
+            if engine.boardToggleRequested {
+                engine.boardToggleRequested = false
+                self.toggleBoard()
+            }
 
             // Session prompt: handle responses
             if case .sessionPrompt = self.stateMachine.state {

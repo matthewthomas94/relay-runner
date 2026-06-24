@@ -4,8 +4,8 @@ import SwiftUI
 /// Manages the kanban-board overlay lifecycle. Owns a single
 /// `BoardOverlayPanel` and an `NSHostingView` rendering the SwiftUI tree.
 ///
-/// Currently toggled from the menu, RelayActions, or the global board hotkey.
-/// Esc / click-outside dismissal land in a follow-up commit.
+/// Currently toggled from the menu, RelayActions, or the STT gesture monitor.
+/// Click-outside dismissal lands in a follow-up commit.
 ///
 /// All methods must be called from the main thread (AppKit requirement). The
 /// type itself isn't marked `@MainActor` so it can be held by `AppState` as a
@@ -29,7 +29,6 @@ final class BoardOverlayController {
     private var runStatePollTimer: Timer?
     private var currentProject: ProjectResolver.LinkedProject?
 
-    private var boardHotkeyGesture = BoardHotkeyGesture()
     private let boardRouteResolver: () -> ProjectResolver.BoardRoute
 
     init(boardRouteResolver: @escaping () -> ProjectResolver.BoardRoute = ProjectResolver.resolveBoardRoute) {
@@ -62,33 +61,34 @@ final class BoardOverlayController {
         runStatePollTimer?.invalidate()
     }
 
-    /// Install global keyboard hooks: double-tap Shift toggles the routed
-    /// board surface (works from any app); Esc dismisses while the board is
-    /// visible. Both rely on Relay Runner's Input Monitoring permission.
+    /// Install global keyboard hook: Esc dismisses while the board is visible.
+    /// The double-tap Shift board trigger is emitted by `CapsLockGesture` so
+    /// it shares the same Input Monitoring recovery path as the other global
+    /// activation gestures.
     ///
     /// Call once from `AppState.startOverlay` — `BoardOverlayController` is
     /// long-lived for the app's lifetime.
-    func installGlobalHotkeys() {
-        guard globalMonitor == nil else { return }
-        let mask: NSEvent.EventTypeMask = [.keyDown, .flagsChanged]
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            self?.handle(event)
+    func installGlobalDismissHotkey() {
+        let mask: NSEvent.EventTypeMask = [.keyDown]
+        if globalMonitor == nil {
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+                self?.handle(event)
+            }
         }
         // Local monitor catches the same shortcuts when our app happens to be
         // frontmost (NSEvent splits them across global/local). Returning the
         // event lets it propagate normally.
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            self?.handle(event)
-            return event
+        if localMonitor == nil {
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+                self?.handle(event)
+                return event
+            }
         }
     }
 
     private func handle(_ event: NSEvent) {
         switch event.type {
-        case .flagsChanged:
-            handleFlagsChanged(event)
         case .keyDown:
-            boardHotkeyGesture.handleKeyDown()
             // Esc: cancel an open editor first, otherwise dismiss the board.
             if event.keyCode == 53, isVisible {
                 DispatchQueue.main.async { [weak self] in
@@ -98,12 +98,6 @@ final class BoardOverlayController {
             }
         default:
             break
-        }
-    }
-
-    private func handleFlagsChanged(_ event: NSEvent) {
-        if boardHotkeyGesture.handleFlagsChanged(event.modifierFlags) {
-            DispatchQueue.main.async { [weak self] in self?.toggle() }
         }
     }
 
