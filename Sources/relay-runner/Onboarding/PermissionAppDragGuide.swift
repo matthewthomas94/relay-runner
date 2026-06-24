@@ -14,6 +14,22 @@ struct PermissionAppDragGuide: View {
     let title: String
     let settingsPane: String
     let targets: [PermissionAppTarget]
+    let highlightedTargetIDs: Set<String>
+
+    init(title: String,
+         settingsPane: String,
+         targets: [PermissionAppTarget],
+         highlightTargets: Bool = false) {
+        self.title = title
+        self.settingsPane = settingsPane
+        self.targets = targets
+        self.highlightedTargetIDs = Self.highlightedTargetIDs(for: targets, isActive: highlightTargets)
+    }
+
+    static func highlightedTargetIDs(for targets: [PermissionAppTarget], isActive: Bool) -> Set<String> {
+        guard isActive else { return [] }
+        return Set(targets.map(\.id))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -26,7 +42,10 @@ struct PermissionAppDragGuide: View {
             HStack(alignment: .center, spacing: 12) {
                 LazyVGrid(columns: iconColumns, alignment: .leading, spacing: 10) {
                     ForEach(targets) { target in
-                        draggableAppIcon(target)
+                        draggableAppIcon(
+                            target,
+                            isHighlighted: highlightedTargetIDs.contains(target.id)
+                        )
                     }
                 }
 
@@ -70,7 +89,7 @@ struct PermissionAppDragGuide: View {
     }
 
     @ViewBuilder
-    private func draggableAppIcon(_ target: PermissionAppTarget) -> some View {
+    private func draggableAppIcon(_ target: PermissionAppTarget, isHighlighted: Bool) -> some View {
         let tile = VStack(spacing: 7) {
             DraggableAppIconView(
                 bundleURL: target.bundleURL,
@@ -78,11 +97,20 @@ struct PermissionAppDragGuide: View {
             )
             .frame(width: iconSize, height: iconSize)
             .padding(7)
-            .background(Color(nsColor: .controlBackgroundColor))
+            .background {
+                iconTileBackground(isHighlighted: isHighlighted)
+            }
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.accentColor.opacity(0.55), lineWidth: 1)
+                    .stroke(
+                        Color.accentColor.opacity(isHighlighted ? 0.85 : 0.55),
+                        lineWidth: isHighlighted ? 1.5 : 1
+                    )
+            )
+            .shadow(
+                color: isHighlighted ? Self.particleGlowColor.opacity(0.45) : .clear,
+                radius: isHighlighted ? 10 : 0
             )
             Text(target.displayName)
                 .font(.caption)
@@ -98,7 +126,32 @@ struct PermissionAppDragGuide: View {
                 Button("Reveal in Finder") { reveal(target) }
             }
         }
+        .accessibilityIdentifier(
+            isHighlighted ? "permission-app-drag-target-highlight" : "permission-app-drag-target"
+        )
         tile
+    }
+
+    @ViewBuilder
+    private func iconTileBackground(isHighlighted: Bool) -> some View {
+        if isHighlighted {
+            ZStack {
+                Color(nsColor: .controlBackgroundColor)
+                    .opacity(0.82)
+                PermissionTargetParticleGlow()
+                    .allowsHitTesting(false)
+            }
+        } else {
+            Color(nsColor: .controlBackgroundColor)
+        }
+    }
+
+    private static var particleGlowColor: Color {
+        Color(
+            hue: Double(ParticleFieldRenderer.Theme.tts.baseHue),
+            saturation: Double(ParticleFieldRenderer.Theme.tts.baseSaturation),
+            brightness: 0.95
+        )
     }
 
     private var permissionListMock: some View {
@@ -170,6 +223,69 @@ struct PermissionAppDragGuide: View {
     private func reveal(_ target: PermissionAppTarget) {
         guard let url = target.bundleURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+}
+
+private struct PermissionTargetParticleGlow: NSViewRepresentable {
+    func makeNSView(context: Context) -> PermissionTargetParticleGlowView {
+        let view = PermissionTargetParticleGlowView()
+        view.setActive(true)
+        return view
+    }
+
+    func updateNSView(_ view: PermissionTargetParticleGlowView, context: Context) {
+        view.setActive(true)
+    }
+}
+
+private final class PermissionTargetParticleGlowView: NSView {
+    private let particleField = PerimeterParticleField(
+        theme: .tts,
+        thicknessFraction: 0.48,
+        falloffExponent: 0.85
+    )
+    private var attached = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        attachIfNeeded()
+        updateBackingScale()
+        particleField.setActive(window != nil, pulsing: true)
+    }
+
+    override func layout() {
+        super.layout()
+        attachIfNeeded()
+        updateBackingScale()
+        particleField.layoutInBounds(bounds)
+    }
+
+    func setActive(_ active: Bool) {
+        attachIfNeeded()
+        particleField.setActive(active, pulsing: true)
+    }
+
+    private func attachIfNeeded() {
+        guard !attached else { return }
+        particleField.attach(to: self)
+        attached = true
+    }
+
+    private func updateBackingScale() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        particleField.setBackingScale(scale)
     }
 }
 

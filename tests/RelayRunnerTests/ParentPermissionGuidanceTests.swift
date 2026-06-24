@@ -73,4 +73,31 @@ final class ParentPermissionGuidanceTests: XCTestCase {
             "Claude.app and Terminal.app"
         )
     }
+
+    func testDragGuideHighlightsOnlyActiveTargets() {
+        let targets = [
+            PermissionAppTarget(displayName: "Codex.app", bundleURL: nil),
+            PermissionAppTarget(displayName: "Terminal.app", bundleURL: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")),
+        ]
+
+        XCTAssertEqual(
+            PermissionAppDragGuide.highlightedTargetIDs(for: targets, isActive: true),
+            Set(targets.map(\.id))
+        )
+        XCTAssertTrue(
+            PermissionAppDragGuide.highlightedTargetIDs(for: targets, isActive: false).isEmpty
+        )
+    }
+
+    func testDetectedParentDragHighlightParityForSupportedAndCustomParents() {
+        for parent in ["Terminal", "Codex", "Claude", "Warp"] {
+            let targets = ParentPermissionGuidance.appTargets(detectedParent: parent)
+
+            XCTAssertEqual(
+                PermissionAppDragGuide.highlightedTargetIDs(for: targets, isActive: true),
+                Set(targets.map(\.id)),
+                parent
+            )
+        }
+    }
 }

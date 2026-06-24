@@ -41,7 +41,8 @@ struct ParentOnboardingView: View {
             PermissionAppDragGuide(
                 title: "Drag the parent app if it is missing",
                 settingsPane: "Accessibility or Screen Recording",
-                targets: ParentPermissionGuidance.appTargets(detectedParent: parent)
+                targets: ParentPermissionGuidance.appTargets(detectedParent: parent),
+                highlightTargets: true
             )
             relaunchHint
             Spacer(minLength: 0)

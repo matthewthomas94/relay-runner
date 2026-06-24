@@ -546,7 +546,8 @@ struct OnboardingView: View {
             PermissionAppDragGuide(
                 title: "Drag \(selectedParentTargetNameList) into \(title)",
                 settingsPane: title,
-                targets: selectedParentAppTargets
+                targets: selectedParentAppTargets,
+                highlightTargets: true
             )
 
             parentPermissionVerificationNote(for: kind)
