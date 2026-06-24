@@ -11,6 +11,6 @@ final class StatusSettingsTabTests: XCTestCase {
         )
 
         XCTAssertTrue(detail.contains("global activation keys"))
-        XCTAssertTrue(detail.contains("Control+Option+Command board hotkey"))
+        XCTAssertTrue(detail.contains("double-tap Shift board hotkey"))
     }
 }

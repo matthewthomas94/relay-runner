@@ -4,8 +4,8 @@ import SwiftUI
 /// Manages the kanban-board overlay lifecycle. Owns a single
 /// `BoardOverlayPanel` and an `NSHostingView` rendering the SwiftUI tree.
 ///
-/// Currently a manual toggle (`show` / `hide` / `toggle` from the menu).
-/// Esc / click-outside / global hotkey dismissal land in a follow-up commit.
+/// Currently toggled from the menu, RelayActions, or the global board hotkey.
+/// Esc / click-outside dismissal land in a follow-up commit.
 ///
 /// All methods must be called from the main thread (AppKit requirement). The
 /// type itself isn't marked `@MainActor` so it can be held by `AppState` as a
@@ -29,14 +29,12 @@ final class BoardOverlayController {
     private var runStatePollTimer: Timer?
     private var currentProject: ProjectResolver.LinkedProject?
 
-    /// Gesture state for the modifier-only ⌃⌥⌘ hotkey. NSEvent doesn't have a
-    /// native "hotkey is only modifiers and no letter" abstraction — we drive
-    /// it off `.flagsChanged` instead. Press Control+Option+Command together,
-    /// release any modifier to toggle. If any key is pressed while the chord is
-    /// held (e.g. ⌃⌥⌘+Arrow), `sawKeyDownDuringGesture` aborts so the toggle
-    /// doesn't fire on incidental modifier use.
-    private var boardChordHeld = false
-    private var sawKeyDownDuringGesture = false
+    private var boardHotkeyGesture = BoardHotkeyGesture()
+    private let boardRouteResolver: () -> ProjectResolver.BoardRoute
+
+    init(boardRouteResolver: @escaping () -> ProjectResolver.BoardRoute = ProjectResolver.resolveBoardRoute) {
+        self.boardRouteResolver = boardRouteResolver
+    }
 
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
         self.themeResolver = resolver
@@ -64,10 +62,9 @@ final class BoardOverlayController {
         runStatePollTimer?.invalidate()
     }
 
-    /// Install global keyboard hooks: ⌃⌥⌘ (Control+Option+Command pressed
-    /// together, no letter) toggles the routed board surface (works from any
-    /// app); Esc dismisses while the board is visible. Both rely on Relay
-    /// Runner's Input Monitoring permission.
+    /// Install global keyboard hooks: double-tap Shift toggles the routed
+    /// board surface (works from any app); Esc dismisses while the board is
+    /// visible. Both rely on Relay Runner's Input Monitoring permission.
     ///
     /// Call once from `AppState.startOverlay` — `BoardOverlayController` is
     /// long-lived for the app's lifetime.
@@ -91,10 +88,7 @@ final class BoardOverlayController {
         case .flagsChanged:
             handleFlagsChanged(event)
         case .keyDown:
-            // Any keypress while the board chord is held aborts the gesture:
-            // Chord+Arrow/window shortcuts, etc., should NOT fire the board
-            // toggle.
-            if boardChordHeld { sawKeyDownDuringGesture = true }
+            boardHotkeyGesture.handleKeyDown()
             // Esc: cancel an open editor first, otherwise dismiss the board.
             if event.keyCode == 53, isVisible {
                 DispatchQueue.main.async { [weak self] in
@@ -108,22 +102,8 @@ final class BoardOverlayController {
     }
 
     private func handleFlagsChanged(_ event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let hasBoardChord = flags.contains([.control, .option, .command])
-        if hasBoardChord && !boardChordHeld {
-            // The board chord just became simultaneously held — start the
-            // gesture window. The toggle doesn't fire yet; we wait for
-            // release to make sure no key was pressed in the interim.
-            boardChordHeld = true
-            sawKeyDownDuringGesture = false
-        } else if !hasBoardChord && boardChordHeld {
-            // One or more modifiers released — gesture ends. Fire only if no
-            // key intercepted (i.e. this was a clean ⌃⌥⌘ tap, not the start of
-            // a longer shortcut).
-            boardChordHeld = false
-            if !sawKeyDownDuringGesture {
-                DispatchQueue.main.async { [weak self] in self?.toggle() }
-            }
+        if boardHotkeyGesture.handleFlagsChanged(event.modifierFlags) {
+            DispatchQueue.main.async { [weak self] in self?.toggle() }
         }
     }
 
@@ -138,7 +118,7 @@ final class BoardOverlayController {
         // single project opens its repo board, while a workspace root opens
         // Program Board without creating a parent `.orchestrator/`.
         let project: ProjectResolver.LinkedProject
-        switch ProjectResolver.resolveBoardRoute() {
+        switch boardRouteResolver() {
         case .project(let resolvedProject):
             project = resolvedProject
         case .programBoard:

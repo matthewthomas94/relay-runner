@@ -846,10 +846,10 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Board overlay — install global ⌃⌥⌘ / Esc hotkeys only once macOS has
-        // already granted Input Monitoring. The menu and MCP toggle still work
-        // without that optional permission, and deferring avoids a TCC prompt
-        // during first launch.
+        // Board overlay — install global double-tap Shift / Esc hotkeys only
+        // once macOS has already granted Input Monitoring. The menu and MCP
+        // toggle still work without that optional permission, and deferring
+        // avoids a TCC prompt during first launch.
         if permissions.inputMonitoring == .granted {
             boardOverlay.installGlobalHotkeys()
         }
