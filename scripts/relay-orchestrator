@@ -153,7 +153,7 @@ If a run finished, also peek at the worktree (path is in the run record) to see 
 ## Notes
 
 - The worker runs with the configured agent's permission-bypass flag inside an isolated branch (`relay/<sanitized-id>`); changes are local-only and never pushed automatically.
-- The default workflow template is at `~/Library/Application Support/relay-runner/orchestrator/WORKFLOW.md`. A repo-local `WORKFLOW.md` overrides the default for that repo.
+- The default workflow template is at `~/Library/Application Support/relay-runner/orchestrator/WORKFLOW.md`. A repo-local `.orchestrator/WORKFLOW.md` overrides the default for that repo; root-level `WORKFLOW.md` files are treated as normal project docs.
 - The worker mutates the ticket file: flips status to `in_progress` on start, then to `done` (or leaves `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits are committed to the worker's branch.
 - For the broader "discuss → write → dispatch → integrate" workflow this command sits inside, see `/relay-workflow`.
 DISPATCH_MD_EOF
@@ -199,7 +199,7 @@ For a one-line typo fix or a doc tweak, just edit and commit in this session.
 ## Boundaries
 
 - Don't push `relay/<id>` branches; integrate first, then delete.
-- Sub-agents are constrained by `services/orchestrator_workflow.md` (or a repo-local `WORKFLOW.md`) — they may only edit their own ticket file under `.orchestrator/`. Other tickets and the board layout belong to the orchestrator (you).
+- Sub-agents are constrained by `services/orchestrator_workflow.md` (or a repo-local `.orchestrator/WORKFLOW.md`) — they may only edit their own ticket file under `.orchestrator/`. Other tickets and the board layout belong to the orchestrator (you).
 
 ## On invocation
 

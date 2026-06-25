@@ -43,7 +43,13 @@ from graphify_core import GraphifyCoreStore
 from graphify_ingest import ingest_registered_projects
 from program_status import build_program_status
 from session_capture import capture_session_review
-from tickets import scan_repo, write as write_ticket, all_deps_done
+from tickets import (
+    TicketParseError,
+    read as read_ticket,
+    scan_repo,
+    write as write_ticket,
+    all_deps_done,
+)
 
 PORT_FILE = Path("/tmp/relay_orchestrator.port")
 RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
@@ -667,6 +673,67 @@ def delete_branch(repo_path: str, branch: str) -> None:
     _git(repo_path, "branch", "-D", branch, check=False)
 
 
+def _git_head(repo_path: str) -> str | None:
+    result = _git(repo_path, "rev-parse", "HEAD", check=False)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def validate_worker_completion(
+    *,
+    workspace_path: str,
+    ticket_id: str,
+    run_id: int,
+    start_head: str | None,
+) -> tuple[bool, str]:
+    """Return whether an exit-0 worker actually completed its ticket.
+
+    Agent CLIs can return 0 after answering a clarification or unrelated prompt.
+    The orchestrator treats ticket completion as on-disk evidence in the worker
+    worktree: a new commit, the requested ticket marked done, and a run-log body
+    that mentions the current run.
+    """
+    workspace = Path(workspace_path)
+    ticket_path = workspace / ".orchestrator" / f"{ticket_id}.md"
+    reasons: list[str] = []
+
+    current_head = _git_head(str(workspace))
+    if start_head and current_head == start_head:
+        reasons.append("worker made no new commit")
+    elif current_head is None:
+        reasons.append("could not read worker git HEAD")
+
+    try:
+        ticket = read_ticket(ticket_path)
+    except FileNotFoundError:
+        return False, f"ticket file missing at {ticket_path}"
+    except (OSError, TicketParseError) as e:
+        return False, f"ticket file unreadable at {ticket_path}: {e}"
+
+    if ticket.get("id") != ticket_id:
+        reasons.append(f"ticket id is {ticket.get('id')!r}, expected {ticket_id!r}")
+    if ticket.get("status") != "done":
+        reasons.append(f"ticket status is {ticket.get('status')!r}, expected 'done'")
+    if ticket.get("run_id") != run_id:
+        reasons.append(f"ticket run_id is {ticket.get('run_id')!r}, expected {run_id}")
+
+    rel_ticket = f".orchestrator/{ticket_id}.md"
+    diff = _git(str(workspace), "diff", "--quiet", "HEAD", "--", rel_ticket, check=False)
+    if diff.returncode == 1:
+        reasons.append("ticket completion is not committed")
+    elif diff.returncode != 0:
+        reasons.append("could not verify committed ticket completion")
+
+    body = str(ticket.get("body") or "")
+    if "## Run log" not in body or str(run_id) not in body:
+        reasons.append(f"ticket run log does not mention run {run_id}")
+
+    if reasons:
+        return False, "; ".join(reasons)
+    return True, "ticket marked done with run evidence"
+
+
 # ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
@@ -676,6 +743,7 @@ class Worker:
 
     def __init__(self, *, run_id: int, run: dict, prompt: str, agent_bin: str,
                  agent_kind: str,
+                 workflow_path: Path | None = None,
                  store: RunsStore, log_path: Path, timeout_seconds: int,
                  on_complete: Callable[[int], None] | None = None):
         self.run_id = run_id
@@ -683,6 +751,7 @@ class Worker:
         self.prompt = prompt
         self.agent_bin = agent_bin
         self.agent_kind = agent_kind
+        self.workflow_path = workflow_path
         self.store = store
         self.log_path = log_path
         self.timeout_seconds = timeout_seconds
@@ -711,6 +780,12 @@ class Worker:
 
         try:
             log.write(f"[orchestrator] provider={self.agent_kind}\n")
+            if self.workflow_path:
+                log.write(f"[orchestrator] workflow_template={self.workflow_path}\n")
+            log.write(f"[orchestrator] prompt_sha256={hashlib.sha256(self.prompt.encode('utf-8')).hexdigest()}\n")
+            start_head = _git_head(self.run["workspace_path"])
+            if start_head:
+                log.write(f"[orchestrator] start_head={start_head}\n")
             cmd = self._command()
             try:
                 self.proc = subprocess.Popen(
@@ -781,7 +856,23 @@ class Worker:
             elif self._cancel_requested.is_set():
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
             elif rc == 0:
-                self.store.update(self.run_id, state="Succeeded", ended=True, exit_code=rc)
+                ok, reason = validate_worker_completion(
+                    workspace_path=self.run["workspace_path"],
+                    ticket_id=self.run["ticket_id"],
+                    run_id=self.run_id,
+                    start_head=start_head,
+                )
+                if ok:
+                    self.store.update(self.run_id, state="Succeeded", ended=True, exit_code=rc)
+                else:
+                    log.write(f"\n[orchestrator] worker exited 0 but did not complete ticket: {reason}\n")
+                    self.store.update(
+                        self.run_id,
+                        state="Failed",
+                        last_error=f"exit=0 but ticket incomplete: {reason}",
+                        ended=True,
+                        exit_code=rc,
+                    )
             elif rc in (-9, -15):
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
             else:
@@ -815,6 +906,7 @@ class Worker:
             self.agent_bin,
             "exec",
             "--json",
+            "--ephemeral",
             "--dangerously-bypass-approvals-and-sandbox",
             "--dangerously-bypass-hook-trust",
         ]
@@ -957,20 +1049,34 @@ class Daemon:
     # -- prompt rendering -------------------------------------------------
 
     def _resolve_workflow_for_repo(self, repo_path: str) -> Path:
-        repo_template = Path(repo_path) / "WORKFLOW.md"
+        repo_template = Path(repo_path) / ".orchestrator" / "WORKFLOW.md"
         if repo_template.is_file():
             return repo_template
         return self.workflow_path
 
+    @staticmethod
+    def _validate_workflow_template(template_path: Path, template: str) -> None:
+        missing = [
+            marker
+            for marker in ("{{ticket_id}}", "{{run_id}}")
+            if marker not in template
+        ]
+        if missing:
+            raise RuntimeError(
+                f"workflow template at {template_path} is not an orchestrator ticket workflow; "
+                f"missing template variable(s): {', '.join(missing)}"
+            )
+
     def _build_prompt(
         self, *, ticket_id: str, repo_path: str, branch: str, attempt: int, run_id: int,
-        caller_context: str | None = None,
+        caller_context: str | None = None, workflow_path: Path | None = None,
     ) -> str:
-        template_path = self._resolve_workflow_for_repo(repo_path)
+        template_path = workflow_path or self._resolve_workflow_for_repo(repo_path)
         try:
             template = template_path.read_text()
         except OSError as e:
             raise RuntimeError(f"could not read workflow template at {template_path}: {e}") from e
+        self._validate_workflow_template(template_path, template)
         # Sub-agents have no memory of the dispatching session. The caller can
         # pass `caller_context` to inject background that doesn't fit in the
         # ticket file (recent decisions, related runs, etc.). Wrap it in a
@@ -1076,6 +1182,7 @@ class Daemon:
                 log_path=str(log_path),
             )
 
+            workflow_path = self._resolve_workflow_for_repo(str(repo))
             prompt = self._build_prompt(
                 ticket_id=ticket_id,
                 repo_path=str(repo),
@@ -1083,12 +1190,13 @@ class Daemon:
                 attempt=attempt,
                 run_id=run_id,
                 caller_context=context,
+                workflow_path=workflow_path,
             )
 
             run = self.runs.get(run_id) or {}
             worker = Worker(
                 run_id=run_id, run=run, prompt=prompt, agent_bin=self.agent_bin,
-                agent_kind=self.agent_kind,
+                agent_kind=self.agent_kind, workflow_path=workflow_path,
                 store=self.runs, log_path=log_path, timeout_seconds=self.worker_timeout,
                 on_complete=self._on_worker_complete,
             )
@@ -1118,30 +1226,50 @@ class Daemon:
             print(f"[orchestrator] dep-progression error for {run['ticket_id']}: {e}", file=sys.stderr)
 
     def _progress_dependents(self, *, repo_path: str, finished_ticket_id: str) -> None:
-        """When a ticket completes, dispatch queued dependents whose deps are done.
+        """When a ticket is done in the source repo, dispatch dependents whose deps are done.
 
-        Backlog dependents are still promoted to the on-disk `ready` schema
-        value first. Dependents already in `ready` stay queued until this path
-        sees every predecessor done, then use the same provider-neutral
-        dispatch chokepoint as manually queued work.
+        Backlog dependents are promoted to the on-disk `ready` schema value
+        only after every predecessor is actually `done` in the source repo.
+        Dependents already in `ready` stay queued until this path sees every
+        predecessor done, then use the same provider-neutral dispatch chokepoint
+        as manually queued work.
         """
         repo = Path(repo_path)
         all_tickets = scan_repo(repo)
+        by_id = {t["id"]: t for t in all_tickets}
+        finished = by_id.get(finished_ticket_id)
+        if not finished or finished["status"] != "done":
+            return
         dependents = [t for t in all_tickets if finished_ticket_id in t["depends_on"]]
         for dep in dependents:
-            if dep["status"] == "backlog":
-                dep["status"] = "ready"
-                write_ticket(dep["_path"], dep)
-            elif dep["status"] != "ready":
+            if dep["status"] not in ("backlog", "ready"):
                 continue
             if not all_deps_done(dep, all_tickets):
                 continue
+            if dep["status"] == "backlog":
+                dep["status"] = "ready"
+                write_ticket(dep["_path"], dep)
             try:
                 self.dispatch(ticket_id=dep["id"], repo_path=str(repo), source="dependency-progression")
             except ValueError as e:
                 # Daemon refused dispatch (e.g. file missing, already active);
                 # the status flip stays — user can drag/redispatch manually.
                 print(f"[orchestrator] auto-dispatch declined for {dep['id']}: {e}", file=sys.stderr)
+
+    def _promote_unblocked_dependents(self, *, repo_path: str) -> list[str]:
+        """Promote backlog dependents whose dependencies are done in the source repo."""
+        repo = Path(repo_path)
+        all_tickets = scan_repo(repo)
+        promoted: list[str] = []
+        for ticket in all_tickets:
+            if ticket["status"] != "backlog" or not ticket["depends_on"]:
+                continue
+            if not all_deps_done(ticket, all_tickets):
+                continue
+            ticket["status"] = "ready"
+            write_ticket(ticket["_path"], ticket)
+            promoted.append(ticket["id"])
+        return promoted
 
     def sweep_ready_tickets(self, *, repo_path: str, trigger: str | None = None) -> dict:
         """Reconcile a repo board and dispatch eligible queued tickets.
@@ -1158,6 +1286,7 @@ class Daemon:
         if not repo.is_dir() or not (repo / ".git").exists():
             raise ValueError(f"repo_path {repo} is not a git repository")
 
+        promoted = self._promote_unblocked_dependents(repo_path=str(repo))
         all_tickets = scan_repo(repo)
         dispatched: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
@@ -1220,6 +1349,7 @@ class Daemon:
         return {
             "repo_path": str(repo),
             "trigger": trigger,
+            "promoted": promoted,
             "dispatched": dispatched,
             "skipped": skipped,
         }

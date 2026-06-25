@@ -211,6 +211,52 @@ class ReadySweeperTests(unittest.TestCase):
                 "source": "dependency-progression",
             }])
 
+    def test_dependency_progression_does_not_promote_when_finished_ticket_is_not_done(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="backlog")
+            self.write_ticket(repo, "RR-2", status="backlog", depends_on=["RR-1"])
+
+            daemon = object.__new__(Daemon)
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs)
+
+            Daemon._progress_dependents(
+                daemon,
+                repo_path=str(repo),
+                finished_ticket_id="RR-1",
+            )
+
+            self.assertEqual(calls, [])
+            self.assertIn("status: backlog", (repo / ".orchestrator" / "RR-2.md").read_text())
+
+    def test_ready_sweep_promotes_merged_done_dependency_then_dispatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="done")
+            self.write_ticket(repo, "RR-2", status="backlog", depends_on=["RR-1"])
+
+            daemon = object.__new__(Daemon)
+            daemon.runs = FakeRuns()
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs) or {
+                "already_active": False,
+                "run": {"id": 42},
+            }
+
+            result = Daemon.sweep_ready_tickets(daemon, repo_path=str(repo), trigger="test")
+
+            self.assertEqual(result["promoted"], ["RR-2"])
+            self.assertEqual(result["dispatched"], [{"ticket_id": "RR-2", "run_id": 42}])
+            self.assertIn("status: ready", (repo / ".orchestrator" / "RR-2.md").read_text())
+            self.assertEqual(calls, [{
+                "ticket_id": "RR-2",
+                "repo_path": str(repo.resolve()),
+                "source": "ready-sweeper",
+            }])
+
     def test_program_sweeper_dispatches_registered_projects_without_parent_board(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

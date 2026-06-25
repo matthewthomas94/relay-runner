@@ -44,7 +44,7 @@ The daemon:
 
 1. Validates `<repo>/.orchestrator/MA-6.md` exists.
 2. Adds a git worktree at `~/Library/Application Support/relay-runner/workspaces/ma-6/` on branch `relay/ma-6`, branched off the repo's default branch (resolved via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `main`).
-3. Renders the workflow prompt (default at `services/orchestrator_workflow.md`, override per-repo at `<repo>/WORKFLOW.md`).
+3. Renders the workflow prompt (default at `services/orchestrator_workflow.md`, override per-repo at `<repo>/.orchestrator/WORKFLOW.md`).
 4. Spawns the configured agent in that worktree, piping the prompt as stdin. New configs default to `codex exec --json --dangerously-bypass-approvals-and-sandbox`; Claude remains available via `[orchestrator].agent = "claude"`.
 5. Returns a `run_id` immediately — the worker continues in the background.
 
@@ -96,9 +96,9 @@ The worktree is isolated: changes don't leak into the repo's primary working cop
 
 ## Customizing the workflow per repo
 
-Drop a `WORKFLOW.md` at the repo's root and the worker uses that instead of the default. Template variables: `{{ticket_id}}`, `{{repo_path}}`, `{{branch}}`, `{{attempt}}`, `{{run_id}}`, `{{caller_context}}`. The default template at [services/orchestrator_workflow.md](../services/orchestrator_workflow.md) is the starting point.
+Drop a `WORKFLOW.md` under the repo's `.orchestrator/` directory and the worker uses that instead of the default. Root-level `WORKFLOW.md` files are ignored because many projects use that name for human process docs. Template variables: `{{ticket_id}}`, `{{repo_path}}`, `{{branch}}`, `{{attempt}}`, `{{run_id}}`, `{{caller_context}}`. The default template at [services/orchestrator_workflow.md](../services/orchestrator_workflow.md) is the starting point.
 
-A repo's `WORKFLOW.md` is a fine place to encode project conventions: which test command to run, which directories are off-limits, what a "done" run log entry should include, etc.
+A repo's `.orchestrator/WORKFLOW.md` is a fine place to encode project conventions: which test command to run, which directories are off-limits, what a "done" run log entry should include, etc.
 
 ## How tickets persist
 
