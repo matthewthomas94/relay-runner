@@ -21,6 +21,17 @@ final class BoardViewModelTests: XCTestCase {
         XCTAssertEqual(model.tickets(in: .done).map(\.id), ["RR-4", "RR-3"])
     }
 
+    func testLaneTicketsHonorBoardOrderWrittenByDragDrop() {
+        let model = BoardViewModel()
+        model.tickets = [
+            ticket(id: "RR-1", status: .backlog, order: 30),
+            ticket(id: "RR-2", status: .backlog, order: 10),
+            ticket(id: "RR-3", status: .backlog, order: 20),
+        ]
+
+        XCTAssertEqual(model.tickets(in: .backlog).map(\.id), ["RR-2", "RR-3", "RR-1"])
+    }
+
     func testProjectBoardDragOffsetUsesReportedCardFrame() {
         let offset = DragState.cardCenterOffset(
             cardFrame: CGRect(x: 100, y: 50, width: 310, height: 82),
@@ -90,7 +101,8 @@ final class BoardViewModelTests: XCTestCase {
     private func ticket(
         id: String,
         status: Ticket.Status,
-        dependsOn: [String] = []
+        dependsOn: [String] = [],
+        order: Int = 0
     ) -> Ticket {
         Ticket(
             id: id,
@@ -100,7 +112,7 @@ final class BoardViewModelTests: XCTestCase {
             dependsOn: dependsOn,
             runId: nil,
             canceled: false,
-            order: 0,
+            order: order,
             description: nil,
             body: ""
         )

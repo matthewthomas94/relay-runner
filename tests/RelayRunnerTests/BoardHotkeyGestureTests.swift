@@ -22,6 +22,16 @@ final class BoardHotkeyGestureTests: XCTestCase {
         XCTAssertFalse(tapShift(&gesture, downAt: start, upAt: start.addingTimeInterval(0.05)))
     }
 
+    func testDoubleTapShiftWithCapsLockStillToggles() {
+        var gesture = BoardHotkeyGesture(doubleTapWindow: 0.45)
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+
+        XCTAssertFalse(gesture.handleFlagsChanged([.shift, .capsLock], at: start))
+        XCTAssertFalse(gesture.handleFlagsChanged(.capsLock, at: start.addingTimeInterval(0.05)))
+        XCTAssertFalse(gesture.handleFlagsChanged([.shift, .capsLock], at: start.addingTimeInterval(0.25)))
+        XCTAssertTrue(gesture.handleFlagsChanged(.capsLock, at: start.addingTimeInterval(0.30)))
+    }
+
     func testShiftTapsOutsideWindowDoNotToggle() {
         var gesture = BoardHotkeyGesture(doubleTapWindow: 0.45)
         let start = Date(timeIntervalSince1970: 1_700_000_000)

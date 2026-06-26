@@ -471,16 +471,16 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertEqual(tickets.sorted(by: Ticket.newestFirst).map(\.id), ["RR-30", "RR-2", "RR-1"])
     }
 
-    func testProjectBoardLaneSortsByTicketFileModifiedAtDescending() throws {
+    func testProjectBoardLaneSortsByBoardOrderBeforeModifiedAt() throws {
         let repo = try makeTempRepo(named: "mouse-assist")
         defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
 
-        let oldTicket = try writeTicket(repo: repo, id: "MA-90", status: .backlog)
-        let recentTicket = try writeTicket(repo: repo, id: "MA-1", status: .backlog)
+        let lowOrderTicket = try writeTicket(repo: repo, id: "MA-1", status: .backlog)
+        let highOrderTicket = try writeTicket(repo: repo, id: "MA-90", status: .backlog)
         let olderDate = Date(timeIntervalSince1970: 1_700_000_000)
         let recentDate = Date(timeIntervalSince1970: 1_700_000_600)
-        try FileManager.default.setAttributes([.modificationDate: olderDate], ofItemAtPath: oldTicket.path)
-        try FileManager.default.setAttributes([.modificationDate: recentDate], ofItemAtPath: recentTicket.path)
+        try FileManager.default.setAttributes([.modificationDate: olderDate], ofItemAtPath: lowOrderTicket.path)
+        try FileManager.default.setAttributes([.modificationDate: recentDate], ofItemAtPath: highOrderTicket.path)
 
         let project = ProjectResolver.LinkedProject(repoPath: repo)
         let model = BoardViewModel()

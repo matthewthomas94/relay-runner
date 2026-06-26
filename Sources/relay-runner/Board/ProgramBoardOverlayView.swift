@@ -771,10 +771,6 @@ private struct ProgramWorkCard: View {
 
                 Spacer(minLength: 0)
 
-                if let priority = cleaned(item.priority) {
-                    ProgramInlineBadge(label: priority.displayLabel)
-                }
-
                 ProgramIconButton(
                     systemName: "square.and.pencil",
                     help: editHelp,

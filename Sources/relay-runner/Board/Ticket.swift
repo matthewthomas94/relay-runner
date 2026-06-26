@@ -15,8 +15,7 @@ struct Ticket: Identifiable, Equatable {
     /// Sort key within a column. Lower = higher in the list. Optional in the
     /// on-disk schema — missing `order` falls back to the numeric portion of
     /// the ticket id (so existing tickets keep their RR-1, RR-2, ... sequence
-    /// without a migration). The board still writes this on drag-drop, but
-    /// display order is driven by the ticket file's modification time.
+    /// without a migration).
     let order: Int
     /// Owning ticket file's modification time. Nil for tickets that have not
     /// been scanned from disk yet.
@@ -73,6 +72,11 @@ struct Ticket: Identifiable, Equatable {
 }
 
 extension Ticket {
+    static func boardOrder(_ lhs: Ticket, _ rhs: Ticket) -> Bool {
+        if lhs.order != rhs.order { return lhs.order < rhs.order }
+        return newestFirst(lhs, rhs)
+    }
+
     static func newestFirst(_ lhs: Ticket, _ rhs: Ticket) -> Bool {
         newestFirst(
             lhsModifiedAt: lhs.modifiedAt,

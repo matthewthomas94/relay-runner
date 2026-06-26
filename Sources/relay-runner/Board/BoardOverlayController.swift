@@ -66,20 +66,28 @@ final class BoardOverlayController {
     /// board surface (works from any app); Esc dismisses while the board is
     /// visible. Both rely on Relay Runner's Input Monitoring permission.
     ///
-    /// Call once from `AppState.startOverlay` — `BoardOverlayController` is
-    /// long-lived for the app's lifetime.
+    /// Safe to call whenever Input Monitoring becomes available. The global
+    /// monitor can fail before TCC has settled, so each monitor is installed
+    /// independently and missing pieces can be retried without duplicating the
+    /// local app monitor.
     func installGlobalHotkeys() {
-        guard globalMonitor == nil else { return }
         let mask: NSEvent.EventTypeMask = [.keyDown, .flagsChanged]
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            self?.handle(event)
+        if globalMonitor == nil {
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+                self?.handle(event)
+            }
+            if globalMonitor == nil {
+                NSLog("[relay-runner] board global hotkey monitor was not installed")
+            }
         }
         // Local monitor catches the same shortcuts when our app happens to be
         // frontmost (NSEvent splits them across global/local). Returning the
         // event lets it propagate normally.
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            self?.handle(event)
-            return event
+        if localMonitor == nil {
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+                self?.handle(event)
+                return event
+            }
         }
     }
 
@@ -145,13 +153,12 @@ final class BoardOverlayController {
             p.reframe(to: screen)
         }
 
-        // Refresh model from current state. Tickets get re-scanned every show;
-        // theme is then kept live by the poll timer below.
-        model.tickets = loadTickets()
-        model.runStates = loadRunStates()
+        // Put the panel onscreen before disk/network refreshes so the hotkey
+        // feels immediate even for large boards or cold daemon state.
+        model.tickets = []
+        model.runStates = [:]
         model.theme = themeResolver?()
         model.editing = nil
-        OrchestratorClient.sweepReadyTickets(repoPath: project.repoPath.path, trigger: "board-show")
 
         let hosting = NSHostingView(rootView: BoardOverlayView(
             model: model,
@@ -177,6 +184,9 @@ final class BoardOverlayController {
 
         startThemePoll()
         startRunStatePoll()
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshVisibleProject(trigger: "board-show")
+        }
     }
 
     func hide() {
@@ -230,6 +240,15 @@ final class BoardOverlayController {
     private func stopRunStatePoll() {
         runStatePollTimer?.invalidate()
         runStatePollTimer = nil
+    }
+
+    private func refreshVisibleProject(trigger: String? = nil) {
+        guard let project = currentProject else { return }
+        model.tickets = loadTickets()
+        model.runStates = loadRunStates()
+        if let trigger {
+            OrchestratorClient.sweepReadyTickets(repoPath: project.repoPath.path, trigger: trigger)
+        }
     }
 
     // MARK: - Editor / mutation handlers
@@ -349,7 +368,7 @@ final class BoardOverlayController {
         // it from the source list first; then clamp the insert index.
         var destColumn = model.tickets
             .filter { $0.status == status && $0.id != ticketId }
-            .sorted(by: Ticket.newestFirst)
+            .sorted(by: Ticket.boardOrder)
         let clampedIndex = max(0, min(insertIndex, destColumn.count))
         let moved = Ticket(
             id: dragged.id,

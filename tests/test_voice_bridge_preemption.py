@@ -112,6 +112,45 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             ))
             self.assertEqual(tts_queue.get_nowait(), "fresh response")
 
+    def test_voice_acknowledgement_replaces_stale_pending_command(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
+
+            first_meta = voice_bridge._begin_relay_command(
+                "first request",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            voice_bridge._publish_command(
+                "first request",
+                {**first_meta, "action": "non_work"},
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+            )
+
+            second_meta = voice_bridge._begin_relay_command(
+                "second request",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            queued = voice_bridge._queue_voice_acknowledgement(
+                second_meta,
+                tts_queue,
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+            )
+
+            self.assertTrue(queued)
+            self.assertEqual(tts_queue.get_nowait(), "Got it. I'm on it.")
+            self.assertFalse(os.path.exists(command_path))
+            current = json.loads(Path(state_path).read_text())
+            self.assertEqual(current["relay_command_seq"], second_meta["relay_command_seq"])
+
     def test_newer_pending_project_work_does_not_create_visible_tickets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir) / "repo"

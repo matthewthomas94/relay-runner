@@ -50,7 +50,7 @@ final class BoardViewModel {
     func tickets(in status: Ticket.Status) -> [Ticket] {
         tickets
             .filter { effectiveStatus(for: $0) == status }
-            .sorted(by: Ticket.newestFirst)
+            .sorted(by: Ticket.boardOrder)
     }
 
     /// Unsatisfied predecessors for a queued ticket. Missing predecessor files
@@ -73,9 +73,8 @@ final class BoardViewModel {
         guard let (status, _) = columnFrames.first(where: { $0.value.contains(location) }) else {
             return nil
         }
-        let columnTickets = tickets
-            .filter { $0.status == status && $0.id != draggedId }
-            .sorted(by: Ticket.newestFirst)
+        let columnTickets = tickets(in: status)
+            .filter { $0.id != draggedId }
         var index = columnTickets.count
         for (i, t) in columnTickets.enumerated() {
             if let frame = cardFrames[t.id], location.y < frame.midY {

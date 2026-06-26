@@ -275,6 +275,7 @@ VOICE_COMMAND_CLAIM_FILE = "/tmp/voice_cmd_claimed.json"
 VOICE_COMMAND_EVENT_LOG = os.environ.get("VOICE_COMMAND_EVENT_LOG", "/tmp/relay_command_events.jsonl")
 VOICE_COMMAND_EVENT_LIMIT = 200
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
+VOICE_ACKNOWLEDGEMENT = os.environ.get("VOICE_ACKNOWLEDGEMENT", "Got it. I'm on it.")
 
 
 def _read_json_file(path: str) -> dict:
@@ -405,6 +406,10 @@ def _discard_pending_command(
                     f"[voice_bridge] Could not remove stale ticket {ticket_path}: {e}",
                     file=sys.stderr,
                 )
+    try:
+        os.unlink(command_path)
+    except OSError:
+        pass
     try:
         os.unlink(meta_path)
     except OSError:
@@ -554,6 +559,31 @@ def _queue_tts_text(
     return True
 
 
+def _queue_voice_acknowledgement(
+    relay_command: dict,
+    tts_queue: queue.Queue,
+    command_path: str = VOICE_CMD_FILE,
+    meta_path: str = VOICE_CMD_META_FILE,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    """Queue a short, metadata-tagged acknowledgement for the newest command."""
+    text = VOICE_ACKNOWLEDGEMENT.strip()
+    if not text:
+        return False
+    _discard_pending_command(command_path=command_path, meta_path=meta_path)
+    payload = json.dumps({
+        "text": text,
+        "relay_command_seq": relay_command.get("relay_command_seq"),
+        "relay_command_id": relay_command.get("relay_command_id"),
+    })
+    return _queue_tts_text(
+        payload,
+        tts_queue,
+        command_path=command_path,
+        state_path=state_path,
+    )
+
+
 def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
     """Read text from TTS input FIFO and put on TTS queue (relay mode only)."""
     while not shutdown_event.is_set():
@@ -687,6 +717,7 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                 tts_worker.skip()
                 _notify_state("processing", prompt=text[:200])
                 relay_command = _begin_relay_command(text)
+                _queue_voice_acknowledgement(relay_command, tts_worker.input_queue)
                 action = resolve_command_action(
                     text,
                     repo_path=Path.cwd(),

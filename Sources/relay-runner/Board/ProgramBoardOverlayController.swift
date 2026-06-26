@@ -199,6 +199,11 @@ final class ProgramBoardOverlayController {
 
         do {
             let result = try ProgramBoardTicketMover.move(unresolved)
+            model.applyDrop(
+                ticketID: result.ticket.id,
+                projectPath: unresolved.repoPath,
+                to: targetLane
+            )
             if let dispatch = result.dispatchRequest {
                 OrchestratorClient.sweepReadyTickets(
                     repoPath: dispatch.repoPath,

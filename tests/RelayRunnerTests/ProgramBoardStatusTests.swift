@@ -442,6 +442,21 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
     }
 
+    func testProgramBoardViewModelApplyDropMovesVisibleTicketImmediately() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let snapshot = try programBoardSnapshot(clientPath: clientPath, toolsPath: toolsPath)
+        let model = ProgramBoardViewModel()
+        model.snapshot = snapshot
+
+        model.applyDrop(ticketID: "CD-1", projectPath: clientPath, to: .ready)
+
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1"])
+        XCTAssertEqual(model.ticketItems(in: .ready).map(\.ticketID), ["CD-1"])
+        XCTAssertEqual(model.snapshot?.backlogWork.counts.items, 1)
+        XCTAssertEqual(model.snapshot?.readyWork.counts.items, 1)
+    }
+
     func testProgramBoardTicketDetailResolvesChildTicketFileFromAllProjects() throws {
         let root = try temporaryDirectory()
         let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)

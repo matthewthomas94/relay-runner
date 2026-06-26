@@ -52,6 +52,47 @@ struct ProgramDashboardSnapshot: Equatable {
     private var allTicketItems: [ProgramStatusItem] {
         backlogWork.items + readyWork.items + inProgressWork.items + doneWork.items
     }
+
+    func movingTicket(
+        ticketID: String,
+        projectPath: String,
+        to lane: ProgramBoardLane
+    ) -> ProgramDashboardSnapshot {
+        guard let moved = allTicketItems.first(where: {
+            $0.ticketID == ticketID && $0.project?.path == projectPath
+        }) else {
+            return self
+        }
+
+        func movedItems(_ response: ProgramStatusResponse, isTarget: Bool) -> [ProgramStatusItem] {
+            var items = response.items.filter {
+                !($0.ticketID == ticketID && $0.project?.path == projectPath)
+            }
+            if isTarget {
+                items.append(moved)
+            }
+            return items
+        }
+
+        func response(_ source: ProgramStatusResponse, items: [ProgramStatusItem]) -> ProgramStatusResponse {
+            ProgramStatusResponse(
+                query: source.query,
+                provider: source.provider,
+                message: source.message,
+                items: items,
+                counts: ProgramStatusCounts(projects: source.counts.projects, items: items.count)
+            )
+        }
+
+        return ProgramDashboardSnapshot(
+            summary: summary,
+            backlogWork: response(backlogWork, items: movedItems(backlogWork, isTarget: lane == .backlog)),
+            readyWork: response(readyWork, items: movedItems(readyWork, isTarget: lane == .ready)),
+            inProgressWork: response(inProgressWork, items: movedItems(inProgressWork, isTarget: lane == .inProgress)),
+            doneWork: response(doneWork, items: movedItems(doneWork, isTarget: lane == .done)),
+            awaitingMerge: awaitingMerge
+        )
+    }
 }
 
 enum ProgramBoardLane: CaseIterable, Identifiable, Equatable, Hashable {
@@ -1051,6 +1092,14 @@ final class ProgramBoardViewModel {
 
     func reportDropFailure(_ message: String) {
         errorMessage = message
+    }
+
+    func applyDrop(ticketID: String, projectPath: String, to lane: ProgramBoardLane) {
+        snapshot = snapshot?.movingTicket(
+            ticketID: ticketID,
+            projectPath: projectPath,
+            to: lane
+        )
     }
 
     @MainActor
