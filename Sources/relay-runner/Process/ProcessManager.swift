@@ -465,8 +465,8 @@ final class ProcessManager {
     ) -> String {
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
         let modelFlag = Self.modelFlag(config.general.model, target: target)
-        let reasoningEffortFlag = Self.codexReasoningEffortFlag(
-            config.general.codex_reasoning_effort,
+        let reasoningEffortFlag = Self.orchestratorEffortFlag(
+            config.general.effectiveOrchestratorEffort,
             target: target
         )
         let cdLine = Self.cdLine(config.general.working_directory, homeDirectory: homeDirectory)
@@ -546,11 +546,20 @@ final class ProcessManager {
         return "--model \(Self.shellQuoted(v)) "
     }
 
-    private static func codexReasoningEffortFlag(_ raw: String, target: AgentTarget) -> String {
-        guard target == .codex else { return "" }
-        let effort = GeneralConfig.normalizedCodexReasoningEffort(raw)
-        guard effort != GeneralConfig.defaultCodexReasoningEffort else { return "" }
-        return "-c \(Self.shellQuoted("model_reasoning_effort=\"\(effort)\"")) "
+    private static func orchestratorEffortFlag(_ raw: String, target: AgentTarget) -> String {
+        let provider: GeneralConfig.AgentProvider
+        switch target {
+        case .codex: provider = .codex
+        case .claude: provider = .claude
+        }
+        let effort = GeneralConfig.normalizedOrchestratorEffort(raw, for: provider)
+        guard effort != GeneralConfig.defaultReasoningEffort else { return "" }
+        switch target {
+        case .codex:
+            return "-c \(Self.shellQuoted("model_reasoning_effort=\"\(effort)\"")) "
+        case .claude:
+            return "--effort \(Self.shellQuoted(effort)) "
+        }
     }
 
     private static func bypassFlag(enabled: Bool, target: AgentTarget) -> String {
@@ -574,7 +583,7 @@ final class ProcessManager {
         case .codex:
             return "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(bypassFlag)\(Self.shellQuoted("Use the relay-bridge skill now."))"
         case .claude:
-            return "\(Self.shellQuoted(binary)) \(modelFlag)\(bypassFlag)\"/relay-bridge\""
+            return "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(bypassFlag)\"/relay-bridge\""
         }
     }
 

@@ -8,6 +8,10 @@ struct Ticket: Identifiable, Equatable {
     let dependsOn: [String]
     let runId: Int?
     let canceled: Bool
+    let workerModel: String?
+    let workerEffort: String?
+    let workerSizingRationale: String?
+    let workerProviderNotes: String?
     /// Board-created tickets are written before the editor opens so they get a
     /// real id immediately. While `draft` is true, the daemon must not sweep a
     /// ready ticket into a worker; saving the editor clears the flag.
@@ -36,6 +40,10 @@ struct Ticket: Identifiable, Equatable {
         dependsOn: [String],
         runId: Int?,
         canceled: Bool,
+        workerModel: String? = nil,
+        workerEffort: String? = nil,
+        workerSizingRationale: String? = nil,
+        workerProviderNotes: String? = nil,
         draft: Bool = false,
         order: Int,
         modifiedAt: Date? = nil,
@@ -49,6 +57,10 @@ struct Ticket: Identifiable, Equatable {
         self.dependsOn = dependsOn
         self.runId = runId
         self.canceled = canceled
+        self.workerModel = workerModel
+        self.workerEffort = workerEffort
+        self.workerSizingRationale = workerSizingRationale
+        self.workerProviderNotes = workerProviderNotes
         self.draft = draft
         self.order = order
         self.modifiedAt = modifiedAt
@@ -161,6 +173,10 @@ enum TicketParser {
             dependsOn: parseList(depsRaw),
             runId: parseOptionalInt(runIdRaw),
             canceled: try parseBool(cancelRaw, field: "canceled"),
+            workerModel: optionalString(fields["worker_model"]),
+            workerEffort: optionalString(fields["worker_effort"]),
+            workerSizingRationale: optionalString(fields["worker_sizing_rationale"]),
+            workerProviderNotes: optionalString(fields["worker_provider_notes"]),
             draft: try draftRaw.map { try parseBool($0, field: "draft") } ?? false,
             order: parseOrder(fields["order"], fallbackFrom: id),
             modifiedAt: modifiedAt,
@@ -386,6 +402,11 @@ enum TicketParser {
     private static func requireString(_ fields: [String: String], _ key: String) throws -> String {
         guard let v = fields[key] else { throw TicketParseError.missingField(key) }
         return v
+    }
+
+    private static func optionalString(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty || trimmed.lowercased() == "null" ? nil : trimmed
     }
 
     private static func parseList(_ raw: String) -> [String] {

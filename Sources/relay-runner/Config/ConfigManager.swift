@@ -65,6 +65,7 @@ final class ConfigManager {
         }
 
         var generalProviderWasExplicit = false
+        var generalOrchestratorEffortWasExplicit = false
 
         // General
         if let general = table["general"]?.tomlValue.table {
@@ -78,7 +79,16 @@ final class ConfigManager {
             if let v = tomlString(general, "working_directory") { config.general.working_directory = v }
             if let v = tomlBool(general, "bypass_permissions") { config.general.bypass_permissions = v }
             if let v = tomlString(general, "model") { config.general.model = v }
+            if let v = tomlString(general, "orchestrator_effort") {
+                generalOrchestratorEffortWasExplicit = true
+                config.general.orchestrator_effort = v
+            }
             if let v = tomlString(general, "codex_reasoning_effort") { config.general.codex_reasoning_effort = v }
+            if let v = tomlString(general, "subagent_sizing_policy") {
+                config.general.subagent_sizing_policy = GeneralConfig.normalizedSubagentSizingPolicy(v)
+            }
+            if let v = tomlString(general, "subagent_model") { config.general.subagent_model = v }
+            if let v = tomlString(general, "subagent_effort") { config.general.subagent_effort = v }
         }
 
         // Awareness
@@ -90,7 +100,11 @@ final class ConfigManager {
             if let v = tomlDouble(awareness, "glow_intensity") { config.awareness.glow_intensity = v }
         }
 
-        migrate(&config, generalProviderWasExplicit: generalProviderWasExplicit)
+        migrate(
+            &config,
+            generalProviderWasExplicit: generalProviderWasExplicit,
+            generalOrchestratorEffortWasExplicit: generalOrchestratorEffortWasExplicit
+        )
         return config
     }
 
@@ -125,6 +139,9 @@ final class ConfigManager {
         lines.append("")
 
         lines.append("[general]")
+        let legacyCodexEffort = GeneralConfig.normalizedCodexReasoningEffort(
+            c.general.orchestrator_effort
+        )
         lines.append("provider = \"\(c.general.provider.rawValue)\"")
         lines.append("command = \"\(c.general.command)\"")
         lines.append("terminal = \"\(c.general.terminal)\"")
@@ -132,7 +149,11 @@ final class ConfigManager {
         lines.append("working_directory = \"\(c.general.working_directory)\"")
         lines.append("bypass_permissions = \(c.general.bypass_permissions)")
         lines.append("model = \"\(c.general.model)\"")
-        lines.append("codex_reasoning_effort = \"\(c.general.codex_reasoning_effort)\"")
+        lines.append("orchestrator_effort = \"\(c.general.orchestrator_effort)\"")
+        lines.append("codex_reasoning_effort = \"\(legacyCodexEffort)\"")
+        lines.append("subagent_sizing_policy = \"\(c.general.subagent_sizing_policy.rawValue)\"")
+        lines.append("subagent_model = \"\(c.general.subagent_model)\"")
+        lines.append("subagent_effort = \"\(c.general.subagent_effort)\"")
         lines.append("")
 
         lines.append("[awareness]")
@@ -148,7 +169,11 @@ final class ConfigManager {
 
     // MARK: - Migration (matches lib.rs:150-180 and config.py:135-157)
 
-    private func migrate(_ config: inout AppConfig, generalProviderWasExplicit: Bool) {
+    private func migrate(
+        _ config: inout AppConfig,
+        generalProviderWasExplicit: Bool,
+        generalOrchestratorEffortWasExplicit: Bool
+    ) {
         // Whisper models -> Parakeet
         switch config.stt.model {
         case "tiny.en", "base.en", "small.en", "medium.en":
@@ -171,7 +196,10 @@ final class ConfigManager {
             config.tts.rate = min(2.0, max(0.5, 2.0 - (config.tts.rate - 100.0) * 1.5 / 200.0))
         }
 
-        config.general.normalize(providerWasExplicit: generalProviderWasExplicit)
+        config.general.normalize(
+            providerWasExplicit: generalProviderWasExplicit,
+            orchestratorEffortWasExplicit: generalOrchestratorEffortWasExplicit
+        )
     }
 }
 

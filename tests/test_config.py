@@ -48,6 +48,10 @@ class ConfigTests(unittest.TestCase):
             config = load_config(path)
 
         self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
+        self.assertEqual(config["general"]["orchestrator_effort"], "default")
+        self.assertEqual(config["general"]["subagent_sizing_policy"], "orchestrator_decides")
+        self.assertEqual(config["general"]["subagent_model"], "balanced")
+        self.assertEqual(config["general"]["subagent_effort"], "medium")
 
     def test_load_config_normalizes_codex_reasoning_effort(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -65,9 +69,28 @@ class ConfigTests(unittest.TestCase):
             config = load_config(path)
 
         self.assertEqual(config["general"]["provider"], "claude")
+        self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
         self.assertEqual(config["general"]["codex_reasoning_effort"], "xhigh")
 
-    def test_load_config_rejects_codex_reasoning_effort_max(self):
+    def test_load_config_allows_claude_orchestrator_effort_max(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.toml")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    """
+                    [general]
+                    provider = "claude"
+                    command = "claude"
+                    orchestrator_effort = "max"
+                    """
+                )
+
+            config = load_config(path)
+
+        self.assertEqual(config["general"]["orchestrator_effort"], "max")
+        self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
+
+    def test_load_config_rejects_codex_orchestrator_effort_max(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "config.toml")
             with open(path, "w", encoding="utf-8") as f:
@@ -76,13 +99,34 @@ class ConfigTests(unittest.TestCase):
                     [general]
                     provider = "codex"
                     command = "codex"
-                    codex_reasoning_effort = "max"
+                    orchestrator_effort = "max"
+                    codex_reasoning_effort = "high"
                     """
                 )
 
             config = load_config(path)
 
+        self.assertEqual(config["general"]["orchestrator_effort"], "default")
         self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
+
+    def test_load_config_normalizes_subagent_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.toml")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    """
+                    [general]
+                    subagent_sizing_policy = "user_default"
+                    subagent_model = " STRONG "
+                    subagent_effort = " XHIGH "
+                    """
+                )
+
+            config = load_config(path)
+
+        self.assertEqual(config["general"]["subagent_sizing_policy"], "user_default")
+        self.assertEqual(config["general"]["subagent_model"], "strong")
+        self.assertEqual(config["general"]["subagent_effort"], "xhigh")
 
 
 if __name__ == "__main__":

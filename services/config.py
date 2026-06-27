@@ -86,6 +86,10 @@ def load_config(config_path: str | None = None) -> dict:
         isinstance(config.get("general"), dict)
         and "provider" in config.get("general", {})
     )
+    general_had_orchestrator_effort = (
+        isinstance(config.get("general"), dict)
+        and "orchestrator_effort" in config.get("general", {})
+    )
 
     # Apply defaults
     defaults = {
@@ -116,7 +120,11 @@ def load_config(config_path: str | None = None) -> dict:
             "working_directory": "",
             "bypass_permissions": True,
             "model": "default",
+            "orchestrator_effort": "default",
             "codex_reasoning_effort": "default",
+            "subagent_sizing_policy": "orchestrator_decides",
+            "subagent_model": "balanced",
+            "subagent_effort": "medium",
         },
         "orchestrator": {
             "agent": "codex",
@@ -147,11 +155,19 @@ def load_config(config_path: str | None = None) -> dict:
                 else:
                     config[section][key] = default
 
-    _migrate_config(config, general_had_provider=general_had_provider)
+    _migrate_config(
+        config,
+        general_had_provider=general_had_provider,
+        general_had_orchestrator_effort=general_had_orchestrator_effort,
+    )
     return config
 
 
-def _migrate_config(config: dict, general_had_provider: bool = True):
+def _migrate_config(
+    config: dict,
+    general_had_provider: bool = True,
+    general_had_orchestrator_effort: bool = True,
+):
     """Migrate legacy config values in-place."""
     tts = config.get("tts", {})
 
@@ -206,11 +222,35 @@ def _migrate_config(config: dict, general_had_provider: bool = True):
     general["model"] = model if model in valid_models[provider] else "default"
 
     valid_codex_reasoning_efforts = {"default", "low", "medium", "high", "xhigh"}
+    valid_claude_reasoning_efforts = valid_codex_reasoning_efforts | {"max"}
     codex_reasoning_effort = (
         str(general.get("codex_reasoning_effort", "default")).strip().lower()
     )
+    raw_orchestrator_effort = (
+        general.get("orchestrator_effort")
+        if general_had_orchestrator_effort
+        else codex_reasoning_effort
+    )
+    orchestrator_effort = str(raw_orchestrator_effort or "default").strip().lower()
+    valid_orchestrator_efforts = (
+        valid_claude_reasoning_efforts if provider == "claude" else valid_codex_reasoning_efforts
+    )
+    if orchestrator_effort not in valid_orchestrator_efforts:
+        orchestrator_effort = "default"
+    general["orchestrator_effort"] = orchestrator_effort
     general["codex_reasoning_effort"] = (
-        codex_reasoning_effort
-        if codex_reasoning_effort in valid_codex_reasoning_efforts
-        else "default"
+        orchestrator_effort if orchestrator_effort in valid_codex_reasoning_efforts else "default"
+    )
+
+    policy = str(general.get("subagent_sizing_policy", "orchestrator_decides")).strip().lower()
+    general["subagent_sizing_policy"] = (
+        policy if policy in {"orchestrator_decides", "user_default"} else "orchestrator_decides"
+    )
+    subagent_model = str(general.get("subagent_model", "balanced")).strip().lower()
+    general["subagent_model"] = (
+        subagent_model if subagent_model in {"fast", "balanced", "strong"} else "balanced"
+    )
+    subagent_effort = str(general.get("subagent_effort", "medium")).strip().lower()
+    general["subagent_effort"] = (
+        subagent_effort if subagent_effort in {"low", "medium", "high", "xhigh"} else "medium"
     )

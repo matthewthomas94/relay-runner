@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
+from config import load_config
+
 
 CONTROL_COMMANDS = {
     "__TTS_STOP__": "tts_stop",
@@ -144,6 +146,7 @@ def create_ticket_for_command(
     repo_path: str | Path,
     source_text: str,
     relay_command: dict | None = None,
+    general_config: dict | None = None,
 ) -> tuple[str, Path]:
     repo = Path(repo_path).expanduser().resolve()
     orch_dir = repo / ".orchestrator"
@@ -159,7 +162,14 @@ def create_ticket_for_command(
             break
         ticket_number += 1
 
-    ticket_path.write_text(_ticket_body(ticket_id, source_text, relay_command=relay_command))
+    ticket_path.write_text(
+        _ticket_body(
+            ticket_id,
+            source_text,
+            relay_command=relay_command,
+            general_config=general_config,
+        )
+    )
     _write_next_id(config_path, config_text, ticket_number + 1)
     return ticket_id, ticket_path
 
@@ -291,6 +301,7 @@ def _ticket_body(
     ticket_id: str,
     source_text: str,
     relay_command: dict | None = None,
+    general_config: dict | None = None,
 ) -> str:
     title = _title_from_command(source_text)
     quote = "\n".join(f"> {line}" if line else ">" for line in source_text.splitlines())
@@ -310,9 +321,10 @@ def _ticket_body(
         "status: backlog\n"
         "priority: medium\n"
         "depends_on: []\n"
-        "run_id: null\n"
-        "canceled: false\n"
-        "---\n\n"
+            "run_id: null\n"
+            "canceled: false\n"
+            f"{_worker_sizing_frontmatter(general_config)}"
+            "---\n\n"
         "## Description\n\n"
         "The foreground orchestrator prepared this project-work ticket:\n\n"
         f"{quote}\n\n"
@@ -332,3 +344,33 @@ def _title_from_command(text: str) -> str:
     if len(title) > 76:
         title = title[:73].rstrip() + "..."
     return title[:1].upper() + title[1:]
+
+
+def _worker_sizing_frontmatter(general_config: dict | None = None) -> str:
+    general = general_config
+    if general is None:
+        try:
+            general = load_config().get("general", {})
+        except Exception:  # noqa: BLE001 - ticket creation must not fail on unreadable Settings.
+            general = {}
+    if general.get("subagent_sizing_policy") != "user_default":
+        return ""
+
+    model = _normalized_subagent_model(general.get("subagent_model"))
+    effort = _normalized_subagent_effort(general.get("subagent_effort"))
+    return (
+        f"worker_model: {model}\n"
+        f"worker_effort: {effort}\n"
+        "worker_sizing_rationale: \"User default from Relay Runner Settings.\"\n"
+        "worker_provider_notes: \"User default applies to Codex and Claude; Codex uses model_reasoning_effort and Claude uses --effort.\"\n"
+    )
+
+
+def _normalized_subagent_model(value: object) -> str:
+    model = str(value or "").strip().lower()
+    return model if model in {"fast", "balanced", "strong"} else "balanced"
+
+
+def _normalized_subagent_effort(value: object) -> str:
+    effort = str(value or "").strip().lower()
+    return effort if effort in {"low", "medium", "high", "xhigh"} else "medium"

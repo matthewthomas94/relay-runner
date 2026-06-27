@@ -12,6 +12,23 @@ enum TicketWriter {
         case writeFailed(underlying: Error)
     }
 
+    struct WorkerSizingDefaults: Equatable {
+        let workerModel: String
+        let workerEffort: String
+        let workerSizingRationale: String
+        let workerProviderNotes: String
+
+        static func from(_ config: GeneralConfig) -> WorkerSizingDefaults? {
+            guard config.subagent_sizing_policy == .userDefault else { return nil }
+            return WorkerSizingDefaults(
+                workerModel: GeneralConfig.normalizedSubagentModel(config.subagent_model),
+                workerEffort: GeneralConfig.normalizedSubagentEffort(config.subagent_effort),
+                workerSizingRationale: "User default from Relay Runner Settings.",
+                workerProviderNotes: "User default applies to Codex and Claude; Codex uses model_reasoning_effort and Claude uses --effort."
+            )
+        }
+    }
+
     // MARK: - Create
 
     /// Mint a new ticket file in `.orchestrator/`. Reads `config.toml`,
@@ -25,7 +42,8 @@ enum TicketWriter {
         status: Ticket.Status,
         title: String = "Untitled",
         order: Int,
-        draft: Bool = false
+        draft: Bool = false,
+        workerSizingDefaults: WorkerSizingDefaults? = nil
     ) throws -> Ticket {
         let dir = ProjectResolver.ticketsDirectory(in: project)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -41,6 +59,10 @@ enum TicketWriter {
             dependsOn: [],
             runId: nil,
             canceled: false,
+            workerModel: workerSizingDefaults?.workerModel,
+            workerEffort: workerSizingDefaults?.workerEffort,
+            workerSizingRationale: workerSizingDefaults?.workerSizingRationale,
+            workerProviderNotes: workerSizingDefaults?.workerProviderNotes,
             draft: draft,
             order: order,
             description: nil,
@@ -58,14 +80,16 @@ enum TicketWriter {
         in project: ProjectResolver.LinkedProject,
         status: Ticket.Status,
         existingTickets: [Ticket],
-        title: String = "Untitled"
+        title: String = "Untitled",
+        workerSizingDefaults: WorkerSizingDefaults? = nil
     ) throws -> Ticket {
         try mint(
             in: project,
             status: status,
             title: title,
             order: nextOrder(for: status, in: existingTickets),
-            draft: true
+            draft: true,
+            workerSizingDefaults: workerSizingDefaults
         )
     }
 
@@ -131,10 +155,42 @@ enum TicketWriter {
             dependsOn: ticket.dependsOn,
             runId: ticket.runId,
             canceled: ticket.canceled,
+            workerModel: ticket.workerModel,
+            workerEffort: ticket.workerEffort,
+            workerSizingRationale: ticket.workerSizingRationale,
+            workerProviderNotes: ticket.workerProviderNotes,
             draft: ticket.draft,
             order: ticket.order,
             description: summary,
             body: newBody
+        )
+    }
+
+    static func applyingWorkerSizingDefaults(
+        _ defaults: WorkerSizingDefaults?,
+        to ticket: Ticket
+    ) -> Ticket {
+        guard let defaults,
+              ticket.workerModel == nil,
+              ticket.workerEffort == nil else {
+            return ticket
+        }
+        return Ticket(
+            id: ticket.id,
+            title: ticket.title,
+            status: ticket.status,
+            priority: ticket.priority,
+            dependsOn: ticket.dependsOn,
+            runId: ticket.runId,
+            canceled: ticket.canceled,
+            workerModel: defaults.workerModel,
+            workerEffort: defaults.workerEffort,
+            workerSizingRationale: defaults.workerSizingRationale,
+            workerProviderNotes: defaults.workerProviderNotes,
+            draft: ticket.draft,
+            order: ticket.order,
+            description: ticket.description,
+            body: ticket.body
         )
     }
 
@@ -150,6 +206,18 @@ enum TicketWriter {
         out += "run_id: \(ticket.runId.map { String($0) } ?? "null")\n"
         out += "canceled: \(ticket.canceled)\n"
         out += "order: \(ticket.order)\n"
+        if let workerModel = ticket.workerModel {
+            out += "worker_model: \(yamlString(workerModel))\n"
+        }
+        if let workerEffort = ticket.workerEffort {
+            out += "worker_effort: \(yamlString(workerEffort))\n"
+        }
+        if let workerSizingRationale = ticket.workerSizingRationale {
+            out += "worker_sizing_rationale: \(yamlString(workerSizingRationale))\n"
+        }
+        if let workerProviderNotes = ticket.workerProviderNotes {
+            out += "worker_provider_notes: \(yamlString(workerProviderNotes))\n"
+        }
         if ticket.draft {
             out += "draft: true\n"
         }

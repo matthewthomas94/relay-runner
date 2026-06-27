@@ -105,6 +105,69 @@ final class BoardProjectConfigTests: XCTestCase {
         )
     }
 
+    func testMintDraftAppliesUserDefaultWorkerSizing() throws {
+        let repo = try makeTempRepo(named: "mouse-assist")
+        defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
+
+        let project = ProjectResolver.LinkedProject(repoPath: repo)
+        let defaults = TicketWriter.WorkerSizingDefaults(
+            workerModel: "strong",
+            workerEffort: "xhigh",
+            workerSizingRationale: "User default from Relay Runner Settings.",
+            workerProviderNotes: "Codex uses model_reasoning_effort; Claude uses --effort."
+        )
+
+        let ticket = try TicketWriter.mintDraft(
+            in: project,
+            status: .ready,
+            existingTickets: [],
+            workerSizingDefaults: defaults
+        )
+        let contents = try String(
+            contentsOf: repo.appendingPathComponent(".orchestrator/MA-1.md"),
+            encoding: .utf8
+        )
+        let parsed = try TicketParser.parse(contents: contents)
+
+        XCTAssertEqual(ticket.workerModel, "strong")
+        XCTAssertEqual(parsed.workerModel, "strong")
+        XCTAssertEqual(parsed.workerEffort, "xhigh")
+        XCTAssertEqual(parsed.workerSizingRationale, "User default from Relay Runner Settings.")
+        XCTAssertEqual(parsed.workerProviderNotes, "Codex uses model_reasoning_effort; Claude uses --effort.")
+    }
+
+    func testWorkerSizingDefaultsDoNotOverrideExplicitSizing() {
+        let ticket = Ticket(
+            id: "RR-1",
+            title: "Explicit",
+            status: .ready,
+            priority: .medium,
+            dependsOn: [],
+            runId: nil,
+            canceled: false,
+            workerModel: "fast",
+            workerEffort: "low",
+            workerSizingRationale: "Orchestrator decided.",
+            workerProviderNotes: "none",
+            order: 10,
+            description: nil,
+            body: ""
+        )
+        let defaults = TicketWriter.WorkerSizingDefaults(
+            workerModel: "strong",
+            workerEffort: "xhigh",
+            workerSizingRationale: "User default.",
+            workerProviderNotes: "Default notes."
+        )
+
+        let result = TicketWriter.applyingWorkerSizingDefaults(defaults, to: ticket)
+
+        XCTAssertEqual(result.workerModel, "fast")
+        XCTAssertEqual(result.workerEffort, "low")
+        XCTAssertEqual(result.workerSizingRationale, "Orchestrator decided.")
+        XCTAssertEqual(result.workerProviderNotes, "none")
+    }
+
     func testMintDraftClaimsSelectedProjectNextIdWithoutMutatingPeerProject() throws {
         let clientRepo = try makeTempRepo(named: "client-dashboard")
         let root = clientRepo.deletingLastPathComponent()

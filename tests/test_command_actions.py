@@ -101,6 +101,44 @@ class CommandActionsTests(unittest.TestCase):
             self.assertFalse((parent_orch / "DE-12.md").exists())
             self.assertEqual((parent_orch / "config.toml").read_text(), 'prefix = "DE"\nnext_id = 12\n')
 
+    def test_ticket_creation_applies_user_default_worker_sizing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orch = repo / ".orchestrator"
+            orch.mkdir()
+            (orch / "config.toml").write_text('prefix = "RR"\nnext_id = 3\n')
+
+            _, ticket_path = create_ticket_for_command(
+                repo,
+                "Fix the login retry bug.",
+                general_config={
+                    "subagent_sizing_policy": "user_default",
+                    "subagent_model": "strong",
+                    "subagent_effort": "xhigh",
+                },
+            )
+
+            raw = ticket_path.read_text()
+            self.assertIn("worker_model: strong", raw)
+            self.assertIn("worker_effort: xhigh", raw)
+            self.assertIn("worker_sizing_rationale", raw)
+            self.assertIn("Codex uses model_reasoning_effort and Claude uses --effort", raw)
+
+    def test_ticket_creation_omits_worker_sizing_when_orchestrator_decides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orch = repo / ".orchestrator"
+            orch.mkdir()
+            (orch / "config.toml").write_text('prefix = "RR"\nnext_id = 3\n')
+
+            _, ticket_path = create_ticket_for_command(
+                repo,
+                "Fix the login retry bug.",
+                general_config={"subagent_sizing_policy": "orchestrator_decides"},
+            )
+
+            self.assertNotIn("worker_model:", ticket_path.read_text())
+
     def test_existing_ticket_dispatch_attaches_to_ticket(self):
         action = classify_command("dispatch rr-7 to a worker")
 

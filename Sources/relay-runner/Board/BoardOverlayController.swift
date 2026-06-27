@@ -28,6 +28,7 @@ final class BoardOverlayController {
     /// run state (In-progress placement + status pills) tracks within ~1s.
     private var runStatePollTimer: Timer?
     private var currentProject: ProjectResolver.LinkedProject?
+    private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
 
     private var boardHotkeyGesture = BoardHotkeyGesture()
     private let boardRouteResolver: () -> ProjectResolver.BoardRoute
@@ -53,6 +54,10 @@ final class BoardOverlayController {
     private var programBoardHandler: (() -> Void)?
     func setProgramBoardHandler(_ handler: @escaping () -> Void) {
         self.programBoardHandler = handler
+    }
+
+    func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
+        self.workerSizingDefaultsProvider = provider
     }
 
     deinit {
@@ -300,15 +305,23 @@ final class BoardOverlayController {
             dependsOn: withDescription.dependsOn,
             runId: withDescription.runId,
             canceled: withDescription.canceled,
+            workerModel: withDescription.workerModel,
+            workerEffort: withDescription.workerEffort,
+            workerSizingRationale: withDescription.workerSizingRationale,
+            workerProviderNotes: withDescription.workerProviderNotes,
             draft: false,
             order: withDescription.order,
             description: withDescription.description,
             body: withDescription.body
         )
+        let ticketToSave = TicketWriter.applyingWorkerSizingDefaults(
+            workerSizingDefaultsProvider(),
+            to: updated
+        )
         do {
-            try TicketWriter.save(updated, in: project)
+            try TicketWriter.save(ticketToSave, in: project)
         } catch {
-            NSLog("[relay-runner] failed to save ticket \(updated.id): \(error)")
+            NSLog("[relay-runner] failed to save ticket \(ticketToSave.id): \(error)")
         }
         model.editing = nil
         setPanelKeyEligible(false)
@@ -319,7 +332,7 @@ final class BoardOverlayController {
         // on a fresh ticket; the worker isn't useful until the user supplies
         // a real title/description, so we wait for the save. The daemon skips
         // dependency-gated queued tickets until their predecessors are done.
-        if updated.status == .ready && !updated.draft {
+        if ticketToSave.status == .ready && !ticketToSave.draft {
             OrchestratorClient.sweepReadyTickets(
                 repoPath: project.repoPath.path,
                 trigger: "board-save"
@@ -334,7 +347,8 @@ final class BoardOverlayController {
                 in: project,
                 status: status,
                 existingTickets: model.tickets,
-                title: "Untitled"
+                title: "Untitled",
+                workerSizingDefaults: workerSizingDefaultsProvider()
             )
             model.tickets = loadTickets()
             openEditor(for: ticket, isNew: true)
@@ -378,6 +392,10 @@ final class BoardOverlayController {
             dependsOn: dragged.dependsOn,
             runId: dragged.runId,
             canceled: dragged.canceled,
+            workerModel: dragged.workerModel,
+            workerEffort: dragged.workerEffort,
+            workerSizingRationale: dragged.workerSizingRationale,
+            workerProviderNotes: dragged.workerProviderNotes,
             draft: dragged.draft,
             order: dragged.order,
             description: dragged.description,
@@ -398,13 +416,20 @@ final class BoardOverlayController {
                 dependsOn: t.dependsOn,
                 runId: t.runId,
                 canceled: t.canceled,
+                workerModel: t.workerModel,
+                workerEffort: t.workerEffort,
+                workerSizingRationale: t.workerSizingRationale,
+                workerProviderNotes: t.workerProviderNotes,
                 draft: t.draft,
                 order: newOrder,
                 description: t.description,
                 body: t.body
             )
+            let ticketToSave = status == .ready
+                ? TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaultsProvider(), to: updated)
+                : updated
             do {
-                try TicketWriter.save(updated, in: project)
+                try TicketWriter.save(ticketToSave, in: project)
             } catch {
                 NSLog("[relay-runner] failed to renumber ticket \(t.id): \(error)")
             }

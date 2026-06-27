@@ -4,21 +4,35 @@ import XCTest
 
 final class ConfigManagerTests: XCTestCase {
 
-    func testCodexReasoningEffortPersistsThroughConfigManager() throws {
+    func testOrchestratorAndSubagentSettingsPersistThroughConfigManager() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)
         var config = AppConfig()
-        config.general.codex_reasoning_effort = "high"
+        config.general.provider = .claude
+        config.general.orchestrator_effort = "max"
+        config.general.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
+            config.general.orchestrator_effort
+        )
+        config.general.subagent_sizing_policy = .userDefault
+        config.general.subagent_model = "strong"
+        config.general.subagent_effort = "xhigh"
 
         try manager.save(config)
         let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
         let loaded = manager.load()
 
-        XCTAssertTrue(raw.contains("codex_reasoning_effort = \"high\""))
-        XCTAssertEqual(loaded.general.codex_reasoning_effort, "high")
+        XCTAssertTrue(raw.contains("orchestrator_effort = \"max\""))
+        XCTAssertTrue(raw.contains("codex_reasoning_effort = \"default\""))
+        XCTAssertTrue(raw.contains("subagent_sizing_policy = \"user_default\""))
+        XCTAssertEqual(loaded.general.provider, .claude)
+        XCTAssertEqual(loaded.general.orchestrator_effort, "max")
+        XCTAssertEqual(loaded.general.codex_reasoning_effort, GeneralConfig.defaultCodexReasoningEffort)
+        XCTAssertEqual(loaded.general.subagent_sizing_policy, .userDefault)
+        XCTAssertEqual(loaded.general.subagent_model, "strong")
+        XCTAssertEqual(loaded.general.subagent_effort, "xhigh")
     }
 
-    func testCodexReasoningEffortLoadNormalizesInvalidValue() throws {
+    func testLegacyCodexReasoningEffortMigratesToOrchestratorEffort() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)
         try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
@@ -26,12 +40,37 @@ final class ConfigManagerTests: XCTestCase {
         [general]
         provider = "codex"
         command = "codex"
-        codex_reasoning_effort = "max"
+        codex_reasoning_effort = "high"
         """.write(to: manager.configPath, atomically: true, encoding: .utf8)
 
         let loaded = manager.load()
 
+        XCTAssertEqual(loaded.general.orchestrator_effort, "high")
+        XCTAssertEqual(loaded.general.codex_reasoning_effort, "high")
+    }
+
+    func testInvalidOrchestratorAndSubagentSettingsNormalizeToDefaults() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try """
+        [general]
+        provider = "codex"
+        command = "codex"
+        orchestrator_effort = "max"
+        codex_reasoning_effort = "high"
+        subagent_sizing_policy = "always"
+        subagent_model = "opus"
+        subagent_effort = "max"
+        """.write(to: manager.configPath, atomically: true, encoding: .utf8)
+
+        let loaded = manager.load()
+
+        XCTAssertEqual(loaded.general.orchestrator_effort, GeneralConfig.defaultReasoningEffort)
         XCTAssertEqual(loaded.general.codex_reasoning_effort, GeneralConfig.defaultCodexReasoningEffort)
+        XCTAssertEqual(loaded.general.subagent_sizing_policy, .orchestratorDecides)
+        XCTAssertEqual(loaded.general.subagent_model, GeneralConfig.defaultSubagentModel)
+        XCTAssertEqual(loaded.general.subagent_effort, GeneralConfig.defaultSubagentEffort)
     }
 
     private func temporaryConfigDir() -> URL {
