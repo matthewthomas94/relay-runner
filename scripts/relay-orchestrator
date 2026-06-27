@@ -176,9 +176,20 @@ You (this main session) are the orchestrator. Each worker spawned by `dispatch_t
 
 Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but the foreground session is always the orchestrator. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
 
+## Worker sizing
+
+Every ticket promoted to `ready` must include an explicit worker-sizing decision in frontmatter:
+
+- `worker_model`: `fast`, `balanced`, `strong`, or a provider-scoped override such as `codex:gpt-5.4-mini` or `claude:sonnet`.
+- `worker_effort`: `low`, `medium`, `high`, or `xhigh` for provider-neutral tickets. `max` is Claude-only unless a future Codex release verifies support.
+- `worker_sizing_rationale`: one short sentence explaining why that tier and effort match the work.
+- `worker_provider_notes`: `none` only when there are no provider-specific caveats; otherwise name the Codex/Claude difference.
+
+Choose the sizing based on ambiguity, code blast radius, security risk, test/build cost, and expected implementation depth. Codex renders effort through `model_reasoning_effort`; Claude renders effort through `--effort`, and Claude currently supports `max` where Codex does not. Prefer shared model tiers and shared effort values for provider-neutral work.
+
 1. **Discuss.** Talk through what needs to happen. Surface assumptions, push back when something's underspecified, propose alternatives. Don't jump to writing tickets until the work is concrete.
 2. **Write tickets.** When the discussion settles on a unit of work, create a ticket file under `<repo>/.orchestrator/<TICKET_ID>.md` following the schema in `docs/specs/orchestrator-tickets.md` (YAML frontmatter + `## Description` + `## Acceptance criteria`). Commit the new ticket to the working branch so the board reflects it. Use the next available id from `<repo>/.orchestrator/config.toml`'s `next_id` and bump that counter in the same commit. Each ticket should be small enough that a sub-agent can complete it in one pass without further clarification.
-3. **Dispatch.** Call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-N", repo_path="<repo absolute path>")`. If the ticket body wouldn't survive cold without this conversation, pass `context="..."` with the relevant background. Multiple parallel dispatches are supported (no concurrency cap), but expect merge conflicts when sub-agents touch overlapping code.
+3. **Dispatch.** Before dispatch, verify the ticket has `worker_model`, `worker_effort`, `worker_sizing_rationale`, and `worker_provider_notes`. Call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-N", repo_path="<repo absolute path>")`. If the ticket body wouldn't survive cold without this conversation, pass `context="..."` with the relevant background. Multiple parallel dispatches are supported (no concurrency cap), but expect merge conflicts when sub-agents touch overlapping code.
 4. **Integrate.** Each sub-agent commits to its `relay/<id>` branch — both the code change and the ticket-file update (status flipped to `done` + a `## Run log` entry). Merge those branches into the working branch in a sensible order, resolve conflicts intentionally (don't just accept "theirs"), then clean up the worktree + delete the throwaway branch.
 
 ## When NOT to dispatch
@@ -255,11 +266,17 @@ You are the orchestrator. Each worker spawned by `dispatch_ticket` is a one-shot
 
 Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but the foreground session is always the orchestrator. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
 
+## Worker Sizing
+
+Every ticket promoted to `ready` must include an explicit worker-sizing decision in frontmatter: `worker_model`, `worker_effort`, `worker_sizing_rationale`, and `worker_provider_notes`. Choose it based on ambiguity, code blast radius, security risk, test/build cost, and expected implementation depth.
+
+Use `worker_model: fast|balanced|strong` for provider-neutral tiers, or provider-scoped overrides such as `codex:gpt-5.4-mini` or `claude:sonnet`. Use `worker_effort: low|medium|high|xhigh` for provider-neutral tickets. `max` is Claude-only unless future Codex support is verified. Codex renders effort through `model_reasoning_effort`; Claude renders effort through `--effort`.
+
 ## Workflow
 
 1. Discuss the work first. Surface assumptions and ambiguity.
-2. Write concrete ticket files under `.orchestrator/` in `backlog`; include description, acceptance criteria, priority, and dependencies.
-3. Promote refined tickets to `ready` only when they are dispatchable. The board auto-dispatches `ready`; direct MCP dispatch is available for manual runs.
+2. Write concrete ticket files under `.orchestrator/` in `backlog`; include description, acceptance criteria, priority, dependencies, and worker-sizing fields before promotion.
+3. Promote refined tickets to `ready` only when they are dispatchable and sized. The board auto-dispatches `ready`; direct MCP dispatch is available for manual runs.
 4. Integrate worker branches after review, resolving conflicts intentionally, then prune worktrees and delete throwaway branches.
 
 Small edits are fine inline. Dispatch when isolation, audit trail, or parallelism pays for the cold start.
