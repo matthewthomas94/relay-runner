@@ -276,6 +276,24 @@ VOICE_COMMAND_EVENT_LOG = os.environ.get("VOICE_COMMAND_EVENT_LOG", "/tmp/relay_
 VOICE_COMMAND_EVENT_LIMIT = 200
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
 VOICE_ACKNOWLEDGEMENT = os.environ.get("VOICE_ACKNOWLEDGEMENT", "Got it. I'm on it.")
+VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS = 1.25
+VOICE_ACKNOWLEDGEMENT_AUTO_DISMISS_SECONDS = 3.0
+
+_GENERIC_ACKNOWLEDGEMENTS = (
+    VOICE_ACKNOWLEDGEMENT,
+    "Received. I'll take it from here.",
+    "Understood. Working on it.",
+    "Okay. I'll handle that.",
+)
+_GIST_ACKNOWLEDGEMENTS = (
+    "Got it: {gist}.",
+    "Understood: {gist}.",
+    "I'm on it: {gist}.",
+)
+_SENSITIVE_ACK_RE = re.compile(
+    r"\b(password|passcode|secret|token|api[_ -]?key|private[_ -]?key|credential)\b",
+    re.IGNORECASE,
+)
 
 
 def _read_json_file(path: str) -> dict:
@@ -292,6 +310,47 @@ def _atomic_write_json(path: str, payload: dict) -> None:
     with open(tmp, "w") as f:
         json.dump(payload, f, sort_keys=True)
     os.rename(tmp, path)
+
+
+def _acknowledgement_variant(seed: str, options: tuple[str, ...]) -> str:
+    if not options:
+        return VOICE_ACKNOWLEDGEMENT
+    return options[sum(seed.encode("utf-8", errors="ignore")) % len(options)]
+
+
+def _safe_acknowledgement_gist(text: str | None) -> str | None:
+    if not text:
+        return None
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned or cleaned.startswith("__"):
+        return None
+    if _SENSITIVE_ACK_RE.search(cleaned):
+        return None
+    cleaned = re.sub(r"https?://\S+", "a link", cleaned)
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    cleaned = cleaned.strip(" \"'`")
+    if not cleaned:
+        return None
+    if len(cleaned) > 72:
+        clipped = cleaned[:72].rsplit(" ", 1)[0].strip()
+        cleaned = clipped if len(clipped) >= 24 else cleaned[:72].strip()
+    return cleaned.rstrip(".,;:!?")
+
+
+def build_voice_acknowledgement(text: str | None, relay_command: dict | None = None) -> str:
+    """Build concise provider-neutral acknowledgement copy for a user command."""
+    seed = f"{text or ''}:{(relay_command or {}).get('relay_command_seq', '')}"
+    gist = _safe_acknowledgement_gist(text)
+    if gist:
+        return _acknowledgement_variant(seed, _GIST_ACKNOWLEDGEMENTS).format(gist=gist)
+    return _acknowledgement_variant(seed, _GENERIC_ACKNOWLEDGEMENTS)
+
+
+def acknowledgement_auto_dismiss_seconds(text: str) -> float:
+    return max(
+        VOICE_ACKNOWLEDGEMENT_AUTO_DISMISS_SECONDS,
+        min(5.0, 2.4 + len(text.strip()) * 0.025),
+    )
 
 
 def _command_event_limit() -> int:
@@ -565,23 +624,40 @@ def _queue_voice_acknowledgement(
     command_path: str = VOICE_CMD_FILE,
     meta_path: str = VOICE_CMD_META_FILE,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    source_text: str | None = None,
+    delay_seconds: float = VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS,
+    notify_state=_notify_state,
 ) -> bool:
-    """Queue a short, metadata-tagged acknowledgement for the newest command."""
-    text = VOICE_ACKNOWLEDGEMENT.strip()
+    """Schedule a short acknowledgement for the newest command."""
+    del tts_queue
+    text = build_voice_acknowledgement(source_text, relay_command).strip()
     if not text:
         return False
     _discard_pending_command(command_path=command_path, meta_path=meta_path)
-    payload = json.dumps({
-        "text": text,
-        "relay_command_seq": relay_command.get("relay_command_seq"),
-        "relay_command_id": relay_command.get("relay_command_id"),
-    })
-    return _queue_tts_text(
-        payload,
-        tts_queue,
-        command_path=command_path,
-        state_path=state_path,
-    )
+    command_seq = relay_command.get("relay_command_seq")
+    command_id = relay_command.get("relay_command_id")
+    auto_dismiss = acknowledgement_auto_dismiss_seconds(text)
+
+    def _notify_if_current():
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        if not _relay_command_current(command_seq, command_id, state_path=state_path):
+            print(
+                "[voice_bridge] Dropping acknowledgement because its Relay command was superseded.",
+                file=sys.stderr,
+            )
+            return
+        notify_state(
+            "acknowledgement",
+            text=text,
+            auto_dismiss_seconds=auto_dismiss,
+        )
+
+    if delay_seconds > 0:
+        threading.Thread(target=_notify_if_current, daemon=True).start()
+    else:
+        _notify_if_current()
+    return True
 
 
 def _handle_relay_control_message(
@@ -732,9 +808,12 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                 # Skip TTS for new voice input, write an explicit command
                 # action for the foreground orchestrator session.
                 tts_worker.skip()
-                _notify_state("processing", prompt=text[:200])
                 relay_command = _begin_relay_command(text)
-                _queue_voice_acknowledgement(relay_command, tts_worker.input_queue)
+                _queue_voice_acknowledgement(
+                    relay_command,
+                    tts_worker.input_queue,
+                    source_text=text,
+                )
                 action = resolve_command_action(
                     text,
                     repo_path=Path.cwd(),

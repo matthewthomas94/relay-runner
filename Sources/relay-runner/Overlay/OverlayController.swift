@@ -134,10 +134,8 @@ final class OverlayController {
     // MARK: - Auto-dismiss
 
     /// Drives the pill toward .idle for states that should fade themselves out
-    /// after a fixed window: .sent / .cancelled (acknowledge then disappear),
-    /// .processing (brief "Thinking…" beat, then get out of the way until TTS
-    /// arrives), .sessionPrompt (long "no session" hint), and local
-    /// program-status responses.
+    /// after a fixed window. User-message acknowledgements use an explicit
+    /// state so substantive TTS responses are not dismissed by this path.
     private func tickAutoDismiss(_ sm: StateMachine) {
         let state = sm.state
         guard let timeout = Self.autoDismissTimeout(for: state) else {
@@ -163,6 +161,8 @@ final class OverlayController {
         switch state {
         case .sent, .cancelled(_):
             sm.dismissSent()
+        case .acknowledgement:
+            sm.dismissAcknowledgement()
         case .processing:
             sm.dismissProcessing()
         case .sessionPrompt:
@@ -176,6 +176,8 @@ final class OverlayController {
 
     private static func autoDismissTimeout(for state: OverlayState) -> TimeInterval? {
         switch state {
+        case .acknowledgement(_, let autoDismiss):
+            return autoDismiss
         case .sent, .cancelled(_):
             return 1.5
         case .processing:
@@ -244,6 +246,11 @@ final class OverlayController {
         case .processing:
             if state != lastAppliedState {
                 pill.showCompact(title: "Thinking\u{2026}", theme: .tts)
+            }
+
+        case .acknowledgement(let text, _):
+            if state != lastAppliedState {
+                pill.showCompact(title: text, theme: .tts)
             }
 
         case .preparing:

@@ -27,6 +27,7 @@ enum OverlayState: Equatable {
         case tts   // Cancelled during playback/response
     }
     case processing
+    case acknowledgement(text: String, autoDismiss: TimeInterval)
     case messageWaiting(preview: String?)
     case preparing
     case speaking
@@ -49,7 +50,7 @@ enum OverlayState: Equatable {
             return nil
         case .listening, .recording:
             return .stt
-        case .processing, .messageWaiting, .preparing, .speaking, .programStatus:
+        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking, .programStatus:
             return .tts
         }
     }
@@ -61,7 +62,7 @@ enum OverlayState: Equatable {
             return .stt
         case .cancelled(.tts):
             return .tts
-        case .processing, .messageWaiting, .preparing, .speaking, .programStatus, .actionGlow:
+        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking, .programStatus, .actionGlow:
             return .tts
         default:
             return .tts
@@ -95,7 +96,7 @@ final class StateMachine: @unchecked Sendable {
     }
 
     /// Called by StateEventBus when Python services send state updates.
-    func handleServiceEvent(source: String, newState: String, text: String?) {
+    func handleServiceEvent(source: String, newState: String, text: String?, autoDismiss: TimeInterval? = nil) {
         switch (source, newState) {
         case ("tts", "message_waiting"):
             messagePreview = text
@@ -126,6 +127,20 @@ final class StateMachine: @unchecked Sendable {
                 // .sent → .processing is intentional: surfaces "Thinking…" the
                 // moment STT finalizes, instead of waiting on the .sent timer.
                 state = .processing
+            }
+
+        case ("bridge", "acknowledgement"):
+            switch state {
+            case .idle, .sent, .processing, .acknowledgement:
+                let acknowledgement = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+                state = .acknowledgement(
+                    text: acknowledgement.flatMap { $0.isEmpty ? nil : $0 } ?? "Got it. I'm on it.",
+                    autoDismiss: autoDismiss ?? 3.0
+                )
+                partialTranscription = ""
+                messagePreview = nil
+            default:
+                break
             }
 
         case ("bridge", "idle"):
@@ -162,6 +177,14 @@ final class StateMachine: @unchecked Sendable {
         }
     }
 
+    func dismissAcknowledgement() {
+        if case .acknowledgement = state {
+            stateBeforeIdle = state
+            lastIdleTransitionTime = Date()
+            state = .idle
+        }
+    }
+
     /// User cancelled the current recording or TTS.
     func setCancelled() {
         let referenceState: OverlayState
@@ -180,7 +203,7 @@ final class StateMachine: @unchecked Sendable {
         switch referenceState {
         case .recording:
             source = .stt
-        case .processing, .messageWaiting, .preparing, .speaking:
+        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking:
             source = .tts
         default:
             source = .stt
