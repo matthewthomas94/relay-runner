@@ -58,4 +58,43 @@ final class ProcessManagerLaunchTests: XCTestCase {
 
         XCTAssertTrue(script.contains("cd '/Users/example'"))
     }
+
+    func testLaunchScriptPassesSelectedGPT56ModelForCodex() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+        var config = AppConfig()
+        config.general.provider = .codex
+        config.general.model = "gpt-5.6-sol"
+
+        let script = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/relay-bridge",
+            target: .codex,
+            agentBinary: "/usr/local/bin/codex",
+            config: config,
+            homeDirectory: home
+        )
+
+        XCTAssertTrue(script.contains(
+            "'/usr/local/bin/codex' --model 'gpt-5.6-sol' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
+        ))
+    }
+
+    func testLaunchScriptRejectsCodexPreviewModelForClaude() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+        var config = AppConfig()
+        config.general.provider = .claude
+        config.general.model = "gpt-5.6-sol"
+
+        let script = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/relay-bridge",
+            target: .claude,
+            agentBinary: "/usr/local/bin/claude",
+            config: config,
+            homeDirectory: home
+        )
+
+        XCTAssertFalse(script.contains("--model"))
+        XCTAssertTrue(script.contains(
+            "'/usr/local/bin/claude' --dangerously-skip-permissions \"/relay-bridge\""
+        ))
+    }
 }

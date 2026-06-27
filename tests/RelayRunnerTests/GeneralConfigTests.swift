@@ -8,10 +8,40 @@ final class GeneralConfigTests: XCTestCase {
             GeneralConfig.codexModelOptions,
             [
                 GeneralConfig.ModelOption(label: "Default", value: "default"),
+                GeneralConfig.ModelOption(label: "GPT-5.6 Sol Preview", value: "gpt-5.6-sol"),
+                GeneralConfig.ModelOption(label: "GPT-5.6 Terra Preview", value: "gpt-5.6-terra"),
+                GeneralConfig.ModelOption(label: "GPT-5.6 Luna Preview", value: "gpt-5.6-luna"),
                 GeneralConfig.ModelOption(label: "GPT-5.5", value: "gpt-5.5"),
                 GeneralConfig.ModelOption(label: "GPT-5.4", value: "gpt-5.4"),
                 GeneralConfig.ModelOption(label: "GPT-5.4-Mini", value: "gpt-5.4-mini"),
                 GeneralConfig.ModelOption(label: "GPT-5.3-Codex-Spark", value: "gpt-5.3-codex-spark"),
+            ]
+        )
+    }
+
+    func testGPT56PreviewModelsAreCodexOnlyLimitedPreviewOptions() {
+        let previewModels = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+
+        for model in previewModels {
+            XCTAssertTrue(GeneralConfig.isModel(model, validFor: .codex))
+            XCTAssertTrue(GeneralConfig.requiresLimitedPreviewAccess(model, for: .codex))
+            XCTAssertFalse(GeneralConfig.isModel(model, validFor: .claude))
+            XCTAssertFalse(GeneralConfig.requiresLimitedPreviewAccess(model, for: .claude))
+        }
+        XCTAssertEqual(
+            GeneralConfig.limitedPreviewAccessNote,
+            "Limited preview access: requires an approved Codex workspace."
+        )
+    }
+
+    func testClaudeModelOptionsRemainClaudeScoped() {
+        XCTAssertEqual(
+            GeneralConfig.claudeModelOptions,
+            [
+                GeneralConfig.ModelOption(label: "Default", value: "default"),
+                GeneralConfig.ModelOption(label: "Opus", value: "opus"),
+                GeneralConfig.ModelOption(label: "Sonnet", value: "sonnet"),
+                GeneralConfig.ModelOption(label: "Haiku", value: "haiku"),
             ]
         )
     }
@@ -30,7 +60,7 @@ final class GeneralConfigTests: XCTestCase {
         var config = GeneralConfig()
         config.provider = .codex
         config.command = "codex"
-        config.model = "gpt-5.5"
+        config.model = "gpt-5.6-sol"
 
         config.selectProvider(.claude)
 
