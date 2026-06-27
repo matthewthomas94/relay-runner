@@ -1067,6 +1067,10 @@ private struct ProgramTicketDetailPanel: View {
         append("Run ID", detail.item.runID.map { "run \($0)" }, to: &rows, prettify: false)
         append("Branch", detail.item.branch, to: &rows, prettify: false)
         append("Provider", detail.item.provider, to: &rows, prettify: false)
+        append("Worker model", detail.item.workerModel, to: &rows, prettify: false)
+        append("Worker effort", detail.item.workerEffort, to: &rows)
+        append("Sizing rationale", detail.item.workerSizingRationale, to: &rows, prettify: false)
+        append("Provider notes", detail.item.workerProviderNotes, to: &rows, prettify: false)
         if !detail.item.dependsOn.isEmpty {
             rows.append(ProgramDetailRow(label: "Depends on", value: detail.item.dependsOn.joined(separator: ", ")))
         } else if let ticket = detail.ticket, !ticket.dependsOn.isEmpty {

@@ -55,6 +55,27 @@ PORT_FILE = Path("/tmp/relay_orchestrator.port")
 RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
 DEFAULT_PORT = 7634
 
+WORKER_SIZING_FIELDS = (
+    "worker_model",
+    "worker_effort",
+    "worker_sizing_rationale",
+    "worker_provider_notes",
+)
+WORKER_MODEL_TIERS = {
+    "codex": {
+        "fast": "gpt-5.4-mini",
+        "balanced": "gpt-5.4",
+        "strong": "gpt-5.5",
+    },
+    "claude": {
+        "fast": "haiku",
+        "balanced": "sonnet",
+        "strong": "opus",
+    },
+}
+CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -182,6 +203,97 @@ _TEMPLATE_RE = re.compile(r"\{\{\s*([\w_]+)\s*\}\}")
 def render_template(template: str, **vars: Any) -> str:
     """Tiny `{{key}}` renderer. Missing keys → empty string. No escaping (we trust the template)."""
     return _TEMPLATE_RE.sub(lambda m: str(vars.get(m.group(1).strip(), "")), template)
+
+
+def _ticket_frontmatter(ticket: dict[str, Any]) -> dict[str, str]:
+    raw = ticket.get("_raw_fields")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _required_sizing_value(ticket: dict[str, Any], field: str) -> str:
+    value = str(_ticket_frontmatter(ticket).get(field) or "").strip()
+    return value
+
+
+def _resolve_worker_model(worker_model: str, agent_kind: str) -> str:
+    value = worker_model.strip().lower()
+    if ":" in value:
+        provider, _, model = value.partition(":")
+        model = model.strip()
+        if provider not in ("codex", "claude") or not model:
+            raise ValueError(f"invalid worker_model {worker_model!r}")
+        if provider != agent_kind:
+            raise ValueError(
+                f"worker_model {worker_model!r} is scoped to {provider}, "
+                f"but configured worker provider is {agent_kind}"
+            )
+        return model
+
+    model = WORKER_MODEL_TIERS.get(agent_kind, {}).get(value)
+    if model is None:
+        allowed = ", ".join(sorted(WORKER_MODEL_TIERS.get(agent_kind, {})))
+        raise ValueError(
+            f"invalid worker_model {worker_model!r} for {agent_kind}; "
+            f"expected one of {allowed} or {agent_kind}:<model>"
+        )
+    return model
+
+
+def _validate_worker_effort(worker_effort: str, *, worker_model: str, agent_kind: str,
+                            provider_notes: str) -> str:
+    effort = worker_effort.strip().lower()
+    allowed = CLAUDE_WORKER_EFFORTS if agent_kind == "claude" else CODEX_WORKER_EFFORTS
+    if effort not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise ValueError(
+            f"invalid worker_effort {worker_effort!r} for {agent_kind}; "
+            f"expected one of {allowed_text}"
+        )
+    if effort == "max":
+        scoped_to_claude = worker_model.strip().lower().startswith("claude:")
+        notes_document_limitation = provider_notes.strip().lower() not in ("", "none")
+        if not scoped_to_claude or not notes_document_limitation:
+            raise ValueError(
+                "worker_effort 'max' requires a Claude-scoped worker_model and "
+                "worker_provider_notes documenting the Codex limitation"
+            )
+    return effort
+
+
+def resolve_worker_sizing(ticket: dict[str, Any], agent_kind: str) -> dict[str, str]:
+    missing = [field for field in WORKER_SIZING_FIELDS if not _required_sizing_value(ticket, field)]
+    if missing:
+        raise ValueError("missing worker sizing metadata: " + ", ".join(missing))
+
+    worker_model = _required_sizing_value(ticket, "worker_model")
+    worker_effort = _required_sizing_value(ticket, "worker_effort")
+    provider_notes = _required_sizing_value(ticket, "worker_provider_notes")
+    model_alias = _resolve_worker_model(worker_model, agent_kind)
+    effort = _validate_worker_effort(
+        worker_effort,
+        worker_model=worker_model,
+        agent_kind=agent_kind,
+        provider_notes=provider_notes,
+    )
+    return {
+        "provider_key": agent_kind,
+        "model_alias": model_alias,
+        "worker_model": worker_model,
+        "worker_effort": effort,
+        "worker_sizing_rationale": _required_sizing_value(ticket, "worker_sizing_rationale"),
+        "worker_provider_notes": provider_notes,
+    }
+
+
+def raw_worker_sizing_metadata(ticket: dict[str, Any], agent_kind: str) -> dict[str, str | None]:
+    return {
+        "provider_key": agent_kind,
+        "model_alias": None,
+        "worker_model": _required_sizing_value(ticket, "worker_model") or None,
+        "worker_effort": _required_sizing_value(ticket, "worker_effort") or None,
+        "worker_sizing_rationale": _required_sizing_value(ticket, "worker_sizing_rationale") or None,
+        "worker_provider_notes": _required_sizing_value(ticket, "worker_provider_notes") or None,
+    }
 
 
 def _relay_command_current(relay_command_seq: int | str | None, relay_command_id: str | None) -> bool:
@@ -380,7 +492,7 @@ def derive_codex_activity(item: dict | None) -> str:
 # ---------------------------------------------------------------------------
 
 class RunsStore:
-    SCHEMA_VERSION = 3  # bump when the runs table shape changes
+    SCHEMA_VERSION = 4  # bump when the runs table shape changes
 
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS runs (
@@ -398,7 +510,13 @@ class RunsStore:
         log_path TEXT,
         last_error TEXT,
         activity TEXT,
-        activity_at REAL
+        activity_at REAL,
+        provider_key TEXT,
+        model_alias TEXT,
+        worker_model TEXT,
+        worker_effort TEXT,
+        worker_sizing_rationale TEXT,
+        worker_provider_notes TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_runs_state ON runs(state);
     CREATE INDEX IF NOT EXISTS idx_runs_ticket ON runs(ticket_id);
@@ -444,13 +562,20 @@ class RunsStore:
                 c.executescript(self.SCHEMA)
 
     def insert(self, *, ticket_id: str, repo_path: str, workspace_path: str,
-               branch: str, state: str, attempt: int = 1, log_path: str | None = None) -> int:
+               branch: str, state: str, attempt: int = 1, log_path: str | None = None,
+               provider_key: str | None = None, model_alias: str | None = None,
+               worker_model: str | None = None, worker_effort: str | None = None,
+               worker_sizing_rationale: str | None = None,
+               worker_provider_notes: str | None = None) -> int:
         with self._conn() as c:
             cur = c.execute(
                 "INSERT INTO runs(ticket_id, repo_path, workspace_path, branch, "
-                "state, attempt, started_at, log_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "state, attempt, started_at, log_path, provider_key, model_alias, "
+                "worker_model, worker_effort, worker_sizing_rationale, worker_provider_notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (ticket_id, repo_path, workspace_path, branch,
-                 state, attempt, time.time(), log_path),
+                 state, attempt, time.time(), log_path, provider_key, model_alias,
+                 worker_model, worker_effort, worker_sizing_rationale, worker_provider_notes),
             )
             run_id = int(cur.lastrowid)
         self.write_index()
@@ -579,6 +704,12 @@ class RunsStore:
                 "branch": r["branch"],
                 "activity": r["activity"],
                 "activity_at": r["activity_at"],
+                "provider_key": r["provider_key"],
+                "model_alias": r["model_alias"],
+                "worker_model": r["worker_model"],
+                "worker_effort": r["worker_effort"],
+                "worker_sizing_rationale": r["worker_sizing_rationale"],
+                "worker_provider_notes": r["worker_provider_notes"],
             }
             for r in rows
         ]
@@ -780,6 +911,16 @@ class Worker:
 
         try:
             log.write(f"[orchestrator] provider={self.agent_kind}\n")
+            if self.run.get("model_alias"):
+                log.write(f"[orchestrator] model_alias={self.run['model_alias']}\n")
+            if self.run.get("worker_model"):
+                log.write(f"[orchestrator] worker_model={self.run['worker_model']}\n")
+            if self.run.get("worker_effort"):
+                log.write(f"[orchestrator] worker_effort={self.run['worker_effort']}\n")
+            if self.run.get("worker_sizing_rationale"):
+                log.write(f"[orchestrator] worker_sizing_rationale={self.run['worker_sizing_rationale']}\n")
+            if self.run.get("worker_provider_notes"):
+                log.write(f"[orchestrator] worker_provider_notes={self.run['worker_provider_notes']}\n")
             if self.workflow_path:
                 log.write(f"[orchestrator] workflow_template={self.workflow_path}\n")
             log.write(f"[orchestrator] prompt_sha256={hashlib.sha256(self.prompt.encode('utf-8')).hexdigest()}\n")
@@ -887,22 +1028,29 @@ class Worker:
             self._notify_complete()
 
     def _command(self) -> list[str]:
+        model_alias = str(self.run.get("model_alias") or "").strip()
+        worker_effort = str(self.run.get("worker_effort") or "").strip()
         if self.agent_kind == "claude":
             # Claude stream-json gives assistant/tool_use/tool_result/result
             # events. The worker parses tool_use blocks into the live board
             # activity chip while teeing the full stream to the run log.
-            return [
+            cmd = [
                 self.agent_bin,
                 "-p",
                 "--dangerously-skip-permissions",
                 "--verbose",
                 "--output-format", "stream-json",
             ]
+            if model_alias:
+                cmd.extend(["--model", model_alias])
+            if worker_effort:
+                cmd.extend(["--effort", worker_effort])
+            return cmd
 
         # Codex exec --json emits JSONL events such as thread.started,
         # item.started command_execution, item.completed, and turn.completed.
         # This is the non-interactive worker surface for Codex sub-agents.
-        return [
+        cmd = [
             self.agent_bin,
             "exec",
             "--json",
@@ -910,6 +1058,11 @@ class Worker:
             "--dangerously-bypass-approvals-and-sandbox",
             "--dangerously-bypass-hook-trust",
         ]
+        if model_alias:
+            cmd.extend(["--model", model_alias])
+        if worker_effort:
+            cmd.extend(["--config", f"model_reasoning_effort={worker_effort}"])
+        return cmd
 
     def _notify_complete(self):
         if self.on_complete:
@@ -1100,6 +1253,41 @@ class Daemon:
 
     # -- API -----------------------------------------------------------------
 
+    def _record_dispatch_refusal(
+        self,
+        *,
+        ticket_id: str,
+        repo_path: str,
+        workspace_path: Path,
+        branch: str,
+        log_path: Path,
+        reason: str,
+        sizing: dict[str, Any] | None = None,
+    ) -> dict | None:
+        attempt = self.runs.next_attempt(ticket_id, repo_path=repo_path)
+        metadata = {
+            "provider_key": self.agent_kind,
+            "model_alias": None,
+            "worker_model": None,
+            "worker_effort": None,
+            "worker_sizing_rationale": None,
+            "worker_provider_notes": None,
+        }
+        if sizing:
+            metadata.update(sizing)
+        run_id = self.runs.insert(
+            ticket_id=ticket_id,
+            repo_path=repo_path,
+            workspace_path=str(workspace_path),
+            branch=branch,
+            state="Failed",
+            attempt=attempt,
+            log_path=str(log_path),
+            **metadata,
+        )
+        self.runs.update(run_id, last_error=reason, ended=True, exit_code=-1)
+        return self.runs.get(run_id)
+
     @staticmethod
     def _resolve_default_branch(repo_path: str) -> str:
         """Resolve the repo's default branch via `git symbolic-ref`. Falls back to 'main'."""
@@ -1132,6 +1320,10 @@ class Daemon:
         ticket_file = repo / ".orchestrator" / f"{ticket_id}.md"
         if not ticket_file.is_file():
             raise ValueError(f"ticket {ticket_id} not found at {ticket_file}")
+        try:
+            ticket = read_ticket(ticket_file)
+        except (OSError, TicketParseError) as e:
+            raise ValueError(f"ticket {ticket_id} could not be read: {e}") from e
 
         sanitized = sanitize_identifier(ticket_id)
         branch = f"{self.branch_prefix}{sanitized}"
@@ -1150,6 +1342,25 @@ class Daemon:
                 return {"already_active": True, "run": existing}
 
             try:
+                sizing = resolve_worker_sizing(ticket, self.agent_kind)
+            except ValueError as e:
+                reason = str(e)
+                self._record_dispatch_refusal(
+                    ticket_id=ticket_id,
+                    repo_path=str(repo),
+                    workspace_path=workspace_path,
+                    branch=branch,
+                    log_path=log_path,
+                    reason=reason,
+                    sizing=raw_worker_sizing_metadata(ticket, self.agent_kind),
+                )
+                print(
+                    f"[orchestrator] dispatch refused for {ticket_id} from {source}: {reason}",
+                    file=sys.stderr,
+                )
+                raise ValueError(reason) from e
+
+            try:
                 create_worktree(
                     repo_path=str(repo),
                     workspace_path=workspace_path,
@@ -1165,6 +1376,7 @@ class Daemon:
                     branch=branch,
                     state="Failed",
                     log_path=str(log_path),
+                    **sizing,
                 )
                 self.runs.update(run_id, last_error=str(e), ended=True, exit_code=-1)
                 raise
@@ -1180,6 +1392,7 @@ class Daemon:
                 state="Claimed",
                 attempt=attempt,
                 log_path=str(log_path),
+                **sizing,
             )
 
             workflow_path = self._resolve_workflow_for_repo(str(repo))
