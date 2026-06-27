@@ -36,6 +36,8 @@ final class OnboardingController {
     private let setAgentProvider: (GeneralConfig.AgentProvider) -> Void
     private let getModel: () -> String
     private let setModel: (String) -> Void
+    private let getCodexReasoningEffort: () -> String
+    private let setCodexReasoningEffort: (String) -> Void
     /// Closure that persists the user's chosen workspace folder back
     /// into AppConfig + ConfigManager. Called from the Ready step's Done
     /// button so a fresh path applies to the next voice session.
@@ -105,8 +107,10 @@ final class OnboardingController {
          getWorkingDirectory: @escaping () -> String = { "" },
          getAgentProvider: @escaping () -> GeneralConfig.AgentProvider = { .codex },
          getModel: @escaping () -> String = { GeneralConfig.defaultModel },
+         getCodexReasoningEffort: @escaping () -> String = { GeneralConfig.defaultCodexReasoningEffort },
          setAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
          setModel: @escaping (String) -> Void = { _ in },
+         setCodexReasoningEffort: @escaping (String) -> Void = { _ in },
          setWorkingDirectory: @escaping (String) -> Void = { _ in },
          startSession: @escaping () -> Void = {}) {
         self.permissions = permissions
@@ -114,8 +118,10 @@ final class OnboardingController {
         self.getWorkingDirectory = getWorkingDirectory
         self.getAgentProvider = getAgentProvider
         self.getModel = getModel
+        self.getCodexReasoningEffort = getCodexReasoningEffort
         self.setAgentProvider = setAgentProvider
         self.setModel = setModel
+        self.setCodexReasoningEffort = setCodexReasoningEffort
         self.setWorkingDirectory = setWorkingDirectory
         self.startSession = startSession
     }
@@ -209,6 +215,7 @@ final class OnboardingController {
             initialWorkingDirectory: getWorkingDirectory(),
             initialAgentProvider: getAgentProvider(),
             initialModel: getModel(),
+            initialCodexReasoningEffort: getCodexReasoningEffort(),
             requiresAgentChoice: !hasChosenAgent,
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             resumeState: resumeState,
@@ -217,6 +224,9 @@ final class OnboardingController {
                 self?.markAgentChoiceComplete()
             },
             onSetModel: { [weak self] model in self?.setModel(model) },
+            onSetCodexReasoningEffort: { [weak self] effort in
+                self?.setCodexReasoningEffort(effort)
+            },
             onSetWorkingDirectory: { [weak self] path in self?.setWorkingDirectory(path) },
             onStartSession: { [weak self] in self?.startSession() },
             onFinish: { [weak self] in self?.finish() }

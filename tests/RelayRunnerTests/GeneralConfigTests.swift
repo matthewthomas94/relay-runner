@@ -16,6 +16,22 @@ final class GeneralConfigTests: XCTestCase {
         )
     }
 
+    func testCodexReasoningEffortOptionsMatchCurrentPublicCodexValues() {
+        XCTAssertEqual(
+            GeneralConfig.codexReasoningEffortOptions,
+            [
+                GeneralConfig.ReasoningEffortOption(label: "Default", value: "default"),
+                GeneralConfig.ReasoningEffortOption(label: "Low", value: "low"),
+                GeneralConfig.ReasoningEffortOption(label: "Medium", value: "medium"),
+                GeneralConfig.ReasoningEffortOption(label: "High", value: "high"),
+                GeneralConfig.ReasoningEffortOption(label: "Extra High", value: "xhigh"),
+            ]
+        )
+        XCTAssertFalse(
+            GeneralConfig.codexReasoningEffortOptions.contains { $0.value == "max" }
+        )
+    }
+
     func testLegacyCodexModelNormalizesToDefault() {
         var config = GeneralConfig()
         config.provider = .codex
@@ -26,17 +42,29 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(config.model, GeneralConfig.defaultModel)
     }
 
+    func testInvalidCodexReasoningEffortNormalizesToDefault() {
+        var config = GeneralConfig()
+        config.provider = .codex
+        config.codex_reasoning_effort = "max"
+
+        config.normalize(providerWasExplicit: true)
+
+        XCTAssertEqual(config.codex_reasoning_effort, GeneralConfig.defaultCodexReasoningEffort)
+    }
+
     func testSelectingProviderUpdatesDefaultCommandAndModelScope() {
         var config = GeneralConfig()
         config.provider = .codex
         config.command = "codex"
         config.model = "gpt-5.5"
+        config.codex_reasoning_effort = "high"
 
         config.selectProvider(.claude)
 
         XCTAssertEqual(config.provider, .claude)
         XCTAssertEqual(config.command, "claude")
         XCTAssertEqual(config.model, GeneralConfig.defaultModel)
+        XCTAssertEqual(config.codex_reasoning_effort, "high")
     }
 
     func testWorkspaceFolderResolvesLegacyWorkingDirectoryValues() {

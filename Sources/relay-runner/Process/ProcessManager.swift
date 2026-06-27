@@ -449,11 +449,16 @@ final class ProcessManager {
     ) -> String {
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
         let modelFlag = Self.modelFlag(config.general.model, target: target)
+        let reasoningEffortFlag = Self.codexReasoningEffortFlag(
+            config.general.codex_reasoning_effort,
+            target: target
+        )
         let cdLine = Self.cdLine(config.general.working_directory, homeDirectory: homeDirectory)
         let launchLine = Self.agentLaunchLine(
             binary: agentBinary,
             target: target,
             modelFlag: modelFlag,
+            reasoningEffortFlag: reasoningEffortFlag,
             bypassFlag: bypassFlag
         )
         return """
@@ -525,6 +530,13 @@ final class ProcessManager {
         return "--model \(Self.shellQuoted(v)) "
     }
 
+    private static func codexReasoningEffortFlag(_ raw: String, target: AgentTarget) -> String {
+        guard target == .codex else { return "" }
+        let effort = GeneralConfig.normalizedCodexReasoningEffort(raw)
+        guard effort != GeneralConfig.defaultCodexReasoningEffort else { return "" }
+        return "-c \(Self.shellQuoted("model_reasoning_effort=\"\(effort)\"")) "
+    }
+
     private static func bypassFlag(enabled: Bool, target: AgentTarget) -> String {
         guard enabled else { return "" }
         switch target {
@@ -539,11 +551,12 @@ final class ProcessManager {
         binary: String,
         target: AgentTarget,
         modelFlag: String,
+        reasoningEffortFlag: String,
         bypassFlag: String
     ) -> String {
         switch target {
         case .codex:
-            return "\(Self.shellQuoted(binary)) \(modelFlag)\(bypassFlag)\(Self.shellQuoted("Use the relay-bridge skill now."))"
+            return "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(bypassFlag)\(Self.shellQuoted("Use the relay-bridge skill now."))"
         case .claude:
             return "\(Self.shellQuoted(binary)) \(modelFlag)\(bypassFlag)\"/relay-bridge\""
         }

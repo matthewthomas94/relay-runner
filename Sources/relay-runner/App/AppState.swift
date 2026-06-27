@@ -48,6 +48,9 @@ final class AppState {
             getWorkingDirectory: { [weak self] in self?.config.general.working_directory ?? "" },
             getAgentProvider: { [weak self] in self?.config.general.provider ?? .codex },
             getModel: { [weak self] in self?.config.general.model ?? GeneralConfig.defaultModel },
+            getCodexReasoningEffort: { [weak self] in
+                self?.config.general.codex_reasoning_effort ?? GeneralConfig.defaultCodexReasoningEffort
+            },
             setAgentProvider: { [weak self] provider in
                 guard let self else { return }
                 var newConfig = self.config
@@ -60,6 +63,12 @@ final class AppState {
                 newConfig.general.model = GeneralConfig.isModel(model, validFor: newConfig.general.provider)
                     ? model
                     : GeneralConfig.defaultModel
+                self.saveConfig(newConfig)
+            },
+            setCodexReasoningEffort: { [weak self] effort in
+                guard let self else { return }
+                var newConfig = self.config
+                newConfig.general.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(effort)
                 self.saveConfig(newConfig)
             },
             setWorkingDirectory: { [weak self] path in

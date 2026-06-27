@@ -21,6 +21,7 @@ struct OnboardingView: View {
     /// Configured primary coding agent at the moment the window opens.
     let initialAgentProvider: GeneralConfig.AgentProvider
     let initialModel: String
+    let initialCodexReasoningEffort: String
     /// When true in the simplified upgrade flow, ask for the provider choice
     /// even if no other setup is missing.
     let requiresAgentChoice: Bool
@@ -28,6 +29,7 @@ struct OnboardingView: View {
     /// Persists the selected primary coding agent back to AppConfig.
     let onSetAgentProvider: (GeneralConfig.AgentProvider) -> Void
     let onSetModel: (String) -> Void
+    let onSetCodexReasoningEffort: (String) -> Void
     /// Persists the user's workspace-folder pick to AppConfig. Called
     /// from the Ready step's Done button.
     let onSetWorkingDirectory: (String) -> Void
@@ -52,6 +54,7 @@ struct OnboardingView: View {
     @State private var workingDirectory: String
     @State private var selectedAgentProvider: GeneralConfig.AgentProvider
     @State private var selectedModel: String
+    @State private var selectedCodexReasoningEffort: String
     /// True once the user has actively chosen a workspace folder on
     /// this opening of the onboarding window — by clicking Browse… or
     /// Use Home Folder. The Done button stays disabled until then so we
@@ -75,11 +78,13 @@ struct OnboardingView: View {
          initialWorkingDirectory: String = "",
          initialAgentProvider: GeneralConfig.AgentProvider = .codex,
          initialModel: String = GeneralConfig.defaultModel,
+         initialCodexReasoningEffort: String = GeneralConfig.defaultCodexReasoningEffort,
          requiresAgentChoice: Bool = false,
          requiresParentPermissionGuidance: Bool = false,
          resumeState: OnboardingResumeState.Snapshot? = nil,
          onSetAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
          onSetModel: @escaping (String) -> Void = { _ in },
+         onSetCodexReasoningEffort: @escaping (String) -> Void = { _ in },
          onSetWorkingDirectory: @escaping (String) -> Void = { _ in },
          onStartSession: @escaping () -> Void = {},
          onFinish: @escaping () -> Void) {
@@ -89,10 +94,12 @@ struct OnboardingView: View {
         self.initialWorkingDirectory = initialWorkingDirectory
         self.initialAgentProvider = initialAgentProvider
         self.initialModel = initialModel
+        self.initialCodexReasoningEffort = initialCodexReasoningEffort
         self.requiresAgentChoice = requiresAgentChoice
         self.requiresParentPermissionGuidance = requiresParentPermissionGuidance
         self.onSetAgentProvider = onSetAgentProvider
         self.onSetModel = onSetModel
+        self.onSetCodexReasoningEffort = onSetCodexReasoningEffort
         self.onSetWorkingDirectory = onSetWorkingDirectory
         self.onStartSession = onStartSession
         self.onFinish = onFinish
@@ -100,6 +107,9 @@ struct OnboardingView: View {
         let startingModel = GeneralConfig.isModel(initialModel, validFor: startingProvider)
             ? initialModel
             : GeneralConfig.defaultModel
+        let startingCodexReasoningEffort = GeneralConfig.normalizedCodexReasoningEffort(
+            initialCodexReasoningEffort
+        )
         let startingParentReviewed = resumeState?.parentPermissionsReviewed ?? false
         // Simplified flow (re-prompt after initial onboarding): jump to the
         // first missing setup item. Full flow starts at the welcome screen.
@@ -117,6 +127,7 @@ struct OnboardingView: View {
         _workingDirectory = State(initialValue: initialWorkingDirectory)
         _selectedAgentProvider = State(initialValue: startingProvider)
         _selectedModel = State(initialValue: startingModel)
+        _selectedCodexReasoningEffort = State(initialValue: startingCodexReasoningEffort)
         _agentSignedIn = State(initialValue: AgentAuth.isAuthenticated(for: startingProvider))
         _parentPermissionsReviewed = State(initialValue: startingParentReviewed)
     }
@@ -216,6 +227,9 @@ struct OnboardingView: View {
         .onChange(of: selectedModel) { _, new in
             onSetModel(new)
             persistResume()
+        }
+        .onChange(of: selectedCodexReasoningEffort) { _, new in
+            onSetCodexReasoningEffort(new)
         }
         .onChange(of: parentPermissionsReviewed) { _, _ in
             persistResume()
@@ -330,6 +344,9 @@ struct OnboardingView: View {
             }
 
             modelPicker
+            if selectedAgentProvider == .codex {
+                codexReasoningEffortPicker
+            }
             workingDirectoryPicker
             setupPlanView
 
@@ -380,6 +397,29 @@ struct OnboardingView: View {
             Spacer()
             Picker("Model", selection: $selectedModel) {
                 ForEach(GeneralConfig.modelOptions(for: selectedAgentProvider)) { option in
+                    Text(option.label).tag(option.value)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 180)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.25))
+        )
+    }
+
+    private var codexReasoningEffortPicker: some View {
+        HStack {
+            Text("Reasoning effort")
+                .font(.callout).bold()
+            Spacer()
+            Picker("Reasoning effort", selection: $selectedCodexReasoningEffort) {
+                ForEach(GeneralConfig.codexReasoningEffortOptions) { option in
                     Text(option.label).tag(option.value)
                 }
             }
@@ -1142,6 +1182,9 @@ struct OnboardingView: View {
     private func beginGuidedSetup() {
         onSetAgentProvider(selectedAgentProvider)
         onSetModel(selectedModel)
+        if selectedAgentProvider == .codex {
+            onSetCodexReasoningEffort(selectedCodexReasoningEffort)
+        }
         onSetWorkingDirectory(workingDirectory)
         agentSignedIn = AgentAuth.isAuthenticated(for: selectedAgentProvider)
         venvInstaller.install()

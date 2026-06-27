@@ -24,6 +24,14 @@ struct GeneralSettingsTab: View {
                 }
             }
 
+            if config.provider == .codex {
+                Picker("Reasoning Effort", selection: $config.codex_reasoning_effort) {
+                    ForEach(GeneralConfig.codexReasoningEffortOptions) { option in
+                        Text(option.label).tag(option.value)
+                    }
+                }
+            }
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(Self.workspaceFolderLabel)
                 HStack {
