@@ -172,6 +172,8 @@ enum NotchActivityLabelPlanner {
             return "Response cancelled"
         case .processing:
             return "Thinking"
+        case .acknowledgement:
+            return "Acknowledged"
         case .messageWaiting:
             return "Response ready"
         case .preparing:
