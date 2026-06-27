@@ -584,6 +584,57 @@ def _queue_voice_acknowledgement(
     )
 
 
+def _handle_relay_control_message(
+    text: str,
+    tts_worker: TTSWorker,
+    command_path: str = VOICE_CMD_FILE,
+    meta_path: str = VOICE_CMD_META_FILE,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
+) -> bool:
+    """Handle provider-neutral relay controls before command publication."""
+    if text == "__TTS_STOP__":
+        # Kill TTS playback only; preserve queued text for double-tap play.
+        tts_worker.stop_playback()
+        return True
+
+    if text == "__INTERRUPT__":
+        tts_worker.stop_playback()
+        relay_command = _begin_relay_command(
+            text,
+            state_path=state_path,
+            event_log_path=event_log_path,
+        )
+        _publish_command(
+            "__INTERRUPT__",
+            {**relay_command, "action": "control", "outcome": "control action interrupt"},
+            command_path=command_path,
+            meta_path=meta_path,
+            state_path=state_path,
+        )
+        return True
+
+    if text == "__CANCEL__":
+        # Double-tap Control is also used to dismiss acknowledgement/TTS UI.
+        # In relay mode Codex and Claude share this bridge path, so dismissal
+        # must not advance newest-intent metadata for either provider.
+        tts_worker.skip()
+        return True
+
+    if text == "__PLAY__":
+        tts_worker.play()
+        return True
+
+    if text == "__REPLAY__":
+        tts_worker.replay()
+        return True
+
+    if text.startswith("__STATUS__:"):
+        return True
+
+    return False
+
+
 def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
     """Read text from TTS input FIFO and put on TTS queue (relay mode only)."""
     while not shutdown_event.is_set():
@@ -670,41 +721,7 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                 if not text:
                     continue
 
-                # Handle control messages internally
-                if text == "__TTS_STOP__":
-                    # Kill TTS playback only — don't clear pending text or
-                    # write to command file (preserves double-tap play and
-                    # allows queued TTS to be synthesized)
-                    tts_worker.stop_playback()
-                    continue
-
-                if text == "__INTERRUPT__":
-                    tts_worker.stop_playback()
-                    relay_command = _begin_relay_command(text)
-                    _publish_command(
-                        "__INTERRUPT__",
-                        {**relay_command, "action": "control", "outcome": "control action interrupt"},
-                    )
-                    continue
-
-                if text == "__CANCEL__":
-                    tts_worker.skip()
-                    relay_command = _begin_relay_command(text)
-                    _publish_command(
-                        "__INTERRUPT__",
-                        {**relay_command, "action": "control", "outcome": "control action cancel"},
-                    )
-                    continue
-
-                if text == "__PLAY__":
-                    tts_worker.play()
-                    continue
-
-                if text == "__REPLAY__":
-                    tts_worker.replay()
-                    continue
-
-                if text.startswith("__STATUS__:"):
+                if _handle_relay_control_message(text, tts_worker):
                     continue
 
                 # Convert "slash <command>" to "/<command>"
