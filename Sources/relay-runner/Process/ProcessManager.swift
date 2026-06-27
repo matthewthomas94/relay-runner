@@ -268,28 +268,44 @@ final class ProcessManager {
         RELAY_CWD=\(shellQuoted(context.workingDirectory))
         RELAY_BRIDGE=\(shellQuoted(relayBridge))
         RELAY_PROVIDER=\(shellQuoted(provider))
+        VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
         launchctl remove com.relay.voicebridge 2>/dev/null || true
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         pkill -f '[v]oice_bridge.py' 2>/dev/null || true
         rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
-        : >> /tmp/voice_bridge.log
+        VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
-        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" >> /tmp/voice_bridge.log 2>&1 || true
+        echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
+        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
+        submit_status=$?
+        echo "[relay-runner] app watchdog launchctl submit exit_status=$submit_status provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         for _ in $(seq 1 20); do
-            [ -S /tmp/voice_bridge.sock ] && exit 0
+            if [ -S /tmp/voice_bridge.sock ]; then
+                echo "[relay-runner] app watchdog launchctl produced socket provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
+                exit 0
+            fi
             launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
             sleep 0.5
         done
         [ -S /tmp/voice_bridge.sock ] && exit 0
-        echo "[relay-runner] app watchdog launchctl recovery did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+        echo "[relay-runner] app watchdog launchctl recovery did not produce a socket; submit_status=$submit_status uid=$(id -u) provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD; launchctl print follows." >> "$VOICE_BRIDGE_LOG"
+        launchctl print "gui/$(id -u)/com.relay.voicebridge" >> "$VOICE_BRIDGE_LOG" 2>&1
+        print_status=$?
+        [ "$print_status" -eq 0 ] || echo "[relay-runner] app watchdog launchctl print exit_status=$print_status" >> "$VOICE_BRIDGE_LOG"
+        echo "[relay-runner] app watchdog falling back to direct background launch." >> "$VOICE_BRIDGE_LOG"
         launchctl remove com.relay.voicebridge 2>/dev/null || true
-        if [ -n "$RELAY_PROVIDER" ]; then
-            (cd "$RELAY_CWD" && RELAY_RUNNER_PROVIDER="$RELAY_PROVIDER" nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &)
-        else
-            (cd "$RELAY_CWD" && env -u RELAY_RUNNER_PROVIDER nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &)
-        fi
-        for _ in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && exit 0; sleep 0.5; done
+        nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-runner] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1 &
+        fallback_pid=$!
+        echo "[relay-runner] app watchdog direct fallback launched pid=$fallback_pid provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
+        for _ in $(seq 1 20); do
+            if [ -S /tmp/voice_bridge.sock ]; then
+                echo "[relay-runner] app watchdog direct fallback produced socket provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
+                exit 0
+            fi
+            sleep 0.5
+        done
+        echo "[relay-runner] app watchdog direct fallback did not produce a socket provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         exit 1
         """
     }

@@ -83,6 +83,7 @@ export PYTHONDONTWRITEBYTECODE=1
 # as Swift literals.
 VENV_ONLY=false
 INSTALL_SKILLS_ONLY=false
+ROTATE_LOG_ONLY=false
 
 # Emit a progress marker the SwiftUI installer can parse to drive a
 # determinate progress bar. Format: `RELAY_PROGRESS:<percent>:<label>`.
@@ -113,6 +114,59 @@ ensure_fifo() {
         rm -f "$path"
     fi
     [ -p "$path" ] || mkfifo "$path" 2>/dev/null || true
+}
+
+voice_bridge_log_path() {
+    echo "${VOICE_BRIDGE_LOG_PATH:-/tmp/voice_bridge.log}"
+}
+
+voice_bridge_log_stamp() {
+    if [ -n "${VOICE_BRIDGE_LOG_TIMESTAMP:-}" ]; then
+        echo "$VOICE_BRIDGE_LOG_TIMESTAMP"
+    else
+        date -u '+%Y%m%d-%H%M%S'
+    fi
+}
+
+rotate_voice_bridge_log() {
+    local log_path
+    log_path="$(voice_bridge_log_path)"
+    local reason="${VOICE_BRIDGE_LOG_REASON:-startup}"
+    local provider="${VOICE_BRIDGE_LOG_PROVIDER:-${RELAY_RUNNER_PROVIDER:-unknown}}"
+    local cwd="${VOICE_BRIDGE_LOG_CWD:-$PWD}"
+    local previous="none"
+    local log_dir log_name stem ext stamp candidate i
+
+    log_dir="$(dirname "$log_path")"
+    log_name="$(basename "$log_path")"
+    stem="${log_name%.*}"
+    if [ "$stem" = "$log_name" ]; then
+        ext=".log"
+    else
+        ext=".${log_name##*.}"
+    fi
+    mkdir -p "$log_dir"
+
+    if [ -s "$log_path" ]; then
+        stamp="$(voice_bridge_log_stamp)"
+        candidate="$log_dir/$stem.$stamp$ext"
+        i=1
+        while [ -e "$candidate" ]; do
+            candidate="$log_dir/$stem.$stamp.$i$ext"
+            i=$((i + 1))
+        done
+        if mv "$log_path" "$candidate"; then
+            previous="$candidate"
+        else
+            previous="move_failed:$candidate"
+        fi
+    fi
+
+    : > "$log_path"
+    {
+        echo "[relay-bridge] diagnostic log started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        echo "[relay-bridge] previous_log=$previous reason=$reason provider=$provider cwd=$cwd"
+    } >> "$log_path"
 }
 
 # Write Relay Runner command/skill files into ~/.claude/commands and
@@ -165,20 +219,45 @@ launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
 rm -f /tmp/voice_bridge_stop_requested
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
-: > /tmp/voice_bridge.log
 RELAY_BRIDGE='__RELAY_BRIDGE__'
 RELAY_PROVIDER=claude
+VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
+VOICE_BRIDGE_LOG_REASON=start VOICE_BRIDGE_LOG_PROVIDER="$RELAY_PROVIDER" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log
 launch_relay_bridge() {
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && export RELAY_RUNNER_PROVIDER="$3" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" >> /tmp/voice_bridge.log 2>&1 || true
+    echo "[relay-bridge] launching via launchctl provider=$RELAY_PROVIDER cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
+    submit_status=$?
+    echo "[relay-bridge] launchctl submit exit_status=$submit_status provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
     for i in $(seq 1 20); do
-        [ -S /tmp/voice_bridge.sock ] && return 0
+        if [ -S /tmp/voice_bridge.sock ]; then
+            echo "[relay-bridge] launchctl produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+            return 0
+        fi
         launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
         sleep 0.5
     done
-    [ -S /tmp/voice_bridge.sock ] && return 0
-    echo "[relay-bridge] launchctl did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+    if [ -S /tmp/voice_bridge.sock ]; then
+        echo "[relay-bridge] launchctl produced socket provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+        return 0
+    fi
+    echo "[relay-bridge] launchctl did not produce a socket; submit_status=$submit_status uid=$(id -u) provider=$RELAY_PROVIDER cwd=$RELAY_CWD; launchctl print follows." >> "$VOICE_BRIDGE_LOG"
+    launchctl print "gui/$(id -u)/com.relay.voicebridge" >> "$VOICE_BRIDGE_LOG" 2>&1
+    print_status=$?
+    [ "$print_status" -eq 0 ] || echo "[relay-bridge] launchctl print exit_status=$print_status" >> "$VOICE_BRIDGE_LOG"
+    echo "[relay-bridge] falling back to direct background launch." >> "$VOICE_BRIDGE_LOG"
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    RELAY_RUNNER_PROVIDER="$RELAY_PROVIDER" nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &
+    nohup /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1 &
+    fallback_pid=$!
+    echo "[relay-bridge] direct fallback launched pid=$fallback_pid provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    for i in $(seq 1 20); do
+        if [ -S /tmp/voice_bridge.sock ]; then
+            echo "[relay-bridge] direct fallback produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "[relay-bridge] direct fallback did not produce a socket provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    return 1
 }
 launch_relay_bridge
 ```
@@ -317,18 +396,39 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
     RELAY_CWD=$(pwd)
     RELAY_BRIDGE='__RELAY_BRIDGE__'
     RELAY_PROVIDER=claude
+    VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
+    VOICE_BRIDGE_LOG_REASON=restart VOICE_BRIDGE_LOG_PROVIDER="$RELAY_PROVIDER" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && export RELAY_RUNNER_PROVIDER="$3" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" >> /tmp/voice_bridge.log 2>&1 || true
+    echo "[relay-bridge] restarting via launchctl provider=$RELAY_PROVIDER cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
+    submit_status=$?
+    echo "[relay-bridge] launchctl restart submit exit_status=$submit_status provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
     for i in $(seq 1 20); do
-        [ -S /tmp/voice_bridge.sock ] && break
+        if [ -S /tmp/voice_bridge.sock ]; then
+            echo "[relay-bridge] launchctl restart produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+            break
+        fi
         launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
         sleep 0.5
     done
     if [ ! -S /tmp/voice_bridge.sock ]; then
-        echo "[relay-bridge] launchctl restart did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+        echo "[relay-bridge] launchctl restart did not produce a socket; submit_status=$submit_status uid=$(id -u) provider=$RELAY_PROVIDER cwd=$RELAY_CWD; launchctl print follows." >> "$VOICE_BRIDGE_LOG"
+        launchctl print "gui/$(id -u)/com.relay.voicebridge" >> "$VOICE_BRIDGE_LOG" 2>&1
+        print_status=$?
+        [ "$print_status" -eq 0 ] || echo "[relay-bridge] launchctl restart print exit_status=$print_status" >> "$VOICE_BRIDGE_LOG"
+        echo "[relay-bridge] falling back to direct background launch." >> "$VOICE_BRIDGE_LOG"
         launchctl remove com.relay.voicebridge 2>/dev/null || true
-        RELAY_RUNNER_PROVIDER="$RELAY_PROVIDER" nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &
-        for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
+        nohup /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1 &
+        fallback_pid=$!
+        echo "[relay-bridge] direct fallback launched pid=$fallback_pid provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+        for i in $(seq 1 20); do
+            if [ -S /tmp/voice_bridge.sock ]; then
+                echo "[relay-bridge] direct fallback produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+                break
+            fi
+            sleep 0.5
+        done
+        [ -S /tmp/voice_bridge.sock ] || echo "[relay-bridge] direct fallback did not produce a socket provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
     fi
 fi
 ```
@@ -446,20 +546,45 @@ launchctl remove com.relay.voicebridge 2>/dev/null || true
 rm -f /tmp/voice_bridge_stop_requested
 pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 RELAY_CWD=$(pwd)
-: > /tmp/voice_bridge.log
 RELAY_BRIDGE='__RELAY_BRIDGE__'
 RELAY_PROVIDER=codex
+VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
+VOICE_BRIDGE_LOG_REASON=start VOICE_BRIDGE_LOG_PROVIDER="$RELAY_PROVIDER" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log
 launch_relay_bridge() {
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && export RELAY_RUNNER_PROVIDER="$3" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" >> /tmp/voice_bridge.log 2>&1 || true
+    echo "[relay-bridge] launching via launchctl provider=$RELAY_PROVIDER cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
+    submit_status=$?
+    echo "[relay-bridge] launchctl submit exit_status=$submit_status provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
     for i in $(seq 1 20); do
-        [ -S /tmp/voice_bridge.sock ] && return 0
+        if [ -S /tmp/voice_bridge.sock ]; then
+            echo "[relay-bridge] launchctl produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+            return 0
+        fi
         launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
         sleep 0.5
     done
-    [ -S /tmp/voice_bridge.sock ] && return 0
-    echo "[relay-bridge] launchctl did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+    if [ -S /tmp/voice_bridge.sock ]; then
+        echo "[relay-bridge] launchctl produced socket provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+        return 0
+    fi
+    echo "[relay-bridge] launchctl did not produce a socket; submit_status=$submit_status uid=$(id -u) provider=$RELAY_PROVIDER cwd=$RELAY_CWD; launchctl print follows." >> "$VOICE_BRIDGE_LOG"
+    launchctl print "gui/$(id -u)/com.relay.voicebridge" >> "$VOICE_BRIDGE_LOG" 2>&1
+    print_status=$?
+    [ "$print_status" -eq 0 ] || echo "[relay-bridge] launchctl print exit_status=$print_status" >> "$VOICE_BRIDGE_LOG"
+    echo "[relay-bridge] falling back to direct background launch." >> "$VOICE_BRIDGE_LOG"
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    RELAY_RUNNER_PROVIDER="$RELAY_PROVIDER" nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &
+    nohup /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1 &
+    fallback_pid=$!
+    echo "[relay-bridge] direct fallback launched pid=$fallback_pid provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    for i in $(seq 1 20); do
+        if [ -S /tmp/voice_bridge.sock ]; then
+            echo "[relay-bridge] direct fallback produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "[relay-bridge] direct fallback did not produce a socket provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    return 1
 }
 launch_relay_bridge
 ```
@@ -584,18 +709,39 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
     RELAY_CWD=$(pwd)
     RELAY_BRIDGE='__RELAY_BRIDGE__'
     RELAY_PROVIDER=codex
+    VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
+    VOICE_BRIDGE_LOG_REASON=restart VOICE_BRIDGE_LOG_PROVIDER="$RELAY_PROVIDER" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" && export RELAY_RUNNER_PROVIDER="$3" && exec "$2" --relay >> /tmp/voice_bridge.log 2>&1' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" >> /tmp/voice_bridge.log 2>&1 || true
+    echo "[relay-bridge] restarting via launchctl provider=$RELAY_PROVIDER cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
+    submit_status=$?
+    echo "[relay-bridge] launchctl restart submit exit_status=$submit_status provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
     for i in $(seq 1 20); do
-        [ -S /tmp/voice_bridge.sock ] && break
+        if [ -S /tmp/voice_bridge.sock ]; then
+            echo "[relay-bridge] launchctl restart produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+            break
+        fi
         launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
         sleep 0.5
     done
     if [ ! -S /tmp/voice_bridge.sock ]; then
-        echo "[relay-bridge] launchctl restart did not produce a socket; falling back to direct background launch." >> /tmp/voice_bridge.log
+        echo "[relay-bridge] launchctl restart did not produce a socket; submit_status=$submit_status uid=$(id -u) provider=$RELAY_PROVIDER cwd=$RELAY_CWD; launchctl print follows." >> "$VOICE_BRIDGE_LOG"
+        launchctl print "gui/$(id -u)/com.relay.voicebridge" >> "$VOICE_BRIDGE_LOG" 2>&1
+        print_status=$?
+        [ "$print_status" -eq 0 ] || echo "[relay-bridge] launchctl restart print exit_status=$print_status" >> "$VOICE_BRIDGE_LOG"
+        echo "[relay-bridge] falling back to direct background launch." >> "$VOICE_BRIDGE_LOG"
         launchctl remove com.relay.voicebridge 2>/dev/null || true
-        RELAY_RUNNER_PROVIDER="$RELAY_PROVIDER" nohup "$RELAY_BRIDGE" --relay >> /tmp/voice_bridge.log 2>&1 &
-        for i in $(seq 1 20); do [ -S /tmp/voice_bridge.sock ] && break; sleep 0.5; done
+        nohup /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1 &
+        fallback_pid=$!
+        echo "[relay-bridge] direct fallback launched pid=$fallback_pid provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+        for i in $(seq 1 20); do
+            if [ -S /tmp/voice_bridge.sock ]; then
+                echo "[relay-bridge] direct fallback produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+                break
+            fi
+            sleep 0.5
+        done
+        [ -S /tmp/voice_bridge.sock ] || echo "[relay-bridge] direct fallback did not produce a socket provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
     fi
 fi
 ```
@@ -757,6 +903,7 @@ for arg in "$@"; do
     case "$arg" in
         --venv-only) VENV_ONLY=true ;;
         --install-skills) INSTALL_SKILLS_ONLY=true ;;
+        --rotate-log) ROTATE_LOG_ONLY=true ;;
         *) __rb_args+=("$arg") ;;
     esac
 done
@@ -764,6 +911,11 @@ done
 # voice_bridge.py understands. The +/expansion guards against `set -u`
 # when no args remain (bash 3.2 compatibility).
 set -- "${__rb_args[@]+"${__rb_args[@]}"}"
+
+if $ROTATE_LOG_ONLY; then
+    rotate_voice_bridge_log
+    exit 0
+fi
 
 # -- Skill-only path: write the .md files and exit, no bootstrap. --
 # Used by Settings → Install Skill (force overwrite — the user already

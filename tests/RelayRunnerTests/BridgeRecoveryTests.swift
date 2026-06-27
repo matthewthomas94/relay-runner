@@ -170,12 +170,18 @@ final class BridgeRecoveryTests: XCTestCase {
             XCTAssertTrue(script.contains("RELAY_CWD='/Users/example/dev repo'"))
             XCTAssertTrue(script.contains("RELAY_PROVIDER='\(provider)'"))
             XCTAssertTrue(script.contains("export RELAY_RUNNER_PROVIDER=\"$3\""))
-            XCTAssertTrue(script.contains("exec \"$2\" --relay"))
+            XCTAssertTrue(script.contains("VOICE_BRIDGE_LOG_REASON=watchdog-recovery"))
+            XCTAssertTrue(script.contains("\"$2\" --relay >> \"$4\""))
+            XCTAssertTrue(script.contains("launchctl bridge process exited status=$status"))
+            XCTAssertTrue(script.contains("launchctl produced socket provider=${RELAY_PROVIDER:-none}"))
+            XCTAssertTrue(script.contains("launchctl print follows"))
+            XCTAssertTrue(script.contains("direct bridge process exited status=$status"))
+            XCTAssertTrue(script.contains("direct fallback produced socket provider=${RELAY_PROVIDER:-none}"))
             XCTAssertTrue(script.contains("[ -f /tmp/voice_bridge_stop_requested ] && exit 1"))
             XCTAssertTrue(script.contains("/tmp/voice_cmd_ready.meta"))
             XCTAssertTrue(script.contains("/tmp/voice_command_state.json"))
             XCTAssertTrue(script.contains("/tmp/voice_cmd_claimed.json"))
-            XCTAssertTrue(script.contains("RELAY_RUNNER_PROVIDER=\"$RELAY_PROVIDER\" nohup \"$RELAY_BRIDGE\" --relay"))
+            XCTAssertTrue(script.contains("nohup /bin/bash -lc"))
         }
     }
 
@@ -187,7 +193,7 @@ final class BridgeRecoveryTests: XCTestCase {
 
         XCTAssertTrue(script.contains("RELAY_PROVIDER=''"))
         XCTAssertTrue(script.contains("unset RELAY_RUNNER_PROVIDER"))
-        XCTAssertTrue(script.contains("env -u RELAY_RUNNER_PROVIDER nohup \"$RELAY_BRIDGE\" --relay"))
+        XCTAssertTrue(script.contains("provider=${3:-none}"))
     }
 
     private func makeFixture() throws -> URL {
