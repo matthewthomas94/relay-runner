@@ -3,6 +3,12 @@ import SwiftUI
 
 @Observable
 final class AppState {
+    struct LaunchPlan: Equatable {
+        let startsOverlay: Bool
+        let startsAwareness: Bool
+        let statusText: String?
+    }
+
     var config: AppConfig
     var isRunning = false
     var statusText = "Idle"
@@ -196,12 +202,18 @@ final class AppState {
         // Start awareness on next run loop tick (after app finishes launching)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            let launchPlan = Self.launchPlan(for: self.permissions.microphone)
+            if launchPlan.startsOverlay {
+                // Keep board routing and the no-session/program-board surfaces
+                // available even before STT starts.
+                self.startOverlay()
+            }
             // Don't touch the microphone at install/open time. Onboarding owns
             // the permission ask, and STT starts only after the grant applies.
-            if self.permissions.microphone == .granted {
+            if launchPlan.startsAwareness {
                 self.startAwareness()
             } else {
-                self.statusText = "Microphone permission needed"
+                self.statusText = launchPlan.statusText ?? self.statusText
             }
             self.onboarding.showIfNeeded()
             if self.refreshBundledServicesOnLaunch {
@@ -220,6 +232,17 @@ final class AppState {
         Task { @MainActor [checkForUpdatesAction] in
             checkForUpdatesAction()
         }
+    }
+
+    static func launchPlan(for microphone: PermissionStatus) -> LaunchPlan {
+        if microphone == .granted {
+            return LaunchPlan(startsOverlay: true, startsAwareness: true, statusText: nil)
+        }
+        return LaunchPlan(
+            startsOverlay: true,
+            startsAwareness: false,
+            statusText: "Microphone permission needed"
+        )
     }
 
     static func serviceLifecycleMessage(for result: OrchestratorDaemonRefreshResult) -> String? {
