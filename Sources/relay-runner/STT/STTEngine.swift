@@ -12,6 +12,7 @@ final class STTEngine: @unchecked Sendable {
     var isRecording = false
     var wasCancelled = false
     var playRequested = false
+    var boardToggleRequested = false
     var partialTranscription = ""
     var statusMessage = ""
 
@@ -297,6 +298,11 @@ final class STTEngine: @unchecked Sendable {
                     playRequested = true
                     FIFOWriter.write("__PLAY__")
                     NSLog("[STTEngine] >> __PLAY__ (double-tap)")
+                    continue
+
+                case .boardToggle:
+                    boardToggleRequested = true
+                    NSLog("[STTEngine] Board toggle requested (double-tap Shift)")
                     continue
                 }
             }

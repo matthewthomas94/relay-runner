@@ -8,6 +8,7 @@ import Foundation
 ///   - Caps Lock (or configured key): toggle recording
 ///   - Double-tap Option: play queued TTS / replay last
 ///   - Double-tap Control: cancel recording / dismiss TTS
+///   - Double-tap Shift: toggle the routed board surface
 final class CapsLockGesture {
 
     enum Event {
@@ -16,6 +17,7 @@ final class CapsLockGesture {
         case cancel
         case interrupt
         case play
+        case boardToggle
     }
 
     /// Threshold before a held key counts as "recording" (not a tap)
@@ -48,6 +50,8 @@ final class CapsLockGesture {
     private var controlWasDown = false
     private var pendingPlay = false
     private var pendingCancel = false
+    private var pendingBoardToggle = false
+    private var boardHotkeyGesture = BoardHotkeyGesture()
 
     /// Modal confirmation gate. When `stateMachine?.pendingConfirmation != nil`
     /// the modifier double-taps mean yes/no instead of play/cancel:
@@ -113,6 +117,10 @@ final class CapsLockGesture {
         if pendingPlay {
             pendingPlay = false
             return .play
+        }
+        if pendingBoardToggle {
+            pendingBoardToggle = false
+            return .boardToggle
         }
 
         let keyOn = isKeyOn
@@ -180,16 +188,28 @@ final class CapsLockGesture {
     // MARK: - Modifier double-tap monitoring (Option = play, Control = cancel)
 
     private func startModifierMonitor() {
-        let global = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.handleModifierEvent(event)
+        let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown]
+        let global = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.handleModifierMonitorEvent(event)
         }
         if let global { keyMonitors.append(global) }
 
-        let local = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.handleModifierEvent(event)
+        let local = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.handleModifierMonitorEvent(event)
             return event
         }
         if let local { keyMonitors.append(local) }
+    }
+
+    private func handleModifierMonitorEvent(_ event: NSEvent) {
+        switch event.type {
+        case .flagsChanged:
+            handleModifierEvent(event)
+        case .keyDown:
+            boardHotkeyGesture.handleKeyDown()
+        default:
+            break
+        }
     }
 
     private func handleModifierEvent(_ event: NSEvent) {
@@ -227,6 +247,10 @@ final class CapsLockGesture {
             }
         }
         controlWasDown = controlDown
+
+        if boardHotkeyGesture.handleFlagsChanged(event.modifierFlags, at: now) {
+            pendingBoardToggle = true
+        }
     }
 
     // MARK: - Custom key monitoring
