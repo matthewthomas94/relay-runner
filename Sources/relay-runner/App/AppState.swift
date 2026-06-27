@@ -105,6 +105,9 @@ final class AppState {
     private var eventBus: StateEventBus?
     private var actionsBus: ActionsConfirmBus?
     private var sttPollTimer: Timer?
+    private var notchActivityTimer: Timer?
+    private var notchActivityRunStates: [RunState] = []
+    private var notchActivityTickets: [Ticket] = []
     private var bridgeWatchdog: Timer?
     private var programStatusTask: Task<Void, Never>?
     /// True while a menu-started terminal session owns the bridge.
@@ -148,6 +151,54 @@ final class AppState {
 
     private func syncNotchStatusSurface() {
         notchStatusController.setActive(hasActiveSession)
+        syncNotchActivitySurface()
+    }
+
+    private func startNotchActivityPolling() {
+        stopNotchActivityPolling()
+        syncNotchActivityProjectState()
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.syncNotchActivityProjectState()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        notchActivityTimer = timer
+    }
+
+    private func stopNotchActivityPolling() {
+        notchActivityTimer?.invalidate()
+        notchActivityTimer = nil
+        notchActivityRunStates = []
+        notchActivityTickets = []
+        notchStatusController.setActivityLabels([])
+    }
+
+    private func syncNotchActivityProjectState() {
+        guard hasActiveSession,
+              let project = ProjectResolver.resolve() else {
+            notchActivityRunStates = []
+            notchActivityTickets = []
+            syncNotchActivitySurface()
+            return
+        }
+
+        notchActivityRunStates = Array(RunStateStore.load(forRepo: project.repoPath).values)
+        notchActivityTickets = ProjectResolver.scanTickets(in: project)
+        syncNotchActivitySurface()
+    }
+
+    private func syncNotchActivitySurface() {
+        guard hasActiveSession else {
+            notchStatusController.setActivityLabels([])
+            return
+        }
+
+        let labels = NotchActivityLabelPlanner.labels(
+            for: stateMachine.state,
+            activeRuns: notchActivityRunStates,
+            tickets: notchActivityTickets,
+            bridgeRecoveryInFlight: bridgeRecoveryInFlight
+        )
+        notchStatusController.setActivityLabels(labels)
     }
 
     init(
@@ -518,6 +569,7 @@ final class AppState {
     func showProgramStatus() {
         if overlayController == nil { startOverlay() }
         stateMachine.showProgramStatus(title: "Program Status", body: "Loading program status...")
+        syncNotchActivitySurface()
 
         programStatusTask?.cancel()
         programStatusTask = Task { [weak self] in
@@ -526,12 +578,14 @@ final class AppState {
                 guard !Task.isCancelled else { return }
                 await MainActor.run { [weak self, title = message.title, body = message.body] in
                     self?.stateMachine.showProgramStatus(title: title, body: body)
+                    self?.syncNotchActivitySurface()
                 }
             } catch {
                 guard !Task.isCancelled else { return }
                 let message = ProgramStatusOverlayFormatter.errorMessage(for: error)
                 await MainActor.run { [weak self, title = message.title, body = message.body] in
                     self?.stateMachine.showProgramStatus(title: title, body: body)
+                    self?.syncNotchActivitySurface()
                 }
             }
         }
@@ -540,6 +594,7 @@ final class AppState {
     func showServiceLifecycleDetail(_ message: String) {
         if overlayController == nil { startOverlay() }
         stateMachine.showProgramStatus(title: "Service Status", body: message)
+        syncNotchActivitySurface()
     }
 
     func toggleRecording() {
@@ -923,6 +978,7 @@ final class AppState {
         let perimeter = PerimeterOverlayManager()
         perimeter.start(stateMachine: stateMachine)
         perimeterOverlay = perimeter
+        startNotchActivityPolling()
 
         // Poll STT engine state → state machine (STT is in-process, no socket needed)
         sttPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
@@ -944,6 +1000,7 @@ final class AppState {
                     self.stateMachine.dismissSessionPrompt()
                 }
                 self.wasRecording = nowRecording
+                self.syncNotchActivitySurface()
                 return
             }
 
@@ -979,6 +1036,7 @@ final class AppState {
                 self.stateMachine.updateSTT(isRecording: nowRecording, partial: engine.partialTranscription)
             }
             self.wasRecording = nowRecording
+            self.syncNotchActivitySurface()
         }
     }
 
@@ -988,6 +1046,7 @@ final class AppState {
 
         sttPollTimer?.invalidate()
         sttPollTimer = nil
+        stopNotchActivityPolling()
 
         overlayController?.stop()
         overlayController = nil
@@ -1002,6 +1061,7 @@ final class AppState {
         actionsBus = nil
 
         stateMachine.reset()
+        syncNotchActivitySurface()
     }
 
 }
