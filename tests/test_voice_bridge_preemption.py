@@ -31,6 +31,23 @@ def claim_ready_command(path: str) -> str:
         os.remove(claim)
 
 
+class FakeTTSWorker:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def stop_playback(self):
+        self.calls.append("stop_playback")
+
+    def skip(self):
+        self.calls.append("skip")
+
+    def play(self):
+        self.calls.append("play")
+
+    def replay(self):
+        self.calls.append("replay")
+
+
 class VoiceBridgePreemptionTests(unittest.TestCase):
     def test_newer_command_suppresses_stale_tts_after_first_claimed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -150,6 +167,82 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertFalse(os.path.exists(command_path))
             current = json.loads(Path(state_path).read_text())
             self.assertEqual(current["relay_command_seq"], second_meta["relay_command_seq"])
+
+    def test_tts_dismissal_does_not_supersede_claimed_command(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            worker = FakeTTSWorker()
+
+            relay_command = voice_bridge._begin_relay_command(
+                "fix the login bug",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            voice_bridge._publish_command(
+                "action: create_ticket",
+                {**relay_command, "action": "create_ticket"},
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+            )
+            self.assertEqual(claim_ready_command(command_path), "action: create_ticket")
+            os.remove(meta_path)
+            state_before_dismissal = json.loads(Path(state_path).read_text())
+
+            handled = voice_bridge._handle_relay_control_message(
+                "__CANCEL__",
+                worker,
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+                event_log_path=None,
+            )
+
+            self.assertTrue(handled)
+            self.assertEqual(worker.calls, ["skip"])
+            self.assertFalse(os.path.exists(command_path))
+            self.assertFalse(os.path.exists(meta_path))
+            self.assertEqual(json.loads(Path(state_path).read_text()), state_before_dismissal)
+
+    def test_explicit_interrupt_still_supersedes_claimed_command(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            worker = FakeTTSWorker()
+
+            relay_command = voice_bridge._begin_relay_command(
+                "fix the login bug",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            voice_bridge._publish_command(
+                "action: create_ticket",
+                {**relay_command, "action": "create_ticket"},
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+            )
+            self.assertEqual(claim_ready_command(command_path), "action: create_ticket")
+            os.remove(meta_path)
+
+            handled = voice_bridge._handle_relay_control_message(
+                "__INTERRUPT__",
+                worker,
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+                event_log_path=None,
+            )
+
+            self.assertTrue(handled)
+            self.assertEqual(worker.calls, ["stop_playback"])
+            self.assertEqual(claim_ready_command(command_path), "__INTERRUPT__")
+            current = json.loads(Path(state_path).read_text())
+            self.assertEqual(current["source_text"], "__INTERRUPT__")
+            self.assertEqual(current["relay_command_seq"], relay_command["relay_command_seq"] + 1)
 
     def test_newer_pending_project_work_does_not_create_visible_tickets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
