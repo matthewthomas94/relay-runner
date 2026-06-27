@@ -116,6 +116,7 @@ def load_config(config_path: str | None = None) -> dict:
             "working_directory": "",
             "bypass_permissions": True,
             "model": "default",
+            "codex_reasoning_effort": "default",
         },
         "orchestrator": {
             "agent": "codex",
@@ -203,3 +204,13 @@ def _migrate_config(config: dict, general_had_provider: bool = True):
     }
     model = str(general.get("model", "default")).strip().lower()
     general["model"] = model if model in valid_models[provider] else "default"
+
+    valid_codex_reasoning_efforts = {"default", "low", "medium", "high", "xhigh"}
+    codex_reasoning_effort = (
+        str(general.get("codex_reasoning_effort", "default")).strip().lower()
+    )
+    general["codex_reasoning_effort"] = (
+        codex_reasoning_effort
+        if codex_reasoning_effort in valid_codex_reasoning_efforts
+        else "default"
+    )

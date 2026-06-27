@@ -7,10 +7,16 @@ final class ConfigManager {
 
     static let shared = ConfigManager()
 
-    private let configDir: URL = {
+    private static let defaultConfigDir: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("relay-runner")
     }()
+
+    private let configDir: URL
+
+    init(configDir: URL = ConfigManager.defaultConfigDir) {
+        self.configDir = configDir
+    }
 
     var configPath: URL { configDir.appendingPathComponent("config.toml") }
 
@@ -72,6 +78,7 @@ final class ConfigManager {
             if let v = tomlString(general, "working_directory") { config.general.working_directory = v }
             if let v = tomlBool(general, "bypass_permissions") { config.general.bypass_permissions = v }
             if let v = tomlString(general, "model") { config.general.model = v }
+            if let v = tomlString(general, "codex_reasoning_effort") { config.general.codex_reasoning_effort = v }
         }
 
         // Awareness
@@ -125,6 +132,7 @@ final class ConfigManager {
         lines.append("working_directory = \"\(c.general.working_directory)\"")
         lines.append("bypass_permissions = \(c.general.bypass_permissions)")
         lines.append("model = \"\(c.general.model)\"")
+        lines.append("codex_reasoning_effort = \"\(c.general.codex_reasoning_effort)\"")
         lines.append("")
 
         lines.append("[awareness]")

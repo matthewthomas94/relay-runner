@@ -51,7 +51,15 @@ struct GeneralConfig: Codable, Equatable {
         var id: String { value }
     }
 
+    struct ReasoningEffortOption: Identifiable, Equatable {
+        let label: String
+        let value: String
+
+        var id: String { value }
+    }
+
     static let defaultModel = "default"
+    static let defaultCodexReasoningEffort = "default"
 
     static let codexModelOptions: [ModelOption] = [
         ModelOption(label: "Default", value: defaultModel),
@@ -73,6 +81,14 @@ struct GeneralConfig: Codable, Equatable {
         ModelOption(label: "Haiku", value: "haiku"),
     ]
 
+    static let codexReasoningEffortOptions: [ReasoningEffortOption] = [
+        ReasoningEffortOption(label: "Default", value: defaultCodexReasoningEffort),
+        ReasoningEffortOption(label: "Low", value: "low"),
+        ReasoningEffortOption(label: "Medium", value: "medium"),
+        ReasoningEffortOption(label: "High", value: "high"),
+        ReasoningEffortOption(label: "Extra High", value: "xhigh"),
+    ]
+
     var provider: AgentProvider = .codex
     var command: String = "codex"
     var terminal: String = "warp"
@@ -80,6 +96,7 @@ struct GeneralConfig: Codable, Equatable {
     var working_directory: String = ""
     var bypass_permissions: Bool = true
     var model: String = defaultModel
+    var codex_reasoning_effort: String = defaultCodexReasoningEffort
 
     static func modelOptions(for provider: AgentProvider) -> [ModelOption] {
         switch provider {
@@ -103,6 +120,13 @@ struct GeneralConfig: Codable, Equatable {
         }
     }
 
+    static func normalizedCodexReasoningEffort(_ effort: String) -> String {
+        let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return codexReasoningEffortOptions.contains { $0.value == normalized }
+            ? normalized
+            : defaultCodexReasoningEffort
+    }
+
     static func inferProvider(from command: String) -> AgentProvider {
         let name = URL(fileURLWithPath: command).lastPathComponent.lowercased()
         return name.contains("claude") ? .claude : .codex
@@ -114,6 +138,7 @@ struct GeneralConfig: Codable, Equatable {
             command = newProvider.defaultCommand
         }
         normalizeSelectedModel()
+        normalizeCodexReasoningEffort()
     }
 
     mutating func normalize(providerWasExplicit: Bool) {
@@ -124,6 +149,7 @@ struct GeneralConfig: Codable, Equatable {
             command = provider.defaultCommand
         }
         normalizeSelectedModel()
+        normalizeCodexReasoningEffort()
     }
 
     private var hasCustomAbsoluteCommand: Bool {
@@ -133,6 +159,10 @@ struct GeneralConfig: Codable, Equatable {
     private mutating func normalizeSelectedModel() {
         let normalized = model.trimmingCharacters(in: .whitespaces).lowercased()
         model = Self.isModel(normalized, validFor: provider) ? normalized : Self.defaultModel
+    }
+
+    private mutating func normalizeCodexReasoningEffort() {
+        codex_reasoning_effort = Self.normalizedCodexReasoningEffort(codex_reasoning_effort)
     }
 
     /// Resolve legacy terminal short names to full app paths.
