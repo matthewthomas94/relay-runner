@@ -135,6 +135,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
             state_path = os.path.join(temp_dir, "voice_command_state.json")
             tts_queue: queue.Queue = queue.Queue()
+            notifications: list[tuple[str, dict]] = []
 
             first_meta = voice_bridge._begin_relay_command(
                 "first request",
@@ -160,13 +161,71 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 command_path=command_path,
                 meta_path=meta_path,
                 state_path=state_path,
+                source_text="second request",
+                delay_seconds=0,
+                notify_state=lambda state, **kwargs: notifications.append((state, kwargs)),
             )
 
             self.assertTrue(queued)
-            self.assertEqual(tts_queue.get_nowait(), "Got it. I'm on it.")
+            self.assertTrue(tts_queue.empty())
+            self.assertEqual(notifications[0][0], "acknowledgement")
+            self.assertIn("second request", notifications[0][1]["text"])
             self.assertFalse(os.path.exists(command_path))
             current = json.loads(Path(state_path).read_text())
             self.assertEqual(current["relay_command_seq"], second_meta["relay_command_seq"])
+
+    def test_voice_acknowledgement_drops_after_command_superseded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            notifications: list[tuple[str, dict]] = []
+
+            first_meta = voice_bridge._begin_relay_command(
+                "first request",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            voice_bridge._begin_relay_command(
+                "second request",
+                state_path=state_path,
+                event_log_path=None,
+            )
+
+            queued = voice_bridge._queue_voice_acknowledgement(
+                first_meta,
+                queue.Queue(),
+                command_path=os.path.join(temp_dir, "voice_cmd_ready"),
+                meta_path=os.path.join(temp_dir, "voice_cmd_ready.meta"),
+                state_path=state_path,
+                source_text="first request",
+                delay_seconds=0,
+                notify_state=lambda state, **kwargs: notifications.append((state, kwargs)),
+            )
+
+            self.assertTrue(queued)
+            self.assertEqual(notifications, [])
+
+    def test_acknowledgement_copy_varies_and_uses_safe_gist(self):
+        first = voice_bridge.build_voice_acknowledgement(
+            "add tests for the board overlay",
+            {"relay_command_seq": 1},
+        )
+        second = voice_bridge.build_voice_acknowledgement(
+            "summarize project status",
+            {"relay_command_seq": 2},
+        )
+
+        self.assertNotEqual(first, second)
+        self.assertIn("board overlay", first)
+        self.assertIn("project status", second)
+
+    def test_acknowledgement_copy_falls_back_for_sensitive_text(self):
+        acknowledgement = voice_bridge.build_voice_acknowledgement(
+            "use password hunter2 for the deployment",
+            {"relay_command_seq": 3},
+        )
+
+        self.assertNotIn("hunter2", acknowledgement)
+        self.assertNotIn("deployment", acknowledgement)
 
     def test_tts_dismissal_does_not_supersede_claimed_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:

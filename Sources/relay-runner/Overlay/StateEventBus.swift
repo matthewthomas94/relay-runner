@@ -77,12 +77,18 @@ actor StateEventBus {
                 else { continue }
 
                 let text = json["text"] as? String
+                let autoDismiss = json["auto_dismiss_seconds"] as? Double
 
                 NSLog("[StateEventBus] \(source):\(state)\(text.map { " text=\($0.prefix(40))" } ?? "")")
 
                 let sm = await self.stateMachine
                 await MainActor.run {
-                    sm?.handleServiceEvent(source: source, newState: state, text: text)
+                    sm?.handleServiceEvent(
+                        source: source,
+                        newState: state,
+                        text: text,
+                        autoDismiss: autoDismiss
+                    )
                 }
             }
         }
