@@ -55,7 +55,7 @@ final class AppState {
             getAgentProvider: { [weak self] in self?.config.general.provider ?? .codex },
             getModel: { [weak self] in self?.config.general.model ?? GeneralConfig.defaultModel },
             getCodexReasoningEffort: { [weak self] in
-                self?.config.general.codex_reasoning_effort ?? GeneralConfig.defaultCodexReasoningEffort
+                self?.config.general.effectiveOrchestratorEffort ?? GeneralConfig.defaultCodexReasoningEffort
             },
             setAgentProvider: { [weak self] provider in
                 guard let self else { return }
@@ -74,7 +74,13 @@ final class AppState {
             setCodexReasoningEffort: { [weak self] effort in
                 guard let self else { return }
                 var newConfig = self.config
-                newConfig.general.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(effort)
+                newConfig.general.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
+                    effort,
+                    for: newConfig.general.provider
+                )
+                newConfig.general.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
+                    newConfig.general.orchestrator_effort
+                )
                 self.saveConfig(newConfig)
             },
             setWorkingDirectory: { [weak self] path in
@@ -164,6 +170,14 @@ final class AppState {
             bundleURL: bundleURL
         )
         self.config = ConfigManager.shared.load()
+        boardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
+            guard let self else { return nil }
+            return TicketWriter.WorkerSizingDefaults.from(self.config.general)
+        }
+        programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
+            guard let self else { return nil }
+            return TicketWriter.WorkerSizingDefaults.from(self.config.general)
+        }
         self.updateRelaunchObserver = NotificationCenter.default.addObserver(
             forName: .relayRunnerWillRelaunchForUpdate,
             object: nil,

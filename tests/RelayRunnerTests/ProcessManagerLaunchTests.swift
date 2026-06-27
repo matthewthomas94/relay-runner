@@ -40,7 +40,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(claudeScript.contains("export RELAY_RUNNER_PROVIDER='claude'"))
         XCTAssertTrue(claudeScript.contains("cd '/Users/example/dev workspace'"))
         XCTAssertTrue(claudeScript.contains(
-            "'/usr/local/bin/claude' --dangerously-skip-permissions \"/relay-bridge\""
+            "'/usr/local/bin/claude' --effort 'high' --dangerously-skip-permissions \"/relay-bridge\""
         ))
         XCTAssertFalse(claudeScript.contains("model_reasoning_effort"))
         XCTAssertFalse(claudeScript.contains(" -c "))
@@ -119,6 +119,27 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(script.contains(
             "'/usr/local/bin/codex' --model 'gpt-5.5' -c 'model_reasoning_effort=\"xhigh\"' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
         ))
+    }
+
+    func testLaunchScriptAppliesClaudeEffortConfig() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+        var config = AppConfig()
+        config.general.provider = .claude
+        config.general.model = "sonnet"
+        config.general.orchestrator_effort = "max"
+
+        let script = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/relay-bridge",
+            target: .claude,
+            agentBinary: "/usr/local/bin/claude",
+            config: config,
+            homeDirectory: home
+        )
+
+        XCTAssertTrue(script.contains(
+            "'/usr/local/bin/claude' --model 'sonnet' --effort 'max' --dangerously-skip-permissions \"/relay-bridge\""
+        ))
+        XCTAssertFalse(script.contains("model_reasoning_effort"))
     }
 
     func testLaunchScriptOmitsDefaultOrInvalidCodexReasoningEffort() {

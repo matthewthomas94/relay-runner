@@ -11,6 +11,7 @@ final class ProgramBoardOverlayController {
     private let model = ProgramBoardViewModel()
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     private var openProjectHandler: ((String) -> Void)?
+    private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
     private var themePollTimer: Timer?
     private var statusPollTimer: Timer?
 
@@ -20,6 +21,10 @@ final class ProgramBoardOverlayController {
 
     func setOpenProjectHandler(_ handler: @escaping (String) -> Void) {
         self.openProjectHandler = handler
+    }
+
+    func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
+        self.workerSizingDefaultsProvider = provider
     }
 
     deinit {
@@ -128,7 +133,10 @@ final class ProgramBoardOverlayController {
 
     private func commitCreate(_ request: ProgramBoardCreateRequest) {
         do {
-            let result = try ProgramBoardTicketCreator.create(request)
+            let result = try ProgramBoardTicketCreator.create(
+                request,
+                workerSizingDefaults: workerSizingDefaultsProvider()
+            )
             if result.shouldDispatch {
                 OrchestratorClient.sweepReadyTickets(
                     repoPath: request.repoPath,
@@ -157,7 +165,10 @@ final class ProgramBoardOverlayController {
 
     private func commitEdit(_ request: ProgramBoardEditRequest) {
         do {
-            let result = try ProgramBoardTicketEditor.save(request)
+            let result = try ProgramBoardTicketEditor.save(
+                request,
+                workerSizingDefaults: workerSizingDefaultsProvider()
+            )
             if result.shouldDispatch {
                 OrchestratorClient.sweepReadyTickets(
                     repoPath: request.repoPath,
@@ -198,7 +209,10 @@ final class ProgramBoardOverlayController {
         }
 
         do {
-            let result = try ProgramBoardTicketMover.move(unresolved)
+            let result = try ProgramBoardTicketMover.move(
+                unresolved,
+                workerSizingDefaults: workerSizingDefaultsProvider()
+            )
             model.applyDrop(
                 ticketID: result.ticket.id,
                 projectPath: unresolved.repoPath,

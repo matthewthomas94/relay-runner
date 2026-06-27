@@ -58,8 +58,25 @@ struct GeneralConfig: Codable, Equatable {
         var id: String { value }
     }
 
+    enum SubagentSizingPolicy: String, CaseIterable, Codable, Identifiable {
+        case orchestratorDecides = "orchestrator_decides"
+        case userDefault = "user_default"
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .orchestratorDecides: return "Orchestrator decides"
+            case .userDefault: return "Use my defaults"
+            }
+        }
+    }
+
     static let defaultModel = "default"
-    static let defaultCodexReasoningEffort = "default"
+    static let defaultReasoningEffort = "default"
+    static let defaultCodexReasoningEffort = defaultReasoningEffort
+    static let defaultSubagentModel = "balanced"
+    static let defaultSubagentEffort = "medium"
 
     static let codexModelOptions: [ModelOption] = [
         ModelOption(label: "Default", value: defaultModel),
@@ -89,6 +106,28 @@ struct GeneralConfig: Codable, Equatable {
         ReasoningEffortOption(label: "Extra High", value: "xhigh"),
     ]
 
+    static let claudeReasoningEffortOptions: [ReasoningEffortOption] = [
+        ReasoningEffortOption(label: "Default", value: defaultReasoningEffort),
+        ReasoningEffortOption(label: "Low", value: "low"),
+        ReasoningEffortOption(label: "Medium", value: "medium"),
+        ReasoningEffortOption(label: "High", value: "high"),
+        ReasoningEffortOption(label: "Extra High", value: "xhigh"),
+        ReasoningEffortOption(label: "Max", value: "max"),
+    ]
+
+    static let subagentModelOptions: [ModelOption] = [
+        ModelOption(label: "Fast", value: "fast"),
+        ModelOption(label: "Balanced", value: "balanced"),
+        ModelOption(label: "Strong", value: "strong"),
+    ]
+
+    static let subagentEffortOptions: [ReasoningEffortOption] = [
+        ReasoningEffortOption(label: "Low", value: "low"),
+        ReasoningEffortOption(label: "Medium", value: "medium"),
+        ReasoningEffortOption(label: "High", value: "high"),
+        ReasoningEffortOption(label: "Extra High", value: "xhigh"),
+    ]
+
     var provider: AgentProvider = .codex
     var command: String = "codex"
     var terminal: String = "warp"
@@ -96,7 +135,12 @@ struct GeneralConfig: Codable, Equatable {
     var working_directory: String = ""
     var bypass_permissions: Bool = true
     var model: String = defaultModel
+    var orchestrator_effort: String = defaultReasoningEffort
+    /// Legacy Codex-only key. Kept for migration and older config readers.
     var codex_reasoning_effort: String = defaultCodexReasoningEffort
+    var subagent_sizing_policy: SubagentSizingPolicy = .orchestratorDecides
+    var subagent_model: String = defaultSubagentModel
+    var subagent_effort: String = defaultSubagentEffort
 
     static func modelOptions(for provider: AgentProvider) -> [ModelOption] {
         switch provider {
@@ -127,9 +171,52 @@ struct GeneralConfig: Codable, Equatable {
             : defaultCodexReasoningEffort
     }
 
+    static func reasoningEffortOptions(for provider: AgentProvider) -> [ReasoningEffortOption] {
+        switch provider {
+        case .codex: return codexReasoningEffortOptions
+        case .claude: return claudeReasoningEffortOptions
+        }
+    }
+
+    static func normalizedOrchestratorEffort(_ effort: String, for provider: AgentProvider) -> String {
+        let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return reasoningEffortOptions(for: provider).contains { $0.value == normalized }
+            ? normalized
+            : defaultReasoningEffort
+    }
+
+    static func normalizedSubagentModel(_ model: String) -> String {
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return subagentModelOptions.contains { $0.value == normalized }
+            ? normalized
+            : defaultSubagentModel
+    }
+
+    static func normalizedSubagentEffort(_ effort: String) -> String {
+        let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return subagentEffortOptions.contains { $0.value == normalized }
+            ? normalized
+            : defaultSubagentEffort
+    }
+
+    static func normalizedSubagentSizingPolicy(_ policy: String) -> SubagentSizingPolicy {
+        SubagentSizingPolicy(rawValue: policy.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            ?? .orchestratorDecides
+    }
+
     static func inferProvider(from command: String) -> AgentProvider {
         let name = URL(fileURLWithPath: command).lastPathComponent.lowercased()
         return name.contains("claude") ? .claude : .codex
+    }
+
+    var effectiveOrchestratorEffort: String {
+        if orchestrator_effort == Self.defaultReasoningEffort {
+            let legacy = Self.normalizedCodexReasoningEffort(codex_reasoning_effort)
+            if legacy != Self.defaultCodexReasoningEffort {
+                return legacy
+            }
+        }
+        return orchestrator_effort
     }
 
     mutating func selectProvider(_ newProvider: AgentProvider) {
@@ -138,10 +225,11 @@ struct GeneralConfig: Codable, Equatable {
             command = newProvider.defaultCommand
         }
         normalizeSelectedModel()
-        normalizeCodexReasoningEffort()
+        normalizeOrchestratorEffort(legacyCodexWasExplicit: true)
+        normalizeSubagentDefaults()
     }
 
-    mutating func normalize(providerWasExplicit: Bool) {
+    mutating func normalize(providerWasExplicit: Bool, orchestratorEffortWasExplicit: Bool = false) {
         if !providerWasExplicit {
             provider = Self.inferProvider(from: command)
         }
@@ -149,7 +237,11 @@ struct GeneralConfig: Codable, Equatable {
             command = provider.defaultCommand
         }
         normalizeSelectedModel()
-        normalizeCodexReasoningEffort()
+        if !orchestratorEffortWasExplicit {
+            orchestrator_effort = codex_reasoning_effort
+        }
+        normalizeOrchestratorEffort(legacyCodexWasExplicit: !orchestratorEffortWasExplicit)
+        normalizeSubagentDefaults()
     }
 
     private var hasCustomAbsoluteCommand: Bool {
@@ -161,8 +253,17 @@ struct GeneralConfig: Codable, Equatable {
         model = Self.isModel(normalized, validFor: provider) ? normalized : Self.defaultModel
     }
 
-    private mutating func normalizeCodexReasoningEffort() {
-        codex_reasoning_effort = Self.normalizedCodexReasoningEffort(codex_reasoning_effort)
+    private mutating func normalizeOrchestratorEffort(legacyCodexWasExplicit: Bool) {
+        if legacyCodexWasExplicit && orchestrator_effort == Self.defaultReasoningEffort {
+            orchestrator_effort = codex_reasoning_effort
+        }
+        orchestrator_effort = Self.normalizedOrchestratorEffort(orchestrator_effort, for: provider)
+        codex_reasoning_effort = Self.normalizedCodexReasoningEffort(orchestrator_effort)
+    }
+
+    private mutating func normalizeSubagentDefaults() {
+        subagent_model = Self.normalizedSubagentModel(subagent_model)
+        subagent_effort = Self.normalizedSubagentEffort(subagent_effort)
     }
 
     /// Resolve legacy terminal short names to full app paths.

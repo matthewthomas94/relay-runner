@@ -296,6 +296,45 @@ def raw_worker_sizing_metadata(ticket: dict[str, Any], agent_kind: str) -> dict[
     }
 
 
+def _normalized_default_worker_sizing(general: dict[str, Any]) -> dict[str, str] | None:
+    if str(general.get("subagent_sizing_policy") or "").strip().lower() != "user_default":
+        return None
+    model = str(general.get("subagent_model") or "").strip().lower()
+    if model not in WORKER_MODEL_TIERS["codex"]:
+        model = "balanced"
+    effort = str(general.get("subagent_effort") or "").strip().lower()
+    if effort not in CODEX_WORKER_EFFORTS:
+        effort = "medium"
+    return {
+        "worker_model": model,
+        "worker_effort": effort,
+        "worker_sizing_rationale": "User default from Relay Runner Settings.",
+        "worker_provider_notes": (
+            "User default applies to Codex and Claude; Codex uses "
+            "model_reasoning_effort and Claude uses --effort."
+        ),
+    }
+
+
+def apply_default_worker_sizing(
+    ticket: dict[str, Any],
+    general: dict[str, Any],
+) -> bool:
+    defaults = _normalized_default_worker_sizing(general)
+    if not defaults:
+        return False
+    explicit_model = _required_sizing_value(ticket, "worker_model")
+    explicit_effort = _required_sizing_value(ticket, "worker_effort")
+    if explicit_model or explicit_effort:
+        return False
+    raw = ticket.setdefault("_raw_fields", {})
+    if not isinstance(raw, dict):
+        raw = {}
+        ticket["_raw_fields"] = raw
+    raw.update(defaults)
+    return True
+
+
 def _relay_command_current(relay_command_seq: int | str | None, relay_command_id: str | None) -> bool:
     if relay_command_seq is None or not relay_command_id:
         return False
@@ -1340,6 +1379,9 @@ class Daemon:
                     file=sys.stderr,
                 )
                 return {"already_active": True, "run": existing}
+
+            if apply_default_worker_sizing(ticket, self.cfg.get("general", {})):
+                write_ticket(ticket_file, ticket)
 
             try:
                 sizing = resolve_worker_sizing(ticket, self.agent_kind)

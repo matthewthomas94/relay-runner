@@ -62,6 +62,42 @@ final class GeneralConfigTests: XCTestCase {
         )
     }
 
+    func testClaudeReasoningEffortOptionsIncludeMax() {
+        XCTAssertEqual(
+            GeneralConfig.claudeReasoningEffortOptions,
+            [
+                GeneralConfig.ReasoningEffortOption(label: "Default", value: "default"),
+                GeneralConfig.ReasoningEffortOption(label: "Low", value: "low"),
+                GeneralConfig.ReasoningEffortOption(label: "Medium", value: "medium"),
+                GeneralConfig.ReasoningEffortOption(label: "High", value: "high"),
+                GeneralConfig.ReasoningEffortOption(label: "Extra High", value: "xhigh"),
+                GeneralConfig.ReasoningEffortOption(label: "Max", value: "max"),
+            ]
+        )
+        XCTAssertEqual(
+            GeneralConfig.normalizedOrchestratorEffort("max", for: .claude),
+            "max"
+        )
+        XCTAssertEqual(
+            GeneralConfig.normalizedOrchestratorEffort("max", for: .codex),
+            GeneralConfig.defaultReasoningEffort
+        )
+    }
+
+    func testSubagentDefaultOptionsAreProviderNeutralSharedValues() {
+        XCTAssertEqual(
+            GeneralConfig.subagentModelOptions.map(\.value),
+            ["fast", "balanced", "strong"]
+        )
+        XCTAssertEqual(
+            GeneralConfig.subagentEffortOptions.map(\.value),
+            ["low", "medium", "high", "xhigh"]
+        )
+        XCTAssertEqual(GeneralConfig.normalizedSubagentModel("opus"), "balanced")
+        XCTAssertEqual(GeneralConfig.normalizedSubagentEffort("max"), "medium")
+        XCTAssertEqual(GeneralConfig.normalizedSubagentSizingPolicy("user_default"), .userDefault)
+    }
+
     func testLegacyCodexModelNormalizesToDefault() {
         var config = GeneralConfig()
         config.provider = .codex
@@ -95,6 +131,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(config.command, "claude")
         XCTAssertEqual(config.model, GeneralConfig.defaultModel)
         XCTAssertEqual(config.codex_reasoning_effort, "high")
+        XCTAssertEqual(config.orchestrator_effort, "high")
     }
 
     func testWorkspaceFolderResolvesLegacyWorkingDirectoryValues() {
@@ -115,5 +152,13 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertTrue(OnboardingView.workspaceFolderHelpText.contains("child git repositories"))
         XCTAssertFalse(GeneralSettingsTab.workspaceFolderHelpText.contains("always a project"))
         XCTAssertFalse(OnboardingView.workspaceFolderHelpText.contains("always a project"))
+    }
+
+    func testGeneralSettingsExposeOrchestratorAndSubagentControlLabels() {
+        XCTAssertEqual(GeneralSettingsTab.orchestratorModelLabel, "Orchestrator Model")
+        XCTAssertEqual(GeneralSettingsTab.orchestratorEffortLabel, "Orchestrator Effort")
+        XCTAssertEqual(GeneralSettingsTab.subagentSizingLabel, "Sub-agent sizing")
+        XCTAssertEqual(GeneralSettingsTab.subagentModelLabel, "Sub-agent Model")
+        XCTAssertEqual(GeneralSettingsTab.subagentEffortLabel, "Sub-agent Effort")
     }
 }

@@ -322,7 +322,8 @@ enum ProgramBoardDropError: LocalizedError {
 enum ProgramBoardTicketMover {
     static func move(
         _ request: ProgramBoardDropRequest,
-        dispatchSource: String = "board-drop"
+        dispatchSource: String = "board-drop",
+        workerSizingDefaults: TicketWriter.WorkerSizingDefaults? = nil
     ) throws -> ProgramBoardDropResult {
         let repoURL = URL(fileURLWithPath: request.repoPath)
             .standardizedFileURL
@@ -348,19 +349,26 @@ enum ProgramBoardTicketMover {
             dependsOn: current.dependsOn,
             runId: current.runId,
             canceled: current.canceled,
+            workerModel: current.workerModel,
+            workerEffort: current.workerEffort,
+            workerSizingRationale: current.workerSizingRationale,
+            workerProviderNotes: current.workerProviderNotes,
             draft: current.draft,
             order: current.order,
             description: current.description,
             body: current.body
         )
+        let ticketToSave = resolved.targetStatus == .ready
+            ? TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
+            : updated
         do {
-            try TicketWriter.save(updated, in: project)
+            try TicketWriter.save(ticketToSave, in: project)
         } catch {
             throw ProgramBoardDropError.saveFailed(ticketID: current.id, underlying: error)
         }
 
         let dispatchRequest: ProgramBoardDispatchRequest?
-        if resolved.shouldDispatch && !updated.draft {
+        if resolved.shouldDispatch && !ticketToSave.draft {
             dispatchRequest = ProgramBoardDispatchRequest(
                 ticketID: resolved.ticketID,
                 repoPath: project.repoPath.path,
@@ -369,7 +377,7 @@ enum ProgramBoardTicketMover {
         } else {
             dispatchRequest = nil
         }
-        return ProgramBoardDropResult(ticket: updated, dispatchRequest: dispatchRequest)
+        return ProgramBoardDropResult(ticket: ticketToSave, dispatchRequest: dispatchRequest)
     }
 }
 
@@ -396,7 +404,10 @@ enum ProgramBoardCreatePolicy {
 }
 
 enum ProgramBoardTicketCreator {
-    static func create(_ request: ProgramBoardCreateRequest) throws -> ProgramBoardCreateResult {
+    static func create(
+        _ request: ProgramBoardCreateRequest,
+        workerSizingDefaults: TicketWriter.WorkerSizingDefaults? = nil
+    ) throws -> ProgramBoardCreateResult {
         let repoURL = URL(fileURLWithPath: request.repoPath)
             .standardizedFileURL
             .resolvingSymlinksInPath()
@@ -419,14 +430,19 @@ enum ProgramBoardTicketCreator {
             dependsOn: withDescription.dependsOn,
             runId: withDescription.runId,
             canceled: withDescription.canceled,
+            workerModel: withDescription.workerModel,
+            workerEffort: withDescription.workerEffort,
+            workerSizingRationale: withDescription.workerSizingRationale,
+            workerProviderNotes: withDescription.workerProviderNotes,
             draft: false,
             order: withDescription.order,
             description: withDescription.description,
             body: withDescription.body
         )
-        try TicketWriter.save(updated, in: project)
+        let ticketToSave = TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
+        try TicketWriter.save(ticketToSave, in: project)
         return ProgramBoardCreateResult(
-            ticket: updated,
+            ticket: ticketToSave,
             shouldDispatch: request.shouldDispatch
         )
     }
@@ -479,7 +495,8 @@ enum ProgramBoardEditError: Error, Equatable {
 enum ProgramBoardTicketEditor {
     static func save(
         _ request: ProgramBoardEditRequest,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        workerSizingDefaults: TicketWriter.WorkerSizingDefaults? = nil
     ) throws -> ProgramBoardEditResult {
         let repoURL = URL(fileURLWithPath: request.repoPath)
             .standardizedFileURL
@@ -511,20 +528,27 @@ enum ProgramBoardTicketEditor {
             dependsOn: withBody.dependsOn,
             runId: withBody.runId,
             canceled: withBody.canceled,
+            workerModel: withBody.workerModel,
+            workerEffort: withBody.workerEffort,
+            workerSizingRationale: withBody.workerSizingRationale,
+            workerProviderNotes: withBody.workerProviderNotes,
             draft: withBody.draft,
             order: withBody.order,
             description: withBody.description,
             body: withBody.body
         )
+        let ticketToSave = updated.status == .ready
+            ? TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
+            : updated
 
-        try TicketWriter.save(updated, in: project)
-        let refreshed = [updated] + ProjectResolver.scanTickets(in: project).filter { $0.id != updated.id }
+        try TicketWriter.save(ticketToSave, in: project)
+        let refreshed = [ticketToSave] + ProjectResolver.scanTickets(in: project).filter { $0.id != ticketToSave.id }
         return ProgramBoardEditResult(
-            ticket: updated,
+            ticket: ticketToSave,
             shouldDispatch: current.status != .ready
-                && updated.status == .ready
-                && !updated.draft
-                && ProgramBoardDropPolicy.allDependenciesDone(for: updated, in: refreshed)
+                && ticketToSave.status == .ready
+                && !ticketToSave.draft
+                && ProgramBoardDropPolicy.allDependenciesDone(for: ticketToSave, in: refreshed)
         )
     }
 }
