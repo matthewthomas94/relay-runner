@@ -652,6 +652,21 @@ class RunsStore:
             ).fetchone()
             return dict(row) if row else None
 
+    def find_awaiting_merge(self, ticket_id: str, repo_path: str | None = None) -> dict | None:
+        params: list[Any] = [ticket_id, "Succeeded"]
+        repo_clause = ""
+        if repo_path is not None:
+            repo_clause = "AND repo_path = ? "
+            params.append(str(Path(repo_path).expanduser().resolve()))
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM runs WHERE ticket_id = ? AND state = ? "
+                f"{repo_clause}"
+                "ORDER BY id DESC LIMIT 1",
+                params,
+            ).fetchone()
+            return dict(row) if row else None
+
     def reconcile_on_startup(self) -> int:
         """Mark any in-flight run from a prior daemon as Stalled. Returns count."""
         ph = ",".join("?" * len(self.ACTIVE_STATES))
@@ -1341,6 +1356,24 @@ class Daemon:
                 )
                 return {"already_active": True, "run": existing}
 
+            awaiting_merge = self.runs.find_awaiting_merge(ticket_id, repo_path=str(repo))
+            if awaiting_merge:
+                reason = (
+                    f"ticket {ticket_id} already has succeeded run "
+                    f"{awaiting_merge['id']} awaiting merge; merge "
+                    f"{awaiting_merge['branch']} or explicitly reset the ticket before retrying"
+                )
+                print(
+                    f"[orchestrator] dispatch skipped for {ticket_id} from {source}: {reason}",
+                    file=sys.stderr,
+                )
+                return {
+                    "already_active": True,
+                    "awaiting_merge": True,
+                    "reason": reason,
+                    "run": awaiting_merge,
+                }
+
             try:
                 sizing = resolve_worker_sizing(ticket, self.agent_kind)
             except ValueError as e:
@@ -1531,6 +1564,16 @@ class Daemon:
                 skip(ticket, "already_active", run_id=existing["id"])
                 continue
 
+            awaiting_merge = self.runs.find_awaiting_merge(ticket["id"], repo_path=str(repo))
+            if awaiting_merge:
+                skip(
+                    ticket,
+                    "awaiting_merge",
+                    run_id=awaiting_merge["id"],
+                    branch=awaiting_merge["branch"],
+                )
+                continue
+
             try:
                 result = self.dispatch(
                     ticket_id=ticket["id"],
@@ -1548,7 +1591,8 @@ class Daemon:
             run = result.get("run") or {}
             run_id = run.get("id")
             if result.get("already_active"):
-                skip(ticket, "already_active", run_id=run_id)
+                reason = "awaiting_merge" if result.get("awaiting_merge") else "already_active"
+                skip(ticket, reason, run_id=run_id)
                 continue
 
             dispatched.append({"ticket_id": ticket["id"], "run_id": run_id})
