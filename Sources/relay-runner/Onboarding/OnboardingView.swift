@@ -374,17 +374,25 @@ struct OnboardingView: View {
     }
 
     private var modelPicker: some View {
-        HStack {
-            Text("Model")
-                .font(.callout).bold()
-            Spacer()
-            Picker("Model", selection: $selectedModel) {
-                ForEach(GeneralConfig.modelOptions(for: selectedAgentProvider)) { option in
-                    Text(option.label).tag(option.value)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Model")
+                    .font(.callout).bold()
+                Spacer()
+                Picker("Model", selection: $selectedModel) {
+                    ForEach(GeneralConfig.modelOptions(for: selectedAgentProvider)) { option in
+                        Text(option.label).tag(option.value)
+                    }
                 }
+                .labelsHidden()
+                .frame(width: 180)
             }
-            .labelsHidden()
-            .frame(width: 180)
+            if GeneralConfig.requiresLimitedPreviewAccess(selectedModel, for: selectedAgentProvider) {
+                Text(GeneralConfig.limitedPreviewAccessNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

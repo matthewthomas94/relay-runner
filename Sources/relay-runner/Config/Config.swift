@@ -55,11 +55,16 @@ struct GeneralConfig: Codable, Equatable {
 
     static let codexModelOptions: [ModelOption] = [
         ModelOption(label: "Default", value: defaultModel),
+        ModelOption(label: "GPT-5.6 Sol Preview", value: "gpt-5.6-sol"),
+        ModelOption(label: "GPT-5.6 Terra Preview", value: "gpt-5.6-terra"),
+        ModelOption(label: "GPT-5.6 Luna Preview", value: "gpt-5.6-luna"),
         ModelOption(label: "GPT-5.5", value: "gpt-5.5"),
         ModelOption(label: "GPT-5.4", value: "gpt-5.4"),
         ModelOption(label: "GPT-5.4-Mini", value: "gpt-5.4-mini"),
         ModelOption(label: "GPT-5.3-Codex-Spark", value: "gpt-5.3-codex-spark"),
     ]
+
+    static let limitedPreviewAccessNote = "Limited preview access: requires an approved Codex workspace."
 
     static let claudeModelOptions: [ModelOption] = [
         ModelOption(label: "Default", value: defaultModel),
@@ -86,6 +91,16 @@ struct GeneralConfig: Codable, Equatable {
     static func isModel(_ model: String, validFor provider: AgentProvider) -> Bool {
         let normalized = model.trimmingCharacters(in: .whitespaces).lowercased()
         return modelOptions(for: provider).contains { $0.value == normalized }
+    }
+
+    static func requiresLimitedPreviewAccess(_ model: String, for provider: AgentProvider) -> Bool {
+        guard provider == .codex else { return false }
+        switch model.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+            return true
+        default:
+            return false
+        }
     }
 
     static func inferProvider(from command: String) -> AgentProvider {

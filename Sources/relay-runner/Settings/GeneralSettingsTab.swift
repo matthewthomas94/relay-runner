@@ -18,9 +18,16 @@ struct GeneralSettingsTab: View {
                 }
             }
 
-            Picker("Model", selection: $config.model) {
-                ForEach(GeneralConfig.modelOptions(for: config.provider)) { option in
-                    Text(option.label).tag(option.value)
+            VStack(alignment: .leading, spacing: 4) {
+                Picker("Model", selection: $config.model) {
+                    ForEach(GeneralConfig.modelOptions(for: config.provider)) { option in
+                        Text(option.label).tag(option.value)
+                    }
+                }
+                if GeneralConfig.requiresLimitedPreviewAccess(config.model, for: config.provider) {
+                    Text(GeneralConfig.limitedPreviewAccessNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
