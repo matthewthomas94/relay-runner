@@ -56,6 +56,10 @@ priority: high
 depends_on: []
 run_id: null
 canceled: false
+worker_model: balanced
+worker_effort: medium
+worker_sizing_rationale: "Small, well-scoped UI change with limited blast radius."
+worker_provider_notes: "Codex uses model_reasoning_effort; Claude uses --effort. No provider-specific limitation."
 ---
 
 ## Description
@@ -80,8 +84,26 @@ Free-form prose explaining the work.
 | `run_id`      | integer / null | yes      | Set by the daemon when dispatched. Persists after completion as an audit-trail back-link.   |
 | `canceled`    | boolean        | yes      | A flag, not a column. Default `false`. Canceled tickets stay in their existing column.      |
 | `draft`       | boolean        | no       | Temporary board-created editor state. `ready` drafts are visible but not auto-dispatched until saved. Omitted when false. |
+| `worker_model` | string       | for `ready` | Provider-neutral worker tier (`fast`, `balanced`, `strong`) or a provider-scoped model override (`codex:<model-slug>` or `claude:<model-alias>`). |
+| `worker_effort` | enum        | for `ready` | Reasoning-effort decision. Shared values: `low`, `medium`, `high`, `xhigh`. `max` is valid only for an explicitly Claude-scoped ticket with `worker_provider_notes` documenting the Codex limitation. |
+| `worker_sizing_rationale` | string | for `ready` | Short non-empty explanation of why the ticket needs the selected model/tier and effort. |
+| `worker_provider_notes` | string | for `ready` | Provider-parity note. Use `none` only when the selected model/tier and effort are intentionally provider-neutral with no caveats. Otherwise name the Codex/Claude difference or limitation. |
 
 Anything else under `---` is ignored, leaving room for future fields without breaking old parsers.
+
+### Worker sizing
+
+Every `ready` ticket is expected to carry an explicit worker-sizing decision before it can be dispatched. The foreground orchestrator makes this decision while it still has the full project context; a cold worker should not infer whether the job belongs on a fast/cheap worker, a balanced worker, or a high-effort configuration.
+
+Use `worker_model` as the model/tier choice and `worker_effort` as the reasoning-effort choice:
+
+- `fast` + `low` fits documentation, test-only, or very localized code changes with low ambiguity and cheap verification.
+- `balanced` + `medium` fits ordinary features, bug fixes, and refactors with a known implementation shape.
+- `strong` with `high` or `xhigh` fits cross-module work, ambiguous design choices, security-sensitive changes, high blast radius, or expensive build/test loops.
+
+Provider-scoped model values are allowed when the ticket intentionally requires one provider's model surface, such as `codex:gpt-5.4-mini` or `claude:sonnet`. Keep effort separate from the model field.
+
+Provider parity is part of the sizing decision. RR-102 verified that Codex workers accept `low`, `medium`, `high`, and `xhigh` through `model_reasoning_effort`, while Claude workers accept `low`, `medium`, `high`, `xhigh`, and `max` through `--effort`. Do not use `max` for provider-neutral or Codex-dispatchable tickets until a future Codex release exposes it. If a ticket is intentionally Claude-only, write that limitation in `worker_provider_notes` instead of leaving the cold worker to discover it.
 
 ### Body
 
@@ -177,6 +199,10 @@ priority: low
 depends_on: [RR-1]
 run_id: null
 canceled: false
+worker_model: strong
+worker_effort: high
+worker_sizing_rationale: "Touches board rendering, ticket parsing, and daemon dispatch wiring."
+worker_provider_notes: "Codex and Claude both support high effort; dispatch renders provider-specific flags."
 ---
 
 ## Description
