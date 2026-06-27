@@ -206,6 +206,69 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertEqual(run["model_alias"], "sonnet")
             self.assertEqual(run["worker_effort"], "xhigh")
 
+    def test_dispatch_skips_succeeded_run_awaiting_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "workspaces" / "rr-1"),
+                branch="relay/rr-1",
+                state="Succeeded",
+                provider_key="claude",
+                model_alias="sonnet",
+            )
+            daemon.runs.update(run_id, ended=True, exit_code=0)
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            self.assertTrue(result["already_active"])
+            self.assertTrue(result["awaiting_merge"])
+            self.assertEqual(result["run"]["id"], run_id)
+            self.assertIn("awaiting merge", result["reason"])
+            self.assertIn("explicitly reset", result["reason"])
+            self.assertEqual(len(daemon.runs.list()), 1)
+
+    def test_dispatch_allows_retry_after_failed_or_canceled_runs(self):
+        for state in ("Failed", "Canceled"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo = root / "repo"
+                self.make_git_repo(repo)
+                self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+                self.git(repo, "add", ".orchestrator/RR-1.md")
+                self.git(repo, "commit", "-m", "add ticket")
+                daemon = self.make_daemon(root, provider="codex")
+                run_id = daemon.runs.insert(
+                    ticket_id="RR-1",
+                    repo_path=str(repo.resolve()),
+                    workspace_path=str(root / "workspaces" / "rr-1"),
+                    branch="relay/rr-1",
+                    state=state,
+                    provider_key="codex",
+                    model_alias="gpt-5.5",
+                )
+                daemon.runs.update(run_id, ended=True, exit_code=1)
+
+                with patch("orchestrator.create_worktree") as create_worktree, \
+                        patch.object(Worker, "start") as start_worker:
+                    result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+                create_worktree.assert_called_once()
+                start_worker.assert_called_once()
+                self.assertFalse(result["already_active"])
+                self.assertEqual(result["run"]["state"], "Claimed")
+
     def test_dependency_progression_holds_dependent_missing_worker_sizing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

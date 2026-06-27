@@ -17,8 +17,13 @@ from orchestrator import Daemon, Handler  # noqa: E402
 
 
 class FakeRuns:
-    def __init__(self, active: dict[str | tuple[str, str], dict] | None = None):
+    def __init__(
+        self,
+        active: dict[str | tuple[str, str], dict] | None = None,
+        awaiting_merge: dict[str | tuple[str, str], dict] | None = None,
+    ):
         self.active = active or {}
+        self.awaiting_merge = awaiting_merge or {}
 
     def find_active(self, ticket_id: str, repo_path: str | None = None) -> dict | None:
         if repo_path is not None:
@@ -26,6 +31,13 @@ class FakeRuns:
             if active:
                 return active
         return self.active.get(ticket_id)
+
+    def find_awaiting_merge(self, ticket_id: str, repo_path: str | None = None) -> dict | None:
+        if repo_path is not None:
+            awaiting_merge = self.awaiting_merge.get((ticket_id, str(Path(repo_path).resolve())))
+            if awaiting_merge:
+                return awaiting_merge
+        return self.awaiting_merge.get(ticket_id)
 
 
 class ReadySweeperTests(unittest.TestCase):
@@ -167,6 +179,30 @@ class ReadySweeperTests(unittest.TestCase):
             self.assertEqual(reasons["RR-4"], "canceled")
             self.assertEqual(reasons["RR-5"], "dependencies_not_done")
             self.assertEqual(reasons["RR-6"], "run_id_present")
+
+    def test_sweeper_skips_ready_ticket_with_succeeded_run_awaiting_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None)
+
+            daemon = object.__new__(Daemon)
+            daemon.runs = FakeRuns(awaiting_merge={
+                "RR-1": {"id": 10, "branch": "relay/rr-1"},
+            })
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs)
+
+            result = Daemon.sweep_ready_tickets(daemon, repo_path=str(repo), trigger="test")
+
+            self.assertEqual(calls, [])
+            self.assertEqual(result["dispatched"], [])
+            self.assertEqual(result["skipped"], [{
+                "ticket_id": "RR-1",
+                "reason": "awaiting_merge",
+                "run_id": 10,
+                "branch": "relay/rr-1",
+            }])
 
     def test_sweeper_skips_board_created_draft_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
