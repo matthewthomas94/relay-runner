@@ -245,6 +245,55 @@ class GraphifyIngestTests(unittest.TestCase):
         self.assertNotIn("PB-1", backlog["message"])
         self.assertNotIn("PB-1", in_progress["message"])
 
+    def test_prunes_stale_run_nodes_missing_from_run_history(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "program-board")
+        _write_ticket(repo, "PB-1", "Active work", "ready", run_id=290)
+
+        registry_path = root / "projects.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "activeProjectID": str(repo.resolve()),
+                    "projects": [
+                        {
+                            "id": str(repo.resolve()),
+                            "repoPath": str(repo.resolve()),
+                            "displayName": "Program Board",
+                            "providers": {"codex": {}, "claude": {}},
+                        }
+                    ],
+                }
+            )
+        )
+        runs_db = root / "runs.db"
+        _write_runs_db(
+            runs_db,
+            [_run_row(root, 290, "PB-1", repo, "Running", "codex")],
+        )
+
+        store = self.make_store()
+        ingest_registered_projects(store, registry_path=registry_path, runs_db_path=runs_db)
+        self.assertIsNotNone(store.find_node(kind=NODE_RUN, stable_key="run:290"))
+        in_progress = build_program_status(store, query="in_progress_lane", limit=0, now=2000.0)
+        self.assertEqual([item["ticket_id"] for item in in_progress["items"]], ["PB-1"])
+
+        runs_db.unlink()
+        _write_runs_db(runs_db, [])
+        counts = ingest_registered_projects(store, registry_path=registry_path, runs_db_path=runs_db)
+
+        self.assertEqual(counts["runs_deleted"], 1)
+        self.assertIsNone(store.find_node(kind=NODE_RUN, stable_key="run:290"))
+        self.assertEqual(store.edges(kind=EDGE_EXECUTES), [])
+        active = build_program_status(store, query="active_work", limit=0, now=2000.0)
+        in_progress = build_program_status(store, query="in_progress_lane", limit=0, now=2000.0)
+        ready = build_program_status(store, query="ready_lane", limit=0, now=2000.0)
+
+        self.assertEqual(active["items"], [])
+        self.assertEqual(in_progress["items"], [])
+        self.assertEqual([item["ticket_id"] for item in ready["items"]], ["PB-1"])
+
     def test_indexes_project_files_incrementally_and_searches_without_live_grep(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: _remove_tree(root))

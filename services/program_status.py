@@ -251,7 +251,7 @@ def _active_runs(ctx: dict[str, Any], provider: str | None) -> list[dict[str, An
     return [
         run
         for run in sorted(ctx["runs"], key=_run_sort_key, reverse=True)
-        if _run_state(run) == "active" and _run_matches_provider(run, provider)
+        if _run_is_active(ctx, run) and _run_matches_provider(run, provider)
     ]
 
 
@@ -346,11 +346,13 @@ def _stale_runs(
     for run in sorted(ctx["runs"], key=_run_sort_key, reverse=True):
         if not _run_matches_provider(run, provider):
             continue
+        if _ticket_is_terminal(ctx["ticket_by_run"].get(run["id"])):
+            continue
         state = _run_state(run)
         if state == "stalled":
             stale.append((run, "stalled"))
             continue
-        if state != "active":
+        if not _run_is_active(ctx, run):
             continue
         body = run.get("body", {})
         last_activity = _number(body.get("activity_at")) or _number(body.get("started_at"))
@@ -402,7 +404,7 @@ def _summary_items(
             {
                 "project": _project(project),
                 "open_tickets": sum(1 for ticket in tickets if _key(_ticket_state(ticket)) not in {"done", "canceled", "cancelled"}),
-                "active_runs": sum(1 for run in runs if _run_state(run) == "active"),
+                "active_runs": sum(1 for run in runs if _run_is_active(ctx, run)),
                 "blocked": sum(1 for ticket in tickets if ticket["id"] in blocked),
                 "awaiting_merge": sum(1 for ticket in tickets if ticket["id"] in awaiting),
                 "stale_runs": sum(1 for run in runs if run["id"] in stale),
@@ -436,13 +438,13 @@ def _project_board_counts(ctx: dict[str, Any], tickets: list[dict[str, Any]]) ->
 
 def _project_board_state(ctx: dict[str, Any], ticket: dict[str, Any]) -> str:
     ticket_state = _key(_ticket_state(ticket))
+    if ticket_state in {"done", "closed", "completed", "awaitingmerge", "awaiting_merge"}:
+        return "done"
     latest_run = next(iter(ctx["runs_by_ticket"].get(ticket["id"], [])), None)
     run_state = _run_state(latest_run)
     if run_state in {"active", "stalled"}:
         return "in_progress"
     if run_state in {"awaiting_merge", "succeeded"} and ticket_state == "ready":
-        return "done"
-    if ticket_state in {"done", "closed", "completed", "awaitingmerge", "awaiting_merge"}:
         return "done"
     if ticket_state in {"inprogress", "in_progress"}:
         return "in_progress"
@@ -651,9 +653,23 @@ def _run_state(run: dict[str, Any] | None) -> str:
     return state
 
 
+def _run_is_active(ctx: dict[str, Any], run: dict[str, Any]) -> bool:
+    return _run_state(run) == "active" and not _ticket_is_terminal(ctx["ticket_by_run"].get(run["id"]))
+
+
 def _ticket_state(ticket: dict[str, Any]) -> str:
     body = ticket.get("body", {})
     return str(body.get("state") or body.get("status") or "")
+
+
+def _ticket_is_terminal(ticket: dict[str, Any] | None) -> bool:
+    return ticket is not None and _key(_ticket_state(ticket)) in {
+        "done",
+        "closed",
+        "completed",
+        "awaitingmerge",
+        "awaiting_merge",
+    }
 
 
 def _ticket_priority(ticket: dict[str, Any]) -> str | None:

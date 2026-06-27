@@ -165,6 +165,31 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual(done["items"][0]["run_state"], "awaiting_merge")
         self.assertEqual(done["items"][0]["provider"], "Claude/sonnet")
 
+    def test_done_tickets_with_stale_active_runs_stay_out_of_active_lanes(self):
+        store = self.make_store()
+        project = _project(
+            store,
+            "/tmp/relay-runner",
+            "Relay Runner",
+            providers={"codex": {}, "claude": {}},
+        )
+        codex_done = _ticket(store, project, "RR-67", "Codex completed work", "done")
+        claude_done = _ticket(store, project, "RR-94", "Claude completed work", "done")
+        _run(store, project, codex_done, 167, "active", "codex", model="gpt-5")
+        _run(store, project, claude_done, 203, "active", "claude", model="sonnet")
+
+        active = build_program_status(store, query="active_work", limit=0, now=2000.0)
+        in_progress = build_program_status(store, query="in_progress_lane", limit=0, now=2000.0)
+        done = build_program_status(store, query="done_lane", limit=0, now=2000.0)
+        summary = build_program_status(store, query="summary", limit=0, now=2000.0)
+
+        self.assertEqual(active["items"], [])
+        self.assertEqual(in_progress["items"], [])
+        self.assertEqual([item["ticket_id"] for item in done["items"]], ["RR-67", "RR-94"])
+        self.assertEqual(summary["items"][0]["active_runs"], 0)
+        self.assertEqual(summary["items"][0]["in_progress_tickets"], 0)
+        self.assertEqual(summary["items"][0]["done_tickets"], 2)
+
     def test_zero_limit_returns_all_board_lane_items_across_projects(self):
         store = self.make_store()
         client = _project(store, "/tmp/client-dashboard", "Client Dashboard")

@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import quote
 
 from graphify_core import (
@@ -50,6 +50,7 @@ def ingest_registered_projects(
         "tickets_deleted": 0,
         "dependencies": 0,
         "runs": 0,
+        "runs_deleted": 0,
         "providers": 0,
         "files_indexed": 0,
         "files_unchanged": 0,
@@ -151,6 +152,7 @@ def ingest_registered_projects(
 
         tickets_by_repo[repo_path] = repo_ticket_nodes
 
+    seen_run_stable_keys: set[str] = set()
     for run in _read_runs(Path(runs_db_path)) if runs_db_path is not None else []:
         repo_path = _clean_path(run.get("repo_path"))
         if repo_path is None:
@@ -195,11 +197,12 @@ def ingest_registered_projects(
         }
         run_node = store.upsert_node(
             kind=NODE_RUN,
-            stable_key=f"run:{run.get('id')}",
+            stable_key=_run_key(run.get("id")),
             project_id=project["id"],
             title=f"{ticket_id} run {run.get('id')}".strip(),
             body=body,
         )
+        seen_run_stable_keys.add(run_node["stable_key"])
         counts["runs"] += 1
         store.upsert_edge(src_id=run_node["id"], dst_id=project["id"], kind=EDGE_BELONGS_TO)
         store.upsert_edge(src_id=project["id"], dst_id=run_node["id"], kind=EDGE_CONTAINS)
@@ -209,6 +212,13 @@ def ingest_registered_projects(
                 store.upsert_edge(src_id=ticket_node["id"], dst_id=run_node["id"], kind=EDGE_AWAITS_MERGE)
         if provider_node is not None:
             store.upsert_edge(src_id=run_node["id"], dst_id=provider_node["id"], kind=EDGE_USES_PROVIDER)
+
+    if runs_db_path is not None:
+        counts["runs_deleted"] = _delete_missing_run_nodes(
+            store,
+            projects=projects_by_repo.values(),
+            seen_run_stable_keys=seen_run_stable_keys,
+        )
 
     return counts
 
@@ -493,6 +503,10 @@ def _ticket_key(repo_path: str, ticket_id: str) -> str:
     return f"{_project_key(repo_path)}:{ticket_id}"
 
 
+def _run_key(run_id: Any) -> str:
+    return f"run:{run_id}"
+
+
 def _delete_missing_ticket_nodes(
     store: GraphifyCoreStore,
     *,
@@ -503,6 +517,24 @@ def _delete_missing_ticket_nodes(
     deleted = 0
     for node in store.nodes(kind=NODE_TICKET, project_id=project["id"]):
         if node["stable_key"] in seen_stable_keys:
+            continue
+        if store.delete_node(node["id"]):
+            deleted += 1
+    return deleted
+
+
+def _delete_missing_run_nodes(
+    store: GraphifyCoreStore,
+    *,
+    projects: Iterable[dict[str, Any]],
+    seen_run_stable_keys: set[str],
+) -> int:
+    project_ids = {project["id"] for project in projects}
+    deleted = 0
+    for node in store.nodes(kind=NODE_RUN):
+        if node.get("project_id") not in project_ids:
+            continue
+        if node["stable_key"] in seen_run_stable_keys:
             continue
         if store.delete_node(node["id"]):
             deleted += 1
