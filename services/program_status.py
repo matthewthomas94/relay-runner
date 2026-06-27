@@ -468,6 +468,10 @@ def _run_item(ctx: dict[str, Any], run: dict[str, Any], status: str) -> dict[str
         "branch": body.get("branch"),
         "activity": body.get("activity"),
         "last_error": body.get("last_error"),
+        "worker_model": body.get("worker_model"),
+        "worker_effort": body.get("worker_effort"),
+        "worker_sizing_rationale": body.get("worker_sizing_rationale"),
+        "worker_provider_notes": body.get("worker_provider_notes"),
         "run_node_id": run["id"],
         "ticket_node_id": ticket["id"] if ticket else None,
     }
@@ -475,6 +479,7 @@ def _run_item(ctx: dict[str, Any], run: dict[str, Any], status: str) -> dict[str
 
 def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> dict[str, Any]:
     latest_run = next(iter(ctx["runs_by_ticket"].get(ticket["id"], [])), None)
+    ticket_sizing_error = _ticket_worker_sizing_error(ticket)
     blockers = _unique_labels(
         [_ticket_id(blocker) for blocker in ctx["blockers"].get(ticket["id"], [])]
         + _unsatisfied_dependencies(ctx, ticket)
@@ -491,7 +496,13 @@ def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> di
         "provider": _run_provider(latest_run) if latest_run else None,
         "branch": latest_run.get("body", {}).get("branch") if latest_run else None,
         "activity": latest_run.get("body", {}).get("activity") if latest_run else None,
-        "last_error": latest_run.get("body", {}).get("last_error") if latest_run else None,
+        "last_error": (latest_run.get("body", {}).get("last_error") if latest_run else None)
+            or ticket_sizing_error,
+        "worker_model": _first_present_body(latest_run, ticket, "worker_model"),
+        "worker_effort": _first_present_body(latest_run, ticket, "worker_effort"),
+        "worker_sizing_rationale": _first_present_body(latest_run, ticket, "worker_sizing_rationale"),
+        "worker_provider_notes": _first_present_body(latest_run, ticket, "worker_provider_notes"),
+        "worker_sizing_error": ticket_sizing_error,
         "depends_on": _ticket_depends_on(ticket),
         "blocked_by": blockers,
         "ticket_node_id": ticket["id"],
@@ -587,11 +598,17 @@ def _item_line(item: dict[str, Any]) -> str:
         details.append(f"run {item['run_id']}")
     if item.get("provider"):
         details.append(item["provider"])
+    if item.get("worker_effort"):
+        details.append(f"effort {item['worker_effort']}")
     if item.get("blocked_by"):
         details.append("waiting on " + ", ".join(item["blocked_by"]))
     if item.get("activity"):
         details.append(str(item["activity"]))
-    if item.get("last_error") and item.get("status") in {"stalled", "failed"}:
+    if item.get("last_error") and (
+        item.get("status") in {"stalled", "failed"}
+        or item.get("run_state") == "failed"
+        or item.get("worker_sizing_error")
+    ):
         details.append(str(item["last_error"]))
     return f"- {project['name']} ({project['path']}): {subject} ({'; '.join(details)})."
 
@@ -651,6 +668,34 @@ def _ticket_depends_on(ticket: dict[str, Any]) -> list[str]:
     if isinstance(raw, list):
         return [str(item) for item in raw if str(item)]
     return []
+
+
+def _first_present_body(run: dict[str, Any] | None, ticket: dict[str, Any],
+                        key: str) -> Any:
+    if run:
+        value = run.get("body", {}).get(key)
+        if value:
+            return value
+    return ticket.get("body", {}).get(key)
+
+
+def _ticket_worker_sizing_error(ticket: dict[str, Any]) -> str | None:
+    if _key(_ticket_state(ticket)) != "ready":
+        return None
+    body = ticket.get("body", {})
+    missing = [
+        key
+        for key in (
+            "worker_model",
+            "worker_effort",
+            "worker_sizing_rationale",
+            "worker_provider_notes",
+        )
+        if not str(body.get(key) or "").strip()
+    ]
+    if not missing:
+        return None
+    return "Missing worker sizing metadata: " + ", ".join(missing)
 
 
 def _run_provider(run: dict[str, Any] | None) -> str | None:

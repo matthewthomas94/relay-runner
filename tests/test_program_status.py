@@ -89,6 +89,17 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertIn("waiting on RR-2", result["message"])
         self.assertNotIn("RR-4", result["message"])
 
+    def test_ready_work_surfaces_missing_worker_sizing_metadata(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        _ticket(store, project, "RR-1", "Ready without sizing", "ready")
+
+        result = build_program_status(store, query="ready_work", now=2000.0)
+
+        self.assertEqual(result["items"][0]["ticket_id"], "RR-1")
+        self.assertIn("Missing worker sizing metadata", result["items"][0]["last_error"])
+        self.assertIn("worker_model", result["message"])
+
     def test_discovery_work_includes_backlog_and_ready_without_active_or_blocked_items(self):
         store = self.make_store()
         project = _project(store, "/tmp/relay-runner", "Relay Runner")

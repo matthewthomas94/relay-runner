@@ -104,6 +104,10 @@ def ingest_registered_projects(
                     "depends_on": ticket["depends_on"],
                     "run_id": ticket["run_id"],
                     "canceled": ticket["canceled"],
+                    "worker_model": _ticket_field(ticket, "worker_model"),
+                    "worker_effort": _ticket_field(ticket, "worker_effort"),
+                    "worker_sizing_rationale": _ticket_field(ticket, "worker_sizing_rationale"),
+                    "worker_provider_notes": _ticket_field(ticket, "worker_provider_notes"),
                     "source_path": str(ticket.get("_path", "")),
                     "markdown": ticket["body"],
                 },
@@ -171,6 +175,10 @@ def ingest_registered_projects(
             "attempt": run.get("attempt"),
             "provider_key": provider_key,
             "model_alias": _first_present(run, "model_alias", "model"),
+            "worker_model": run.get("worker_model"),
+            "worker_effort": run.get("worker_effort"),
+            "worker_sizing_rationale": run.get("worker_sizing_rationale"),
+            "worker_provider_notes": run.get("worker_provider_notes"),
             "state": state,
             "raw_state": run.get("state"),
             "program_state": program_state,
@@ -505,6 +513,14 @@ def _ticket_state(ticket: dict[str, Any]) -> str:
     if ticket.get("canceled"):
         return "canceled"
     return str(ticket.get("status") or "unknown")
+
+
+def _ticket_field(ticket: dict[str, Any], field: str) -> str | None:
+    raw = ticket.get("_raw_fields")
+    if not isinstance(raw, dict):
+        return None
+    value = str(raw.get(field) or "").strip()
+    return value or None
 
 
 def _registry_provider_keys(record: dict[str, Any]) -> list[str]:

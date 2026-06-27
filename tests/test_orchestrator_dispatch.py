@@ -4,14 +4,17 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
-from orchestrator import Daemon, Worker, validate_worker_completion  # noqa: E402
+from orchestrator import Daemon, RunsStore, Worker, validate_worker_completion  # noqa: E402
+from tickets import read as read_ticket  # noqa: E402
 
 
 class OrchestratorDispatchTests(unittest.TestCase):
@@ -66,8 +69,172 @@ class OrchestratorDispatchTests(unittest.TestCase):
         worker = object.__new__(Worker)
         worker.agent_kind = "codex"
         worker.agent_bin = "codex"
+        worker.run = {}
 
         self.assertIn("--ephemeral", Worker._command(worker))
+
+    def test_codex_worker_applies_model_and_reasoning_effort(self):
+        worker = object.__new__(Worker)
+        worker.agent_kind = "codex"
+        worker.agent_bin = "codex"
+        worker.run = {"model_alias": "gpt-5.5", "worker_effort": "high"}
+
+        command = Worker._command(worker)
+
+        self.assertIn("--model", command)
+        self.assertIn("gpt-5.5", command)
+        self.assertIn("--config", command)
+        self.assertIn("model_reasoning_effort=high", command)
+        self.assertNotIn("--effort", command)
+
+    def test_claude_worker_applies_model_and_effort(self):
+        worker = object.__new__(Worker)
+        worker.agent_kind = "claude"
+        worker.agent_bin = "claude"
+        worker.run = {"model_alias": "sonnet", "worker_effort": "xhigh"}
+
+        command = Worker._command(worker)
+
+        self.assertIn("--model", command)
+        self.assertIn("sonnet", command)
+        self.assertIn("--effort", command)
+        self.assertIn("xhigh", command)
+        self.assertNotIn("model_reasoning_effort=xhigh", command)
+
+    def test_dispatch_refuses_ready_ticket_missing_worker_sizing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=False)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker, \
+                    self.assertRaisesRegex(ValueError, "missing worker sizing metadata"):
+                daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            runs = daemon.runs.list()
+            self.assertEqual(len(runs), 1)
+            self.assertEqual(runs[0]["state"], "Failed")
+            self.assertEqual(runs[0]["provider_key"], "codex")
+            self.assertIn("worker_model", runs[0]["last_error"])
+
+    def test_ready_sweeper_refuses_missing_worker_sizing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=False)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            self.assertEqual(result["dispatched"], [])
+            self.assertEqual(result["skipped"][0]["ticket_id"], "RR-1")
+            self.assertEqual(result["skipped"][0]["reason"], "dispatch_failed")
+            self.assertIn("missing worker sizing metadata", result["skipped"][0]["error"])
+
+    def test_dispatch_records_valid_codex_sizing_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="ready",
+                run_id=None,
+                sizing=True,
+                worker_model="strong",
+                worker_effort="high",
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            create_worktree.assert_called_once()
+            start_worker.assert_called_once()
+            run = result["run"]
+            self.assertEqual(run["state"], "Claimed")
+            self.assertEqual(run["provider_key"], "codex")
+            self.assertEqual(run["model_alias"], "gpt-5.5")
+            self.assertEqual(run["worker_model"], "strong")
+            self.assertEqual(run["worker_effort"], "high")
+            self.assertIn("Cross-provider", run["worker_sizing_rationale"])
+
+    def test_dispatch_records_valid_claude_sizing_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="ready",
+                run_id=None,
+                sizing=True,
+                worker_model="balanced",
+                worker_effort="xhigh",
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="claude")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            create_worktree.assert_called_once()
+            start_worker.assert_called_once()
+            run = result["run"]
+            self.assertEqual(run["provider_key"], "claude")
+            self.assertEqual(run["model_alias"], "sonnet")
+            self.assertEqual(run["worker_effort"], "xhigh")
+
+    def test_dependency_progression_holds_dependent_missing_worker_sizing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="done", run_id=7, sizing=True)
+            self.write_ticket(
+                repo,
+                "RR-2",
+                status="backlog",
+                run_id=None,
+                depends_on=["RR-1"],
+                sizing=False,
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md", ".orchestrator/RR-2.md")
+            self.git(repo, "commit", "-m", "add tickets")
+            daemon = self.make_daemon(root, provider="codex")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                daemon._progress_dependents(repo_path=str(repo), finished_ticket_id="RR-1")
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            dependent = read_ticket(repo / ".orchestrator/RR-2.md")
+            self.assertEqual(dependent["status"], "ready")
+            runs = daemon.runs.list()
+            self.assertEqual(runs[0]["state"], "Failed")
+            self.assertIn("missing worker sizing metadata", runs[0]["last_error"])
 
     def test_exit_zero_noop_is_not_successful_ticket_completion(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,6 +320,21 @@ class OrchestratorDispatchTests(unittest.TestCase):
         self.git(repo, "config", "user.email", "relay@example.test")
         self.git(repo, "config", "user.name", "Relay Test")
 
+    def make_daemon(self, root: Path, *, provider: str) -> Daemon:
+        daemon = object.__new__(Daemon)
+        daemon.cfg = {}
+        daemon.workspace_root = root / "workspaces"
+        daemon.branch_prefix = "relay/"
+        daemon.workflow_path = Path(ROOT) / "services" / "orchestrator_workflow.md"
+        daemon.worker_timeout = 30
+        daemon.agent_kind = provider
+        daemon.agent_bin = provider
+        daemon.runs = RunsStore(root / "runs.db")
+        daemon._dispatch_lock = threading.Lock()
+        daemon._workers = {}
+        daemon._workers_lock = threading.Lock()
+        return daemon
+
     def write_ticket(
         self,
         repo: Path,
@@ -160,19 +342,31 @@ class OrchestratorDispatchTests(unittest.TestCase):
         *,
         status: str,
         run_id: int | None,
+        depends_on: list[str] | None = None,
+        sizing: bool = False,
+        worker_model: str = "strong",
+        worker_effort: str = "high",
         body: str = "## Description\n\nTest ticket.\n",
     ) -> None:
         run_value = "null" if run_id is None else str(run_id)
+        deps = "[" + ", ".join(depends_on or []) + "]"
+        sizing_block = ""
+        if sizing:
+            sizing_block = f"""worker_model: {worker_model}
+worker_effort: {worker_effort}
+worker_sizing_rationale: "Cross-provider dispatch enforcement touches daemon launch and status surfaces."
+worker_provider_notes: "Codex uses model_reasoning_effort; Claude uses --effort. No provider-specific limitation."
+"""
         (repo / ".orchestrator" / f"{ticket_id}.md").write_text(
             f"""---
 id: {ticket_id}
 title: {ticket_id}
 status: {status}
 priority: medium
-depends_on: []
+depends_on: {deps}
 run_id: {run_value}
 canceled: false
----
+{sizing_block}---
 
 {body}
 """

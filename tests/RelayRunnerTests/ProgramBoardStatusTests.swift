@@ -45,6 +45,10 @@ final class ProgramBoardStatusTests: XCTestCase {
               "run_state": "active",
               "provider": "Codex/gpt-5",
               "branch": "relay/rr-42",
+              "worker_model": "strong",
+              "worker_effort": "high",
+              "worker_sizing_rationale": "Cross-provider dispatch enforcement.",
+              "worker_provider_notes": "Codex uses model_reasoning_effort; Claude uses --effort.",
               "activity": "Editing Swift files"
             },
             {
@@ -80,6 +84,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.inProgressWork.items.first?.runID, "27")
         XCTAssertEqual(snapshot.inProgressWork.items.first?.priority, "high")
         XCTAssertEqual(snapshot.inProgressWork.items.first?.dependsOn, ["RR-0"])
+        XCTAssertEqual(snapshot.inProgressWork.items.first?.workerModel, "strong")
+        XCTAssertEqual(snapshot.inProgressWork.items.first?.workerEffort, "high")
+        XCTAssertEqual(snapshot.inProgressWork.items.first?.workerSizingRationale, "Cross-provider dispatch enforcement.")
     }
 
     func testProjectSelectionFiltersCanonicalTicketLanesAcrossProjects() throws {

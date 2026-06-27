@@ -673,6 +673,11 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let branch: String?
     let activity: String?
     let lastError: String?
+    let workerModel: String?
+    let workerEffort: String?
+    let workerSizingRationale: String?
+    let workerProviderNotes: String?
+    let workerSizingError: String?
     let dependsOn: [String]
     let blockedBy: [String]
     let openTickets: Int?
@@ -712,6 +717,11 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         case branch
         case activity
         case lastError = "last_error"
+        case workerModel = "worker_model"
+        case workerEffort = "worker_effort"
+        case workerSizingRationale = "worker_sizing_rationale"
+        case workerProviderNotes = "worker_provider_notes"
+        case workerSizingError = "worker_sizing_error"
         case dependsOn = "depends_on"
         case blockedBy = "blocked_by"
         case openTickets = "open_tickets"
@@ -741,6 +751,11 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         branch = try values.decodeIfPresent(String.self, forKey: .branch)
         activity = try values.decodeIfPresent(String.self, forKey: .activity)
         lastError = try values.decodeIfPresent(String.self, forKey: .lastError)
+        workerModel = try values.decodeIfPresent(String.self, forKey: .workerModel)
+        workerEffort = try values.decodeIfPresent(String.self, forKey: .workerEffort)
+        workerSizingRationale = try values.decodeIfPresent(String.self, forKey: .workerSizingRationale)
+        workerProviderNotes = try values.decodeIfPresent(String.self, forKey: .workerProviderNotes)
+        workerSizingError = try values.decodeIfPresent(String.self, forKey: .workerSizingError)
         dependsOn = try values.decodeIfPresent([String].self, forKey: .dependsOn) ?? []
         blockedBy = try values.decodeIfPresent([String].self, forKey: .blockedBy) ?? []
         openTickets = try values.decodeIfPresent(Int.self, forKey: .openTickets)
