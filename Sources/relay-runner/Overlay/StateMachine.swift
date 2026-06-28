@@ -86,6 +86,7 @@ final class StateMachine: @unchecked Sendable {
     private(set) var state: OverlayState = .idle
     private(set) var partialTranscription: String = ""
     private(set) var messagePreview: String?
+    private(set) var workingProgress: String?
 
     private let now: () -> Date
     private var stateBeforeIdle: OverlayState = .idle
@@ -116,15 +117,18 @@ final class StateMachine: @unchecked Sendable {
         switch (source, newState) {
         case ("tts", "message_waiting"):
             pendingAcknowledgement = nil
+            workingProgress = nil
             messagePreview = text
             state = .messageWaiting(preview: text)
 
         case ("tts", "preparing"):
             pendingAcknowledgement = nil
+            workingProgress = nil
             state = .preparing
 
         case ("tts", "speaking"):
             pendingAcknowledgement = nil
+            workingProgress = nil
             state = .speaking
 
         case ("tts", "idle"):
@@ -147,6 +151,9 @@ final class StateMachine: @unchecked Sendable {
                 // moment STT finalizes, instead of waiting on the .sent timer.
                 state = .processing
             }
+
+        case ("bridge", "working"):
+            workingProgress = Self.normalizedWorkingProgress(text)
 
         case ("bridge", "acknowledgement"):
             let acknowledgement = acknowledgementState(
@@ -174,6 +181,7 @@ final class StateMachine: @unchecked Sendable {
             }
 
         case ("bridge", "idle"):
+            workingProgress = nil
             if case .processing = state {
                 stateBeforeIdle = state
                 lastIdleTransitionTime = now()
@@ -314,8 +322,21 @@ final class StateMachine: @unchecked Sendable {
         state = .idle
         partialTranscription = ""
         messagePreview = nil
+        workingProgress = nil
         sentEnteredAt = nil
         pendingAcknowledgement = nil
+    }
+
+    private static func normalizedWorkingProgress(_ text: String?) -> String? {
+        let words = (text ?? "")
+            .replacingOccurrences(of: "\n", with: " ")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+        let normalized = words.joined(separator: " ")
+        guard !normalized.isEmpty else { return nil }
+        if normalized.count <= 180 { return normalized }
+        let clipped = String(normalized.prefix(177))
+        return clipped.trimmingCharacters(in: .whitespacesAndNewlines) + "..."
     }
 
     private func acknowledgementState(

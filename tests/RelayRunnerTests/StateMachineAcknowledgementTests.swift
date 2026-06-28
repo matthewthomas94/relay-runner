@@ -114,4 +114,30 @@ final class StateMachineAcknowledgementTests: XCTestCase {
 
         XCTAssertEqual(stateMachine.state, .messageWaiting(preview: "Here is the detailed response."))
     }
+
+    func testBridgeWorkingEventStoresProgressWithoutChangingVisibleState() {
+        let stateMachine = StateMachine()
+
+        stateMachine.handleServiceEvent(
+            source: "bridge",
+            newState: "working",
+            text: "  First pass found 102 SKILL.md files.\nNarrowing the audit now.  ",
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .idle)
+        XCTAssertEqual(
+            stateMachine.workingProgress,
+            "First pass found 102 SKILL.md files. Narrowing the audit now."
+        )
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "preparing",
+            text: nil,
+            autoDismiss: nil
+        )
+
+        XCTAssertNil(stateMachine.workingProgress)
+    }
 }

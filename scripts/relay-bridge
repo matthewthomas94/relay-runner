@@ -378,6 +378,34 @@ Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claim
   - The foreground session is the orchestrator; do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 
+### Step 2.5: Send working progress to the notch
+
+When you write a non-final progress update in the terminal during a long task, also mirror that exact short status to Relay Runner. These updates appear as the working-state notch label when no more specific compact activity label is active. Existing compact labels such as Listening, Response ready, worker state, bridge recovery, or ticket activity take priority over this stream.
+
+```bash
+python3 - <<'PY'
+import json
+import socket
+
+text = "YOUR_PROGRESS_UPDATE"
+if text.strip():
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(
+            json.dumps({
+                "source": "bridge",
+                "state": "working",
+                "text": text.strip(),
+            }).encode(),
+            "/tmp/voice_state.sock",
+        )
+    except OSError:
+        pass
+    finally:
+        sock.close()
+PY
+```
+
 ### Step 3: Speak your response
 
 After generating your response, tear down the background heartbeat refresher spawned in Step 1, then ensure the bridge is still alive (the app's watchdog may still have killed an orphaned bridge during very long processing). If it died, restart it via the bundled relay-bridge so the user still receives your response:
@@ -692,6 +720,34 @@ Interpret the text:
   - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
   - The foreground session is the orchestrator; do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
+
+Send working progress to the notch:
+
+When you write a non-final progress update in the terminal during a long task, also mirror that exact short status to Relay Runner. These updates appear as the working-state notch label when no more specific compact activity label is active. Existing compact labels such as Listening, Response ready, worker state, bridge recovery, or ticket activity take priority over this stream.
+
+```bash
+python3 - <<'PY'
+import json
+import socket
+
+text = "YOUR_PROGRESS_UPDATE"
+if text.strip():
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(
+            json.dumps({
+                "source": "bridge",
+                "state": "working",
+                "text": text.strip(),
+            }).encode(),
+            "/tmp/voice_state.sock",
+        )
+    except OSError:
+        pass
+    finally:
+        sock.close()
+PY
+```
 
 After your response, stop the heartbeat refresher and ensure the bridge is alive:
 

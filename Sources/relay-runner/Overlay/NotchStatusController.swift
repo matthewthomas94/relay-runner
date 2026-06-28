@@ -68,6 +68,8 @@ enum NotchSessionStatus: String, Equatable {
             return .listening
         case .messageWaiting, .preparing, .speaking:
             return .playing
+        case .sent, .processing, .acknowledgement, .sessionPrompt, .programStatus, .actionGlow:
+            return .working
         default:
             return hasActivityLabels ? .working : .notWorking
         }
@@ -240,7 +242,7 @@ enum NotchStatusGlyphMotion {
 enum NotchStatusPlacementPlanner {
     static let glyphSize = CGSize(width: 30, height: 32)
     static let compactLeadingWingWidth: CGFloat = 19
-    static let maximumActivityLabelWidth: CGFloat = 206
+    static let maximumActivityLabelWidth: CGFloat = 390
     static let fallbackSurfaceWidth: CGFloat = compactLeadingWingWidth + glyphSize.width
 
     private static let screenEdgeGap: CGFloat = 8
@@ -378,7 +380,10 @@ enum NotchActivityLabelPlanner {
             labels.append("Waiting dependency")
         }
 
-        return conciseUnique(labels).prefix(maximumLabels).map { $0 }
+        var compactLabels = conciseUnique(labels)
+        compactLabels.removeAll { $0 == "Thinking" }
+
+        return compactLabels.prefix(maximumLabels).map { $0 }
     }
 
     static func label(for state: OverlayState) -> String? {
@@ -454,6 +459,18 @@ enum NotchActivityLabelPlanner {
         return compactWords(trimmed, fallback: fallback)
     }
 
+    static func label(forWorkingProgress progress: String?) -> String? {
+        let words = (progress ?? "")
+            .replacingOccurrences(of: "\n", with: " ")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+        let normalized = words.joined(separator: " ")
+        guard !normalized.isEmpty else { return nil }
+        if normalized.count <= 180 { return normalized }
+        let clipped = String(normalized.prefix(177))
+        return clipped.trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    }
+
     static func hasWaitingDependency(in tickets: [Ticket]) -> Bool {
         let byID = Dictionary(uniqueKeysWithValues: tickets.map { ($0.id, $0) })
         return tickets.contains { ticket in
@@ -527,11 +544,19 @@ final class NotchStatusController {
     private var active = false
     private var status: NotchSessionStatus = .notWorking
     private var activityLabels: [String] = []
+    private var workingProgressLabel: String?
+    private var workingGlyphHovered = false
     private var activityIndex = 0
     private var carouselTimer: Timer?
     private var screenParametersObserver: NSObjectProtocol?
     private var lastPlacement: NotchStatusPlacement?
     private var loggedMissingNotch = false
+
+    init() {
+        pillView.onWorkingGlyphHoverChanged = { [weak self] hovered in
+            self?.setWorkingGlyphHovered(hovered)
+        }
+    }
 
     deinit {
         carouselTimer?.invalidate()
@@ -575,6 +600,9 @@ final class NotchStatusController {
 
         guard self.status != status else { return }
         self.status = status
+        if status != .working {
+            workingGlyphHovered = false
+        }
         updateStatusContent()
     }
 
@@ -601,6 +629,33 @@ final class NotchStatusController {
         updateCarousel()
         if active {
             updatePlacement(animated: true)
+        } else {
+            updateStatusContent()
+        }
+    }
+
+    func setWorkingProgressLabel(_ label: String?) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.setWorkingProgressLabel(label)
+            }
+            return
+        }
+
+        let normalized = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let progress = normalized?.isEmpty == true ? nil : normalized
+        guard progress != workingProgressLabel else {
+            if active {
+                updatePlacement(animated: false)
+            } else {
+                updateStatusContent()
+            }
+            return
+        }
+
+        workingProgressLabel = progress
+        if active {
+            updatePlacement(animated: status == .working && workingGlyphHovered)
         } else {
             updateStatusContent()
         }
@@ -694,7 +749,7 @@ final class NotchStatusController {
         pillView.frame = CGRect(origin: .zero, size: panel.frame.size)
         pillView.apply(
             status: status,
-            label: activityLabels[safe: activityIndex],
+            label: displayedActivityLabel,
             activityLabelWidth: lastPlacement?.activityLabelWidth ?? 0,
             leadingSpacerWidth: lastPlacement?.leadingSpacerWidth ?? NotchStatusPlacementPlanner.compactLeadingWingWidth,
             notchSpacerWidth: lastPlacement?.notchSpacerWidth ?? 0,
@@ -746,11 +801,53 @@ final class NotchStatusController {
     }
 
     private func placement(for screen: NSScreen) -> NotchStatusPlacement? {
-        let labelWidth = NotchStatusPlacementPlanner.activityLabelWidth(for: activityLabels[safe: activityIndex])
+        let labelWidth = NotchStatusPlacementPlanner.activityLabelWidth(for: displayedActivityLabel)
         return NotchStatusPlacementPlanner.placement(
             for: NotchStatusDisplayGeometry(screen: screen),
             activityLabelWidth: labelWidth
         )
+    }
+
+    private var displayedActivityLabel: String? {
+        Self.displayedActivityLabel(
+            status: status,
+            compactLabel: activityLabels[safe: activityIndex],
+            workingProgressLabel: workingProgressLabel,
+            workingGlyphHovered: workingGlyphHovered
+        )
+    }
+
+    static func displayedActivityLabel(
+        status: NotchSessionStatus,
+        compactLabel: String?,
+        workingProgressLabel: String?,
+        workingGlyphHovered: Bool
+    ) -> String? {
+        if status == .working,
+           workingGlyphHovered,
+           let workingProgressLabel,
+           !workingProgressLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return workingProgressLabel
+        }
+        return compactLabel
+    }
+
+    private func setWorkingGlyphHovered(_ hovered: Bool) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.setWorkingGlyphHovered(hovered)
+            }
+            return
+        }
+
+        let effectiveHover = status == .working && hovered
+        guard workingGlyphHovered != effectiveHover else { return }
+        workingGlyphHovered = effectiveHover
+        if active {
+            updatePlacement(animated: true)
+        } else {
+            updateStatusContent()
+        }
     }
 
     private func installScreenParametersObserver() {
@@ -791,7 +888,8 @@ private final class NotchStatusPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         isOpaque = false
         backgroundColor = .clear
-        ignoresMouseEvents = true
+        ignoresMouseEvents = false
+        acceptsMouseMovedEvents = true
         hasShadow = false
         isMovableByWindowBackground = false
         hidesOnDeactivate = false
@@ -809,6 +907,9 @@ private final class NotchStatusPillContentView: NSView {
     private var waveTimer: Timer?
     private var frameAnimationTimer: Timer?
     private var frameAnimationEnd: Date?
+    private var glyphTrackingArea: NSTrackingArea?
+    private var workingGlyphHovered = false
+    var onWorkingGlyphHoverChanged: ((Bool) -> Void)?
 
     override var isFlipped: Bool { true }
 
@@ -842,7 +943,11 @@ private final class NotchStatusPillContentView: NSView {
         self.leadingSpacerWidth = leadingSpacerWidth
         self.notchSpacerWidth = notchSpacerWidth
         self.glyphScreenX = glyphScreenX
+        if status != .working {
+            setWorkingGlyphHovered(false)
+        }
         updateWaveTimer(restart: glyphChanged)
+        updateTrackingAreas()
         needsDisplay = true
     }
 
@@ -870,6 +975,41 @@ private final class NotchStatusPillContentView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateWaveTimer(restart: false)
+        if window == nil {
+            setWorkingGlyphHovered(false)
+        }
+        updateTrackingAreas()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let glyphTrackingArea {
+            removeTrackingArea(glyphTrackingArea)
+            self.glyphTrackingArea = nil
+        }
+
+        let glyphFrame = currentGlyphFrame()
+        guard !glyphFrame.isEmpty else { return }
+        let area = NSTrackingArea(
+            rect: glyphFrame,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        glyphTrackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateWorkingGlyphHover(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateWorkingGlyphHover(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setWorkingGlyphHovered(false)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -909,7 +1049,7 @@ private final class NotchStatusPillContentView: NSView {
         guard let label, activityLabelWidth > 0 else { return 0 }
 
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.lineBreakMode = .byClipping
         paragraph.alignment = .left
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
@@ -922,27 +1062,53 @@ private final class NotchStatusPillContentView: NSView {
             width: max(0, activityLabelWidth - 17),
             height: 16
         )
-        (label as NSString).draw(in: textRect, withAttributes: attributes)
+        let labelString = label as NSString
+        let labelWidth = labelString.size(withAttributes: attributes).width
+        if labelWidth <= textRect.width
+            || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            labelString.draw(in: textRect, withAttributes: attributes)
+        } else {
+            let gap: CGFloat = 32
+            let scrollDistance = labelWidth + gap
+            let duration = max(6.5, min(14, Double(labelWidth / 26)))
+            let phase = CGFloat(CACurrentMediaTime().truncatingRemainder(dividingBy: duration) / duration)
+            let offset = phase * scrollDistance
+
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: textRect).addClip()
+            var x = textRect.minX - offset
+            while x < textRect.maxX {
+                labelString.draw(
+                    in: NSRect(x: x, y: textRect.minY, width: labelWidth, height: textRect.height),
+                    withAttributes: attributes
+                )
+                x += scrollDistance
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
         return activityLabelWidth
     }
 
     private func drawGlyph(after labelWidth: CGFloat) {
         let glyph = status.glyph
         let glyphSize = NotchStatusPlacementPlanner.glyphSize
-        let naturalGlyphX = labelWidth + leadingSpacerWidth + notchSpacerWidth
-        let anchoredGlyphX = glyphScreenX.map { screenX in
-            screenX - (window?.frame.minX ?? 0)
-        } ?? naturalGlyphX
-        let glyphX = min(max(0, anchoredGlyphX), max(0, bounds.width - glyphSize.width))
-        let glyphY = max(0, (bounds.height - glyphSize.height) / 2)
+        let glyphFrame = currentGlyphFrame(labelWidth: labelWidth)
         let dotOrigin = CGPoint(
-            x: glyphX + (glyphSize.width - NotchStatusGlyph.artworkSize.width) / 2,
-            y: glyphY + (glyphSize.height - NotchStatusGlyph.artworkSize.height) / 2
+            x: glyphFrame.minX + (glyphSize.width - NotchStatusGlyph.artworkSize.width) / 2,
+            y: glyphFrame.minY + (glyphSize.height - NotchStatusGlyph.artworkSize.height) / 2
         )
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let activeShimmer = status.usesGlyphShimmer && !reduceMotion
         let time = CACurrentMediaTime()
-        let motionPhase = reduceMotion ? 0 : NotchStatusGlyphMotion.phase(at: time)
+        let shouldAnimateMotion = shouldAnimateGlyphMotion(reduceMotion: reduceMotion)
+        let motionPhase = shouldAnimateMotion ? NotchStatusGlyphMotion.phase(at: time) : 0
+
+        if status == .working && workingGlyphHovered {
+            NSColor(calibratedWhite: 0.85, alpha: 0.25).setFill()
+            NSBezierPath(
+                ovalIn: NSRect(x: dotOrigin.x + 2, y: dotOrigin.y + 2, width: 20, height: 20)
+            ).fill()
+        }
 
         for (index, dot) in glyph.dots.enumerated() {
             let shimmer = activeShimmer
@@ -964,9 +1130,9 @@ private final class NotchStatusPillContentView: NSView {
     }
 
     private func updateWaveTimer(restart: Bool) {
-        let shouldAnimate = status.animatesGlyphMotion
-            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            && window != nil
+        let shouldAnimate = shouldAnimateGlyphMotion(
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        ) && window != nil
 
         if restart {
             waveTimer?.invalidate()
@@ -984,6 +1150,44 @@ private final class NotchStatusPillContentView: NSView {
             waveTimer?.invalidate()
             waveTimer = nil
         }
+    }
+
+    private func shouldAnimateGlyphMotion(reduceMotion: Bool) -> Bool {
+        guard !reduceMotion else { return false }
+        switch status {
+        case .working:
+            return workingGlyphHovered
+        case .listening, .playing:
+            return true
+        case .notWorking:
+            return false
+        }
+    }
+
+    private func updateWorkingGlyphHover(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        setWorkingGlyphHovered(status == .working && currentGlyphFrame().contains(point))
+    }
+
+    private func setWorkingGlyphHovered(_ hovered: Bool) {
+        let effectiveHover = status == .working && hovered
+        guard workingGlyphHovered != effectiveHover else { return }
+        workingGlyphHovered = effectiveHover
+        updateWaveTimer(restart: true)
+        needsDisplay = true
+        onWorkingGlyphHoverChanged?(effectiveHover)
+    }
+
+    private func currentGlyphFrame(labelWidth: CGFloat? = nil) -> NSRect {
+        let glyphSize = NotchStatusPlacementPlanner.glyphSize
+        let resolvedLabelWidth = labelWidth ?? activityLabelWidth
+        let naturalGlyphX = resolvedLabelWidth + leadingSpacerWidth + notchSpacerWidth
+        let anchoredGlyphX = glyphScreenX.map { screenX in
+            screenX - (window?.frame.minX ?? 0)
+        } ?? naturalGlyphX
+        let glyphX = min(max(0, anchoredGlyphX), max(0, bounds.width - glyphSize.width))
+        let glyphY = max(0, (bounds.height - glyphSize.height) / 2)
+        return NSRect(origin: CGPoint(x: glyphX, y: glyphY), size: glyphSize)
     }
 }
 

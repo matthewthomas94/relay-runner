@@ -175,6 +175,7 @@ final class AppState {
         notchActivityTimer = nil
         notchActivityRunStates = []
         notchActivityTickets = []
+        notchStatusController.setWorkingProgressLabel(nil)
         notchStatusController.setActivityLabels([])
     }
 
@@ -194,6 +195,7 @@ final class AppState {
 
     private func syncNotchActivitySurface() {
         guard hasActiveSession else {
+            notchStatusController.setWorkingProgressLabel(nil)
             notchStatusController.setActivityLabels([])
             return
         }
@@ -204,9 +206,14 @@ final class AppState {
             tickets: notchActivityTickets,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight
         )
+        let workingProgressLabel = NotchActivityLabelPlanner.label(forWorkingProgress: stateMachine.workingProgress)
         notchStatusController.setStatus(
-            NotchSessionStatus.resolve(for: stateMachine.state, hasActivityLabels: !labels.isEmpty)
+            NotchSessionStatus.resolve(
+                for: stateMachine.state,
+                hasActivityLabels: !labels.isEmpty || workingProgressLabel != nil
+            )
         )
+        notchStatusController.setWorkingProgressLabel(workingProgressLabel)
         notchStatusController.setActivityLabels(labels)
     }
 

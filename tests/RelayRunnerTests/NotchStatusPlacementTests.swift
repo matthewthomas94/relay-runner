@@ -112,8 +112,14 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: ""), 0)
         XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Playing"), 61)
         XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"), 72)
-        XCTAssertEqual(
+        XCTAssertLessThan(
             NotchStatusPlacementPlanner.activityLabelWidth(for: "Moving ticket to Done, RR-100 is complete"),
+            NotchStatusPlacementPlanner.maximumActivityLabelWidth
+        )
+        XCTAssertEqual(
+            NotchStatusPlacementPlanner.activityLabelWidth(
+                for: "The first pass found 102 SKILL.md files across user, workspace, system, and plugin roots."
+            ),
             NotchStatusPlacementPlanner.maximumActivityLabelWidth
         )
     }
@@ -141,6 +147,71 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
+    func testWorkingProgressIsHoverOnly() {
+        let progress = "The first pass found 102 SKILL.md files across user and plugin roots."
+
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.labels(for: .processing),
+            []
+        )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabel(
+                status: .working,
+                compactLabel: nil,
+                workingProgressLabel: progress,
+                workingGlyphHovered: false
+            ),
+            nil
+        )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabel(
+                status: .working,
+                compactLabel: nil,
+                workingProgressLabel: progress,
+                workingGlyphHovered: true
+            ),
+            progress
+        )
+
+        let now = Date(timeIntervalSince1970: 2_000)
+        let run = RunState(
+            ticketId: "RR-94",
+            repoPath: "/repo",
+            runId: 94,
+            state: "Running",
+            lastError: nil,
+            activity: "Running Swift tests",
+            activityAt: now.timeIntervalSince1970
+        )
+
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.labels(
+                for: .processing,
+                activeRuns: [run],
+                now: now
+            ),
+            ["Running tests"]
+        )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabel(
+                status: .working,
+                compactLabel: "Running tests",
+                workingProgressLabel: progress,
+                workingGlyphHovered: false
+            ),
+            "Running tests"
+        )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabel(
+                status: .working,
+                compactLabel: "Running tests",
+                workingProgressLabel: progress,
+                workingGlyphHovered: true
+            ),
+            progress
+        )
+    }
+
     func testNotchSessionStatusMapsUserFacingStates() {
         XCTAssertEqual(
             NotchSessionStatus.resolve(for: .idle, hasActivityLabels: false),
@@ -148,6 +219,10 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
         XCTAssertEqual(
             NotchSessionStatus.resolve(for: .idle, hasActivityLabels: true),
+            .working
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: .processing, hasActivityLabels: false),
             .working
         )
         XCTAssertEqual(
