@@ -2,69 +2,120 @@ import XCTest
 @testable import relay_runner
 
 final class NotchStatusPlacementTests: XCTestCase {
-    func testPlacesSurfaceToRightOfNotchAndBelowMenuBarArea() throws {
+    func testPlacesContinuousPillAcrossNotchWithoutActivityLabels() throws {
         let geometry = NotchStatusDisplayGeometry(
             frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
-            auxiliaryTopRightArea: CGRect(x: 800, y: 944, width: 712, height: 38)
+            visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 944),
+            auxiliaryTopLeftArea: CGRect(x: 0, y: 950, width: 663, height: 32),
+            auxiliaryTopRightArea: CGRect(x: 848, y: 950, width: 664, height: 32)
         )
 
         let placement = try XCTUnwrap(NotchStatusPlacementPlanner.placement(for: geometry))
 
-        XCTAssertEqual(placement.visibleFrame.size, NotchStatusPlacementPlanner.surfaceSize)
-        XCTAssertGreaterThanOrEqual(placement.visibleFrame.minX, geometry.auxiliaryTopRightArea.minX)
-        XCTAssertLessThanOrEqual(placement.visibleFrame.maxX, geometry.auxiliaryTopRightArea.maxX)
-        XCTAssertLessThanOrEqual(placement.visibleFrame.maxY, geometry.auxiliaryTopRightArea.minY)
-        XCTAssertLessThan(placement.retractedFrame.minX, placement.visibleFrame.minX)
+        XCTAssertEqual(placement.notchSpacerWidth, 185)
+        XCTAssertEqual(placement.activityLabelWidth, 0)
+        XCTAssertEqual(placement.leadingSpacerWidth, NotchStatusPlacementPlanner.compactLeadingWingWidth)
+        XCTAssertEqual(
+            placement.visibleFrame.minX,
+            geometry.auxiliaryTopLeftArea.maxX - NotchStatusPlacementPlanner.compactLeadingWingWidth
+        )
+        XCTAssertEqual(
+            placement.visibleFrame.width,
+            NotchStatusPlacementPlanner.compactLeadingWingWidth
+                + placement.notchSpacerWidth
+                + NotchStatusPlacementPlanner.glyphSize.width
+        )
+        XCTAssertEqual(
+            placement.visibleFrame.maxX,
+            geometry.auxiliaryTopRightArea.minX + NotchStatusPlacementPlanner.glyphSize.width
+        )
+        XCTAssertEqual(placement.glyphScreenX, geometry.auxiliaryTopRightArea.minX)
+        XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
     }
 
-    func testPlacesActivityCapsuleToLeftOfNotchAndBelowMenuBarArea() throws {
+    func testPlacesContinuousPillAcrossNotchWithActivityLabels() throws {
         let geometry = NotchStatusDisplayGeometry(
             frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
-            auxiliaryTopLeftArea: CGRect(x: 0, y: 944, width: 712, height: 38),
-            auxiliaryTopRightArea: CGRect(x: 800, y: 944, width: 712, height: 38)
+            visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 944),
+            auxiliaryTopLeftArea: CGRect(x: 0, y: 950, width: 663, height: 32),
+            auxiliaryTopRightArea: CGRect(x: 848, y: 950, width: 664, height: 32)
+        )
+        let labelWidth: CGFloat = 72
+
+        let placement = try XCTUnwrap(
+            NotchStatusPlacementPlanner.placement(for: geometry, activityLabelWidth: labelWidth)
         )
 
-        let placement = try XCTUnwrap(NotchStatusPlacementPlanner.placement(for: geometry))
-        let activityVisible = try XCTUnwrap(placement.activityVisibleFrame)
-        let activityRetracted = try XCTUnwrap(placement.activityRetractedFrame)
+        XCTAssertEqual(placement.notchSpacerWidth, 185)
+        XCTAssertEqual(placement.activityLabelWidth, labelWidth)
+        XCTAssertEqual(placement.leadingSpacerWidth, 0)
+        XCTAssertEqual(
+            placement.visibleFrame.minX,
+            geometry.auxiliaryTopLeftArea.maxX - labelWidth
+        )
+        XCTAssertEqual(
+            placement.visibleFrame.width,
+            labelWidth
+                + placement.notchSpacerWidth
+                + NotchStatusPlacementPlanner.glyphSize.width
+        )
+        XCTAssertEqual(placement.glyphScreenX, geometry.auxiliaryTopRightArea.minX)
+        XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
 
-        XCTAssertEqual(activityVisible.size, NotchStatusPlacementPlanner.activitySurfaceSize)
-        XCTAssertLessThanOrEqual(activityVisible.maxX, geometry.auxiliaryTopLeftArea.maxX)
-        XCTAssertGreaterThanOrEqual(activityVisible.minX, geometry.frame.minX)
-        XCTAssertLessThanOrEqual(activityVisible.maxY, geometry.auxiliaryTopLeftArea.minY)
-        XCTAssertGreaterThan(activityRetracted.minX, activityVisible.minX)
-        XCTAssertLessThan(activityVisible.maxX, placement.visibleFrame.minX)
+        let compactPlacement = try XCTUnwrap(NotchStatusPlacementPlanner.placement(for: geometry))
+        XCTAssertEqual(compactPlacement.glyphScreenX, placement.glyphScreenX)
     }
 
-    func testHidesSurfaceWhenDisplayDoesNotReportNotchArea() {
+    func testCentersFallbackPillWhenDisplayDoesNotReportNotchArea() throws {
         let geometry = NotchStatusDisplayGeometry(
             frame: CGRect(x: 0, y: 0, width: 1728, height: 1117),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1728, height: 1080),
             auxiliaryTopRightArea: .zero
         )
 
-        XCTAssertNil(NotchStatusPlacementPlanner.placement(for: geometry))
-    }
-
-    func testHidesSurfaceWhenNotchRightAreaCannotFitIcon() {
-        let geometry = NotchStatusDisplayGeometry(
-            frame: CGRect(x: 0, y: 0, width: 320, height: 240),
-            auxiliaryTopRightArea: CGRect(x: 300, y: 216, width: 20, height: 24)
-        )
-
-        XCTAssertNil(NotchStatusPlacementPlanner.placement(for: geometry))
-    }
-
-    func testHidesActivityCapsuleWhenLeftNotchAreaCannotFitFixedWidth() throws {
-        let geometry = NotchStatusDisplayGeometry(
-            frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
-            auxiliaryTopLeftArea: CGRect(x: 0, y: 944, width: 90, height: 38),
-            auxiliaryTopRightArea: CGRect(x: 800, y: 944, width: 712, height: 38)
-        )
-
         let placement = try XCTUnwrap(NotchStatusPlacementPlanner.placement(for: geometry))
 
-        XCTAssertNil(placement.activityVisibleFrame)
-        XCTAssertNil(placement.activityRetractedFrame)
+        XCTAssertEqual(placement.notchSpacerWidth, 0)
+        XCTAssertEqual(placement.activityLabelWidth, 0)
+        XCTAssertEqual(placement.leadingSpacerWidth, NotchStatusPlacementPlanner.compactLeadingWingWidth)
+        XCTAssertEqual(placement.visibleFrame.width, NotchStatusPlacementPlanner.fallbackSurfaceWidth)
+        XCTAssertEqual(placement.visibleFrame.midX, geometry.frame.midX)
+        XCTAssertEqual(placement.glyphScreenX, placement.visibleFrame.maxX - NotchStatusPlacementPlanner.glyphSize.width)
+        XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
+    }
+
+    func testCentersFallbackPillWithActivityLabelsWhenDisplayDoesNotReportNotchArea() throws {
+        let geometry = NotchStatusDisplayGeometry(
+            frame: CGRect(x: 0, y: 0, width: 1728, height: 1117),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1728, height: 1080)
+        )
+        let labelWidth: CGFloat = 72
+
+        let placement = try XCTUnwrap(
+            NotchStatusPlacementPlanner.placement(for: geometry, activityLabelWidth: labelWidth)
+        )
+
+        XCTAssertEqual(placement.notchSpacerWidth, 0)
+        XCTAssertEqual(placement.activityLabelWidth, labelWidth)
+        XCTAssertEqual(placement.leadingSpacerWidth, 0)
+        XCTAssertEqual(
+            placement.visibleFrame.width,
+            labelWidth + NotchStatusPlacementPlanner.glyphSize.width
+        )
+        XCTAssertEqual(placement.visibleFrame.midX, geometry.frame.midX)
+        XCTAssertEqual(placement.glyphScreenX, placement.visibleFrame.maxX - NotchStatusPlacementPlanner.glyphSize.width)
+        XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
+    }
+
+    func testActivityLabelWidthMatchesUpdatedDesignScale() {
+        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: nil), 0)
+        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: ""), 0)
+        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Playing"), 61)
+        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"), 72)
+        XCTAssertEqual(
+            NotchStatusPlacementPlanner.activityLabelWidth(for: "Moving ticket to Done, RR-100 is complete"),
+            NotchStatusPlacementPlanner.maximumActivityLabelWidth
+        )
     }
 
     func testActivityLabelsMapVoiceAndActionStatesToConciseCopy() {
@@ -117,18 +168,55 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
-    func testNotchGlyphsUseNeutralOrangeAndBluePurpleDotMatrices() {
+    func testNotchGlyphsMatchExportedDotMatrices() {
         XCTAssertEqual(NotchSessionStatus.notWorking.glyph, .neutral)
         XCTAssertEqual(NotchSessionStatus.working.glyph, .neutral)
         XCTAssertEqual(NotchSessionStatus.listening.glyph, .listening)
         XCTAssertEqual(NotchSessionStatus.playing.glyph, .playing)
 
         XCTAssertEqual(NotchStatusGlyph.neutral.dots.count, 4)
-        XCTAssertTrue(NotchStatusGlyph.neutral.dots.allSatisfy { $0.color == .neutral })
-        XCTAssertEqual(NotchStatusGlyph.listening.dots.count, 9)
-        XCTAssertTrue(NotchStatusGlyph.listening.dots.contains { $0.color == .orange })
-        XCTAssertTrue(NotchStatusGlyph.playing.dots.contains { $0.color == .blue })
-        XCTAssertTrue(NotchStatusGlyph.playing.dots.contains { $0.color == .purple })
+        XCTAssertEqual(NotchStatusGlyph.neutral.dots.map(\.x), [14.5, 9.5, 9.5, 14.5])
+        XCTAssertEqual(NotchStatusGlyph.neutral.dots.map(\.y), [9.5, 9.5, 14.5, 14.5])
+        XCTAssertTrue(NotchStatusGlyph.neutral.dots.allSatisfy { $0.color == .white })
+        XCTAssertTrue(NotchStatusGlyph.neutral.dots.allSatisfy { $0.diameter == 3 })
+
+        XCTAssertEqual(NotchStatusGlyph.listening.dots.count, 12)
+        XCTAssertEqual(NotchStatusGlyph.listening.dots.filter { $0.color == .white }.count, 4)
+        XCTAssertEqual(NotchStatusGlyph.listening.dots.filter { $0.color == .orange }.count, 8)
+        XCTAssertEqual(NotchStatusGlyph.listening.dots.map(\.x), [14.5, 19.5, 14.5, 9.5, 4.5, 9.5, 9.5, 9.5, 4.5, 14.5, 14.5, 19.5])
+        XCTAssertEqual(NotchStatusGlyph.listening.dots.map(\.y), [9.5, 9.5, 4.5, 9.5, 9.5, 4.5, 14.5, 19.5, 14.5, 14.5, 19.5, 14.5])
+
+        XCTAssertEqual(NotchStatusGlyph.playing.dots.count, 12)
+        XCTAssertEqual(NotchStatusGlyph.playing.dots.filter { $0.color == .white }.count, 4)
+        XCTAssertEqual(NotchStatusGlyph.playing.dots.filter { $0.color == .blue }.count, 8)
+        XCTAssertEqual(NotchStatusGlyph.playing.dots.map(\.x), NotchStatusGlyph.listening.dots.map(\.x))
+        XCTAssertEqual(NotchStatusGlyph.playing.dots.map(\.y), NotchStatusGlyph.listening.dots.map(\.y))
+    }
+
+    func testNotchGlyphMotionMatchesAnimatedSVGKeyframes() throws {
+        XCTAssertFalse(NotchSessionStatus.notWorking.animatesGlyphMotion)
+        XCTAssertTrue(NotchSessionStatus.working.animatesGlyphMotion)
+        XCTAssertTrue(NotchSessionStatus.listening.animatesGlyphMotion)
+        XCTAssertTrue(NotchSessionStatus.playing.animatesGlyphMotion)
+        XCTAssertEqual(NotchStatusGlyphMotion.duration, 0.6, accuracy: 0.0001)
+
+        XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .notWorking, phase: 0.6683), 0)
+        XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .working, phase: 0), 0, accuracy: 0.0001)
+        XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .working, phase: 0.6683), .pi / 4, accuracy: 0.0001)
+        XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .working, phase: 1), .pi / 2, accuracy: 0.0001)
+
+        let rightDot = try XCTUnwrap(NotchStatusGlyph.listening.dots.first { $0.x == 19.5 && $0.y == 9.5 })
+        XCTAssertEqual(NotchStatusGlyphMotion.accentOffset(for: rightDot, status: .listening, phase: 0).x, 0, accuracy: 0.0001)
+        XCTAssertEqual(NotchStatusGlyphMotion.accentOffset(for: rightDot, status: .listening, phase: 0.6667).x, 1, accuracy: 0.0001)
+        XCTAssertEqual(NotchStatusGlyphMotion.accentOffset(for: rightDot, status: .listening, phase: 1).x, 0, accuracy: 0.0001)
+
+        let topDot = try XCTUnwrap(NotchStatusGlyph.playing.dots.first { $0.x == 14.5 && $0.y == 4.5 })
+        XCTAssertEqual(NotchStatusGlyphMotion.accentOffset(for: topDot, status: .playing, phase: 0.6667).y, -1, accuracy: 0.0001)
+
+        let coreDot = try XCTUnwrap(NotchStatusGlyph.neutral.dots.first)
+        let rotated = NotchStatusGlyphMotion.transformedCenter(for: coreDot, status: .working, phase: 0.6683)
+        XCTAssertEqual(rotated.x, 15.5355, accuracy: 0.0001)
+        XCTAssertEqual(rotated.y, 12, accuracy: 0.0001)
     }
 
     func testActivityLabelsNormalizeWorkerActivityWithoutProviderSpecificCopy() {

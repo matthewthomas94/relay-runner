@@ -41,6 +41,12 @@ struct ProgramDashboardSnapshot: Equatable {
         allTicketItems.first { $0.id == id }
     }
 
+    func ticketItem(ticketID: String, projectPath: String) -> ProgramStatusItem? {
+        allTicketItems.first {
+            $0.ticketID == ticketID && $0.project?.path == projectPath
+        }
+    }
+
     func containsProject(path: String) -> Bool {
         projects.contains { $0.project?.path == path }
     }
@@ -53,23 +59,47 @@ struct ProgramDashboardSnapshot: Equatable {
         backlogWork.items + readyWork.items + inProgressWork.items + doneWork.items
     }
 
-    func movingTicket(
+    func upsertingTicket(
+        _ ticket: Ticket,
+        projectPath: String,
+        projectName: String?
+    ) -> ProgramDashboardSnapshot {
+        replacingTicketItem(
+            ticketID: ticket.id,
+            projectPath: projectPath,
+            replacement: ProgramStatusItem.ticket(
+                ticket,
+                projectPath: projectPath,
+                projectName: projectName
+            ),
+            targetLane: ProgramBoardLane(status: ticket.status)
+        )
+    }
+
+    func removingTicket(ticketID: String, projectPath: String) -> ProgramDashboardSnapshot {
+        replacingTicketItem(
+            ticketID: ticketID,
+            projectPath: projectPath,
+            replacement: nil,
+            targetLane: nil
+        )
+    }
+
+    private func replacingTicketItem(
         ticketID: String,
         projectPath: String,
-        to lane: ProgramBoardLane
+        replacement: ProgramStatusItem?,
+        targetLane: ProgramBoardLane?
     ) -> ProgramDashboardSnapshot {
-        guard let moved = allTicketItems.first(where: {
-            $0.ticketID == ticketID && $0.project?.path == projectPath
-        }) else {
-            return self
-        }
-
-        func movedItems(_ response: ProgramStatusResponse, isTarget: Bool) -> [ProgramStatusItem] {
-            var items = response.items.filter {
+        func items(
+            _ source: ProgramStatusResponse,
+            lane: ProgramBoardLane
+        ) -> [ProgramStatusItem] {
+            var items = source.items.filter {
                 !($0.ticketID == ticketID && $0.project?.path == projectPath)
             }
-            if isTarget {
-                items.append(moved)
+            if lane == targetLane, let replacement {
+                items.append(replacement)
             }
             return items
         }
@@ -84,12 +114,17 @@ struct ProgramDashboardSnapshot: Equatable {
             )
         }
 
+        let backlogItems = items(backlogWork, lane: .backlog)
+        let readyItems = items(readyWork, lane: .ready)
+        let inProgressItems = items(inProgressWork, lane: .inProgress)
+        let doneItems = items(doneWork, lane: .done)
+
         return ProgramDashboardSnapshot(
             summary: summary,
-            backlogWork: response(backlogWork, items: movedItems(backlogWork, isTarget: lane == .backlog)),
-            readyWork: response(readyWork, items: movedItems(readyWork, isTarget: lane == .ready)),
-            inProgressWork: response(inProgressWork, items: movedItems(inProgressWork, isTarget: lane == .inProgress)),
-            doneWork: response(doneWork, items: movedItems(doneWork, isTarget: lane == .done)),
+            backlogWork: response(backlogWork, items: backlogItems),
+            readyWork: response(readyWork, items: readyItems),
+            inProgressWork: response(inProgressWork, items: inProgressItems),
+            doneWork: response(doneWork, items: doneItems),
             awaitingMerge: awaitingMerge
         )
     }
@@ -127,6 +162,15 @@ enum ProgramBoardLane: CaseIterable, Identifiable, Equatable, Hashable {
         case .ready: .ready
         case .inProgress: .inProgress
         case .done: .done
+        }
+    }
+
+    init(status: Ticket.Status) {
+        switch status {
+        case .backlog: self = .backlog
+        case .ready: self = .ready
+        case .inProgress: self = .inProgress
+        case .done: self = .done
         }
     }
 }
@@ -728,6 +772,86 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         .joined(separator: "|")
     }
 
+    init(
+        project: ProgramStatusProject?,
+        ticketID: String?,
+        title: String?,
+        status: String?,
+        priority: String?,
+        ticketState: String? = nil,
+        runID: String? = nil,
+        runState: String? = nil,
+        provider: String? = nil,
+        branch: String? = nil,
+        activity: String? = nil,
+        lastError: String? = nil,
+        workerModel: String? = nil,
+        workerEffort: String? = nil,
+        workerSizingRationale: String? = nil,
+        workerProviderNotes: String? = nil,
+        workerSizingError: String? = nil,
+        dependsOn: [String] = [],
+        blockedBy: [String] = [],
+        openTickets: Int? = nil,
+        activeRuns: Int? = nil,
+        blocked: Int? = nil,
+        awaitingMerge: Int? = nil,
+        staleRuns: Int? = nil,
+        backlogTickets: Int? = nil,
+        readyTickets: Int? = nil,
+        inProgressTickets: Int? = nil,
+        doneTickets: Int? = nil,
+        providers: [String] = [],
+        providerHealth: [String] = []
+    ) {
+        self.project = project
+        self.ticketID = ticketID
+        self.title = title
+        self.status = status
+        self.priority = priority
+        self.ticketState = ticketState
+        self.runID = runID
+        self.runState = runState
+        self.provider = provider
+        self.branch = branch
+        self.activity = activity
+        self.lastError = lastError
+        self.workerModel = workerModel
+        self.workerEffort = workerEffort
+        self.workerSizingRationale = workerSizingRationale
+        self.workerProviderNotes = workerProviderNotes
+        self.workerSizingError = workerSizingError
+        self.dependsOn = dependsOn
+        self.blockedBy = blockedBy
+        self.openTickets = openTickets
+        self.activeRuns = activeRuns
+        self.blocked = blocked
+        self.awaitingMerge = awaitingMerge
+        self.staleRuns = staleRuns
+        self.backlogTickets = backlogTickets
+        self.readyTickets = readyTickets
+        self.inProgressTickets = inProgressTickets
+        self.doneTickets = doneTickets
+        self.providers = providers
+        self.providerHealth = providerHealth
+    }
+
+    static func ticket(
+        _ ticket: Ticket,
+        projectPath: String,
+        projectName: String?
+    ) -> ProgramStatusItem {
+        let name = clean(projectName) ?? URL(fileURLWithPath: projectPath).lastPathComponent
+        return ProgramStatusItem(
+            project: ProgramStatusProject(name: name, path: projectPath),
+            ticketID: ticket.id,
+            title: ticket.title,
+            status: ticket.status.rawValue,
+            priority: ticket.priority.rawValue,
+            dependsOn: ticket.dependsOn
+        )
+    }
+
     private enum CodingKeys: String, CodingKey {
         case project
         case ticketID = "ticket_id"
@@ -809,6 +933,11 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
             return "\(Int(double))"
         }
         return nil
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -954,6 +1083,26 @@ final class ProgramBoardViewModel {
     func reload() -> Task<Void, Never> {
         reloadTask?.cancel()
         reloadState = .loading
+        errorMessage = nil
+        let fetchDashboard = fetchDashboard
+        let task = Task { [weak self] in
+            do {
+                let snapshot = try await fetchDashboard()
+                guard !Task.isCancelled else { return }
+                await self?.finishReload(snapshot: snapshot)
+            } catch {
+                guard !Task.isCancelled else { return }
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                await self?.finishReload(errorMessage: message)
+            }
+        }
+        reloadTask = task
+        return task
+    }
+
+    @discardableResult
+    func refreshInBackground() -> Task<Void, Never> {
+        reloadTask?.cancel()
         errorMessage = nil
         let fetchDashboard = fetchDashboard
         let task = Task { [weak self] in
@@ -1133,12 +1282,26 @@ final class ProgramBoardViewModel {
         errorMessage = message
     }
 
-    func applyDrop(ticketID: String, projectPath: String, to lane: ProgramBoardLane) {
-        snapshot = snapshot?.movingTicket(
-            ticketID: ticketID,
+    func applyTicket(_ ticket: Ticket, projectPath: String) {
+        let projectName = snapshot?.projectName(for: projectPath)
+        snapshot = snapshot?.upsertingTicket(
+            ticket,
             projectPath: projectPath,
-            to: lane
+            projectName: projectName
         )
+        if selectedTicketDetail?.identity?.ticketID == ticket.id,
+           selectedTicketDetail?.identity?.projectPath == projectPath,
+           let refreshedItem = snapshot?.ticketItem(ticketID: ticket.id, projectPath: projectPath) {
+            selectedTicketDetail = ProgramTicketDetail.load(item: refreshedItem)
+        }
+    }
+
+    func removeTicket(ticketID: String, projectPath: String) {
+        snapshot = snapshot?.removingTicket(ticketID: ticketID, projectPath: projectPath)
+        if selectedTicketDetail?.identity?.ticketID == ticketID,
+           selectedTicketDetail?.identity?.projectPath == projectPath {
+            selectedTicketDetail = nil
+        }
     }
 
     @MainActor

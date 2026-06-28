@@ -1,24 +1,28 @@
 import AppKit
+import Darwin
 import QuartzCore
-import SwiftUI
 
 struct NotchStatusDisplayGeometry: Equatable {
     let frame: CGRect
+    let visibleFrame: CGRect
     let auxiliaryTopLeftArea: CGRect
     let auxiliaryTopRightArea: CGRect
 
     init(
         frame: CGRect,
+        visibleFrame: CGRect? = nil,
         auxiliaryTopLeftArea: CGRect = .zero,
-        auxiliaryTopRightArea: CGRect
+        auxiliaryTopRightArea: CGRect = .zero
     ) {
         self.frame = frame
+        self.visibleFrame = visibleFrame ?? frame
         self.auxiliaryTopLeftArea = auxiliaryTopLeftArea
         self.auxiliaryTopRightArea = auxiliaryTopRightArea
     }
 
     init(screen: NSScreen) {
         self.frame = screen.frame
+        self.visibleFrame = screen.visibleFrame
         self.auxiliaryTopLeftArea = screen.auxiliaryTopLeftArea ?? .zero
         self.auxiliaryTopRightArea = screen.auxiliaryTopRightArea ?? .zero
     }
@@ -27,8 +31,10 @@ struct NotchStatusDisplayGeometry: Equatable {
 struct NotchStatusPlacement: Equatable {
     let visibleFrame: CGRect
     let retractedFrame: CGRect
-    let activityVisibleFrame: CGRect?
-    let activityRetractedFrame: CGRect?
+    let activityLabelWidth: CGFloat
+    let leadingSpacerWidth: CGFloat
+    let notchSpacerWidth: CGFloat
+    let glyphScreenX: CGFloat
 }
 
 enum NotchSessionStatus: String, Equatable {
@@ -48,6 +54,14 @@ enum NotchSessionStatus: String, Equatable {
         }
     }
 
+    var animatesGlyphMotion: Bool {
+        self != .notWorking
+    }
+
+    var usesGlyphShimmer: Bool {
+        self == .listening || self == .playing
+    }
+
     static func resolve(for state: OverlayState, hasActivityLabels: Bool) -> NotchSessionStatus {
         switch state {
         case .listening, .recording:
@@ -65,40 +79,41 @@ enum NotchStatusGlyph: Equatable {
     case listening
     case playing
 
+    static let artworkSize = CGSize(width: 24, height: 24)
+
     var dots: [NotchStatusGlyphDot] {
         switch self {
         case .neutral:
             return [
-                NotchStatusGlyphDot(x: 5.5, y: 5.5, diameter: 3.4, color: .neutral, opacity: 0.95),
-                NotchStatusGlyphDot(x: 12.5, y: 5.5, diameter: 3.4, color: .neutral, opacity: 0.95),
-                NotchStatusGlyphDot(x: 5.5, y: 12.5, diameter: 3.4, color: .neutral, opacity: 0.95),
-                NotchStatusGlyphDot(x: 12.5, y: 12.5, diameter: 3.4, color: .neutral, opacity: 0.95),
+                NotchStatusGlyphDot(x: 14.5, y: 9.5, diameter: 3, color: .white, opacity: 1),
+                NotchStatusGlyphDot(x: 9.5, y: 9.5, diameter: 3, color: .white, opacity: 1),
+                NotchStatusGlyphDot(x: 9.5, y: 14.5, diameter: 3, color: .white, opacity: 1),
+                NotchStatusGlyphDot(x: 14.5, y: 14.5, diameter: 3, color: .white, opacity: 1),
             ]
         case .listening:
-            return Self.activityDots(colors: [.orange, .amber], brightCenter: .orange)
+            return Self.activityDots(accent: .orange)
         case .playing:
-            return Self.activityDots(colors: [.blue, .purple], brightCenter: .lavender)
+            return Self.activityDots(accent: .blue)
         }
     }
 
-    private static func activityDots(
-        colors: [NotchStatusDotColor],
-        brightCenter: NotchStatusDotColor
-    ) -> [NotchStatusGlyphDot] {
-        let points: [(CGFloat, CGFloat)] = [
-            (4, 4), (9, 4), (14, 4),
-            (4, 9), (9, 9), (14, 9),
-            (4, 14), (9, 14), (14, 14),
+    private static func activityDots(accent: NotchStatusDotColor) -> [NotchStatusGlyphDot] {
+        let dots: [(CGFloat, CGFloat, NotchStatusDotColor)] = [
+            (14.5, 9.5, .white),
+            (19.5, 9.5, accent),
+            (14.5, 4.5, accent),
+            (9.5, 9.5, .white),
+            (4.5, 9.5, accent),
+            (9.5, 4.5, accent),
+            (9.5, 14.5, .white),
+            (9.5, 19.5, accent),
+            (4.5, 14.5, accent),
+            (14.5, 14.5, .white),
+            (14.5, 19.5, accent),
+            (19.5, 14.5, accent),
         ]
-        return points.enumerated().map { index, point in
-            let isCenter = index == 4
-            return NotchStatusGlyphDot(
-                x: point.0,
-                y: point.1,
-                diameter: isCenter ? 3.4 : 2.6,
-                color: isCenter ? brightCenter : colors[index % colors.count],
-                opacity: isCenter ? 1.0 : 0.78
-            )
+        return dots.map { x, y, color in
+            NotchStatusGlyphDot(x: x, y: y, diameter: 3, color: color, opacity: 1)
         }
     }
 }
@@ -112,45 +127,164 @@ struct NotchStatusGlyphDot: Equatable {
 }
 
 enum NotchStatusDotColor: Equatable {
-    case neutral
+    case white
     case orange
-    case amber
     case blue
-    case purple
-    case lavender
+}
+
+enum NotchStatusGlyphMotion {
+    static let duration: TimeInterval = 0.6
+
+    private static let artworkCenter = CGPoint(x: 12, y: 12)
+    private static let accentKeyframe: CGFloat = 0.6667
+    private static let rotationKeyframe: CGFloat = 0.6683
+    private static let quarterTurn: CGFloat = .pi / 2
+    private static let halfStepTurn: CGFloat = .pi / 4
+    private static let svgLinearEaseSamples: [CGFloat] = [
+        0, 0.0188, 0.0679, 0.1374, 0.2195, 0.308, 0.3978, 0.4856, 0.5686,
+        0.6452, 0.7142, 0.7753, 0.8283, 0.8735, 0.9113, 0.9423, 0.9671,
+        0.9866, 1.0014, 1.0123, 1.0198, 1.0247, 1.0274, 1.0283, 1.0281,
+        1.0268, 1.025, 1.0227, 1.0202, 1.0177, 1.0152, 1.0128, 1.0106,
+        1.0085, 1.0068, 1.0052, 1.0039, 1.0028, 1.0018, 1.0011, 1.0005,
+        1, 0.9997, 0.9995, 0.9993, 0.9992, 0.9992, 0.9992, 0.9992,
+        0.9993, 0.9993,
+    ]
+
+    static func phase(at time: TimeInterval) -> CGFloat {
+        let raw = time.truncatingRemainder(dividingBy: duration)
+        let positive = raw >= 0 ? raw : raw + duration
+        return CGFloat(positive / duration)
+    }
+
+    static func coreRotation(for status: NotchSessionStatus, phase: CGFloat) -> CGFloat {
+        guard status.animatesGlyphMotion else { return 0 }
+        if phase <= rotationKeyframe {
+            return halfStepTurn * svgEase(phase / rotationKeyframe)
+        }
+        let remainingProgress = (phase - rotationKeyframe) / (1 - rotationKeyframe)
+        return halfStepTurn + halfStepTurn * svgEase(remainingProgress)
+    }
+
+    static func accentOffset(for dot: NotchStatusGlyphDot, status: NotchSessionStatus, phase: CGFloat) -> CGPoint {
+        guard status == .listening || status == .playing,
+              dot.color != .white else {
+            return .zero
+        }
+        let vector = accentVector(for: dot)
+        let amount: CGFloat
+        if phase <= accentKeyframe {
+            amount = svgEase(phase / accentKeyframe)
+        } else {
+            amount = 1 - svgEase((phase - accentKeyframe) / (1 - accentKeyframe))
+        }
+        return CGPoint(x: vector.x * amount, y: vector.y * amount)
+    }
+
+    static func transformedCenter(
+        for dot: NotchStatusGlyphDot,
+        status: NotchSessionStatus,
+        phase: CGFloat
+    ) -> CGPoint {
+        var center = CGPoint(x: dot.x, y: dot.y)
+        if dot.color == .white {
+            center = rotated(center, by: coreRotation(for: status, phase: phase))
+        } else {
+            let offset = accentOffset(for: dot, status: status, phase: phase)
+            center.x += offset.x
+            center.y += offset.y
+        }
+        return center
+    }
+
+    private static func svgEase(_ progress: CGFloat) -> CGFloat {
+        let clamped = min(max(progress, 0), 1)
+        guard clamped > 0 else { return 0 }
+        guard clamped < 1 else { return 1 }
+
+        let scaled = clamped * CGFloat(svgLinearEaseSamples.count - 1)
+        let lowerIndex = min(Int(floor(scaled)), svgLinearEaseSamples.count - 2)
+        let fraction = scaled - CGFloat(lowerIndex)
+        let lower = svgLinearEaseSamples[lowerIndex]
+        let upper = svgLinearEaseSamples[lowerIndex + 1]
+        return lower + (upper - lower) * fraction
+    }
+
+    private static func accentVector(for dot: NotchStatusGlyphDot) -> CGPoint {
+        switch (dot.x, dot.y) {
+        case (19.5, _):
+            return CGPoint(x: 1, y: 0)
+        case (4.5, _):
+            return CGPoint(x: -1, y: 0)
+        case (_, 4.5):
+            return CGPoint(x: 0, y: -1)
+        case (_, 19.5):
+            return CGPoint(x: 0, y: 1)
+        default:
+            return .zero
+        }
+    }
+
+    private static func rotated(_ point: CGPoint, by angle: CGFloat) -> CGPoint {
+        guard angle != 0 else { return point }
+        let translatedX = point.x - artworkCenter.x
+        let translatedY = point.y - artworkCenter.y
+        let cosine = Darwin.cos(angle)
+        let sine = Darwin.sin(angle)
+        return CGPoint(
+            x: artworkCenter.x + translatedX * cosine - translatedY * sine,
+            y: artworkCenter.y + translatedX * sine + translatedY * cosine
+        )
+    }
 }
 
 enum NotchStatusPlacementPlanner {
-    static let surfaceSize = CGSize(width: 30, height: 30)
-    static let activitySurfaceSize = CGSize(width: 168, height: 30)
+    static let glyphSize = CGSize(width: 30, height: 32)
+    static let compactLeadingWingWidth: CGFloat = 19
+    static let maximumActivityLabelWidth: CGFloat = 206
+    static let fallbackSurfaceWidth: CGFloat = compactLeadingWingWidth + glyphSize.width
 
-    private static let notchGap: CGFloat = 8
-    private static let menuBarGap: CGFloat = 4
     private static let screenEdgeGap: CGFloat = 8
+    private static let activityLabelMeasurementPadding: CGFloat = 17
 
-    static func placement(for geometry: NotchStatusDisplayGeometry) -> NotchStatusPlacement? {
-        let rightArea = geometry.auxiliaryTopRightArea
+    static func placement(
+        for geometry: NotchStatusDisplayGeometry,
+        activityLabelWidth: CGFloat = 0
+    ) -> NotchStatusPlacement? {
+        let labelWidth = max(0, min(activityLabelWidth, maximumActivityLabelWidth))
+        let hasActivityLabel = labelWidth > 0
+        let leadingSpacerWidth = hasActivityLabel ? 0 : compactLeadingWingWidth
+        let notchFrame = notchFrame(for: geometry)
+        let notchSpacerWidth = notchFrame?.width ?? 0
+        let surfaceWidth: CGFloat
+        let preferredX: CGFloat
+        let notchedGlyphScreenX: CGFloat?
 
-        // On notched Macs, AppKit reports the unobscured menu-bar strip to the
-        // right of the camera housing here. Non-notched and external displays
-        // report an empty rect, so the status surface stays hidden instead of
-        // guessing at a surprising fallback position.
-        guard !rightArea.isEmpty,
-              rightArea.width >= surfaceSize.width + notchGap else {
+        if let notchFrame {
+            surfaceWidth = labelWidth + leadingSpacerWidth + notchSpacerWidth + glyphSize.width
+            preferredX = notchFrame.minX - labelWidth - leadingSpacerWidth
+            notchedGlyphScreenX = notchFrame.maxX
+        } else {
+            surfaceWidth = max(
+                hasActivityLabel ? labelWidth + glyphSize.width : leadingSpacerWidth + glyphSize.width,
+                glyphSize.width
+            )
+            preferredX = geometry.frame.midX - surfaceWidth / 2
+            notchedGlyphScreenX = nil
+        }
+
+        guard surfaceWidth <= geometry.frame.width - screenEdgeGap * 2 else {
             return nil
         }
 
-        let maximumX = rightArea.maxX - surfaceSize.width - screenEdgeGap
-        let preferredX = rightArea.minX + notchGap
+        let maximumX = geometry.frame.maxX - surfaceWidth - screenEdgeGap
         let x = max(
             geometry.frame.minX + screenEdgeGap,
             min(preferredX, maximumX)
         )
 
-        // Keep the surface below the menu-bar auxiliary area so it sits near
-        // the notch without covering menu extras or the camera cutout.
-        let preferredY = rightArea.minY - surfaceSize.height - menuBarGap
-        let maximumY = geometry.frame.maxY - surfaceSize.height - screenEdgeGap
+        let surfaceTop = geometry.frame.maxY
+        let preferredY = surfaceTop - glyphSize.height
+        let maximumY = surfaceTop - glyphSize.height
         let y = max(
             geometry.frame.minY + screenEdgeGap,
             min(preferredY, maximumY)
@@ -159,56 +293,56 @@ enum NotchStatusPlacementPlanner {
         let visibleFrame = CGRect(
             x: x,
             y: y,
-            width: surfaceSize.width,
-            height: surfaceSize.height
+            width: surfaceWidth,
+            height: glyphSize.height
         )
+        let glyphScreenX = notchedGlyphScreenX ?? visibleFrame.maxX - glyphSize.width
         let retractedFrame = CGRect(
-            x: max(geometry.frame.minX + screenEdgeGap, rightArea.minX - surfaceSize.width * 0.7),
+            x: x,
             y: min(y + 2, maximumY),
-            width: surfaceSize.width,
-            height: surfaceSize.height
+            width: surfaceWidth,
+            height: glyphSize.height
         )
-
-        let activityPlacement = activityFrames(for: geometry)
 
         return NotchStatusPlacement(
             visibleFrame: visibleFrame,
             retractedFrame: retractedFrame,
-            activityVisibleFrame: activityPlacement?.visible,
-            activityRetractedFrame: activityPlacement?.retracted
+            activityLabelWidth: labelWidth,
+            leadingSpacerWidth: leadingSpacerWidth,
+            notchSpacerWidth: notchSpacerWidth,
+            glyphScreenX: glyphScreenX
         )
     }
 
-    private static func activityFrames(for geometry: NotchStatusDisplayGeometry) -> (visible: CGRect, retracted: CGRect)? {
+    static func activityLabelWidth(for label: String?) -> CGFloat {
+        guard let label,
+              !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return 0
+        }
+        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let textWidth = (label as NSString).size(withAttributes: [.font: font]).width
+        return min(maximumActivityLabelWidth, ceil(textWidth) + activityLabelMeasurementPadding)
+    }
+
+    private static func notchFrame(for geometry: NotchStatusDisplayGeometry) -> CGRect? {
         let leftArea = geometry.auxiliaryTopLeftArea
+        let rightArea = geometry.auxiliaryTopRightArea
         guard !leftArea.isEmpty,
-              leftArea.width >= activitySurfaceSize.width + notchGap else {
+              !rightArea.isEmpty,
+              leftArea.maxX < rightArea.minX else {
             return nil
         }
 
-        let preferredX = leftArea.maxX - activitySurfaceSize.width - notchGap
-        let x = max(geometry.frame.minX + screenEdgeGap, preferredX)
+        let top = max(leftArea.maxY, rightArea.maxY)
+        let height = max(leftArea.height, rightArea.height)
+        guard height > 0 else { return nil }
 
-        let preferredY = leftArea.minY - activitySurfaceSize.height - menuBarGap
-        let maximumY = geometry.frame.maxY - activitySurfaceSize.height - screenEdgeGap
-        let y = max(
-            geometry.frame.minY + screenEdgeGap,
-            min(preferredY, maximumY)
+        return CGRect(
+            x: leftArea.maxX,
+            y: top - height,
+            width: rightArea.minX - leftArea.maxX,
+            height: height
         )
-
-        let visibleFrame = CGRect(
-            x: x,
-            y: y,
-            width: activitySurfaceSize.width,
-            height: activitySurfaceSize.height
-        )
-        let retractedFrame = CGRect(
-            x: min(leftArea.maxX - activitySurfaceSize.width * 0.25, geometry.frame.maxX - activitySurfaceSize.width),
-            y: min(y + 2, maximumY),
-            width: activitySurfaceSize.width,
-            height: activitySurfaceSize.height
-        )
-        return (visibleFrame, retractedFrame)
     }
 }
 
@@ -389,7 +523,7 @@ enum NotchStatusAnimationPolicy {
 
 final class NotchStatusController {
     private var panel: NotchStatusPanel?
-    private var activityPanel: NotchStatusPanel?
+    private let pillView = NotchStatusPillContentView()
     private var active = false
     private var status: NotchSessionStatus = .notWorking
     private var activityLabels: [String] = []
@@ -414,7 +548,11 @@ final class NotchStatusController {
 
         guard self.active != active else {
             if active {
-                updatePlacement(animated: false)
+                if let panel, panel.isVisible {
+                    updatePlacement(animated: false)
+                } else {
+                    show()
+                }
             }
             return
         }
@@ -422,9 +560,6 @@ final class NotchStatusController {
         self.active = active
         if active {
             show()
-            if !activityLabels.isEmpty {
-                showActivity()
-            }
         } else {
             hide()
         }
@@ -441,7 +576,6 @@ final class NotchStatusController {
         guard self.status != status else { return }
         self.status = status
         updateStatusContent()
-        updateActivityContent()
     }
 
     func setActivityLabels(_ labels: [String]) {
@@ -454,23 +588,22 @@ final class NotchStatusController {
 
         let compactLabels = Array(labels.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
         guard compactLabels != activityLabels else {
-            if active, !compactLabels.isEmpty {
-                updateActivityPlacement(animated: false)
+            if active {
+                updatePlacement(animated: false)
+            } else {
+                updateStatusContent()
             }
             return
         }
 
         activityLabels = compactLabels
         activityIndex = 0
-
-        guard active, !activityLabels.isEmpty else {
-            hideActivity()
-            return
-        }
-
-        updateActivityContent()
-        showActivity()
         updateCarousel()
+        if active {
+            updatePlacement(animated: true)
+        } else {
+            updateStatusContent()
+        }
     }
 
     private func show() {
@@ -482,7 +615,6 @@ final class NotchStatusController {
                 loggedMissingNotch = true
             }
             panel?.orderOut(nil)
-            hideActivity()
             return
         }
 
@@ -493,15 +625,15 @@ final class NotchStatusController {
         if self.panel == nil {
             self.panel = panel
         }
-        updateStatusContent()
 
         panel.setFrame(placement.retractedFrame, display: false)
+        updateStatusContent()
         panel.alphaValue = 0
         panel.orderFrontRegardless()
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = animationDuration(0.22)
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 0.95, 0.2, 1.0)
+            context.duration = animationDuration(0.34)
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.28, 1.0)
             panel.animator().setFrame(placement.visibleFrame, display: true)
             panel.animator().alphaValue = 1
         }
@@ -509,7 +641,7 @@ final class NotchStatusController {
 
     private func hide() {
         removeScreenParametersObserver()
-        hideActivity()
+        stopCarousel()
 
         guard let panel else { return }
         let targetFrame = currentPlacement()?.retractedFrame
@@ -517,8 +649,8 @@ final class NotchStatusController {
             ?? panel.frame.offsetBy(dx: -10, dy: 2)
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = animationDuration(0.18)
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0.0, 1.0, 1.0)
+            context.duration = animationDuration(0.24)
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.42, 0.0, 1.0, 1.0)
             panel.animator().setFrame(targetFrame, display: true)
             panel.animator().alphaValue = 0
         } completionHandler: {
@@ -529,115 +661,45 @@ final class NotchStatusController {
     private func updatePlacement(animated: Bool) {
         guard let placement = currentPlacement() else {
             panel?.orderOut(nil)
-            hideActivity()
             return
         }
         lastPlacement = placement
 
-        guard let panel else { return }
+        guard let panel else {
+            show()
+            return
+        }
         if animated {
+            updateStatusContent()
+            let duration = animationDuration(0.36)
+            pillView.redrawDuringFrameAnimation(duration: duration)
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = animationDuration(0.18)
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.28, 1.0)
                 panel.animator().setFrame(placement.visibleFrame, display: true)
             }
         } else {
             panel.setFrame(placement.visibleFrame, display: true)
+            updateStatusContent()
         }
-        if activityLabels.isEmpty {
-            hideActivity()
-        } else {
-            showActivity()
-        }
-    }
-
-    private func showActivity() {
-        installScreenParametersObserver()
-
-        guard let placement = currentPlacement(),
-              let visibleFrame = placement.activityVisibleFrame,
-              let retractedFrame = placement.activityRetractedFrame else {
-            activityPanel?.orderOut(nil)
-            stopCarousel()
-            return
-        }
-
-        lastPlacement = placement
-
-        let panel = activityPanel ?? NotchStatusPanel()
-        if activityPanel == nil {
-            self.activityPanel = panel
-        }
-        updateActivityContent()
-
-        guard !panel.isVisible else {
-            updateActivityPlacement(animated: true)
-            updateCarousel()
-            return
-        }
-
-        panel.setFrame(retractedFrame, display: false)
-        panel.alphaValue = 0
-        panel.orderFrontRegardless()
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = animationDuration(0.24)
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 0.98, 0.18, 1.0)
-            panel.animator().setFrame(visibleFrame, display: true)
-            panel.animator().alphaValue = 1
-        }
-        updateCarousel()
-    }
-
-    private func hideActivity() {
-        stopCarousel()
-
-        guard let panel = activityPanel else { return }
-        let targetFrame = currentPlacement()?.activityRetractedFrame
-            ?? lastPlacement?.activityRetractedFrame
-            ?? panel.frame.offsetBy(dx: 12, dy: 2)
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = animationDuration(0.18)
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0.0, 1.0, 1.0)
-            panel.animator().setFrame(targetFrame, display: true)
-            panel.animator().alphaValue = 0
-        } completionHandler: {
-            panel.orderOut(nil)
-        }
-    }
-
-    private func updateActivityPlacement(animated: Bool) {
-        guard !activityLabels.isEmpty,
-              let panel = activityPanel,
-              let placement = currentPlacement(),
-              let visibleFrame = placement.activityVisibleFrame else {
-            activityPanel?.orderOut(nil)
-            stopCarousel()
-            return
-        }
-
-        lastPlacement = placement
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = animationDuration(0.18)
-                panel.animator().setFrame(visibleFrame, display: true)
-            }
-        } else {
-            panel.setFrame(visibleFrame, display: true)
-        }
-    }
-
-    private func updateActivityContent() {
-        guard let panel = activityPanel,
-              let label = activityLabels[safe: activityIndex] else {
-            return
-        }
-        panel.contentView = NSHostingView(rootView: NotchActivityCapsuleView(status: status, label: label))
     }
 
     private func updateStatusContent() {
         guard let panel else { return }
-        panel.contentView = NSHostingView(rootView: NotchStatusIconView(status: status))
+        if panel.contentView !== pillView {
+            pillView.frame = CGRect(origin: .zero, size: panel.frame.size)
+            pillView.autoresizingMask = [.width, .height]
+            panel.contentView = pillView
+        }
+        pillView.frame = CGRect(origin: .zero, size: panel.frame.size)
+        pillView.apply(
+            status: status,
+            label: activityLabels[safe: activityIndex],
+            activityLabelWidth: lastPlacement?.activityLabelWidth ?? 0,
+            leadingSpacerWidth: lastPlacement?.leadingSpacerWidth ?? NotchStatusPlacementPlanner.compactLeadingWingWidth,
+            notchSpacerWidth: lastPlacement?.notchSpacerWidth ?? 0,
+            glyphScreenX: lastPlacement?.glyphScreenX
+        )
     }
 
     private func updateCarousel() {
@@ -656,22 +718,26 @@ final class NotchStatusController {
     private func advanceActivityLabel() {
         guard !activityLabels.isEmpty else { return }
         activityIndex = (activityIndex + 1) % activityLabels.count
-        updateActivityContent()
+        if active {
+            updatePlacement(animated: true)
+        } else {
+            updateStatusContent()
+        }
     }
 
     private func currentPlacement() -> NotchStatusPlacement? {
         // Multi-display rule: prefer the notched display under the pointer;
-        // otherwise keep the icon on the first display that reports a notch.
-        // Non-notched displays stay empty rather than growing a detached badge.
+        // otherwise use the display under the pointer, including external
+        // displays that need the centered continuous-pill fallback.
         if let mouseScreen = NSScreen.screens.first(where: { screen in
             NSMouseInRect(NSEvent.mouseLocation, screen.frame, false)
         }),
-           let placement = Self.placement(for: mouseScreen) {
+           let placement = placement(for: mouseScreen) {
             return placement
         }
 
         for screen in NSScreen.screens {
-            if let placement = Self.placement(for: screen) {
+            if let placement = placement(for: screen) {
                 return placement
             }
         }
@@ -679,8 +745,12 @@ final class NotchStatusController {
         return nil
     }
 
-    private static func placement(for screen: NSScreen) -> NotchStatusPlacement? {
-        NotchStatusPlacementPlanner.placement(for: NotchStatusDisplayGeometry(screen: screen))
+    private func placement(for screen: NSScreen) -> NotchStatusPlacement? {
+        let labelWidth = NotchStatusPlacementPlanner.activityLabelWidth(for: activityLabels[safe: activityIndex])
+        return NotchStatusPlacementPlanner.placement(
+            for: NotchStatusDisplayGeometry(screen: screen),
+            activityLabelWidth: labelWidth
+        )
     }
 
     private func installScreenParametersObserver() {
@@ -729,102 +799,203 @@ private final class NotchStatusPanel: NSPanel {
     }
 }
 
-private struct NotchStatusIconView: View {
-    let status: NotchSessionStatus
+private final class NotchStatusPillContentView: NSView {
+    private var status: NotchSessionStatus = .notWorking
+    private var label: String?
+    private var activityLabelWidth: CGFloat = 0
+    private var leadingSpacerWidth: CGFloat = NotchStatusPlacementPlanner.compactLeadingWingWidth
+    private var notchSpacerWidth: CGFloat = 0
+    private var glyphScreenX: CGFloat?
+    private var waveTimer: Timer?
+    private var frameAnimationTimer: Timer?
+    private var frameAnimationEnd: Date?
 
-    var body: some View {
-        ZStack {
-            Capsule(style: .continuous)
-                .fill(Color.black.opacity(0.94))
-                .shadow(color: status.glyph.shadowColor.opacity(0.34), radius: 5, y: 1)
+    override var isFlipped: Bool { true }
 
-            NotchDotMatrixView(glyph: status.glyph)
-        }
-        .frame(
-            width: NotchStatusPlacementPlanner.surfaceSize.width,
-            height: NotchStatusPlacementPlanner.surfaceSize.height
-        )
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
     }
-}
 
-private struct NotchActivityCapsuleView: View {
-    let status: NotchSessionStatus
-    let label: String
-
-    var body: some View {
-        HStack(spacing: 7) {
-            NotchDotMatrixView(glyph: status.glyph, scale: 0.62)
-                .frame(width: 14, height: 14)
-
-            Text(label)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 12)
-        .frame(
-            width: NotchStatusPlacementPlanner.activitySurfaceSize.width,
-            height: NotchStatusPlacementPlanner.activitySurfaceSize.height
-        )
-        .background {
-            Capsule(style: .continuous)
-                .fill(Color.black.opacity(0.94))
-                .overlay {
-                    Capsule(style: .continuous)
-                        .stroke(Color.white.opacity(0.10), lineWidth: 1)
-                }
-                .shadow(color: Color.black.opacity(0.28), radius: 8, y: 2)
-        }
+    required init?(coder: NSCoder) {
+        nil
     }
-}
 
-private struct NotchDotMatrixView: View {
-    let glyph: NotchStatusGlyph
-    var scale: CGFloat = 1
+    deinit {
+        waveTimer?.invalidate()
+        frameAnimationTimer?.invalidate()
+    }
 
-    var body: some View {
-        ZStack {
-            ForEach(Array(glyph.dots.enumerated()), id: \.offset) { _, dot in
-                Circle()
-                    .fill(dot.color.swiftUIColor.opacity(dot.opacity))
-                    .frame(width: dot.diameter * scale, height: dot.diameter * scale)
-                    .position(x: dot.x * scale, y: dot.y * scale)
+    func apply(
+        status: NotchSessionStatus,
+        label: String?,
+        activityLabelWidth: CGFloat,
+        leadingSpacerWidth: CGFloat,
+        notchSpacerWidth: CGFloat,
+        glyphScreenX: CGFloat?
+    ) {
+        let glyphChanged = self.status.glyph != status.glyph
+        self.status = status
+        self.label = label
+        self.activityLabelWidth = activityLabelWidth
+        self.leadingSpacerWidth = leadingSpacerWidth
+        self.notchSpacerWidth = notchSpacerWidth
+        self.glyphScreenX = glyphScreenX
+        updateWaveTimer(restart: glyphChanged)
+        needsDisplay = true
+    }
+
+    func redrawDuringFrameAnimation(duration: TimeInterval) {
+        guard duration > 0 else { return }
+        frameAnimationEnd = Date().addingTimeInterval(duration + 0.06)
+        if frameAnimationTimer != nil { return }
+
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            self.needsDisplay = true
+            if let end = self.frameAnimationEnd, Date() >= end {
+                timer.invalidate()
+                self.frameAnimationTimer = nil
+                self.frameAnimationEnd = nil
             }
         }
-        .frame(width: 18 * scale, height: 18 * scale)
+        RunLoop.main.add(timer, forMode: .common)
+        frameAnimationTimer = timer
     }
-}
 
-private extension NotchStatusGlyph {
-    var shadowColor: Color {
-        switch self {
-        case .neutral:
-            return .white
-        case .listening:
-            return NotchStatusDotColor.orange.swiftUIColor
-        case .playing:
-            return NotchStatusDotColor.purple.swiftUIColor
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateWaveTimer(restart: false)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        NSColor(calibratedWhite: 0, alpha: 0.985).setFill()
+        bottomRoundedPillPath(in: bounds).fill()
+
+        let labelWidth = drawLabelIfNeeded()
+        drawGlyph(after: labelWidth)
+    }
+
+    private func bottomRoundedPillPath(in rect: NSRect) -> NSBezierPath {
+        let radius = min(rect.height / 2, rect.width / 2)
+        let control = radius * 0.5522847498307936
+        let path = NSBezierPath()
+
+        path.move(to: NSPoint(x: rect.minX, y: rect.minY))
+        path.line(to: NSPoint(x: rect.maxX, y: rect.minY))
+        path.line(to: NSPoint(x: rect.maxX, y: rect.maxY - radius))
+        path.curve(
+            to: NSPoint(x: rect.maxX - radius, y: rect.maxY),
+            controlPoint1: NSPoint(x: rect.maxX, y: rect.maxY - radius + control),
+            controlPoint2: NSPoint(x: rect.maxX - radius + control, y: rect.maxY)
+        )
+        path.line(to: NSPoint(x: rect.minX + radius, y: rect.maxY))
+        path.curve(
+            to: NSPoint(x: rect.minX, y: rect.maxY - radius),
+            controlPoint1: NSPoint(x: rect.minX + radius - control, y: rect.maxY),
+            controlPoint2: NSPoint(x: rect.minX, y: rect.maxY - radius + control)
+        )
+        path.close()
+        return path
+    }
+
+    private func drawLabelIfNeeded() -> CGFloat {
+        guard let label, activityLabelWidth > 0 else { return 0 }
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.alignment = .left
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph,
+        ]
+        let textRect = NSRect(
+            x: 13,
+            y: (bounds.height - 16) / 2,
+            width: max(0, activityLabelWidth - 17),
+            height: 16
+        )
+        (label as NSString).draw(in: textRect, withAttributes: attributes)
+        return activityLabelWidth
+    }
+
+    private func drawGlyph(after labelWidth: CGFloat) {
+        let glyph = status.glyph
+        let glyphSize = NotchStatusPlacementPlanner.glyphSize
+        let naturalGlyphX = labelWidth + leadingSpacerWidth + notchSpacerWidth
+        let anchoredGlyphX = glyphScreenX.map { screenX in
+            screenX - (window?.frame.minX ?? 0)
+        } ?? naturalGlyphX
+        let glyphX = min(max(0, anchoredGlyphX), max(0, bounds.width - glyphSize.width))
+        let glyphY = max(0, (bounds.height - glyphSize.height) / 2)
+        let dotOrigin = CGPoint(
+            x: glyphX + (glyphSize.width - NotchStatusGlyph.artworkSize.width) / 2,
+            y: glyphY + (glyphSize.height - NotchStatusGlyph.artworkSize.height) / 2
+        )
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let activeShimmer = status.usesGlyphShimmer && !reduceMotion
+        let time = CACurrentMediaTime()
+        let motionPhase = reduceMotion ? 0 : NotchStatusGlyphMotion.phase(at: time)
+
+        for (index, dot) in glyph.dots.enumerated() {
+            let shimmer = activeShimmer
+                ? 0.72 + 0.28 * ((Darwin.sin(time * 5.2 + Double(index) * 0.62) + 1) / 2)
+                : 1
+            let diameter = dot.diameter
+            let center = reduceMotion
+                ? CGPoint(x: dot.x, y: dot.y)
+                : NotchStatusGlyphMotion.transformedCenter(for: dot, status: status, phase: motionPhase)
+            let rect = NSRect(
+                x: dotOrigin.x + center.x - diameter / 2,
+                y: dotOrigin.y + center.y - diameter / 2,
+                width: diameter,
+                height: diameter
+            )
+            dot.color.nsColor.withAlphaComponent(dot.opacity * shimmer).setFill()
+            NSBezierPath(ovalIn: rect).fill()
+        }
+    }
+
+    private func updateWaveTimer(restart: Bool) {
+        let shouldAnimate = status.animatesGlyphMotion
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            && window != nil
+
+        if restart {
+            waveTimer?.invalidate()
+            waveTimer = nil
+        }
+
+        if shouldAnimate {
+            guard waveTimer == nil else { return }
+            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                self?.needsDisplay = true
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            waveTimer = timer
+        } else {
+            waveTimer?.invalidate()
+            waveTimer = nil
         }
     }
 }
 
 private extension NotchStatusDotColor {
-    var swiftUIColor: Color {
+    var nsColor: NSColor {
         switch self {
-        case .neutral:
-            return Color.white
+        case .white:
+            return .white
         case .orange:
-            return Color(red: 1.0, green: 0.32, blue: 0.06)
-        case .amber:
-            return Color(red: 1.0, green: 0.62, blue: 0.18)
+            return NSColor(calibratedRed: 0.949, green: 0.439, blue: 0.047, alpha: 1)
         case .blue:
-            return Color(red: 0.22, green: 0.26, blue: 1.0)
-        case .purple:
-            return Color(red: 0.48, green: 0.34, blue: 1.0)
-        case .lavender:
-            return Color(red: 0.82, green: 0.78, blue: 1.0)
+            return NSColor(calibratedRed: 0.169, green: 0.067, blue: 0.910, alpha: 1)
         }
     }
 }

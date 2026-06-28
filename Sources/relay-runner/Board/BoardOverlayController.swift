@@ -265,10 +265,10 @@ final class BoardOverlayController {
         if let draft = model.editing, draft.isNew, let project = currentProject {
             do {
                 try TicketWriter.delete(draft.original.id, in: project)
+                model.removeTicket(id: draft.original.id)
             } catch {
                 NSLog("[relay-runner] failed to delete new ticket draft \(draft.original.id): \(error)")
             }
-            model.tickets = loadTickets()
         }
         model.editing = nil
         setPanelKeyEligible(false)
@@ -306,12 +306,12 @@ final class BoardOverlayController {
         )
         do {
             try TicketWriter.save(ticketToSave, in: project)
+            model.upsertTicket(ticketToSave)
         } catch {
             NSLog("[relay-runner] failed to save ticket \(ticketToSave.id): \(error)")
         }
         model.editing = nil
         setPanelKeyEligible(false)
-        model.tickets = loadTickets()
 
         // Reconcile queued tickets after save. Covers
         // "create-in-queued-then-type-title": handleCreate opens the editor
@@ -336,7 +336,7 @@ final class BoardOverlayController {
                 title: "Untitled",
                 workerSizingDefaults: workerSizingDefaultsProvider()
             )
-            model.tickets = loadTickets()
+            model.upsertTicket(ticket)
             openEditor(for: ticket, isNew: true)
         } catch {
             NSLog("[relay-runner] failed to mint ticket: \(error)")
@@ -347,12 +347,12 @@ final class BoardOverlayController {
         guard let project = currentProject else { return }
         do {
             try TicketWriter.delete(ticket.id, in: project)
+            model.removeTicket(id: ticket.id)
         } catch {
             NSLog("[relay-runner] failed to delete ticket \(ticket.id): \(error)")
         }
         model.editing = nil
         setPanelKeyEligible(false)
-        model.tickets = loadTickets()
     }
 
     /// Drop handler: move `ticketId` into `status` at position `insertIndex`
@@ -387,46 +387,89 @@ final class BoardOverlayController {
             description: dragged.description,
             body: dragged.body
         )
-        destColumn.insert(moved, at: clampedIndex)
 
-        // Renumber by 10s so future inserts have headroom without renumbering
-        // every neighbor on every drop.
-        for (i, t) in destColumn.enumerated() {
-            let newOrder = (i + 1) * 10
-            if t.order == newOrder && t.status == status && t.id != ticketId { continue }
+        let previous = clampedIndex > 0 ? destColumn[clampedIndex - 1] : nil
+        let next = clampedIndex < destColumn.count ? destColumn[clampedIndex] : nil
+        var movedPersisted = false
+        if let newOrder = Ticket.orderBetween(previous: previous?.order, next: next?.order) {
             let updated = Ticket(
-                id: t.id,
-                title: t.title,
+                id: moved.id,
+                title: moved.title,
                 status: status,
-                priority: t.priority,
-                dependsOn: t.dependsOn,
-                runId: t.runId,
-                canceled: t.canceled,
-                workerModel: t.workerModel,
-                workerEffort: t.workerEffort,
-                workerSizingRationale: t.workerSizingRationale,
-                workerProviderNotes: t.workerProviderNotes,
-                draft: t.draft,
+                priority: moved.priority,
+                dependsOn: moved.dependsOn,
+                runId: moved.runId,
+                canceled: moved.canceled,
+                workerModel: moved.workerModel,
+                workerEffort: moved.workerEffort,
+                workerSizingRationale: moved.workerSizingRationale,
+                workerProviderNotes: moved.workerProviderNotes,
+                draft: moved.draft,
                 order: newOrder,
-                description: t.description,
-                body: t.body
+                description: moved.description,
+                body: moved.body
             )
             let ticketToSave = status == .ready
                 ? TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaultsProvider(), to: updated)
                 : updated
             do {
                 try TicketWriter.save(ticketToSave, in: project)
+                model.upsertTicket(ticketToSave)
+                movedPersisted = true
             } catch {
-                NSLog("[relay-runner] failed to renumber ticket \(t.id): \(error)")
+                NSLog("[relay-runner] failed to move ticket \(updated.id): \(error)")
             }
+        } else {
+            destColumn.insert(moved, at: clampedIndex)
+            var savedTickets: [Ticket] = []
+
+            // Dense neighboring order values are rare. When they happen,
+            // renumber just the destination column and patch the in-memory
+            // model instead of rescanning every ticket file.
+            for (i, t) in destColumn.enumerated() {
+                let newOrder = (i + 1) * 10
+                if t.order == newOrder && t.status == status && t.id != ticketId {
+                    savedTickets.append(t)
+                    continue
+                }
+                let updated = Ticket(
+                    id: t.id,
+                    title: t.title,
+                    status: status,
+                    priority: t.priority,
+                    dependsOn: t.dependsOn,
+                    runId: t.runId,
+                    canceled: t.canceled,
+                    workerModel: t.workerModel,
+                    workerEffort: t.workerEffort,
+                    workerSizingRationale: t.workerSizingRationale,
+                    workerProviderNotes: t.workerProviderNotes,
+                    draft: t.draft,
+                    order: newOrder,
+                    description: t.description,
+                    body: t.body
+                )
+                let ticketToSave = status == .ready
+                    ? TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaultsProvider(), to: updated)
+                    : updated
+                do {
+                    try TicketWriter.save(ticketToSave, in: project)
+                    savedTickets.append(ticketToSave)
+                    if ticketToSave.id == ticketId {
+                        movedPersisted = true
+                    }
+                } catch {
+                    NSLog("[relay-runner] failed to renumber ticket \(t.id): \(error)")
+                }
+            }
+            model.upsertTickets(savedTickets)
         }
-        model.tickets = loadTickets()
 
         // Reconcile queued tickets when this drop transitioned the dragged
         // ticket INTO ready (not when reordering within ready, not when moving
         // out of ready). The daemon dispatches only dependency-satisfied
         // tickets, so dependency-gated work stays queued without a failed run.
-        if dragged.status != .ready && status == .ready && !dragged.draft {
+        if movedPersisted && dragged.status != .ready && status == .ready && !dragged.draft {
             OrchestratorClient.sweepReadyTickets(
                 repoPath: project.repoPath.path,
                 trigger: "board-drop"

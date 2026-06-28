@@ -49,21 +49,72 @@ final class UpdaterTests: XCTestCase {
     }
 
     @MainActor
-    func testSparkleRelaunchHookStopsBundledServices() {
-        var didPrepare = false
+    func testCheckForUpdatesFocusesUpdateUIBeforeAndAfterSparkleCheck() {
+        var events: [String] = []
+        let controller = RelayUpdaterController(
+            installerContext: RelayInstallerContext(
+                sourceBundleURL: URL(fileURLWithPath: "/tmp/Relay Runner.app", isDirectory: true),
+                applicationsURL: URL(fileURLWithPath: "/Applications", isDirectory: true)
+            ),
+            focusUpdateUI: {
+                events.append("focus")
+            },
+            scheduleUpdateUIFocus: { focus in
+                events.append("schedule-focus")
+                focus()
+            },
+            checkForUpdatesOverride: {
+                events.append("check")
+            }
+        )
+
+        controller.checkForUpdates()
+
+        XCTAssertEqual(events, ["focus", "check", "schedule-focus", "focus"])
+    }
+
+    @MainActor
+    func testSparkleRelaunchHookStopsBundledServicesOnce() {
+        var prepareCount = 0
         let controller = RelayUpdaterController(
             installerContext: RelayInstallerContext(
                 sourceBundleURL: URL(fileURLWithPath: "/tmp/Relay Runner.app", isDirectory: true),
                 applicationsURL: URL(fileURLWithPath: "/Applications", isDirectory: true)
             ),
             prepareForRelaunch: {
-                didPrepare = true
+                prepareCount += 1
             }
         )
 
         controller.prepareForSparkleRelaunch()
+        controller.prepareForSparkleRelaunch()
 
-        XCTAssertTrue(didPrepare)
+        XCTAssertEqual(prepareCount, 1)
+    }
+
+    @MainActor
+    func testPostponedRelaunchPreparesBeforeContinuingInstall() {
+        var events: [String] = []
+        let controller = RelayUpdaterController(
+            installerContext: RelayInstallerContext(
+                sourceBundleURL: URL(fileURLWithPath: "/tmp/Relay Runner.app", isDirectory: true),
+                applicationsURL: URL(fileURLWithPath: "/Applications", isDirectory: true)
+            ),
+            prepareForRelaunch: {
+                events.append("prepare")
+            },
+            scheduleRelaunchContinuation: { continueRelaunch in
+                events.append("schedule-continue")
+                continueRelaunch()
+            }
+        )
+
+        let didPostpone = controller.postponeRelaunchUntilPrepared {
+            events.append("continue")
+        }
+
+        XCTAssertTrue(didPostpone)
+        XCTAssertEqual(events, ["prepare", "schedule-continue", "continue"])
     }
 
     func testServiceLifecycleMessageDocumentsActiveWorkerDeferral() {

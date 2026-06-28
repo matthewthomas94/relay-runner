@@ -449,19 +449,33 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
     }
 
-    func testProgramBoardViewModelApplyDropMovesVisibleTicketImmediately() throws {
+    func testProgramBoardViewModelApplyTicketMovesVisibleTicketImmediately() throws {
         let clientPath = "/repo/client-dashboard"
         let toolsPath = "/repo/tools"
         let snapshot = try programBoardSnapshot(clientPath: clientPath, toolsPath: toolsPath)
         let model = ProgramBoardViewModel()
         model.snapshot = snapshot
 
-        model.applyDrop(ticketID: "CD-1", projectPath: clientPath, to: .ready)
+        model.applyTicket(ticket(id: "CD-1", status: .ready), projectPath: clientPath)
 
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1"])
         XCTAssertEqual(model.ticketItems(in: .ready).map(\.ticketID), ["CD-1"])
+        XCTAssertEqual(model.ticketItems(in: .ready).first?.status, "ready")
         XCTAssertEqual(model.snapshot?.backlogWork.counts.items, 1)
         XCTAssertEqual(model.snapshot?.readyWork.counts.items, 1)
+    }
+
+    func testProgramBoardViewModelRemoveTicketUpdatesVisibleSnapshotImmediately() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let snapshot = try programBoardSnapshot(clientPath: clientPath, toolsPath: toolsPath)
+        let model = ProgramBoardViewModel()
+        model.snapshot = snapshot
+
+        model.removeTicket(ticketID: "CD-1", projectPath: clientPath)
+
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1"])
+        XCTAssertEqual(model.snapshot?.backlogWork.counts.items, 1)
     }
 
     func testProgramBoardTicketDetailResolvesChildTicketFileFromAllProjects() throws {

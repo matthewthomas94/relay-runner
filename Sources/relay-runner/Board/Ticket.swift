@@ -89,6 +89,20 @@ extension Ticket {
         return newestFirst(lhs, rhs)
     }
 
+    static func orderBetween(previous: Int?, next: Int?) -> Int? {
+        switch (previous, next) {
+        case let (.some(previous), .some(next)):
+            guard next - previous > 1 else { return nil }
+            return previous + ((next - previous) / 2)
+        case let (.some(previous), .none):
+            return previous + 10
+        case let (.none, .some(next)):
+            return next - 10
+        case (.none, .none):
+            return 10
+        }
+    }
+
     static func newestFirst(_ lhs: Ticket, _ rhs: Ticket) -> Bool {
         newestFirst(
             lhsModifiedAt: lhs.modifiedAt,

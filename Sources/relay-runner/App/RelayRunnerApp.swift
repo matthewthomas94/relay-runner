@@ -21,10 +21,7 @@ struct RelayRunnerApp: App {
         let context = RelayInstallerContext.current()
         appDelegate.handlesDockReopenWithSettings = context == nil
         let updaterController = context == nil
-            ? RelayUpdaterController(
-                installerContext: context,
-                prepareForRelaunch: { ProcessManager().stopServicesForBundleReplacement() }
-            )
+            ? RelayUpdaterController(installerContext: context)
             : nil
         _updaterController = State(initialValue: updaterController)
         _appState = State(initialValue: context == nil ? AppState(

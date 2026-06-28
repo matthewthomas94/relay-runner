@@ -137,6 +137,7 @@ final class ProgramBoardOverlayController {
                 request,
                 workerSizingDefaults: workerSizingDefaultsProvider()
             )
+            model.applyTicket(result.ticket, projectPath: request.repoPath)
             if result.shouldDispatch {
                 OrchestratorClient.sweepReadyTickets(
                     repoPath: request.repoPath,
@@ -148,7 +149,7 @@ final class ProgramBoardOverlayController {
         }
         model.cancelCreate()
         setPanelKeyEligible(false)
-        model.reload()
+        model.refreshInBackground()
     }
 
     private func beginEdit(detail: ProgramTicketDetail) {
@@ -169,6 +170,7 @@ final class ProgramBoardOverlayController {
                 request,
                 workerSizingDefaults: workerSizingDefaultsProvider()
             )
+            model.applyTicket(result.ticket, projectPath: request.repoPath)
             if result.shouldDispatch {
                 OrchestratorClient.sweepReadyTickets(
                     repoPath: request.repoPath,
@@ -180,19 +182,20 @@ final class ProgramBoardOverlayController {
         }
         model.cancelEdit()
         setPanelKeyEligible(false)
-        model.reload()
+        model.refreshInBackground()
     }
 
     private func handleDelete(_ request: ProgramBoardDeleteRequest) {
         do {
             _ = try ProgramBoardTicketDeleter.delete(request)
+            model.removeTicket(ticketID: request.ticketID, projectPath: request.repoPath)
         } catch {
             NSLog("[relay-runner] failed to delete program ticket \(request.ticketID) in \(request.repoPath): \(error)")
         }
         model.cancelEdit()
         model.clearSelectedTicket()
         setPanelKeyEligible(false)
-        model.reload()
+        model.refreshInBackground()
     }
 
     private func handleDrop(
@@ -213,18 +216,14 @@ final class ProgramBoardOverlayController {
                 unresolved,
                 workerSizingDefaults: workerSizingDefaultsProvider()
             )
-            model.applyDrop(
-                ticketID: result.ticket.id,
-                projectPath: unresolved.repoPath,
-                to: targetLane
-            )
+            model.applyTicket(result.ticket, projectPath: unresolved.repoPath)
             if let dispatch = result.dispatchRequest {
                 OrchestratorClient.sweepReadyTickets(
                     repoPath: dispatch.repoPath,
                     trigger: dispatch.source
                 )
             }
-            model.reload()
+            model.refreshInBackground()
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             NSLog("[relay-runner] failed to move program ticket \(unresolved.ticketID): \(message)")

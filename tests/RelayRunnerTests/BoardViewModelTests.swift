@@ -32,6 +32,14 @@ final class BoardViewModelTests: XCTestCase {
         XCTAssertEqual(model.tickets(in: .backlog).map(\.id), ["RR-2", "RR-3", "RR-1"])
     }
 
+    func testTicketOrderBetweenUsesSparseGapsBeforeRenumbering() {
+        XCTAssertEqual(Ticket.orderBetween(previous: 10, next: 30), 20)
+        XCTAssertEqual(Ticket.orderBetween(previous: 30, next: nil), 40)
+        XCTAssertEqual(Ticket.orderBetween(previous: nil, next: 30), 20)
+        XCTAssertEqual(Ticket.orderBetween(previous: nil, next: nil), 10)
+        XCTAssertNil(Ticket.orderBetween(previous: 10, next: 11))
+    }
+
     func testProjectBoardDragOffsetUsesReportedCardFrame() {
         let offset = DragState.cardCenterOffset(
             cardFrame: CGRect(x: 100, y: 50, width: 310, height: 82),

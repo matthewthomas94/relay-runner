@@ -53,6 +53,24 @@ final class BoardViewModel {
             .sorted(by: Ticket.boardOrder)
     }
 
+    func upsertTicket(_ ticket: Ticket) {
+        if let index = tickets.firstIndex(where: { $0.id == ticket.id }) {
+            tickets[index] = ticket
+        } else {
+            tickets.append(ticket)
+        }
+    }
+
+    func upsertTickets(_ updatedTickets: [Ticket]) {
+        for ticket in updatedTickets {
+            upsertTicket(ticket)
+        }
+    }
+
+    func removeTicket(id: String) {
+        tickets.removeAll { $0.id == id }
+    }
+
     /// Unsatisfied predecessors for a queued ticket. Missing predecessor files
     /// count as waiting so dependency-gated work does not silently dispatch.
     func waitingOn(for ticket: Ticket) -> [String] {

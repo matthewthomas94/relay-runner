@@ -408,7 +408,6 @@ final class AppState {
         statusText = "Ready"
 
         startBridgeWatchdog()
-        bridgeAliveCache = false
 
         startOverlay()
     }
