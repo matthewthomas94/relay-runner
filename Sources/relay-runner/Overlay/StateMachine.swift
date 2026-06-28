@@ -74,13 +74,28 @@ enum OverlayState: Equatable {
 /// Always accessed from main thread (timers, StateEventBus MainActor dispatch).
 @Observable
 final class StateMachine: @unchecked Sendable {
+    static let sentAutoDismissDuration: TimeInterval = 1.5
+    static let acknowledgementDelayAfterSent: TimeInterval = 1.0
+
+    private struct PendingAcknowledgement {
+        let text: String
+        let autoDismiss: TimeInterval
+        let presentAt: Date
+    }
 
     private(set) var state: OverlayState = .idle
     private(set) var partialTranscription: String = ""
     private(set) var messagePreview: String?
 
+    private let now: () -> Date
     private var stateBeforeIdle: OverlayState = .idle
     private var lastIdleTransitionTime: Date = .distantPast
+    private var sentEnteredAt: Date?
+    private var pendingAcknowledgement: PendingAcknowledgement?
+
+    init(now: @escaping () -> Date = Date.init) {
+        self.now = now
+    }
 
     /// Called by AppState when STT engine state changes.
     func updateSTT(isRecording: Bool, partial: String) {
@@ -91,6 +106,7 @@ final class StateMachine: @unchecked Sendable {
         } else if case .recording = state {
             // Stopped recording — show brief "Sent" confirmation.
             state = .sent
+            sentEnteredAt = now()
             partialTranscription = ""
         }
     }
@@ -99,20 +115,23 @@ final class StateMachine: @unchecked Sendable {
     func handleServiceEvent(source: String, newState: String, text: String?, autoDismiss: TimeInterval? = nil) {
         switch (source, newState) {
         case ("tts", "message_waiting"):
+            pendingAcknowledgement = nil
             messagePreview = text
             state = .messageWaiting(preview: text)
 
         case ("tts", "preparing"):
+            pendingAcknowledgement = nil
             state = .preparing
 
         case ("tts", "speaking"):
+            pendingAcknowledgement = nil
             state = .speaking
 
         case ("tts", "idle"):
             switch state {
             case .speaking, .preparing, .messageWaiting:
                 stateBeforeIdle = state
-                lastIdleTransitionTime = Date()
+                lastIdleTransitionTime = now()
                 state = .idle
                 messagePreview = nil
             default:
@@ -130,15 +149,26 @@ final class StateMachine: @unchecked Sendable {
             }
 
         case ("bridge", "acknowledgement"):
+            let acknowledgement = acknowledgementState(
+                text: text,
+                autoDismiss: autoDismiss
+            )
             switch state {
-            case .idle, .sent, .processing, .acknowledgement:
-                let acknowledgement = text?.trimmingCharacters(in: .whitespacesAndNewlines)
-                state = .acknowledgement(
-                    text: acknowledgement.flatMap { $0.isEmpty ? nil : $0 } ?? "Got it. I'm on it.",
-                    autoDismiss: autoDismiss ?? 3.0
+            case .sent:
+                let presentAt = max(
+                    now(),
+                    (sentEnteredAt ?? now())
+                        .addingTimeInterval(
+                            Self.sentAutoDismissDuration + Self.acknowledgementDelayAfterSent
+                        )
                 )
-                partialTranscription = ""
-                messagePreview = nil
+                pendingAcknowledgement = PendingAcknowledgement(
+                    text: acknowledgement.text,
+                    autoDismiss: acknowledgement.autoDismiss,
+                    presentAt: presentAt
+                )
+            case .idle, .processing, .acknowledgement:
+                applyAcknowledgement(acknowledgement)
             default:
                 break
             }
@@ -146,7 +176,7 @@ final class StateMachine: @unchecked Sendable {
         case ("bridge", "idle"):
             if case .processing = state {
                 stateBeforeIdle = state
-                lastIdleTransitionTime = Date()
+                lastIdleTransitionTime = now()
                 state = .idle
             }
 
@@ -160,6 +190,7 @@ final class StateMachine: @unchecked Sendable {
         switch state {
         case .sent, .cancelled(_):
             state = .idle
+            sentEnteredAt = nil
         default:
             break
         }
@@ -172,7 +203,7 @@ final class StateMachine: @unchecked Sendable {
     func dismissProcessing() {
         if case .processing = state {
             stateBeforeIdle = state
-            lastIdleTransitionTime = Date()
+            lastIdleTransitionTime = now()
             state = .idle
         }
     }
@@ -180,8 +211,22 @@ final class StateMachine: @unchecked Sendable {
     func dismissAcknowledgement() {
         if case .acknowledgement = state {
             stateBeforeIdle = state
-            lastIdleTransitionTime = Date()
+            lastIdleTransitionTime = now()
             state = .idle
+        }
+    }
+
+    func promotePendingAcknowledgementIfReady() {
+        guard let pendingAcknowledgement,
+              now() >= pendingAcknowledgement.presentAt else { return }
+        switch state {
+        case .idle, .processing, .acknowledgement:
+            applyAcknowledgement((pendingAcknowledgement.text, pendingAcknowledgement.autoDismiss))
+            self.pendingAcknowledgement = nil
+        case .messageWaiting, .preparing, .speaking:
+            self.pendingAcknowledgement = nil
+        default:
+            break
         }
     }
 
@@ -189,7 +234,7 @@ final class StateMachine: @unchecked Sendable {
     func setCancelled() {
         let referenceState: OverlayState
         if state == .idle {
-            if Date().timeIntervalSince(lastIdleTransitionTime) < 0.5 {
+            if now().timeIntervalSince(lastIdleTransitionTime) < 0.5 {
                 referenceState = stateBeforeIdle
             } else {
                 return // Purely idle, do not pop a cancelled pill
@@ -267,6 +312,29 @@ final class StateMachine: @unchecked Sendable {
     /// Reset to idle (services stopped).
     func reset() {
         state = .idle
+        partialTranscription = ""
+        messagePreview = nil
+        sentEnteredAt = nil
+        pendingAcknowledgement = nil
+    }
+
+    private func acknowledgementState(
+        text: String?,
+        autoDismiss: TimeInterval?
+    ) -> (text: String, autoDismiss: TimeInterval) {
+        let acknowledgement = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (
+            acknowledgement.flatMap { $0.isEmpty ? nil : $0 } ?? "Got it. I'm on it.",
+            autoDismiss ?? 3.0
+        )
+    }
+
+    private func applyAcknowledgement(_ acknowledgement: (text: String, autoDismiss: TimeInterval)) {
+        pendingAcknowledgement = nil
+        state = .acknowledgement(
+            text: acknowledgement.text,
+            autoDismiss: acknowledgement.autoDismiss
+        )
         partialTranscription = ""
         messagePreview = nil
     }

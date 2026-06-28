@@ -137,6 +137,7 @@ final class OverlayController {
     /// after a fixed window. User-message acknowledgements use an explicit
     /// state so substantive TTS responses are not dismissed by this path.
     private func tickAutoDismiss(_ sm: StateMachine) {
+        sm.promotePendingAcknowledgementIfReady()
         let state = sm.state
         guard let timeout = Self.autoDismissTimeout(for: state) else {
             autoDismissTimestamp = nil
@@ -179,7 +180,7 @@ final class OverlayController {
         case .acknowledgement(_, let autoDismiss):
             return autoDismiss
         case .sent, .cancelled(_):
-            return 1.5
+            return StateMachine.sentAutoDismissDuration
         case .processing:
             return 1.0
         case .sessionPrompt:
