@@ -31,6 +31,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
         XCTAssertEqual(placement.glyphScreenX, geometry.auxiliaryTopRightArea.minX)
         XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
+        XCTAssertEqual(placement.visibleFrame.height, 34)
     }
 
     func testPlacesContinuousPillAcrossNotchWithActivityLabels() throws {

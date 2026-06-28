@@ -240,7 +240,7 @@ enum NotchStatusGlyphMotion {
 }
 
 enum NotchStatusPlacementPlanner {
-    static let glyphSize = CGSize(width: 30, height: 32)
+    static let glyphSize = CGSize(width: 30, height: 34)
     static let compactLeadingWingWidth: CGFloat = 19
     static let maximumActivityLabelWidth: CGFloat = 390
     static let fallbackSurfaceWidth: CGFloat = compactLeadingWingWidth + glyphSize.width
@@ -908,7 +908,7 @@ private final class NotchStatusPillContentView: NSView {
     private var frameAnimationTimer: Timer?
     private var frameAnimationEnd: Date?
     private var glyphTrackingArea: NSTrackingArea?
-    private var workingGlyphHovered = false
+    private var glyphHovered = false
     var onWorkingGlyphHoverChanged: ((Bool) -> Void)?
 
     override var isFlipped: Bool { true }
@@ -936,6 +936,7 @@ private final class NotchStatusPillContentView: NSView {
         notchSpacerWidth: CGFloat,
         glyphScreenX: CGFloat?
     ) {
+        let statusChanged = self.status != status
         let glyphChanged = self.status.glyph != status.glyph
         self.status = status
         self.label = label
@@ -943,10 +944,10 @@ private final class NotchStatusPillContentView: NSView {
         self.leadingSpacerWidth = leadingSpacerWidth
         self.notchSpacerWidth = notchSpacerWidth
         self.glyphScreenX = glyphScreenX
-        if status != .working {
-            setWorkingGlyphHovered(false)
+        if statusChanged {
+            notifyWorkingGlyphHoverChanged()
         }
-        updateWaveTimer(restart: glyphChanged)
+        updateWaveTimer(restart: glyphChanged || statusChanged)
         updateTrackingAreas()
         needsDisplay = true
     }
@@ -976,7 +977,7 @@ private final class NotchStatusPillContentView: NSView {
         super.viewDidMoveToWindow()
         updateWaveTimer(restart: false)
         if window == nil {
-            setWorkingGlyphHovered(false)
+            setGlyphHovered(false)
         }
         updateTrackingAreas()
     }
@@ -1001,15 +1002,15 @@ private final class NotchStatusPillContentView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        updateWorkingGlyphHover(with: event)
+        updateGlyphHover(with: event)
     }
 
     override func mouseMoved(with event: NSEvent) {
-        updateWorkingGlyphHover(with: event)
+        updateGlyphHover(with: event)
     }
 
     override func mouseExited(with event: NSEvent) {
-        setWorkingGlyphHovered(false)
+        setGlyphHovered(false)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1103,7 +1104,7 @@ private final class NotchStatusPillContentView: NSView {
         let shouldAnimateMotion = shouldAnimateGlyphMotion(reduceMotion: reduceMotion)
         let motionPhase = shouldAnimateMotion ? NotchStatusGlyphMotion.phase(at: time) : 0
 
-        if status == .working && workingGlyphHovered {
+        if glyphHovered {
             NSColor(calibratedWhite: 0.85, alpha: 0.25).setFill()
             NSBezierPath(
                 ovalIn: NSRect(x: dotOrigin.x + 2, y: dotOrigin.y + 2, width: 20, height: 20)
@@ -1156,7 +1157,7 @@ private final class NotchStatusPillContentView: NSView {
         guard !reduceMotion else { return false }
         switch status {
         case .working:
-            return workingGlyphHovered
+            return glyphHovered
         case .listening, .playing:
             return true
         case .notWorking:
@@ -1164,18 +1165,21 @@ private final class NotchStatusPillContentView: NSView {
         }
     }
 
-    private func updateWorkingGlyphHover(with event: NSEvent) {
+    private func updateGlyphHover(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        setWorkingGlyphHovered(status == .working && currentGlyphFrame().contains(point))
+        setGlyphHovered(currentGlyphFrame().contains(point))
     }
 
-    private func setWorkingGlyphHovered(_ hovered: Bool) {
-        let effectiveHover = status == .working && hovered
-        guard workingGlyphHovered != effectiveHover else { return }
-        workingGlyphHovered = effectiveHover
+    private func setGlyphHovered(_ hovered: Bool) {
+        guard glyphHovered != hovered else { return }
+        glyphHovered = hovered
         updateWaveTimer(restart: true)
         needsDisplay = true
-        onWorkingGlyphHoverChanged?(effectiveHover)
+        notifyWorkingGlyphHoverChanged()
+    }
+
+    private func notifyWorkingGlyphHoverChanged() {
+        onWorkingGlyphHoverChanged?(status == .working && glyphHovered)
     }
 
     private func currentGlyphFrame(labelWidth: CGFloat? = nil) -> NSRect {
