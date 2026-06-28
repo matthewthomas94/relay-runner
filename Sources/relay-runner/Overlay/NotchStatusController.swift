@@ -31,6 +31,95 @@ struct NotchStatusPlacement: Equatable {
     let activityRetractedFrame: CGRect?
 }
 
+enum NotchSessionStatus: String, Equatable {
+    case notWorking = "Not working"
+    case working = "Working"
+    case listening = "Listening"
+    case playing = "Playing"
+
+    var glyph: NotchStatusGlyph {
+        switch self {
+        case .notWorking, .working:
+            return .neutral
+        case .listening:
+            return .listening
+        case .playing:
+            return .playing
+        }
+    }
+
+    static func resolve(for state: OverlayState, hasActivityLabels: Bool) -> NotchSessionStatus {
+        switch state {
+        case .listening, .recording:
+            return .listening
+        case .messageWaiting, .preparing, .speaking:
+            return .playing
+        default:
+            return hasActivityLabels ? .working : .notWorking
+        }
+    }
+}
+
+enum NotchStatusGlyph: Equatable {
+    case neutral
+    case listening
+    case playing
+
+    var dots: [NotchStatusGlyphDot] {
+        switch self {
+        case .neutral:
+            return [
+                NotchStatusGlyphDot(x: 5.5, y: 5.5, diameter: 3.4, color: .neutral, opacity: 0.95),
+                NotchStatusGlyphDot(x: 12.5, y: 5.5, diameter: 3.4, color: .neutral, opacity: 0.95),
+                NotchStatusGlyphDot(x: 5.5, y: 12.5, diameter: 3.4, color: .neutral, opacity: 0.95),
+                NotchStatusGlyphDot(x: 12.5, y: 12.5, diameter: 3.4, color: .neutral, opacity: 0.95),
+            ]
+        case .listening:
+            return Self.activityDots(colors: [.orange, .amber], brightCenter: .orange)
+        case .playing:
+            return Self.activityDots(colors: [.blue, .purple], brightCenter: .lavender)
+        }
+    }
+
+    private static func activityDots(
+        colors: [NotchStatusDotColor],
+        brightCenter: NotchStatusDotColor
+    ) -> [NotchStatusGlyphDot] {
+        let points: [(CGFloat, CGFloat)] = [
+            (4, 4), (9, 4), (14, 4),
+            (4, 9), (9, 9), (14, 9),
+            (4, 14), (9, 14), (14, 14),
+        ]
+        return points.enumerated().map { index, point in
+            let isCenter = index == 4
+            return NotchStatusGlyphDot(
+                x: point.0,
+                y: point.1,
+                diameter: isCenter ? 3.4 : 2.6,
+                color: isCenter ? brightCenter : colors[index % colors.count],
+                opacity: isCenter ? 1.0 : 0.78
+            )
+        }
+    }
+}
+
+struct NotchStatusGlyphDot: Equatable {
+    let x: CGFloat
+    let y: CGFloat
+    let diameter: CGFloat
+    let color: NotchStatusDotColor
+    let opacity: Double
+}
+
+enum NotchStatusDotColor: Equatable {
+    case neutral
+    case orange
+    case amber
+    case blue
+    case purple
+    case lavender
+}
+
 enum NotchStatusPlacementPlanner {
     static let surfaceSize = CGSize(width: 30, height: 30)
     static let activitySurfaceSize = CGSize(width: 168, height: 30)
@@ -179,7 +268,7 @@ enum NotchActivityLabelPlanner {
         case .preparing:
             return "Preparing speech"
         case .speaking:
-            return "Speaking response"
+            return "Playing"
         case .sessionPrompt:
             return "Waiting session"
         case .programStatus:
@@ -224,6 +313,7 @@ enum NotchActivityLabelPlanner {
         if lower.contains("plan") { return "Planning work" }
         if lower.contains("research") || lower.contains("web") { return "Researching" }
         if lower.contains("delegat") || lower.contains("sub-agent") { return "Dispatching worker" }
+        if lower.contains("mov") && lower.contains("ticket") { return "Moving ticket" }
         if lower.contains("ticket") { return "Updating ticket" }
         if looksLikeRawCommand(trimmed) { return fallback }
 
@@ -301,6 +391,7 @@ final class NotchStatusController {
     private var panel: NotchStatusPanel?
     private var activityPanel: NotchStatusPanel?
     private var active = false
+    private var status: NotchSessionStatus = .notWorking
     private var activityLabels: [String] = []
     private var activityIndex = 0
     private var carouselTimer: Timer?
@@ -337,6 +428,20 @@ final class NotchStatusController {
         } else {
             hide()
         }
+    }
+
+    func setStatus(_ status: NotchSessionStatus) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.setStatus(status)
+            }
+            return
+        }
+
+        guard self.status != status else { return }
+        self.status = status
+        updateStatusContent()
+        updateActivityContent()
     }
 
     func setActivityLabels(_ labels: [String]) {
@@ -386,9 +491,9 @@ final class NotchStatusController {
 
         let panel = panel ?? NotchStatusPanel()
         if self.panel == nil {
-            panel.contentView = NSHostingView(rootView: NotchStatusIconView())
             self.panel = panel
         }
+        updateStatusContent()
 
         panel.setFrame(placement.retractedFrame, display: false)
         panel.alphaValue = 0
@@ -527,7 +632,12 @@ final class NotchStatusController {
               let label = activityLabels[safe: activityIndex] else {
             return
         }
-        panel.contentView = NSHostingView(rootView: NotchActivityCapsuleView(label: label))
+        panel.contentView = NSHostingView(rootView: NotchActivityCapsuleView(status: status, label: label))
+    }
+
+    private func updateStatusContent() {
+        guard let panel else { return }
+        panel.contentView = NSHostingView(rootView: NotchStatusIconView(status: status))
     }
 
     private func updateCarousel() {
@@ -620,23 +730,15 @@ private final class NotchStatusPanel: NSPanel {
 }
 
 private struct NotchStatusIconView: View {
-    private let orange = Color(red: 1.0, green: 0.42, blue: 0.0)
+    let status: NotchSessionStatus
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .fill(.regularMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .stroke(orange.opacity(0.88), lineWidth: 1)
-                }
-                .shadow(color: orange.opacity(0.32), radius: 5, y: 1)
+            Capsule(style: .continuous)
+                .fill(Color.black.opacity(0.94))
+                .shadow(color: status.glyph.shadowColor.opacity(0.34), radius: 5, y: 1)
 
-            Image("TrayIconActive", bundle: RelayRunnerResources.bundle)
-                .renderingMode(.original)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 18, height: 18)
+            NotchDotMatrixView(glyph: status.glyph)
         }
         .frame(
             width: NotchStatusPlacementPlanner.surfaceSize.width,
@@ -646,13 +748,13 @@ private struct NotchStatusIconView: View {
 }
 
 private struct NotchActivityCapsuleView: View {
+    let status: NotchSessionStatus
     let label: String
 
     var body: some View {
         HStack(spacing: 7) {
-            Circle()
-                .fill(Color(red: 1.0, green: 0.42, blue: 0.0))
-                .frame(width: 6, height: 6)
+            NotchDotMatrixView(glyph: status.glyph, scale: 0.62)
+                .frame(width: 14, height: 14)
 
             Text(label)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -674,6 +776,55 @@ private struct NotchActivityCapsuleView: View {
                         .stroke(Color.white.opacity(0.10), lineWidth: 1)
                 }
                 .shadow(color: Color.black.opacity(0.28), radius: 8, y: 2)
+        }
+    }
+}
+
+private struct NotchDotMatrixView: View {
+    let glyph: NotchStatusGlyph
+    var scale: CGFloat = 1
+
+    var body: some View {
+        ZStack {
+            ForEach(Array(glyph.dots.enumerated()), id: \.offset) { _, dot in
+                Circle()
+                    .fill(dot.color.swiftUIColor.opacity(dot.opacity))
+                    .frame(width: dot.diameter * scale, height: dot.diameter * scale)
+                    .position(x: dot.x * scale, y: dot.y * scale)
+            }
+        }
+        .frame(width: 18 * scale, height: 18 * scale)
+    }
+}
+
+private extension NotchStatusGlyph {
+    var shadowColor: Color {
+        switch self {
+        case .neutral:
+            return .white
+        case .listening:
+            return NotchStatusDotColor.orange.swiftUIColor
+        case .playing:
+            return NotchStatusDotColor.purple.swiftUIColor
+        }
+    }
+}
+
+private extension NotchStatusDotColor {
+    var swiftUIColor: Color {
+        switch self {
+        case .neutral:
+            return Color.white
+        case .orange:
+            return Color(red: 1.0, green: 0.32, blue: 0.06)
+        case .amber:
+            return Color(red: 1.0, green: 0.62, blue: 0.18)
+        case .blue:
+            return Color(red: 0.22, green: 0.26, blue: 1.0)
+        case .purple:
+            return Color(red: 0.48, green: 0.34, blue: 1.0)
+        case .lavender:
+            return Color(red: 0.82, green: 0.78, blue: 1.0)
         }
     }
 }
