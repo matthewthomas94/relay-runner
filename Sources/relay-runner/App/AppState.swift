@@ -204,6 +204,9 @@ final class AppState {
             tickets: notchActivityTickets,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight
         )
+        notchStatusController.setStatus(
+            NotchSessionStatus.resolve(for: stateMachine.state, hasActivityLabels: !labels.isEmpty)
+        )
         notchStatusController.setActivityLabels(labels)
     }
 

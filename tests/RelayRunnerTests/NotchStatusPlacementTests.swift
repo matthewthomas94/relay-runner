@@ -33,6 +33,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(activityVisible.minX, geometry.frame.minX)
         XCTAssertLessThanOrEqual(activityVisible.maxY, geometry.auxiliaryTopLeftArea.minY)
         XCTAssertGreaterThan(activityRetracted.minX, activityVisible.minX)
+        XCTAssertLessThan(activityVisible.maxX, placement.visibleFrame.minX)
     }
 
     func testHidesSurfaceWhenDisplayDoesNotReportNotchArea() {
@@ -69,7 +70,7 @@ final class NotchStatusPlacementTests: XCTestCase {
     func testActivityLabelsMapVoiceAndActionStatesToConciseCopy() {
         XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .recording), ["Listening"])
         XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .sent), ["Sending voice"])
-        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .speaking), ["Speaking response"])
+        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .speaking), ["Playing"])
         XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .messageWaiting(preview: "Long response")), ["Response ready"])
         XCTAssertEqual(
             NotchActivityLabelPlanner.labels(for: .actionGlow(awaitingConfirmation: nil)),
@@ -87,6 +88,47 @@ final class NotchStatusPlacementTests: XCTestCase {
             ),
             ["Awaiting approval"]
         )
+    }
+
+    func testNotchSessionStatusMapsUserFacingStates() {
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: .idle, hasActivityLabels: false),
+            .notWorking
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: .idle, hasActivityLabels: true),
+            .working
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: .recording, hasActivityLabels: true),
+            .listening
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: .listening, hasActivityLabels: false),
+            .listening
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: .speaking, hasActivityLabels: true),
+            .playing
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: .messageWaiting(preview: nil), hasActivityLabels: true),
+            .playing
+        )
+    }
+
+    func testNotchGlyphsUseNeutralOrangeAndBluePurpleDotMatrices() {
+        XCTAssertEqual(NotchSessionStatus.notWorking.glyph, .neutral)
+        XCTAssertEqual(NotchSessionStatus.working.glyph, .neutral)
+        XCTAssertEqual(NotchSessionStatus.listening.glyph, .listening)
+        XCTAssertEqual(NotchSessionStatus.playing.glyph, .playing)
+
+        XCTAssertEqual(NotchStatusGlyph.neutral.dots.count, 4)
+        XCTAssertTrue(NotchStatusGlyph.neutral.dots.allSatisfy { $0.color == .neutral })
+        XCTAssertEqual(NotchStatusGlyph.listening.dots.count, 9)
+        XCTAssertTrue(NotchStatusGlyph.listening.dots.contains { $0.color == .orange })
+        XCTAssertTrue(NotchStatusGlyph.playing.dots.contains { $0.color == .blue })
+        XCTAssertTrue(NotchStatusGlyph.playing.dots.contains { $0.color == .purple })
     }
 
     func testActivityLabelsNormalizeWorkerActivityWithoutProviderSpecificCopy() {
@@ -112,6 +154,10 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(
             NotchActivityLabelPlanner.label(forWorkerActivity: "Editing NotchStatusController.swift"),
             "Editing files"
+        )
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.label(forWorkerActivity: "Moving ticket to Done, RR-100 is complete"),
+            "Moving ticket"
         )
     }
 
