@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import relay_runner
 
@@ -228,6 +229,34 @@ final class NotchStatusPlacementTests: XCTestCase {
                 workingGlyphHovered: true
             ),
             progress
+        )
+    }
+
+    func testWorkingProgressHoverUsesStableStaticLabelRendering() {
+        XCTAssertEqual(
+            NotchActivityLabelRenderPolicy.lineBreakMode(status: .working, glyphHovered: true),
+            .byTruncatingTail
+        )
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
+                status: .working,
+                oldWorkingGlyphHovered: false,
+                newWorkingGlyphHovered: true
+            )
+        )
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
+                status: .working,
+                oldWorkingGlyphHovered: true,
+                newWorkingGlyphHovered: false
+            )
+        )
+        XCTAssertTrue(
+            NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
+                status: .playing,
+                oldWorkingGlyphHovered: false,
+                newWorkingGlyphHovered: true
+            )
         )
     }
 

@@ -542,6 +542,24 @@ enum NotchStatusAnimationPolicy {
     }
 }
 
+enum NotchActivityLabelRenderPolicy {
+    static func lineBreakMode(status: NotchSessionStatus, glyphHovered: Bool) -> NSLineBreakMode {
+        .byTruncatingTail
+    }
+
+    static func shouldAnimatePlacementTransition(
+        status: NotchSessionStatus,
+        oldWorkingGlyphHovered: Bool,
+        newWorkingGlyphHovered: Bool
+    ) -> Bool {
+        guard status == .working,
+              oldWorkingGlyphHovered != newWorkingGlyphHovered else {
+            return true
+        }
+        return false
+    }
+}
+
 final class NotchStatusController {
     private var panel: NotchStatusPanel?
     private let pillView = NotchStatusPillContentView()
@@ -870,9 +888,14 @@ final class NotchStatusController {
 
         let effectiveHover = status == .working && hovered
         guard workingGlyphHovered != effectiveHover else { return }
+        let shouldAnimate = NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
+            status: status,
+            oldWorkingGlyphHovered: workingGlyphHovered,
+            newWorkingGlyphHovered: effectiveHover
+        )
         workingGlyphHovered = effectiveHover
         if active {
-            updatePlacement(animated: true)
+            updatePlacement(animated: shouldAnimate)
         } else {
             updateStatusContent()
         }
@@ -1043,7 +1066,7 @@ private final class NotchStatusPillContentView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        setGlyphHovered(false)
+        refreshGlyphHoverFromMouseLocation()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1104,7 +1127,10 @@ private final class NotchStatusPillContentView: NSView {
         guard let label, activityLabelWidth > 0 else { return 0 }
 
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byClipping
+        paragraph.lineBreakMode = NotchActivityLabelRenderPolicy.lineBreakMode(
+            status: status,
+            glyphHovered: glyphHovered
+        )
         paragraph.alignment = .left
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
@@ -1118,29 +1144,10 @@ private final class NotchStatusPillContentView: NSView {
             height: 16
         )
         let labelString = label as NSString
-        let labelWidth = labelString.size(withAttributes: attributes).width
-        if labelWidth <= textRect.width
-            || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            labelString.draw(in: textRect, withAttributes: attributes)
-        } else {
-            let gap: CGFloat = 32
-            let scrollDistance = labelWidth + gap
-            let duration = max(6.5, min(14, Double(labelWidth / 26)))
-            let phase = CGFloat(CACurrentMediaTime().truncatingRemainder(dividingBy: duration) / duration)
-            let offset = phase * scrollDistance
-
-            NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(rect: textRect).addClip()
-            var x = textRect.minX - offset
-            while x < textRect.maxX {
-                labelString.draw(
-                    in: NSRect(x: x, y: textRect.minY, width: labelWidth, height: textRect.height),
-                    withAttributes: attributes
-                )
-                x += scrollDistance
-            }
-            NSGraphicsContext.restoreGraphicsState()
-        }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: textRect).addClip()
+        labelString.draw(in: textRect, withAttributes: attributes)
+        NSGraphicsContext.restoreGraphicsState()
         return activityLabelWidth
     }
 
