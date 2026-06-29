@@ -234,17 +234,21 @@ final class NotchStatusPlacementTests: XCTestCase {
 
     func testWorkingProgressHoverUsesStableStaticLabelRendering() {
         XCTAssertEqual(
-            NotchActivityLabelRenderPolicy.lineBreakMode(status: .working, glyphHovered: true),
+            NotchActivityLabelRenderPolicy.lineBreakMode(isScrolling: false),
             .byTruncatingTail
         )
-        XCTAssertFalse(
+        XCTAssertEqual(
+            NotchActivityLabelRenderPolicy.lineBreakMode(isScrolling: true),
+            .byClipping
+        )
+        XCTAssertTrue(
             NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
                 status: .working,
                 oldWorkingGlyphHovered: false,
                 newWorkingGlyphHovered: true
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
                 status: .working,
                 oldWorkingGlyphHovered: true,
@@ -257,6 +261,71 @@ final class NotchStatusPlacementTests: XCTestCase {
                 oldWorkingGlyphHovered: false,
                 newWorkingGlyphHovered: true
             )
+        )
+    }
+
+    func testWorkingProgressScrollStartsAfterHoverDwellWhenTruncated() {
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldScrollLabel(
+                status: .working,
+                glyphHovered: true,
+                hoverDuration: 0.99,
+                textWidth: 500,
+                availableWidth: 320,
+                reduceMotion: false
+            )
+        )
+        XCTAssertTrue(
+            NotchActivityLabelRenderPolicy.shouldScrollLabel(
+                status: .working,
+                glyphHovered: true,
+                hoverDuration: 1.0,
+                textWidth: 500,
+                availableWidth: 320,
+                reduceMotion: false
+            )
+        )
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldScrollLabel(
+                status: .working,
+                glyphHovered: true,
+                hoverDuration: 1.2,
+                textWidth: 300,
+                availableWidth: 320,
+                reduceMotion: false
+            )
+        )
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldScrollLabel(
+                status: .working,
+                glyphHovered: true,
+                hoverDuration: 1.2,
+                textWidth: 500,
+                availableWidth: 320,
+                reduceMotion: true
+            )
+        )
+
+        XCTAssertEqual(
+            NotchActivityLabelRenderPolicy.scrollOffset(
+                hoverDuration: 1.0,
+                textWidth: 500
+            ),
+            0
+        )
+        XCTAssertGreaterThan(
+            NotchActivityLabelRenderPolicy.scrollOffset(
+                hoverDuration: 1.6,
+                textWidth: 500
+            ),
+            0
+        )
+        XCTAssertLessThan(
+            NotchActivityLabelRenderPolicy.scrollOffset(
+                hoverDuration: 10,
+                textWidth: 500
+            ),
+            NotchActivityLabelRenderPolicy.scrollStride(textWidth: 500)
         )
     }
 

@@ -543,8 +543,45 @@ enum NotchStatusAnimationPolicy {
 }
 
 enum NotchActivityLabelRenderPolicy {
-    static func lineBreakMode(status: NotchSessionStatus, glyphHovered: Bool) -> NSLineBreakMode {
-        .byTruncatingTail
+    static let hoverScrollDelay: TimeInterval = 1.0
+    static let scrollGap: CGFloat = 36
+
+    static func lineBreakMode(isScrolling: Bool) -> NSLineBreakMode {
+        isScrolling ? .byClipping : .byTruncatingTail
+    }
+
+    static func shouldScrollLabel(
+        status: NotchSessionStatus,
+        glyphHovered: Bool,
+        hoverDuration: TimeInterval,
+        textWidth: CGFloat,
+        availableWidth: CGFloat,
+        reduceMotion: Bool
+    ) -> Bool {
+        guard status == .working,
+              glyphHovered,
+              !reduceMotion,
+              hoverDuration >= hoverScrollDelay else {
+            return false
+        }
+        return textWidth > availableWidth
+    }
+
+    static func scrollStride(textWidth: CGFloat) -> CGFloat {
+        max(0, textWidth) + scrollGap
+    }
+
+    static func scrollOffset(
+        hoverDuration: TimeInterval,
+        textWidth: CGFloat
+    ) -> CGFloat {
+        let stride = scrollStride(textWidth: textWidth)
+        guard stride > 0 else { return 0 }
+
+        let elapsed = max(0, hoverDuration - hoverScrollDelay)
+        let duration = max(4.0, min(12.0, TimeInterval(stride / 50)))
+        let phase = elapsed.truncatingRemainder(dividingBy: duration) / duration
+        return stride * CGFloat(phase)
     }
 
     static func shouldAnimatePlacementTransition(
@@ -552,11 +589,7 @@ enum NotchActivityLabelRenderPolicy {
         oldWorkingGlyphHovered: Bool,
         newWorkingGlyphHovered: Bool
     ) -> Bool {
-        guard status == .working,
-              oldWorkingGlyphHovered != newWorkingGlyphHovered else {
-            return true
-        }
-        return false
+        true
     }
 }
 
@@ -963,6 +996,7 @@ private final class NotchStatusPillContentView: NSView {
     private var frameAnimationEnd: Date?
     private var hoverTrackingArea: NSTrackingArea?
     private var glyphHovered = false
+    private var glyphHoverStartedAt: CFTimeInterval?
     var onWorkingGlyphHoverChanged: ((Bool) -> Void)?
     var onGlyphClicked: (() -> Void)?
     private static let glyphHoverSlop: CGFloat = 8
@@ -994,12 +1028,16 @@ private final class NotchStatusPillContentView: NSView {
     ) {
         let statusChanged = self.status != status
         let glyphChanged = self.status.glyph != status.glyph
+        let labelChanged = self.label != label
         self.status = status
         self.label = label
         self.activityLabelWidth = activityLabelWidth
         self.leadingSpacerWidth = leadingSpacerWidth
         self.notchSpacerWidth = notchSpacerWidth
         self.glyphScreenX = glyphScreenX
+        if labelChanged, glyphHovered {
+            glyphHoverStartedAt = CACurrentMediaTime()
+        }
         if statusChanged {
             notifyWorkingGlyphHoverChanged()
         }
@@ -1126,27 +1164,67 @@ private final class NotchStatusPillContentView: NSView {
     private func drawLabelIfNeeded() -> CGFloat {
         guard let label, activityLabelWidth > 0 else { return 0 }
 
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = NotchActivityLabelRenderPolicy.lineBreakMode(
-            status: status,
-            glyphHovered: glyphHovered
-        )
-        paragraph.alignment = .left
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph,
-        ]
+        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let labelString = label as NSString
+        let textWidth = labelString.size(withAttributes: [.font: font]).width
         let textRect = NSRect(
             x: 13,
             y: (bounds.height - 16) / 2,
             width: max(0, activityLabelWidth - 17),
             height: 16
         )
-        let labelString = label as NSString
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let hoverDuration = glyphHoverStartedAt.map { CACurrentMediaTime() - $0 } ?? 0
+        let isScrolling = NotchActivityLabelRenderPolicy.shouldScrollLabel(
+            status: status,
+            glyphHovered: glyphHovered,
+            hoverDuration: hoverDuration,
+            textWidth: textWidth,
+            availableWidth: textRect.width,
+            reduceMotion: reduceMotion
+        )
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = NotchActivityLabelRenderPolicy.lineBreakMode(
+            isScrolling: isScrolling
+        )
+        paragraph.alignment = .left
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph,
+        ]
+        let drawRect: NSRect
+        if isScrolling {
+            let offset = NotchActivityLabelRenderPolicy.scrollOffset(
+                hoverDuration: hoverDuration,
+                textWidth: textWidth
+            )
+            drawRect = NSRect(
+                x: textRect.minX - offset,
+                y: textRect.minY,
+                width: textWidth,
+                height: textRect.height
+            )
+        } else {
+            drawRect = textRect
+        }
+
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: textRect).addClip()
-        labelString.draw(in: textRect, withAttributes: attributes)
+        if isScrolling {
+            let stride = NotchActivityLabelRenderPolicy.scrollStride(textWidth: textWidth)
+            var x = drawRect.minX
+            while x < textRect.maxX {
+                labelString.draw(
+                    in: NSRect(x: x, y: textRect.minY, width: textWidth, height: textRect.height),
+                    withAttributes: attributes
+                )
+                x += stride
+            }
+        } else {
+            labelString.draw(in: drawRect, withAttributes: attributes)
+        }
         NSGraphicsContext.restoreGraphicsState()
         return activityLabelWidth
     }
@@ -1245,6 +1323,7 @@ private final class NotchStatusPillContentView: NSView {
     private func setGlyphHovered(_ hovered: Bool) {
         guard glyphHovered != hovered else { return }
         glyphHovered = hovered
+        glyphHoverStartedAt = hovered ? CACurrentMediaTime() : nil
         updateWaveTimer(restart: true)
         needsDisplay = true
         notifyWorkingGlyphHoverChanged()
