@@ -251,7 +251,10 @@ enum NotchStatusPlacementPlanner {
     static let fallbackSurfaceWidth: CGFloat = compactLeadingWingWidth + glyphSize.width
 
     private static let screenEdgeGap: CGFloat = 8
-    private static let activityLabelMeasurementPadding: CGFloat = 17
+    private static let activityLabelMeasurementPadding: CGFloat =
+        NotchActivityLabelRenderPolicy.textLeadingInset
+        + NotchActivityLabelRenderPolicy.textRightGlyphClearance
+        + 8
 
     static func placement(
         for geometry: NotchStatusDisplayGeometry,

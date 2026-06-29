@@ -112,8 +112,15 @@ final class NotchStatusPlacementTests: XCTestCase {
     func testActivityLabelWidthMatchesUpdatedDesignScale() {
         XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: nil), 0)
         XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: ""), 0)
-        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Playing"), 61)
-        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"), 72)
+        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Playing"), 99)
+        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"), 110)
+        XCTAssertGreaterThanOrEqual(
+            NotchActivityLabelRenderPolicy.labelTextRect(
+                activityLabelWidth: NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"),
+                boundsHeight: NotchStatusPlacementPlanner.glyphSize.height
+            ).width,
+            63
+        )
         XCTAssertLessThan(
             NotchStatusPlacementPlanner.activityLabelWidth(for: "Moving ticket to Done, RR-100 is complete"),
             NotchStatusPlacementPlanner.maximumActivityLabelWidth
