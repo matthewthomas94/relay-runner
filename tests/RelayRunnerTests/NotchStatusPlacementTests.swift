@@ -233,9 +233,10 @@ final class NotchStatusPlacementTests: XCTestCase {
     }
 
     func testWorkingProgressHoverUsesStableStaticLabelRendering() {
+        XCTAssertEqual(NotchStatusPlacementPlanner.maximumActivityLabelWidth, 520)
         XCTAssertEqual(
             NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth,
-            NotchStatusPlacementPlanner.maximumActivityLabelWidth / 2
+            260
         )
         XCTAssertEqual(
             NotchActivityLabelRenderPolicy.lineBreakMode(isScrolling: false),
