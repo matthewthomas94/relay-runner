@@ -592,6 +592,16 @@ enum NotchActivityLabelRenderPolicy {
         return stride * CGFloat(phase)
     }
 
+    static func hoverStartTime(
+        current: CFTimeInterval?,
+        glyphHovered: Bool,
+        labelChanged: Bool,
+        now: CFTimeInterval
+    ) -> CFTimeInterval? {
+        guard glyphHovered else { return nil }
+        return current ?? now
+    }
+
     static func shouldAnimatePlacementTransition(
         status: NotchSessionStatus,
         oldWorkingGlyphHovered: Bool,
@@ -1061,9 +1071,12 @@ private final class NotchStatusPillContentView: NSView {
         self.leadingSpacerWidth = leadingSpacerWidth
         self.notchSpacerWidth = notchSpacerWidth
         self.glyphScreenX = glyphScreenX
-        if labelChanged, glyphHovered {
-            glyphHoverStartedAt = CACurrentMediaTime()
-        }
+        glyphHoverStartedAt = NotchActivityLabelRenderPolicy.hoverStartTime(
+            current: glyphHoverStartedAt,
+            glyphHovered: glyphHovered,
+            labelChanged: labelChanged,
+            now: CACurrentMediaTime()
+        )
         if statusChanged {
             notifyWorkingGlyphHoverChanged()
         }

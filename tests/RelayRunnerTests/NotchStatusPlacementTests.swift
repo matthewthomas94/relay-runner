@@ -370,6 +370,47 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
+    func testWorkingProgressStreamUpdatesDoNotRestartHoverDwell() {
+        let hoverStartedAt: CFTimeInterval = 10
+
+        XCTAssertEqual(
+            NotchActivityLabelRenderPolicy.hoverStartTime(
+                current: hoverStartedAt,
+                glyphHovered: true,
+                labelChanged: true,
+                now: 12
+            ),
+            hoverStartedAt
+        )
+        XCTAssertEqual(
+            NotchActivityLabelRenderPolicy.hoverStartTime(
+                current: nil,
+                glyphHovered: true,
+                labelChanged: true,
+                now: 12
+            ),
+            12
+        )
+        XCTAssertNil(
+            NotchActivityLabelRenderPolicy.hoverStartTime(
+                current: hoverStartedAt,
+                glyphHovered: false,
+                labelChanged: true,
+                now: 12
+            )
+        )
+
+        let offsetBeforeStreamUpdate = NotchActivityLabelRenderPolicy.scrollOffset(
+            hoverDuration: 1.2,
+            textWidth: 500
+        )
+        let offsetAfterStreamUpdate = NotchActivityLabelRenderPolicy.scrollOffset(
+            hoverDuration: 2.4,
+            textWidth: 500
+        )
+        XCTAssertGreaterThan(offsetAfterStreamUpdate, offsetBeforeStreamUpdate)
+    }
+
     func testNotchSessionStatusMapsUserFacingStates() {
         XCTAssertEqual(
             NotchSessionStatus.resolve(for: .idle, hasActivityLabels: false),
