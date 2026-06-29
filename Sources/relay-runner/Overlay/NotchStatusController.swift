@@ -246,7 +246,7 @@ enum NotchStatusGlyphMotion {
 enum NotchStatusPlacementPlanner {
     static let glyphSize = CGSize(width: 30, height: 34)
     static let compactLeadingWingWidth: CGFloat = 19
-    static let maximumActivityLabelWidth: CGFloat = 520
+    static let maximumActivityLabelWidth: CGFloat = 650
     static let maximumWorkingProgressLabelWidth: CGFloat = maximumActivityLabelWidth / 2
     static let fallbackSurfaceWidth: CGFloat = compactLeadingWingWidth + glyphSize.width
 

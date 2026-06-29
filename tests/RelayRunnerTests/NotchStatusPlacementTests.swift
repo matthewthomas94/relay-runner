@@ -120,7 +120,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
         XCTAssertEqual(
             NotchStatusPlacementPlanner.activityLabelWidth(
-                for: "The first pass found 102 SKILL.md files across user, workspace, system, and plugin roots."
+                for: "The first pass found 102 SKILL.md files across user, workspace, system, plugin roots, and archived plugin cache roots."
             ),
             NotchStatusPlacementPlanner.maximumActivityLabelWidth
         )
@@ -233,10 +233,10 @@ final class NotchStatusPlacementTests: XCTestCase {
     }
 
     func testWorkingProgressHoverUsesStableStaticLabelRendering() {
-        XCTAssertEqual(NotchStatusPlacementPlanner.maximumActivityLabelWidth, 520)
+        XCTAssertEqual(NotchStatusPlacementPlanner.maximumActivityLabelWidth, 650)
         XCTAssertEqual(
             NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth,
-            260
+            325
         )
         XCTAssertEqual(
             NotchActivityLabelRenderPolicy.lineBreakMode(isScrolling: false),
