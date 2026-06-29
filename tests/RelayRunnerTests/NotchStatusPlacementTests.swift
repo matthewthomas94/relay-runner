@@ -190,7 +190,7 @@ final class NotchStatusPlacementTests: XCTestCase {
                 workingProgressLabel: progress,
                 workingGlyphHovered: true
             ),
-            NotchStatusPlacementPlanner.maximumActivityLabelWidth
+            NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
         )
 
         let now = Date(timeIntervalSince1970: 2_000)
@@ -234,6 +234,10 @@ final class NotchStatusPlacementTests: XCTestCase {
 
     func testWorkingProgressHoverUsesStableStaticLabelRendering() {
         XCTAssertEqual(
+            NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth,
+            NotchStatusPlacementPlanner.maximumActivityLabelWidth / 2
+        )
+        XCTAssertEqual(
             NotchActivityLabelRenderPolicy.lineBreakMode(isScrolling: false),
             .byTruncatingTail
         )
@@ -261,6 +265,17 @@ final class NotchStatusPlacementTests: XCTestCase {
                 oldWorkingGlyphHovered: false,
                 newWorkingGlyphHovered: true
             )
+        )
+
+        let textRect = NotchActivityLabelRenderPolicy.labelTextRect(
+            activityLabelWidth: NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth,
+            boundsHeight: NotchStatusPlacementPlanner.glyphSize.height
+        )
+        XCTAssertEqual(textRect.minX, NotchActivityLabelRenderPolicy.textLeadingInset)
+        XCTAssertEqual(
+            textRect.maxX,
+            NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
+                - NotchActivityLabelRenderPolicy.textRightGlyphClearance
         )
     }
 

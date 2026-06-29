@@ -247,6 +247,7 @@ enum NotchStatusPlacementPlanner {
     static let glyphSize = CGSize(width: 30, height: 34)
     static let compactLeadingWingWidth: CGFloat = 19
     static let maximumActivityLabelWidth: CGFloat = 390
+    static let maximumWorkingProgressLabelWidth: CGFloat = maximumActivityLabelWidth / 2
     static let fallbackSurfaceWidth: CGFloat = compactLeadingWingWidth + glyphSize.width
 
     private static let screenEdgeGap: CGFloat = 8
@@ -545,6 +546,9 @@ enum NotchStatusAnimationPolicy {
 enum NotchActivityLabelRenderPolicy {
     static let hoverScrollDelay: TimeInterval = 1.0
     static let scrollGap: CGFloat = 36
+    static let textLeadingInset: CGFloat = 13
+    static let textRightGlyphClearance: CGFloat = 34
+    static let textHeight: CGFloat = 16
 
     static func lineBreakMode(isScrolling: Bool) -> NSLineBreakMode {
         isScrolling ? .byClipping : .byTruncatingTail
@@ -590,6 +594,15 @@ enum NotchActivityLabelRenderPolicy {
         newWorkingGlyphHovered: Bool
     ) -> Bool {
         true
+    }
+
+    static func labelTextRect(activityLabelWidth: CGFloat, boundsHeight: CGFloat) -> NSRect {
+        NSRect(
+            x: textLeadingInset,
+            y: (boundsHeight - textHeight) / 2,
+            width: max(0, activityLabelWidth - textLeadingInset - textRightGlyphClearance),
+            height: textHeight
+        )
     }
 }
 
@@ -906,7 +919,7 @@ final class NotchStatusController {
            workingGlyphHovered,
            let workingProgressLabel,
            !workingProgressLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return NotchStatusPlacementPlanner.maximumActivityLabelWidth
+            return NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
         }
         return NotchStatusPlacementPlanner.activityLabelWidth(for: compactLabel)
     }
@@ -1167,11 +1180,9 @@ private final class NotchStatusPillContentView: NSView {
         let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         let labelString = label as NSString
         let textWidth = labelString.size(withAttributes: [.font: font]).width
-        let textRect = NSRect(
-            x: 13,
-            y: (bounds.height - 16) / 2,
-            width: max(0, activityLabelWidth - 17),
-            height: 16
+        let textRect = NotchActivityLabelRenderPolicy.labelTextRect(
+            activityLabelWidth: activityLabelWidth,
+            boundsHeight: bounds.height
         )
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let hoverDuration = glyphHoverStartedAt.map { CACurrentMediaTime() - $0 } ?? 0
