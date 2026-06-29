@@ -285,6 +285,24 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
                 - NotchActivityLabelRenderPolicy.textRightGlyphClearance
         )
+
+        let clippedDuringExpansion = NotchActivityLabelRenderPolicy.labelTextRect(
+            activityLabelWidth: NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth,
+            boundsHeight: NotchStatusPlacementPlanner.glyphSize.height,
+            glyphFrame: NSRect(x: 118, y: 0, width: 30, height: 34)
+        )
+        XCTAssertEqual(
+            clippedDuringExpansion.maxX,
+            118 - NotchActivityLabelRenderPolicy.textGlyphGap
+        )
+        XCTAssertLessThan(clippedDuringExpansion.maxX, 118)
+
+        let unclippedAfterExpansion = NotchActivityLabelRenderPolicy.labelTextRect(
+            activityLabelWidth: NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth,
+            boundsHeight: NotchStatusPlacementPlanner.glyphSize.height,
+            glyphFrame: NSRect(x: 420, y: 0, width: 30, height: 34)
+        )
+        XCTAssertEqual(unclippedAfterExpansion, textRect)
     }
 
     func testWorkingProgressScrollStartsAfterHoverDwellWhenTruncated() {

@@ -551,6 +551,7 @@ enum NotchActivityLabelRenderPolicy {
     static let scrollGap: CGFloat = 36
     static let textLeadingInset: CGFloat = 13
     static let textRightGlyphClearance: CGFloat = 34
+    static let textGlyphGap: CGFloat = 8
     static let textHeight: CGFloat = 16
 
     static func lineBreakMode(isScrolling: Bool) -> NSLineBreakMode {
@@ -599,13 +600,22 @@ enum NotchActivityLabelRenderPolicy {
         true
     }
 
-    static func labelTextRect(activityLabelWidth: CGFloat, boundsHeight: CGFloat) -> NSRect {
-        NSRect(
+    static func labelTextRect(
+        activityLabelWidth: CGFloat,
+        boundsHeight: CGFloat,
+        glyphFrame: NSRect? = nil
+    ) -> NSRect {
+        var rect = NSRect(
             x: textLeadingInset,
             y: (boundsHeight - textHeight) / 2,
             width: max(0, activityLabelWidth - textLeadingInset - textRightGlyphClearance),
             height: textHeight
         )
+        if let glyphFrame {
+            let maxTextX = min(rect.maxX, glyphFrame.minX - textGlyphGap)
+            rect.size.width = max(0, maxTextX - rect.minX)
+        }
+        return rect
     }
 }
 
@@ -1183,10 +1193,13 @@ private final class NotchStatusPillContentView: NSView {
         let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         let labelString = label as NSString
         let textWidth = labelString.size(withAttributes: [.font: font]).width
+        let glyphFrame = currentGlyphFrame(labelWidth: activityLabelWidth)
         let textRect = NotchActivityLabelRenderPolicy.labelTextRect(
             activityLabelWidth: activityLabelWidth,
-            boundsHeight: bounds.height
+            boundsHeight: bounds.height,
+            glyphFrame: glyphFrame
         )
+        guard textRect.width > 0 else { return activityLabelWidth }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let hoverDuration = glyphHoverStartedAt.map { CACurrentMediaTime() - $0 } ?? 0
         let isScrolling = NotchActivityLabelRenderPolicy.shouldScrollLabel(
