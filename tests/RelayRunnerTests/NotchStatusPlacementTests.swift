@@ -173,6 +173,24 @@ final class NotchStatusPlacementTests: XCTestCase {
             ),
             progress
         )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabelWidth(
+                status: .working,
+                compactLabel: nil,
+                workingProgressLabel: progress,
+                workingGlyphHovered: false
+            ),
+            0
+        )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabelWidth(
+                status: .working,
+                compactLabel: nil,
+                workingProgressLabel: progress,
+                workingGlyphHovered: true
+            ),
+            NotchStatusPlacementPlanner.maximumActivityLabelWidth
+        )
 
         let now = Date(timeIntervalSince1970: 2_000)
         let run = RunState(
@@ -221,6 +239,22 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(
             NotchSessionStatus.resolve(for: .idle, hasActivityLabels: true),
             .working
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(
+                for: .idle,
+                hasActivityLabels: false,
+                boardIsLoading: true
+            ),
+            .working
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(
+                for: .recording,
+                hasActivityLabels: false,
+                boardIsLoading: true
+            ),
+            .listening
         )
         XCTAssertEqual(
             NotchSessionStatus.resolve(for: .processing, hasActivityLabels: false),

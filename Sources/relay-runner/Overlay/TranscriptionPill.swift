@@ -11,6 +11,10 @@ import CoreImage
 ///   - Content updates within same state: smooth in-place resize
 ///   - All movement is purely vertical (Y-axis only)
 final class TranscriptionPill: NSView {
+    struct AcknowledgementCopy: Equatable {
+        let title: String
+        let body: String?
+    }
 
     enum Theme {
         case stt
@@ -67,10 +71,18 @@ final class TranscriptionPill: NSView {
     private let bottomOffset: CGFloat = 56
 
     private let textColor = NSColor(red: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 1)
+    private let primaryTextColor = NSColor(red: 247 / 255, green: 249 / 255, blue: 252 / 255, alpha: 1)
+    private let secondaryTextColor = NSColor(red: 213 / 255, green: 219 / 255, blue: 232 / 255, alpha: 1)
+
+    private enum Presentation {
+        case standard
+        case acknowledgement
+    }
 
     private var isCompact = true
     private var isTransitioning = false
     private var currentTheme: Theme?
+    private var presentation: Presentation = .standard
 
     /// Latest pill size requested via `transitionContent`. The deferred
     /// callback reads these instead of its captured arguments so that a
@@ -216,6 +228,8 @@ final class TranscriptionPill: NSView {
         let wasCompact = isCompact
         let themeChanged = currentTheme.map { type(of: $0) != type(of: theme) } ?? true
 
+        presentation = .standard
+        applyTypography()
         applyTheme(theme)
         titleLabel.stringValue = title
         titleLabel.alignment = .center
@@ -243,6 +257,8 @@ final class TranscriptionPill: NSView {
         let wasVisible = alphaValue > 0.01
         let wasCompact = isCompact
 
+        presentation = .standard
+        applyTypography()
         applyTheme(theme)
         if suppressShadow {
             layer?.shadowOpacity = 0
@@ -291,6 +307,87 @@ final class TranscriptionPill: NSView {
             applyLayout(width: maxWidth, height: pillHeight, animated: false)
             slideIn(animated: animated)
         }
+    }
+
+    func showAcknowledgement(text: String, theme: Theme, animated: Bool = true) {
+        let copy = Self.acknowledgementCopy(from: text)
+        let wasVisible = alphaValue > 0.01
+        let wasCompact = isCompact
+
+        presentation = .acknowledgement
+        applyTypography()
+        applyTheme(theme)
+        titleLabel.stringValue = copy.title
+        titleLabel.alignment = .left
+        bodyLabel.stringValue = copy.body ?? ""
+        bodyLabel.alignment = .left
+        manualScrollEngaged = false
+        isCompact = false
+
+        let contentMaxWidth = acknowledgementMaxWidth - currentPadH * 2
+        let titleWidth = titleLabel.sizeThatFits(NSSize(width: contentMaxWidth, height: .greatestFiniteMagnitude)).width
+        let bodyWidth = bodyLabel.sizeThatFits(NSSize(width: contentMaxWidth, height: .greatestFiniteMagnitude)).width
+        let contentWidth = min(contentMaxWidth, max(titleWidth, bodyWidth))
+        let pillWidth = min(
+            acknowledgementMaxWidth,
+            max(acknowledgementMinWidth, ceil(contentWidth) + currentPadH * 2)
+        )
+        let resolvedContentWidth = pillWidth - currentPadH * 2
+        let titleSize = titleLabel.sizeThatFits(NSSize(width: resolvedContentWidth, height: .greatestFiniteMagnitude))
+        let hasBody = !(copy.body ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let bodySize = hasBody
+            ? bodyLabel.sizeThatFits(NSSize(width: resolvedContentWidth, height: .greatestFiniteMagnitude))
+            : .zero
+        let bodyVisibleHeight = min(bodySize.height, acknowledgementMaxBodyHeight)
+        let pillHeight = currentPadV
+            + titleSize.height
+            + (hasBody ? currentTextGap + bodyVisibleHeight : 0)
+            + currentPadV
+
+        if wasVisible && animated && wasCompact {
+            transitionContent(width: pillWidth, height: pillHeight)
+        } else if wasVisible {
+            applyLayout(width: pillWidth, height: pillHeight, animated: animated)
+            if hasBody, bodyContainer.isHidden {
+                bodyContainer.isHidden = false
+            }
+            bodyContainer.alphaValue = hasBody ? 1 : 0
+        } else {
+            bodyContainer.isHidden = !hasBody
+            bodyContainer.alphaValue = hasBody ? 1 : 0
+            applyLayout(width: pillWidth, height: pillHeight, animated: false)
+            slideIn(animated: animated)
+        }
+    }
+
+    static func acknowledgementCopy(from text: String) -> AcknowledgementCopy {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let colon = trimmed.firstIndex(of: ":") {
+            let title = String(trimmed[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = String(trimmed[trimmed.index(after: colon)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty, !body.isEmpty, !body.contains("\n") {
+                return AcknowledgementCopy(title: title, body: body)
+            }
+        }
+
+        let lines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if let first = lines.first {
+            let body = lines.dropFirst().joined(separator: " ")
+            return AcknowledgementCopy(
+                title: first,
+                body: body.isEmpty ? nil : body
+            )
+        }
+
+        return AcknowledgementCopy(
+            title: trimmed.isEmpty ? "Got it" : trimmed,
+            body: nil
+        )
     }
 
     func hide(animated: Bool = true) {
@@ -467,7 +564,46 @@ final class TranscriptionPill: NSView {
     private func applyTheme(_ theme: Theme) {
         currentTheme = theme
         layer?.shadowColor = theme.primaryShadowColor
-        layer?.shadowOpacity = 0.2
+        layer?.shadowOpacity = presentation == .acknowledgement ? 0.10 : 0.2
+        solidFillLayer.backgroundColor = (presentation == .acknowledgement
+            ? NSColor(red: 8 / 255, green: 10 / 255, blue: 16 / 255, alpha: 0.68)
+            : NSColor(white: 0.0, alpha: 0.45)
+        ).cgColor
+        gradientFillLayer.colors = presentation == .acknowledgement
+            ? [
+                NSColor(red: 87 / 255, green: 78 / 255, blue: 138 / 255, alpha: 0.18).cgColor,
+                NSColor(red: 246 / 255, green: 248 / 255, blue: 255 / 255, alpha: 0.06).cgColor,
+            ]
+            : [
+                NSColor(white: 0.0, alpha: 0.10).cgColor,
+                NSColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 0.10).cgColor,
+            ]
+        borderGradientLayer.colors = presentation == .acknowledgement
+            ? [
+                NSColor(white: 1, alpha: 0.04).cgColor,
+                NSColor(red: 198 / 255, green: 191 / 255, blue: 249 / 255, alpha: 0.16).cgColor,
+                NSColor(white: 1, alpha: 0.09).cgColor,
+            ]
+            : [
+                NSColor(white: 1, alpha: 0.0).cgColor,
+                NSColor(white: 1, alpha: 0.0).cgColor,
+                NSColor(white: 1, alpha: 0.1).cgColor,
+            ]
+    }
+
+    private func applyTypography() {
+        switch presentation {
+        case .standard:
+            titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+            titleLabel.textColor = textColor
+            bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
+            bodyLabel.textColor = textColor
+        case .acknowledgement:
+            titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+            titleLabel.textColor = primaryTextColor
+            bodyLabel.font = .systemFont(ofSize: 13, weight: .regular)
+            bodyLabel.textColor = secondaryTextColor
+        }
     }
 
     private func applyLayout(width: CGFloat, height: CGFloat, animated: Bool, duration: CFTimeInterval = 0.4) {
@@ -478,7 +614,10 @@ final class TranscriptionPill: NSView {
         let targetBounds = NSRect(x: 0, y: 0, width: width, height: height)
 
         let inset = targetBounds.insetBy(dx: 0.5, dy: 0.5)
-        let crPath = CGPath(roundedRect: inset, cornerWidth: cr, cornerHeight: cr, transform: nil)
+        let radius = currentCornerRadius
+        let crPath = CGPath(roundedRect: inset, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        backgroundBlurView.layer?.cornerRadius = radius
+        glassContainerView.layer?.cornerRadius = radius
 
         if animated && alphaValue > 0.01 {
             NSAnimationContext.runAnimationGroup { ctx in
@@ -518,13 +657,13 @@ final class TranscriptionPill: NSView {
     }
 
     private func layoutLabels(targetBounds: NSRect, animated: Bool, duration: CFTimeInterval = 0.4) {
-        let contentWidth = targetBounds.width - pillPadH * 2
+        let contentWidth = targetBounds.width - currentPadH * 2
         let titleHeight = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude)).height
 
         if isCompact {
             cancelBodyScroll()
             let titleFrame = NSRect(
-                x: pillPadH,
+                x: currentPadH,
                 y: (targetBounds.height - titleHeight) / 2,
                 width: contentWidth,
                 height: titleHeight
@@ -545,12 +684,14 @@ final class TranscriptionPill: NSView {
             // Full content height (may exceed maxBodyHeight); container clips
             // it and we scroll the label inside if overflowing.
             let bodyContentHeight = bodyLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude)).height
-            let bodyVisibleHeight = min(bodyContentHeight, maxBodyHeight)
-            let totalContent = titleHeight + textGap + bodyVisibleHeight
+            let hasBody = !bodyLabel.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let bodyVisibleHeight = hasBody ? min(bodyContentHeight, currentMaxBodyHeight) : 0
+            let totalContent = titleHeight + (hasBody ? currentTextGap + bodyVisibleHeight : 0)
             let startY = (targetBounds.height - totalContent) / 2
 
-            let containerFrame = NSRect(x: pillPadH, y: startY, width: contentWidth, height: bodyVisibleHeight)
-            let titleFrame = NSRect(x: pillPadH, y: startY + bodyVisibleHeight + textGap, width: contentWidth, height: titleHeight)
+            let containerFrame = NSRect(x: currentPadH, y: startY, width: contentWidth, height: bodyVisibleHeight)
+            let titleFrameY = hasBody ? startY + bodyVisibleHeight + currentTextGap : startY
+            let titleFrame = NSRect(x: currentPadH, y: titleFrameY, width: contentWidth, height: titleHeight)
 
             // Top-anchored: label's top edge lines up with container's top
             // edge. NSView origin is bottom-left, so the label's y is
@@ -582,7 +723,7 @@ final class TranscriptionPill: NSView {
             if bodyContainer.isHidden {
                 bodyContainer.frame = containerFrame
                 bodyLabel.frame = labelFrame
-                bodyContainer.isHidden = false
+                bodyContainer.isHidden = !hasBody
             }
 
             if animated {
@@ -590,7 +731,7 @@ final class TranscriptionPill: NSView {
                     ctx.duration = duration
                     ctx.timingFunction = springTiming
                     bodyContainer.animator().frame = containerFrame
-                    bodyContainer.animator().alphaValue = 1
+                    bodyContainer.animator().alphaValue = hasBody ? 1 : 0
                     titleLabel.animator().frame = titleFrame
                 }
                 // Snap the label to its starting position inside the container
@@ -599,7 +740,8 @@ final class TranscriptionPill: NSView {
                 bodyLabel.frame = labelFrame
             } else {
                 bodyContainer.frame = containerFrame
-                bodyContainer.alphaValue = 1
+                bodyContainer.alphaValue = hasBody ? 1 : 0
+                bodyContainer.isHidden = !hasBody
                 bodyLabel.frame = labelFrame
                 titleLabel.frame = titleFrame
             }
@@ -608,7 +750,7 @@ final class TranscriptionPill: NSView {
             // STT pins to the bottom (no scroll). Manual scroll has taken
             // control. Otherwise: TTS auto-teleprompter, preserved if the
             // existing timer is already animating this same text.
-            if bodyContentHeight > maxBodyHeight {
+            if bodyContentHeight > currentMaxBodyHeight {
                 if isSttPinToBottom || manualScrollEngaged {
                     cancelBodyScroll()
                 } else if !scrollContinues {
@@ -734,5 +876,29 @@ final class TranscriptionPill: NSView {
         case (.stt, .stt), (.tts, .tts): return true
         default: return false
         }
+    }
+
+    private var acknowledgementMaxWidth: CGFloat { 420 }
+    private var acknowledgementMinWidth: CGFloat { 344 }
+    private var acknowledgementMaxBodyHeight: CGFloat { 48 }
+
+    private var currentPadH: CGFloat {
+        presentation == .acknowledgement ? 24 : pillPadH
+    }
+
+    private var currentPadV: CGFloat {
+        presentation == .acknowledgement ? 15 : pillPadV
+    }
+
+    private var currentTextGap: CGFloat {
+        presentation == .acknowledgement ? 6 : textGap
+    }
+
+    private var currentCornerRadius: CGFloat {
+        presentation == .acknowledgement ? 14 : cr
+    }
+
+    private var currentMaxBodyHeight: CGFloat {
+        presentation == .acknowledgement ? acknowledgementMaxBodyHeight : maxBodyHeight
     }
 }

@@ -251,7 +251,7 @@ final class OverlayController {
 
         case .acknowledgement(let text, _):
             if state != lastAppliedState {
-                pill.showCompact(title: text, theme: .tts)
+                pill.showAcknowledgement(text: text, theme: .tts)
             }
 
         case .preparing:

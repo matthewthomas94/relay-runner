@@ -1079,6 +1079,16 @@ final class ProgramBoardViewModel {
         reloadTask?.cancel()
     }
 
+    func prepareForOpening() {
+        reloadTask?.cancel()
+        reloadState = .idle
+        errorMessage = nil
+        selectedTicketDetail = nil
+        creating = nil
+        editing = nil
+        endDrag()
+    }
+
     @discardableResult
     func reload() -> Task<Void, Never> {
         reloadTask?.cancel()

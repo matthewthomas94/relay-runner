@@ -1,7 +1,47 @@
+import AppKit
 import XCTest
 @testable import relay_runner
 
 final class StateMachineAcknowledgementTests: XCTestCase {
+    func testAcknowledgementCopySplitsTitleAndSummaryLines() {
+        XCTAssertEqual(
+            TranscriptionPill.acknowledgementCopy(
+                from: "Ok I've got it\n\nYou want me to update the UI for the modal."
+            ),
+            TranscriptionPill.AcknowledgementCopy(
+                title: "Ok I've got it",
+                body: "You want me to update the UI for the modal."
+            )
+        )
+
+        XCTAssertEqual(
+            TranscriptionPill.acknowledgementCopy(from: "Got it: add tests."),
+            TranscriptionPill.AcknowledgementCopy(title: "Got it", body: "add tests.")
+        )
+
+        XCTAssertEqual(
+            TranscriptionPill.acknowledgementCopy(from: "  "),
+            TranscriptionPill.AcknowledgementCopy(title: "Got it", body: nil)
+        )
+    }
+
+    func testAcknowledgementPillUsesDedicatedCompactFootprint() {
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 800))
+        let pill = TranscriptionPill(frame: .zero)
+        host.addSubview(pill)
+
+        pill.showAcknowledgement(
+            text: "Ok I've got it\n\nYou want me to update the UI for the modal.",
+            theme: .tts,
+            animated: false
+        )
+
+        XCTAssertGreaterThanOrEqual(pill.frame.width, 344)
+        XCTAssertLessThanOrEqual(pill.frame.width, 420)
+        XCTAssertGreaterThan(pill.frame.height, 48)
+        XCTAssertLessThan(pill.frame.height, 96)
+    }
+
     func testBridgeAcknowledgementDuringSentIsDeferredUntilAfterSentWindowPlusPause() {
         var now = Date(timeIntervalSinceReferenceDate: 1_000)
         let stateMachine = StateMachine(now: { now })

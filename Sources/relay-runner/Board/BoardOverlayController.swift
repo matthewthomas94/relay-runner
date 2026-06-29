@@ -14,6 +14,7 @@ final class BoardOverlayController {
 
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
+    private weak var revealContainer: BoardRevealContainerView?
     private var globalMonitor: Any?
     private var localMonitor: Any?
     /// Drives the SwiftUI view. Mutated by the controller (theme on every
@@ -28,6 +29,8 @@ final class BoardOverlayController {
     /// run state (In-progress placement + status pills) tracks within ~1s.
     private var runStatePollTimer: Timer?
     private var currentProject: ProjectResolver.LinkedProject?
+    private var cachedProjectPath: String?
+    private var loadingStateHandler: ((Bool) -> Void)?
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
 
     private let boardRouteResolver: () -> ProjectResolver.BoardRoute
@@ -53,6 +56,10 @@ final class BoardOverlayController {
     private var programBoardHandler: (() -> Void)?
     func setProgramBoardHandler(_ handler: @escaping () -> Void) {
         self.programBoardHandler = handler
+    }
+
+    func setLoadingStateHandler(_ handler: @escaping (Bool) -> Void) {
+        self.loadingStateHandler = handler
     }
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
@@ -140,17 +147,24 @@ final class BoardOverlayController {
         currentProject = project
 
         let p = panel ?? BoardOverlayPanel()
-        if let screen = currentMouseScreen() {
+        let screen = currentMouseScreen()
+        if let screen {
             p.reframe(to: screen)
         }
 
-        // Put the panel onscreen before disk/network refreshes so the hotkey
-        // feels immediate even for large boards or cold daemon state.
-        model.tickets = []
-        model.runStates = [:]
+        let hasCachedProject = cachedProjectPath == project.repoPath.path
+        if !hasCachedProject {
+            model.tickets = []
+            model.runStates = [:]
+        }
         model.theme = themeResolver?()
         model.editing = nil
+        model.dragState = nil
+        if !hasCachedProject {
+            loadingStateHandler?(true)
+        }
 
+        let contentFrame = NSRect(origin: .zero, size: p.frame.size)
         let hosting = NSHostingView(rootView: BoardOverlayView(
             model: model,
             onDismiss: { [weak self] in self?.hide() },
@@ -161,27 +175,46 @@ final class BoardOverlayController {
             onCancel: { [weak self] in self?.cancelEditor() },
             onDelete: { [weak self] ticket in self?.handleDelete(ticket) }
         ))
-        hosting.frame = p.frame
+        hosting.frame = contentFrame
         hosting.autoresizingMask = [.width, .height]
         // Transparent background so the panel's transparency shows through
         // the unused SwiftUI canvas (the columns themselves opt back in with
         // their own backgrounds).
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
 
-        p.contentView = hosting
+        let container = BoardRevealContainerView(
+            frame: contentFrame,
+            contentView: hosting,
+            displayGeometry: screen.map(NotchStatusDisplayGeometry.init(screen:))
+                ?? NotchStatusDisplayGeometry(screenFrame: p.frame),
+            startsLoading: !hasCachedProject
+        )
+        container.autoresizingMask = [.width, .height]
+
+        p.contentView = container
         p.orderFrontRegardless()
         self.panel = p
+        self.revealContainer = container
         self.isVisible = true
+        DispatchQueue.main.async { [weak container] in
+            container?.animateReveal {}
+        }
 
         startThemePoll()
         startRunStatePoll()
         DispatchQueue.main.async { [weak self] in
-            self?.refreshVisibleProject(trigger: "board-show")
+            guard let self, self.isVisible else { return }
+            self.refreshVisibleProject(trigger: "board-show")
+            self.revealContainer?.setLoading(false)
+            if !hasCachedProject {
+                self.loadingStateHandler?(false)
+            }
         }
     }
 
     func hide() {
         guard isVisible else { return }
+        loadingStateHandler?(false)
         // Cancel any open edit so reopening the board lands on a clean view.
         if model.editing != nil {
             cancelEditor()
@@ -190,9 +223,23 @@ final class BoardOverlayController {
         currentProject = nil
         stopThemePoll()
         stopRunStatePoll()
-        panel?.orderOut(nil)
-        panel?.contentView = nil
         isVisible = false
+        let panelToDismiss = panel
+        let container = revealContainer ?? panelToDismiss?.contentView as? BoardRevealContainerView
+        if let container {
+            container.animateDismiss { [weak self, weak panelToDismiss] in
+                guard let panelToDismiss else { return }
+                panelToDismiss.orderOut(nil)
+                if let self, self.panel === panelToDismiss {
+                    self.panel?.contentView = nil
+                    self.revealContainer = nil
+                }
+            }
+        } else {
+            panelToDismiss?.orderOut(nil)
+            panelToDismiss?.contentView = nil
+            revealContainer = nil
+        }
     }
 
     /// Poll the resolver and update model.theme on changes. 100 ms feels
@@ -237,6 +284,7 @@ final class BoardOverlayController {
         guard let project = currentProject else { return }
         model.tickets = loadTickets()
         model.runStates = loadRunStates()
+        cachedProjectPath = project.repoPath.path
         if let trigger {
             OrchestratorClient.sweepReadyTickets(repoPath: project.repoPath.path, trigger: trigger)
         }

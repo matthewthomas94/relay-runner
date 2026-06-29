@@ -136,6 +136,8 @@ final class AppState {
     private var bridgeRecoveryInFlight = false {
         didSet { syncNotchStatusSurface() }
     }
+    private var projectBoardLoading = false
+    private var programBoardLoading = false
     private var lastBridgeRecoveryAt: Date = .distantPast
     private static let bridgeRecoveryCooldown: TimeInterval = 15
     private var bridgeRecoverySuppressedForUpdate = false
@@ -210,7 +212,8 @@ final class AppState {
         notchStatusController.setStatus(
             NotchSessionStatus.resolve(
                 for: stateMachine.state,
-                hasActivityLabels: !labels.isEmpty || workingProgressLabel != nil
+                hasActivityLabels: !labels.isEmpty || workingProgressLabel != nil,
+                boardIsLoading: projectBoardLoading || programBoardLoading
             )
         )
         notchStatusController.setWorkingProgressLabel(workingProgressLabel)
@@ -238,6 +241,9 @@ final class AppState {
         programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
             guard let self else { return nil }
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
+        }
+        notchStatusController.setGlyphClickHandler { [weak self] in
+            self?.toggleBoard()
         }
         self.updateRelaunchObserver = NotificationCenter.default.addObserver(
             forName: .relayRunnerWillRelaunchForUpdate,
@@ -981,10 +987,16 @@ final class AppState {
         boardOverlay.setProgramBoardHandler { [weak self] in
             self?.programBoardOverlay.toggle()
         }
+        boardOverlay.setLoadingStateHandler { [weak self] isLoading in
+            self?.setProjectBoardLoading(isLoading)
+        }
         programBoardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
             if case .actionGlow = state { return .stt }
             return state.particleTheme
+        }
+        programBoardOverlay.setLoadingStateHandler { [weak self] isLoading in
+            self?.setProgramBoardLoading(isLoading)
         }
         programBoardOverlay.setOpenProjectHandler { [weak self] repoPath in
             guard let self else { return }
@@ -1066,6 +1078,18 @@ final class AppState {
             self.wasRecording = nowRecording
             self.syncNotchActivitySurface()
         }
+    }
+
+    private func setProjectBoardLoading(_ isLoading: Bool) {
+        guard projectBoardLoading != isLoading else { return }
+        projectBoardLoading = isLoading
+        syncNotchActivitySurface()
+    }
+
+    private func setProgramBoardLoading(_ isLoading: Bool) {
+        guard programBoardLoading != isLoading else { return }
+        programBoardLoading = isLoading
+        syncNotchActivitySurface()
     }
 
     private func stopOverlay() {

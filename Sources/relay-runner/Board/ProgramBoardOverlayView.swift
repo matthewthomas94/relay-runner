@@ -40,7 +40,7 @@ struct ProgramBoardOverlayView: View {
                     onDelete: onDelete,
                     onDrop: onDrop
                 )
-                .padding(.top, 89)
+                .padding(.top, BoardSurfaceLayout.columnTopPadding)
 
                 Spacer(minLength: 0)
             }
@@ -198,7 +198,7 @@ private struct ProgramBoardContent: View {
         if let snapshot = model.snapshot {
             if snapshot.hasRegisteredProjects {
                 ZStack(alignment: .top) {
-                    HStack(alignment: .top, spacing: 12) {
+                    HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
                         ProgramOverviewColumn(
                             snapshot: snapshot,
                             selectedProjectPath: model.selectedProjectPath,
@@ -224,6 +224,8 @@ private struct ProgramBoardContent: View {
                             )
                         }
                     }
+                    .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                    .frame(maxWidth: .infinity, alignment: .top)
 
                     if let detail = model.selectedTicketDetail {
                         ProgramTicketDetailPanel(
@@ -249,14 +251,8 @@ private struct ProgramBoardContent: View {
                 )
             }
         } else if model.isLoading {
-            ProgramStatePanel(
-                title: "Loading program status",
-                detail: nil,
-                reloadState: model.reloadState,
-                theme: model.theme,
-                onRefresh: onRefresh,
-                onDismiss: onDismiss
-            )
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgramStatePanel(
                 title: "Program status unavailable",
@@ -321,7 +317,7 @@ private struct ProgramOverviewColumn: View {
 
             Spacer(minLength: 0)
         }
-        .programColumnChrome(width: 304, theme: theme)
+        .programColumnChrome(theme: theme)
     }
 }
 
@@ -613,7 +609,7 @@ private struct ProgramWorkColumnPanel: View {
             }
             Spacer(minLength: 0)
         }
-        .programColumnChrome(width: 270, theme: theme)
+        .programColumnChrome(theme: theme)
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(
@@ -1730,14 +1726,13 @@ private struct ProgramInlineBadge: View {
 }
 
 private struct ProgramBoardColumnChrome: ViewModifier {
-    let width: CGFloat
     let theme: ParticleFieldRenderer.Theme?
 
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
-            .frame(width: width, height: 633, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
             .background(BoardGlassBackground(cornerRadius: 16))
             .shadow(color: Self.shadowColor(for: theme), radius: 20, x: 0, y: -6)
             .animation(.easeInOut(duration: 0.4), value: theme)
@@ -1758,8 +1753,8 @@ private struct ProgramBoardColumnChrome: ViewModifier {
 }
 
 private extension View {
-    func programColumnChrome(width: CGFloat, theme: ParticleFieldRenderer.Theme?) -> some View {
-        modifier(ProgramBoardColumnChrome(width: width, theme: theme))
+    func programColumnChrome(theme: ParticleFieldRenderer.Theme?) -> some View {
+        modifier(ProgramBoardColumnChrome(theme: theme))
     }
 }
 

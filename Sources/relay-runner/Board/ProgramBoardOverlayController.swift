@@ -8,9 +8,11 @@ final class ProgramBoardOverlayController {
 
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
+    private weak var revealContainer: BoardRevealContainerView?
     private let model = ProgramBoardViewModel()
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     private var openProjectHandler: ((String) -> Void)?
+    private var loadingStateHandler: ((Bool) -> Void)?
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
     private var themePollTimer: Timer?
     private var statusPollTimer: Timer?
@@ -21,6 +23,10 @@ final class ProgramBoardOverlayController {
 
     func setOpenProjectHandler(_ handler: @escaping (String) -> Void) {
         self.openProjectHandler = handler
+    }
+
+    func setLoadingStateHandler(_ handler: @escaping (Bool) -> Void) {
+        self.loadingStateHandler = handler
     }
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
@@ -40,13 +46,20 @@ final class ProgramBoardOverlayController {
         guard !isVisible else { return }
 
         let p = panel ?? BoardOverlayPanel()
-        if let screen = currentMouseScreen() {
+        let screen = currentMouseScreen()
+        if let screen {
             p.reframe(to: screen)
         }
 
+        let hasCachedSnapshot = model.snapshot != nil
+        model.prepareForOpening()
         model.theme = themeResolver?()
-        model.reload()
+        let reloadTask = hasCachedSnapshot ? model.refreshInBackground() : model.reload()
+        if !hasCachedSnapshot {
+            loadingStateHandler?(true)
+        }
 
+        let contentFrame = NSRect(origin: .zero, size: p.frame.size)
         let hosting = NSHostingView(rootView: ProgramBoardOverlayView(
             model: model,
             onDismiss: { [weak self] in self?.hide() },
@@ -63,30 +76,66 @@ final class ProgramBoardOverlayController {
                 self?.handleDrop(item: item, from: sourceLane, to: targetLane)
             }
         ))
-        hosting.frame = p.frame
+        hosting.frame = contentFrame
         hosting.autoresizingMask = [.width, .height]
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
 
-        p.contentView = hosting
+        let container = BoardRevealContainerView(
+            frame: contentFrame,
+            contentView: hosting,
+            displayGeometry: screen.map(NotchStatusDisplayGeometry.init(screen:))
+                ?? NotchStatusDisplayGeometry(screenFrame: p.frame),
+            startsLoading: !hasCachedSnapshot
+        )
+        container.autoresizingMask = [.width, .height]
+
+        p.contentView = container
         p.orderFrontRegardless()
         panel = p
+        revealContainer = container
         isVisible = true
+        DispatchQueue.main.async { [weak container] in
+            container?.animateReveal {}
+        }
 
         startThemePoll()
         startStatusPoll()
+        Task { @MainActor [weak self, weak container] in
+            await reloadTask.value
+            guard let self, self.isVisible else { return }
+            container?.setLoading(false)
+            if !hasCachedSnapshot {
+                self.loadingStateHandler?(false)
+            }
+        }
     }
 
     func hide() {
         guard isVisible else { return }
+        loadingStateHandler?(false)
         model.endDrag()
         model.cancelCreate()
         model.cancelEdit()
         setPanelKeyEligible(false)
         stopThemePoll()
         stopStatusPoll()
-        panel?.orderOut(nil)
-        panel?.contentView = nil
         isVisible = false
+        let panelToDismiss = panel
+        let container = revealContainer ?? panelToDismiss?.contentView as? BoardRevealContainerView
+        if let container {
+            container.animateDismiss { [weak self, weak panelToDismiss] in
+                guard let panelToDismiss else { return }
+                panelToDismiss.orderOut(nil)
+                if let self, self.panel === panelToDismiss {
+                    self.panel?.contentView = nil
+                    self.revealContainer = nil
+                }
+            }
+        } else {
+            panelToDismiss?.orderOut(nil)
+            panelToDismiss?.contentView = nil
+            revealContainer = nil
+        }
     }
 
     private func startThemePoll() {

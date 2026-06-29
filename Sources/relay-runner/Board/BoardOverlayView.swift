@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+enum BoardSurfaceLayout {
+    static let horizontalPadding: CGFloat = 24
+    static let columnSpacing: CGFloat = 10
+    static let columnTopPadding: CGFloat = 78
+    static let columnHeight: CGFloat = 633
+}
+
 /// Observable model driving the board view. The controller mutates `theme`
 /// from a poll timer so the panel glow updates live as the particle field
 /// changes (recording starts → red, playback starts → purple).
@@ -258,7 +265,7 @@ struct BoardOverlayView: View {
                 }
 
             VStack(spacing: 0) {
-                HStack(alignment: .top, spacing: 12) {
+                HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
                     ForEach(columns) { spec in
                         BoardColumnPanel(
                             model: model,
@@ -270,7 +277,9 @@ struct BoardOverlayView: View {
                         )
                     }
                 }
-                .padding(.top, 89)
+                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                .frame(maxWidth: .infinity, alignment: .top)
                 Spacer(minLength: 0)
             }
 
@@ -390,7 +399,7 @@ private struct BoardColumnPanel: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
-        .frame(width: 358, height: 633, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
         .background(BoardGlassBackground(cornerRadius: 16))
         // Report frame for drag hit-testing. Placed after the background so
         // the geometry matches the visible panel rect.

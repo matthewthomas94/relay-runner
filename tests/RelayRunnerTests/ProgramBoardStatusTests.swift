@@ -449,6 +449,41 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
     }
 
+    func testProgramBoardViewModelPrepareForOpeningPreservesVisibleSnapshot() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let snapshot = try programBoardSnapshot(clientPath: clientPath, toolsPath: toolsPath)
+        let item = try XCTUnwrap(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil).first)
+        let model = ProgramBoardViewModel()
+        model.snapshot = snapshot
+        model.reloadState = .failed("stale")
+        model.errorMessage = "stale"
+        model.selectProject(path: clientPath)
+        model.selectTicket(item)
+        model.beginCreate(in: .backlog)
+        model.beginDrag(
+            item: item,
+            sourceLane: .backlog,
+            location: CGPoint(x: 12, y: 34),
+            cardCenterOffset: .zero,
+            target: ProgramBoardDropTarget(lane: .ready, isValid: true)
+        )
+
+        model.prepareForOpening()
+
+        XCTAssertEqual(model.snapshot, snapshot)
+        XCTAssertEqual(model.reloadState, .idle)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.selectedProjectPath, clientPath)
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1"])
+        XCTAssertNil(model.selectedTicketDetail)
+        XCTAssertNil(model.creating)
+        XCTAssertNil(model.editing)
+        XCTAssertNil(model.dragItemID)
+        XCTAssertNil(model.dragTarget)
+        XCTAssertNil(model.dragPreview)
+    }
+
     func testProgramBoardViewModelApplyTicketMovesVisibleTicketImmediately() throws {
         let clientPath = "/repo/client-dashboard"
         let toolsPath = "/repo/tools"
