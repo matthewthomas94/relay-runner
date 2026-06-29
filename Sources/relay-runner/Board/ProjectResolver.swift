@@ -4,9 +4,11 @@ import Foundation
 ///
 /// A `/relay-bridge` session remains the default activation path. The bridge
 /// writes its launching cwd to `/tmp/voice_bridge.cwd` at startup and clears
-/// it on shutdown; the bridge socket plus the agent-consumer heartbeat are
-/// the liveness check. When no bridge is live, an explicitly activated
-/// registry project can still back UI/MCP programmatic flows.
+/// it on shutdown; the bridge daemon plus cwd/provider metadata are the
+/// liveness check. The agent-consumer heartbeat is watchdog input only, since
+/// completed Codex App turns can stop touching it while the bridge session is
+/// still valid. When no bridge is live, an explicitly activated registry
+/// project can still back UI/MCP programmatic flows.
 ///
 /// Bridge cwd values run through the workspace/project classifier: a single
 /// repo activates that repo and initializes `.orchestrator/config.toml` when
@@ -49,7 +51,7 @@ enum ProjectResolver {
     ) -> LinkedProject? {
         let fm = FileManager.default
         // Tests can pass explicit fixture paths and use the default healthy
-        // closure; production resolve() checks process + consumer liveness.
+        // closure; production resolve() checks process + bridge metadata.
         let bridgeAlive = bridgeSessionAlive() && fm.fileExists(atPath: bridgeSocket.path)
         if bridgeAlive,
            let raw = try? String(contentsOf: bridgeCwdFile, encoding: .utf8) {

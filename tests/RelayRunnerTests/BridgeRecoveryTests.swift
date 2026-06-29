@@ -73,6 +73,21 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
+    func testWatchdogKeepsContextBackedDaemonWhenCodexTaskCompletes() {
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: false,
+                daemonAlive: true,
+                consumerAlive: false,
+                hasSessionContext: true,
+                wasAlive: false,
+                sessionBridgeSeen: false,
+                elapsedSinceSessionStart: 0
+            ),
+            .keepDaemon
+        )
+    }
+
     func testWatchdogSuppressesRecoveryDuringSparkleRelaunch() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(

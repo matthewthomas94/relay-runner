@@ -658,18 +658,34 @@ final class AppState {
     private func startBridgeWatchdog() {
         stopBridgeWatchdog()
         let daemonAlive = processManager.bridgeAlive()
-        bridgeAliveCache = daemonAlive && processManager.bridgeConsumerAlive()
+        let consumerAlive = daemonAlive && processManager.bridgeConsumerAlive()
+        let hasSessionContext = processManager.bridgeRecoveryContext(
+            fallbackConfig: menuSessionActive ? config : nil
+        ) != nil
+        bridgeAliveCache = ProcessManager.relaySessionAlive(
+            daemonAlive: daemonAlive,
+            consumerAlive: consumerAlive,
+            hasSessionContext: hasSessionContext
+        )
         bridgeWatchdog = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             guard let self, self.isRunning else { return }
             let daemonAlive = self.processManager.bridgeAlive()
             let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
-            let alive = daemonAlive && consumerAlive
+            let hasSessionContext = self.processManager.bridgeRecoveryContext(
+                fallbackConfig: self.menuSessionActive ? self.config : nil
+            ) != nil
+            let alive = ProcessManager.relaySessionAlive(
+                daemonAlive: daemonAlive,
+                consumerAlive: consumerAlive,
+                hasSessionContext: hasSessionContext
+            )
             let wasAlive = self.bridgeAliveCache
             let elapsed = Date().timeIntervalSince(self.sessionStartTime)
             let action = Self.bridgeWatchdogAction(
                 menuSessionActive: self.menuSessionActive,
                 daemonAlive: daemonAlive,
                 consumerAlive: consumerAlive,
+                hasSessionContext: hasSessionContext,
                 wasAlive: wasAlive,
                 sessionBridgeSeen: self.sessionBridgeSeen,
                 elapsedSinceSessionStart: elapsed,
@@ -688,9 +704,10 @@ final class AppState {
                 return
             case .keepDaemon:
                 // A busy Codex/Claude turn can stop touching the consumer
-                // heartbeat while git/build work continues. Keep an already
-                // observed session daemon alive so TTS and queued voice input
-                // can recover.
+                // heartbeat while git/build work continues. A completed Codex
+                // App turn can also leave a valid context-backed daemon idle.
+                // Keep that session alive so TTS, the board, and queued voice
+                // input can recover.
                 self.bridgeAliveCache = true
                 if self.statusText != "Session" {
                     self.statusText = "Session"
@@ -779,6 +796,7 @@ final class AppState {
         menuSessionActive: Bool,
         daemonAlive: Bool,
         consumerAlive: Bool,
+        hasSessionContext: Bool = false,
         wasAlive: Bool,
         sessionBridgeSeen: Bool,
         elapsedSinceSessionStart: TimeInterval,
@@ -795,7 +813,7 @@ final class AppState {
             return .alive
         }
         if daemonAlive && !consumerAlive {
-            return (menuSessionActive || wasAlive) ? .keepDaemon : .reapOrphan
+            return (menuSessionActive || wasAlive || hasSessionContext) ? .keepDaemon : .reapOrphan
         }
         if menuSessionActive {
             if sessionBridgeSeen || elapsedSinceSessionStart > 90 {

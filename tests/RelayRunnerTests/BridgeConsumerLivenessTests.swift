@@ -53,6 +53,26 @@ final class BridgeConsumerLivenessTests: XCTestCase {
         ))
     }
 
+    func testRelaySessionSurvivesCompletedCodexTurnWithBridgeContext() {
+        XCTAssertTrue(ProcessManager.relaySessionAlive(
+            daemonAlive: true,
+            consumerAlive: false,
+            hasSessionContext: true
+        ))
+
+        XCTAssertFalse(ProcessManager.relaySessionAlive(
+            daemonAlive: true,
+            consumerAlive: false,
+            hasSessionContext: false
+        ))
+
+        XCTAssertFalse(ProcessManager.relaySessionAlive(
+            daemonAlive: false,
+            consumerAlive: true,
+            hasSessionContext: true
+        ))
+    }
+
     private func makeFixture() throws -> (root: URL, socket: URL, command: URL, heartbeat: URL) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RelayRunnerBridgeTests-\(UUID().uuidString)", isDirectory: true)

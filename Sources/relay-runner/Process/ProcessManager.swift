@@ -111,7 +111,25 @@ final class ProcessManager {
     }
 
     static func activeRelaySessionAlive() -> Bool {
-        bridgeDaemonAlive() && relayConsumerAlive()
+        let daemonAlive = bridgeDaemonAlive()
+        let consumerAlive = daemonAlive && relayConsumerAlive()
+        let hasSessionContext = bridgeRecoveryContext(
+            cwdFile: URL(fileURLWithPath: bridgeCwdPath),
+            providerFile: URL(fileURLWithPath: bridgeProviderPath)
+        ) != nil
+        return relaySessionAlive(
+            daemonAlive: daemonAlive,
+            consumerAlive: consumerAlive,
+            hasSessionContext: hasSessionContext
+        )
+    }
+
+    static func relaySessionAlive(
+        daemonAlive: Bool,
+        consumerAlive: Bool,
+        hasSessionContext: Bool
+    ) -> Bool {
+        daemonAlive && (consumerAlive || hasSessionContext)
     }
 
     private static func bridgeDaemonAlive() -> Bool {
@@ -136,6 +154,9 @@ final class ProcessManager {
 
     /// Check if the relay consumer (the agent skill's bash polling loop) is alive.
     /// Uses two signals: stale heartbeat file and unconsumed voice command.
+    /// This is watchdog input, not the whole session-liveness contract: a
+    /// completed Codex App turn can stop touching the consumer heartbeat while
+    /// the relay daemon and its cwd/provider metadata remain the active session.
     func bridgeConsumerAlive() -> Bool {
         Self.relayConsumerAlive()
     }
@@ -175,8 +196,9 @@ final class ProcessManager {
         // Modern Codex and Claude relay-bridge sessions touch the heartbeat
         // every 200ms while waiting and every 2s while the agent is working.
         // A missing heartbeat gets only a bounded startup/old-skill grace
-        // instead of indefinite benefit of doubt; after that, a live socket
-        // without a consumer is treated as an orphaned session.
+        // instead of indefinite benefit of doubt. Callers combine this with
+        // bridge session metadata before deciding whether to preserve or reap
+        // the daemon.
         if let modified = modificationDate(of: heartbeatPath, fileManager: fm) {
             let age = now.timeIntervalSince(modified)
             if age > staleHeartbeatTimeout {
