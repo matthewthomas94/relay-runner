@@ -8,12 +8,13 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SPARKLE_VERSION="${SPARKLE_VERSION:-2.9.3}"
 SPARKLE_TOOLS_URL="${SPARKLE_TOOLS_URL:-https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz}"
-SPARKLE_APPCAST_URL="${SPARKLE_APPCAST_URL:-https://github.com/matthewthomas94/relay-runner/releases/latest/download/appcast.xml}"
-SPARKLE_DOWNLOAD_URL_PREFIX="${SPARKLE_DOWNLOAD_URL_PREFIX:-https://github.com/matthewthomas94/relay-runner/releases/latest/download/}"
+SPARKLE_APPCAST_URL="${SPARKLE_APPCAST_URL:-https://github.com/matthewthomas94/relay-runner-updates/releases/latest/download/appcast.xml}"
+SPARKLE_DOWNLOAD_URL_PREFIX="${SPARKLE_DOWNLOAD_URL_PREFIX:-https://github.com/matthewthomas94/relay-runner-updates/releases/latest/download/}"
 DIST_DIR="${DIST_DIR:-$PROJECT_ROOT/dist}"
 SPARKLE_ARCHIVE_PATH="${SPARKLE_ARCHIVE_PATH:-$DIST_DIR/RelayRunner.zip}"
 SPARKLE_APPCAST_OUTPUT="${SPARKLE_APPCAST_OUTPUT:-$DIST_DIR/appcast.xml}"
 SPARKLE_BIN_DIR="${SPARKLE_BIN_DIR:-}"
+SPARKLE_MAXIMUM_VERSIONS="${SPARKLE_MAXIMUM_VERSIONS:-0}"
 
 if [ -z "${SPARKLE_ED_PRIVATE_KEY:-}" ]; then
     echo "error: SPARKLE_ED_PRIVATE_KEY is required to sign the Sparkle appcast." >&2
@@ -30,6 +31,13 @@ case "$SPARKLE_DOWNLOAD_URL_PREFIX" in
         ;;
     *)
         echo "error: SPARKLE_DOWNLOAD_URL_PREFIX must be an https URL ending in /." >&2
+        exit 1
+        ;;
+esac
+
+case "$SPARKLE_MAXIMUM_VERSIONS" in
+    ''|*[!0-9]*)
+        echo "error: SPARKLE_MAXIMUM_VERSIONS must be a non-negative integer." >&2
         exit 1
         ;;
 esac
@@ -64,6 +72,7 @@ echo "==> Generating Sparkle appcast..."
 echo "$SPARKLE_ED_PRIVATE_KEY" | "$GENERATE_APPCAST" \
     --ed-key-file - \
     --download-url-prefix "$SPARKLE_DOWNLOAD_URL_PREFIX" \
+    --maximum-versions "$SPARKLE_MAXIMUM_VERSIONS" \
     -o "$ARCHIVES_DIR/appcast.xml" \
     "$ARCHIVES_DIR"
 

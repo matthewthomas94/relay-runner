@@ -46,6 +46,8 @@ That keeps old appcast entries stable even after a newer release becomes `latest
 
 If Relay Runner later moves to a branded update domain, change `SUFeedURL`, `SPARKLE_APPCAST_URL`, and `SPARKLE_DOWNLOAD_URL_PREFIX` together and keep the old feed URL live long enough for installed apps to cross the bridge.
 
+`scripts/generate-appcast.sh` passes `--maximum-versions 0` to Sparkle's `generate_appcast`. Sparkle's default is to preserve only three versions per branch point, which can force users on older builds to install several sequential updates. Relay Runner keeps the full appcast history so a manual or automatic update can jump directly to the newest compatible release.
+
 ## Version Monotonicity
 
 Sparkle compares `CFBundleVersion`, not `CFBundleShortVersionString`. Every public update must increase `CFBundleVersion` before tagging. Do not republish a different `RelayRunner.zip` for the same `CFBundleVersion`; bump the build number and regenerate the appcast instead.
