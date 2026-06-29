@@ -184,6 +184,20 @@ private extension View {
     }
 }
 
+enum ProgramBoardContentPresentation: Equatable {
+    case board
+    case noRegisteredProjects
+    case empty
+
+    static func resolve(
+        hasSnapshot: Bool,
+        hasRegisteredProjects: Bool
+    ) -> ProgramBoardContentPresentation {
+        guard hasSnapshot else { return .empty }
+        return hasRegisteredProjects ? .board : .noRegisteredProjects
+    }
+}
+
 private struct ProgramBoardContent: View {
     @Bindable var model: ProgramBoardViewModel
     let onRefresh: () -> Void
@@ -195,8 +209,12 @@ private struct ProgramBoardContent: View {
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
-        if let snapshot = model.snapshot {
-            if snapshot.hasRegisteredProjects {
+        switch ProgramBoardContentPresentation.resolve(
+            hasSnapshot: model.snapshot != nil,
+            hasRegisteredProjects: model.snapshot?.hasRegisteredProjects ?? false
+        ) {
+        case .board:
+            if let snapshot = model.snapshot {
                 ZStack(alignment: .top) {
                     HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
                         ProgramOverviewColumn(
@@ -240,7 +258,9 @@ private struct ProgramBoardContent: View {
                         .zIndex(1)
                     }
                 }
-            } else {
+            }
+        case .noRegisteredProjects:
+            if let snapshot = model.snapshot {
                 ProgramStatePanel(
                     title: "No registered projects",
                     detail: model.errorMessage ?? snapshot.summary.message,
@@ -250,19 +270,14 @@ private struct ProgramBoardContent: View {
                     onDismiss: onDismiss
                 )
             }
-        } else if model.isLoading {
-            Color.clear
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ProgramStatePanel(
-                title: "Program status unavailable",
-                detail: model.errorMessage,
-                reloadState: model.reloadState,
-                theme: model.theme,
-                onRefresh: onRefresh,
-                onDismiss: onDismiss
-            )
+        case .empty:
+            emptySurface
         }
+    }
+
+    private var emptySurface: some View {
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

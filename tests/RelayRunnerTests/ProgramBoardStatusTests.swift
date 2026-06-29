@@ -1312,6 +1312,30 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertNil(stateMachine.messagePreview)
     }
 
+    func testProgramBoardContentPresentationHidesNoSnapshotFallbacks() {
+        XCTAssertEqual(
+            ProgramBoardContentPresentation.resolve(
+                hasSnapshot: false,
+                hasRegisteredProjects: false
+            ),
+            .empty
+        )
+        XCTAssertEqual(
+            ProgramBoardContentPresentation.resolve(
+                hasSnapshot: true,
+                hasRegisteredProjects: false
+            ),
+            .noRegisteredProjects
+        )
+        XCTAssertEqual(
+            ProgramBoardContentPresentation.resolve(
+                hasSnapshot: true,
+                hasRegisteredProjects: true
+            ),
+            .board
+        )
+    }
+
     private func decode(_ json: String) throws -> ProgramStatusResponse {
         let data = try XCTUnwrap(json.data(using: .utf8))
         return try JSONDecoder().decode(ProgramStatusResponse.self, from: data)
