@@ -2,6 +2,14 @@ import XCTest
 @testable import relay_runner
 
 final class ProgramBoardStatusTests: XCTestCase {
+    func testProgramBoardGlassCompositesAgainstBoardBackdrop() {
+        XCTAssertEqual(ProgramBoardBackdropStyle.glassBlendingMode, .withinWindow)
+        XCTAssertEqual(ProgramBoardBackdropStyle.backdropOpacity, 0.96, accuracy: 0.001)
+        XCTAssertGreaterThan(
+            ProgramBoardBackdropStyle.backdropHeight,
+            BoardSurfaceLayout.columnTopPadding + BoardSurfaceLayout.columnHeight
+        )
+    }
 
     func testDecodesSummaryAndProviderNeutralWorkItems() throws {
         let summary = try decode("""

@@ -1,6 +1,17 @@
 import AppKit
 import SwiftUI
 
+enum ProgramBoardBackdropStyle {
+    static let backdropOpacity: Double = 0.96
+    static let bottomCornerRadius: CGFloat = 14
+    static let bottomPadding: CGFloat = 24
+    static let glassBlendingMode = NSVisualEffectView.BlendingMode.withinWindow
+
+    static var backdropHeight: CGFloat {
+        BoardSurfaceLayout.columnTopPadding + BoardSurfaceLayout.columnHeight + bottomPadding
+    }
+}
+
 struct ProgramBoardOverlayView: View {
     @Bindable var model: ProgramBoardViewModel
     let onDismiss: () -> Void
@@ -16,7 +27,14 @@ struct ProgramBoardOverlayView: View {
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
+            ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
+                .fill(Color.black.opacity(ProgramBoardBackdropStyle.backdropOpacity))
+                .frame(maxWidth: .infinity)
+                .frame(height: ProgramBoardBackdropStyle.backdropHeight)
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -89,6 +107,29 @@ struct ProgramBoardOverlayView: View {
         .ignoresSafeArea()
         .onPreferenceChange(ProgramColumnFramesKey.self) { model.columnFrames = $0 }
         .onPreferenceChange(ProgramCardFramesKey.self) { model.cardFrames = $0 }
+    }
+}
+
+private struct ProgramBoardBackdropShape: Shape {
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let radius = min(cornerRadius, rect.width / 2, rect.height / 2)
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.maxY - radius),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -1052,7 +1093,7 @@ private struct ProgramTicketDetailPanel: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
         .frame(width: 560, height: 633, alignment: .topLeading)
-        .background(BoardGlassBackground(cornerRadius: 16))
+        .background(ProgramBoardGlassBackground(cornerRadius: 16))
         .shadow(color: ProgramBoardColumnChrome.shadowColor(for: theme), radius: 22, x: 0, y: -6)
         .contentShape(Rectangle())
         .onTapGesture { }
@@ -1387,7 +1428,7 @@ private struct ProgramTicketEditModal: View {
             }
             .padding(20)
             .frame(width: 560)
-            .background(BoardGlassBackground(cornerRadius: 16))
+            .background(ProgramBoardGlassBackground(cornerRadius: 16))
             .shadow(color: Color.black.opacity(0.5), radius: 30, x: 0, y: 10)
             .onTapGesture { }
             .onAppear { titleFocused = true }
@@ -1562,7 +1603,7 @@ private struct ProgramTicketCreateModal: View {
             }
             .padding(20)
             .frame(width: 520)
-            .background(BoardGlassBackground(cornerRadius: 16))
+            .background(ProgramBoardGlassBackground(cornerRadius: 16))
             .shadow(color: Color.black.opacity(0.5), radius: 30, x: 0, y: 10)
             .onTapGesture { }
             .onAppear { titleFocused = true }
@@ -1626,7 +1667,7 @@ private struct ProgramStatePanel: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
         .frame(width: 640, height: 360, alignment: .topLeading)
-        .background(BoardGlassBackground(cornerRadius: 16))
+        .background(ProgramBoardGlassBackground(cornerRadius: 16))
         .shadow(color: ProgramBoardColumnChrome.shadowColor(for: theme), radius: 20, x: 0, y: -6)
         .contentShape(Rectangle())
         .onTapGesture { }
@@ -1724,6 +1765,17 @@ private struct ProgramCardBackground: View {
     }
 }
 
+private struct ProgramBoardGlassBackground: View {
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        BoardGlassBackground(
+            cornerRadius: cornerRadius,
+            blendingMode: ProgramBoardBackdropStyle.glassBlendingMode
+        )
+    }
+}
+
 private struct ProgramInlineBadge: View {
     let label: String
 
@@ -1748,7 +1800,7 @@ private struct ProgramBoardColumnChrome: ViewModifier {
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
             .frame(maxWidth: .infinity, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
-            .background(BoardGlassBackground(cornerRadius: 16))
+            .background(ProgramBoardGlassBackground(cornerRadius: 16))
             .shadow(color: Self.shadowColor(for: theme), radius: 20, x: 0, y: -6)
             .animation(.easeInOut(duration: 0.4), value: theme)
             .contentShape(Rectangle())
