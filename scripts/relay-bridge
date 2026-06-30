@@ -184,15 +184,22 @@ install_skills() {
     local cmds_dir="$HOME/.claude/commands"
     local bridge_md="$cmds_dir/relay-bridge.md"
     local stop_md="$cmds_dir/relay-stop.md"
+    local legacy_pm_sync_md="$cmds_dir/pm-sync.md"
     local codex_skills_dir="$HOME/.codex/skills"
     local codex_bridge_dir="$codex_skills_dir/relay-bridge"
     local codex_stop_dir="$codex_skills_dir/relay-stop"
+    local legacy_codex_pm_sync_dir="$codex_skills_dir/pm-sync"
     local codex_bridge_md="$codex_bridge_dir/SKILL.md"
     local codex_stop_md="$codex_stop_dir/SKILL.md"
     local relay_bridge_path="$SCRIPT_DIR/relay-bridge"
 
     mkdir -p "$cmds_dir"
     mkdir -p "$codex_bridge_dir" "$codex_stop_dir"
+
+    # Reinstalls should scrub legacy Program Manager command/skill launchers
+    # without touching user-owned .pm project data.
+    rm -f "$legacy_pm_sync_md"
+    rm -rf "$legacy_codex_pm_sync_dir"
 
     if [ "$mode" = "force" ] || [ ! -f "$bridge_md" ]; then
         # Quoted heredoc — no $-expansion. The single placeholder

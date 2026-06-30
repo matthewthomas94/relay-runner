@@ -51,6 +51,8 @@ CODEX_WORKFLOW_MD="$CODEX_WORKFLOW_DIR/SKILL.md"
 # user upgraded mid-rename.
 LEGACY_LINK_MD="$CMDS_DIR/relay-link-project.md"
 LEGACY_ORCHESTRATE_MD="$CMDS_DIR/relay-orchestrate.md"
+LEGACY_PM_SYNC_MD="$CMDS_DIR/pm-sync.md"
+LEGACY_CODEX_PM_SYNC_DIR="$CODEX_SKILLS_DIR/pm-sync"
 
 # -- Common helpers --
 
@@ -110,7 +112,8 @@ install_skills() {
 
     # Always remove the legacy slash commands if present — even on
     # if-missing installs — so old prompts don't shadow the new ones.
-    rm -f "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
+    rm -f "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD" "$LEGACY_PM_SYNC_MD"
+    rm -rf "$LEGACY_CODEX_PM_SYNC_DIR"
 
     if [ "$mode" = "force" ] || [ ! -f "$DISPATCH_MD" ]; then
         cat > "$DISPATCH_MD" <<'DISPATCH_MD_EOF'
@@ -286,8 +289,8 @@ CODEX_WORKFLOW_MD_EOF
 }
 
 uninstall_skills() {
-    rm -f "$DISPATCH_MD" "$WORKFLOW_MD" "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
-    rm -rf "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"
+    rm -f "$DISPATCH_MD" "$WORKFLOW_MD" "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD" "$LEGACY_PM_SYNC_MD"
+    rm -rf "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR" "$LEGACY_CODEX_PM_SYNC_DIR"
     echo "[relay-orchestrator] removed slash command files."
 }
 
