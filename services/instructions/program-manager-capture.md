@@ -1,6 +1,6 @@
 ## Program Manager capture
 
-When the user wants to record a session review, project status, shipped work, started work, blockers, risks, ideas, decisions, or notes for program tracking, use the native `mcp__relay-orchestrator__session_capture` tool. Do not direct the user to the legacy PM-sync command or produce PM-sync YAML.
+When the user wants to record a session review, project status, shipped work, started work, blockers, risks, ideas, decisions, or notes for program tracking, use the native `mcp__relay-orchestrator__session_capture` tool.
 
 Codex and Claude use the same capture schema. Pass concise structured entries and any relevant conversation context explicitly; the daemon does not scrape either provider's transcript history.
 
