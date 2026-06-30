@@ -16,6 +16,24 @@ final class TranscriptionPill: NSView {
         let body: String?
     }
 
+    enum AcknowledgementGlassStyle {
+        static let shadowOpacity: Float = 0.16
+        static let solidFill = NSColor(red: 17 / 255, green: 13 / 255, blue: 36 / 255, alpha: 0.62)
+        static let gradientStops = [
+            NSColor(red: 45 / 255, green: 30 / 255, blue: 94 / 255, alpha: 0.34),
+            NSColor(red: 92 / 255, green: 78 / 255, blue: 156 / 255, alpha: 0.26),
+            NSColor(red: 210 / 255, green: 204 / 255, blue: 255 / 255, alpha: 0.09),
+        ]
+        static let borderStops = [
+            NSColor(white: 1, alpha: 0.08),
+            NSColor(red: 198 / 255, green: 191 / 255, blue: 249 / 255, alpha: 0.28),
+            NSColor(white: 1, alpha: 0.12),
+        ]
+        static let particleSaturation: CGFloat = 1.35
+        static let particleContrast: CGFloat = 1.15
+        static let particleBrightness: CGFloat = 0.025
+    }
+
     enum Theme {
         case stt
         case tts
@@ -439,9 +457,18 @@ final class TranscriptionPill: NSView {
 
         let boostFilter = CIFilter(name: "CIColorControls")!
         boostFilter.setValue(blurredCI, forKey: kCIInputImageKey)
-        boostFilter.setValue(1.1, forKey: kCIInputSaturationKey)
-        boostFilter.setValue(1.1, forKey: kCIInputContrastKey)
-        boostFilter.setValue(0.02, forKey: kCIInputBrightnessKey)
+        boostFilter.setValue(
+            presentation == .acknowledgement ? AcknowledgementGlassStyle.particleSaturation : 1.1,
+            forKey: kCIInputSaturationKey
+        )
+        boostFilter.setValue(
+            presentation == .acknowledgement ? AcknowledgementGlassStyle.particleContrast : 1.1,
+            forKey: kCIInputContrastKey
+        )
+        boostFilter.setValue(
+            presentation == .acknowledgement ? AcknowledgementGlassStyle.particleBrightness : 0.02,
+            forKey: kCIInputBrightnessKey
+        )
 
         guard let output = boostFilter.outputImage else { return }
         let finalCI = output.cropped(to: cropRect)
@@ -564,26 +591,19 @@ final class TranscriptionPill: NSView {
     private func applyTheme(_ theme: Theme) {
         currentTheme = theme
         layer?.shadowColor = theme.primaryShadowColor
-        layer?.shadowOpacity = presentation == .acknowledgement ? 0.10 : 0.2
+        layer?.shadowOpacity = presentation == .acknowledgement ? AcknowledgementGlassStyle.shadowOpacity : 0.2
         solidFillLayer.backgroundColor = (presentation == .acknowledgement
-            ? NSColor(red: 8 / 255, green: 10 / 255, blue: 16 / 255, alpha: 0.68)
+            ? AcknowledgementGlassStyle.solidFill
             : NSColor(white: 0.0, alpha: 0.45)
         ).cgColor
         gradientFillLayer.colors = presentation == .acknowledgement
-            ? [
-                NSColor(red: 87 / 255, green: 78 / 255, blue: 138 / 255, alpha: 0.18).cgColor,
-                NSColor(red: 246 / 255, green: 248 / 255, blue: 255 / 255, alpha: 0.06).cgColor,
-            ]
+            ? AcknowledgementGlassStyle.gradientStops.map { $0.cgColor }
             : [
                 NSColor(white: 0.0, alpha: 0.10).cgColor,
                 NSColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 0.10).cgColor,
             ]
         borderGradientLayer.colors = presentation == .acknowledgement
-            ? [
-                NSColor(white: 1, alpha: 0.04).cgColor,
-                NSColor(red: 198 / 255, green: 191 / 255, blue: 249 / 255, alpha: 0.16).cgColor,
-                NSColor(white: 1, alpha: 0.09).cgColor,
-            ]
+            ? AcknowledgementGlassStyle.borderStops.map { $0.cgColor }
             : [
                 NSColor(white: 1, alpha: 0.0).cgColor,
                 NSColor(white: 1, alpha: 0.0).cgColor,

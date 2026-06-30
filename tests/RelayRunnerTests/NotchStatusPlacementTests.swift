@@ -3,6 +3,19 @@ import XCTest
 @testable import relay_runner
 
 final class NotchStatusPlacementTests: XCTestCase {
+    func testAcknowledgementGlassUsesTintedParticleForwardSurface() {
+        let style = TranscriptionPill.AcknowledgementGlassStyle.self
+        let fill = style.solidFill.usingColorSpace(.sRGB)
+
+        XCTAssertEqual(fill?.alphaComponent ?? 0, 0.62, accuracy: 0.001)
+        XCTAssertGreaterThan(fill?.blueComponent ?? 0, fill?.redComponent ?? 1)
+        XCTAssertGreaterThan(style.gradientStops.count, 2)
+        XCTAssertGreaterThan(style.gradientStops.first?.alphaComponent ?? 0, 0.30)
+        XCTAssertGreaterThan(style.borderStops[1].alphaComponent, 0.20)
+        XCTAssertGreaterThan(style.particleSaturation, 1.1)
+        XCTAssertGreaterThan(style.particleContrast, 1.1)
+    }
+
     func testPlacesContinuousPillAcrossNotchWithoutActivityLabels() throws {
         let geometry = NotchStatusDisplayGeometry(
             frame: CGRect(x: 0, y: 0, width: 1512, height: 982),

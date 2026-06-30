@@ -548,11 +548,11 @@ private struct NewTicketButton: View {
 /// so columns and cards share the exact same visual language as the pill.
 /// Mirrors values from `TranscriptionPill.init` — keep in sync if those change.
 ///
-/// IMPORTANT: NSVisualEffectView's `.behindWindow` blending mode only reaches
-/// the desktop when the effect view composites directly against the window —
-/// wrapping it in a SwiftUI `ZStack` with a parent `clipShape` flattens the
-/// stack into a backing buffer and the OS blur silently degrades to "just
-/// transparency". So the structure here is deliberate:
+/// IMPORTANT: NSVisualEffectView blending only works correctly when the effect
+/// view composites directly against the window. Wrapping it in a SwiftUI
+/// `ZStack` with a parent `clipShape` flattens the stack into a backing buffer
+/// and the OS blur silently degrades to "just transparency". So the structure
+/// here is deliberate:
 ///
 ///   - The blur is the receiver itself (a self-clipping NSVisualEffectView).
 ///   - Each tint / gradient / specular / border layer is applied via its own
@@ -560,11 +560,20 @@ private struct NewTicketButton: View {
 ///     fusing them into one compositing group.
 struct BoardGlassBackground: View {
     let cornerRadius: CGFloat
+    let blendingMode: NSVisualEffectView.BlendingMode
+
+    init(
+        cornerRadius: CGFloat,
+        blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+    ) {
+        self.cornerRadius = cornerRadius
+        self.blendingMode = blendingMode
+    }
 
     var body: some View {
         VisualEffectBlur(
             material: .underWindowBackground,
-            blendingMode: .behindWindow,
+            blendingMode: blendingMode,
             cornerRadius: cornerRadius
         )
         .overlay {
