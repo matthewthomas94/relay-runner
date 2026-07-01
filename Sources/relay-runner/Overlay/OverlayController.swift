@@ -246,9 +246,9 @@ final class OverlayController {
                 pill.showCompact(title: "Thinking\u{2026}", theme: .tts)
             }
 
-        case .acknowledgement(let text, _):
+        case .acknowledgement:
             if state != lastAppliedState {
-                pill.showAcknowledgement(text: text, theme: .tts)
+                pill.hide()
             }
 
         case .preparing:

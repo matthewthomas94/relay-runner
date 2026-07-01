@@ -1,45 +1,31 @@
-import AppKit
 import XCTest
 @testable import relay_runner
 
 final class StateMachineAcknowledgementTests: XCTestCase {
-    func testAcknowledgementCopySplitsTitleAndSummaryLines() {
-        XCTAssertEqual(
-            TranscriptionPill.acknowledgementCopy(
-                from: "Ok I've got it\n\nYou want me to update the UI for the modal."
-            ),
-            TranscriptionPill.AcknowledgementCopy(
-                title: "Ok I've got it",
-                body: "You want me to update the UI for the modal."
-            )
-        )
+    func testAcknowledgementStateUsesNotchOnlyPresentation() {
+        let state = OverlayState.acknowledgement(text: "Got it: add tests.", autoDismiss: 3.25)
 
-        XCTAssertEqual(
-            TranscriptionPill.acknowledgementCopy(from: "Got it: add tests."),
-            TranscriptionPill.AcknowledgementCopy(title: "Got it", body: "add tests.")
-        )
-
-        XCTAssertEqual(
-            TranscriptionPill.acknowledgementCopy(from: "  "),
-            TranscriptionPill.AcknowledgementCopy(title: "Got it", body: nil)
-        )
+        XCTAssertEqual(NotchActivityLabelPlanner.label(for: state), "Acknowledged")
+        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: state), ["Acknowledged"])
+        XCTAssertNil(state.particleTheme)
     }
 
-    func testAcknowledgementPillUsesDedicatedCompactFootprint() {
-        let host = NSView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 800))
-        let pill = TranscriptionPill(frame: .zero)
-        host.addSubview(pill)
+    func testAdjacentVoiceAndResponseStatesKeepBottomOverlayPresentation() {
+        XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.listening), "Listening")
+        XCTAssertEqual(OverlayState.listening.particleTheme, .stt)
 
-        pill.showAcknowledgement(
-            text: "Ok I've got it\n\nYou want me to update the UI for the modal.",
-            theme: .tts,
-            animated: false
-        )
+        XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.processing), "Thinking")
+        XCTAssertEqual(OverlayState.processing.particleTheme, .tts)
 
-        XCTAssertGreaterThanOrEqual(pill.frame.width, 344)
-        XCTAssertLessThanOrEqual(pill.frame.width, 420)
-        XCTAssertGreaterThan(pill.frame.height, 48)
-        XCTAssertLessThan(pill.frame.height, 96)
+        let messageWaiting = OverlayState.messageWaiting(preview: "Done.")
+        XCTAssertEqual(NotchActivityLabelPlanner.label(for: messageWaiting), "Response ready")
+        XCTAssertEqual(messageWaiting.particleTheme, .tts)
+
+        XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.preparing), "Preparing speech")
+        XCTAssertEqual(OverlayState.preparing.particleTheme, .tts)
+
+        XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.speaking), "Playing")
+        XCTAssertEqual(OverlayState.speaking.particleTheme, .tts)
     }
 
     func testBridgeAcknowledgementDuringSentIsDeferredUntilAfterSentWindowPlusPause() {
