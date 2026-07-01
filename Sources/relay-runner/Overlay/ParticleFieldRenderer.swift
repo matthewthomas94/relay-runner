@@ -4,7 +4,6 @@ import QuartzCore
 /// Renders an animated halftone dot particle field on the bottom portion of the screen.
 /// Dots are arranged in a grid with size varying by distance from bottom-center.
 /// A slow diagonal wave adds subtle organic movement.
-/// A gentle behind-window blur sits underneath the dots.
 final class ParticleFieldRenderer {
 
     enum Theme: Hashable {
@@ -46,15 +45,9 @@ final class ParticleFieldRenderer {
 
     private let gradientLayer = CAGradientLayer()
     private let particleLayer = CALayer()
-    
-    /// Callback receives the active particle frame and its layer boundary
-    var onFrameRendered: ((CGImage, CGRect) -> Void)?
-    
+
     private var currentTheme: Theme?
     private var intensityMultiplier: Double = 0.6
-
-    // Particles render continuously behind the pill — the pill's glass
-    // blur handles the visual layering, no exclusion mask needed.
 
     private var animationTimer: Timer?
     private var startTime: CFTimeInterval = 0
@@ -231,9 +224,6 @@ final class ParticleFieldRenderer {
         ctx.restoreGState()
         let image = ctx.makeImage()
         particleLayer.contents = image
-        if let img = image {
-            onFrameRendered?(img, particleLayer.frame)
-        }
     }
 
     // MARK: - Dot grid generation

@@ -2,10 +2,9 @@ import AppKit
 import SwiftUI
 
 enum ProgramBoardBackdropStyle {
-    static let backdropOpacity: Double = 0.96
+    static let backdropOpacity: Double = 1.0
     static let bottomCornerRadius: CGFloat = 14
     static let bottomPadding: CGFloat = 24
-    static let glassBlendingMode = NSVisualEffectView.BlendingMode.withinWindow
 
     static var backdropHeight: CGFloat {
         BoardSurfaceLayout.columnTopPadding + BoardSurfaceLayout.columnHeight + bottomPadding
@@ -506,12 +505,10 @@ private struct ProgramProjectFilterHeader: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
                         .background(
-                            Capsule()
-                                .fill(Color.white.opacity(isAllSelected ? 0.16 : 0.07))
-                        )
-                        .overlay(
-                            Capsule()
-                                .stroke(Color.white.opacity(isAllSelected ? 0.25 : 0.10), lineWidth: 0.5)
+                            BoardDarkCapsuleBackground(
+                                fill: isAllSelected ? BoardDarkSurfaceStyle.panelFill : BoardDarkSurfaceStyle.contentFill,
+                                stroke: isAllSelected ? ProgramBoardStyle.secondaryText.opacity(0.45) : BoardDarkSurfaceStyle.border
+                            )
                         )
                 }
                 .buttonStyle(.plain)
@@ -928,7 +925,7 @@ private struct ProgramWorkCard: View {
         if item.isAwaitingMerge {
             labels.append("Awaiting merge")
         } else if item.hasActiveWorker {
-            labels.append("Active worker")
+            labels.append(item.activeWorkerBadgeLabel ?? "Running")
         }
         if !item.blockedBy.isEmpty {
             labels.append("Waiting")
@@ -961,7 +958,7 @@ private struct ProgramWorkCard: View {
         if let provider = cleaned(item.provider) {
             parts.append(provider)
         }
-        if let activity = cleaned(item.activity) {
+        if !item.hasActiveWorker, let activity = cleaned(item.activity) {
             parts.append(activity)
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ")
@@ -1118,8 +1115,13 @@ private struct ProgramTicketDetailPanel: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
         .frame(width: 560, height: 633, alignment: .topLeading)
-        .background(ProgramBoardGlassBackground(cornerRadius: 16))
-        .shadow(color: ProgramBoardColumnChrome.shadowColor(for: theme), radius: 22, x: 0, y: -6)
+        .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius))
+        .shadow(
+            color: ProgramBoardColumnChrome.shadowColor(for: theme),
+            radius: BoardDarkSurfaceStyle.shadowRadius,
+            x: 0,
+            y: BoardDarkSurfaceStyle.shadowYOffset
+        )
         .contentShape(Rectangle())
         .onTapGesture { }
     }
@@ -1279,8 +1281,12 @@ private struct ProgramDetailActionButton: View {
             .foregroundStyle(foregroundStyle)
             .padding(.horizontal, 9)
             .frame(height: 26)
-            .background(Capsule().fill(Color.white.opacity(disabled ? 0.04 : 0.10)))
-            .overlay(Capsule().stroke(Color.white.opacity(disabled ? 0.06 : 0.14), lineWidth: 0.5))
+            .background(
+                BoardDarkCapsuleBackground(
+                    fill: BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1),
+                    stroke: BoardDarkSurfaceStyle.border.opacity(disabled ? 0.55 : 1)
+                )
+            )
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -1408,7 +1414,7 @@ private struct ProgramTicketEditModal: View {
                 }
 
                 Divider()
-                    .background(Color.white.opacity(0.12))
+                    .background(BoardDarkSurfaceStyle.border)
 
                 ProgramEditTextArea(
                     title: "Description",
@@ -1432,7 +1438,7 @@ private struct ProgramTicketEditModal: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
-                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        .background(BoardDarkCapsuleBackground())
                         .contentShape(Capsule())
                         .programButtonCursor()
                     Button("Save") {
@@ -1446,15 +1452,24 @@ private struct ProgramTicketEditModal: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .foregroundStyle(Color.white.opacity(currentRequest == nil ? 0.45 : 1.0))
-                    .background(Capsule().fill(Color.white.opacity(currentRequest == nil ? 0.08 : 0.20)))
+                    .background(
+                        BoardDarkCapsuleBackground(
+                            fill: BoardDarkSurfaceStyle.panelFill.opacity(currentRequest == nil ? 0.55 : 1)
+                        )
+                    )
                     .contentShape(Capsule())
                     .programButtonCursor(enabled: currentRequest != nil)
                 }
             }
             .padding(20)
             .frame(width: 560)
-            .background(ProgramBoardGlassBackground(cornerRadius: 16))
-            .shadow(color: Color.black.opacity(0.5), radius: 30, x: 0, y: 10)
+            .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius))
+            .shadow(
+                color: Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity),
+                radius: BoardDarkSurfaceStyle.shadowRadius,
+                x: 0,
+                y: BoardDarkSurfaceStyle.shadowYOffset
+            )
             .onTapGesture { }
             .onAppear { titleFocused = true }
         }
@@ -1493,11 +1508,11 @@ private struct ProgramEditTextArea: View {
                 .padding(8)
                 .background(
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.black.opacity(0.30))
+                        .fill(BoardDarkSurfaceStyle.contentFill)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                        .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
                 )
         }
     }
@@ -1577,7 +1592,7 @@ private struct ProgramTicketCreateModal: View {
                     .lineLimit(1...3)
 
                 Divider()
-                    .background(Color.white.opacity(0.12))
+                    .background(BoardDarkSurfaceStyle.border)
 
                 Text("Description")
                     .font(.system(size: 11, weight: .semibold))
@@ -1592,11 +1607,11 @@ private struct ProgramTicketCreateModal: View {
                     .padding(8)
                     .background(
                         RoundedRectangle(cornerRadius: 10)
-                            .fill(Color.black.opacity(0.30))
+                            .fill(BoardDarkSurfaceStyle.contentFill)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                            .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
                     )
 
                 HStack(spacing: 8) {
@@ -1607,7 +1622,7 @@ private struct ProgramTicketCreateModal: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
-                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        .background(BoardDarkCapsuleBackground())
                         .contentShape(Capsule())
                         .programButtonCursor()
                     Button("Save") {
@@ -1621,15 +1636,24 @@ private struct ProgramTicketCreateModal: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .foregroundStyle(Color.white.opacity(canSave ? 1.0 : 0.45))
-                    .background(Capsule().fill(Color.white.opacity(canSave ? 0.20 : 0.08)))
+                    .background(
+                        BoardDarkCapsuleBackground(
+                            fill: BoardDarkSurfaceStyle.panelFill.opacity(canSave ? 1 : 0.55)
+                        )
+                    )
                     .contentShape(Capsule())
                     .programButtonCursor(enabled: canSave)
                 }
             }
             .padding(20)
             .frame(width: 520)
-            .background(ProgramBoardGlassBackground(cornerRadius: 16))
-            .shadow(color: Color.black.opacity(0.5), radius: 30, x: 0, y: 10)
+            .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius))
+            .shadow(
+                color: Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity),
+                radius: BoardDarkSurfaceStyle.shadowRadius,
+                x: 0,
+                y: BoardDarkSurfaceStyle.shadowYOffset
+            )
             .onTapGesture { }
             .onAppear { titleFocused = true }
         }
@@ -1692,8 +1716,13 @@ private struct ProgramStatePanel: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
         .frame(width: 640, height: 360, alignment: .topLeading)
-        .background(ProgramBoardGlassBackground(cornerRadius: 16))
-        .shadow(color: ProgramBoardColumnChrome.shadowColor(for: theme), radius: 20, x: 0, y: -6)
+        .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius))
+        .shadow(
+            color: ProgramBoardColumnChrome.shadowColor(for: theme),
+            radius: BoardDarkSurfaceStyle.shadowRadius,
+            x: 0,
+            y: BoardDarkSurfaceStyle.shadowYOffset
+        )
         .contentShape(Rectangle())
         .onTapGesture { }
     }
@@ -1730,8 +1759,7 @@ private struct ProgramStartSessionButton: View {
             .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.96))
             .padding(.horizontal, 9)
             .frame(height: 24)
-            .background(Capsule().fill(Color.white.opacity(0.10)))
-            .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
+            .background(BoardDarkCapsuleBackground())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -1756,8 +1784,7 @@ private struct ProgramEndSessionButton: View {
             .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.96))
             .padding(.horizontal, 9)
             .frame(height: 24)
-            .background(Capsule().fill(Color.white.opacity(0.10)))
-            .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
+            .background(BoardDarkCapsuleBackground())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -1790,8 +1817,7 @@ private struct ProgramIconButton: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(iconColor)
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.white.opacity(0.10)))
-                .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+                .background(BoardDarkCircleBackground())
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1818,8 +1844,7 @@ private struct ProgramReloadButton: View {
                 }
             }
             .frame(width: 22, height: 22)
-            .background(Circle().fill(Color.white.opacity(0.10)))
-            .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+            .background(BoardDarkCircleBackground())
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1833,22 +1858,20 @@ private struct ProgramCardBackground: View {
     let cornerRadius: CGFloat
 
     var body: some View {
-        RoundedRectangle(cornerRadius: cornerRadius)
-            .fill(Color.black.opacity(0.35))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
-            )
+        BoardDarkSurfaceBackground(
+            cornerRadius: cornerRadius,
+            fill: BoardDarkSurfaceStyle.contentFill
+        )
     }
 }
 
-private struct ProgramBoardGlassBackground: View {
+private struct ProgramBoardDarkSurfaceBackground: View {
     let cornerRadius: CGFloat
 
     var body: some View {
-        BoardGlassBackground(
+        BoardDarkSurfaceBackground(
             cornerRadius: cornerRadius,
-            blendingMode: ProgramBoardBackdropStyle.glassBlendingMode
+            fill: BoardDarkSurfaceStyle.panelFill
         )
     }
 }
@@ -1863,8 +1886,14 @@ private struct ProgramInlineBadge: View {
             .lineLimit(1)
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
-            .background(Capsule().fill(Color.white.opacity(0.08)))
-            .overlay(Capsule().stroke(Color.white.opacity(0.10), lineWidth: 0.5))
+            .background(
+                Capsule()
+                    .fill(BoardDarkSurfaceStyle.contentFill)
+                    .overlay(
+                        Capsule()
+                            .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
+                    )
+            )
             .fixedSize()
     }
 }
@@ -1877,8 +1906,13 @@ private struct ProgramBoardColumnChrome: ViewModifier {
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
             .frame(maxWidth: .infinity, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
-            .background(ProgramBoardGlassBackground(cornerRadius: 16))
-            .shadow(color: Self.shadowColor(for: theme), radius: 20, x: 0, y: -6)
+            .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
+            .shadow(
+                color: Self.shadowColor(for: theme),
+                radius: BoardDarkSurfaceStyle.shadowRadius,
+                x: 0,
+                y: BoardDarkSurfaceStyle.shadowYOffset
+            )
             .animation(.easeInOut(duration: 0.4), value: theme)
             .contentShape(Rectangle())
             .onTapGesture { }
@@ -1886,12 +1920,8 @@ private struct ProgramBoardColumnChrome: ViewModifier {
 
     static func shadowColor(for theme: ParticleFieldRenderer.Theme?) -> Color {
         switch theme {
-        case .stt:
-            return Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 0.15)
-        case .tts:
-            return Color(.sRGB, red: 40 / 255, green: 17 / 255, blue: 208 / 255, opacity: 0.15)
-        case nil:
-            return Color.black.opacity(0.45)
+        case .stt, .tts, nil:
+            return Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity)
         }
     }
 }

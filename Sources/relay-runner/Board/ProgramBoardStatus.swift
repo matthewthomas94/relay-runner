@@ -1368,9 +1368,13 @@ extension String {
     }
 }
 
-private func clean(_ value: String?) -> String? {
+private func cleanedProgramValue(_ value: String?) -> String? {
     let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return trimmed.isEmpty ? nil : trimmed
+}
+
+private func clean(_ value: String?) -> String? {
+    cleanedProgramValue(value)
 }
 
 extension ProgramStatusItem {
@@ -1391,6 +1395,18 @@ extension ProgramStatusItem {
 
     var hasActiveWorker: Bool {
         programStateKeys.contains("active")
+    }
+
+    var activeWorkerBadgeLabel: String? {
+        guard hasActiveWorker else { return nil }
+        if let activity = cleanedProgramValue(activity) {
+            return activity
+        }
+        for state in [runState, status, ticketState] {
+            guard let state = cleanedProgramValue(state) else { continue }
+            return state.programStateKey == "active" ? "Running" : state.displayLabel
+        }
+        return "Running"
     }
 
     var isProgramBoardDraggable: Bool {

@@ -438,17 +438,15 @@ def _project_board_counts(ctx: dict[str, Any], tickets: list[dict[str, Any]]) ->
 
 def _project_board_state(ctx: dict[str, Any], ticket: dict[str, Any]) -> str:
     ticket_state = _key(_ticket_state(ticket))
-    if ticket_state in {"done", "closed", "completed", "awaitingmerge", "awaiting_merge"}:
+    if ticket_state in {"done", "closed", "completed"}:
         return "done"
     latest_run = next(iter(ctx["runs_by_ticket"].get(ticket["id"], [])), None)
     run_state = _run_state(latest_run)
     if run_state in {"active", "stalled"}:
         return "in_progress"
-    if run_state in {"awaiting_merge", "succeeded"} and ticket_state == "ready":
-        return "done"
     if ticket_state in {"inprogress", "in_progress"}:
         return "in_progress"
-    if ticket_state == "ready":
+    if ticket_state in {"ready", "awaitingmerge", "awaiting_merge"}:
         return "ready"
     return "backlog"
 

@@ -276,7 +276,7 @@ VOICE_COMMAND_EVENT_LOG = os.environ.get("VOICE_COMMAND_EVENT_LOG", "/tmp/relay_
 VOICE_COMMAND_EVENT_LIMIT = 200
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
 VOICE_ACKNOWLEDGEMENT = os.environ.get("VOICE_ACKNOWLEDGEMENT", "Got it. I'm on it.")
-VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS = 1.25
+VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS = 0.0
 VOICE_ACKNOWLEDGEMENT_AUTO_DISMISS_SECONDS = 3.0
 
 _GENERIC_ACKNOWLEDGEMENTS = (
@@ -285,14 +285,47 @@ _GENERIC_ACKNOWLEDGEMENTS = (
     "Understood. Working on it.",
     "Okay. I'll handle that.",
 )
-_GIST_ACKNOWLEDGEMENTS = (
-    "Got it: {gist}.",
-    "Understood: {gist}.",
-    "I'm on it: {gist}.",
-)
 _SENSITIVE_ACK_RE = re.compile(
-    r"\b(password|passcode|secret|token|api[_ -]?key|private[_ -]?key|credential)\b",
+    r"\b(password|passcode|secret|token|api[_ -]?key|private[_ -]?key|credential|credit card)\b",
     re.IGNORECASE,
+)
+_INTENT_ACKNOWLEDGEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\b(ack|acknowledg)", re.IGNORECASE),
+        "I'll take care of the acknowledgement issue.",
+    ),
+    (
+        re.compile(r"\b(subagent|sub-agent|orchestrator model|worker model|gpt-?5|5\.\d)\b", re.IGNORECASE),
+        "I'll check the subagent model settings.",
+    ),
+    (
+        re.compile(r"\b(program board|board|ticket card|work card|pill)\b", re.IGNORECASE),
+        "I'll update the board behavior.",
+    ),
+    (
+        re.compile(r"\b(test|tests|coverage|failing)\b", re.IGNORECASE),
+        "I'll check the tests.",
+    ),
+    (
+        re.compile(r"\b(status|state|show|summari[sz]e|check|look at|inspect)\b", re.IGNORECASE),
+        "I'll check that.",
+    ),
+    (
+        re.compile(r"\b(fix|debug|repair|broken|issue|bug)\b", re.IGNORECASE),
+        "I'll take care of that issue.",
+    ),
+    (
+        re.compile(r"\b(add|build|create|implement|make|wire)\b", re.IGNORECASE),
+        "I'll build that.",
+    ),
+    (
+        re.compile(r"\b(change|update|swap|replace|refactor|tune|adjust)\b", re.IGNORECASE),
+        "I'll update that.",
+    ),
+    (
+        re.compile(r"\b(remove|delete|clean up)\b", re.IGNORECASE),
+        "I'll remove that.",
+    ),
 )
 
 
@@ -318,7 +351,7 @@ def _acknowledgement_variant(seed: str, options: tuple[str, ...]) -> str:
     return options[sum(seed.encode("utf-8", errors="ignore")) % len(options)]
 
 
-def _safe_acknowledgement_gist(text: str | None) -> str | None:
+def _acknowledgement_intent(text: str | None) -> str | None:
     if not text:
         return None
     cleaned = re.sub(r"\s+", " ", text).strip()
@@ -326,23 +359,18 @@ def _safe_acknowledgement_gist(text: str | None) -> str | None:
         return None
     if _SENSITIVE_ACK_RE.search(cleaned):
         return None
-    cleaned = re.sub(r"https?://\S+", "a link", cleaned)
-    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
-    cleaned = cleaned.strip(" \"'`")
-    if not cleaned:
-        return None
-    if len(cleaned) > 72:
-        clipped = cleaned[:72].rsplit(" ", 1)[0].strip()
-        cleaned = clipped if len(clipped) >= 24 else cleaned[:72].strip()
-    return cleaned.rstrip(".,;:!?")
+    for pattern, acknowledgement in _INTENT_ACKNOWLEDGEMENTS:
+        if pattern.search(cleaned):
+            return acknowledgement
+    return None
 
 
 def build_voice_acknowledgement(text: str | None, relay_command: dict | None = None) -> str:
     """Build concise provider-neutral acknowledgement copy for a user command."""
     seed = f"{text or ''}:{(relay_command or {}).get('relay_command_seq', '')}"
-    gist = _safe_acknowledgement_gist(text)
-    if gist:
-        return _acknowledgement_variant(seed, _GIST_ACKNOWLEDGEMENTS).format(gist=gist)
+    intent = _acknowledgement_intent(text)
+    if intent:
+        return intent
     return _acknowledgement_variant(seed, _GENERIC_ACKNOWLEDGEMENTS)
 
 

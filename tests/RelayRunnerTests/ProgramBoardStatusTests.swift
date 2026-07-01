@@ -2,9 +2,19 @@ import XCTest
 @testable import relay_runner
 
 final class ProgramBoardStatusTests: XCTestCase {
-    func testProgramBoardGlassCompositesAgainstBoardBackdrop() {
-        XCTAssertEqual(ProgramBoardBackdropStyle.glassBlendingMode, .withinWindow)
-        XCTAssertEqual(ProgramBoardBackdropStyle.backdropOpacity, 0.96, accuracy: 0.001)
+    func testProgramBoardUsesSolidDarkFigmaSurfaces() {
+        let panelFill = BoardDarkSurfaceStyle.panelFillNSColor.usingColorSpace(.sRGB)
+        let border = BoardDarkSurfaceStyle.borderNSColor.usingColorSpace(.sRGB)
+
+        XCTAssertEqual(ProgramBoardBackdropStyle.backdropOpacity, 1, accuracy: 0.001)
+        XCTAssertEqual(panelFill?.redComponent ?? 0, 9 / 255, accuracy: 0.001)
+        XCTAssertEqual(panelFill?.greenComponent ?? 0, 11 / 255, accuracy: 0.001)
+        XCTAssertEqual(panelFill?.blueComponent ?? 0, 15 / 255, accuracy: 0.001)
+        XCTAssertEqual(border?.redComponent ?? 0, 17 / 255, accuracy: 0.001)
+        XCTAssertEqual(border?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
+        XCTAssertEqual(border?.blueComponent ?? 0, 29 / 255, accuracy: 0.001)
+        XCTAssertEqual(BoardDarkSurfaceStyle.columnCornerRadius, 12)
+        XCTAssertEqual(BoardDarkSurfaceStyle.shadowOpacity, 0.08, accuracy: 0.001)
         XCTAssertGreaterThan(
             ProgramBoardBackdropStyle.backdropHeight,
             BoardSurfaceLayout.columnTopPadding + BoardSurfaceLayout.columnHeight
@@ -500,6 +510,31 @@ final class ProgramBoardStatusTests: XCTestCase {
         model.hasActiveSession = true
 
         XCTAssertTrue(model.hasActiveSession)
+    }
+
+    func testProgramStatusItemActiveWorkerBadgeShowsActivity() throws {
+        let active = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-117",
+            title: "Add End Session",
+            status: "active",
+            runID: 155,
+            runState: "active",
+            activity: "Running Swift tests"
+        )
+        let fallback = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-118",
+            title: "No activity yet",
+            status: "active",
+            runID: 156,
+            runState: "active"
+        )
+
+        XCTAssertEqual(active.activeWorkerBadgeLabel, "Running Swift tests")
+        XCTAssertEqual(fallback.activeWorkerBadgeLabel, "Running")
     }
 
     func testProgramBoardViewModelExposesSelectedProjectForSessionLaunch() throws {
@@ -1453,6 +1488,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         blockedBy: [String] = [],
         runID: Int? = nil,
         runState: String? = nil,
+        activity: String? = nil,
         branch: String? = nil,
         provider: String? = nil
     ) throws -> ProgramStatusItem {
@@ -1470,6 +1506,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         }
         if let runState {
             object["run_state"] = runState
+        }
+        if let activity {
+            object["activity"] = activity
         }
         if let branch {
             object["branch"] = branch

@@ -39,12 +39,9 @@ final class OverlayController {
         contentView.layer?.backgroundColor = NSColor.clear.cgColor
         p.contentView = contentView
 
-        // Attach particle field (blur view + dot layer)
+        // Attach particle field behind the solid pill surfaces.
         particleField.attach(to: contentView)
         particleField.setIntensity(config.glow_intensity)
-        particleField.onFrameRendered = { [weak self] cgImage, frameInView in
-            self?.pill.updateBackdrop(with: cgImage, particleFrame: frameInView)
-        }
 
         // Attach pill
         contentView.addSubview(pill)

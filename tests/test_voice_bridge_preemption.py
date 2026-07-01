@@ -169,7 +169,8 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertTrue(queued)
             self.assertTrue(tts_queue.empty())
             self.assertEqual(notifications[0][0], "acknowledgement")
-            self.assertIn("second request", notifications[0][1]["text"])
+            self.assertNotIn("second request", notifications[0][1]["text"])
+            self.assertTrue(notifications[0][1]["text"].strip())
             self.assertFalse(os.path.exists(command_path))
             current = json.loads(Path(state_path).read_text())
             self.assertEqual(current["relay_command_seq"], second_meta["relay_command_seq"])
@@ -204,19 +205,23 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertTrue(queued)
             self.assertEqual(notifications, [])
 
-    def test_acknowledgement_copy_varies_and_uses_safe_gist(self):
-        first = voice_bridge.build_voice_acknowledgement(
-            "add tests for the board overlay",
+    def test_acknowledgement_copy_synthesizes_intent_without_echoing_transcript(self):
+        acknowledgement = voice_bridge.build_voice_acknowledgement(
+            "I want a quick synthesis and response from the agent for the acknowledgement",
             {"relay_command_seq": 1},
         )
-        second = voice_bridge.build_voice_acknowledgement(
+
+        self.assertEqual(acknowledgement, "I'll take care of the acknowledgement issue.")
+        self.assertNotIn("quick synthesis", acknowledgement)
+        self.assertNotIn("response from the agent", acknowledgement)
+
+    def test_acknowledgement_copy_uses_fast_generic_intent_response(self):
+        acknowledgement = voice_bridge.build_voice_acknowledgement(
             "summarize project status",
             {"relay_command_seq": 2},
         )
 
-        self.assertNotEqual(first, second)
-        self.assertIn("board overlay", first)
-        self.assertIn("project status", second)
+        self.assertEqual(acknowledgement, "I'll check that.")
 
     def test_acknowledgement_copy_falls_back_for_sensitive_text(self):
         acknowledgement = voice_bridge.build_voice_acknowledgement(
@@ -226,6 +231,9 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
         self.assertNotIn("hunter2", acknowledgement)
         self.assertNotIn("deployment", acknowledgement)
+
+    def test_voice_acknowledgement_defaults_to_immediate_delivery(self):
+        self.assertEqual(voice_bridge.VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS, 0.0)
 
     def test_tts_dismissal_does_not_supersede_claimed_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:

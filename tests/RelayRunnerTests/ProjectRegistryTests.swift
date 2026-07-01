@@ -583,6 +583,37 @@ final class ProjectRegistryTests: XCTestCase {
         ))
     }
 
+    func testWorkspaceDiscoveryRemovesPreviouslyRegisteredWorkspaceProject() throws {
+        let workspace = try makeTempRepo(named: "dev")
+        let root = workspace.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+
+        _ = try ProjectResolver.activateProject(
+            at: workspace,
+            provider: "codex",
+            registry: registry
+        )
+
+        let childRepo = workspace.appendingPathComponent("relay-runner", isDirectory: true)
+        try makeGitRepo(at: childRepo)
+
+        let classification = try registry.registerDiscovery(at: workspace, provider: "codex")
+        guard case .workspaceRoot(let rootPath, let childRepoPaths) = classification else {
+            return XCTFail("Expected workspace discovery to classify the configured folder as a workspace root.")
+        }
+
+        XCTAssertEqual(resolvedPath(rootPath), resolvedPath(workspace))
+        XCTAssertEqual(childRepoPaths.map { resolvedPath($0) }, [resolvedPath(childRepo)])
+
+        let document = try registry.load()
+        XCTAssertNil(document.activeProjectID)
+        XCTAssertEqual(document.activeWorkspaceRootID, resolvedPath(workspace))
+        XCTAssertNil(document.projects.first { $0.repoPath == resolvedPath(workspace) })
+        XCTAssertEqual(document.projects.map(\.repoPath), [resolvedPath(childRepo) ?? childRepo.path])
+    }
+
     func testDiscoveryRejectsNonGitFolderWithNoProjectsWithoutInitializingIt() throws {
         let directory = try makeTempDirectory(named: "scratch-work")
         let root = directory.deletingLastPathComponent()

@@ -3,17 +3,20 @@ import XCTest
 @testable import relay_runner
 
 final class NotchStatusPlacementTests: XCTestCase {
-    func testAcknowledgementGlassUsesTintedParticleForwardSurface() {
-        let style = TranscriptionPill.AcknowledgementGlassStyle.self
-        let fill = style.solidFill.usingColorSpace(.sRGB)
+    func testPillSurfacesUseDarkFigmaStyle() {
+        let style = TranscriptionPill.DarkSurfaceStyle.self
+        let fill = style.pillFill.usingColorSpace(.sRGB)
+        let border = style.border.usingColorSpace(.sRGB)
 
-        XCTAssertEqual(fill?.alphaComponent ?? 0, 0.62, accuracy: 0.001)
-        XCTAssertGreaterThan(fill?.blueComponent ?? 0, fill?.redComponent ?? 1)
-        XCTAssertGreaterThan(style.gradientStops.count, 2)
-        XCTAssertGreaterThan(style.gradientStops.first?.alphaComponent ?? 0, 0.30)
-        XCTAssertGreaterThan(style.borderStops[1].alphaComponent, 0.20)
-        XCTAssertGreaterThan(style.particleSaturation, 1.1)
-        XCTAssertGreaterThan(style.particleContrast, 1.1)
+        XCTAssertEqual(fill?.redComponent ?? 1, 0, accuracy: 0.001)
+        XCTAssertEqual(fill?.greenComponent ?? 1, 0, accuracy: 0.001)
+        XCTAssertEqual(fill?.blueComponent ?? 1, 0, accuracy: 0.001)
+        XCTAssertEqual(fill?.alphaComponent ?? 0, 1, accuracy: 0.001)
+        XCTAssertEqual(border?.redComponent ?? 0, 17 / 255, accuracy: 0.001)
+        XCTAssertEqual(border?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
+        XCTAssertEqual(border?.blueComponent ?? 0, 29 / 255, accuracy: 0.001)
+        XCTAssertEqual(style.shadowOpacity, 0.08, accuracy: 0.001)
+        XCTAssertEqual(style.shadowRadius, 4, accuracy: 0.001)
     }
 
     func testPlacesContinuousPillAcrossNotchWithoutActivityLabels() throws {

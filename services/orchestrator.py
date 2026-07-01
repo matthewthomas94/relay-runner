@@ -239,6 +239,15 @@ def _resolve_worker_model(worker_model: str, agent_kind: str) -> str:
     return model
 
 
+def _configured_orchestrator_model(general: dict[str, Any] | None) -> str | None:
+    if not isinstance(general, dict):
+        return None
+    if str(general.get("subagent_sizing_policy") or "").strip().lower() != "user_default":
+        return None
+    model = str(general.get("model") or "").strip().lower()
+    return model if model and model != "default" else None
+
+
 def _validate_worker_effort(worker_effort: str, *, worker_model: str, agent_kind: str,
                             provider_notes: str) -> str:
     effort = worker_effort.strip().lower()
@@ -260,7 +269,11 @@ def _validate_worker_effort(worker_effort: str, *, worker_model: str, agent_kind
     return effort
 
 
-def resolve_worker_sizing(ticket: dict[str, Any], agent_kind: str) -> dict[str, str]:
+def resolve_worker_sizing(
+    ticket: dict[str, Any],
+    agent_kind: str,
+    general: dict[str, Any] | None = None,
+) -> dict[str, str]:
     missing = [field for field in WORKER_SIZING_FIELDS if not _required_sizing_value(ticket, field)]
     if missing:
         raise ValueError("missing worker sizing metadata: " + ", ".join(missing))
@@ -268,7 +281,7 @@ def resolve_worker_sizing(ticket: dict[str, Any], agent_kind: str) -> dict[str, 
     worker_model = _required_sizing_value(ticket, "worker_model")
     worker_effort = _required_sizing_value(ticket, "worker_effort")
     provider_notes = _required_sizing_value(ticket, "worker_provider_notes")
-    model_alias = _resolve_worker_model(worker_model, agent_kind)
+    model_alias = _configured_orchestrator_model(general) or _resolve_worker_model(worker_model, agent_kind)
     effort = _validate_worker_effort(
         worker_effort,
         worker_model=worker_model,
@@ -322,10 +335,6 @@ def apply_default_worker_sizing(
 ) -> bool:
     defaults = _normalized_default_worker_sizing(general)
     if not defaults:
-        return False
-    explicit_model = _required_sizing_value(ticket, "worker_model")
-    explicit_effort = _required_sizing_value(ticket, "worker_effort")
-    if explicit_model or explicit_effort:
         return False
     raw = ticket.setdefault("_raw_fields", {})
     if not isinstance(raw, dict):
@@ -1417,7 +1426,11 @@ class Daemon:
                 write_ticket(ticket_file, ticket)
 
             try:
-                sizing = resolve_worker_sizing(ticket, self.agent_kind)
+                sizing = resolve_worker_sizing(
+                    ticket,
+                    self.agent_kind,
+                    general=self.cfg.get("general", {}),
+                )
             except ValueError as e:
                 reason = str(e)
                 self._record_dispatch_refusal(

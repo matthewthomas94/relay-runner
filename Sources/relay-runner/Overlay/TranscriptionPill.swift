@@ -2,7 +2,7 @@ import AppKit
 import CoreImage
 
 /// Bottom-center pill showing state info, live transcription, or message preview.
-/// Liquid glass style: within-window blur refracts particles, specular border, themed glow shadow.
+/// Dark solid surface matching the board overlay styling.
 ///
 /// Animation contract:
 ///   - Entrance: slide up from below screen + Gaussian blur 64→0
@@ -16,56 +16,29 @@ final class TranscriptionPill: NSView {
         let body: String?
     }
 
-    enum AcknowledgementGlassStyle {
-        static let shadowOpacity: Float = 0.16
-        static let solidFill = NSColor(red: 17 / 255, green: 13 / 255, blue: 36 / 255, alpha: 0.62)
-        static let gradientStops = [
-            NSColor(red: 45 / 255, green: 30 / 255, blue: 94 / 255, alpha: 0.34),
-            NSColor(red: 92 / 255, green: 78 / 255, blue: 156 / 255, alpha: 0.26),
-            NSColor(red: 210 / 255, green: 204 / 255, blue: 255 / 255, alpha: 0.09),
-        ]
-        static let borderStops = [
-            NSColor(white: 1, alpha: 0.08),
-            NSColor(red: 198 / 255, green: 191 / 255, blue: 249 / 255, alpha: 0.28),
-            NSColor(white: 1, alpha: 0.12),
-        ]
-        static let particleSaturation: CGFloat = 1.35
-        static let particleContrast: CGFloat = 1.15
-        static let particleBrightness: CGFloat = 0.025
+    enum DarkSurfaceStyle {
+        static let pillFill = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+        static let border = NSColor(
+            srgbRed: 17 / 255,
+            green: 22 / 255,
+            blue: 29 / 255,
+            alpha: 1
+        )
+        static let shadowOpacity: Float = 0.08
+        static let shadowRadius: CGFloat = 4
     }
 
     enum Theme {
         case stt
         case tts
-
-        var primaryShadowColor: CGColor {
-            switch self {
-            case .stt: return NSColor(red: 244 / 255, green: 60 / 255, blue: 9 / 255, alpha: 1).cgColor
-            case .tts: return NSColor(red: 40 / 255, green: 17 / 255, blue: 208 / 255, alpha: 1).cgColor
-            }
-        }
-
-        var secondaryShadowColor: CGColor {
-            switch self {
-            case .stt: return NSColor(red: 242 / 255, green: 223 / 255, blue: 12 / 255, alpha: 1).cgColor
-            case .tts: return NSColor(red: 198 / 255, green: 191 / 255, blue: 249 / 255, alpha: 1).cgColor
-            }
-        }
     }
 
     // Unused — kept for API compat; particles render behind the pill unmasked
     var onFrameChanged: ((CGRect) -> Void)?
 
-    private let backgroundBlurView = NSVisualEffectView()
-    private let glassContainerView = NSView()
-
-    // Glass layers
-    private let solidFillLayer = CALayer()
-    private let backdropLayer = CALayer()
-    private let gradientFillLayer = CAGradientLayer()
-    private let specularLayer = CAGradientLayer()
-    private let borderGradientLayer = CAGradientLayer()
-    private let borderMaskLayer = CAShapeLayer()
+    private let surfaceContainerView = NSView()
+    private let fillLayer = CALayer()
+    private let borderLayer = CAShapeLayer()
 
     private let titleLabel: NSTextField
     private let bodyLabel: NSTextField
@@ -73,9 +46,6 @@ final class TranscriptionPill: NSView {
     /// pill into a wall of text. When the label exceeds the container, the
     /// label is animated upward inside the container (teleprompter-style).
     private let bodyContainer = NSView()
-
-    private let ciContext = CIContext(options: [.cacheIntermediates: false])
-    private let blurFilter = CIFilter(name: "CIGaussianBlur")!
 
     private let maxWidth: CGFloat = 460
     /// Cap for the visible body region. Around 4 lines at 14pt — matches the
@@ -141,9 +111,9 @@ final class TranscriptionPill: NSView {
         layer?.isOpaque = false
         alphaValue = 0
 
-        // Primary shadow on root layer
-        layer?.shadowOffset = CGSize(width: 0, height: -6)
-        layer?.shadowRadius = 20
+        // Subtle Figma L1-style shadow on root layer.
+        layer?.shadowOffset = CGSize(width: 0, height: 2)
+        layer?.shadowRadius = DarkSurfaceStyle.shadowRadius
         layer?.shadowOpacity = 0
 
         // Blur filter for entrance/exit transitions
@@ -152,62 +122,18 @@ final class TranscriptionPill: NSView {
         motionBlur.setValue(0, forKey: kCIInputRadiusKey)
         layer?.filters = [motionBlur]
 
-        // Background blur for external apps behind the overlay window
-        backgroundBlurView.blendingMode = .behindWindow
-        backgroundBlurView.material = .underWindowBackground
-        backgroundBlurView.appearance = NSAppearance(named: .darkAqua)
-        backgroundBlurView.state = .active
-        backgroundBlurView.wantsLayer = true
-        backgroundBlurView.layer?.cornerRadius = cr
-        backgroundBlurView.layer?.masksToBounds = true
-        addSubview(backgroundBlurView)
+        surfaceContainerView.wantsLayer = true
+        surfaceContainerView.layer?.cornerRadius = cr
+        surfaceContainerView.layer?.masksToBounds = true
+        addSubview(surfaceContainerView)
 
-        // Glass container (clips all internal layers)
-        glassContainerView.wantsLayer = true
-        glassContainerView.layer?.cornerRadius = cr
-        glassContainerView.layer?.masksToBounds = true
-        addSubview(glassContainerView)
+        fillLayer.backgroundColor = DarkSurfaceStyle.pillFill.cgColor
+        surfaceContainerView.layer?.addSublayer(fillLayer)
 
-        // Dark base fill
-        solidFillLayer.backgroundColor = NSColor(white: 0.0, alpha: 0.45).cgColor
-        glassContainerView.layer?.addSublayer(solidFillLayer)
-
-        // Blurred particle backdrop
-        glassContainerView.layer?.addSublayer(backdropLayer)
-
-        // Gradient overlay
-        gradientFillLayer.colors = [
-            NSColor(white: 0.0, alpha: 0.10).cgColor,
-            NSColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 0.10).cgColor,
-        ]
-        gradientFillLayer.startPoint = CGPoint(x: 0.5, y: 1.0)
-        gradientFillLayer.endPoint = CGPoint(x: 0.5, y: 0.0)
-        glassContainerView.layer?.addSublayer(gradientFillLayer)
-
-        // Top specular highlight
-        specularLayer.colors = [
-            NSColor(white: 1, alpha: 0.0).cgColor,
-            NSColor(white: 1, alpha: 0.1).cgColor,
-        ]
-        specularLayer.startPoint = CGPoint(x: 0.5, y: 0)
-        specularLayer.endPoint = CGPoint(x: 0.5, y: 1)
-        glassContainerView.layer?.addSublayer(specularLayer)
-
-        // Border stroke
-        borderMaskLayer.fillColor = nil
-        borderMaskLayer.strokeColor = NSColor.white.cgColor
-        borderMaskLayer.lineWidth = 1.0
-
-        borderGradientLayer.colors = [
-            NSColor(white: 1, alpha: 0.0).cgColor,
-            NSColor(white: 1, alpha: 0.0).cgColor,
-            NSColor(white: 1, alpha: 0.1).cgColor,
-        ]
-        borderGradientLayer.locations = [0.0, 0.1, 1]
-        borderGradientLayer.startPoint = CGPoint(x: 0.5, y: 1.0)
-        borderGradientLayer.endPoint = CGPoint(x: 0.5, y: 0.0)
-        borderGradientLayer.mask = borderMaskLayer
-        glassContainerView.layer?.addSublayer(borderGradientLayer)
+        borderLayer.fillColor = nil
+        borderLayer.strokeColor = DarkSurfaceStyle.border.cgColor
+        borderLayer.lineWidth = 1.0
+        surfaceContainerView.layer?.addSublayer(borderLayer)
 
         // Title label
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -280,10 +206,6 @@ final class TranscriptionPill: NSView {
         applyTheme(theme)
         if suppressShadow {
             layer?.shadowOpacity = 0
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            backdropLayer.contents = nil
-            CATransaction.commit()
         }
         titleLabel.stringValue = title
         titleLabel.alignment = .left
@@ -436,57 +358,6 @@ final class TranscriptionPill: NSView {
         }
     }
 
-    func updateBackdrop(with particlesImage: CGImage, particleFrame: CGRect) {
-        let targetFrame = self.frame
-        let intersection = targetFrame.intersection(particleFrame)
-        guard intersection.width > 0 && intersection.height > 0 else { return }
-
-        let scale = CGFloat(particlesImage.width) / particleFrame.width
-        let cropRect = CGRect(
-            x: (intersection.minX - particleFrame.minX) * scale,
-            y: (intersection.minY - particleFrame.minY) * scale,
-            width: intersection.width * scale,
-            height: intersection.height * scale
-        )
-
-        let ciImage = CIImage(cgImage: particlesImage).cropped(to: cropRect)
-        blurFilter.setValue(ciImage, forKey: kCIInputImageKey)
-        blurFilter.setValue(8.0 * scale, forKey: kCIInputRadiusKey)
-
-        guard let blurredCI = blurFilter.outputImage else { return }
-
-        let boostFilter = CIFilter(name: "CIColorControls")!
-        boostFilter.setValue(blurredCI, forKey: kCIInputImageKey)
-        boostFilter.setValue(
-            presentation == .acknowledgement ? AcknowledgementGlassStyle.particleSaturation : 1.1,
-            forKey: kCIInputSaturationKey
-        )
-        boostFilter.setValue(
-            presentation == .acknowledgement ? AcknowledgementGlassStyle.particleContrast : 1.1,
-            forKey: kCIInputContrastKey
-        )
-        boostFilter.setValue(
-            presentation == .acknowledgement ? AcknowledgementGlassStyle.particleBrightness : 0.02,
-            forKey: kCIInputBrightnessKey
-        )
-
-        guard let output = boostFilter.outputImage else { return }
-        let finalCI = output.cropped(to: cropRect)
-
-        if let blurredImage = ciContext.createCGImage(finalCI, from: cropRect) {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            backdropLayer.contents = blurredImage
-            let backdropOriginX = intersection.minX - targetFrame.minX
-            let backdropOriginY = intersection.minY - targetFrame.minY
-            backdropLayer.frame = CGRect(
-                x: backdropOriginX, y: backdropOriginY,
-                width: intersection.width, height: intersection.height
-            )
-            CATransaction.commit()
-        }
-    }
-
     // MARK: - Animation: Entrance
 
     private func slideIn(animated: Bool) {
@@ -590,25 +461,10 @@ final class TranscriptionPill: NSView {
 
     private func applyTheme(_ theme: Theme) {
         currentTheme = theme
-        layer?.shadowColor = theme.primaryShadowColor
-        layer?.shadowOpacity = presentation == .acknowledgement ? AcknowledgementGlassStyle.shadowOpacity : 0.2
-        solidFillLayer.backgroundColor = (presentation == .acknowledgement
-            ? AcknowledgementGlassStyle.solidFill
-            : NSColor(white: 0.0, alpha: 0.45)
-        ).cgColor
-        gradientFillLayer.colors = presentation == .acknowledgement
-            ? AcknowledgementGlassStyle.gradientStops.map { $0.cgColor }
-            : [
-                NSColor(white: 0.0, alpha: 0.10).cgColor,
-                NSColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 0.10).cgColor,
-            ]
-        borderGradientLayer.colors = presentation == .acknowledgement
-            ? AcknowledgementGlassStyle.borderStops.map { $0.cgColor }
-            : [
-                NSColor(white: 1, alpha: 0.0).cgColor,
-                NSColor(white: 1, alpha: 0.0).cgColor,
-                NSColor(white: 1, alpha: 0.1).cgColor,
-            ]
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = DarkSurfaceStyle.shadowOpacity
+        fillLayer.backgroundColor = DarkSurfaceStyle.pillFill.cgColor
+        borderLayer.strokeColor = DarkSurfaceStyle.border.cgColor
     }
 
     private func applyTypography() {
@@ -619,9 +475,9 @@ final class TranscriptionPill: NSView {
             bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
             bodyLabel.textColor = textColor
         case .acknowledgement:
-            titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+            titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
             titleLabel.textColor = primaryTextColor
-            bodyLabel.font = .systemFont(ofSize: 13, weight: .regular)
+            bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
             bodyLabel.textColor = secondaryTextColor
         }
     }
@@ -636,16 +492,14 @@ final class TranscriptionPill: NSView {
         let inset = targetBounds.insetBy(dx: 0.5, dy: 0.5)
         let radius = currentCornerRadius
         let crPath = CGPath(roundedRect: inset, cornerWidth: radius, cornerHeight: radius, transform: nil)
-        backgroundBlurView.layer?.cornerRadius = radius
-        glassContainerView.layer?.cornerRadius = radius
+        surfaceContainerView.layer?.cornerRadius = radius
 
         if animated && alphaValue > 0.01 {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = duration
                 ctx.timingFunction = springTiming
                 animator().frame = targetFrame
-                backgroundBlurView.animator().frame = targetBounds
-                glassContainerView.animator().frame = targetBounds
+                surfaceContainerView.animator().frame = targetBounds
             }
             // Animate CALayer frames in sync
             CATransaction.begin()
@@ -655,8 +509,7 @@ final class TranscriptionPill: NSView {
             CATransaction.commit()
         } else {
             frame = targetFrame
-            backgroundBlurView.frame = targetBounds
-            glassContainerView.frame = targetBounds
+            surfaceContainerView.frame = targetBounds
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             applyInternalLayerFrames(targetBounds, borderPath: crPath)
@@ -668,12 +521,9 @@ final class TranscriptionPill: NSView {
 
     /// Set all internal CALayer frames — called inside a CATransaction.
     private func applyInternalLayerFrames(_ bounds: NSRect, borderPath: CGPath) {
-        solidFillLayer.frame = bounds
-        gradientFillLayer.frame = bounds
-        specularLayer.frame = CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1)
-        borderGradientLayer.frame = bounds
-        borderMaskLayer.path = borderPath
-        borderMaskLayer.frame = bounds
+        fillLayer.frame = bounds
+        borderLayer.path = borderPath
+        borderLayer.frame = bounds
     }
 
     private func layoutLabels(targetBounds: NSRect, animated: Bool, duration: CFTimeInterval = 0.4) {
@@ -907,15 +757,15 @@ final class TranscriptionPill: NSView {
     }
 
     private var currentPadV: CGFloat {
-        presentation == .acknowledgement ? 15 : pillPadV
+        presentation == .acknowledgement ? 16 : pillPadV
     }
 
     private var currentTextGap: CGFloat {
-        presentation == .acknowledgement ? 6 : textGap
+        presentation == .acknowledgement ? 12 : textGap
     }
 
     private var currentCornerRadius: CGFloat {
-        presentation == .acknowledgement ? 14 : cr
+        cr
     }
 
     private var currentMaxBodyHeight: CGFloat {

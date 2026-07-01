@@ -8,9 +8,24 @@ enum BoardSurfaceLayout {
     static let columnHeight: CGFloat = 633
 }
 
+enum BoardDarkSurfaceStyle {
+    static let panelFillNSColor = NSColor(srgbRed: 9 / 255, green: 11 / 255, blue: 15 / 255, alpha: 1)
+    static let contentFillNSColor = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+    static let borderNSColor = NSColor(srgbRed: 17 / 255, green: 22 / 255, blue: 29 / 255, alpha: 1)
+
+    static let panelFill = Color(nsColor: panelFillNSColor)
+    static let contentFill = Color(nsColor: contentFillNSColor)
+    static let border = Color(nsColor: borderNSColor)
+
+    static let columnCornerRadius: CGFloat = 12
+    static let pillCornerRadius: CGFloat = 16
+    static let shadowOpacity: Double = 0.08
+    static let shadowRadius: CGFloat = 4
+    static let shadowYOffset: CGFloat = 2
+}
+
 /// Observable model driving the board view. The controller mutates `theme`
-/// from a poll timer so the panel glow updates live as the particle field
-/// changes (recording starts → red, playback starts → purple).
+/// from a poll timer so live session state remains available to the board.
 @Observable
 final class BoardViewModel {
     var tickets: [Ticket] = []
@@ -400,7 +415,7 @@ private struct BoardColumnPanel: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
         .frame(maxWidth: .infinity, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
-        .background(BoardGlassBackground(cornerRadius: 16))
+        .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
         // Report frame for drag hit-testing. Placed after the background so
         // the geometry matches the visible panel rect.
         .background(
@@ -413,9 +428,9 @@ private struct BoardColumnPanel: View {
         )
         .shadow(
             color: BoardColumnPanel.shadowColor(for: theme),
-            radius: 20,
+            radius: BoardDarkSurfaceStyle.shadowRadius,
             x: 0,
-            y: -6
+            y: BoardDarkSurfaceStyle.shadowYOffset
         )
         .animation(.easeInOut(duration: 0.4), value: theme)
         .onTapGesture { /* swallow taps on the panel so they don't dismiss */ }
@@ -423,12 +438,8 @@ private struct BoardColumnPanel: View {
 
     private static func shadowColor(for theme: ParticleFieldRenderer.Theme?) -> Color {
         switch theme {
-        case .stt:
-            return Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 0.15)
-        case .tts:
-            return Color(.sRGB, red: 40 / 255, green: 17 / 255, blue: 208 / 255, opacity: 0.15)
-        case nil:
-            return Color.black.opacity(0.45)
+        case .stt, .tts, nil:
+            return Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity)
         }
     }
 }
@@ -535,8 +546,7 @@ private struct NewTicketButton: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.white.opacity(0.10)))
-                .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+                .background(BoardDarkCircleBackground())
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -544,105 +554,39 @@ private struct NewTicketButton: View {
     }
 }
 
-/// Replicates the TranscriptionPill's "liquid glass" layer stack (TTS theme)
-/// so columns and cards share the exact same visual language as the pill.
-/// Mirrors values from `TranscriptionPill.init` — keep in sync if those change.
-///
-/// IMPORTANT: NSVisualEffectView blending only works correctly when the effect
-/// view composites directly against the window. Wrapping it in a SwiftUI
-/// `ZStack` with a parent `clipShape` flattens the stack into a backing buffer
-/// and the OS blur silently degrades to "just transparency". So the structure
-/// here is deliberate:
-///
-///   - The blur is the receiver itself (a self-clipping NSVisualEffectView).
-///   - Each tint / gradient / specular / border layer is applied via its own
-///     `.overlay { ... }` so SwiftUI keeps them as sibling layers rather than
-///     fusing them into one compositing group.
-struct BoardGlassBackground: View {
+struct BoardDarkSurfaceBackground: View {
     let cornerRadius: CGFloat
-    let blendingMode: NSVisualEffectView.BlendingMode
-
-    init(
-        cornerRadius: CGFloat,
-        blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
-    ) {
-        self.cornerRadius = cornerRadius
-        self.blendingMode = blendingMode
-    }
+    var fill: Color = BoardDarkSurfaceStyle.panelFill
 
     var body: some View {
-        VisualEffectBlur(
-            material: .underWindowBackground,
-            blendingMode: blendingMode,
-            cornerRadius: cornerRadius
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(Color.black.opacity(0.10))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(
-                    LinearGradient(
-                        gradient: Gradient(colors: [
-                            Color(white: 0).opacity(0.10),
-                            Color(white: 0.97).opacity(0.10),
-                        ]),
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-        }
-        .overlay(alignment: .top) {
-            LinearGradient(
-                gradient: Gradient(colors: [
-                    Color.white.opacity(0.10),
-                    Color.white.opacity(0.0),
-                ]),
-                startPoint: .top,
-                endPoint: .bottom
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .fill(fill)
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1)
             )
-            .frame(height: 1)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius)
-                .strokeBorder(
-                    LinearGradient(
-                        gradient: Gradient(stops: [
-                            .init(color: Color.white.opacity(0.10), location: 0.0),
-                            .init(color: Color.white.opacity(0.0),  location: 0.9),
-                            .init(color: Color.white.opacity(0.0),  location: 1.0),
-                        ]),
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
-        }
     }
 }
 
-private struct VisualEffectBlur: NSViewRepresentable {
-    let material: NSVisualEffectView.Material
-    let blendingMode: NSVisualEffectView.BlendingMode
-    let cornerRadius: CGFloat
+struct BoardDarkCapsuleBackground: View {
+    var fill: Color = BoardDarkSurfaceStyle.contentFill
+    var stroke: Color = BoardDarkSurfaceStyle.border
 
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = blendingMode
-        view.state = .active
-        view.appearance = NSAppearance(named: .darkAqua)
-        view.wantsLayer = true
-        view.layer?.cornerRadius = cornerRadius
-        view.layer?.masksToBounds = true
-        return view
+    var body: some View {
+        Capsule()
+            .fill(fill)
+            .overlay(Capsule().stroke(stroke, lineWidth: 1))
     }
+}
 
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = material
-        nsView.blendingMode = blendingMode
-        nsView.layer?.cornerRadius = cornerRadius
+struct BoardDarkCircleBackground: View {
+    var fill: Color = BoardDarkSurfaceStyle.contentFill
+    var stroke: Color = BoardDarkSurfaceStyle.border
+
+    var body: some View {
+        Circle()
+            .fill(fill)
+            .overlay(Circle().stroke(stroke, lineWidth: 1))
     }
 }
 
@@ -703,10 +647,17 @@ private struct TicketCard: View {
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.black.opacity(0.35))
+            BoardDarkSurfaceBackground(
+                cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius,
+                fill: BoardDarkSurfaceStyle.contentFill
+            )
         )
-        .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
+        .shadow(
+            color: Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity),
+            radius: BoardDarkSurfaceStyle.shadowRadius,
+            x: 0,
+            y: BoardDarkSurfaceStyle.shadowYOffset
+        )
         .opacity(ticket.canceled ? 0.45 : 1.0)
     }
 }
@@ -724,14 +675,7 @@ private struct DependencyWaitingBadge: View {
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .background(
-            Capsule()
-                .fill(Color.white.opacity(0.08))
-        )
-        .overlay(
-            Capsule()
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
-        )
+        .background(BoardDarkCapsuleBackground())
         .fixedSize()
     }
 }
@@ -792,20 +736,13 @@ private struct AgentActivityBadge: View {
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .background(
-            Capsule()
-                .fill(Color.white.opacity(0.08))
-        )
-        .overlay(
-            Capsule()
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
-        )
+        .background(BoardDarkCapsuleBackground())
     }
 }
 
-/// Live run-state pill driven by the daemon's runs-index. Mirrors
-/// `AgentActivityBadge`'s glass capsule; the dot color separates states at a
-/// glance (green running, amber stalled, red failed, blue awaiting-merge).
+/// Live run-state pill driven by the daemon's runs-index. The dot color
+/// separates states at a glance (green running, amber stalled, red failed,
+/// blue awaiting-merge).
 private struct RunStatusPill: View {
     let pill: RunPill
 
@@ -839,14 +776,7 @@ private struct RunStatusPill: View {
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .background(
-            Capsule()
-                .fill(Color.white.opacity(0.08))
-        )
-        .overlay(
-            Capsule()
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
-        )
+        .background(BoardDarkCapsuleBackground())
         .fixedSize()
     }
 }
@@ -922,12 +852,7 @@ private struct TicketEditorModal: View {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 0.90))
                             .frame(width: 24, height: 24)
-                            .background(
-                                Circle().fill(Color.white.opacity(0.06))
-                            )
-                            .overlay(
-                                Circle().stroke(Color.white.opacity(0.10), lineWidth: 0.5)
-                            )
+                            .background(BoardDarkCircleBackground())
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -988,11 +913,11 @@ private struct TicketEditorModal: View {
                     .padding(8)
                     .background(
                         RoundedRectangle(cornerRadius: 10)
-                            .fill(Color.black.opacity(0.30))
+                            .fill(BoardDarkSurfaceStyle.contentFill)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                            .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
                     )
 
                 Text("Acceptance criteria")
@@ -1008,11 +933,11 @@ private struct TicketEditorModal: View {
                     .padding(8)
                     .background(
                         RoundedRectangle(cornerRadius: 10)
-                            .fill(Color.black.opacity(0.30))
+                            .fill(BoardDarkSurfaceStyle.contentFill)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                            .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
                     )
 
                 HStack(spacing: 8) {
@@ -1023,9 +948,7 @@ private struct TicketEditorModal: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
-                        .background(
-                            Capsule().fill(Color.white.opacity(0.08))
-                        )
+                        .background(BoardDarkCapsuleBackground())
                         .contentShape(Capsule())
                         .pointingHandCursor()
                     Button("Save") { onCommit(title, status, priority, description, acceptanceCriteria) }
@@ -1034,17 +957,20 @@ private struct TicketEditorModal: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .foregroundStyle(Color.white)
-                        .background(
-                            Capsule().fill(Color.white.opacity(0.20))
-                        )
+                        .background(BoardDarkCapsuleBackground(fill: BoardDarkSurfaceStyle.panelFill))
                         .contentShape(Capsule())
                         .pointingHandCursor()
                 }
             }
             .padding(20)
             .frame(width: 520)
-            .background(BoardGlassBackground(cornerRadius: 16))
-            .shadow(color: Color.black.opacity(0.5), radius: 30, x: 0, y: 10)
+            .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius))
+            .shadow(
+                color: Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity),
+                radius: BoardDarkSurfaceStyle.shadowRadius,
+                x: 0,
+                y: BoardDarkSurfaceStyle.shadowYOffset
+            )
             .onTapGesture { /* swallow */ }
             .onAppear { titleFocused = true }
         }

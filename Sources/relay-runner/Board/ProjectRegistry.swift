@@ -277,6 +277,8 @@ struct ProjectRegistry {
         let timestamp = now()
         let childProjectIDs = childRepoURLs.map(\.path).sorted()
 
+        document.projects.removeAll { $0.id == rootURL.path }
+
         for childRepoURL in childRepoURLs {
             upsertProject(
                 in: &document,
