@@ -5,6 +5,10 @@ import SwiftUI
 /// not scoped to `ProjectResolver.resolve()`; any ticket mutation resolves
 /// through the owning child repo advertised by Program Manager status.
 final class ProgramBoardOverlayController {
+    enum SessionControlAction: Equatable {
+        case start(String?)
+        case end
+    }
 
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
@@ -14,6 +18,7 @@ final class ProgramBoardOverlayController {
     private var openProjectHandler: ((String) -> Void)?
     private var loadingStateHandler: ((Bool) -> Void)?
     private var startSessionHandler: ((String?) -> Void)?
+    private var endSessionHandler: (() -> Void)?
     private var sessionActiveProvider: () -> Bool = { false }
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
     private var themePollTimer: Timer?
@@ -35,12 +40,23 @@ final class ProgramBoardOverlayController {
         self.startSessionHandler = handler
     }
 
+    func setEndSessionHandler(_ handler: @escaping () -> Void) {
+        self.endSessionHandler = handler
+    }
+
     func setSessionActiveProvider(_ provider: @escaping () -> Bool) {
         self.sessionActiveProvider = provider
     }
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
         self.workerSizingDefaultsProvider = provider
+    }
+
+    static func sessionControlAction(
+        hasActiveSession: Bool,
+        selectedProjectPath: String?
+    ) -> SessionControlAction {
+        hasActiveSession ? .end : .start(selectedProjectPath)
     }
 
     deinit {
@@ -76,6 +92,7 @@ final class ProgramBoardOverlayController {
             onDismiss: { [weak self] in self?.hide() },
             onRefresh: { [weak self] in self?.model.reload() },
             onStartSession: { [weak self] in self?.startSession() },
+            onEndSession: { [weak self] in self?.endSession() },
             onOpenProject: { [weak self] repoPath in self?.openProjectHandler?(repoPath) },
             onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
             onCreateCommit: { [weak self] request in self?.commitCreate(request) },
@@ -187,6 +204,12 @@ final class ProgramBoardOverlayController {
     private func startSession() {
         guard !model.hasActiveSession else { return }
         startSessionHandler?(model.selectedSessionProjectPath)
+        model.hasActiveSession = sessionActiveProvider()
+    }
+
+    private func endSession() {
+        guard model.hasActiveSession else { return }
+        endSessionHandler?()
         model.hasActiveSession = sessionActiveProvider()
     }
 

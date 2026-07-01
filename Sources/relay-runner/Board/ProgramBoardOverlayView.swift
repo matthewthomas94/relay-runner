@@ -17,6 +17,7 @@ struct ProgramBoardOverlayView: View {
     let onDismiss: () -> Void
     let onRefresh: () -> Void
     let onStartSession: () -> Void
+    let onEndSession: () -> Void
     let onOpenProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
     let onCreateCommit: (ProgramBoardCreateRequest) -> Void
@@ -53,6 +54,7 @@ struct ProgramBoardOverlayView: View {
                     model: model,
                     onRefresh: onRefresh,
                     onStartSession: onStartSession,
+                    onEndSession: onEndSession,
                     onDismiss: onDismiss,
                     onOpenProject: onOpenProject,
                     onCreateStart: onCreateStart,
@@ -245,6 +247,7 @@ private struct ProgramBoardContent: View {
     @Bindable var model: ProgramBoardViewModel
     let onRefresh: () -> Void
     let onStartSession: () -> Void
+    let onEndSession: () -> Void
     let onDismiss: () -> Void
     let onOpenProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
@@ -273,6 +276,7 @@ private struct ProgramBoardContent: View {
                             onSelectProject: model.selectProject,
                             onRefresh: onRefresh,
                             onStartSession: onStartSession,
+                            onEndSession: onEndSession,
                             onDismiss: onDismiss
                         )
                         ForEach(ProgramBoardLane.allCases) { lane in
@@ -339,6 +343,7 @@ private struct ProgramOverviewColumn: View {
     let onSelectProject: (String) -> Void
     let onRefresh: () -> Void
     let onStartSession: () -> Void
+    let onEndSession: () -> Void
     let onDismiss: () -> Void
 
     var body: some View {
@@ -361,6 +366,7 @@ private struct ProgramOverviewColumn: View {
                 isAllSelected: selectedProjectPath == nil,
                 hasActiveSession: hasActiveSession,
                 onStartSession: onStartSession,
+                onEndSession: onEndSession,
                 onSelectAll: onSelectAll
             )
 
@@ -466,6 +472,7 @@ private struct ProgramProjectFilterHeader: View {
     let isAllSelected: Bool
     let hasActiveSession: Bool
     let onStartSession: () -> Void
+    let onEndSession: () -> Void
     let onSelectAll: () -> Void
 
     var body: some View {
@@ -487,7 +494,9 @@ private struct ProgramProjectFilterHeader: View {
             }
             Spacer(minLength: 0)
             HStack(alignment: .center, spacing: 6) {
-                if !hasActiveSession {
+                if hasActiveSession {
+                    ProgramEndSessionButton(action: onEndSession)
+                } else {
                     ProgramStartSessionButton(action: onStartSession)
                 }
                 Button(action: onSelectAll) {
@@ -1728,6 +1737,32 @@ private struct ProgramStartSessionButton: View {
         .buttonStyle(.plain)
         .programButtonCursor()
         .help("Start a Relay Runner voice session")
+    }
+}
+
+private struct ProgramEndSessionButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 9, weight: .bold))
+                Text("End Session")
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.96))
+            .padding(.horizontal, 9)
+            .frame(height: 24)
+            .background(Capsule().fill(Color.white.opacity(0.10)))
+            .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .programButtonCursor()
+        .help("End the active Relay Runner voice session")
     }
 }
 

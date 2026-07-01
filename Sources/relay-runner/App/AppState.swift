@@ -257,6 +257,9 @@ final class AppState {
         programBoardOverlay.setStartSessionHandler { [weak self] projectPath in
             self?.newSession(workingDirectory: projectPath)
         }
+        programBoardOverlay.setEndSessionHandler { [weak self] in
+            self?.endSession()
+        }
         programBoardOverlay.setSessionActiveProvider { [weak self] in
             self?.hasActiveSession ?? false
         }
