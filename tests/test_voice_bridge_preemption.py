@@ -421,8 +421,34 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         )
         self.assertEqual(
             script.count("if [ -f /tmp/voice_bridge_stop_requested ]; then"),
-            4,
+            6,
         )
+
+    def test_generated_provider_skills_preserve_bridge_context_after_response(self):
+        script_path = os.path.join(ROOT, "scripts", "relay-bridge")
+        with open(script_path) as f:
+            script = f.read()
+
+        claude_cleanup = script[
+            script.index("After generating your response, tear down the background heartbeat refresher"):
+            script.index("Then send the TTS response with the claimed Relay command metadata.")
+        ]
+        codex_cleanup = script[
+            script.index("After your response, stop the heartbeat refresher"):
+            script.index("Write only the spoken summary to TTS, tagged with the claimed Relay command metadata.")
+        ]
+
+        for cleanup in [claude_cleanup, codex_cleanup]:
+            self.assertIn("preserving session metadata for app watchdog recovery", cleanup)
+            self.assertIn("cat /tmp/voice_bridge.cwd", cleanup)
+            self.assertIn("cat /tmp/voice_bridge.provider", cleanup)
+            self.assertNotIn("rm -f /tmp/voice_in.fifo", cleanup)
+            self.assertNotIn("voice_bridge.cwd /tmp/voice_bridge.provider", cleanup)
+            self.assertNotIn("launchctl remove com.relay.voicebridge", cleanup)
+            self.assertNotIn("VOICE_BRIDGE_LOG_REASON=restart", cleanup)
+
+        self.assertEqual(script.count("os.O_WRONLY | os.O_NONBLOCK"), 2)
+        self.assertNotIn("python3 - <<'PY' > /tmp/tts_in.fifo", script)
 
 
 if __name__ == "__main__":
