@@ -1214,12 +1214,19 @@ final class ProgramBoardStatusTests: XCTestCase {
         try writeTicket(repo: root, id: "RR-1", title: "Parent copy", status: "backlog", body: "Parent body")
         try writeTicket(repo: child, id: "RR-1", title: "Child work", status: "backlog", body: "Child body")
 
+        let defaults = TicketWriter.WorkerSizingDefaults(
+            workerModel: "strong",
+            workerEffort: "xhigh",
+            workerSizingRationale: "User default from Relay Runner Settings.",
+            workerProviderNotes: "User default applies to Codex and Claude; Codex uses model_reasoning_effort and Claude uses --effort."
+        )
+
         let result = try ProgramBoardTicketMover.move(ProgramBoardDropRequest(
             ticketID: "RR-1",
             repoPath: child.path,
             targetStatus: .ready,
             shouldDispatch: true
-        ))
+        ), workerSizingDefaults: defaults)
 
         let childPath = child.standardizedFileURL.resolvingSymlinksInPath().path
         XCTAssertEqual(result.ticket.status, .ready)
@@ -1228,6 +1235,8 @@ final class ProgramBoardStatusTests: XCTestCase {
             ProgramBoardDispatchRequest(ticketID: "RR-1", repoPath: childPath, source: "board-drop")
         )
         XCTAssertEqual(try readTicket(repo: child, id: "RR-1").status, .ready)
+        XCTAssertEqual(try readTicket(repo: child, id: "RR-1").workerModel, "strong")
+        XCTAssertEqual(try readTicket(repo: child, id: "RR-1").workerEffort, "xhigh")
         XCTAssertEqual(try readTicket(repo: root, id: "RR-1").status, .backlog)
 
         let dispatch = try XCTUnwrap(result.dispatchRequest)

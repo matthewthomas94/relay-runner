@@ -177,7 +177,40 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertEqual(ticket["_raw_fields"]["worker_model"], "strong")
             self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
 
-    def test_user_default_worker_sizing_overrides_explicit_ticket_sizing(self):
+    def test_ready_sweeper_applies_user_default_worker_sizing_to_ready_ticket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=False)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.cfg = {
+                "general": {
+                    "subagent_sizing_policy": "user_default",
+                    "model": "gpt-5.5",
+                    "subagent_model": "strong",
+                    "subagent_effort": "xhigh",
+                }
+            }
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
+            create_worktree.assert_called_once()
+            start_worker.assert_called_once()
+            self.assertEqual(result["dispatched"][0]["ticket_id"], "RR-1")
+            ticket = read_ticket(repo / ".orchestrator/RR-1.md")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "strong")
+            self.assertEqual(ticket["_raw_fields"]["worker_effort"], "xhigh")
+            self.assertIn(
+                "Codex uses model_reasoning_effort and Claude uses --effort",
+                ticket["_raw_fields"]["worker_provider_notes"],
+            )
+
+    def test_user_default_worker_sizing_preserves_explicit_ticket_sizing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -206,12 +239,12 @@ class OrchestratorDispatchTests(unittest.TestCase):
             with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
                 result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
 
-            self.assertEqual(result["run"]["model_alias"], "gpt-5.6-sol")
-            self.assertEqual(result["run"]["worker_model"], "strong")
-            self.assertEqual(result["run"]["worker_effort"], "high")
+            self.assertEqual(result["run"]["model_alias"], "gpt-5.4-mini")
+            self.assertEqual(result["run"]["worker_model"], "fast")
+            self.assertEqual(result["run"]["worker_effort"], "low")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "strong")
-            self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "fast")
+            self.assertEqual(ticket["_raw_fields"]["worker_effort"], "low")
 
     def test_dispatch_records_valid_codex_sizing_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
