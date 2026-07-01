@@ -292,6 +292,40 @@ final class ProjectRegistryTests: XCTestCase {
         ))
     }
 
+    func testActivityProjectsIncludeProgramBoardWorkspaceChildren() throws {
+        let workspace = try makeTempDirectory(named: "dev")
+        let root = workspace.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = workspace.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = workspace.appendingPathComponent("tools", isDirectory: true)
+        try makeGitRepo(at: clientRepo)
+        try makeGitRepo(at: toolsRepo)
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        let bridgeProvider = root.appendingPathComponent("voice_bridge.provider")
+        try Data().write(to: bridgeSocket)
+        try Data(workspace.path.utf8).write(to: bridgeCwd)
+        try Data("codex\n".utf8).write(to: bridgeProvider)
+
+        let registry = ProjectRegistry(fileURL: root.appendingPathComponent("projects.json"))
+        let projects = ProjectResolver.resolveActivityProjects(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            bridgeProviderFile: bridgeProvider,
+            registry: registry
+        )
+
+        XCTAssertEqual(projects.map { resolvedPath($0.repoPath) }, [
+            resolvedPath(clientRepo),
+            resolvedPath(toolsRepo),
+        ])
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: workspace.appendingPathComponent(".orchestrator").path
+        ))
+    }
+
     func testBoardRouteKeepsConfiguredWorkspaceWhenChildRepoBridgeIsLive() throws {
         let workspace = try makeTempDirectory(named: "dev")
         let root = workspace.deletingLastPathComponent()

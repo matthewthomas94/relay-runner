@@ -114,6 +114,7 @@ final class AppState {
     private var notchActivityTimer: Timer?
     private var notchActivityRunStates: [RunState] = []
     private var notchActivityTickets: [Ticket] = []
+    private var notchActivityTicketsByRunKey: [String: Ticket] = [:]
     private var bridgeWatchdog: Timer?
     private var programStatusTask: Task<Void, Never>?
     /// True while a menu-started terminal session owns the bridge.
@@ -187,21 +188,44 @@ final class AppState {
         notchActivityTimer = nil
         notchActivityRunStates = []
         notchActivityTickets = []
+        notchActivityTicketsByRunKey = [:]
         notchStatusController.setWorkingProgressLabel(nil)
         notchStatusController.setActivityLabels([])
     }
 
     private func syncNotchActivityProjectState() {
-        guard hasActiveSession,
-              let project = ProjectResolver.resolve() else {
+        guard hasActiveSession else {
             notchActivityRunStates = []
             notchActivityTickets = []
+            notchActivityTicketsByRunKey = [:]
             syncNotchActivitySurface()
             return
         }
 
-        notchActivityRunStates = Array(RunStateStore.load(forRepo: project.repoPath).values)
-        notchActivityTickets = ProjectResolver.scanTickets(in: project)
+        let projects = ProjectResolver.resolveActivityProjects()
+        guard !projects.isEmpty else {
+            notchActivityRunStates = []
+            notchActivityTickets = []
+            notchActivityTicketsByRunKey = [:]
+            syncNotchActivitySurface()
+            return
+        }
+
+        var runStates: [RunState] = []
+        var tickets: [Ticket] = []
+        var ticketsByRunKey: [String: Ticket] = [:]
+        for project in projects {
+            runStates.append(contentsOf: Array(RunStateStore.load(forRepo: project.repoPath).values))
+            let projectTickets = ProjectResolver.scanTickets(in: project)
+            tickets.append(contentsOf: projectTickets)
+            let repoPath = project.repoPath.resolvingSymlinksInPath().path
+            for ticket in projectTickets {
+                ticketsByRunKey[Self.notchActivityRunKey(repoPath: repoPath, ticketId: ticket.id)] = ticket
+            }
+        }
+        notchActivityRunStates = runStates
+        notchActivityTickets = tickets
+        notchActivityTicketsByRunKey = ticketsByRunKey
         syncNotchActivitySurface()
     }
 
@@ -220,7 +244,22 @@ final class AppState {
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
             bridgeStartingUp: bridgeStartingUp
         )
-        let workingProgressLabel = NotchActivityLabelPlanner.label(forWorkingProgress: stateMachine.workingProgress)
+        let hoverActivityLabel = NotchActivityLabelPlanner.hoverLabel(
+            for: stateMachine.state,
+            activeRuns: notchActivityRunStates,
+            tickets: notchActivityTickets,
+            bridgeRecoveryInFlight: bridgeRecoveryInFlight,
+            bridgeStartingUp: bridgeStartingUp,
+            ticketForRun: { [notchActivityTicketsByRunKey] run in
+                let repoPath = URL(fileURLWithPath: run.repoPath).resolvingSymlinksInPath().path
+                return notchActivityTicketsByRunKey[
+                    Self.notchActivityRunKey(repoPath: repoPath, ticketId: run.ticketId)
+                ]
+            }
+        )
+        let workingProgressLabel =
+            NotchActivityLabelPlanner.label(forWorkingProgress: stateMachine.workingProgress)
+            ?? hoverActivityLabel
         notchStatusController.setStatus(
             NotchSessionStatus.resolve(
                 for: stateMachine.state,
@@ -230,6 +269,10 @@ final class AppState {
         )
         notchStatusController.setWorkingProgressLabel(workingProgressLabel)
         notchStatusController.setActivityLabels(labels)
+    }
+
+    private static func notchActivityRunKey(repoPath: String, ticketId: String) -> String {
+        "\(repoPath)|\(ticketId)"
     }
 
     init(

@@ -76,6 +76,53 @@ enum ProjectResolver {
         }
     }
 
+    static func resolveActivityProjects() -> [LinkedProject] {
+        resolveActivityProjects(
+            bridgeSocket: URL(fileURLWithPath: bridgeSocketPath),
+            bridgeCwdFile: URL(fileURLWithPath: bridgeCwdFilePath),
+            bridgeProviderFile: URL(fileURLWithPath: bridgeProviderFilePath),
+            bridgeSessionAlive: ProcessManager.activeRelaySessionAlive
+        )
+    }
+
+    static func resolveActivityProjects(
+        bridgeSocket: URL,
+        bridgeCwdFile: URL,
+        bridgeProviderFile: URL? = nil,
+        bridgeSessionAlive: () -> Bool = { true },
+        registry: ProjectRegistry = ProjectRegistry()
+    ) -> [LinkedProject] {
+        let fm = FileManager.default
+        let bridgeAlive = bridgeSessionAlive() && fm.fileExists(atPath: bridgeSocket.path)
+        if bridgeAlive,
+           let raw = try? String(contentsOf: bridgeCwdFile, encoding: .utf8) {
+            let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty else { return [] }
+
+            let cwdURL = URL(fileURLWithPath: path)
+            let provider = bridgeProviderFile.flatMap(readBridgeProvider)
+            do {
+                if let project = try registry.activateBridgeCwd(at: cwdURL, provider: provider) {
+                    return [project]
+                }
+                return try registry.activeWorkspaceProjects()
+            } catch {
+                NSLog("[relay-runner] failed to resolve activity projects for \(cwdURL.path): \(error)")
+                return []
+            }
+        }
+
+        do {
+            if let project = try registry.activeProject() {
+                return [project]
+            }
+            return try registry.activeWorkspaceProjects()
+        } catch {
+            NSLog("[relay-runner] failed to resolve activity projects: \(error)")
+            return []
+        }
+    }
+
     static func resolveBoardRoute() -> BoardRoute {
         resolveBoardRoute(
             bridgeSocket: URL(fileURLWithPath: bridgeSocketPath),

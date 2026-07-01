@@ -379,12 +379,7 @@ enum NotchActivityLabelPlanner {
             labels.append(stateLabel)
         }
 
-        let runLabels = activeRuns
-            .filter(\.isActive)
-            .sorted { lhs, rhs in
-                if lhs.runId != rhs.runId { return lhs.runId > rhs.runId }
-                return (lhs.activityAt ?? 0) > (rhs.activityAt ?? 0)
-            }
+        let runLabels = sortedActiveRuns(activeRuns)
             .compactMap { label(for: $0, now: now) }
         labels.append(contentsOf: runLabels)
 
@@ -396,6 +391,37 @@ enum NotchActivityLabelPlanner {
         compactLabels.removeAll { $0 == "Thinking" }
 
         return compactLabels.prefix(maximumLabels).map { $0 }
+    }
+
+    static func hoverLabel(
+        for state: OverlayState,
+        activeRuns: [RunState] = [],
+        tickets: [Ticket] = [],
+        bridgeRecoveryInFlight: Bool = false,
+        bridgeStartingUp: Bool = false,
+        now: Date = Date(),
+        ticketForRun: ((RunState) -> Ticket?)? = nil
+    ) -> String? {
+        let ticketsByID = Dictionary(tickets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+
+        if let runLabel = sortedActiveRuns(activeRuns)
+            .compactMap({
+                let ticket = ticketForRun?($0) ?? ticketsByID[$0.ticketId]
+                return label(forActiveRunDetail: $0, ticket: ticket, now: now)
+            })
+            .first {
+            return runLabel
+        }
+        if bridgeStartingUp {
+            return "Starting session"
+        }
+        if bridgeRecoveryInFlight {
+            return "Reconnecting session"
+        }
+        if hasWaitingDependency(in: tickets) {
+            return "Waiting on ticket dependency"
+        }
+        return label(for: state)
     }
 
     static func label(for state: OverlayState) -> String? {
@@ -471,6 +497,18 @@ enum NotchActivityLabelPlanner {
         return compactWords(trimmed, fallback: fallback)
     }
 
+    static func label(forDetailedWorkerActivity activity: String, fallback: String = "Worker running") -> String {
+        let trimmed = activity.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fallback }
+        let lower = trimmed.lowercased()
+        let rawCommand = looksLikeRawCommand(trimmed)
+
+        if lower == "idle" { return "Worker idle" }
+        if rawCommand && !isRecognizedCommandActivity(lower) { return fallback }
+        if rawCommand { return label(forWorkerActivity: trimmed, fallback: fallback) }
+        return label(forWorkingProgress: trimmed) ?? fallback
+    }
+
     static func label(forWorkingProgress progress: String?) -> String? {
         let words = (progress ?? "")
             .replacingOccurrences(of: "\n", with: " ")
@@ -484,7 +522,7 @@ enum NotchActivityLabelPlanner {
     }
 
     static func hasWaitingDependency(in tickets: [Ticket]) -> Bool {
-        let byID = Dictionary(uniqueKeysWithValues: tickets.map { ($0.id, $0) })
+        let byID = Dictionary(tickets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return tickets.contains { ticket in
             guard ticket.status == .ready,
                   !ticket.canceled,
@@ -508,6 +546,92 @@ enum NotchActivityLabelPlanner {
             result.append(compact)
         }
         return result
+    }
+
+    private static func sortedActiveRuns(_ activeRuns: [RunState]) -> [RunState] {
+        activeRuns
+            .filter(\.isActive)
+            .sorted { lhs, rhs in
+                if lhs.runId != rhs.runId { return lhs.runId > rhs.runId }
+                return (lhs.activityAt ?? 0) > (rhs.activityAt ?? 0)
+            }
+    }
+
+    private static func label(
+        forActiveRunDetail run: RunState,
+        ticket: Ticket?,
+        now: Date
+    ) -> String? {
+        guard run.isActive else { return nil }
+
+        var text = "\(run.ticketId) run \(run.runId)"
+        if let detail = detail(for: run, ticket: ticket, now: now) {
+            text += ": \(detail)"
+        }
+        if let providerLabel = providerLabel(for: run) {
+            text += " (\(providerLabel))"
+        }
+        return label(forWorkingProgress: text)
+    }
+
+    private static func detail(for run: RunState, ticket: Ticket?, now: Date) -> String? {
+        let activityDetail: String?
+        switch run.state {
+        case "Claimed":
+            activityDetail = "Dispatching worker"
+        case "Stalled":
+            activityDetail = "Worker stalled"
+        case "Running":
+            if let activity = run.activityChip(now: now) {
+                activityDetail = label(forDetailedWorkerActivity: activity)
+            } else {
+                activityDetail = "Worker running"
+            }
+        default:
+            activityDetail = nil
+        }
+
+        let title = ticket?.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch (activityDetail, title?.isEmpty == false ? title : nil) {
+        case let (.some(activity), .some(title)) where activity != title:
+            return "\(activity) - \(title)"
+        case let (.some(activity), _):
+            return activity
+        case let (_, .some(title)):
+            return title
+        default:
+            return nil
+        }
+    }
+
+    private static func providerLabel(for run: RunState) -> String? {
+        let provider = run.providerKey?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = run.modelAlias?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerLabel = provider.flatMap { value -> String? in
+            guard !value.isEmpty else { return nil }
+            switch value.lowercased() {
+            case "codex":
+                return "Codex"
+            case "claude":
+                return "Claude"
+            default:
+                return value
+            }
+        }
+        let modelLabel = model?.isEmpty == false ? model : nil
+
+        switch (providerLabel, modelLabel) {
+        case let (.some(providerLabel), .some(modelLabel)):
+            return "\(providerLabel)/\(modelLabel)"
+        case let (.some(providerLabel), .none):
+            return providerLabel
+        case let (.none, .some(modelLabel)):
+            return modelLabel
+        case (.none, .none):
+            return nil
+        }
     }
 
     private static func compactWords(_ text: String, fallback: String) -> String {

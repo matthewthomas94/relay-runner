@@ -560,6 +560,69 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
+    func testHoverActivityLabelIncludesActiveRunDetails() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let run = RunState(
+            ticketId: "RR-118",
+            repoPath: "/repo",
+            runId: 157,
+            state: "Running",
+            lastError: nil,
+            activity: "Reading source files",
+            activityAt: now.timeIntervalSince1970,
+            providerKey: "codex",
+            modelAlias: "gpt-5"
+        )
+        let tickets = [
+            ticket(id: "RR-118", title: "Restore hover trace", status: .inProgress),
+        ]
+
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.hoverLabel(
+                for: .idle,
+                activeRuns: [run],
+                tickets: tickets,
+                now: now
+            ),
+            "RR-118 run 157: Reading source files - Restore hover trace (Codex/gpt-5)"
+        )
+    }
+
+    func testHoverActivityLabelHandlesNoWorkAndStaleRuns() {
+        let now = Date(timeIntervalSince1970: 2_000)
+
+        XCTAssertNil(
+            NotchActivityLabelPlanner.hoverLabel(
+                for: .idle,
+                activeRuns: [],
+                tickets: [],
+                now: now
+            )
+        )
+
+        let staleRun = RunState(
+            ticketId: "RR-119",
+            repoPath: "/repo",
+            runId: 158,
+            state: "Running",
+            lastError: nil,
+            activity: "Reading source files",
+            activityAt: now.timeIntervalSince1970 - RunState.idleThreshold - 1,
+            providerKey: "claude",
+            modelAlias: "sonnet"
+        )
+
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.hoverLabel(
+                for: .idle,
+                activeRuns: [staleRun],
+                tickets: [ticket(id: "RR-119", title: "Background worker", status: .inProgress)],
+                now: now
+            ),
+            "RR-119 run 158: Worker idle - Background worker (Claude/sonnet)"
+        )
+    }
+
     func testActivityLabelsIncludeWaitingDependencyWhenReadyWorkIsBlocked() {
         let tickets = [
             ticket(id: "RR-1", status: .ready, dependsOn: ["RR-0"]),
@@ -579,12 +642,13 @@ final class NotchStatusPlacementTests: XCTestCase {
 
     private func ticket(
         id: String,
+        title: String? = nil,
         status: Ticket.Status,
         dependsOn: [String] = []
     ) -> Ticket {
         Ticket(
             id: id,
-            title: id,
+            title: title ?? id,
             status: status,
             priority: .medium,
             dependsOn: dependsOn,

@@ -20,6 +20,10 @@ struct RunState: Equatable, Decodable {
     /// Epoch seconds of the last activity event. Used to detect a stalled
     /// worker (no events for `idleThreshold`).
     let activityAt: Double?
+    /// Provider/model metadata written by the orchestrator when the run is
+    /// dispatched. Older index entries omit these fields.
+    let providerKey: String?
+    let modelAlias: String?
 
     private enum CodingKeys: String, CodingKey {
         case ticketId = "ticket_id"
@@ -29,6 +33,30 @@ struct RunState: Equatable, Decodable {
         case lastError = "last_error"
         case activity
         case activityAt = "activity_at"
+        case providerKey = "provider_key"
+        case modelAlias = "model_alias"
+    }
+
+    init(
+        ticketId: String,
+        repoPath: String,
+        runId: Int,
+        state: String,
+        lastError: String?,
+        activity: String?,
+        activityAt: Double?,
+        providerKey: String? = nil,
+        modelAlias: String? = nil
+    ) {
+        self.ticketId = ticketId
+        self.repoPath = repoPath
+        self.runId = runId
+        self.state = state
+        self.lastError = lastError
+        self.activity = activity
+        self.activityAt = activityAt
+        self.providerKey = providerKey
+        self.modelAlias = modelAlias
     }
 
     var isActive: Bool {
