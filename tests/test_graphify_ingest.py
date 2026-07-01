@@ -232,6 +232,60 @@ class GraphifyIngestTests(unittest.TestCase):
             {str(relay_repo.resolve())},
         )
 
+    def test_deletes_stale_workspace_root_project_when_registry_only_tracks_root(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        workspace = root / "dev"
+        workspace.mkdir()
+        relay_repo = _make_repo(workspace, "relay-runner")
+        tools_repo = _make_repo(workspace, "tools")
+
+        registry_path = root / "projects.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "activeProjectID": None,
+                    "activeWorkspaceRootID": str(workspace.resolve()),
+                    "workspaceRoots": [
+                        {"id": str(workspace.resolve()), "rootPath": str(workspace.resolve())}
+                    ],
+                    "projects": [
+                        {
+                            "id": str(relay_repo.resolve()),
+                            "repoPath": str(relay_repo.resolve()),
+                            "displayName": "Relay Runner",
+                            "providers": {"codex": {}},
+                        },
+                        {
+                            "id": str(tools_repo.resolve()),
+                            "repoPath": str(tools_repo.resolve()),
+                            "displayName": "Tools",
+                            "providers": {"claude": {}},
+                        },
+                    ],
+                }
+            )
+        )
+
+        store = self.make_store()
+        store.upsert_node(
+            kind=NODE_PROJECT,
+            stable_key=f"repo:{workspace.resolve()}",
+            title="dev",
+            body={"repo_path": str(workspace.resolve()), "providers": {"codex": {}}},
+        )
+
+        counts = ingest_registered_projects(store, registry_path=registry_path)
+        summary = build_program_status(store, query="summary", limit=0, now=2000.0)
+
+        self.assertEqual(counts["projects"], 2)
+        self.assertIsNone(store.find_node(kind=NODE_PROJECT, stable_key=f"repo:{workspace.resolve()}"))
+        self.assertEqual(
+            {item["project"]["path"] for item in summary["items"]},
+            {str(relay_repo.resolve()), str(tools_repo.resolve())},
+        )
+        self.assertNotIn(f"- dev ({workspace.resolve()})", summary["message"])
+
     def test_preserves_active_project_that_matches_historical_workspace_root(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: _remove_tree(root))

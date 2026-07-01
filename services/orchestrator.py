@@ -104,7 +104,14 @@ def _registered_project_repo_paths(registry_path: Path) -> list[str]:
 
     active_project = str(payload.get("activeProjectID") or "").strip()
     active_project_path = str(Path(active_project).expanduser().resolve()) if active_project else None
+    active_workspace_root = str(payload.get("activeWorkspaceRootID") or "").strip()
+    active_workspace_root_path = str(Path(active_workspace_root).expanduser().resolve()) if active_workspace_root else None
     workspace_roots = _registered_workspace_root_paths(payload)
+    workspace_roots_to_filter = {
+        path
+        for path in workspace_roots
+        if path != active_project_path or path == active_workspace_root_path
+    }
     repo_paths: list[str] = []
     seen: set[str] = set()
     for record in projects:
@@ -115,7 +122,7 @@ def _registered_project_repo_paths(registry_path: Path) -> list[str]:
         if not repo_path:
             continue
         resolved = str(Path(repo_path).expanduser().resolve())
-        if (resolved in workspace_roots and resolved != active_project_path) or resolved in seen:
+        if resolved in workspace_roots_to_filter or resolved in seen:
             continue
         seen.add(resolved)
         repo_paths.append(resolved)

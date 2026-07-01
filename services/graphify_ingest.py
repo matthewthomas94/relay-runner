@@ -41,7 +41,13 @@ def ingest_registered_projects(
     registry = _load_registry(Path(registry_path))
     active_project_id = registry.get("activeProjectID")
     active_project_path = _clean_path(active_project_id)
+    active_workspace_root_path = _clean_path(registry.get("activeWorkspaceRootID"))
     workspace_root_paths = _workspace_root_paths(registry)
+    workspace_roots_to_filter = {
+        path
+        for path in workspace_root_paths
+        if path != active_project_path or path == active_workspace_root_path
+    }
     registered_projects = registry.get("projects")
     if not isinstance(registered_projects, list):
         registered_projects = []
@@ -61,14 +67,16 @@ def ingest_registered_projects(
     projects_by_repo: dict[str, dict[str, Any]] = {}
     tickets_by_repo: dict[str, dict[str, dict[str, Any]]] = {}
 
+    for repo_path in workspace_roots_to_filter:
+        _delete_existing_project_graph(store, repo_path)
+
     for record in registered_projects:
         if not isinstance(record, dict):
             continue
         repo_path = _repo_path(record)
         if repo_path is None:
             continue
-        if repo_path in workspace_root_paths and repo_path != active_project_path:
-            _delete_existing_project_graph(store, repo_path)
+        if repo_path in workspace_roots_to_filter:
             continue
 
         project = store.upsert_node(
