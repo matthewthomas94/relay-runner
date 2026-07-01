@@ -308,6 +308,7 @@ class ReadySweeperTests(unittest.TestCase):
                 "activeWorkspaceRootID": str(root.resolve()),
                 "workspaceRoots": [{"id": str(root.resolve()), "rootPath": str(root.resolve())}],
                 "projects": [
+                    {"id": str(root.resolve()), "repoPath": str(root.resolve()), "displayName": root.name},
                     {"id": str(repo_a.resolve()), "repoPath": str(repo_a.resolve())},
                     {"id": str(repo_b.resolve()), "repoPath": str(repo_b.resolve())},
                 ],
@@ -343,6 +344,47 @@ class ReadySweeperTests(unittest.TestCase):
                     {"repo_path": str(repo_a.resolve()), "ticket_id": "RR-1", "run_id": 1},
                     {"repo_path": str(repo_b.resolve()), "ticket_id": "RR-1", "run_id": 2},
                 ],
+            )
+
+    def test_program_sweeper_preserves_active_project_that_matches_historical_workspace_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "platform"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready")
+
+            registry = root / "projects.json"
+            registry.write_text(json.dumps({
+                "activeProjectID": str(repo.resolve()),
+                "activeWorkspaceRootID": None,
+                "workspaceRoots": [{"id": str(repo.resolve()), "rootPath": str(repo.resolve())}],
+                "projects": [
+                    {"id": str(repo.resolve()), "repoPath": str(repo.resolve()), "displayName": "Platform"},
+                ],
+            }))
+
+            daemon = object.__new__(Daemon)
+            daemon.program_registry_path = registry
+            daemon.runs = FakeRuns()
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs) or {
+                "already_active": False,
+                "run": {"id": 7},
+            }
+
+            result = Daemon.sweep_program_ready_tickets(
+                daemon,
+                trigger="program-board-refresh",
+            )
+
+            self.assertEqual(calls, [{
+                "ticket_id": "RR-1",
+                "repo_path": str(repo.resolve()),
+                "source": "ready-sweeper",
+            }])
+            self.assertEqual(
+                result["dispatched"],
+                [{"repo_path": str(repo.resolve()), "ticket_id": "RR-1", "run_id": 7}],
             )
 
     def test_repo_scoped_active_run_does_not_block_same_ticket_id_in_another_project(self):
