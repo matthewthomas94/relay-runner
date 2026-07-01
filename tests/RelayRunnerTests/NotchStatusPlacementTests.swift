@@ -147,6 +147,11 @@ final class NotchStatusPlacementTests: XCTestCase {
     }
 
     func testActivityLabelsMapVoiceAndActionStatesToConciseCopy() {
+        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .idle), [])
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.labels(for: .idle, bridgeStartingUp: true),
+            ["Starting up..."]
+        )
         XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .recording), ["Listening"])
         XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .sent), ["Sending voice"])
         XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .speaking), ["Playing"])

@@ -17,4 +17,21 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertTrue(plan.startsAwareness)
         XCTAssertNil(plan.statusText)
     }
+
+    func testSessionLaunchConfigCanUseScopedWorkingDirectoryWithoutMutatingSavedConfig() {
+        var config = AppConfig()
+        config.general.working_directory = "/Users/example/dev"
+
+        let scoped = AppState.sessionLaunchConfig(
+            from: config,
+            workingDirectory: " /Users/example/dev/brain-stack "
+        )
+        let global = AppState.sessionLaunchConfig(from: config, workingDirectory: nil)
+        let blank = AppState.sessionLaunchConfig(from: config, workingDirectory: "   ")
+
+        XCTAssertEqual(scoped.general.working_directory, "/Users/example/dev/brain-stack")
+        XCTAssertEqual(global.general.working_directory, "/Users/example/dev")
+        XCTAssertEqual(blank.general.working_directory, "/Users/example/dev")
+        XCTAssertEqual(config.general.working_directory, "/Users/example/dev")
+    }
 }

@@ -120,6 +120,7 @@ final class AppState {
     private var menuSessionActive = false {
         didSet { syncNotchStatusSurface() }
     }
+    @ObservationIgnored private var activeSessionLaunchConfig: AppConfig?
     /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
     private var bridgeAliveCache = false {
         didSet { syncNotchStatusSurface() }
@@ -132,7 +133,12 @@ final class AppState {
     private var sessionStartTime: Date = .distantPast
     /// Has the bridge for the current menu-started session been observed alive at least once?
     /// Used to distinguish "still starting up" from "came up and then died".
-    private var sessionBridgeSeen = false
+    private var sessionBridgeSeen = false {
+        didSet {
+            guard oldValue != sessionBridgeSeen else { return }
+            syncNotchStatusSurface()
+        }
+    }
     private var bridgeRecoveryInFlight = false {
         didSet { syncNotchStatusSurface() }
     }
@@ -157,8 +163,12 @@ final class AppState {
     /// users see the menu reflect their session promptly.
     var hasActiveSession: Bool { menuSessionActive || bridgeAliveCache || bridgeRecoveryInFlight }
 
+    private var bridgeStartingUp: Bool {
+        menuSessionActive && !sessionBridgeSeen && !bridgeRecoveryInFlight
+    }
+
     private func syncNotchStatusSurface() {
-        notchStatusController.setActive(hasActiveSession)
+        notchStatusController.setActive(overlayController != nil)
         syncNotchActivitySurface()
     }
 
@@ -197,6 +207,7 @@ final class AppState {
 
     private func syncNotchActivitySurface() {
         guard hasActiveSession else {
+            notchStatusController.setStatus(.notWorking)
             notchStatusController.setWorkingProgressLabel(nil)
             notchStatusController.setActivityLabels([])
             return
@@ -206,7 +217,8 @@ final class AppState {
             for: stateMachine.state,
             activeRuns: notchActivityRunStates,
             tickets: notchActivityTickets,
-            bridgeRecoveryInFlight: bridgeRecoveryInFlight
+            bridgeRecoveryInFlight: bridgeRecoveryInFlight,
+            bridgeStartingUp: bridgeStartingUp
         )
         let workingProgressLabel = NotchActivityLabelPlanner.label(forWorkingProgress: stateMachine.workingProgress)
         notchStatusController.setStatus(
@@ -241,6 +253,12 @@ final class AppState {
         programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
             guard let self else { return nil }
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
+        }
+        programBoardOverlay.setStartSessionHandler { [weak self] projectPath in
+            self?.newSession(workingDirectory: projectPath)
+        }
+        programBoardOverlay.setSessionActiveProvider { [weak self] in
+            self?.hasActiveSession ?? false
         }
         notchStatusController.setGlyphClickHandler { [weak self] in
             self?.toggleBoard()
@@ -429,6 +447,7 @@ final class AppState {
     func endSession() {
         processManager.killBridge(stopRequested: true)
         menuSessionActive = false
+        activeSessionLaunchConfig = nil
         bridgeAliveCache = false
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
@@ -448,6 +467,7 @@ final class AppState {
         guard isRunning else { return }
         stopBridgeWatchdog()
         menuSessionActive = false
+        activeSessionLaunchConfig = nil
         bridgeRecoveryInFlight = false
         stopOverlay()
         sttEngine?.stop()
@@ -461,6 +481,7 @@ final class AppState {
         bridgeRecoverySuppressedForUpdate = true
         stopBridgeWatchdog()
         menuSessionActive = false
+        activeSessionLaunchConfig = nil
         bridgeAliveCache = false
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
@@ -551,11 +572,15 @@ final class AppState {
         return hasExplicitWorkspace && oldGeneral.provider != newGeneral.provider
     }
 
-    func newSession() {
+    func newSession(workingDirectory: String? = nil) {
         guard permissions.microphone == .granted else {
             onboarding.showAlways()
             return
         }
+        let launchConfig = Self.sessionLaunchConfig(
+            from: config,
+            workingDirectory: workingDirectory
+        )
         // Mark first-session-run before we do anything else — the
         // onboarding controller uses this flag to decide whether to
         // re-show the All Set screen on next launch. Marking on
@@ -570,6 +595,7 @@ final class AppState {
         sessionStartTime = Date()
         sessionBridgeSeen = false
         sessionPromptGate.reset()
+        activeSessionLaunchConfig = launchConfig
         // Bridge is about to launch — assume alive until watchdog says otherwise
         bridgeAliveCache = true
 
@@ -583,12 +609,21 @@ final class AppState {
         }
 
         // Launch a normal agent terminal and pre-fire relay-bridge voice mode.
-        processManager.launchNewSession(config: config)
+        processManager.launchNewSession(config: launchConfig)
         isRunning = true
         statusText = "Session"
 
         // Ensure overlay is running
         if overlayController == nil { startOverlay() }
+    }
+
+    static func sessionLaunchConfig(from config: AppConfig, workingDirectory: String?) -> AppConfig {
+        var launchConfig = config
+        let trimmed = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            launchConfig.general.working_directory = trimmed
+        }
+        return launchConfig
     }
 
     func ttsCommand(_ cmd: String) {
@@ -655,12 +690,17 @@ final class AppState {
 
     // MARK: - Bridge watchdog
 
+    private var bridgeRecoveryFallbackConfig: AppConfig? {
+        guard menuSessionActive else { return nil }
+        return activeSessionLaunchConfig ?? config
+    }
+
     private func startBridgeWatchdog() {
         stopBridgeWatchdog()
         let daemonAlive = processManager.bridgeAlive()
         let consumerAlive = daemonAlive && processManager.bridgeConsumerAlive()
         let hasSessionContext = processManager.bridgeRecoveryContext(
-            fallbackConfig: menuSessionActive ? config : nil
+            fallbackConfig: bridgeRecoveryFallbackConfig
         ) != nil
         bridgeAliveCache = ProcessManager.relaySessionAlive(
             daemonAlive: daemonAlive,
@@ -672,7 +712,7 @@ final class AppState {
             let daemonAlive = self.processManager.bridgeAlive()
             let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
             let hasSessionContext = self.processManager.bridgeRecoveryContext(
-                fallbackConfig: self.menuSessionActive ? self.config : nil
+                fallbackConfig: self.bridgeRecoveryFallbackConfig
             ) != nil
             let alive = ProcessManager.relaySessionAlive(
                 daemonAlive: daemonAlive,
@@ -699,6 +739,7 @@ final class AppState {
                 self.processManager.killBridge()
                 self.bridgeAliveCache = false
                 self.menuSessionActive = false
+                self.activeSessionLaunchConfig = nil
                 self.sessionBridgeSeen = false
                 self.statusText = "Ready"
                 return
@@ -723,6 +764,7 @@ final class AppState {
                 }
                 NSLog("[AppState] Bridge died but no recovery context was available")
                 self.menuSessionActive = false
+                self.activeSessionLaunchConfig = nil
                 self.sessionBridgeSeen = false
                 self.statusText = "Ready"
                 return
@@ -829,7 +871,7 @@ final class AppState {
         if bridgeRecoverySuppressedForUpdate { return false }
         if processManager.bridgeStopRequested() { return false }
         if bridgeRecoveryInFlight { return true }
-        guard let context = processManager.bridgeRecoveryContext(fallbackConfig: menuSessionActive ? config : nil) else {
+        guard let context = processManager.bridgeRecoveryContext(fallbackConfig: bridgeRecoveryFallbackConfig) else {
             return false
         }
         let now = Date()
@@ -854,6 +896,7 @@ final class AppState {
                     }
                     self.bridgeAliveCache = false
                     self.menuSessionActive = false
+                    self.activeSessionLaunchConfig = nil
                     self.sessionBridgeSeen = false
                     self.statusText = "Ready"
                     NSLog("[AppState] Voice bridge recovery ignored because session stop was requested")
@@ -868,6 +911,7 @@ final class AppState {
                 } else {
                     self.bridgeAliveCache = false
                     self.menuSessionActive = false
+                    self.activeSessionLaunchConfig = nil
                     self.sessionBridgeSeen = false
                     self.statusText = "Ready"
                     NSLog("[AppState] Voice bridge daemon recovery failed")
@@ -1032,6 +1076,7 @@ final class AppState {
         perimeter.start(stateMachine: stateMachine)
         perimeterOverlay = perimeter
         startNotchActivityPolling()
+        syncNotchStatusSurface()
 
         // Poll STT engine state → state machine (STT is in-process, no socket needed)
         sttPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
@@ -1131,7 +1176,7 @@ final class AppState {
         actionsBus = nil
 
         stateMachine.reset()
-        syncNotchActivitySurface()
+        syncNotchStatusSurface()
     }
 
 }

@@ -1055,6 +1055,7 @@ final class ProgramBoardViewModel {
     var reloadState: ProgramBoardReloadState = .idle
     var errorMessage: String?
     var theme: ParticleFieldRenderer.Theme?
+    var hasActiveSession = false
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?
     var creating: ProgramBoardCreateDraft?
@@ -1137,6 +1138,14 @@ final class ProgramBoardViewModel {
     var selectedScopeTitle: String {
         guard let selectedProjectPath else { return "All tickets" }
         return snapshot?.projectName(for: selectedProjectPath) ?? "Selected project"
+    }
+
+    var selectedSessionProjectPath: String? {
+        guard let selectedProjectPath,
+              snapshot?.containsProject(path: selectedProjectPath) == true else {
+            return nil
+        }
+        return selectedProjectPath
     }
 
     var projectTargets: [ProgramBoardProjectTarget] {

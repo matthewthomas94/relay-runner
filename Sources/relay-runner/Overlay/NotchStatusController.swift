@@ -364,10 +364,14 @@ enum NotchActivityLabelPlanner {
         activeRuns: [RunState] = [],
         tickets: [Ticket] = [],
         bridgeRecoveryInFlight: Bool = false,
+        bridgeStartingUp: Bool = false,
         now: Date = Date()
     ) -> [String] {
         var labels: [String] = []
 
+        if bridgeStartingUp {
+            labels.append("Starting up...")
+        }
         if bridgeRecoveryInFlight {
             labels.append("Reconnecting session")
         }

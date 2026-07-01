@@ -492,6 +492,32 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertNil(model.dragPreview)
     }
 
+    func testProgramBoardViewModelTracksActiveSessionForHeaderActions() {
+        let model = ProgramBoardViewModel()
+
+        XCTAssertFalse(model.hasActiveSession)
+
+        model.hasActiveSession = true
+
+        XCTAssertTrue(model.hasActiveSession)
+    }
+
+    func testProgramBoardViewModelExposesSelectedProjectForSessionLaunch() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let snapshot = try programBoardSnapshot(clientPath: clientPath, toolsPath: toolsPath)
+        let model = ProgramBoardViewModel()
+        model.snapshot = snapshot
+
+        XCTAssertNil(model.selectedSessionProjectPath)
+
+        model.selectProject(path: clientPath)
+        XCTAssertEqual(model.selectedSessionProjectPath, clientPath)
+
+        model.selectProject(path: "/repo/missing")
+        XCTAssertNil(model.selectedSessionProjectPath)
+    }
+
     func testProgramBoardViewModelApplyTicketMovesVisibleTicketImmediately() throws {
         let clientPath = "/repo/client-dashboard"
         let toolsPath = "/repo/tools"

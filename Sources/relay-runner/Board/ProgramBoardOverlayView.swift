@@ -16,6 +16,7 @@ struct ProgramBoardOverlayView: View {
     @Bindable var model: ProgramBoardViewModel
     let onDismiss: () -> Void
     let onRefresh: () -> Void
+    let onStartSession: () -> Void
     let onOpenProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
     let onCreateCommit: (ProgramBoardCreateRequest) -> Void
@@ -51,6 +52,7 @@ struct ProgramBoardOverlayView: View {
                 ProgramBoardContent(
                     model: model,
                     onRefresh: onRefresh,
+                    onStartSession: onStartSession,
                     onDismiss: onDismiss,
                     onOpenProject: onOpenProject,
                     onCreateStart: onCreateStart,
@@ -242,6 +244,7 @@ enum ProgramBoardContentPresentation: Equatable {
 private struct ProgramBoardContent: View {
     @Bindable var model: ProgramBoardViewModel
     let onRefresh: () -> Void
+    let onStartSession: () -> Void
     let onDismiss: () -> Void
     let onOpenProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
@@ -265,9 +268,11 @@ private struct ProgramBoardContent: View {
                             errorMessage: model.errorMessage,
                             reloadState: model.reloadState,
                             theme: model.theme,
+                            hasActiveSession: model.hasActiveSession,
                             onSelectAll: model.selectAllProjects,
                             onSelectProject: model.selectProject,
                             onRefresh: onRefresh,
+                            onStartSession: onStartSession,
                             onDismiss: onDismiss
                         )
                         ForEach(ProgramBoardLane.allCases) { lane in
@@ -329,9 +334,11 @@ private struct ProgramOverviewColumn: View {
     let errorMessage: String?
     let reloadState: ProgramBoardReloadState
     let theme: ParticleFieldRenderer.Theme?
+    let hasActiveSession: Bool
     let onSelectAll: () -> Void
     let onSelectProject: (String) -> Void
     let onRefresh: () -> Void
+    let onStartSession: () -> Void
     let onDismiss: () -> Void
 
     var body: some View {
@@ -352,6 +359,8 @@ private struct ProgramOverviewColumn: View {
                 count: snapshot.projects.count,
                 selectedScopeTitle: selectedScopeTitle,
                 isAllSelected: selectedProjectPath == nil,
+                hasActiveSession: hasActiveSession,
+                onStartSession: onStartSession,
                 onSelectAll: onSelectAll
             )
 
@@ -455,6 +464,8 @@ private struct ProgramProjectFilterHeader: View {
     let count: Int
     let selectedScopeTitle: String
     let isAllSelected: Bool
+    let hasActiveSession: Bool
+    let onStartSession: () -> Void
     let onSelectAll: () -> Void
 
     var body: some View {
@@ -475,23 +486,28 @@ private struct ProgramProjectFilterHeader: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            Button(action: onSelectAll) {
-                Text("All")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(isAllSelected ? ProgramBoardStyle.primaryText : ProgramBoardStyle.secondaryText)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(
-                        Capsule()
-                            .fill(Color.white.opacity(isAllSelected ? 0.16 : 0.07))
-                    )
-                    .overlay(
-                        Capsule()
-                            .stroke(Color.white.opacity(isAllSelected ? 0.25 : 0.10), lineWidth: 0.5)
-                    )
+            HStack(alignment: .center, spacing: 6) {
+                if !hasActiveSession {
+                    ProgramStartSessionButton(action: onStartSession)
+                }
+                Button(action: onSelectAll) {
+                    Text("All")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(isAllSelected ? ProgramBoardStyle.primaryText : ProgramBoardStyle.secondaryText)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule()
+                                .fill(Color.white.opacity(isAllSelected ? 0.16 : 0.07))
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.white.opacity(isAllSelected ? 0.25 : 0.10), lineWidth: 0.5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Show tickets from all projects")
             }
-            .buttonStyle(.plain)
-            .help("Show tickets from all projects")
         }
     }
 }
@@ -1686,6 +1702,32 @@ private struct ProgramErrorStrip: View {
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(ProgramCardBackground(cornerRadius: 12))
+    }
+}
+
+private struct ProgramStartSessionButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 9, weight: .bold))
+                Text("Start Session")
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.96))
+            .padding(.horizontal, 9)
+            .frame(height: 24)
+            .background(Capsule().fill(Color.white.opacity(0.10)))
+            .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .programButtonCursor()
+        .help("Start a Relay Runner voice session")
     }
 }
 

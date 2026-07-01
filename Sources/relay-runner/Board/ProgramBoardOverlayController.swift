@@ -13,6 +13,8 @@ final class ProgramBoardOverlayController {
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     private var openProjectHandler: ((String) -> Void)?
     private var loadingStateHandler: ((Bool) -> Void)?
+    private var startSessionHandler: ((String?) -> Void)?
+    private var sessionActiveProvider: () -> Bool = { false }
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
     private var themePollTimer: Timer?
     private var statusPollTimer: Timer?
@@ -27,6 +29,14 @@ final class ProgramBoardOverlayController {
 
     func setLoadingStateHandler(_ handler: @escaping (Bool) -> Void) {
         self.loadingStateHandler = handler
+    }
+
+    func setStartSessionHandler(_ handler: @escaping (String?) -> Void) {
+        self.startSessionHandler = handler
+    }
+
+    func setSessionActiveProvider(_ provider: @escaping () -> Bool) {
+        self.sessionActiveProvider = provider
     }
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
@@ -54,6 +64,7 @@ final class ProgramBoardOverlayController {
         let hasCachedSnapshot = model.snapshot != nil
         model.prepareForOpening()
         model.theme = themeResolver?()
+        model.hasActiveSession = sessionActiveProvider()
         let reloadTask = hasCachedSnapshot ? model.refreshInBackground() : model.reload()
         if !hasCachedSnapshot {
             loadingStateHandler?(true)
@@ -64,6 +75,7 @@ final class ProgramBoardOverlayController {
             model: model,
             onDismiss: { [weak self] in self?.hide() },
             onRefresh: { [weak self] in self?.model.reload() },
+            onStartSession: { [weak self] in self?.startSession() },
             onOpenProject: { [weak self] repoPath in self?.openProjectHandler?(repoPath) },
             onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
             onCreateCommit: { [weak self] request in self?.commitCreate(request) },
@@ -146,6 +158,10 @@ final class ProgramBoardOverlayController {
             if next != self.model.theme {
                 self.model.theme = next
             }
+            let hasActiveSession = self.sessionActiveProvider()
+            if hasActiveSession != self.model.hasActiveSession {
+                self.model.hasActiveSession = hasActiveSession
+            }
         }
     }
 
@@ -166,6 +182,12 @@ final class ProgramBoardOverlayController {
     private func stopStatusPoll() {
         statusPollTimer?.invalidate()
         statusPollTimer = nil
+    }
+
+    private func startSession() {
+        guard !model.hasActiveSession else { return }
+        startSessionHandler?(model.selectedSessionProjectPath)
+        model.hasActiveSession = sessionActiveProvider()
     }
 
     private func beginCreate(in lane: ProgramBoardLane) {
