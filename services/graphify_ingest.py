@@ -40,6 +40,8 @@ def ingest_registered_projects(
     """
     registry = _load_registry(Path(registry_path))
     active_project_id = registry.get("activeProjectID")
+    active_project_path = _clean_path(active_project_id)
+    workspace_root_paths = _workspace_root_paths(registry)
     registered_projects = registry.get("projects")
     if not isinstance(registered_projects, list):
         registered_projects = []
@@ -64,6 +66,9 @@ def ingest_registered_projects(
             continue
         repo_path = _repo_path(record)
         if repo_path is None:
+            continue
+        if repo_path in workspace_root_paths and repo_path != active_project_path:
+            _delete_existing_project_graph(store, repo_path)
             continue
 
         project = store.upsert_node(
@@ -229,6 +234,20 @@ def _load_registry(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _workspace_root_paths(registry: dict[str, Any]) -> set[str]:
+    roots = registry.get("workspaceRoots")
+    if not isinstance(roots, list):
+        return set()
+    paths: set[str] = set()
+    for record in roots:
+        if not isinstance(record, dict):
+            continue
+        path = _clean_path(record.get("rootPath") or record.get("id"))
+        if path is not None:
+            paths.add(path)
+    return paths
 
 
 _IGNORED_CODE_INDEX_DIRS = {
@@ -505,6 +524,15 @@ def _ticket_key(repo_path: str, ticket_id: str) -> str:
 
 def _run_key(run_id: Any) -> str:
     return f"run:{run_id}"
+
+
+def _delete_existing_project_graph(store: GraphifyCoreStore, repo_path: str) -> None:
+    project = store.find_node(kind=NODE_PROJECT, stable_key=_project_key(repo_path))
+    if project is None:
+        return
+    for node in store.nodes(project_id=project["id"]):
+        store.delete_node(node["id"])
+    store.delete_node(project["id"])
 
 
 def _delete_missing_ticket_nodes(
