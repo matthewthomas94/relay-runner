@@ -46,11 +46,11 @@ enum OverlayState: Equatable {
     /// around the screen edges by PerimeterOverlay, not at the bottom.
     var particleTheme: ParticleFieldRenderer.Theme? {
         switch self {
-        case .idle, .paused, .sent, .cancelled(_), .sessionPrompt, .actionGlow:
+        case .idle, .paused, .sent, .cancelled(_), .acknowledgement, .sessionPrompt, .actionGlow:
             return nil
         case .listening, .recording:
             return .stt
-        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking, .programStatus:
+        case .processing, .messageWaiting, .preparing, .speaking, .programStatus:
             return .tts
         }
     }

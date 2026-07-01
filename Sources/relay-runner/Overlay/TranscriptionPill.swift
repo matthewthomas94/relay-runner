@@ -11,11 +11,6 @@ import CoreImage
 ///   - Content updates within same state: smooth in-place resize
 ///   - All movement is purely vertical (Y-axis only)
 final class TranscriptionPill: NSView {
-    struct AcknowledgementCopy: Equatable {
-        let title: String
-        let body: String?
-    }
-
     enum DarkSurfaceStyle {
         static let pillFill = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
         static let border = NSColor(
@@ -59,18 +54,10 @@ final class TranscriptionPill: NSView {
     private let bottomOffset: CGFloat = 56
 
     private let textColor = NSColor(red: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 1)
-    private let primaryTextColor = NSColor(red: 247 / 255, green: 249 / 255, blue: 252 / 255, alpha: 1)
-    private let secondaryTextColor = NSColor(red: 213 / 255, green: 219 / 255, blue: 232 / 255, alpha: 1)
-
-    private enum Presentation {
-        case standard
-        case acknowledgement
-    }
 
     private var isCompact = true
     private var isTransitioning = false
     private var currentTheme: Theme?
-    private var presentation: Presentation = .standard
 
     /// Latest pill size requested via `transitionContent`. The deferred
     /// callback reads these instead of its captured arguments so that a
@@ -172,7 +159,6 @@ final class TranscriptionPill: NSView {
         let wasCompact = isCompact
         let themeChanged = currentTheme.map { type(of: $0) != type(of: theme) } ?? true
 
-        presentation = .standard
         applyTypography()
         applyTheme(theme)
         titleLabel.stringValue = title
@@ -201,7 +187,6 @@ final class TranscriptionPill: NSView {
         let wasVisible = alphaValue > 0.01
         let wasCompact = isCompact
 
-        presentation = .standard
         applyTypography()
         applyTheme(theme)
         if suppressShadow {
@@ -247,87 +232,6 @@ final class TranscriptionPill: NSView {
             applyLayout(width: maxWidth, height: pillHeight, animated: false)
             slideIn(animated: animated)
         }
-    }
-
-    func showAcknowledgement(text: String, theme: Theme, animated: Bool = true) {
-        let copy = Self.acknowledgementCopy(from: text)
-        let wasVisible = alphaValue > 0.01
-        let wasCompact = isCompact
-
-        presentation = .acknowledgement
-        applyTypography()
-        applyTheme(theme)
-        titleLabel.stringValue = copy.title
-        titleLabel.alignment = .left
-        bodyLabel.stringValue = copy.body ?? ""
-        bodyLabel.alignment = .left
-        manualScrollEngaged = false
-        isCompact = false
-
-        let contentMaxWidth = acknowledgementMaxWidth - currentPadH * 2
-        let titleWidth = titleLabel.sizeThatFits(NSSize(width: contentMaxWidth, height: .greatestFiniteMagnitude)).width
-        let bodyWidth = bodyLabel.sizeThatFits(NSSize(width: contentMaxWidth, height: .greatestFiniteMagnitude)).width
-        let contentWidth = min(contentMaxWidth, max(titleWidth, bodyWidth))
-        let pillWidth = min(
-            acknowledgementMaxWidth,
-            max(acknowledgementMinWidth, ceil(contentWidth) + currentPadH * 2)
-        )
-        let resolvedContentWidth = pillWidth - currentPadH * 2
-        let titleSize = titleLabel.sizeThatFits(NSSize(width: resolvedContentWidth, height: .greatestFiniteMagnitude))
-        let hasBody = !(copy.body ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let bodySize = hasBody
-            ? bodyLabel.sizeThatFits(NSSize(width: resolvedContentWidth, height: .greatestFiniteMagnitude))
-            : .zero
-        let bodyVisibleHeight = min(bodySize.height, acknowledgementMaxBodyHeight)
-        let pillHeight = currentPadV
-            + titleSize.height
-            + (hasBody ? currentTextGap + bodyVisibleHeight : 0)
-            + currentPadV
-
-        if wasVisible && animated && wasCompact {
-            transitionContent(width: pillWidth, height: pillHeight)
-        } else if wasVisible {
-            applyLayout(width: pillWidth, height: pillHeight, animated: animated)
-            if hasBody, bodyContainer.isHidden {
-                bodyContainer.isHidden = false
-            }
-            bodyContainer.alphaValue = hasBody ? 1 : 0
-        } else {
-            bodyContainer.isHidden = !hasBody
-            bodyContainer.alphaValue = hasBody ? 1 : 0
-            applyLayout(width: pillWidth, height: pillHeight, animated: false)
-            slideIn(animated: animated)
-        }
-    }
-
-    static func acknowledgementCopy(from text: String) -> AcknowledgementCopy {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let colon = trimmed.firstIndex(of: ":") {
-            let title = String(trimmed[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let body = String(trimmed[trimmed.index(after: colon)...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !title.isEmpty, !body.isEmpty, !body.contains("\n") {
-                return AcknowledgementCopy(title: title, body: body)
-            }
-        }
-
-        let lines = text
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        if let first = lines.first {
-            let body = lines.dropFirst().joined(separator: " ")
-            return AcknowledgementCopy(
-                title: first,
-                body: body.isEmpty ? nil : body
-            )
-        }
-
-        return AcknowledgementCopy(
-            title: trimmed.isEmpty ? "Got it" : trimmed,
-            body: nil
-        )
     }
 
     func hide(animated: Bool = true) {
@@ -468,18 +372,10 @@ final class TranscriptionPill: NSView {
     }
 
     private func applyTypography() {
-        switch presentation {
-        case .standard:
-            titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-            titleLabel.textColor = textColor
-            bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
-            bodyLabel.textColor = textColor
-        case .acknowledgement:
-            titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-            titleLabel.textColor = primaryTextColor
-            bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
-            bodyLabel.textColor = secondaryTextColor
-        }
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = textColor
+        bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
+        bodyLabel.textColor = textColor
     }
 
     private func applyLayout(width: CGFloat, height: CGFloat, animated: Bool, duration: CFTimeInterval = 0.4) {
@@ -748,20 +644,16 @@ final class TranscriptionPill: NSView {
         }
     }
 
-    private var acknowledgementMaxWidth: CGFloat { 420 }
-    private var acknowledgementMinWidth: CGFloat { 344 }
-    private var acknowledgementMaxBodyHeight: CGFloat { 48 }
-
     private var currentPadH: CGFloat {
-        presentation == .acknowledgement ? 24 : pillPadH
+        pillPadH
     }
 
     private var currentPadV: CGFloat {
-        presentation == .acknowledgement ? 16 : pillPadV
+        pillPadV
     }
 
     private var currentTextGap: CGFloat {
-        presentation == .acknowledgement ? 12 : textGap
+        textGap
     }
 
     private var currentCornerRadius: CGFloat {
@@ -769,6 +661,6 @@ final class TranscriptionPill: NSView {
     }
 
     private var currentMaxBodyHeight: CGFloat {
-        presentation == .acknowledgement ? acknowledgementMaxBodyHeight : maxBodyHeight
+        maxBodyHeight
     }
 }
