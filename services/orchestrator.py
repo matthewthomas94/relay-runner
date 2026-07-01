@@ -361,6 +361,8 @@ def apply_default_worker_sizing(
     defaults = _normalized_default_worker_sizing(general)
     if not defaults:
         return False
+    if any(_required_sizing_value(ticket, field) for field in WORKER_SIZING_FIELDS):
+        return False
     raw = ticket.setdefault("_raw_fields", {})
     if not isinstance(raw, dict):
         raw = {}
@@ -1447,14 +1449,16 @@ class Daemon:
                     "run": awaiting_merge,
                 }
 
-            if apply_default_worker_sizing(ticket, self.cfg.get("general", {})):
+            general_config = self.cfg.get("general", {})
+            applied_default_sizing = apply_default_worker_sizing(ticket, general_config)
+            if applied_default_sizing:
                 write_ticket(ticket_file, ticket)
 
             try:
                 sizing = resolve_worker_sizing(
                     ticket,
                     self.agent_kind,
-                    general=self.cfg.get("general", {}),
+                    general=general_config if applied_default_sizing else {},
                 )
             except ValueError as e:
                 reason = str(e)
