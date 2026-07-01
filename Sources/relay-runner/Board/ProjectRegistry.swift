@@ -217,6 +217,22 @@ struct ProjectRegistry {
         return document.workspaceRoots.first { $0.id == activeWorkspaceRootID }
     }
 
+    func activeWorkspaceProjects() throws -> [ProjectResolver.LinkedProject] {
+        let document = try load()
+        guard let activeWorkspaceRootID = document.activeWorkspaceRootID,
+              let root = document.workspaceRoots.first(where: { $0.id == activeWorkspaceRootID }) else {
+            return []
+        }
+
+        let projectIDs = Set(root.discoveredProjectIDs)
+        return document.projects
+            .filter { projectIDs.contains($0.id) }
+            .compactMap { project in
+                try? resolveGitRepo(containing: URL(fileURLWithPath: project.repoPath))
+            }
+            .map(ProjectResolver.LinkedProject.init(repoPath:))
+    }
+
     private func activeWorkspaceRootContainsDescendant(_ directory: URL) throws -> Bool {
         let document = try load()
         guard let activeWorkspaceRootID = document.activeWorkspaceRootID,
