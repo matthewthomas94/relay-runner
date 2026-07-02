@@ -1,0 +1,230 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = os.path.dirname(os.path.dirname(__file__))
+SERVICES = os.path.join(ROOT, "services")
+sys.path.insert(0, SERVICES)
+
+from pm_frontstage import (  # noqa: E402
+    BackstageOutcome,
+    DelegationRequest,
+    PMFrontstagePrototype,
+    PMStatusEvent,
+    RelayCommandMetadata,
+)
+
+
+def relay_command(seq: int = 1, command_id: str = "cmd-1") -> dict:
+    return {
+        "relay_command_seq": seq,
+        "relay_command_id": command_id,
+        "provider": "codex",
+    }
+
+
+class PMFrontstageTests(unittest.TestCase):
+    def test_status_event_contract_is_public_and_structured(self):
+        command = RelayCommandMetadata.from_dict(
+            relay_command(7, "cmd-7"),
+            source_text="dispatch RR-7 with hidden details",
+        )
+
+        event = PMStatusEvent(
+            phase="outcome",
+            message="The PM can dispatch the worker.",
+            source="orchestrator",
+            command=command,
+            run_id=42,
+            ticket_id="rr-7",
+        )
+
+        payload = event.to_dict()
+        self.assertEqual(payload["phase"], "outcome")
+        self.assertEqual(payload["message"], "The PM can dispatch the worker.")
+        self.assertEqual(payload["source"], "orchestrator")
+        self.assertEqual(payload["ticket_id"], "RR-7")
+        self.assertEqual(payload["run_id"], 42)
+        self.assertEqual(payload["command"]["relay_command_seq"], 7)
+        self.assertEqual(payload["command"]["relay_command_id"], "cmd-7")
+        self.assertEqual(payload["command"]["provider"], "codex")
+        self.assertNotIn("source_text", payload["command"])
+        self.assertNotIn("reasoning", payload)
+
+    def test_acknowledgement_is_emitted_before_backstage_planning(self):
+        order: list[str] = []
+
+        def planner(source_text, command_fields, repo_path):
+            del source_text, command_fields, repo_path
+            order.append("planner")
+            return BackstageOutcome.execute_solo(
+                "The PM can answer directly.",
+                solo_action="inline work explicitly requested",
+            )
+
+        runner = PMFrontstagePrototype(
+            backstage_planner=planner,
+            current_command_reader=lambda: relay_command(),
+            emit=lambda event: order.append(event.phase),
+        )
+
+        result = runner.handle_voice_command(
+            "fix this inline",
+            relay_command(),
+            repo_path="/tmp/repo",
+        )
+
+        self.assertEqual(order, ["acknowledged", "planning", "planner", "outcome"])
+        self.assertEqual(result.outcome.kind, "execute_solo")
+        self.assertFalse(result.stale)
+
+    def test_default_planner_returns_pm_controlled_delegate_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            command = relay_command(3, "cmd-3")
+            runner = PMFrontstagePrototype(
+                current_command_reader=lambda: command,
+            )
+
+            result = runner.handle_voice_command(
+                "dispatch RR-7 to a worker",
+                command,
+                repo_path=tmp,
+            )
+
+        outcome = result.outcome
+        self.assertEqual(outcome.kind, "delegate_plan")
+        self.assertEqual(outcome.max_parallel_workers, 1)
+        request = outcome.delegation_requests[0]
+        self.assertIsInstance(request, DelegationRequest)
+        self.assertTrue(request.pm_controls_dispatch)
+        self.assertEqual(request.ticket_id, "RR-7")
+        self.assertEqual(request.to_dispatch_payload(), {
+            "ticket_id": "RR-7",
+            "repo_path": str(Path(tmp).resolve()),
+            "relay_command_seq": 3,
+            "relay_command_id": "cmd-3",
+        })
+        self.assertEqual(result.status_events[-1].ticket_id, "RR-7")
+
+    def test_default_planner_exposes_all_outcome_shapes(self):
+        inline = PMFrontstagePrototype().handle_voice_command(
+            "fix it inline",
+            relay_command(1, "inline"),
+            repo_path="/tmp/repo",
+        )
+        needs_user = PMFrontstagePrototype().handle_voice_command(
+            "hello there",
+            relay_command(2, "needs-user"),
+            repo_path="/tmp/repo",
+        )
+
+        self.assertEqual(inline.outcome.kind, "execute_solo")
+        self.assertEqual(needs_user.outcome.kind, "needs_user")
+        self.assertTrue(needs_user.outcome.question)
+
+    def test_stale_command_stops_before_backstage_planning(self):
+        planner_calls = 0
+
+        def planner(source_text, command_fields, repo_path):
+            nonlocal planner_calls
+            del source_text, command_fields, repo_path
+            planner_calls += 1
+            return BackstageOutcome.execute_solo("Should not run.", solo_action="no-op")
+
+        runner = PMFrontstagePrototype(
+            backstage_planner=planner,
+            current_command_reader=lambda: relay_command(2, "newer"),
+        )
+
+        result = runner.handle_voice_command(
+            "dispatch RR-7",
+            relay_command(1, "older"),
+            repo_path="/tmp/repo",
+        )
+
+        self.assertEqual(planner_calls, 0)
+        self.assertTrue(result.stale)
+        self.assertIsNone(result.outcome)
+        self.assertEqual([event.phase for event in result.status_events], [
+            "acknowledged",
+            "stale",
+        ])
+
+    def test_stale_command_stops_delegate_plan_after_backstage_planning(self):
+        current = relay_command(1, "cmd-1")
+        command = RelayCommandMetadata.from_dict(current, source_text="dispatch RR-7")
+
+        def planner(source_text, command_fields, repo_path):
+            del source_text, command_fields
+            current.update(relay_command(2, "newer"))
+            return BackstageOutcome.delegate_plan(
+                "The PM can dispatch one worker.",
+                [
+                    DelegationRequest(
+                        ticket_id="RR-7",
+                        repo_path=str(repo_path),
+                        summary="dispatch ticket RR-7",
+                        command=command,
+                    )
+                ],
+            )
+
+        runner = PMFrontstagePrototype(
+            backstage_planner=planner,
+            current_command_reader=lambda: current,
+        )
+
+        result = runner.handle_voice_command(
+            "dispatch RR-7",
+            relay_command(1, "cmd-1"),
+            repo_path="/tmp/repo",
+        )
+
+        self.assertTrue(result.stale)
+        self.assertIsNone(result.outcome)
+        self.assertEqual([event.phase for event in result.status_events], [
+            "acknowledged",
+            "planning",
+            "stale",
+        ])
+
+    def test_cli_harness_streams_status_events_and_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    os.path.join(SERVICES, "pm_frontstage.py"),
+                    "--command",
+                    "dispatch RR-7 to a worker",
+                    "--seq",
+                    "4",
+                    "--id",
+                    "cmd-4",
+                    "--repo",
+                    tmp,
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        lines = [json.loads(line) for line in proc.stdout.splitlines()]
+        self.assertEqual(lines[0]["status_event"]["phase"], "acknowledged")
+        self.assertEqual(lines[1]["status_event"]["phase"], "planning")
+        self.assertEqual(lines[2]["status_event"]["phase"], "outcome")
+        self.assertEqual(lines[3]["outcome"]["kind"], "delegate_plan")
+        dispatch_payload = lines[3]["outcome"]["delegation_requests"][0]["dispatch_payload"]
+        self.assertEqual(dispatch_payload["relay_command_seq"], 4)
+        self.assertEqual(dispatch_payload["relay_command_id"], "cmd-4")
+        self.assertIn("Codex", lines[3]["provider_parity"])
+        self.assertIn("Claude", lines[3]["provider_parity"])
+
+
+if __name__ == "__main__":
+    unittest.main()
