@@ -289,7 +289,7 @@ Now enter a continuous loop. Repeat these steps until the user says "stop listen
 
 ### Step 0: Scan the orchestrator board
 
-Before every wait for input, snapshot the active project's `.orchestrator/` directory and diff against the previous snapshot. You are the orchestrator — you should know what's on the board at all times, not wait to be told. Changes you should detect: tickets newly in `ready`, runs that transitioned `in_progress` → `done` (worker finished), backlog items the daemon auto-promoted to ready (dependency progression), cancellations, brand-new tickets in any column.
+Before every wait for input, snapshot the active project's `.orchestrator/` directory and diff against the previous snapshot. You are the PM frontstage for the user, so you should know what's on the board at all times and be ready to report it without waiting to be told. Changes you should detect: tickets newly in `ready`, runs that transitioned `in_progress` → `done` (worker finished), backlog items the daemon auto-promoted to ready (dependency progression), cancellations, brand-new tickets in any column.
 
 ```bash
 {
@@ -382,7 +382,9 @@ Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claim
   - Internal controls (`__TTS_STOP__`, `__PLAY__`, `__REPLAY__`, `__INTERRUPT__`, `__CANCEL__`) are deliberate no-ticket actions.
   - Repo/project work must resolve the target project and create/refine a visible ticket only after the raw command has been classified into actionable work.
   - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
-  - The foreground session is the orchestrator; do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
+  - You are the PM frontstage for the user; the persistent orchestrator receives the same private Relay metadata in parallel and owns target resolution, ticket authoring, ticket refinement, and dispatch decisions.
+  - Raw Relay command captures are private metadata, not visible ticket prose. Do not paste raw transcript text into `.orchestrator/` tickets unless it has been refined into actionable project work.
+  - Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 
 ### Step 2.5: Send curated orchestration traces to the notch
@@ -693,7 +695,9 @@ Interpret the text:
   - Internal controls (`__TTS_STOP__`, `__PLAY__`, `__REPLAY__`, `__INTERRUPT__`, `__CANCEL__`) are deliberate no-ticket actions.
   - Repo/project work must resolve the target project and create/refine a visible ticket only after the raw command has been classified into actionable work.
   - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
-  - The foreground session is the orchestrator; do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
+  - You are the PM frontstage for the user; the persistent orchestrator receives the same private Relay metadata in parallel and owns target resolution, ticket authoring, ticket refinement, and dispatch decisions.
+  - Raw Relay command captures are private metadata, not visible ticket prose. Do not paste raw transcript text into `.orchestrator/` tickets unless it has been refined into actionable project work.
+  - Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 
 Send curated orchestration traces to the notch:

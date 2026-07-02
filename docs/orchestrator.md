@@ -24,7 +24,7 @@ The board is scoped to whichever project or workspace folder your active `/relay
 
 The bridge records its launching cwd to `/tmp/voice_bridge.cwd` so the menu-bar app can classify the active location. If that cwd is a folder with child git repos, Relay Runner registers the folder as a workspace root, records the child projects, and opens the read-only Program Board. It does not create a parent `.orchestrator/`. If the cwd is a single git repo, the project registry stores the repo path, display name, last-seen time, and provider activation metadata, then the board uses the repo root. If the repo has no `.orchestrator/config.toml`, activation initializes it with a repo-derived prefix (`mouse-assist` -> `MA`) and `next_id = 1`. If the cwd is neither a git repo nor a workspace folder containing child repos, activation is refused; run `git init` yourself or select a folder that already contains git repos. Codex and Claude use the same activation model, with provider-specific metadata recorded under the provider label when the caller supplies one. Without a live bridge (no `/tmp/voice_bridge.sock`) or another explicit activation, the board's double-tap Shift hotkey surfaces the same "No session running" pill that appears when you try to record voice out of session. Switching projects means stopping one bridge (or running `/relay-stop`) and starting another from the new repo or workspace cwd, or using a programmatic activation path by repo path or known alias.
 
-When relay mode starts, the bridge also registers a persistent foreground-orchestrator lifecycle row in `orchestrator_sessions.db`, keyed by the resolved cwd. The row stores provider, model, effort, heartbeat, and readable state (`idle`, `planning`, `awaiting_workers`, `reviewing`, `blocked`, `failed`, `stopped`, or `stale`). It is durable daemon state, not a warm model process, so an idle orchestrator session does not spend tokens. Codex and Claude use the same registration and heartbeat path; provider changes on the same project reuse the row and record the change.
+When relay mode starts, the bridge also registers a persistent orchestrator lifecycle row in `orchestrator_sessions.db`, keyed by the resolved cwd. The row stores provider, model, effort, heartbeat, and readable state (`idle`, `planning`, `awaiting_workers`, `reviewing`, `blocked`, `failed`, `stopped`, or `stale`). It is durable daemon state, not a warm model process, so an idle orchestrator session does not spend tokens. Codex and Claude use the same registration and heartbeat path; provider changes on the same project reuse the row and record the change.
 
 ### 2. Write a ticket
 
@@ -73,14 +73,15 @@ Codex and Claude use the same capture schema. The daemon does not scrape either 
 
 ## The intended workflow
 
-The orchestrator is designed around a four-step loop. The main Codex or Claude session is the *orchestrator* — it's the one talking to you and routing work — and each worker is a one-shot *sub-agent*.
+Relay Runner now runs as an RR-Loop with three roles: the PM frontstage talks to the user, the persistent orchestrator owns durable planning and ticket shaping, and each worker is a one-shot execution agent. Codex and Claude follow the same role split; only launch flags, auth flows, model names, and effort rendering differ.
 
-1. **Discuss.** You and the main session talk through what needs to happen. Voice via `/relay-bridge`, or just typed chat. The main session has full context of the conversation, the codebase, and the project state.
-2. **Write tickets in `backlog`.** When the discussion settles on concrete work, the main session creates a ticket file under `<repo>/.orchestrator/` — title, description with acceptance criteria, priority, `depends_on` if it needs another ticket to land first. Default `status: backlog`. Each ticket should be small enough that a sub-agent can complete it in one pass without further clarification. Commit the new ticket (and the `next_id` bump) to the working branch.
-3. **Promote to `ready` — dispatch fires automatically.** When a ticket is refined enough, drag it from `backlog` to `ready` in the board. The moment it lands, the board calls `dispatch_ticket(ticket_id, repo_path)`; a worker spawns in an isolated worktree. For a chain (tickets with `depends_on`), promote only the first one — when each predecessor lands in `done`, the daemon auto-flips its dependents from `backlog` to `ready` and dispatches them. Multiple dispatches in parallel are supported (no concurrency cap by design — bound by your agent rate limit). For one-off out-of-band dispatches, the MCP tool `mcp__relay-orchestrator__dispatch_ticket` is still callable directly; pass `context="..."` when there's relevant background that doesn't fit cleanly in the ticket body.
-4. **Integrate.** Each sub-agent commits to its `relay/<id>` branch — both the code change and the ticket-file update. The main session merges those branches into the working branch (resolving conflicts when sub-agents touched overlapping code), then prunes the worktree + branch. The merge publishes the `done` status to the board, which is what unblocks any dependents and triggers their auto-promotion.
-
-The main session is *not* a passive router. It's the same session that holds the discussion, so it owns: drafting ticket acceptance criteria, deciding which tickets to promote in parallel, picking the merge order when conflicts are likely, and reviewing the sub-agents' work for quality.
+1. **Raw instruction fanout.** `/relay-bridge` captures the user's voice or typed instruction once, then fans it out in parallel: the PM frontstage gets the live request for acknowledgement and status reporting, while the persistent orchestrator receives the same raw Relay metadata privately for durable command tracking and project resolution.
+2. **PM acknowledgement and status.** The PM frontstage responds to the user first: clarifies ambiguity, reports waiting states, summarizes board or run changes, and names the action outcome. It does not silently become the worker or write raw transcript text into visible tickets.
+3. **Persistent orchestrator ticket authoring.** The persistent orchestrator resolves the target repo or ticket, writes or refines `.orchestrator/<ticket_id>.md`, sets worker sizing, and keeps visible ticket prose cold-start safe. Raw Relay command captures remain private metadata, not board cards or ticket body text.
+4. **PM worker creation.** Once a ticket is refined enough, the PM frontstage moves it to `ready` in the board or calls `mcp__relay-orchestrator__dispatch_ticket`. The board auto-dispatches `ready`, and direct dispatch stays available for retries or explicit manual control.
+5. **Worker execution.** The daemon creates an isolated worktree on `relay/<id>`, renders the worker workflow prompt, and launches the configured agent. The worker claims the ticket, implements the change, verifies it, commits code, and appends a run log entry before exiting.
+6. **Orchestrator review and merge.** The persistent orchestrator reviews completed worker branches, chooses merge order, resolves conflicts intentionally, and merges worker commits into the working branch. That merge publishes `done` on the board and triggers any dependent auto-promotion.
+7. **PM status updates.** The PM frontstage reports run ids, failures, completions, and next actions back to the user. It stays frontstage across the whole loop even while the persistent orchestrator and workers do backstage work.
 
 There's no scheduler picking tickets off the backlog on its own — the user (or the dependency chain) controls what becomes `ready`. Once it's `ready`, the worker is on its way.
 
@@ -135,7 +136,7 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | `<repo>/.orchestrator/<TICKET_ID>.md` | One ticket per file (board source of truth) |
 | `<repo>/.orchestrator/config.toml` | Repo-scoped ticket counter (`prefix`, `next_id`) |
 | `~/Library/Application Support/relay-runner/orchestrator/runs.db` | Run history (SQLite) |
-| `~/Library/Application Support/relay-runner/orchestrator/orchestrator_sessions.db` | Persistent foreground-orchestrator lifecycle state |
+| `~/Library/Application Support/relay-runner/orchestrator/orchestrator_sessions.db` | Persistent orchestrator lifecycle state |
 | `~/Library/Application Support/relay-runner/workspaces/<sanitized-id>/` | Per-ticket worktree |
 | `~/Library/Application Support/relay-runner/workspaces/<sanitized-id>/.relay/run.log` | Worker stdout (full session trace) |
 | `~/Library/LaunchAgents/com.relay.orchestrator.plist` | launchd descriptor |
@@ -157,6 +158,13 @@ launchctl print "gui/$(id -u)/com.relay.orchestrator"   # detailed launchd state
 tail /tmp/relay_orchestrator.err
 ```
 Restart with `scripts/relay-orchestrator --start`.
+
+**Installed skills still show older foreground-session guidance.** Re-generate the installed command and skill files from the repo sources:
+```bash
+scripts/relay-bridge --install-skills
+scripts/relay-orchestrator --install-skills
+```
+If you're validating the bundled app instead of the repo checkout, rebuild or reinstall the app first so the bundled scripts match the updated source.
 
 **Worker hangs.** Cancel and inspect:
 ```

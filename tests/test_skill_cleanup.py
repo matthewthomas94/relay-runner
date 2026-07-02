@@ -6,6 +6,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class SkillCleanupTests(unittest.TestCase):
+    def test_relay_bridge_install_uses_pm_frontstage_wording(self):
+        script = (ROOT / "scripts" / "relay-bridge").read_text()
+
+        self.assertIn("You are the PM frontstage for the user", script)
+        self.assertIn("Raw Relay command captures are private metadata", script)
+        self.assertNotIn("The foreground session is the orchestrator", script)
+
     def test_relay_bridge_install_scrubs_legacy_pm_sync_surfaces(self):
         script = (ROOT / "scripts" / "relay-bridge").read_text()
 
@@ -22,6 +29,13 @@ class SkillCleanupTests(unittest.TestCase):
         self.assertIn('rm -f "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD" "$LEGACY_PM_SYNC_MD"', script)
         self.assertIn('rm -rf "$LEGACY_CODEX_PM_SYNC_DIR"', script)
         self.assertIn('rm -rf "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR" "$LEGACY_CODEX_PM_SYNC_DIR"', script)
+
+    def test_relay_orchestrator_install_uses_pm_frontstage_wording(self):
+        script = (ROOT / "scripts" / "relay-orchestrator").read_text()
+
+        self.assertIn("You are the PM frontstage for the user", script)
+        self.assertIn("Raw Relay command captures are private metadata", script)
+        self.assertNotIn("the foreground session is always the orchestrator", script)
 
 
 if __name__ == "__main__":
