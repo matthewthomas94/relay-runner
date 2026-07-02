@@ -458,7 +458,12 @@ def start_persistent_orchestrator_lifecycle(
         f"provider={provider} repo={repo_path}",
         file=sys.stderr,
     )
-    return {"session_id": session_id, "repo_path": repo_path, "thread": thread}
+    return {
+        "session_id": session_id,
+        "repo_path": repo_path,
+        "thread": thread,
+        "shutdown_event": shutdown_event,
+    }
 
 
 def stop_persistent_orchestrator_lifecycle(
@@ -469,6 +474,12 @@ def stop_persistent_orchestrator_lifecycle(
 ) -> None:
     if not session:
         return
+    event = session.get("shutdown_event")
+    if hasattr(event, "set"):
+        event.set()
+    thread = session.get("thread")
+    if hasattr(thread, "join"):
+        thread.join(timeout=0.5)
     payload = {"reason": reason}
     if session.get("session_id"):
         payload["session_id"] = session["session_id"]
