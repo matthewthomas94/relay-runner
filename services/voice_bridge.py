@@ -751,6 +751,94 @@ def _metadata_for_action(action, relay_command: dict) -> dict:
     return metadata
 
 
+def _raw_instruction_payload(
+    source_text: str,
+    relay_command: dict,
+    action,
+    *,
+    repo_path: str | Path | None = None,
+    orchestrator_session: dict | None = None,
+) -> dict:
+    metadata = _metadata_for_action(action, relay_command)
+    session_repo = (orchestrator_session or {}).get("repo_path")
+    session_id = (orchestrator_session or {}).get("session_id")
+    repo = str(Path(repo_path or session_repo or Path.cwd()).expanduser().resolve())
+    payload = {
+        "repo_path": repo,
+        "source_text": source_text,
+        "relay_command_seq": metadata.get("relay_command_seq"),
+        "relay_command_id": metadata.get("relay_command_id"),
+        "provider": metadata.get("provider"),
+        "received_at": metadata.get("received_at"),
+        "action": metadata.get("action"),
+        "outcome": metadata.get("outcome"),
+    }
+    if session_id is not None:
+        payload["session_id"] = session_id
+    return payload
+
+
+def _deliver_raw_instruction_to_orchestrator(
+    source_text: str,
+    relay_command: dict,
+    action,
+    *,
+    repo_path: str | Path | None = None,
+    orchestrator_session: dict | None = None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    request_json=_post_orchestrator_json,
+) -> bool:
+    command_seq = relay_command.get("relay_command_seq")
+    command_id = relay_command.get("relay_command_id")
+    if not _relay_command_current(command_seq, command_id, state_path=state_path):
+        print(
+            "[voice_bridge] Dropping raw orchestrator command because its Relay command was superseded.",
+            file=sys.stderr,
+        )
+        return False
+    payload = _raw_instruction_payload(
+        source_text,
+        relay_command,
+        action,
+        repo_path=repo_path,
+        orchestrator_session=orchestrator_session,
+    )
+    try:
+        request_json("/v1/orchestrator-session/command", payload)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+        print(f"[voice_bridge] Could not fan out raw command to orchestrator: {e}", file=sys.stderr)
+        return False
+    return True
+
+
+def _fanout_raw_instruction_to_orchestrator(
+    source_text: str,
+    relay_command: dict,
+    action,
+    *,
+    repo_path: str | Path | None = None,
+    orchestrator_session: dict | None = None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    request_json=_post_orchestrator_json,
+) -> threading.Thread:
+    thread = threading.Thread(
+        target=_deliver_raw_instruction_to_orchestrator,
+        kwargs={
+            "source_text": source_text,
+            "relay_command": relay_command,
+            "action": action,
+            "repo_path": repo_path,
+            "orchestrator_session": orchestrator_session,
+            "state_path": state_path,
+            "request_json": request_json,
+        },
+        name="orchestrator-raw-command-fanout",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def _discard_pending_command(
     command_path: str = VOICE_CMD_FILE,
     meta_path: str = VOICE_CMD_META_FILE,
@@ -1073,7 +1161,12 @@ def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
                 time.sleep(0.2)
 
 
-def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
+def _run_relay(
+    tts_worker: TTSWorker,
+    shutdown_event: threading.Event,
+    *,
+    orchestrator_session: dict | None = None,
+):
     """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
     # Create TTS input FIFO
     for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE]:
@@ -1167,6 +1260,13 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                     repo_path=Path.cwd(),
                     relay_command=relay_command,
                 )
+                _fanout_raw_instruction_to_orchestrator(
+                    text,
+                    relay_command,
+                    action,
+                    repo_path=Path.cwd(),
+                    orchestrator_session=orchestrator_session,
+                )
                 _publish_command(
                     format_command_for_agent(action),
                     _metadata_for_action(action, relay_command),
@@ -1231,7 +1331,11 @@ def main():
     if relay_mode:
         orchestrator_session = start_persistent_orchestrator_lifecycle(cfg, shutdown_event)
         try:
-            _run_relay(tts_worker, shutdown_event)
+            _run_relay(
+                tts_worker,
+                shutdown_event,
+                orchestrator_session=orchestrator_session,
+            )
         finally:
             shutdown_event.set()
             stop_persistent_orchestrator_lifecycle(

@@ -1,9 +1,9 @@
 """Relay command action classification.
 
-The foreground Codex or Claude session is the orchestrator. This module keeps
-voice/text command handling explicit before implementation starts: controls are
+The foreground Codex or Claude session is the PM frontstage. This module keeps
+voice/text command handling explicit before work routes backstage: controls are
 intentional no-ticket actions, ticket references attach to existing work, and
-new project-work requests are handed to the foreground session for target
+new project-work requests are handed to the persistent orchestrator for target
 resolution and refined ticket creation.
 """
 
@@ -137,7 +137,7 @@ def resolve_command_action(
         source_text=action.source_text,
         requires_ticket=True,
         repo_path=str(repo),
-        reason="visible ticket creation is deferred until the foreground orchestrator resolves the target project and refines the work",
+        reason="visible ticket creation is deferred until the persistent orchestrator resolves the target project and refines the work",
         **_relay_fields(relay_command),
     )
 
@@ -206,23 +206,23 @@ def format_command_for_agent(action: CommandAction) -> str:
     lines.extend(
         [
             "",
-            "Orchestrator contract:",
-            "- You are the foreground orchestrator, not the implementation worker.",
-            "- Do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
-            "- Resolve this action first: classify it as non-work, ask for the target project, create/refine/commit the ticket in the resolved project, edit an existing ticket, or dispatch queued work.",
-            "- Raw Relay command captures are private metadata, not board cards; do not copy raw transcript text into a visible ticket unless it has been refined into actionable project work.",
-            "- Relay command metadata is the stale-action guard. Before creating, editing, or dispatching tickets, and before TTS, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
-            "- When dispatching through relay-orchestrator, pass relay_command_seq and relay_command_id when they are present.",
-            "- Your user-facing response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.",
+            "PM frontstage contract:",
+            "- You are the PM frontstage for the user, not the persistent orchestrator or implementation worker.",
+            "- Keep the user-facing response concise and status-oriented; do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
+            "- The persistent orchestrator receives the same private raw command and Relay metadata in parallel; it owns target resolution, refined ticket creation, ticket edits, planning, and dispatch decisions.",
+            "- Raw Relay command captures are private metadata, not board cards; do not copy raw transcript text into a visible ticket unless the persistent orchestrator has refined it into actionable project work.",
+            "- Relay command metadata is the stale-action guard. Before any user-visible follow-up, TTS, ticket edit, dispatch, or orchestrator action, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
+            "- When a later dispatch request goes through relay-orchestrator, pass relay_command_seq and relay_command_id when they are present.",
+            "- Your user-facing response must name the PM outcome, such as waiting on the orchestrator plan, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.",
         ]
     )
 
     if action.kind == "create_ticket":
-        lines.append("- No visible ticket has been written yet; resolve the target project and create a refined ticket only if this is actionable project work.")
+        lines.append("- No visible ticket has been written yet; wait for the persistent orchestrator to resolve the target project and create refined ticket content.")
     elif action.kind == "dispatch_ticket":
-        lines.append("- Dispatch the named ticket through relay-orchestrator; do not implement the ticket yourself.")
+        lines.append("- The persistent orchestrator owns dispatching the named ticket through relay-orchestrator; do not implement the ticket yourself.")
     elif action.kind == "update_ticket":
-        lines.append("- Edit the named ticket so it can survive a cold worker run; dispatch only if it is ready.")
+        lines.append("- The persistent orchestrator owns editing the named ticket so it can survive a cold worker run; dispatch only after it is ready.")
     elif action.kind == "inspect_ticket":
         lines.append("- Inspect/report ticket or run state; do not implement the ticket yourself.")
     elif action.kind == "needs_project":
@@ -326,7 +326,7 @@ def _ticket_body(
             f"{_worker_sizing_frontmatter(general_config)}"
             "---\n\n"
         "## Description\n\n"
-        "The foreground orchestrator prepared this project-work ticket:\n\n"
+        "The persistent orchestrator prepared this project-work ticket:\n\n"
         f"{quote}\n\n"
         "Refine this ticket before dispatch if the worker would need more context.\n\n"
         f"{relay_section}"

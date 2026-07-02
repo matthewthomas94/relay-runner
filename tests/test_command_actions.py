@@ -58,7 +58,9 @@ class CommandActionsTests(unittest.TestCase):
             self.assertIn("action: create_ticket", prompt)
             self.assertIn("ticket_id: null", prompt)
             self.assertIn("No visible ticket has been written yet", prompt)
-            self.assertIn("Do not perform substantive source-code implementation directly", prompt)
+            self.assertIn("You are the PM frontstage", prompt)
+            self.assertIn("The persistent orchestrator receives the same private raw command", prompt)
+            self.assertNotIn("You are the foreground orchestrator", prompt)
 
     def test_relay_command_metadata_is_preserved_without_visible_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -84,6 +86,7 @@ class CommandActionsTests(unittest.TestCase):
             self.assertIn("relay_command_seq: 7", prompt)
             self.assertIn("relay_command_id: cmd-7", prompt)
             self.assertIn("pass relay_command_seq and relay_command_id", prompt)
+            self.assertIn("persistent orchestrator", prompt)
 
     def test_explicit_refined_ticket_creation_targets_resolved_child_repo(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -67,6 +67,7 @@ ORCHESTRATOR_SESSION_STATES = frozenset({
     "stale",
 })
 ORCHESTRATOR_SESSION_STALE_AFTER_SECONDS = 30.0
+ORCHESTRATOR_COMMAND_STATUSES = frozenset({"received", "stale"})
 
 WORKER_SIZING_FIELDS = (
     "worker_model",
@@ -1171,6 +1172,142 @@ class OrchestratorSessionStore:
         return None
 
 
+class OrchestratorCommandStore:
+    """Private raw-command inbox for the persistent orchestrator."""
+
+    SCHEMA_VERSION = 1
+
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS orchestrator_commands (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        relay_command_id TEXT NOT NULL UNIQUE,
+        relay_command_seq INTEGER NOT NULL,
+        session_id INTEGER,
+        repo_path TEXT NOT NULL,
+        provider_key TEXT,
+        source_text TEXT NOT NULL,
+        action TEXT,
+        outcome TEXT,
+        status TEXT NOT NULL,
+        received_at REAL,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_commands_repo ON orchestrator_commands(repo_path);
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_commands_status ON orchestrator_commands(status);
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._init()
+
+    @contextmanager
+    def _conn(self):
+        with self._lock:
+            conn = sqlite3.connect(str(self.path), isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+            finally:
+                conn.close()
+
+    def _init(self) -> None:
+        with self._conn() as c:
+            current = int(c.execute("PRAGMA user_version").fetchone()[0])
+            if current != self.SCHEMA_VERSION:
+                c.execute("DROP TABLE IF EXISTS orchestrator_commands")
+                c.executescript(self.SCHEMA)
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+            else:
+                c.executescript(self.SCHEMA)
+
+    @staticmethod
+    def _public_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        data = dict(row)
+        data.pop("source_text", None)
+        return data
+
+    def record(
+        self,
+        *,
+        repo_path: str,
+        source_text: str,
+        relay_command_seq: int | str,
+        relay_command_id: str,
+        session_id: int | None = None,
+        provider_key: str | None = None,
+        action: str | None = None,
+        outcome: str | None = None,
+        received_at: float | None = None,
+        status: str = "received",
+    ) -> dict[str, Any]:
+        if not str(source_text or "").strip():
+            raise ValueError("source_text is required")
+        command_id = str(relay_command_id or "").strip()
+        if not command_id:
+            raise ValueError("relay_command_id is required")
+        try:
+            command_seq = int(relay_command_seq)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid relay_command_seq: {relay_command_seq!r}") from exc
+        command_status = str(status or "received").strip().lower()
+        if command_status not in ORCHESTRATOR_COMMAND_STATUSES:
+            raise ValueError(
+                "invalid orchestrator command status "
+                f"{status!r}; expected one of {', '.join(sorted(ORCHESTRATOR_COMMAND_STATUSES))}"
+            )
+        repo = str(Path(repo_path).expanduser().resolve())
+        now = time.time()
+        provider = OrchestratorSessionStore._normalize_provider(provider_key) if provider_key else None
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO orchestrator_commands("
+                "relay_command_id, relay_command_seq, session_id, repo_path, provider_key, "
+                "source_text, action, outcome, status, received_at, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(relay_command_id) DO UPDATE SET "
+                "relay_command_seq = excluded.relay_command_seq, "
+                "session_id = excluded.session_id, "
+                "repo_path = excluded.repo_path, "
+                "provider_key = excluded.provider_key, "
+                "source_text = excluded.source_text, "
+                "action = excluded.action, "
+                "outcome = excluded.outcome, "
+                "status = excluded.status, "
+                "received_at = excluded.received_at, "
+                "updated_at = excluded.updated_at",
+                (
+                    command_id,
+                    command_seq,
+                    session_id,
+                    repo,
+                    provider,
+                    source_text,
+                    action,
+                    outcome,
+                    command_status,
+                    received_at,
+                    now,
+                    now,
+                ),
+            )
+            row = c.execute(
+                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
+                (command_id,),
+            ).fetchone()
+            return self._public_row(row)
+
+    def get_private(self, command_id: str) -> dict[str, Any] | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
+                (command_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+
 # ---------------------------------------------------------------------------
 # Git worktree helpers
 # ---------------------------------------------------------------------------
@@ -1667,6 +1804,7 @@ class Daemon:
         data = _data_root()
         self.runs = RunsStore(data / "runs.db", index_path=data / "runs.json")
         self.orchestrator_sessions = OrchestratorSessionStore(data / "orchestrator_sessions.db")
+        self.orchestrator_commands = OrchestratorCommandStore(data / "orchestrator_commands.db")
         self.graphify_path = data / "graphify.db"
         self.program_registry_path = _program_registry_path()
 
@@ -2240,6 +2378,35 @@ class Daemon:
             raise ValueError("orchestrator session not found")
         return {"orchestrator_session": result}
 
+    def record_orchestrator_command(
+        self,
+        *,
+        repo_path: str,
+        source_text: str,
+        relay_command_seq: int | str,
+        relay_command_id: str,
+        session_id: int | None = None,
+        provider: str | None = None,
+        action: str | None = None,
+        outcome: str | None = None,
+        received_at: float | None = None,
+    ) -> dict:
+        if not repo_path:
+            raise ValueError("repo_path is required")
+        _validate_relay_command(relay_command_seq, relay_command_id)
+        result = self.orchestrator_commands.record(
+            repo_path=repo_path,
+            source_text=source_text,
+            relay_command_seq=relay_command_seq,
+            relay_command_id=relay_command_id,
+            session_id=session_id,
+            provider_key=provider,
+            action=action,
+            outcome=outcome,
+            received_at=received_at,
+        )
+        return {"orchestrator_command": result}
+
     def list_orchestrator_sessions(
         self,
         *,
@@ -2453,6 +2620,21 @@ class Handler(BaseHTTPRequestHandler):
                     reason=body.get("reason"),
                 )
                 return 200, result
+
+            if method == "POST" and segments == ["v1", "orchestrator-session", "command"]:
+                body = _read_body(self)
+                result = self.daemon.record_orchestrator_command(
+                    repo_path=body.get("repo_path", ""),
+                    source_text=body.get("source_text", ""),
+                    relay_command_seq=body.get("relay_command_seq"),
+                    relay_command_id=body.get("relay_command_id", ""),
+                    session_id=body.get("session_id"),
+                    provider=body.get("provider"),
+                    action=body.get("action"),
+                    outcome=body.get("outcome"),
+                    received_at=body.get("received_at"),
+                )
+                return 202, result
 
             if method == "POST" and segments == ["v1", "program", "capture"]:
                 body = _read_body(self)

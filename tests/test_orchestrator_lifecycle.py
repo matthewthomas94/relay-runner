@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -18,8 +19,9 @@ sys.modules.setdefault(
     types.SimpleNamespace(asarray=lambda samples: samples, int16=object()),
 )
 
+import orchestrator  # noqa: E402
 import voice_bridge  # noqa: E402
-from orchestrator import OrchestratorSessionStore  # noqa: E402
+from orchestrator import Daemon, OrchestratorCommandStore, OrchestratorSessionStore  # noqa: E402
 
 
 class OrchestratorLifecycleTests(unittest.TestCase):
@@ -144,6 +146,58 @@ class OrchestratorLifecycleTests(unittest.TestCase):
         self.assertTrue(any(path == "/v1/orchestrator-session/heartbeat" for path, _ in requests))
         self.assertEqual(requests[-1][0], "/v1/orchestrator-session/stop")
         self.assertEqual(requests[-1][1]["reason"], "bridge stopped")
+
+    def test_orchestrator_command_store_keeps_raw_text_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = OrchestratorCommandStore(Path(tmp) / "commands.db")
+
+            public = store.record(
+                repo_path=tmp,
+                source_text="fix login with private transcript details",
+                relay_command_seq=4,
+                relay_command_id="cmd-4",
+                session_id=7,
+                provider_key="claude",
+                action="create_ticket",
+                outcome="project work needs refined ticket",
+                received_at=123.0,
+            )
+
+            self.assertNotIn("source_text", public)
+            self.assertEqual(public["relay_command_seq"], 4)
+            self.assertEqual(public["relay_command_id"], "cmd-4")
+            self.assertEqual(public["provider_key"], "claude")
+            private = store.get_private("cmd-4")
+            self.assertIsNotNone(private)
+            self.assertEqual(
+                private["source_text"],
+                "fix login with private transcript details",
+            )
+
+    def test_daemon_rejects_stale_orchestrator_command_before_recording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "voice_command_state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 2,
+                "relay_command_id": "second",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            daemon = object.__new__(Daemon)
+            daemon.orchestrator_commands = OrchestratorCommandStore(Path(tmp) / "commands.db")
+            try:
+                with self.assertRaisesRegex(ValueError, "stale Relay command"):
+                    Daemon.record_orchestrator_command(
+                        daemon,
+                        repo_path=tmp,
+                        source_text="fix stale thing",
+                        relay_command_seq=1,
+                        relay_command_id="first",
+                    )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+            self.assertIsNone(daemon.orchestrator_commands.get_private("first"))
 
 
 if __name__ == "__main__":

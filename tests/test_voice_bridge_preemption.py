@@ -279,6 +279,75 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             )
             self.assertNotIn("source_text", status_event["command"])
 
+    def test_raw_instruction_fanout_sends_same_private_command_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "repo"
+            repo.mkdir()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            requests: list[tuple[str, dict]] = []
+            relay_command = voice_bridge._begin_relay_command(
+                "fix private login bug details",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            action = voice_bridge.resolve_command_action(
+                "fix private login bug details",
+                repo_path=repo,
+                relay_command=relay_command,
+            )
+
+            delivered = voice_bridge._deliver_raw_instruction_to_orchestrator(
+                "fix private login bug details",
+                relay_command,
+                action,
+                repo_path=repo,
+                orchestrator_session={"session_id": 7, "repo_path": str(repo)},
+                state_path=state_path,
+                request_json=lambda path, payload: requests.append((path, payload)) or {},
+            )
+
+            self.assertTrue(delivered)
+            self.assertEqual(requests[0][0], "/v1/orchestrator-session/command")
+            payload = requests[0][1]
+            self.assertEqual(payload["source_text"], "fix private login bug details")
+            self.assertEqual(payload["relay_command_seq"], relay_command["relay_command_seq"])
+            self.assertEqual(payload["relay_command_id"], relay_command["relay_command_id"])
+            self.assertEqual(payload["session_id"], 7)
+            self.assertEqual(payload["action"], "create_ticket")
+            self.assertEqual(payload["repo_path"], str(repo.resolve()))
+
+    def test_raw_instruction_fanout_rejects_stale_command_before_post(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            requests: list[tuple[str, dict]] = []
+            first = voice_bridge._begin_relay_command(
+                "fix first thing",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            voice_bridge._begin_relay_command(
+                "fix second thing",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            action = voice_bridge.resolve_command_action(
+                "fix first thing",
+                repo_path=temp_dir,
+                relay_command=first,
+            )
+
+            delivered = voice_bridge._deliver_raw_instruction_to_orchestrator(
+                "fix first thing",
+                first,
+                action,
+                repo_path=temp_dir,
+                state_path=state_path,
+                request_json=lambda path, payload: requests.append((path, payload)) or {},
+            )
+
+            self.assertFalse(delivered)
+            self.assertEqual(requests, [])
+
     def test_orchestration_trace_emits_public_notch_payload(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "voice_command_state.json")
