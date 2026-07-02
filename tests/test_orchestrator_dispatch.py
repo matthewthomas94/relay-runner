@@ -31,12 +31,16 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 daemon,
                 ticket_id="RR-1",
                 repo_path=str(repo),
+                workspace_path=str(repo.parent / "workspaces" / "rr-1"),
                 branch="relay/rr-1",
                 attempt=2,
                 run_id=17,
             )
 
             self.assertIn("Read `.orchestrator/RR-1.md`", prompt)
+            self.assertIn(f"- Source repo path: `{repo}`", prompt)
+            self.assertIn(f"- Assigned worktree cwd: `{repo.parent / 'workspaces' / 'rr-1'}`", prompt)
+            self.assertIn("git branch --show-current` prints exactly `relay/rr-1`", prompt)
             self.assertIn("- Run ID: 17", prompt)
             self.assertNotIn("Mentistic Workflow", prompt)
             self.assertEqual(
@@ -60,6 +64,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                     daemon,
                     ticket_id="RR-1",
                     repo_path=str(repo),
+                    workspace_path=str(repo.parent / "workspaces" / "rr-1"),
                     branch="relay/rr-1",
                     attempt=1,
                     run_id=9,

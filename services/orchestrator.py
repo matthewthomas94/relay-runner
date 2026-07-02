@@ -2022,7 +2022,7 @@ class Daemon:
             )
 
     def _build_prompt(
-        self, *, ticket_id: str, repo_path: str, branch: str, attempt: int, run_id: int,
+        self, *, ticket_id: str, repo_path: str, workspace_path: str, branch: str, attempt: int, run_id: int,
         caller_context: str | None = None, workflow_path: Path | None = None,
     ) -> str:
         template_path = workflow_path or self._resolve_workflow_for_repo(repo_path)
@@ -2046,6 +2046,7 @@ class Daemon:
             template,
             ticket_id=ticket_id,
             repo_path=repo_path,
+            workspace_path=workspace_path,
             branch=branch,
             attempt=str(attempt),
             run_id=str(run_id),
@@ -2252,6 +2253,7 @@ class Daemon:
             prompt = self._build_prompt(
                 ticket_id=ticket_id,
                 repo_path=str(repo),
+                workspace_path=str(workspace_path),
                 branch=branch,
                 attempt=attempt,
                 run_id=run_id,

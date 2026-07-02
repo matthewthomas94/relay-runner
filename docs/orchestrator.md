@@ -98,7 +98,7 @@ The worktree is isolated: changes don't leak into the repo's primary working cop
 
 ## Customizing the workflow per repo
 
-Drop a `WORKFLOW.md` under the repo's `.orchestrator/` directory and the worker uses that instead of the default. Root-level `WORKFLOW.md` files are ignored because many projects use that name for human process docs. Template variables: `{{ticket_id}}`, `{{repo_path}}`, `{{branch}}`, `{{attempt}}`, `{{run_id}}`, `{{caller_context}}`. The default template at [services/orchestrator_workflow.md](../services/orchestrator_workflow.md) is the starting point.
+Drop a `WORKFLOW.md` under the repo's `.orchestrator/` directory and the worker uses that instead of the default. Root-level `WORKFLOW.md` files are ignored because many projects use that name for human process docs. Template variables: `{{ticket_id}}`, `{{repo_path}}`, `{{workspace_path}}`, `{{branch}}`, `{{attempt}}`, `{{run_id}}`, `{{caller_context}}`. The default template at [services/orchestrator_workflow.md](../services/orchestrator_workflow.md) is the starting point.
 
 A repo's `.orchestrator/WORKFLOW.md` is a fine place to encode project conventions: which test command to run, which directories are off-limits, what a "done" run log entry should include, etc.
 
