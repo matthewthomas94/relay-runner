@@ -22,6 +22,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from command_actions import format_command_for_agent, resolve_command_action
@@ -32,6 +34,9 @@ from tts_worker import TTSWorker
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 BRIDGE_CONTROL_SOCK = os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock")
 VOICE_STATE_SOCK = "/tmp/voice_state.sock"
+ORCHESTRATOR_PORT_FILE = os.environ.get("ORCHESTRATOR_PORT_FILE", "/tmp/relay_orchestrator.port")
+ORCHESTRATOR_DEFAULT_PORT = int(os.environ.get("ORCHESTRATOR_DEFAULT_PORT", "7634"))
+ORCHESTRATOR_HEARTBEAT_SECONDS = float(os.environ.get("ORCHESTRATOR_HEARTBEAT_SECONDS", "10"))
 
 
 def _notify_state(state: str, **kwargs):
@@ -344,6 +349,137 @@ def _atomic_write_json(path: str, payload: dict) -> None:
     with open(tmp, "w") as f:
         json.dump(payload, f, sort_keys=True)
     os.rename(tmp, path)
+
+
+def _orchestrator_port(port_file: str = ORCHESTRATOR_PORT_FILE) -> int:
+    try:
+        raw = Path(port_file).read_text().strip()
+        return int(raw) if raw else ORCHESTRATOR_DEFAULT_PORT
+    except (OSError, TypeError, ValueError):
+        return ORCHESTRATOR_DEFAULT_PORT
+
+
+def _post_orchestrator_json(path: str, payload: dict, *, timeout: float = 1.0) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{_orchestrator_port()}{path}",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        body = response.read()
+    if not body:
+        return {}
+    data = json.loads(body.decode("utf-8"))
+    return data if isinstance(data, dict) else {}
+
+
+def _bridge_provider(cfg: dict) -> str:
+    env_provider = os.environ.get("RELAY_RUNNER_PROVIDER", "").strip().lower()
+    if env_provider:
+        return env_provider
+    general = cfg.get("general") if isinstance(cfg, dict) else {}
+    provider = str((general or {}).get("provider") or "codex").strip().lower()
+    return "claude" if "claude" in provider else "codex"
+
+
+def _bridge_model(cfg: dict) -> str | None:
+    general = cfg.get("general") if isinstance(cfg, dict) else {}
+    model = str((general or {}).get("model") or "").strip().lower()
+    return model or None
+
+
+def _bridge_effort(cfg: dict) -> str | None:
+    general = cfg.get("general") if isinstance(cfg, dict) else {}
+    effort = str((general or {}).get("orchestrator_effort") or "").strip().lower()
+    return effort or None
+
+
+def start_persistent_orchestrator_lifecycle(
+    cfg: dict,
+    shutdown_event: threading.Event,
+    *,
+    cwd: str | None = None,
+    request_json=_post_orchestrator_json,
+) -> dict | None:
+    """Register this bridge as the durable foreground orchestrator session.
+
+    The lifecycle record is daemon/database state plus periodic heartbeats; it
+    does not spawn or keep a model process busy while idle.
+    """
+    repo_path = str(Path(cwd or os.getcwd()).expanduser().resolve())
+    provider = _bridge_provider(cfg)
+    payload = {
+        "repo_path": repo_path,
+        "provider": provider,
+        "model": _bridge_model(cfg),
+        "effort": _bridge_effort(cfg),
+        "source": "relay-bridge",
+        "pid": os.getpid(),
+        "state": "idle",
+    }
+    try:
+        response = request_json("/v1/orchestrator-session/ensure", payload)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+        print(f"[voice_bridge] Persistent orchestrator unavailable: {e}", file=sys.stderr)
+        return None
+
+    session = response.get("orchestrator_session") if isinstance(response, dict) else None
+    if not isinstance(session, dict) or not session.get("id"):
+        print("[voice_bridge] Persistent orchestrator did not return a session id.", file=sys.stderr)
+        return None
+
+    session_id = int(session["id"])
+
+    def _heartbeat_loop() -> None:
+        while not shutdown_event.wait(ORCHESTRATOR_HEARTBEAT_SECONDS):
+            try:
+                request_json(
+                    "/v1/orchestrator-session/heartbeat",
+                    {
+                        "session_id": session_id,
+                        "repo_path": repo_path,
+                        "provider": provider,
+                        "state": "idle",
+                    },
+                )
+            except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+                print(f"[voice_bridge] Persistent orchestrator heartbeat failed: {e}", file=sys.stderr)
+
+    thread = threading.Thread(
+        target=_heartbeat_loop,
+        name="orchestrator-lifecycle-heartbeat",
+        daemon=True,
+    )
+    thread.start()
+    print(
+        f"[voice_bridge] Persistent orchestrator session {session_id} active "
+        f"provider={provider} repo={repo_path}",
+        file=sys.stderr,
+    )
+    return {"session_id": session_id, "repo_path": repo_path, "thread": thread}
+
+
+def stop_persistent_orchestrator_lifecycle(
+    session: dict | None,
+    *,
+    reason: str,
+    request_json=_post_orchestrator_json,
+) -> None:
+    if not session:
+        return
+    payload = {"reason": reason}
+    if session.get("session_id"):
+        payload["session_id"] = session["session_id"]
+    elif session.get("repo_path"):
+        payload["repo_path"] = session["repo_path"]
+    else:
+        return
+    try:
+        request_json("/v1/orchestrator-session/stop", payload)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+        print(f"[voice_bridge] Persistent orchestrator stop failed: {e}", file=sys.stderr)
 
 
 def _acknowledgement_variant(seed: str, options: tuple[str, ...]) -> str:
@@ -1093,10 +1229,15 @@ def main():
 
     # Relay mode: daemon for the relay-bridge skill/command
     if relay_mode:
+        orchestrator_session = start_persistent_orchestrator_lifecycle(cfg, shutdown_event)
         try:
             _run_relay(tts_worker, shutdown_event)
         finally:
             shutdown_event.set()
+            stop_persistent_orchestrator_lifecycle(
+                orchestrator_session,
+                reason="bridge stopped",
+            )
             tts_worker.shutdown()
             try:
                 os.unlink(BRIDGE_CONTROL_SOCK)

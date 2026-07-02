@@ -24,6 +24,8 @@ The board is scoped to whichever project or workspace folder your active `/relay
 
 The bridge records its launching cwd to `/tmp/voice_bridge.cwd` so the menu-bar app can classify the active location. If that cwd is a folder with child git repos, Relay Runner registers the folder as a workspace root, records the child projects, and opens the read-only Program Board. It does not create a parent `.orchestrator/`. If the cwd is a single git repo, the project registry stores the repo path, display name, last-seen time, and provider activation metadata, then the board uses the repo root. If the repo has no `.orchestrator/config.toml`, activation initializes it with a repo-derived prefix (`mouse-assist` -> `MA`) and `next_id = 1`. If the cwd is neither a git repo nor a workspace folder containing child repos, activation is refused; run `git init` yourself or select a folder that already contains git repos. Codex and Claude use the same activation model, with provider-specific metadata recorded under the provider label when the caller supplies one. Without a live bridge (no `/tmp/voice_bridge.sock`) or another explicit activation, the board's double-tap Shift hotkey surfaces the same "No session running" pill that appears when you try to record voice out of session. Switching projects means stopping one bridge (or running `/relay-stop`) and starting another from the new repo or workspace cwd, or using a programmatic activation path by repo path or known alias.
 
+When relay mode starts, the bridge also registers a persistent foreground-orchestrator lifecycle row in `orchestrator_sessions.db`, keyed by the resolved cwd. The row stores provider, model, effort, heartbeat, and readable state (`idle`, `planning`, `awaiting_workers`, `reviewing`, `blocked`, `failed`, `stopped`, or `stale`). It is durable daemon state, not a warm model process, so an idle orchestrator session does not spend tokens. Codex and Claude use the same registration and heartbeat path; provider changes on the same project reuse the row and record the change.
+
 ### 2. Write a ticket
 
 Open the menu-bar Board (double-tap Shift to toggle) and create a ticket via the column's `+` button. The board writes the file to `<repo>/.orchestrator/<TICKET_ID>.md` and bumps `<repo>/.orchestrator/config.toml`'s `next_id`. Existing configs keep their configured prefix; fresh repos derive one from the repo name. Commit both to the working branch — that's the ticket's audit trail going forward.
@@ -133,6 +135,7 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | `<repo>/.orchestrator/<TICKET_ID>.md` | One ticket per file (board source of truth) |
 | `<repo>/.orchestrator/config.toml` | Repo-scoped ticket counter (`prefix`, `next_id`) |
 | `~/Library/Application Support/relay-runner/orchestrator/runs.db` | Run history (SQLite) |
+| `~/Library/Application Support/relay-runner/orchestrator/orchestrator_sessions.db` | Persistent foreground-orchestrator lifecycle state |
 | `~/Library/Application Support/relay-runner/workspaces/<sanitized-id>/` | Per-ticket worktree |
 | `~/Library/Application Support/relay-runner/workspaces/<sanitized-id>/.relay/run.log` | Worker stdout (full session trace) |
 | `~/Library/LaunchAgents/com.relay.orchestrator.plist` | launchd descriptor |

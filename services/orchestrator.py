@@ -56,6 +56,17 @@ PORT_FILE = Path("/tmp/relay_orchestrator.port")
 RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
 VOICE_STATE_SOCK = Path("/tmp/voice_state.sock")
 DEFAULT_PORT = 7634
+ORCHESTRATOR_SESSION_STATES = frozenset({
+    "idle",
+    "planning",
+    "awaiting_workers",
+    "reviewing",
+    "blocked",
+    "failed",
+    "stopped",
+    "stale",
+})
+ORCHESTRATOR_SESSION_STALE_AFTER_SECONDS = 30.0
 
 WORKER_SIZING_FIELDS = (
     "worker_model",
@@ -878,6 +889,288 @@ class RunsStore:
                   file=sys.stderr)
 
 
+class OrchestratorSessionStore:
+    """Durable foreground-orchestrator lifecycle records.
+
+    These rows describe the persistent per-project/session orchestrator owned by
+    the bridge/frontstage loop. They do not spawn or hold a model process; idle
+    means durable state only, so keeping a session alive does not spend tokens.
+    """
+
+    SCHEMA_VERSION = 1
+
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS orchestrator_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_key TEXT NOT NULL UNIQUE,
+        repo_path TEXT NOT NULL,
+        provider_key TEXT NOT NULL,
+        model_alias TEXT,
+        effort TEXT,
+        state TEXT NOT NULL,
+        started_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        heartbeat_at REAL NOT NULL,
+        stopped_at REAL,
+        stop_reason TEXT,
+        pid INTEGER,
+        source TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_sessions_repo ON orchestrator_sessions(repo_path);
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_sessions_state ON orchestrator_sessions(state);
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._init()
+
+    @contextmanager
+    def _conn(self):
+        with self._lock:
+            conn = sqlite3.connect(str(self.path), isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+            finally:
+                conn.close()
+
+    def _init(self) -> None:
+        with self._conn() as c:
+            current = int(c.execute("PRAGMA user_version").fetchone()[0])
+            if current != self.SCHEMA_VERSION:
+                c.execute("DROP TABLE IF EXISTS orchestrator_sessions")
+                c.executescript(self.SCHEMA)
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+            else:
+                c.executescript(self.SCHEMA)
+
+    @staticmethod
+    def session_key(repo_path: str) -> str:
+        repo = str(Path(repo_path).expanduser().resolve())
+        digest = hashlib.sha1(repo.encode("utf-8")).hexdigest()[:16]
+        return f"project:{digest}"
+
+    @staticmethod
+    def _normalize_provider(provider_key: str | None) -> str:
+        provider = (provider_key or "codex").strip().lower()
+        return "claude" if "claude" in provider else "codex"
+
+    @staticmethod
+    def _normalize_state(state: str | None) -> str:
+        value = (state or "idle").strip().lower()
+        if value not in ORCHESTRATOR_SESSION_STATES:
+            raise ValueError(
+                "invalid orchestrator state "
+                f"{state!r}; expected one of {', '.join(sorted(ORCHESTRATOR_SESSION_STATES))}"
+            )
+        return value
+
+    def ensure(
+        self,
+        *,
+        repo_path: str,
+        provider_key: str,
+        model_alias: str | None = None,
+        effort: str | None = None,
+        source: str | None = None,
+        pid: int | None = None,
+        state: str = "idle",
+    ) -> dict[str, Any]:
+        repo = str(Path(repo_path).expanduser().resolve())
+        key = self.session_key(repo)
+        provider = self._normalize_provider(provider_key)
+        next_state = self._normalize_state(state)
+        now = time.time()
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM orchestrator_sessions WHERE session_key = ?",
+                (key,),
+            ).fetchone()
+            if row is None:
+                cur = c.execute(
+                    "INSERT INTO orchestrator_sessions("
+                    "session_key, repo_path, provider_key, model_alias, effort, state, "
+                    "started_at, updated_at, heartbeat_at, pid, source"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        key,
+                        repo,
+                        provider,
+                        model_alias,
+                        effort,
+                        next_state,
+                        now,
+                        now,
+                        now,
+                        pid,
+                        source,
+                    ),
+                )
+                new_row = c.execute(
+                    "SELECT * FROM orchestrator_sessions WHERE id = ?",
+                    (cur.lastrowid,),
+                ).fetchone()
+                result = dict(new_row)
+                result["created"] = True
+                result["provider_changed"] = False
+                return result
+
+            provider_changed = row["provider_key"] != provider
+            stop_reason = (
+                f"provider changed from {row['provider_key']} to {provider}"
+                if provider_changed else None
+            )
+            c.execute(
+                "UPDATE orchestrator_sessions SET "
+                "repo_path = ?, provider_key = ?, model_alias = ?, effort = ?, "
+                "state = ?, updated_at = ?, heartbeat_at = ?, stopped_at = NULL, "
+                "stop_reason = ?, pid = ?, source = ? "
+                "WHERE id = ?",
+                (
+                    repo,
+                    provider,
+                    model_alias,
+                    effort,
+                    next_state,
+                    now,
+                    now,
+                    stop_reason,
+                    pid,
+                    source,
+                    row["id"],
+                ),
+            )
+            new_row = c.execute(
+                "SELECT * FROM orchestrator_sessions WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            result = dict(new_row)
+            result["created"] = False
+            result["provider_changed"] = provider_changed
+            return result
+
+    def heartbeat(
+        self,
+        *,
+        session_id: int | None = None,
+        repo_path: str | None = None,
+        provider_key: str | None = None,
+        state: str | None = None,
+    ) -> dict[str, Any] | None:
+        now = time.time()
+        next_state = self._normalize_state(state) if state is not None else None
+        with self._conn() as c:
+            row = self._find_row(c, session_id=session_id, repo_path=repo_path)
+            if row is None:
+                return None
+            provider = self._normalize_provider(provider_key) if provider_key else row["provider_key"]
+            fields = [
+                "heartbeat_at = ?",
+                "updated_at = ?",
+                "provider_key = ?",
+                "stopped_at = NULL",
+                "stop_reason = NULL",
+            ]
+            values: list[Any] = [now, now, provider]
+            if next_state is not None:
+                fields.append("state = ?")
+                values.append(next_state)
+            elif row["state"] in ("stale", "stopped", "failed"):
+                fields.append("state = ?")
+                values.append("idle")
+            values.append(row["id"])
+            c.execute(
+                f"UPDATE orchestrator_sessions SET {', '.join(fields)} WHERE id = ?",
+                values,
+            )
+            updated = c.execute(
+                "SELECT * FROM orchestrator_sessions WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            return dict(updated) if updated else None
+
+    def stop(
+        self,
+        *,
+        session_id: int | None = None,
+        repo_path: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any] | None:
+        now = time.time()
+        with self._conn() as c:
+            row = self._find_row(c, session_id=session_id, repo_path=repo_path)
+            if row is None:
+                return None
+            c.execute(
+                "UPDATE orchestrator_sessions SET state = 'stopped', updated_at = ?, "
+                "stopped_at = ?, stop_reason = ? WHERE id = ?",
+                (now, now, reason, row["id"]),
+            )
+            updated = c.execute(
+                "SELECT * FROM orchestrator_sessions WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            return dict(updated) if updated else None
+
+    def reconcile_stale(self, stale_after_seconds: float = ORCHESTRATOR_SESSION_STALE_AFTER_SECONDS) -> int:
+        cutoff = time.time() - max(0.0, stale_after_seconds)
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE orchestrator_sessions SET state = 'stale', updated_at = ?, "
+                "stop_reason = 'heartbeat expired' "
+                "WHERE state NOT IN ('stopped', 'stale') AND heartbeat_at < ?",
+                (time.time(), cutoff),
+            )
+            return cur.rowcount
+
+    def get(self, session_id: int) -> dict[str, Any] | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM orchestrator_sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list(self, *, repo_path: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        self.reconcile_stale()
+        with self._conn() as c:
+            if repo_path:
+                repo = str(Path(repo_path).expanduser().resolve())
+                rows = c.execute(
+                    "SELECT * FROM orchestrator_sessions WHERE repo_path = ? "
+                    "ORDER BY updated_at DESC LIMIT ?",
+                    (repo, limit),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM orchestrator_sessions ORDER BY updated_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def _find_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        session_id: int | None = None,
+        repo_path: str | None = None,
+    ) -> sqlite3.Row | None:
+        if session_id is not None:
+            return conn.execute(
+                "SELECT * FROM orchestrator_sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if repo_path:
+            key = self.session_key(str(Path(repo_path).expanduser().resolve()))
+            return conn.execute(
+                "SELECT * FROM orchestrator_sessions WHERE session_key = ?",
+                (key,),
+            ).fetchone()
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Git worktree helpers
 # ---------------------------------------------------------------------------
@@ -1373,6 +1666,7 @@ class Daemon:
 
         data = _data_root()
         self.runs = RunsStore(data / "runs.db", index_path=data / "runs.json")
+        self.orchestrator_sessions = OrchestratorSessionStore(data / "orchestrator_sessions.db")
         self.graphify_path = data / "graphify.db"
         self.program_registry_path = _program_registry_path()
 
@@ -1389,6 +1683,12 @@ class Daemon:
         # first transition (reconcile above mutates state directly, bypassing the
         # insert/update write hooks).
         self.runs.write_index()
+        stale_sessions = self.orchestrator_sessions.reconcile_stale()
+        if stale_sessions:
+            print(
+                f"[orchestrator] reconciled {stale_sessions} stale orchestrator session(s) on startup",
+                file=sys.stderr,
+            )
 
         agent_setting = orch_cfg.get("agent") or cfg.get("general", {}).get("command") or "codex"
         self.agent_kind = _agent_kind(str(agent_setting))
@@ -1877,6 +2177,77 @@ class Daemon:
     def get_run(self, run_id: int) -> dict | None:
         return self.runs.get(run_id)
 
+    def ensure_orchestrator_session(
+        self,
+        *,
+        repo_path: str,
+        provider: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        source: str | None = None,
+        pid: int | None = None,
+        state: str = "idle",
+    ) -> dict:
+        if not repo_path:
+            raise ValueError("repo_path is required")
+        repo = Path(repo_path).expanduser().resolve()
+        if not repo.is_dir():
+            raise ValueError(f"repo_path {repo} is not a directory")
+        general = self.cfg.get("general", {})
+        provider_key = provider or general.get("provider") or self.agent_kind
+        result = self.orchestrator_sessions.ensure(
+            repo_path=str(repo),
+            provider_key=str(provider_key),
+            model_alias=model or general.get("model"),
+            effort=effort or general.get("orchestrator_effort"),
+            source=source or "direct",
+            pid=pid,
+            state=state,
+        )
+        return {"orchestrator_session": result}
+
+    def heartbeat_orchestrator_session(
+        self,
+        *,
+        session_id: int | None = None,
+        repo_path: str | None = None,
+        provider: str | None = None,
+        state: str | None = None,
+    ) -> dict:
+        result = self.orchestrator_sessions.heartbeat(
+            session_id=session_id,
+            repo_path=repo_path,
+            provider_key=provider,
+            state=state,
+        )
+        if result is None:
+            raise ValueError("orchestrator session not found")
+        return {"orchestrator_session": result}
+
+    def stop_orchestrator_session(
+        self,
+        *,
+        session_id: int | None = None,
+        repo_path: str | None = None,
+        reason: str | None = None,
+    ) -> dict:
+        result = self.orchestrator_sessions.stop(
+            session_id=session_id,
+            repo_path=repo_path,
+            reason=reason,
+        )
+        if result is None:
+            raise ValueError("orchestrator session not found")
+        return {"orchestrator_session": result}
+
+    def list_orchestrator_sessions(
+        self,
+        *,
+        repo_path: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        return self.orchestrator_sessions.list(repo_path=repo_path, limit=limit)
+
     def program_status(
         self,
         *,
@@ -2039,6 +2410,49 @@ class Handler(BaseHTTPRequestHandler):
                     provider=provider,
                     limit=limit,
                 )
+
+            if method == "GET" and segments == ["v1", "orchestrator-sessions"]:
+                repo_path = (query.get("repo_path") or [None])[0]
+                limit = int((query.get("limit") or ["100"])[0])
+                return 200, {
+                    "orchestrator_sessions": self.daemon.list_orchestrator_sessions(
+                        repo_path=repo_path,
+                        limit=limit,
+                    )
+                }
+
+            if method == "POST" and segments == ["v1", "orchestrator-session", "ensure"]:
+                body = _read_body(self)
+                result = self.daemon.ensure_orchestrator_session(
+                    repo_path=body.get("repo_path", ""),
+                    provider=body.get("provider"),
+                    model=body.get("model"),
+                    effort=body.get("effort"),
+                    source=body.get("source"),
+                    pid=body.get("pid"),
+                    state=body.get("state") or "idle",
+                )
+                session = result.get("orchestrator_session") or {}
+                return (201 if session.get("created") else 200), result
+
+            if method == "POST" and segments == ["v1", "orchestrator-session", "heartbeat"]:
+                body = _read_body(self)
+                result = self.daemon.heartbeat_orchestrator_session(
+                    session_id=body.get("session_id"),
+                    repo_path=body.get("repo_path"),
+                    provider=body.get("provider"),
+                    state=body.get("state"),
+                )
+                return 200, result
+
+            if method == "POST" and segments == ["v1", "orchestrator-session", "stop"]:
+                body = _read_body(self)
+                result = self.daemon.stop_orchestrator_session(
+                    session_id=body.get("session_id"),
+                    repo_path=body.get("repo_path"),
+                    reason=body.get("reason"),
+                )
+                return 200, result
 
             if method == "POST" and segments == ["v1", "program", "capture"]:
                 body = _read_body(self)
