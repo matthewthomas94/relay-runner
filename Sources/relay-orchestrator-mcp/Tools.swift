@@ -115,7 +115,7 @@ struct ListRunsTool: MCPTool {
     let name = "list_runs"
     let description = """
         List orchestrator runs, newest first. Pass `state` to filter by lifecycle state \
-        (Claimed, Running, Succeeded, Failed, Stalled, Canceled). Default limit: 100.
+        (Claimed, Running, AwaitingReview, MergeConflict, Merged, Failed, Stalled, Canceled). Default limit: 100.
         """
 
     var inputSchema: [String: Any] {
@@ -124,7 +124,7 @@ struct ListRunsTool: MCPTool {
             "properties": [
                 "state": [
                     "type": "string",
-                    "enum": ["Claimed", "Running", "Succeeded", "Failed", "Stalled", "Canceled"],
+                    "enum": ["Claimed", "Running", "AwaitingReview", "MergeConflict", "Merged", "Succeeded", "Failed", "Stalled", "Canceled"],
                 ],
                 "limit": ["type": "integer", "description": "Max rows to return. Default: 100."],
             ],
@@ -164,6 +164,80 @@ struct GetRunTool: MCPTool {
     func call(arguments: [String: Any]) async throws -> [[String: Any]] {
         let id = try requireInt(arguments, "run_id")
         return try await proxy(method: "GET", path: "/v1/runs/\(id)")
+    }
+}
+
+// MARK: - inspect_run_for_review
+
+struct InspectRunForReviewTool: MCPTool {
+    let name = "inspect_run_for_review"
+    let description = """
+        Inspect a completed worker run before accepting or retrying it. Returns the run record, worker log tail, \
+        ticket run log from the worker branch, branch commits, diff stat, changed paths, and verification evidence. \
+        Works for Codex and Claude runs because both providers write the same run database and worker log shape.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "run_id": ["type": "integer"],
+            ],
+            "required": ["run_id"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let id = try requireInt(arguments, "run_id")
+        return try await proxy(method: "GET", path: "/v1/runs/\(id)/review")
+    }
+}
+
+// MARK: - review_run
+
+struct ReviewRunTool: MCPTool {
+    let name = "review_run"
+    let description = """
+        Accept or retry a worker run that is awaiting orchestrator review. `decision=accept` merges the worker branch \
+        into the source repo, prunes the worktree and branch, publishes the ticket's done state through that merge, \
+        and then progresses dependents. `decision=retry` marks the reviewed run failed, prunes its worktree and branch, \
+        and optionally dispatches a fresh attempt. This path is provider-neutral for Codex and Claude runs.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "run_id": ["type": "integer"],
+                "decision": [
+                    "type": "string",
+                    "enum": ["accept", "retry"],
+                ],
+                "reason": [
+                    "type": "string",
+                    "description": "Required human/orchestrator rationale when retrying; ignored for accept.",
+                ],
+                "redispatch": [
+                    "type": "boolean",
+                    "description": "For decision=retry, dispatch a fresh attempt after pruning. Default: true.",
+                ],
+            ],
+            "required": ["run_id", "decision"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let id = try requireInt(arguments, "run_id")
+        var body: [String: Any] = [
+            "decision": try requireString(arguments, "decision"),
+        ]
+        if let reason = arguments["reason"] as? String, !reason.isEmpty {
+            body["reason"] = reason
+        }
+        if let redispatch = arguments["redispatch"] as? Bool {
+            body["redispatch"] = redispatch
+        }
+        return try await proxy(method: "POST", path: "/v1/runs/\(id)/review", body: body)
     }
 }
 

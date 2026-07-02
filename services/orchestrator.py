@@ -75,6 +75,8 @@ WORKER_SIZING_FIELDS = (
     "worker_sizing_rationale",
     "worker_provider_notes",
 )
+REVIEW_BLOCKING_STATES = ("AwaitingReview", "MergeConflict", "Succeeded")
+MERGEABLE_REVIEW_STATES = ("AwaitingReview", "MergeConflict", "Succeeded")
 WORKER_MODEL_TIERS = {
     "codex": {
         "fast": "gpt-5.4-mini",
@@ -957,14 +959,15 @@ class RunsStore:
             return dict(row) if row else None
 
     def find_awaiting_merge(self, ticket_id: str, repo_path: str | None = None) -> dict | None:
-        params: list[Any] = [ticket_id, "Succeeded"]
+        params: list[Any] = [ticket_id, *REVIEW_BLOCKING_STATES]
+        placeholders = ",".join("?" * len(REVIEW_BLOCKING_STATES))
         repo_clause = ""
         if repo_path is not None:
             repo_clause = "AND repo_path = ? "
             params.append(str(Path(repo_path).expanduser().resolve()))
         with self._conn() as c:
             row = c.execute(
-                "SELECT * FROM runs WHERE ticket_id = ? AND state = ? "
+                f"SELECT * FROM runs WHERE ticket_id = ? AND state IN ({placeholders}) "
                 f"{repo_clause}"
                 "ORDER BY id DESC LIMIT 1",
                 params,
@@ -1005,10 +1008,12 @@ class RunsStore:
         """Active runs plus completed ones inside the retention window. One
         entry per run, shaped for the board overlay (run_id is the row id)."""
         cutoff = time.time() - self.INDEX_RETENTION_SECONDS
+        review_placeholders = ",".join("?" * len(REVIEW_BLOCKING_STATES))
         rows = conn.execute(
             "SELECT * FROM runs WHERE ended_at IS NULL OR ended_at >= ? "
+            f"OR state IN ({review_placeholders}) "
             "ORDER BY id DESC",
-            (cutoff,),
+            (cutoff, *REVIEW_BLOCKING_STATES),
         ).fetchall()
         return [
             {
@@ -1548,6 +1553,31 @@ def _git_head(repo_path: str) -> str | None:
     return result.stdout.strip() or None
 
 
+def _git_text(repo_path: str, *args: str) -> str:
+    result = _git(repo_path, *args, check=False)
+    text = (result.stdout or "").strip()
+    if result.returncode != 0:
+        err = (result.stderr or "").strip()
+        return err or text or f"git {' '.join(args)} failed with exit {result.returncode}"
+    return text
+
+
+def _tail_text(path: Path, *, max_lines: int = 160, max_chars: int = 20_000) -> str:
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError as e:
+        return f"unavailable: {e}"
+    return "\n".join(lines[-max_lines:])[-max_chars:]
+
+
+def _ticket_run_log(ticket_body: str) -> str:
+    marker = "## Run log"
+    index = ticket_body.find(marker)
+    if index < 0:
+        return ""
+    return ticket_body[index:].strip()
+
+
 def validate_worker_completion(
     *,
     workspace_path: str,
@@ -1771,9 +1801,9 @@ class Worker:
                     start_head=start_head,
                 )
                 if ok:
-                    self.store.update(self.run_id, state="Succeeded", ended=True, exit_code=rc)
+                    self.store.update(self.run_id, state="AwaitingReview", ended=True, exit_code=rc)
                     _notify_orchestration_trace(
-                        "run-succeeded",
+                        "run-review-needed",
                         ticket_id=self.run["ticket_id"],
                         run_id=self.run_id,
                         source="worker",
@@ -2488,6 +2518,146 @@ class Daemon:
     def get_run(self, run_id: int) -> dict | None:
         return self.runs.get(run_id)
 
+    def inspect_run_for_review(self, run_id: int) -> dict:
+        run = self.runs.get(run_id)
+        if not run:
+            raise ValueError(f"unknown run_id {run_id}")
+
+        repo_path = str(run.get("repo_path") or "")
+        workspace_text = str(run.get("workspace_path") or "")
+        branch = str(run.get("branch") or "")
+        ticket_id = str(run.get("ticket_id") or "")
+        ticket_log = ""
+        ticket_status = None
+        if workspace_text:
+            workspace_path = Path(workspace_text)
+            try:
+                ticket = read_ticket(workspace_path / ".orchestrator" / f"{ticket_id}.md")
+                ticket_status = ticket.get("status")
+                ticket_log = _ticket_run_log(str(ticket.get("body") or ""))
+            except (OSError, TicketParseError):
+                ticket_log = ""
+
+        return {
+            "run": run,
+            "review_needed": run.get("state") in REVIEW_BLOCKING_STATES,
+            "ticket_status": ticket_status,
+            "log_tail": _tail_text(Path(str(run.get("log_path") or ""))) if run.get("log_path") else "",
+            "ticket_run_log": ticket_log,
+            "branch_commits": _git_text(repo_path, "log", "--oneline", f"HEAD..{branch}") if repo_path and branch else "",
+            "branch_diff_stat": _git_text(repo_path, "diff", "--stat", f"HEAD...{branch}") if repo_path and branch else "",
+            "branch_diff_name_status": _git_text(repo_path, "diff", "--name-status", f"HEAD...{branch}") if repo_path and branch else "",
+            "verification_evidence": (
+                "worker completion validation passed"
+                if run.get("state") in REVIEW_BLOCKING_STATES
+                else run.get("last_error")
+            ),
+        }
+
+    def accept_worker_run(self, run_id: int) -> dict:
+        run = self.runs.get(run_id)
+        if not run:
+            raise ValueError(f"unknown run_id {run_id}")
+        if run.get("state") not in MERGEABLE_REVIEW_STATES:
+            raise ValueError(f"run {run_id} is not awaiting review")
+
+        repo_path = str(run["repo_path"])
+        branch = str(run["branch"])
+        ticket_id = str(run["ticket_id"])
+
+        status = _git(repo_path, "status", "--porcelain", check=False)
+        if status.returncode != 0 or status.stdout.strip():
+            reason = "source repo has uncommitted changes; refusing worker merge"
+            self.runs.update(run_id, state="MergeConflict", last_error=reason)
+            return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
+
+        merge = _git(
+            repo_path,
+            "merge",
+            "--no-ff",
+            branch,
+            "-m",
+            f"merge {ticket_id} worker run {run_id}",
+            check=False,
+        )
+        if merge.returncode != 0:
+            _git(repo_path, "merge", "--abort", check=False)
+            reason = (merge.stderr or merge.stdout or "merge failed").strip()
+            self.runs.update(run_id, state="MergeConflict", last_error=reason)
+            return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
+
+        merged_ticket = read_ticket(Path(repo_path) / ".orchestrator" / f"{ticket_id}.md")
+        if merged_ticket.get("status") != "done":
+            reason = f"merged branch did not publish {ticket_id} as done"
+            self.runs.update(run_id, state="MergeConflict", last_error=reason)
+            return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
+
+        removed, worktree_error = remove_worktree(repo_path, Path(str(run["workspace_path"])))
+        delete_branch(repo_path, branch)
+        self.runs.update(run_id, state="Merged")
+        _notify_orchestration_trace(
+            "run-merged",
+            ticket_id=ticket_id,
+            run_id=run_id,
+            source="orchestrator",
+        )
+        try:
+            self._progress_dependents(repo_path=repo_path, finished_ticket_id=ticket_id)
+        except Exception as e:  # noqa: BLE001 — merge succeeded; report follow-up safely
+            print(f"[orchestrator] dep-progression error after merging {ticket_id}: {e}", file=sys.stderr)
+
+        result: dict[str, Any] = {
+            "accepted": True,
+            "run": self.runs.get(run_id),
+            "worktree_removed": removed,
+        }
+        if worktree_error:
+            result["worktree_error"] = worktree_error
+        return result
+
+    def request_worker_retry(
+        self,
+        run_id: int,
+        *,
+        reason: str | None = None,
+        redispatch: bool = True,
+    ) -> dict:
+        run = self.runs.get(run_id)
+        if not run:
+            raise ValueError(f"unknown run_id {run_id}")
+        if run.get("state") not in REVIEW_BLOCKING_STATES:
+            raise ValueError(f"run {run_id} is not awaiting review")
+
+        repo_path = str(run["repo_path"])
+        ticket_id = str(run["ticket_id"])
+        workspace_path = Path(str(run["workspace_path"]))
+        failure_reason = f"Review requested retry: {(reason or 'work incomplete').strip()}"
+        removed, worktree_error = remove_worktree(repo_path, workspace_path)
+        delete_branch(repo_path, str(run["branch"]))
+        self.runs.update(run_id, state="Failed", last_error=failure_reason)
+        _notify_orchestration_trace(
+            "run-failed",
+            ticket_id=ticket_id,
+            run_id=run_id,
+            source="orchestrator",
+        )
+
+        result: dict[str, Any] = {
+            "retry_requested": True,
+            "run": self.runs.get(run_id),
+            "worktree_removed": removed,
+            "redispatched": None,
+        }
+        if worktree_error:
+            result["worktree_error"] = worktree_error
+        if redispatch:
+            result["redispatched"] = self.dispatch(
+                ticket_id=ticket_id,
+                repo_path=repo_path,
+                source="orchestrator-review-retry",
+            )
+        return result
+
     def ensure_orchestrator_session(
         self,
         *,
@@ -3071,6 +3241,25 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and len(segments) == 3 and segments[:2] == ["v1", "runs"]:
                 run = self.daemon.get_run(int(segments[2]))
                 return (200 if run else 404), {"run": run}
+
+            if (method == "GET" and len(segments) == 4
+                    and segments[:2] == ["v1", "runs"] and segments[3] == "review"):
+                result = self.daemon.inspect_run_for_review(int(segments[2]))
+                return 200, result
+
+            if (method == "POST" and len(segments) == 4
+                    and segments[:2] == ["v1", "runs"] and segments[3] == "review"):
+                body = _read_body(self)
+                decision = str(body.get("decision") or "").strip().lower()
+                if decision == "accept":
+                    return 200, self.daemon.accept_worker_run(int(segments[2]))
+                if decision == "retry":
+                    return 202, self.daemon.request_worker_retry(
+                        int(segments[2]),
+                        reason=body.get("reason"),
+                        redispatch=bool(body.get("redispatch", True)),
+                    )
+                raise ValueError("decision must be 'accept' or 'retry'")
 
             if (method == "POST" and len(segments) == 4
                     and segments[:2] == ["v1", "runs"] and segments[3] == "cancel"):

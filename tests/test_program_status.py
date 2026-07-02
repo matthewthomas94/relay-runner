@@ -237,6 +237,22 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual(item["done_tickets"], 1)
         self.assertEqual(item["awaiting_merge"], 1)
 
+    def test_awaiting_merge_query_distinguishes_review_and_conflict_states(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        review = _ticket(store, project, "RR-1", "Needs review", "ready")
+        conflict = _ticket(store, project, "RR-2", "Needs conflict resolution", "ready")
+        _run(store, project, review, 101, "awaiting_review", "codex", model="gpt-5")
+        _run(store, project, conflict, 102, "merge_conflict", "claude", model="sonnet")
+
+        result = build_program_status(store, query="awaiting_merge", now=2000.0)
+
+        statuses = {item["ticket_id"]: item["status"] for item in result["items"]}
+        self.assertEqual(statuses["RR-1"], "awaiting review")
+        self.assertEqual(statuses["RR-2"], "merge conflict")
+        self.assertIn("RR-1 - Needs review (awaiting review", result["message"])
+        self.assertIn("RR-2 - Needs conflict resolution (merge conflict", result["message"])
+
 
 def _project(
     store: GraphifyCoreStore,

@@ -164,7 +164,7 @@ def build_program_status(
 
     if query == QUERY_AWAITING_MERGE:
         items = [
-            _ticket_item(ctx, ticket, "awaiting merge")
+            _awaiting_review_item(ctx, ticket)
             for ticket in _awaiting_merge_tickets(ctx, provider_key)
         ]
         return _response(
@@ -316,7 +316,7 @@ def _awaiting_merge_tickets(ctx: dict[str, Any], provider: str | None) -> list[d
         and _ticket_matches_provider(ctx, ticket, provider)
     }
     for run in ctx["runs"]:
-        if _run_state(run) == "awaiting_merge" and _run_matches_provider(run, provider):
+        if _run_state(run) in {"awaiting_merge", "awaiting_review", "merge_conflict"} and _run_matches_provider(run, provider):
             ticket = ctx["ticket_by_run"].get(run["id"])
             if ticket:
                 ticket_ids.add(ticket["id"])
@@ -369,8 +369,8 @@ def _attention_items(
 ) -> list[dict[str, Any]]:
     items = []
     for ticket in _awaiting_merge_tickets(ctx, provider):
-        item = _ticket_item(ctx, ticket, "awaiting merge")
-        item["attention"] = "awaiting merge"
+        item = _awaiting_review_item(ctx, ticket)
+        item["attention"] = item["status"]
         items.append(item)
     for ticket in _blocked_tickets(ctx, provider):
         item = _ticket_item(ctx, ticket, "blocked")
@@ -507,6 +507,15 @@ def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> di
         "blocked_by": blockers,
         "ticket_node_id": ticket["id"],
     }
+
+
+def _awaiting_review_item(ctx: dict[str, Any], ticket: dict[str, Any]) -> dict[str, Any]:
+    latest_run = next(iter(ctx["runs_by_ticket"].get(ticket["id"], [])), None)
+    status = {
+        "awaiting_review": "awaiting review",
+        "merge_conflict": "merge conflict",
+    }.get(_run_state(latest_run), "awaiting merge")
+    return _ticket_item(ctx, ticket, status)
 
 
 def _limit_items(items: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
@@ -646,6 +655,10 @@ def _run_state(run: dict[str, Any] | None) -> str:
     state = _key(body.get("program_state") or body.get("state") or body.get("raw_state"))
     if state in {"claimed", "running"}:
         return "active"
+    if state in {"awaitingreview", "awaiting_review"}:
+        return "awaiting_review"
+    if state in {"mergeconflict", "merge_conflict"}:
+        return "merge_conflict"
     if state in {"awaitingmerge", "awaiting_merge"}:
         return "awaiting_merge"
     return state
