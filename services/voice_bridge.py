@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 from command_actions import format_command_for_agent, resolve_command_action
-from pm_frontstage import PMStatusEvent, RelayCommandMetadata
+from pm_frontstage import OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata
 from config import load_config
 from tts_worker import TTSWorker
 
@@ -399,6 +399,125 @@ def _pm_status_event_payload(
     except ValueError as e:
         print(f"[voice_bridge] Could not build PM status event: {e}", file=sys.stderr)
         return None
+
+
+def _coerce_optional_int(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _orchestration_trace_payload(
+    *,
+    kind: str,
+    relay_command: dict | None = None,
+    source_text: str | None = None,
+    source: str = "orchestrator",
+    message: str | None = None,
+    ticket_id: str | None = None,
+    run_id: int | None = None,
+) -> dict | None:
+    """Build a public orchestration trace payload for the notch stream."""
+    try:
+        command = None
+        if relay_command:
+            command = RelayCommandMetadata.from_dict(relay_command, source_text=source_text)
+        event = OrchestrationTraceEvent(
+            kind=kind,
+            source=source,
+            message=message,
+            command=command,
+            ticket_id=ticket_id,
+            run_id=run_id,
+        )
+    except ValueError as e:
+        print(f"[voice_bridge] Could not build orchestration trace: {e}", file=sys.stderr)
+        return None
+
+    payload = {
+        "text": event.message,
+        "trace_event": event.to_dict(),
+    }
+    status_event = event.to_status_event_dict()
+    if status_event is not None:
+        payload["status_event"] = status_event
+    return payload
+
+
+def emit_orchestration_trace(
+    *,
+    kind: str,
+    relay_command: dict | None = None,
+    source_text: str | None = None,
+    source: str = "orchestrator",
+    message: str | None = None,
+    ticket_id: str | None = None,
+    run_id: int | None = None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    notify_state=_notify_state,
+) -> bool:
+    """Emit a short public orchestration trace to the notch if still current."""
+    if relay_command:
+        command_seq = relay_command.get("relay_command_seq")
+        command_id = relay_command.get("relay_command_id")
+        if command_seq is not None or command_id:
+            if not _relay_command_current(command_seq, command_id, state_path=state_path):
+                print(
+                    "[voice_bridge] Dropping orchestration trace because its Relay command was superseded.",
+                    file=sys.stderr,
+                )
+                return False
+
+    payload = _orchestration_trace_payload(
+        kind=kind,
+        relay_command=relay_command,
+        source_text=source_text,
+        source=source,
+        message=message,
+        ticket_id=ticket_id,
+        run_id=run_id,
+    )
+    if payload is None:
+        return False
+    notify_state("working", **payload)
+    return True
+
+
+def _handle_orchestration_trace_control(
+    raw: str,
+    *,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    notify_state=_notify_state,
+) -> bool:
+    text = raw.strip()
+    if not text:
+        return True
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = {"kind": "board-change", "message": text}
+    if not isinstance(data, dict):
+        return True
+
+    relay_command = data.get("relay_command")
+    if not isinstance(relay_command, dict):
+        relay_command = _read_json_file(VOICE_COMMAND_CLAIM_FILE)
+    if not relay_command:
+        relay_command = None
+
+    return emit_orchestration_trace(
+        kind=str(data.get("kind") or "board-change"),
+        relay_command=relay_command,
+        source=str(data.get("source") or "orchestrator"),
+        message=data.get("message"),
+        ticket_id=data.get("ticket_id"),
+        run_id=_coerce_optional_int(data.get("run_id")),
+        state_path=state_path,
+        notify_state=notify_state,
+    )
 
 
 def acknowledgement_auto_dismiss_seconds(text: str) -> float:
@@ -790,6 +909,13 @@ def _handle_relay_control_message(
         tts_worker.replay()
         return True
 
+    if text.startswith("__TRACE__:"):
+        _handle_orchestration_trace_control(
+            text[len("__TRACE__:"):],
+            state_path=state_path,
+        )
+        return True
+
     if text.startswith("__STATUS__:"):
         return True
 
@@ -1066,6 +1192,10 @@ def main():
 
                 if text == "__REPLAY__":
                     tts_worker.replay()
+                    continue
+
+                if text.startswith("__TRACE__:"):
+                    _handle_orchestration_trace_control(text[len("__TRACE__:"):])
                     continue
 
                 if text.startswith("__STATUS__:"):

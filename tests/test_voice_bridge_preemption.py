@@ -279,6 +279,63 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             )
             self.assertNotIn("source_text", status_event["command"])
 
+    def test_orchestration_trace_emits_public_notch_payload(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            relay_command = voice_bridge._begin_relay_command(
+                "create a ticket with private transcript details",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            notifications: list[tuple[str, dict]] = []
+
+            emitted = voice_bridge.emit_orchestration_trace(
+                kind="ticket-created",
+                relay_command=relay_command,
+                source_text="create a ticket with private transcript details",
+                ticket_id="RR-9",
+                state_path=state_path,
+                notify_state=lambda state, **kwargs: notifications.append((state, kwargs)),
+            )
+
+            self.assertTrue(emitted)
+            self.assertEqual(notifications[0][0], "working")
+            self.assertEqual(notifications[0][1]["text"], "Created ticket RR-9")
+            trace_event = notifications[0][1]["trace_event"]
+            self.assertEqual(trace_event["kind"], "ticket-created")
+            self.assertEqual(trace_event["ticket_id"], "RR-9")
+            self.assertEqual(trace_event["message"], notifications[0][1]["text"])
+            self.assertNotIn("source_text", trace_event["command"])
+            status_event = notifications[0][1]["status_event"]
+            self.assertEqual(status_event["phase"], "planning")
+            self.assertEqual(status_event["message"], notifications[0][1]["text"])
+
+    def test_orchestration_trace_drops_after_command_superseded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            first = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            voice_bridge._begin_relay_command(
+                "newer command",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            notifications: list[tuple[str, dict]] = []
+
+            emitted = voice_bridge.emit_orchestration_trace(
+                kind="dispatch-started",
+                relay_command=first,
+                ticket_id="RR-7",
+                state_path=state_path,
+                notify_state=lambda state, **kwargs: notifications.append((state, kwargs)),
+            )
+
+            self.assertFalse(emitted)
+            self.assertEqual(notifications, [])
+
     def test_build_bundle_includes_pm_frontstage_service(self):
         script_path = os.path.join(ROOT, "scripts", "build-dmg.sh")
         with open(script_path) as f:

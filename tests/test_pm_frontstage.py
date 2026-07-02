@@ -15,6 +15,7 @@ sys.path.insert(0, SERVICES)
 from pm_frontstage import (  # noqa: E402
     BackstageOutcome,
     DelegationRequest,
+    OrchestrationTraceEvent,
     PMFrontstagePrototype,
     PMStatusEvent,
     RelayCommandMetadata,
@@ -56,6 +57,39 @@ class PMFrontstageTests(unittest.TestCase):
         self.assertEqual(payload["command"]["provider"], "codex")
         self.assertNotIn("source_text", payload["command"])
         self.assertNotIn("reasoning", payload)
+
+    def test_orchestration_trace_contract_is_curated_and_public(self):
+        command = RelayCommandMetadata.from_dict(
+            relay_command(8, "cmd-8"),
+            source_text="create RR-8 with private transcript text",
+        )
+
+        event = OrchestrationTraceEvent(
+            kind="dispatch-claimed",
+            command=command,
+            ticket_id="rr-8",
+            run_id=51,
+        )
+
+        payload = event.to_dict()
+        self.assertEqual(payload["kind"], "dispatch-claimed")
+        self.assertEqual(payload["message"], "RR-8 run 51 claimed")
+        self.assertEqual(payload["ticket_id"], "RR-8")
+        self.assertEqual(payload["run_id"], 51)
+        self.assertEqual(payload["command"]["relay_command_id"], "cmd-8")
+        self.assertNotIn("source_text", payload["command"])
+        self.assertLessEqual(len(payload["message"]), 96)
+
+        status_event = event.to_status_event_dict()
+        self.assertEqual(status_event["phase"], "planning")
+        self.assertEqual(status_event["message"], payload["message"])
+
+    def test_orchestration_trace_rejects_raw_command_like_messages(self):
+        with self.assertRaisesRegex(ValueError, "raw commands"):
+            OrchestrationTraceEvent(
+                kind="board-change",
+                message="git status && cat secret.txt",
+            )
 
     def test_acknowledgement_is_emitted_before_backstage_planning(self):
         order: list[str] = []
