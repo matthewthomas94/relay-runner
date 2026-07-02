@@ -23,6 +23,21 @@ from command_actions import resolve_command_action
 STATUS_PHASES = frozenset({"acknowledged", "planning", "outcome", "stale"})
 STATUS_SOURCES = frozenset({"pm", "orchestrator", "worker"})
 OUTCOME_KINDS = frozenset({"execute_solo", "delegate_plan", "needs_user"})
+TRACE_KINDS = frozenset({
+    "ticket-created",
+    "dispatch-started",
+    "dispatch-claimed",
+    "run-running",
+    "run-succeeded",
+    "run-failed",
+    "board-change",
+})
+TRACE_MESSAGE_MAX_LEN = 96
+_COMMAND_LIKE_TRACE_RE = re.compile(
+    r"(`|\$\(|&&|\|\||\s;\s|"
+    r"\b(?:bash|cat|curl|git|grep|npm|pnpm|python|python3|sh|swift|xcodebuild|yarn|zsh)\s+)",
+    re.IGNORECASE,
+)
 
 PROVIDER_PARITY_NOTES = (
     "The PM/frontstage event contract is provider-neutral for Codex and Claude. "
@@ -45,6 +60,19 @@ def _public_message(value: str) -> str:
     if not message:
         raise ValueError("status events require a public user-facing message")
     return message
+
+
+def _clip_public_message(message: str, limit: int = TRACE_MESSAGE_MAX_LEN) -> str:
+    if len(message) <= limit:
+        return message
+    return message[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _public_trace_message(value: str) -> str:
+    message = _public_message(value)
+    if _COMMAND_LIKE_TRACE_RE.search(message):
+        raise ValueError("trace messages must not contain raw commands or shell snippets")
+    return _clip_public_message(message)
 
 
 def _coerce_seq(value: Any) -> int:
@@ -145,6 +173,93 @@ class PMStatusEvent:
         if self.ticket_id:
             data["ticket_id"] = self.ticket_id
         return data
+
+
+def _trace_ticket_label(ticket_id: str | None) -> str:
+    ticket = str(ticket_id or "").strip().upper()
+    return ticket or "Ticket"
+
+
+def default_orchestration_trace_message(
+    kind: str,
+    *,
+    ticket_id: str | None = None,
+    run_id: int | None = None,
+) -> str:
+    ticket = _trace_ticket_label(ticket_id)
+    run_suffix = f" run {run_id}" if run_id is not None else ""
+    messages = {
+        "ticket-created": f"Created ticket {ticket}",
+        "dispatch-started": f"Dispatching {ticket}",
+        "dispatch-claimed": f"{ticket}{run_suffix} claimed",
+        "run-running": f"{ticket}{run_suffix} running",
+        "run-succeeded": f"{ticket}{run_suffix} succeeded",
+        "run-failed": f"{ticket}{run_suffix} failed",
+        "board-change": f"Board updated for {ticket}" if ticket_id else "Board updated",
+    }
+    return messages[kind]
+
+
+def orchestration_trace_status_phase(kind: str) -> str:
+    return "outcome" if kind in {"run-succeeded", "run-failed"} else "planning"
+
+
+@dataclass(frozen=True)
+class OrchestrationTraceEvent:
+    kind: str
+    source: str = "orchestrator"
+    message: str | None = None
+    command: RelayCommandMetadata | None = None
+    run_id: int | None = None
+    ticket_id: str | None = None
+
+    def __post_init__(self) -> None:
+        kind = self.kind.strip().lower()
+        source = self.source.strip().lower()
+        if kind not in TRACE_KINDS:
+            raise ValueError(f"invalid orchestration trace kind: {self.kind!r}")
+        if source not in STATUS_SOURCES:
+            raise ValueError(f"invalid trace source: {self.source!r}")
+        message = (
+            self.message
+            if self.message is not None
+            else default_orchestration_trace_message(
+                kind,
+                ticket_id=self.ticket_id,
+                run_id=self.run_id,
+            )
+        )
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "message", _public_trace_message(message))
+        if self.ticket_id:
+            object.__setattr__(self, "ticket_id", self.ticket_id.upper())
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "kind": self.kind,
+            "message": self.message,
+            "source": self.source,
+        }
+        if self.command is not None:
+            data["command"] = self.command.to_public_dict()
+        if self.run_id is not None:
+            data["run_id"] = self.run_id
+        if self.ticket_id:
+            data["ticket_id"] = self.ticket_id
+        return data
+
+    def to_status_event_dict(self) -> dict[str, Any] | None:
+        if self.command is None:
+            return None
+        return PMStatusEvent(
+            phase=orchestration_trace_status_phase(self.kind),
+            message=self.message,
+            source=self.source,
+            command=self.command,
+            ticket_id=self.ticket_id,
+            run_id=self.run_id,
+        ).to_dict()
 
 
 @dataclass(frozen=True)

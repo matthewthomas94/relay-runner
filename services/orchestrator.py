@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 from graphify_core import GraphifyCoreStore
 from graphify_ingest import ingest_registered_projects
+from pm_frontstage import OrchestrationTraceEvent, RelayCommandMetadata
 from program_status import build_program_status
 from session_capture import capture_session_review
 from tickets import (
@@ -53,6 +54,7 @@ from tickets import (
 
 PORT_FILE = Path("/tmp/relay_orchestrator.port")
 RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
+VOICE_STATE_SOCK = Path("/tmp/voice_state.sock")
 DEFAULT_PORT = 7634
 
 WORKER_SIZING_FIELDS = (
@@ -75,6 +77,58 @@ WORKER_MODEL_TIERS = {
 }
 CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
+
+
+def _notify_state(state: str, **kwargs: Any) -> None:
+    msg = {"source": "orchestrator", "state": state, **kwargs}
+    s = None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        s.sendto(json.dumps(msg).encode(), str(VOICE_STATE_SOCK))
+    except (OSError, ConnectionRefusedError):
+        pass
+    finally:
+        if s is not None:
+            s.close()
+
+
+def _notify_orchestration_trace(
+    kind: str,
+    *,
+    ticket_id: str | None = None,
+    run_id: int | None = None,
+    source: str = "orchestrator",
+    relay_command_seq: int | str | None = None,
+    relay_command_id: str | None = None,
+) -> None:
+    command = None
+    if relay_command_seq is not None or relay_command_id:
+        try:
+            command = RelayCommandMetadata.from_dict({
+                "relay_command_seq": relay_command_seq,
+                "relay_command_id": relay_command_id,
+            })
+        except ValueError:
+            command = None
+    try:
+        event = OrchestrationTraceEvent(
+            kind=kind,
+            source=source,
+            command=command,
+            ticket_id=ticket_id,
+            run_id=run_id,
+        )
+    except ValueError as e:
+        print(f"[orchestrator] could not build orchestration trace: {e}", file=sys.stderr)
+        return
+    payload: dict[str, Any] = {
+        "text": event.message,
+        "trace_event": event.to_dict(),
+    }
+    status_event = event.to_status_event_dict()
+    if status_event is not None:
+        payload["status_event"] = status_event
+    _notify_state("working", **payload)
 
 
 # ---------------------------------------------------------------------------
@@ -996,6 +1050,12 @@ class Worker:
             log = self.log_path.open("w")
         except OSError as e:
             self.store.update(self.run_id, state="Failed", last_error=f"Could not open log: {e}", ended=True)
+            _notify_orchestration_trace(
+                "run-failed",
+                ticket_id=self.run["ticket_id"],
+                run_id=self.run_id,
+                source="worker",
+            )
             self._notify_complete()
             return
 
@@ -1033,9 +1093,21 @@ class Worker:
                                   last_error=f"{self.agent_kind} CLI not found: {e}",
                                   ended=True, exit_code=-1)
                 log.write(f"[orchestrator] {self.agent_kind} CLI not found: {e}\n")
+                _notify_orchestration_trace(
+                    "run-failed",
+                    ticket_id=self.run["ticket_id"],
+                    run_id=self.run_id,
+                    source="worker",
+                )
                 return
 
             self.store.update(self.run_id, state="Running", pid=self.proc.pid)
+            _notify_orchestration_trace(
+                "run-running",
+                ticket_id=self.run["ticket_id"],
+                run_id=self.run_id,
+                source="worker",
+            )
 
             # Feed the prompt and close stdin so the agent starts. The prompt is a
             # few KB — well under the pipe buffer — so this single write won't
@@ -1084,8 +1156,20 @@ class Worker:
                 self.store.update(self.run_id, state="Failed",
                                   last_error=f"Timed out after {self.timeout_seconds}s",
                                   ended=True, exit_code=-1)
+                _notify_orchestration_trace(
+                    "run-failed",
+                    ticket_id=self.run["ticket_id"],
+                    run_id=self.run_id,
+                    source="worker",
+                )
             elif self._cancel_requested.is_set():
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
+                _notify_orchestration_trace(
+                    "run-failed",
+                    ticket_id=self.run["ticket_id"],
+                    run_id=self.run_id,
+                    source="worker",
+                )
             elif rc == 0:
                 ok, reason = validate_worker_completion(
                     workspace_path=self.run["workspace_path"],
@@ -1095,6 +1179,12 @@ class Worker:
                 )
                 if ok:
                     self.store.update(self.run_id, state="Succeeded", ended=True, exit_code=rc)
+                    _notify_orchestration_trace(
+                        "run-succeeded",
+                        ticket_id=self.run["ticket_id"],
+                        run_id=self.run_id,
+                        source="worker",
+                    )
                 else:
                     log.write(f"\n[orchestrator] worker exited 0 but did not complete ticket: {reason}\n")
                     self.store.update(
@@ -1104,12 +1194,30 @@ class Worker:
                         ended=True,
                         exit_code=rc,
                     )
+                    _notify_orchestration_trace(
+                        "run-failed",
+                        ticket_id=self.run["ticket_id"],
+                        run_id=self.run_id,
+                        source="worker",
+                    )
             elif rc in (-9, -15):
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
+                _notify_orchestration_trace(
+                    "run-failed",
+                    ticket_id=self.run["ticket_id"],
+                    run_id=self.run_id,
+                    source="worker",
+                )
             else:
                 self.store.update(self.run_id, state="Failed",
                                   last_error=f"exit={rc}; tail={' / '.join(tail)[:500]}",
                                   ended=True, exit_code=rc)
+                _notify_orchestration_trace(
+                    "run-failed",
+                    ticket_id=self.run["ticket_id"],
+                    run_id=self.run_id,
+                    source="worker",
+                )
         finally:
             try:
                 log.close()
@@ -1376,6 +1484,12 @@ class Daemon:
             **metadata,
         )
         self.runs.update(run_id, last_error=reason, ended=True, exit_code=-1)
+        _notify_orchestration_trace(
+            "run-failed",
+            ticket_id=ticket_id,
+            run_id=run_id,
+            source="worker",
+        )
         return self.runs.get(run_id)
 
     @staticmethod
@@ -1414,6 +1528,12 @@ class Daemon:
             ticket = read_ticket(ticket_file)
         except (OSError, TicketParseError) as e:
             raise ValueError(f"ticket {ticket_id} could not be read: {e}") from e
+        _notify_orchestration_trace(
+            "dispatch-started",
+            ticket_id=ticket_id,
+            relay_command_seq=relay_command_seq,
+            relay_command_id=str(relay_command_id or "") if relay_command_id else None,
+        )
 
         sanitized = sanitize_identifier(ticket_id)
         branch = f"{self.branch_prefix}{sanitized}"
@@ -1496,6 +1616,12 @@ class Daemon:
                     **sizing,
                 )
                 self.runs.update(run_id, last_error=str(e), ended=True, exit_code=-1)
+                _notify_orchestration_trace(
+                    "run-failed",
+                    ticket_id=ticket_id,
+                    run_id=run_id,
+                    source="worker",
+                )
                 raise
 
             # Pre-existing attempts: bump attempt number for THIS ticket.
@@ -1510,6 +1636,13 @@ class Daemon:
                 attempt=attempt,
                 log_path=str(log_path),
                 **sizing,
+            )
+            _notify_orchestration_trace(
+                "dispatch-claimed",
+                ticket_id=ticket_id,
+                run_id=run_id,
+                relay_command_seq=relay_command_seq,
+                relay_command_id=str(relay_command_id or "") if relay_command_id else None,
             )
 
             workflow_path = self._resolve_workflow_for_repo(str(repo))
@@ -1579,6 +1712,10 @@ class Daemon:
             if dep["status"] == "backlog":
                 dep["status"] = "ready"
                 write_ticket(dep["_path"], dep)
+                _notify_orchestration_trace(
+                    "board-change",
+                    ticket_id=dep["id"],
+                )
             try:
                 self.dispatch(ticket_id=dep["id"], repo_path=str(repo), source="dependency-progression")
             except ValueError as e:
@@ -1599,6 +1736,10 @@ class Daemon:
             ticket["status"] = "ready"
             write_ticket(ticket["_path"], ticket)
             promoted.append(ticket["id"])
+            _notify_orchestration_trace(
+                "board-change",
+                ticket_id=ticket["id"],
+            )
         return promoted
 
     def sweep_ready_tickets(self, *, repo_path: str, trigger: str | None = None) -> dict:

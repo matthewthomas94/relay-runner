@@ -385,33 +385,17 @@ Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claim
   - The foreground session is the orchestrator; do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 
-### Step 2.5: Send working progress to the notch
+### Step 2.5: Send curated orchestration traces to the notch
 
-When you write a non-final progress update in the terminal during a long task, also mirror that exact short status to Relay Runner. These updates appear as the working-state notch label when no more specific compact activity label is active. Existing compact labels such as Listening, Response ready, worker state, bridge recovery, or ticket activity take priority over this stream.
+When a meaningful orchestration milestone happens, mirror a short public trace to Relay Runner through the bridge control path. Use this for ticket-created, dispatch-started, dispatch-claimed, run-running, run-succeeded, run-failed, and board-change events. Keep the message user-safe and bounded; do not include raw shell commands, raw tool output, hidden reasoning, transcript dumps, secrets, or unbounded metadata. Codex and Claude use the same trace kinds and public copy.
 
 ```bash
-python3 - <<'PY'
-import json
-import socket
-
-text = "YOUR_PROGRESS_UPDATE"
-if text.strip():
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        sock.sendto(
-            json.dumps({
-                "source": "bridge",
-                "state": "working",
-                "text": text.strip(),
-            }).encode(),
-            "/tmp/voice_state.sock",
-        )
-    except OSError:
-        pass
-    finally:
-        sock.close()
-PY
+printf '%s\n' '__TRACE__:{"kind":"ticket-created","ticket_id":"RR-123"}' > /tmp/voice_in.fifo
+printf '%s\n' '__TRACE__:{"kind":"dispatch-claimed","ticket_id":"RR-123","run_id":456}' > /tmp/voice_in.fifo
+printf '%s\n' '__TRACE__:{"kind":"run-succeeded","ticket_id":"RR-123","run_id":456}' > /tmp/voice_in.fifo
 ```
+
+These traces appear as the working-state notch label when no more specific compact activity label is active. Existing compact labels such as Listening, Response ready, worker state, bridge recovery, or ticket activity take priority over this stream.
 
 ### Step 3: Speak your response
 
@@ -712,33 +696,17 @@ Interpret the text:
   - The foreground session is the orchestrator; do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 
-Send working progress to the notch:
+Send curated orchestration traces to the notch:
 
-When you write a non-final progress update in the terminal during a long task, also mirror that exact short status to Relay Runner. These updates appear as the working-state notch label when no more specific compact activity label is active. Existing compact labels such as Listening, Response ready, worker state, bridge recovery, or ticket activity take priority over this stream.
+When a meaningful orchestration milestone happens, mirror a short public trace to Relay Runner through the bridge control path. Use this for ticket-created, dispatch-started, dispatch-claimed, run-running, run-succeeded, run-failed, and board-change events. Keep the message user-safe and bounded; do not include raw shell commands, raw tool output, hidden reasoning, transcript dumps, secrets, or unbounded metadata. Codex and Claude use the same trace kinds and public copy.
 
 ```bash
-python3 - <<'PY'
-import json
-import socket
-
-text = "YOUR_PROGRESS_UPDATE"
-if text.strip():
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        sock.sendto(
-            json.dumps({
-                "source": "bridge",
-                "state": "working",
-                "text": text.strip(),
-            }).encode(),
-            "/tmp/voice_state.sock",
-        )
-    except OSError:
-        pass
-    finally:
-        sock.close()
-PY
+printf '%s\n' '__TRACE__:{"kind":"ticket-created","ticket_id":"RR-123"}' > /tmp/voice_in.fifo
+printf '%s\n' '__TRACE__:{"kind":"dispatch-claimed","ticket_id":"RR-123","run_id":456}' > /tmp/voice_in.fifo
+printf '%s\n' '__TRACE__:{"kind":"run-succeeded","ticket_id":"RR-123","run_id":456}' > /tmp/voice_in.fifo
 ```
+
+These traces appear as the working-state notch label when no more specific compact activity label is active. Existing compact labels such as Listening, Response ready, worker state, bridge recovery, or ticket activity take priority over this stream.
 
 After your response, stop the heartbeat refresher and ensure the bridge session metadata remains intact. The Relay Runner app owns daemon recovery; if the daemon is missing here, preserve `/tmp/voice_bridge.cwd` and `/tmp/voice_bridge.provider`, wait briefly for the app watchdog, and skip TTS rather than deleting runtime context from the agent side:
 

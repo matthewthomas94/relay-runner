@@ -81,13 +81,13 @@ class CommandAction:
 
 def is_control_command(text: str) -> bool:
     value = (text or "").strip()
-    return value in CONTROL_COMMANDS or value.startswith("__STATUS__:")
+    return value in CONTROL_COMMANDS or value.startswith("__STATUS__:") or value.startswith("__TRACE__:")
 
 
 def classify_command(text: str) -> CommandAction:
     source = (text or "").strip()
     if is_control_command(source):
-        reason = CONTROL_COMMANDS.get(source, "status")
+        reason = CONTROL_COMMANDS.get(source, "trace" if source.startswith("__TRACE__:") else "status")
         return CommandAction(kind="control", source_text=source, reason=reason)
 
     if INLINE_RE.search(source):

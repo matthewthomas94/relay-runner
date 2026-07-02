@@ -31,6 +31,13 @@ class CommandActionsTests(unittest.TestCase):
                 self.assertEqual(action.reason, reason)
                 self.assertEqual(format_command_for_agent(action), command)
 
+    def test_trace_control_is_not_routed_as_ticket_work(self):
+        action = classify_command('__TRACE__:{"kind":"ticket-created","ticket_id":"RR-9"}')
+
+        self.assertEqual(action.kind, "control")
+        self.assertFalse(action.requires_ticket)
+        self.assertEqual(action.reason, "trace")
+
     def test_new_project_work_defers_visible_ticket_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
