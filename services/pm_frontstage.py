@@ -270,6 +270,12 @@ class DelegationRequest:
     command: RelayCommandMetadata
     run_id: int | None = None
     pm_controls_dispatch: bool = True
+    dependency_assumptions: tuple[str, ...] = ()
+    worker_model: str | None = None
+    worker_effort: str | None = None
+    worker_sizing_rationale: str | None = None
+    worker_provider_notes: str | None = None
+    dispatcher_context: str | None = None
 
     def __post_init__(self) -> None:
         if not str(self.ticket_id or "").strip():
@@ -279,12 +285,29 @@ class DelegationRequest:
         object.__setattr__(self, "ticket_id", str(self.ticket_id).upper())
         object.__setattr__(self, "repo_path", str(Path(self.repo_path).expanduser()))
         object.__setattr__(self, "summary", _public_message(self.summary))
+        object.__setattr__(
+            self,
+            "dependency_assumptions",
+            tuple(str(item).strip().upper() for item in self.dependency_assumptions if str(item).strip()),
+        )
+        for field in (
+            "worker_model",
+            "worker_effort",
+            "worker_sizing_rationale",
+            "worker_provider_notes",
+            "dispatcher_context",
+        ):
+            value = getattr(self, field)
+            if value is not None:
+                object.__setattr__(self, field, _public_message(value))
 
     def to_dispatch_payload(self) -> dict[str, Any]:
         payload = {
             "ticket_id": self.ticket_id,
             "repo_path": self.repo_path,
         }
+        if self.dispatcher_context:
+            payload["context"] = self.dispatcher_context
         payload.update(self.command.to_dispatch_fields())
         return payload
 
@@ -296,6 +319,18 @@ class DelegationRequest:
             "pm_controls_dispatch": self.pm_controls_dispatch,
             "dispatch_payload": self.to_dispatch_payload(),
         }
+        if self.dependency_assumptions:
+            data["dependency_assumptions"] = list(self.dependency_assumptions)
+        for field in (
+            "worker_model",
+            "worker_effort",
+            "worker_sizing_rationale",
+            "worker_provider_notes",
+            "dispatcher_context",
+        ):
+            value = getattr(self, field)
+            if value:
+                data[field] = value
         if self.run_id is not None:
             data["run_id"] = self.run_id
         return data

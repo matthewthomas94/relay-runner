@@ -400,6 +400,207 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertEqual(runs[0]["state"], "Failed")
             self.assertIn("missing worker sizing metadata", runs[0]["last_error"])
 
+    def test_orchestrator_actions_create_ticket_bump_config_and_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            self.git(repo, "add", ".orchestrator/config.toml")
+            self.git(repo, "commit", "-m", "add config")
+            daemon = self.make_daemon(root, provider="codex")
+            actions = [
+                {
+                    "kind": "create_ticket",
+                    "title": "Implement refined login retry fix",
+                    "description": "Add bounded retry handling for login failures.",
+                    "acceptance_criteria": [
+                        "Login retries stop after the configured limit.",
+                        "The existing login tests cover the retry failure path.",
+                    ],
+                    "priority": "high",
+                    "worker_model": "strong",
+                    "worker_effort": "high",
+                    "worker_sizing_rationale": "Touches auth flow and test coverage.",
+                    "worker_provider_notes": "Codex uses model_reasoning_effort; Claude uses --effort.",
+                },
+                {
+                    "kind": "request_worker",
+                    "ticket_id": "RR-1",
+                    "dependency_assumptions": [],
+                    "worker_model": "strong",
+                    "worker_effort": "high",
+                    "dispatcher_context": "Use only the refined ticket content.",
+                },
+            ]
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.apply_orchestrator_actions(
+                    repo_path=str(repo),
+                    actions=actions,
+                    request_id="req-1",
+                )
+
+            create_worktree.assert_called_once()
+            start_worker.assert_called_once()
+            self.assertEqual((repo / ".orchestrator" / "config.toml").read_text(), 'prefix = "RR"\nnext_id = 2\n')
+            ticket = read_ticket(repo / ".orchestrator/RR-1.md")
+            self.assertEqual(ticket["status"], "ready")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "strong")
+            self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
+            self.assertIn("Add bounded retry handling", ticket["body"])
+            self.assertNotIn("dispatch the refined plan", ticket["body"])
+            self.assertEqual(result["dispatch_requests"][0]["worker_model"], "strong")
+            self.assertEqual(result["dispatches"][0]["ticket_id"], "RR-1")
+            self.assertEqual(result["dispatches"][0]["already_active"], False)
+            self.assertEqual(result["skipped"], [])
+            self.assertEqual(daemon.runs.list()[0]["worker_effort"], "high")
+
+    def test_orchestrator_actions_explicit_ticket_id_advances_config_counter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            daemon = self.make_daemon(root, provider="codex")
+
+            daemon.apply_orchestrator_actions(repo_path=str(repo), actions=[{
+                "kind": "create_ticket",
+                "ticket_id": "RR-4",
+                "title": "Explicit ticket",
+                "description": "Create a specific ticket id.",
+                "acceptance_criteria": ["The counter advances past the explicit id."],
+                "worker_model": "fast",
+                "worker_effort": "low",
+                "worker_sizing_rationale": "Small explicit ticket.",
+                "worker_provider_notes": "Codex uses model_reasoning_effort; Claude uses --effort.",
+            }])
+
+            self.assertTrue((repo / ".orchestrator/RR-4.md").exists())
+            self.assertEqual((repo / ".orchestrator/config.toml").read_text(), 'prefix = "RR"\nnext_id = 5\n')
+
+    def test_orchestrator_actions_multi_ticket_fanout_respects_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 3\n')
+            self.git(repo, "add", ".orchestrator/config.toml")
+            self.git(repo, "commit", "-m", "add config")
+            daemon = self.make_daemon(root, provider="claude")
+            base_action = {
+                "priority": "high",
+                "worker_model": "balanced",
+                "worker_effort": "xhigh",
+                "worker_sizing_rationale": "Provider-neutral fanout with explicit sizing.",
+                "worker_provider_notes": "Codex uses model_reasoning_effort; Claude uses --effort.",
+            }
+            actions = [
+                {
+                    **base_action,
+                    "kind": "create_ticket",
+                    "ticket_id": "RR-1",
+                    "title": "Prepare protocol",
+                    "description": "Add the protocol foundation.",
+                    "acceptance_criteria": ["Protocol tests pass."],
+                },
+                {
+                    **base_action,
+                    "kind": "create_ticket",
+                    "ticket_id": "RR-2",
+                    "title": "Use protocol",
+                    "description": "Use the protocol after RR-1 lands.",
+                    "acceptance_criteria": ["Dependent tests pass."],
+                    "depends_on": ["RR-1"],
+                },
+                {
+                    "kind": "request_worker",
+                    "ticket_id": "RR-1",
+                    "dependency_assumptions": [],
+                    "worker_model": "balanced",
+                    "worker_effort": "xhigh",
+                },
+                {
+                    "kind": "request_worker",
+                    "ticket_id": "RR-2",
+                    "dependency_assumptions": ["RR-1"],
+                    "worker_model": "balanced",
+                    "worker_effort": "xhigh",
+                },
+            ]
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.apply_orchestrator_actions(
+                    repo_path=str(repo),
+                    actions=actions,
+                )
+
+            create_worktree.assert_called_once()
+            start_worker.assert_called_once()
+            self.assertEqual(result["dispatches"][0]["ticket_id"], "RR-1")
+            self.assertEqual(result["skipped"], [{"ticket_id": "RR-2", "reason": "dependencies_not_done"}])
+            self.assertEqual(read_ticket(repo / ".orchestrator/RR-1.md")["status"], "ready")
+            self.assertEqual(read_ticket(repo / ".orchestrator/RR-2.md")["status"], "ready")
+            self.assertEqual(daemon.runs.list()[0]["provider_key"], "claude")
+            self.assertEqual(daemon.runs.list()[0]["worker_effort"], "xhigh")
+
+    def test_orchestrator_actions_reject_duplicate_request_id_without_rewriting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            daemon = self.make_daemon(root, provider="codex")
+            actions = [{
+                "kind": "create_ticket",
+                "title": "One refined ticket",
+                "description": "Structured description.",
+                "acceptance_criteria": ["The ticket is written once."],
+                "worker_model": "fast",
+                "worker_effort": "low",
+                "worker_sizing_rationale": "Small ticket.",
+                "worker_provider_notes": "Codex uses model_reasoning_effort; Claude uses --effort.",
+            }]
+
+            daemon.apply_orchestrator_actions(repo_path=str(repo), actions=actions, request_id="dup-1")
+
+            with self.assertRaisesRegex(ValueError, "duplicate orchestrator action request"):
+                daemon.apply_orchestrator_actions(repo_path=str(repo), actions=actions, request_id="dup-1")
+
+            self.assertTrue((repo / ".orchestrator/RR-1.md").exists())
+            self.assertFalse((repo / ".orchestrator/RR-2.md").exists())
+
+    def test_orchestrator_actions_reject_stale_relay_command_before_ticket_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            daemon = self.make_daemon(root, provider="codex")
+            actions = [{
+                "kind": "create_ticket",
+                "title": "Stale ticket",
+                "description": "This must not be written.",
+                "acceptance_criteria": ["No ticket file is created."],
+                "worker_model": "fast",
+                "worker_effort": "low",
+                "worker_sizing_rationale": "Small ticket.",
+                "worker_provider_notes": "Codex uses model_reasoning_effort; Claude uses --effort.",
+            }]
+
+            with self.assertRaisesRegex(ValueError, "stale Relay command"):
+                daemon.apply_orchestrator_actions(
+                    repo_path=str(repo),
+                    actions=actions,
+                    relay_command_seq=1,
+                    relay_command_id="old",
+                )
+
+            self.assertFalse((repo / ".orchestrator/RR-1.md").exists())
+            self.assertEqual((repo / ".orchestrator/config.toml").read_text(), 'prefix = "RR"\nnext_id = 1\n')
+
     def test_exit_zero_noop_is_not_successful_ticket_completion(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"

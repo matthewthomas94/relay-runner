@@ -146,6 +146,34 @@ class PMFrontstageTests(unittest.TestCase):
         })
         self.assertEqual(result.status_events[-1].ticket_id, "RR-7")
 
+    def test_delegation_request_carries_worker_creation_metadata(self):
+        command = RelayCommandMetadata.from_dict(
+            relay_command(9, "cmd-9"),
+            source_text="dispatch the refined plan",
+        )
+
+        request = DelegationRequest(
+            ticket_id="rr-9",
+            repo_path="/tmp/repo",
+            summary="Dispatch refined ticket RR-9",
+            command=command,
+            dependency_assumptions=("rr-8",),
+            worker_model="strong",
+            worker_effort="high",
+            worker_sizing_rationale="Cross-module worker request.",
+            worker_provider_notes="Codex uses model_reasoning_effort; Claude uses --effort.",
+            dispatcher_context="Use the refined ticket only.",
+        )
+
+        payload = request.to_dict()
+        self.assertEqual(payload["ticket_id"], "RR-9")
+        self.assertEqual(payload["dependency_assumptions"], ["RR-8"])
+        self.assertEqual(payload["worker_model"], "strong")
+        self.assertEqual(payload["worker_effort"], "high")
+        self.assertEqual(payload["dispatch_payload"]["context"], "Use the refined ticket only.")
+        self.assertEqual(payload["dispatch_payload"]["relay_command_seq"], 9)
+        self.assertNotIn("source_text", payload["dispatch_payload"])
+
     def test_default_planner_exposes_all_outcome_shapes(self):
         inline = PMFrontstagePrototype().handle_voice_command(
             "fix it inline",

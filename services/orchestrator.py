@@ -89,6 +89,17 @@ WORKER_MODEL_TIERS = {
 }
 CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
+ORCHESTRATOR_ACTION_KINDS = frozenset({
+    "create_ticket",
+    "edit_ticket",
+    "update_dependencies",
+    "request_worker",
+})
+TICKET_CONFIG_PREFIX_RE = re.compile(
+    r'^\s*prefix\s*=\s*["\']?([A-Za-z][A-Za-z0-9]*)["\']?\s*$',
+    re.MULTILINE,
+)
+TICKET_CONFIG_NEXT_ID_RE = re.compile(r"^(\s*next_id\s*=\s*)(\d+)(\s*)$", re.MULTILINE)
 
 
 def _notify_state(state: str, **kwargs: Any) -> None:
@@ -435,6 +446,158 @@ def apply_default_worker_sizing(
         ticket["_raw_fields"] = raw
     raw.update(defaults)
     return True
+
+
+def _clean_required_text(value: Any, field: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        raise ValueError(f"{field} is required")
+    return text
+
+
+def _clean_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text or None
+
+
+def _clean_markdown(value: Any, field: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field} is required")
+    return text
+
+
+def _string_list(value: Any, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list")
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _ticket_id_list(value: Any, field: str) -> list[str]:
+    return [item.upper() for item in _string_list(value, field)]
+
+
+def _ticket_config(config_path: Path) -> tuple[str, int, str]:
+    try:
+        text = config_path.read_text()
+    except OSError as e:
+        raise ValueError(f"could not read {config_path}: {e}") from e
+    prefix_match = TICKET_CONFIG_PREFIX_RE.search(text)
+    next_match = TICKET_CONFIG_NEXT_ID_RE.search(text)
+    if not prefix_match or not next_match:
+        raise ValueError("invalid .orchestrator/config.toml: expected prefix and next_id")
+    return prefix_match.group(1).upper(), int(next_match.group(2)), text
+
+
+def _write_ticket_config_next_id(config_path: Path, config_text: str, next_id: int) -> None:
+    updated = TICKET_CONFIG_NEXT_ID_RE.sub(
+        lambda match: f"{match.group(1)}{next_id}{match.group(3)}",
+        config_text,
+        count=1,
+    )
+    if not updated.endswith("\n"):
+        updated += "\n"
+    config_path.write_text(updated)
+
+
+def _mint_ticket_id(repo: Path) -> str:
+    orch_dir = repo / ".orchestrator"
+    prefix, next_id, config_text = _ticket_config(orch_dir / "config.toml")
+    ticket_number = next_id
+    while (orch_dir / f"{prefix}-{ticket_number}.md").exists():
+        ticket_number += 1
+    _write_ticket_config_next_id(orch_dir / "config.toml", config_text, ticket_number + 1)
+    return f"{prefix}-{ticket_number}"
+
+
+def _advance_ticket_config_past(repo: Path, ticket_id: str) -> None:
+    orch_dir = repo / ".orchestrator"
+    prefix, next_id, config_text = _ticket_config(orch_dir / "config.toml")
+    match = re.fullmatch(rf"{re.escape(prefix)}-(\d+)", ticket_id.upper())
+    if match is None:
+        return
+    ticket_number = int(match.group(1))
+    if ticket_number >= next_id:
+        _write_ticket_config_next_id(orch_dir / "config.toml", config_text, ticket_number + 1)
+
+
+def _acceptance_criteria_lines(value: Any) -> list[str]:
+    criteria = _string_list(value, "acceptance_criteria")
+    if not criteria:
+        raise ValueError("acceptance_criteria is required")
+    return criteria
+
+
+def _structured_ticket_body(description: str, acceptance_criteria: list[str]) -> str:
+    checks = "\n".join(f"- [ ] {item}" for item in acceptance_criteria)
+    return f"## Description\n\n{description}\n\n## Acceptance criteria\n\n{checks}\n"
+
+
+def _action_worker_sizing(action: dict[str, Any]) -> dict[str, str]:
+    sizing = {
+        field: _clean_required_text(action.get(field), field)
+        for field in WORKER_SIZING_FIELDS
+    }
+    effort = sizing["worker_effort"].lower()
+    if effort not in CLAUDE_WORKER_EFFORTS:
+        raise ValueError(f"invalid worker_effort {sizing['worker_effort']!r}")
+    sizing["worker_effort"] = effort
+    return sizing
+
+
+def _apply_ticket_action_fields(ticket: dict[str, Any], action: dict[str, Any]) -> None:
+    if "title" in action:
+        ticket["title"] = _clean_required_text(action.get("title"), "title")
+    if "priority" in action:
+        priority = str(action.get("priority") or "").strip().lower()
+        if priority not in ("urgent", "high", "medium", "low"):
+            raise ValueError(f"invalid priority: {priority!r}")
+        ticket["priority"] = priority
+    if "depends_on" in action:
+        ticket["depends_on"] = _ticket_id_list(action.get("depends_on"), "depends_on")
+    if "description" in action or "acceptance_criteria" in action:
+        description = _clean_markdown(
+            action.get("description") if "description" in action else _body_section(ticket, "Description"),
+            "description",
+        )
+        criteria = (
+            _acceptance_criteria_lines(action.get("acceptance_criteria"))
+            if "acceptance_criteria" in action
+            else _body_acceptance_criteria(ticket)
+        )
+        ticket["body"] = _structured_ticket_body(description, criteria)
+    raw = ticket.setdefault("_raw_fields", {})
+    if not isinstance(raw, dict):
+        raw = {}
+        ticket["_raw_fields"] = raw
+    if any(field in action for field in WORKER_SIZING_FIELDS):
+        for field, value in _action_worker_sizing(action).items():
+            raw[field] = value
+
+
+def _body_section(ticket: dict[str, Any], heading: str) -> str:
+    body = str(ticket.get("body") or "")
+    pattern = re.compile(rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+    match = pattern.search(body)
+    return match.group(1).strip() if match else ""
+
+
+def _body_acceptance_criteria(ticket: dict[str, Any]) -> list[str]:
+    section = _body_section(ticket, "Acceptance criteria")
+    criteria: list[str] = []
+    for line in section.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- [ ] "):
+            criteria.append(stripped[6:].strip())
+        elif stripped.startswith("- [x] ") or stripped.startswith("- [X] "):
+            criteria.append(stripped[6:].strip())
+    if not criteria:
+        raise ValueError("acceptance_criteria is required")
+    return criteria
 
 
 def _relay_command_current(relay_command_seq: int | str | None, relay_command_id: str | None) -> bool:
@@ -1811,6 +1974,8 @@ class Daemon:
         # MVP: single concurrency. Held during the dispatch claim → spawn window
         # (release immediately after spawn — the worker runs in its own thread).
         self._dispatch_lock = threading.Lock()
+        self._ticket_authoring_lock = threading.Lock()
+        self._orchestrator_action_request_ids: set[str] = set()
         self._workers: dict[int, Worker] = {}
         self._workers_lock = threading.Lock()
 
@@ -2135,6 +2300,10 @@ class Daemon:
         predecessor done, then use the same provider-neutral dispatch chokepoint
         as manually queued work.
         """
+        with self._authoring_mutex():
+            self._progress_dependents_locked(repo_path=repo_path, finished_ticket_id=finished_ticket_id)
+
+    def _progress_dependents_locked(self, *, repo_path: str, finished_ticket_id: str) -> None:
         repo = Path(repo_path)
         all_tickets = scan_repo(repo)
         by_id = {t["id"]: t for t in all_tickets}
@@ -2195,6 +2364,10 @@ class Daemon:
         if not repo.is_dir() or not (repo / ".git").exists():
             raise ValueError(f"repo_path {repo} is not a git repository")
 
+        with self._authoring_mutex():
+            return self._sweep_ready_tickets_locked(repo=repo, trigger=trigger)
+
+    def _sweep_ready_tickets_locked(self, *, repo: Path, trigger: str | None = None) -> dict:
         promoted = self._promote_unblocked_dependents(repo_path=str(repo))
         all_tickets = scan_repo(repo)
         dispatched: list[dict[str, Any]] = []
@@ -2414,6 +2587,210 @@ class Daemon:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         return self.orchestrator_sessions.list(repo_path=repo_path, limit=limit)
+
+    def _authoring_mutex(self) -> threading.Lock:
+        lock = getattr(self, "_ticket_authoring_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._ticket_authoring_lock = lock
+        return lock
+
+    def _action_request_ids(self) -> set[str]:
+        seen = getattr(self, "_orchestrator_action_request_ids", None)
+        if seen is None:
+            seen = set()
+            self._orchestrator_action_request_ids = seen
+        return seen
+
+    def apply_orchestrator_actions(
+        self,
+        *,
+        repo_path: str,
+        actions: list[dict[str, Any]],
+        request_id: str | None = None,
+        relay_command_seq: int | str | None = None,
+        relay_command_id: str | None = None,
+    ) -> dict:
+        if not repo_path:
+            raise ValueError("repo_path is required")
+        if not isinstance(actions, list) or not actions:
+            raise ValueError("actions must be a non-empty list")
+        _validate_relay_command(relay_command_seq, relay_command_id)
+
+        repo = Path(repo_path).expanduser().resolve()
+        orch_dir = repo / ".orchestrator"
+        if not repo.is_dir() or not (repo / ".git").exists():
+            raise ValueError(f"repo_path {repo} is not a git repository")
+        if not orch_dir.is_dir():
+            raise ValueError(f"repo_path {repo} has no .orchestrator directory")
+
+        action_request_id = _clean_optional_text(request_id)
+        with self._authoring_mutex():
+            seen_request_ids = self._action_request_ids()
+            if action_request_id and action_request_id in seen_request_ids:
+                raise ValueError(f"duplicate orchestrator action request: {action_request_id}")
+
+            tickets_written: list[dict[str, Any]] = []
+            dispatch_requests: list[dict[str, Any]] = []
+            dispatches: list[dict[str, Any]] = []
+            skipped: list[dict[str, Any]] = []
+
+            for raw_action in actions:
+                if not isinstance(raw_action, dict):
+                    raise ValueError("each action must be an object")
+                kind = str(raw_action.get("kind") or "").strip().lower()
+                if kind not in ORCHESTRATOR_ACTION_KINDS:
+                    raise ValueError(f"invalid orchestrator action kind: {kind!r}")
+
+                if kind == "create_ticket":
+                    ticket_id = self._create_orchestrator_ticket(repo, raw_action)
+                    tickets_written.append({"ticket_id": ticket_id, "action": kind})
+                elif kind in {"edit_ticket", "update_dependencies"}:
+                    ticket_id = self._edit_orchestrator_ticket(repo, raw_action, dependencies_only=(kind == "update_dependencies"))
+                    tickets_written.append({"ticket_id": ticket_id, "action": kind})
+                elif kind == "request_worker":
+                    dispatch_requests.append(self._worker_creation_request(repo, raw_action))
+
+            all_tickets = scan_repo(repo)
+            for request in dispatch_requests:
+                ticket_id = request["ticket_id"]
+                ticket_path = orch_dir / f"{ticket_id}.md"
+                ticket = read_ticket(ticket_path)
+                if ticket["canceled"]:
+                    skipped.append({"ticket_id": ticket_id, "reason": "canceled"})
+                    continue
+                if ticket.get("draft"):
+                    skipped.append({"ticket_id": ticket_id, "reason": "draft"})
+                    continue
+                if ticket["status"] not in ("backlog", "ready"):
+                    skipped.append({"ticket_id": ticket_id, "reason": f"status:{ticket['status']}"})
+                    continue
+                if ticket["status"] == "backlog":
+                    ticket["status"] = "ready"
+                    write_ticket(ticket_path, ticket)
+                    tickets_written.append({"ticket_id": ticket_id, "action": "mark_ready"})
+                    all_tickets = scan_repo(repo)
+                if not all_deps_done(ticket, all_tickets):
+                    skipped.append({"ticket_id": ticket_id, "reason": "dependencies_not_done"})
+                    continue
+
+                result = self.dispatch(
+                    ticket_id=ticket_id,
+                    repo_path=str(repo),
+                    context=request.get("dispatcher_context"),
+                    source="orchestrator-action",
+                    relay_command_seq=relay_command_seq,
+                    relay_command_id=relay_command_id,
+                )
+                run = result.get("run") or {}
+                dispatches.append({
+                    "ticket_id": ticket_id,
+                    "run_id": run.get("id"),
+                    "already_active": bool(result.get("already_active")),
+                })
+
+            if action_request_id:
+                seen_request_ids.add(action_request_id)
+
+            return {
+                "repo_path": str(repo),
+                "request_id": action_request_id,
+                "tickets_written": tickets_written,
+                "dispatch_requests": dispatch_requests,
+                "dispatches": dispatches,
+                "skipped": skipped,
+            }
+
+    def _create_orchestrator_ticket(self, repo: Path, action: dict[str, Any]) -> str:
+        ticket_id = str(action.get("ticket_id") or "").strip().upper()
+        title = _clean_required_text(action.get("title"), "title")
+        priority = str(action.get("priority") or "medium").strip().lower()
+        if priority not in ("urgent", "high", "medium", "low"):
+            raise ValueError(f"invalid priority: {priority!r}")
+        description = _clean_markdown(action.get("description"), "description")
+        criteria = _acceptance_criteria_lines(action.get("acceptance_criteria"))
+        sizing = _action_worker_sizing(action)
+        depends_on = _ticket_id_list(action.get("depends_on"), "depends_on")
+        if not ticket_id:
+            ticket_id = _mint_ticket_id(repo)
+        ticket_path = repo / ".orchestrator" / f"{ticket_id}.md"
+        if ticket_path.exists():
+            raise ValueError(f"ticket {ticket_id} already exists")
+        _advance_ticket_config_past(repo, ticket_id)
+        match = re.search(r"-(\d+)$", ticket_id)
+        order = int(match.group(1)) if match else 0
+        ticket = {
+            "id": ticket_id,
+            "title": title,
+            "status": "backlog",
+            "priority": priority,
+            "depends_on": depends_on,
+            "run_id": None,
+            "canceled": False,
+            "order": order,
+            "body": _structured_ticket_body(description, criteria),
+            "_raw_fields": sizing,
+        }
+        write_ticket(ticket_path, ticket)
+        _notify_orchestration_trace("ticket-created", ticket_id=ticket_id)
+        return ticket_id
+
+    def _edit_orchestrator_ticket(
+        self,
+        repo: Path,
+        action: dict[str, Any],
+        *,
+        dependencies_only: bool,
+    ) -> str:
+        ticket_id = _clean_required_text(action.get("ticket_id"), "ticket_id").upper()
+        ticket_path = repo / ".orchestrator" / f"{ticket_id}.md"
+        if not ticket_path.is_file():
+            raise ValueError(f"ticket {ticket_id} not found")
+        ticket = read_ticket(ticket_path)
+        if dependencies_only:
+            ticket["depends_on"] = _ticket_id_list(action.get("depends_on"), "depends_on")
+        else:
+            _apply_ticket_action_fields(ticket, action)
+        if ticket["status"] == "ready":
+            ticket["status"] = "backlog"
+        write_ticket(ticket_path, ticket)
+        _notify_orchestration_trace("board-change", ticket_id=ticket_id)
+        return ticket_id
+
+    def _worker_creation_request(self, repo: Path, action: dict[str, Any]) -> dict[str, Any]:
+        ticket_id = _clean_required_text(action.get("ticket_id"), "ticket_id").upper()
+        ticket_path = repo / ".orchestrator" / f"{ticket_id}.md"
+        if not ticket_path.is_file():
+            raise ValueError(f"ticket {ticket_id} not found")
+        ticket = read_ticket(ticket_path)
+        assumptions = _ticket_id_list(
+            action.get("dependency_assumptions", ticket["depends_on"]),
+            "dependency_assumptions",
+        )
+        if assumptions != ticket["depends_on"]:
+            raise ValueError(
+                f"worker request for {ticket_id} has dependency_assumptions "
+                f"{assumptions}, but ticket depends_on is {ticket['depends_on']}"
+            )
+        for field in WORKER_SIZING_FIELDS:
+            requested = _clean_optional_text(action.get(field))
+            actual = _required_sizing_value(ticket, field)
+            if requested and requested != actual:
+                raise ValueError(
+                    f"worker request for {ticket_id} has {field}={requested!r}, "
+                    f"but ticket has {actual!r}"
+                )
+        sizing = resolve_worker_sizing(ticket, self.agent_kind, general={})
+        return {
+            "ticket_id": ticket_id,
+            "repo_path": str(repo),
+            "dependency_assumptions": assumptions,
+            "worker_model": sizing["worker_model"],
+            "worker_effort": sizing["worker_effort"],
+            "worker_sizing_rationale": sizing["worker_sizing_rationale"],
+            "worker_provider_notes": sizing["worker_provider_notes"],
+            "dispatcher_context": _clean_optional_text(action.get("dispatcher_context")),
+        }
 
     def program_status(
         self,
@@ -2649,6 +3026,17 @@ class Handler(BaseHTTPRequestHandler):
                     source=body.get("source") or "session_capture",
                 )
                 return 201, result
+
+            if method == "POST" and segments == ["v1", "orchestrator-actions"]:
+                body = _read_body(self)
+                result = self.daemon.apply_orchestrator_actions(
+                    repo_path=body.get("repo_path", ""),
+                    actions=body.get("actions") or [],
+                    request_id=body.get("request_id"),
+                    relay_command_seq=body.get("relay_command_seq"),
+                    relay_command_id=body.get("relay_command_id"),
+                )
+                return 202, result
 
             if method == "POST" and segments == ["v1", "runs"]:
                 body = _read_body(self)
