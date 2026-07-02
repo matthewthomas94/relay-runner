@@ -288,7 +288,14 @@ final class NotchStatusPlacementTests: XCTestCase {
                 newWorkingGlyphHovered: false
             )
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
+                status: .working,
+                oldWorkingGlyphHovered: true,
+                newWorkingGlyphHovered: true
+            )
+        )
+        XCTAssertFalse(
             NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
                 status: .playing,
                 oldWorkingGlyphHovered: false,
@@ -393,6 +400,7 @@ final class NotchStatusPlacementTests: XCTestCase {
 
     func testWorkingProgressStreamUpdatesDoNotRestartHoverDwell() {
         let hoverStartedAt: CFTimeInterval = 10
+        let progress = "Reading source files while preparing the worker trace."
 
         XCTAssertEqual(
             NotchActivityLabelRenderPolicy.hoverStartTime(
@@ -430,6 +438,42 @@ final class NotchStatusPlacementTests: XCTestCase {
             textWidth: 500
         )
         XCTAssertGreaterThan(offsetAfterStreamUpdate, offsetBeforeStreamUpdate)
+
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldAnimateContentPlacementUpdate(
+                status: .working,
+                workingGlyphHovered: true,
+                workingProgressLabel: progress
+            )
+        )
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldAnimateContentPlacementUpdate(
+                status: .working,
+                workingGlyphHovered: true,
+                workingProgressLabel: "  \(progress)  "
+            )
+        )
+        XCTAssertTrue(
+            NotchActivityLabelRenderPolicy.shouldAnimateContentPlacementUpdate(
+                status: .working,
+                workingGlyphHovered: false,
+                workingProgressLabel: progress
+            )
+        )
+        XCTAssertTrue(
+            NotchActivityLabelRenderPolicy.shouldAnimateContentPlacementUpdate(
+                status: .working,
+                workingGlyphHovered: true,
+                workingProgressLabel: nil
+            )
+        )
+        XCTAssertTrue(
+            NotchActivityLabelRenderPolicy.shouldAnimateContentPlacementUpdate(
+                status: .listening,
+                workingGlyphHovered: true,
+                workingProgressLabel: progress
+            )
+        )
     }
 
     func testNotchSessionStatusMapsUserFacingStates() {
