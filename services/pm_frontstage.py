@@ -33,9 +33,14 @@ TRACE_KINDS = frozenset({
     "board-change",
 })
 TRACE_MESSAGE_MAX_LEN = 96
+UPDATE_MODE_MESSAGE_MAX_LEN = 120
 _COMMAND_LIKE_TRACE_RE = re.compile(
     r"(`|\$\(|&&|\|\||\s;\s|"
     r"\b(?:bash|cat|curl|git|grep|npm|pnpm|python|python3|sh|swift|xcodebuild|yarn|zsh)\s+)",
+    re.IGNORECASE,
+)
+_PRIVATE_ACTIVITY_RE = re.compile(
+    r"(transcript|source_text|tool\s+log|reasoning|scratchpad|prompt)",
     re.IGNORECASE,
 )
 
@@ -53,6 +58,7 @@ BackstagePlanner = Callable[
 CurrentCommandReader = Callable[[], Union[dict[str, Any], None]]
 StatusEmitter = Callable[["PMStatusEvent"], None]
 AcknowledgementBuilder = Callable[[str, "RelayCommandMetadata"], str]
+UpdateStatusReader = Callable[[], "PMUpdateSnapshot"]
 
 
 def _public_message(value: str) -> str:
@@ -68,11 +74,24 @@ def _clip_public_message(message: str, limit: int = TRACE_MESSAGE_MAX_LEN) -> st
     return message[: max(0, limit - 3)].rstrip() + "..."
 
 
+def _clip_update_message(message: str) -> str:
+    return _clip_public_message(message, limit=UPDATE_MODE_MESSAGE_MAX_LEN)
+
+
 def _public_trace_message(value: str) -> str:
     message = _public_message(value)
     if _COMMAND_LIKE_TRACE_RE.search(message):
         raise ValueError("trace messages must not contain raw commands or shell snippets")
     return _clip_public_message(message)
+
+
+def _public_update_activity(value: str | None) -> str | None:
+    if value is None:
+        return None
+    message = _public_message(value)
+    if _COMMAND_LIKE_TRACE_RE.search(message) or _PRIVATE_ACTIVITY_RE.search(message):
+        return None
+    return _clip_update_message(message)
 
 
 def _coerce_seq(value: Any) -> int:
@@ -424,6 +443,299 @@ class PMRunResult:
     status_events: tuple[PMStatusEvent, ...]
     outcome: BackstageOutcome | None
     stale: bool = False
+
+
+@dataclass(frozen=True)
+class PMUpdateRun:
+    ticket_id: str | None
+    run_id: int | None
+    state: str
+    activity: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.ticket_id:
+            object.__setattr__(self, "ticket_id", str(self.ticket_id).upper())
+        object.__setattr__(self, "state", _public_message(self.state))
+        object.__setattr__(self, "activity", _public_update_activity(self.activity))
+
+
+@dataclass(frozen=True)
+class PMUpdateSnapshot:
+    session_state: str | None = None
+    active_runs: tuple[PMUpdateRun, ...] = ()
+    blocked_tickets: int = 0
+    awaiting_merge: int = 0
+    stale_runs: int = 0
+    open_tickets: int = 0
+
+    def signature(self, state: str) -> tuple[Any, ...]:
+        return (
+            state,
+            tuple(
+                (
+                    run.ticket_id,
+                    run.run_id,
+                    run.state,
+                    run.activity,
+                )
+                for run in self.active_runs
+            ),
+            self.blocked_tickets,
+            self.awaiting_merge,
+            self.stale_runs,
+            self.open_tickets,
+            self.session_state,
+        )
+
+
+@dataclass(frozen=True)
+class PMUpdatePollResult:
+    continue_running: bool
+    state: str
+    emitted_event: PMStatusEvent | None = None
+    stale: bool = False
+
+
+def _provider_key(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    return "claude" if "claude" in text else "codex"
+
+
+def _normalize_path_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return str(Path(raw).expanduser().resolve())
+
+
+def _select_orchestrator_session(
+    sessions_payload: dict[str, Any] | None,
+    *,
+    repo_path: str,
+    provider: str | None = None,
+    session_id: int | None = None,
+) -> dict[str, Any] | None:
+    sessions = []
+    if isinstance(sessions_payload, dict):
+        raw_sessions = sessions_payload.get("orchestrator_sessions", sessions_payload.get("sessions", []))
+        if isinstance(raw_sessions, list):
+            sessions = [row for row in raw_sessions if isinstance(row, dict)]
+    repo = _normalize_path_text(repo_path)
+    provider_key = _provider_key(provider)
+    for row in sessions:
+        if session_id is not None and int(row.get("id") or 0) == session_id:
+            return row
+    for row in sessions:
+        if _normalize_path_text(row.get("repo_path")) != repo:
+            continue
+        if provider_key and _provider_key(row.get("provider_key")) != provider_key:
+            continue
+        return row
+    return None
+
+
+def _summary_item_for_repo(
+    program_payload: dict[str, Any] | None,
+    *,
+    repo_path: str,
+) -> dict[str, Any]:
+    if not isinstance(program_payload, dict):
+        return {}
+    repo = _normalize_path_text(repo_path)
+    items = program_payload.get("items")
+    if not isinstance(items, list):
+        return {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        project = item.get("project")
+        if isinstance(project, dict) and _normalize_path_text(project.get("path")) == repo:
+            return item
+    return {}
+
+
+def build_pm_update_snapshot(
+    *,
+    repo_path: str,
+    sessions_payload: dict[str, Any] | None = None,
+    runs_payload: dict[str, Any] | None = None,
+    program_payload: dict[str, Any] | None = None,
+    provider: str | None = None,
+    session_id: int | None = None,
+) -> PMUpdateSnapshot:
+    repo = _normalize_path_text(repo_path)
+    provider_key = _provider_key(provider)
+    session = _select_orchestrator_session(
+        sessions_payload,
+        repo_path=repo,
+        provider=provider_key,
+        session_id=session_id,
+    )
+    raw_runs = []
+    if isinstance(runs_payload, dict):
+        payload_runs = runs_payload.get("runs")
+        if isinstance(payload_runs, list):
+            raw_runs = [row for row in payload_runs if isinstance(row, dict)]
+
+    active_runs: list[PMUpdateRun] = []
+    for row in raw_runs:
+        if _normalize_path_text(row.get("repo_path")) != repo:
+            continue
+        if provider_key and _provider_key(row.get("provider_key")) != provider_key:
+            continue
+        state = str(row.get("state") or "").strip()
+        if state not in {"Claimed", "Running"}:
+            continue
+        active_runs.append(PMUpdateRun(
+            ticket_id=str(row.get("ticket_id") or "").strip() or None,
+            run_id=int(row["id"]) if row.get("id") is not None else None,
+            state=state,
+            activity=str(row.get("activity") or "").strip() or None,
+        ))
+
+    summary = _summary_item_for_repo(program_payload, repo_path=repo)
+    return PMUpdateSnapshot(
+        session_state=str((session or {}).get("state") or "").strip().lower() or None,
+        active_runs=tuple(active_runs[:3]),
+        blocked_tickets=int(summary.get("blocked") or 0),
+        awaiting_merge=int(summary.get("awaiting_merge") or 0),
+        stale_runs=int(summary.get("stale_runs") or 0),
+        open_tickets=int(summary.get("open_tickets") or 0),
+    )
+
+
+def _active_run_message(active_runs: tuple[PMUpdateRun, ...]) -> str:
+    parts = []
+    for run in active_runs[:2]:
+        subject = run.ticket_id or "Worker"
+        if run.run_id is not None:
+            subject += f" run {run.run_id}"
+        detail = run.activity or ("Starting work" if run.state == "Claimed" else "Working")
+        parts.append(f"{subject}: {detail}")
+    if len(active_runs) == 1:
+        return _clip_update_message(parts[0])
+    remaining = len(active_runs) - len(parts)
+    prefix = f"{len(active_runs)} workers active"
+    if remaining > 0:
+        prefix += f" (+{remaining} more)"
+    return _clip_update_message(prefix + ". " + "; ".join(parts))
+
+
+def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
+    word = singular if count == 1 else (plural or singular + "s")
+    return f"{count} {word}"
+
+
+def summarize_pm_update_snapshot(
+    snapshot: PMUpdateSnapshot,
+    *,
+    startup_grace_active: bool,
+    saw_progress: bool,
+) -> tuple[str, str, str]:
+    session_state = snapshot.session_state or "idle"
+    if session_state in {"failed", "stopped", "stale"}:
+        message_map = {
+            "failed": "The orchestrator session needs attention before work can continue.",
+            "stopped": "The orchestrator session stopped before finishing the status loop.",
+            "stale": "The orchestrator session went stale, so update mode stopped.",
+        }
+        return session_state, "outcome", _clip_update_message(message_map[session_state])
+
+    if snapshot.active_runs:
+        return "awaiting_workers", "planning", _active_run_message(snapshot.active_runs)
+
+    if snapshot.blocked_tickets or snapshot.stale_runs:
+        parts = []
+        if snapshot.blocked_tickets:
+            parts.append(_count_phrase(snapshot.blocked_tickets, "blocked ticket"))
+        if snapshot.stale_runs:
+            parts.append(_count_phrase(snapshot.stale_runs, "stale run"))
+        return "blocked", "planning", _clip_update_message("Needs attention: " + ", ".join(parts) + ".")
+
+    if snapshot.awaiting_merge:
+        return (
+            "reviewing",
+            "outcome",
+            _clip_update_message(
+                "Waiting on review or merge for "
+                + _count_phrase(snapshot.awaiting_merge, "ticket")
+                + "."
+            ),
+        )
+
+    if startup_grace_active and not saw_progress:
+        return "planning", "planning", "Planning the work and checking current status."
+
+    return "idle", "outcome", "No active worker runs right now."
+
+
+class PMUpdateMode:
+    def __init__(
+        self,
+        *,
+        command: RelayCommandMetadata,
+        status_reader: UpdateStatusReader,
+        current_command_reader: CurrentCommandReader | None = None,
+        emit: StatusEmitter | None = None,
+        cadence_seconds: float = 8.0,
+        startup_grace_seconds: float = 6.0,
+    ) -> None:
+        self.command = command
+        self.status_reader = status_reader
+        self.current_command_reader = current_command_reader
+        self.emit_callback = emit
+        self.cadence_seconds = max(1.0, float(cadence_seconds))
+        self.startup_grace_seconds = max(0.0, float(startup_grace_seconds))
+        self.started_at = time.time()
+        self.last_emitted_at = 0.0
+        self.last_signature: tuple[Any, ...] | None = None
+        self.state = "planning"
+        self.saw_progress = False
+
+    def poll(self, *, now: float | None = None) -> PMUpdatePollResult:
+        moment = time.time() if now is None else now
+        if not self._command_is_current():
+            self.state = "stale"
+            return PMUpdatePollResult(False, state="stale", stale=True)
+
+        snapshot = self.status_reader()
+        startup_grace_active = (moment - self.started_at) < self.startup_grace_seconds
+        state, phase, message = summarize_pm_update_snapshot(
+            snapshot,
+            startup_grace_active=startup_grace_active,
+            saw_progress=self.saw_progress,
+        )
+        if state in {"awaiting_workers", "blocked", "reviewing"}:
+            self.saw_progress = True
+
+        self.state = state
+        signature = snapshot.signature(state)
+        if self.last_signature is None and state == "planning" and not self.saw_progress:
+            self.last_signature = signature
+            return PMUpdatePollResult(True, state=state)
+        changed = signature != self.last_signature
+        terminal = state in {"failed", "stopped", "stale"} or (state == "idle" and (self.saw_progress or not startup_grace_active))
+        event = None
+        if changed or (self.last_emitted_at and (moment - self.last_emitted_at) >= self.cadence_seconds and state != "idle"):
+            source = "worker" if snapshot.active_runs else "orchestrator"
+            event = PMStatusEvent(
+                phase=phase,
+                message=message,
+                source=source,
+                command=self.command,
+            )
+            self.last_emitted_at = moment
+            if self.emit_callback is not None:
+                self.emit_callback(event)
+        self.last_signature = signature
+        return PMUpdatePollResult(not terminal, state=state, emitted_event=event)
+
+    def _command_is_current(self) -> bool:
+        if self.current_command_reader is None:
+            return True
+        return self.command.matches(self.current_command_reader())
 
 
 def default_acknowledgement_builder(

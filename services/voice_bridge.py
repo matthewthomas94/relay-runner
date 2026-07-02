@@ -23,11 +23,18 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 from command_actions import format_command_for_agent, resolve_command_action
-from pm_frontstage import OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata
+from pm_frontstage import (
+    OrchestrationTraceEvent,
+    PMStatusEvent,
+    PMUpdateMode,
+    RelayCommandMetadata,
+    build_pm_update_snapshot,
+)
 from config import load_config
 from tts_worker import TTSWorker
 
@@ -37,6 +44,9 @@ VOICE_STATE_SOCK = "/tmp/voice_state.sock"
 ORCHESTRATOR_PORT_FILE = os.environ.get("ORCHESTRATOR_PORT_FILE", "/tmp/relay_orchestrator.port")
 ORCHESTRATOR_DEFAULT_PORT = int(os.environ.get("ORCHESTRATOR_DEFAULT_PORT", "7634"))
 ORCHESTRATOR_HEARTBEAT_SECONDS = float(os.environ.get("ORCHESTRATOR_HEARTBEAT_SECONDS", "10"))
+PM_UPDATE_POLL_SECONDS = float(os.environ.get("PM_UPDATE_POLL_SECONDS", "2"))
+PM_UPDATE_CADENCE_SECONDS = float(os.environ.get("PM_UPDATE_CADENCE_SECONDS", "8"))
+PM_UPDATE_STARTUP_GRACE_SECONDS = float(os.environ.get("PM_UPDATE_STARTUP_GRACE_SECONDS", "6"))
 
 
 def _notify_state(state: str, **kwargs):
@@ -375,6 +385,24 @@ def _post_orchestrator_json(path: str, payload: dict, *, timeout: float = 1.0) -
     return data if isinstance(data, dict) else {}
 
 
+def _get_orchestrator_json(path: str, params: dict[str, object] | None = None, *, timeout: float = 1.0) -> dict:
+    query = urllib.parse.urlencode({
+        key: value
+        for key, value in (params or {}).items()
+        if value is not None and value != ""
+    })
+    url = f"http://127.0.0.1:{_orchestrator_port()}{path}"
+    if query:
+        url += "?" + query
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        body = response.read()
+    if not body:
+        return {}
+    data = json.loads(body.decode("utf-8"))
+    return data if isinstance(data, dict) else {}
+
+
 def _bridge_provider(cfg: dict) -> str:
     env_provider = os.environ.get("RELAY_RUNNER_PROVIDER", "").strip().lower()
     if env_provider:
@@ -431,21 +459,29 @@ def start_persistent_orchestrator_lifecycle(
         return None
 
     session_id = int(session["id"])
+    session_state = {"value": "idle"}
+    session_lock = threading.Lock()
+
+    def _send_heartbeat() -> None:
+        with session_lock:
+            heartbeat_state = session_state["value"]
+        try:
+            request_json(
+                "/v1/orchestrator-session/heartbeat",
+                {
+                    "session_id": session_id,
+                    "repo_path": repo_path,
+                    "provider": provider,
+                    "state": heartbeat_state,
+                },
+            )
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+            print(f"[voice_bridge] Persistent orchestrator heartbeat failed: {e}", file=sys.stderr)
 
     def _heartbeat_loop() -> None:
+        _send_heartbeat()
         while not shutdown_event.wait(ORCHESTRATOR_HEARTBEAT_SECONDS):
-            try:
-                request_json(
-                    "/v1/orchestrator-session/heartbeat",
-                    {
-                        "session_id": session_id,
-                        "repo_path": repo_path,
-                        "provider": provider,
-                        "state": "idle",
-                    },
-                )
-            except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
-                print(f"[voice_bridge] Persistent orchestrator heartbeat failed: {e}", file=sys.stderr)
+            _send_heartbeat()
 
     thread = threading.Thread(
         target=_heartbeat_loop,
@@ -461,8 +497,11 @@ def start_persistent_orchestrator_lifecycle(
     return {
         "session_id": session_id,
         "repo_path": repo_path,
+        "provider": provider,
         "thread": thread,
         "shutdown_event": shutdown_event,
+        "state": session_state,
+        "state_lock": session_lock,
     }
 
 
@@ -491,6 +530,119 @@ def stop_persistent_orchestrator_lifecycle(
         request_json("/v1/orchestrator-session/stop", payload)
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
         print(f"[voice_bridge] Persistent orchestrator stop failed: {e}", file=sys.stderr)
+
+
+def _set_orchestrator_session_state(session: dict | None, state: str) -> None:
+    if not session:
+        return
+    lock = session.get("state_lock")
+    holder = session.get("state")
+    if not hasattr(lock, "__enter__") or not isinstance(holder, dict):
+        return
+    with lock:
+        holder["value"] = state
+
+
+def _fetch_pm_update_snapshot(
+    *,
+    repo_path: str,
+    provider: str | None,
+    session_id: int | None,
+    request_get_json=_get_orchestrator_json,
+) -> object:
+    sessions = request_get_json(
+        "/v1/orchestrator-sessions",
+        {"repo_path": repo_path, "limit": 8},
+    )
+    runs = request_get_json("/v1/runs", {"limit": 32})
+    program = request_get_json(
+        "/v1/program/status",
+        {"query": "summary", "provider": provider, "limit": 0},
+    )
+    return build_pm_update_snapshot(
+        repo_path=repo_path,
+        sessions_payload=sessions,
+        runs_payload=runs,
+        program_payload=program,
+        provider=provider,
+        session_id=session_id,
+    )
+
+
+def _should_start_pm_update_mode(action) -> bool:
+    return action.kind in {"create_ticket", "update_ticket", "dispatch_ticket"}
+
+
+def _start_pm_update_mode(
+    relay_command: dict,
+    action,
+    *,
+    orchestrator_session: dict | None,
+    source_text: str | None = None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    notify_state=_notify_state,
+    request_get_json=_get_orchestrator_json,
+) -> threading.Thread | None:
+    if not _should_start_pm_update_mode(action) or not orchestrator_session:
+        return None
+    repo_path = str(orchestrator_session.get("repo_path") or Path.cwd())
+    provider = str(orchestrator_session.get("provider") or "").strip() or None
+    session_id = orchestrator_session.get("session_id")
+    try:
+        command = RelayCommandMetadata.from_dict(relay_command, source_text=source_text)
+    except ValueError:
+        return None
+
+    def emit(event: PMStatusEvent) -> None:
+        payload = {
+            "text": event.message,
+            "status_event": event.to_dict(),
+        }
+        notify_state("working", **payload)
+
+    def read_current_command() -> dict | None:
+        return _read_json_file(state_path)
+
+    mode = PMUpdateMode(
+        command=command,
+        status_reader=lambda: _fetch_pm_update_snapshot(
+            repo_path=repo_path,
+            provider=provider,
+            session_id=session_id if isinstance(session_id, int) else None,
+            request_get_json=request_get_json,
+        ),
+        current_command_reader=read_current_command,
+        emit=emit,
+        cadence_seconds=PM_UPDATE_CADENCE_SECONDS,
+        startup_grace_seconds=PM_UPDATE_STARTUP_GRACE_SECONDS,
+    )
+    _set_orchestrator_session_state(orchestrator_session, "planning")
+
+    def _run() -> None:
+        poll_seconds = max(0.25, PM_UPDATE_POLL_SECONDS)
+        while True:
+            try:
+                result = mode.poll()
+            except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+                print(f"[voice_bridge] PM update mode status fetch failed: {e}", file=sys.stderr)
+                _set_orchestrator_session_state(orchestrator_session, "blocked")
+                return
+            if result.stale:
+                return
+            _set_orchestrator_session_state(orchestrator_session, result.state)
+            if not result.continue_running:
+                if result.state == "idle":
+                    _set_orchestrator_session_state(orchestrator_session, "idle")
+                return
+            time.sleep(poll_seconds)
+
+    thread = threading.Thread(
+        target=_run,
+        name="pm-update-mode",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def _acknowledgement_variant(seed: str, options: tuple[str, ...]) -> str:
@@ -1277,6 +1429,12 @@ def _run_relay(
                     action,
                     repo_path=Path.cwd(),
                     orchestrator_session=orchestrator_session,
+                )
+                _start_pm_update_mode(
+                    relay_command,
+                    action,
+                    orchestrator_session=orchestrator_session,
+                    source_text=text,
                 )
                 _publish_command(
                     format_command_for_agent(action),

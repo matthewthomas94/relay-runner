@@ -17,8 +17,12 @@ from pm_frontstage import (  # noqa: E402
     DelegationRequest,
     OrchestrationTraceEvent,
     PMFrontstagePrototype,
+    PMUpdateMode,
+    PMUpdateRun,
+    PMUpdateSnapshot,
     PMStatusEvent,
     RelayCommandMetadata,
+    build_pm_update_snapshot,
 )
 
 
@@ -286,6 +290,127 @@ class PMFrontstageTests(unittest.TestCase):
         self.assertEqual(dispatch_payload["relay_command_id"], "cmd-4")
         self.assertIn("Codex", lines[3]["provider_parity"])
         self.assertIn("Claude", lines[3]["provider_parity"])
+
+    def test_build_pm_update_snapshot_uses_durable_repo_scoped_sources(self):
+        snapshot = build_pm_update_snapshot(
+            repo_path="/tmp/repo",
+            provider="codex",
+            session_id=7,
+            sessions_payload={
+                "orchestrator_sessions": [
+                    {"id": 7, "repo_path": "/tmp/repo", "provider_key": "codex", "state": "awaiting_workers"},
+                    {"id": 8, "repo_path": "/tmp/other", "provider_key": "codex", "state": "idle"},
+                ]
+            },
+            runs_payload={
+                "runs": [
+                    {"id": 21, "repo_path": "/tmp/repo", "ticket_id": "rr-9", "state": "Running", "activity": "Running tests", "provider_key": "codex"},
+                    {"id": 22, "repo_path": "/tmp/repo", "ticket_id": "rr-10", "state": "Failed", "activity": "cat secret.txt", "provider_key": "codex"},
+                    {"id": 23, "repo_path": "/tmp/other", "ticket_id": "rr-11", "state": "Running", "activity": "Other repo", "provider_key": "codex"},
+                ]
+            },
+            program_payload={
+                "items": [
+                    {
+                        "project": {"path": "/tmp/repo"},
+                        "open_tickets": 4,
+                        "blocked": 1,
+                        "awaiting_merge": 2,
+                        "stale_runs": 1,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(snapshot.session_state, "awaiting_workers")
+        self.assertEqual(snapshot.active_runs, (
+            PMUpdateRun(ticket_id="RR-9", run_id=21, state="Running", activity="Running tests"),
+        ))
+        self.assertEqual(snapshot.blocked_tickets, 1)
+        self.assertEqual(snapshot.awaiting_merge, 2)
+        self.assertEqual(snapshot.stale_runs, 1)
+        self.assertEqual(snapshot.open_tickets, 4)
+
+    def test_pm_update_mode_emits_on_meaningful_change_and_cadence(self):
+        command = RelayCommandMetadata.from_dict(relay_command(10, "cmd-10"))
+        notifications: list[PMStatusEvent] = []
+        snapshots = iter([
+            PMUpdateSnapshot(session_state="planning"),
+            PMUpdateSnapshot(
+                session_state="awaiting_workers",
+                active_runs=(PMUpdateRun(ticket_id="RR-9", run_id=51, state="Running", activity="Running tests"),),
+            ),
+            PMUpdateSnapshot(
+                session_state="awaiting_workers",
+                active_runs=(PMUpdateRun(ticket_id="RR-9", run_id=51, state="Running", activity="Running tests"),),
+            ),
+        ])
+        mode = PMUpdateMode(
+            command=command,
+            status_reader=lambda: next(snapshots),
+            current_command_reader=lambda: relay_command(10, "cmd-10"),
+            emit=notifications.append,
+            cadence_seconds=5,
+            startup_grace_seconds=2,
+        )
+        mode.started_at = 100.0
+
+        first = mode.poll(now=100.0)
+        second = mode.poll(now=103.0)
+        third = mode.poll(now=109.0)
+
+        self.assertTrue(first.continue_running)
+        self.assertIsNone(first.emitted_event)
+        self.assertEqual(second.state, "awaiting_workers")
+        self.assertEqual(second.emitted_event.message, "RR-9 run 51: Running tests")
+        self.assertEqual(third.state, "awaiting_workers")
+        self.assertEqual(third.emitted_event.message, "RR-9 run 51: Running tests")
+        self.assertEqual(len(notifications), 2)
+
+    def test_pm_update_mode_stops_when_newer_command_takes_over(self):
+        command = RelayCommandMetadata.from_dict(relay_command(11, "cmd-11"))
+        mode = PMUpdateMode(
+            command=command,
+            status_reader=lambda: PMUpdateSnapshot(session_state="planning"),
+            current_command_reader=lambda: relay_command(12, "newer"),
+        )
+        mode.started_at = 100.0
+
+        result = mode.poll(now=100.0)
+
+        self.assertFalse(result.continue_running)
+        self.assertTrue(result.stale)
+        self.assertEqual(result.state, "stale")
+
+    def test_pm_update_mode_keeps_status_messages_public_and_bounded(self):
+        command = RelayCommandMetadata.from_dict(relay_command(13, "cmd-13"))
+        message_log: list[str] = []
+        mode = PMUpdateMode(
+            command=command,
+            status_reader=lambda: PMUpdateSnapshot(
+                session_state="awaiting_workers",
+                active_runs=(
+                    PMUpdateRun(
+                        ticket_id="RR-13",
+                        run_id=99,
+                        state="Running",
+                        activity="Reading source files while raw transcript text stays private and very long for clipping verification",
+                    ),
+                ),
+            ),
+            current_command_reader=lambda: relay_command(13, "cmd-13"),
+            emit=lambda event: message_log.append(event.message),
+            cadence_seconds=30,
+            startup_grace_seconds=0,
+        )
+        mode.started_at = 200.0
+
+        result = mode.poll(now=200.0)
+
+        self.assertTrue(result.continue_running)
+        self.assertLessEqual(len(message_log[0]), 120)
+        self.assertNotIn("transcript", result.emitted_event.message.lower())
+        self.assertNotIn("source_text", result.emitted_event.to_dict()["command"])
 
 
 if __name__ == "__main__":
