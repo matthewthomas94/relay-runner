@@ -117,7 +117,7 @@ install_skills() {
 
     if [ "$mode" = "force" ] || [ ! -f "$DISPATCH_MD" ]; then
         cat > "$DISPATCH_MD" <<'DISPATCH_MD_EOF'
-Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs the configured agent autonomously inside it.
+Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. You are acting as the PM frontstage for the user: report the dispatch outcome, while the persistent orchestrator creates an isolated git worktree, renders the workflow prompt, and runs the configured agent autonomously inside it.
 
 ## When to use this
 
@@ -165,19 +165,19 @@ DISPATCH_MD_EOF
 
     if [ "$mode" = "force" ] || [ ! -f "$WORKFLOW_MD" ]; then
         cat > "$WORKFLOW_MD" <<'WORKFLOW_MD_EOF'
-**MANDATORY orchestrator-mode prime.** Invoke this skill on the FIRST conversational turn of any session where the `mcp__relay-orchestrator__*` tools are registered — the user installed relay-runner specifically so that this is the default operating mode. The orchestrator workflow (discuss → write tickets to `.orchestrator/` → dispatch sub-agents → integrate) is the *only* intended workflow for relay-runner installations. The user should not have to ask for it, mention "dispatch", or invoke any slash command — having relay-runner installed *is* the request to operate this way.
+**MANDATORY orchestrator-mode prime.** Invoke this skill on the FIRST conversational turn of any session where the `mcp__relay-orchestrator__*` tools are registered — the user installed relay-runner specifically so that this is the default operating mode. The Relay Runner loop is PM frontstage → persistent orchestrator ticket shaping → worker execution → orchestrator review/integration. The user should not have to ask for it, mention "dispatch", or invoke any slash command — having relay-runner installed *is* the request to operate this way.
 
 Also re-trigger when the user discusses concrete work to be done ("let's tackle…", "what should we work on", "I need to fix…", "we should add…"), mentions tickets / issues / the backlog / the board, says "dispatch / hand off / delegate / kick off / spin up an agent", references a ticket id like RR-6, or asks "what are the agents doing" / "how's RR-6" / "stop RR-6".
 
 Do NOT trigger when: relay-orchestrator MCP isn't registered, or the user has explicitly said "stay in this session, don't dispatch" / "don't use the orchestrator". A small inline edit the user asks for directly is still fine to do here — the orchestrator workflow says "dispatch when the round-trip pays off", not "always dispatch".
 
-## The four-step workflow
+## The role split
 
-You (this main session) are the orchestrator. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
+You are the PM frontstage for the user. The persistent orchestrator owns durable ticket planning, target resolution, and dispatch decisions backstage. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
 
 ## Command action contract
 
-Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but the foreground session is always the orchestrator. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
+Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but both providers keep the same PM frontstage → persistent orchestrator → worker split. Raw Relay command captures are private metadata, not visible ticket prose. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
 
 ## Worker sizing
 
@@ -190,10 +190,10 @@ Every ticket promoted to `ready` must include an explicit worker-sizing decision
 
 Choose the sizing based on ambiguity, code blast radius, security risk, test/build cost, and expected implementation depth. Codex renders effort through `model_reasoning_effort`; Claude renders effort through `--effort`, and Claude currently supports `max` where Codex does not. Prefer shared model tiers and shared effort values for provider-neutral work.
 
-1. **Discuss.** Talk through what needs to happen. Surface assumptions, push back when something's underspecified, propose alternatives. Don't jump to writing tickets until the work is concrete.
-2. **Write tickets.** When the discussion settles on a unit of work, create a ticket file under `<repo>/.orchestrator/<TICKET_ID>.md` following the schema in `docs/specs/orchestrator-tickets.md` (YAML frontmatter + `## Description` + `## Acceptance criteria`). Commit the new ticket to the working branch so the board reflects it. Use the next available id from `<repo>/.orchestrator/config.toml`'s `next_id` and bump that counter in the same commit. Each ticket should be small enough that a sub-agent can complete it in one pass without further clarification.
-3. **Dispatch.** Before dispatch, verify the ticket has `worker_model`, `worker_effort`, `worker_sizing_rationale`, and `worker_provider_notes`. Call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-N", repo_path="<repo absolute path>")`. If the ticket body wouldn't survive cold without this conversation, pass `context="..."` with the relevant background. Multiple parallel dispatches are supported (no concurrency cap), but expect merge conflicts when sub-agents touch overlapping code.
-4. **Integrate.** Each sub-agent commits to its `relay/<id>` branch — both the code change and the ticket-file update (status flipped to `done` + a `## Run log` entry). Merge those branches into the working branch in a sensible order, resolve conflicts intentionally (don't just accept "theirs"), then clean up the worktree + delete the throwaway branch.
+1. **Acknowledge and clarify.** Talk through what needs to happen. Surface assumptions, push back when something's underspecified, and report the visible action outcome to the user.
+2. **Let the persistent orchestrator shape visible work.** When the discussion settles on a unit of work, ensure the ticket under `<repo>/.orchestrator/<TICKET_ID>.md` is refined enough for a cold worker: description, acceptance criteria, dependencies, and worker-sizing fields. Keep raw transcript text private unless it has been refined into actionable ticket prose.
+3. **Dispatch.** Before dispatch, verify the ticket has `worker_model`, `worker_effort`, `worker_sizing_rationale`, and `worker_provider_notes`. Move it to `ready` or call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-N", repo_path="<repo absolute path>")`. If the ticket body wouldn't survive cold without this conversation, pass `context="..."` with the relevant background. Multiple parallel dispatches are supported (no concurrency cap), but expect merge conflicts when sub-agents touch overlapping code.
+4. **Review and integrate.** Each sub-agent commits to its `relay/<id>` branch — both the code change and the ticket-file update (status flipped to `done` + a `## Run log` entry). Review those branches, merge them into the working branch in a sensible order, resolve conflicts intentionally, then clean up the worktree + delete the throwaway branch.
 
 ## When NOT to dispatch
 
@@ -233,7 +233,7 @@ description: Dispatch a ticket from the current repo's local Relay Runner kanban
 
 # relay-dispatch
 
-Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. The orchestrator creates an isolated git worktree, renders the workflow prompt, and runs the configured agent autonomously inside it.
+Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. You are acting as the PM frontstage for the user: report the dispatch outcome, while the persistent orchestrator creates an isolated git worktree, renders the workflow prompt, and runs the configured agent autonomously inside it.
 
 ## Steps
 
@@ -263,11 +263,11 @@ description: Prime Relay Runner orchestrator mode in Codex. Use when relay-orche
 
 # relay-workflow
 
-You are the orchestrator. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
+You are the PM frontstage for the user. The persistent orchestrator owns durable ticket planning, target resolution, and dispatch decisions backstage. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
 
 ## Command Action Contract
 
-Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but the foreground session is always the orchestrator. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
+Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but both providers keep the same PM frontstage → persistent orchestrator → worker split. Raw Relay command captures are private metadata, not visible ticket prose. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
 
 ## Worker Sizing
 
@@ -277,10 +277,10 @@ Use `worker_model: fast|balanced|strong` for provider-neutral tiers, or provider
 
 ## Workflow
 
-1. Discuss the work first. Surface assumptions and ambiguity.
-2. Write concrete ticket files under `.orchestrator/` in `backlog`; include description, acceptance criteria, priority, dependencies, and worker-sizing fields before promotion.
+1. Acknowledge and clarify the work first. Surface assumptions and ambiguity, and keep the user updated on the visible outcome.
+2. Let the persistent orchestrator shape visible ticket content under `.orchestrator/`; include description, acceptance criteria, priority, dependencies, and worker-sizing fields before promotion, and keep raw transcript text private unless refined.
 3. Promote refined tickets to `ready` only when they are dispatchable and sized. The board auto-dispatches `ready`; direct MCP dispatch is available for manual runs.
-4. Integrate worker branches after review, resolving conflicts intentionally, then prune worktrees and delete throwaway branches.
+4. Review and integrate worker branches after completion, resolving conflicts intentionally, then prune worktrees and delete throwaway branches.
 
 Small edits are fine inline. Dispatch when isolation, audit trail, or parallelism pays for the cold start.
 CODEX_WORKFLOW_MD_EOF

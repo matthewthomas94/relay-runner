@@ -61,6 +61,7 @@ class CommandActionsTests(unittest.TestCase):
             self.assertIn("You are the PM frontstage", prompt)
             self.assertIn("The persistent orchestrator receives the same private raw command", prompt)
             self.assertNotIn("You are the foreground orchestrator", prompt)
+            self.assertIn("Raw Relay command captures are private metadata", prompt)
 
     def test_relay_command_metadata_is_preserved_without_visible_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
