@@ -4,6 +4,7 @@ import os
 import queue
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import json
@@ -278,6 +279,139 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 relay_command["relay_command_id"],
             )
             self.assertNotIn("source_text", status_event["command"])
+
+    def test_persistent_orchestrator_heartbeat_uses_dynamic_update_state(self):
+        requests: list[tuple[str, dict]] = []
+
+        def fake_request(path: str, payload: dict) -> dict:
+            requests.append((path, payload))
+            if path == "/v1/orchestrator-session/ensure":
+                return {"orchestrator_session": {"id": 7}}
+            return {"orchestrator_session": {"id": payload["session_id"]}}
+
+        previous_interval = voice_bridge.ORCHESTRATOR_HEARTBEAT_SECONDS
+        voice_bridge.ORCHESTRATOR_HEARTBEAT_SECONDS = 0.01
+        shutdown_event = threading.Event()
+        try:
+            session = voice_bridge.start_persistent_orchestrator_lifecycle(
+                {"general": {"provider": "codex"}},
+                shutdown_event,
+                cwd="/tmp/repo",
+                request_json=fake_request,
+            )
+            voice_bridge._set_orchestrator_session_state(session, "awaiting_workers")
+            for _ in range(20):
+                if any(
+                    path == "/v1/orchestrator-session/heartbeat"
+                    and payload.get("state") == "awaiting_workers"
+                    for path, payload in requests
+                ):
+                    break
+                shutdown_event.wait(0.01)
+            voice_bridge.stop_persistent_orchestrator_lifecycle(
+                session,
+                reason="test done",
+                request_json=fake_request,
+            )
+        finally:
+            voice_bridge.ORCHESTRATOR_HEARTBEAT_SECONDS = previous_interval
+
+        self.assertTrue(any(
+            path == "/v1/orchestrator-session/heartbeat"
+            and payload.get("state") == "awaiting_workers"
+            for path, payload in requests
+        ))
+
+    def test_pm_update_mode_emits_safe_status_and_stops_when_superseded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            relay_command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            notifications: list[tuple[str, dict]] = []
+            action = voice_bridge.resolve_command_action(
+                "dispatch RR-7",
+                repo_path=temp_dir,
+                relay_command=relay_command,
+            )
+
+            def fake_get(path: str, params: dict | None = None) -> dict:
+                if path == "/v1/orchestrator-sessions":
+                    return {
+                        "orchestrator_sessions": [
+                            {
+                                "id": 7,
+                                "repo_path": temp_dir,
+                                "provider_key": "codex",
+                                "state": "awaiting_workers",
+                            }
+                        ]
+                    }
+                if path == "/v1/runs":
+                    return {
+                        "runs": [
+                            {
+                                "id": 51,
+                                "repo_path": temp_dir,
+                                "ticket_id": "RR-7",
+                                "state": "Running",
+                                "activity": "Reading source files",
+                                "provider_key": "codex",
+                            }
+                        ]
+                    }
+                self.assertEqual(path, "/v1/program/status")
+                self.assertEqual(params["query"], "summary")
+                return {
+                    "items": [
+                        {
+                            "project": {"path": temp_dir},
+                            "open_tickets": 1,
+                            "blocked": 0,
+                            "awaiting_merge": 0,
+                            "stale_runs": 0,
+                        }
+                    ]
+                }
+
+            previous_poll = voice_bridge.PM_UPDATE_POLL_SECONDS
+            voice_bridge.PM_UPDATE_POLL_SECONDS = 0.01
+            try:
+                thread = voice_bridge._start_pm_update_mode(
+                    relay_command,
+                    action,
+                    orchestrator_session={
+                        "session_id": 7,
+                        "repo_path": temp_dir,
+                        "provider": "codex",
+                        "state": {"value": "idle"},
+                        "state_lock": threading.Lock(),
+                    },
+                    source_text="dispatch RR-7",
+                    state_path=state_path,
+                    notify_state=lambda state, **kwargs: notifications.append((state, kwargs)),
+                    request_get_json=fake_get,
+                )
+
+                for _ in range(40):
+                    if notifications:
+                        break
+                    thread.join(timeout=0.01)
+                self.assertTrue(notifications)
+                self.assertEqual(notifications[0][0], "working")
+                self.assertEqual(notifications[0][1]["text"], "RR-7 run 51: Reading source files")
+                self.assertNotIn("source_text", notifications[0][1]["status_event"]["command"])
+
+                Path(state_path).write_text(json.dumps({
+                    "relay_command_seq": relay_command["relay_command_seq"] + 1,
+                    "relay_command_id": "newer",
+                }))
+                thread.join(timeout=0.5)
+                self.assertFalse(thread.is_alive())
+            finally:
+                voice_bridge.PM_UPDATE_POLL_SECONDS = previous_poll
 
     def test_raw_instruction_fanout_sends_same_private_command_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:
