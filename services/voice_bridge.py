@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from command_actions import format_command_for_agent, resolve_command_action
+from pm_frontstage import PMStatusEvent, RelayCommandMetadata
 from config import load_config
 from tts_worker import TTSWorker
 
@@ -374,6 +375,32 @@ def build_voice_acknowledgement(text: str | None, relay_command: dict | None = N
     return _acknowledgement_variant(seed, _GENERIC_ACKNOWLEDGEMENTS)
 
 
+def _pm_status_event_payload(
+    *,
+    phase: str,
+    message: str,
+    source: str,
+    relay_command: dict,
+    source_text: str | None = None,
+    ticket_id: str | None = None,
+    run_id: int | None = None,
+) -> dict | None:
+    """Build a public PM-frontstage status event from Relay metadata."""
+    try:
+        command = RelayCommandMetadata.from_dict(relay_command, source_text=source_text)
+        return PMStatusEvent(
+            phase=phase,
+            message=message,
+            source=source,
+            command=command,
+            ticket_id=ticket_id,
+            run_id=run_id,
+        ).to_dict()
+    except ValueError as e:
+        print(f"[voice_bridge] Could not build PM status event: {e}", file=sys.stderr)
+        return None
+
+
 def acknowledgement_auto_dismiss_seconds(text: str) -> float:
     return max(
         VOICE_ACKNOWLEDGEMENT_AUTO_DISMISS_SECONDS,
@@ -665,6 +692,13 @@ def _queue_voice_acknowledgement(
     command_seq = relay_command.get("relay_command_seq")
     command_id = relay_command.get("relay_command_id")
     auto_dismiss = acknowledgement_auto_dismiss_seconds(text)
+    status_event = _pm_status_event_payload(
+        phase="acknowledged",
+        message=text,
+        source="pm",
+        relay_command=relay_command,
+        source_text=source_text,
+    )
 
     def _notify_if_current():
         if delay_seconds > 0:
@@ -675,17 +709,40 @@ def _queue_voice_acknowledgement(
                 file=sys.stderr,
             )
             return
-        notify_state(
-            "acknowledgement",
-            text=text,
-            auto_dismiss_seconds=auto_dismiss,
-        )
+        payload = {
+            "text": text,
+            "auto_dismiss_seconds": auto_dismiss,
+        }
+        if status_event is not None:
+            payload["status_event"] = status_event
+        notify_state("acknowledgement", **payload)
 
     if delay_seconds > 0:
         threading.Thread(target=_notify_if_current, daemon=True).start()
     else:
         _notify_if_current()
     return True
+
+
+def _notify_pm_planning(
+    relay_command: dict,
+    *,
+    source_text: str | None = None,
+    notify_state=_notify_state,
+) -> None:
+    """Emit the PM-frontstage planning event before agent/orchestrator handling."""
+    message = "Checking the project and choosing the route."
+    status_event = _pm_status_event_payload(
+        phase="planning",
+        message=message,
+        source="orchestrator",
+        relay_command=relay_command,
+        source_text=source_text,
+    )
+    payload = {"text": message}
+    if status_event is not None:
+        payload["status_event"] = status_event
+    notify_state("working", **payload)
 
 
 def _handle_relay_control_message(
@@ -842,6 +899,7 @@ def _run_relay(tts_worker: TTSWorker, shutdown_event: threading.Event):
                     tts_worker.input_queue,
                     source_text=text,
                 )
+                _notify_pm_planning(relay_command, source_text=text)
                 action = resolve_command_action(
                     text,
                     repo_path=Path.cwd(),

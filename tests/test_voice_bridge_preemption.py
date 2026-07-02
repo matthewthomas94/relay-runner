@@ -171,6 +171,19 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual(notifications[0][0], "acknowledgement")
             self.assertNotIn("second request", notifications[0][1]["text"])
             self.assertTrue(notifications[0][1]["text"].strip())
+            status_event = notifications[0][1]["status_event"]
+            self.assertEqual(status_event["phase"], "acknowledged")
+            self.assertEqual(status_event["source"], "pm")
+            self.assertEqual(status_event["message"], notifications[0][1]["text"])
+            self.assertEqual(
+                status_event["command"]["relay_command_seq"],
+                second_meta["relay_command_seq"],
+            )
+            self.assertEqual(
+                status_event["command"]["relay_command_id"],
+                second_meta["relay_command_id"],
+            )
+            self.assertNotIn("source_text", status_event["command"])
             self.assertFalse(os.path.exists(command_path))
             current = json.loads(Path(state_path).read_text())
             self.assertEqual(current["relay_command_seq"], second_meta["relay_command_seq"])
@@ -234,6 +247,44 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
     def test_voice_acknowledgement_defaults_to_immediate_delivery(self):
         self.assertEqual(voice_bridge.VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS, 0.0)
+
+    def test_pm_planning_status_event_uses_public_contract(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            relay_command = voice_bridge._begin_relay_command(
+                "dispatch RR-7 to a worker",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            notifications: list[tuple[str, dict]] = []
+
+            voice_bridge._notify_pm_planning(
+                relay_command,
+                source_text="dispatch RR-7 to a worker",
+                notify_state=lambda state, **kwargs: notifications.append((state, kwargs)),
+            )
+
+            self.assertEqual(notifications[0][0], "working")
+            self.assertEqual(
+                notifications[0][1]["text"],
+                "Checking the project and choosing the route.",
+            )
+            status_event = notifications[0][1]["status_event"]
+            self.assertEqual(status_event["phase"], "planning")
+            self.assertEqual(status_event["source"], "orchestrator")
+            self.assertEqual(status_event["message"], notifications[0][1]["text"])
+            self.assertEqual(
+                status_event["command"]["relay_command_id"],
+                relay_command["relay_command_id"],
+            )
+            self.assertNotIn("source_text", status_event["command"])
+
+    def test_build_bundle_includes_pm_frontstage_service(self):
+        script_path = os.path.join(ROOT, "scripts", "build-dmg.sh")
+        with open(script_path) as f:
+            script = f.read()
+
+        self.assertIn("pm_frontstage.py", script)
 
     def test_tts_dismissal_does_not_supersede_claimed_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:
