@@ -15,7 +15,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Union
 
 from command_actions import resolve_command_action
 
@@ -31,8 +31,11 @@ PROVIDER_PARITY_NOTES = (
     "share cooperative stale-command checks."
 )
 
-BackstagePlanner = Callable[[str, dict[str, Any], str | Path | None], "BackstageOutcome"]
-CurrentCommandReader = Callable[[], dict[str, Any] | None]
+BackstagePlanner = Callable[
+    [str, dict[str, Any], Union[str, Path, None]],
+    "BackstageOutcome",
+]
+CurrentCommandReader = Callable[[], Union[dict[str, Any], None]]
 StatusEmitter = Callable[["PMStatusEvent"], None]
 AcknowledgementBuilder = Callable[[str, "RelayCommandMetadata"], str]
 
