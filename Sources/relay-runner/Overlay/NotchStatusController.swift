@@ -735,7 +735,20 @@ enum NotchActivityLabelRenderPolicy {
         oldWorkingGlyphHovered: Bool,
         newWorkingGlyphHovered: Bool
     ) -> Bool {
-        true
+        status == .working && oldWorkingGlyphHovered != newWorkingGlyphHovered
+    }
+
+    static func shouldAnimateContentPlacementUpdate(
+        status: NotchSessionStatus,
+        workingGlyphHovered: Bool,
+        workingProgressLabel: String?
+    ) -> Bool {
+        guard status == .working,
+              workingGlyphHovered,
+              workingProgressLabel?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return true
+        }
+        return false
     }
 
     static func labelTextRect(
@@ -851,7 +864,7 @@ final class NotchStatusController {
         activityIndex = 0
         updateCarousel()
         if active {
-            updatePlacement(animated: true)
+            updatePlacement(animated: shouldAnimateContentPlacementUpdate)
         } else {
             updateStatusContent()
         }
@@ -997,7 +1010,7 @@ final class NotchStatusController {
         guard !activityLabels.isEmpty else { return }
         activityIndex = (activityIndex + 1) % activityLabels.count
         if active {
-            updatePlacement(animated: true)
+            updatePlacement(animated: shouldAnimateContentPlacementUpdate)
         } else {
             updateStatusContent()
         }
@@ -1073,6 +1086,14 @@ final class NotchStatusController {
             return NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
         }
         return NotchStatusPlacementPlanner.activityLabelWidth(for: compactLabel)
+    }
+
+    private var shouldAnimateContentPlacementUpdate: Bool {
+        NotchActivityLabelRenderPolicy.shouldAnimateContentPlacementUpdate(
+            status: status,
+            workingGlyphHovered: workingGlyphHovered,
+            workingProgressLabel: workingProgressLabel
+        )
     }
 
     private func setWorkingGlyphHovered(_ hovered: Bool) {
