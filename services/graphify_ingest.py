@@ -698,6 +698,12 @@ def _run_state(raw_state: Any) -> str:
     state = str(raw_state or "").strip().lower().replace("-", "_").replace(" ", "_")
     if state in {"claimed", "running"}:
         return "active"
+    if state in {"awaiting_review", "awaitingreview"}:
+        return "awaiting_review"
+    if state in {"merge_conflict", "mergeconflict"}:
+        return "merge_conflict"
+    if state == "merged":
+        return "merged"
     if state in {"succeeded", "success", "done"}:
         return "succeeded"
     if state in {"failed", "failure", "timed_out", "timeout"}:
@@ -710,6 +716,8 @@ def _run_state(raw_state: Any) -> str:
 
 
 def _program_state(state: str, ticket_node: dict[str, Any] | None) -> str:
+    if state in {"awaiting_review", "merge_conflict"}:
+        return state
     if state != "succeeded" or ticket_node is None:
         return state
     ticket_state = str(ticket_node["body"].get("state") or "")

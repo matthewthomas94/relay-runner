@@ -21,6 +21,8 @@ final class MCPServer {
             DispatchTicketTool(),
             ListRunsTool(),
             GetRunTool(),
+            InspectRunForReviewTool(),
+            ReviewRunTool(),
             CancelRunTool(),
             ProgramStatusTool(),
             SessionCaptureTool(),
