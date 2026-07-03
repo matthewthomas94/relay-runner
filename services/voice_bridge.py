@@ -47,6 +47,21 @@ ORCHESTRATOR_HEARTBEAT_SECONDS = float(os.environ.get("ORCHESTRATOR_HEARTBEAT_SE
 PM_UPDATE_POLL_SECONDS = float(os.environ.get("PM_UPDATE_POLL_SECONDS", "2"))
 PM_UPDATE_CADENCE_SECONDS = float(os.environ.get("PM_UPDATE_CADENCE_SECONDS", "8"))
 PM_UPDATE_STARTUP_GRACE_SECONDS = float(os.environ.get("PM_UPDATE_STARTUP_GRACE_SECONDS", "6"))
+PUBLIC_TRACE_TTS_DELAY_SECONDS = float(os.environ.get("PUBLIC_TRACE_TTS_DELAY_SECONDS", "0.6"))
+PUBLIC_TRACE_TTS_MAX_WAIT_SECONDS = float(os.environ.get("PUBLIC_TRACE_TTS_MAX_WAIT_SECONDS", "3.0"))
+PUBLIC_TRACE_TTS_MAX_LEN = 120
+PUBLIC_TRACE_TTS_HISTORY_LIMIT = 128
+_PUBLIC_TRACE_TTS_UNSAFE_RE = re.compile(
+    r"(`|\$\(|&&|\|\||\s;\s|"
+    r"\b(?:bash|cat|curl|git|grep|npm|pnpm|python|python3|sh|swift|xcodebuild|yarn|zsh)\s+|"
+    r"\b(?:password|secret|token|credential|transcript|source_text|tool\s+log|reasoning|scratchpad|prompt|stdout|stderr|shell output)\b)",
+    re.IGNORECASE,
+)
+_PUBLIC_TRACE_TTS_PHASES = frozenset({"acknowledged", "planning"})
+_PUBLIC_TRACE_TTS_TERMINAL_KINDS = frozenset({"run-succeeded", "run-failed", "run-merged"})
+_PUBLIC_TRACE_ACKS: dict[tuple[int, str], str] = {}
+_COMMAND_TTS: dict[tuple[int, str], str] = {}
+_PUBLIC_TRACE_TTS_LOCK = threading.Lock()
 
 
 def _notify_state(state: str, **kwargs):
@@ -578,6 +593,7 @@ def _start_pm_update_mode(
     action,
     *,
     orchestrator_session: dict | None,
+    tts_queue: queue.Queue | None = None,
     source_text: str | None = None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     notify_state=_notify_state,
@@ -599,6 +615,11 @@ def _start_pm_update_mode(
             "status_event": event.to_dict(),
         }
         notify_state("working", **payload)
+        _queue_public_trace_acknowledgement(
+            payload,
+            tts_queue,
+            state_path=state_path,
+        )
 
     def read_current_command() -> dict | None:
         return _read_json_file(state_path)
@@ -755,6 +776,7 @@ def emit_orchestration_trace(
     message: str | None = None,
     ticket_id: str | None = None,
     run_id: int | None = None,
+    tts_queue: queue.Queue | None = None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     notify_state=_notify_state,
 ) -> bool:
@@ -782,12 +804,18 @@ def emit_orchestration_trace(
     if payload is None:
         return False
     notify_state("working", **payload)
+    _queue_public_trace_acknowledgement(
+        payload,
+        tts_queue,
+        state_path=state_path,
+    )
     return True
 
 
 def _handle_orchestration_trace_control(
     raw: str,
     *,
+    tts_queue: queue.Queue | None = None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     notify_state=_notify_state,
 ) -> bool:
@@ -814,6 +842,7 @@ def _handle_orchestration_trace_control(
         message=data.get("message"),
         ticket_id=data.get("ticket_id"),
         run_id=_coerce_optional_int(data.get("run_id")),
+        tts_queue=tts_queue,
         state_path=state_path,
         notify_state=notify_state,
     )
@@ -1151,6 +1180,195 @@ def _parse_tts_payload(raw: str) -> tuple[str, int | None, str | None]:
     return str(payload.get("text") or ""), command_seq, str(command_id) if command_id else None
 
 
+def _command_key(command_seq: int | str | None, command_id: str | None) -> tuple[int, str] | None:
+    if command_seq is None or not command_id:
+        return None
+    try:
+        return int(command_seq), str(command_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_spoken_text(text: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def _near_duplicate_spoken_text(left: str, right: str) -> bool:
+    left_normalized = _normalize_spoken_text(left)
+    right_normalized = _normalize_spoken_text(right)
+    if not left_normalized or not right_normalized:
+        return False
+    if left_normalized == right_normalized:
+        return True
+    shorter, longer = sorted((left_normalized, right_normalized), key=len)
+    return len(shorter) >= 24 and shorter in longer
+
+
+def _record_command_tts(command_seq: int | str | None, command_id: str | None, text: str) -> None:
+    key = _command_key(command_seq, command_id)
+    if key is None:
+        return
+    with _PUBLIC_TRACE_TTS_LOCK:
+        _COMMAND_TTS[key] = text
+        while len(_COMMAND_TTS) > PUBLIC_TRACE_TTS_HISTORY_LIMIT:
+            _COMMAND_TTS.pop(next(iter(_COMMAND_TTS)))
+
+
+def _command_has_tts(command_seq: int | str | None, command_id: str | None) -> bool:
+    key = _command_key(command_seq, command_id)
+    if key is None:
+        return False
+    with _PUBLIC_TRACE_TTS_LOCK:
+        return key in _COMMAND_TTS
+
+
+def _record_public_trace_ack(command_seq: int | str | None, command_id: str | None, text: str) -> None:
+    key = _command_key(command_seq, command_id)
+    if key is None:
+        return
+    with _PUBLIC_TRACE_TTS_LOCK:
+        _PUBLIC_TRACE_ACKS[key] = text
+        while len(_PUBLIC_TRACE_ACKS) > PUBLIC_TRACE_TTS_HISTORY_LIMIT:
+            _PUBLIC_TRACE_ACKS.pop(next(iter(_PUBLIC_TRACE_ACKS)))
+
+
+def _public_trace_ack_for_command(command_seq: int | str | None, command_id: str | None) -> str | None:
+    key = _command_key(command_seq, command_id)
+    if key is None:
+        return None
+    with _PUBLIC_TRACE_TTS_LOCK:
+        return _PUBLIC_TRACE_ACKS.get(key)
+
+
+def _reset_public_trace_tts_state() -> None:
+    """Test helper: clear per-command TTS acknowledgement bookkeeping."""
+    with _PUBLIC_TRACE_TTS_LOCK:
+        _PUBLIC_TRACE_ACKS.clear()
+        _COMMAND_TTS.clear()
+
+
+def _is_duplicate_public_trace_ack(command_seq: int | str | None, command_id: str | None, text: str) -> bool:
+    acknowledgement = _public_trace_ack_for_command(command_seq, command_id)
+    return bool(acknowledgement and _near_duplicate_spoken_text(acknowledgement, text))
+
+
+def _public_trace_tts_message(value) -> str | None:
+    message = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not message or len(message) > PUBLIC_TRACE_TTS_MAX_LEN:
+        return None
+    if _PUBLIC_TRACE_TTS_UNSAFE_RE.search(message):
+        return None
+    return message
+
+
+def _public_trace_tts_candidate(payload: dict) -> tuple[str, int, str] | None:
+    status_event = payload.get("status_event")
+    if isinstance(status_event, dict):
+        phase = str(status_event.get("phase") or "").strip().lower()
+        if phase not in _PUBLIC_TRACE_TTS_PHASES:
+            return None
+        command = status_event.get("command")
+        if not isinstance(command, dict):
+            return None
+        key = _command_key(command.get("relay_command_seq"), command.get("relay_command_id"))
+        message = _public_trace_tts_message(status_event.get("message"))
+        if key is None or message is None:
+            return None
+        return message, key[0], key[1]
+
+    trace_event = payload.get("trace_event")
+    if isinstance(trace_event, dict):
+        kind = str(trace_event.get("kind") or "").strip().lower()
+        if kind in _PUBLIC_TRACE_TTS_TERMINAL_KINDS:
+            return None
+        command = trace_event.get("command")
+        if not isinstance(command, dict):
+            return None
+        key = _command_key(command.get("relay_command_seq"), command.get("relay_command_id"))
+        message = _public_trace_tts_message(trace_event.get("message"))
+        if key is None or message is None:
+            return None
+        return message, key[0], key[1]
+
+    return None
+
+
+def _wait_for_public_trace_tts_window(
+    command_seq: int,
+    command_id: str,
+    *,
+    command_path: str,
+    state_path: str,
+    max_wait_seconds: float,
+) -> bool:
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+    while True:
+        if not _relay_command_current(command_seq, command_id, state_path=state_path):
+            print(
+                "[voice_bridge] Dropping trace acknowledgement because its Relay command was superseded.",
+                file=sys.stderr,
+            )
+            return False
+        if _command_has_tts(command_seq, command_id):
+            return False
+        if not os.path.exists(command_path):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _queue_public_trace_acknowledgement(
+    payload: dict,
+    tts_queue: queue.Queue | None,
+    *,
+    command_path: str = VOICE_CMD_FILE,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    delay_seconds: float = PUBLIC_TRACE_TTS_DELAY_SECONDS,
+    max_wait_seconds: float = PUBLIC_TRACE_TTS_MAX_WAIT_SECONDS,
+) -> bool:
+    """Speak the first safe public trace/status event for a claimed command."""
+    if tts_queue is None:
+        return False
+    candidate = _public_trace_tts_candidate(payload)
+    if candidate is None:
+        return False
+    message, command_seq, command_id = candidate
+    if _public_trace_ack_for_command(command_seq, command_id):
+        return False
+
+    def _queue_if_current() -> None:
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        if not _wait_for_public_trace_tts_window(
+            command_seq,
+            command_id,
+            command_path=command_path,
+            state_path=state_path,
+            max_wait_seconds=max_wait_seconds,
+        ):
+            return
+        payload_text = json.dumps({
+            "text": message,
+            "relay_command_seq": command_seq,
+            "relay_command_id": command_id,
+        })
+        if _queue_tts_text(
+            payload_text,
+            tts_queue,
+            command_path=command_path,
+            state_path=state_path,
+        ):
+            _record_public_trace_ack(command_seq, command_id, message)
+
+    if delay_seconds > 0 or os.path.exists(command_path):
+        threading.Thread(target=_queue_if_current, name="public-trace-tts-ack", daemon=True).start()
+    else:
+        _queue_if_current()
+    return True
+
+
 def _queue_tts_text(
     text: str,
     tts_queue: queue.Queue,
@@ -1169,6 +1387,12 @@ def _queue_tts_text(
                 file=sys.stderr,
             )
             return False
+        if _is_duplicate_public_trace_ack(command_seq, command_id, text):
+            print(
+                "[voice_bridge] Dropping TTS because it duplicates the trace acknowledgement.",
+                file=sys.stderr,
+            )
+            return False
     if os.path.exists(command_path):
         print(
             "[voice_bridge] Dropping TTS because a newer voice command is pending.",
@@ -1176,6 +1400,7 @@ def _queue_tts_text(
         )
         return False
     tts_queue.put(text)
+    _record_command_tts(command_seq, command_id, text)
     return True
 
 
@@ -1234,6 +1459,7 @@ def _notify_pm_planning(
     relay_command: dict,
     *,
     source_text: str | None = None,
+    tts_queue: queue.Queue | None = None,
     notify_state=_notify_state,
 ) -> None:
     """Emit the PM-frontstage planning event before agent/orchestrator handling."""
@@ -1249,6 +1475,7 @@ def _notify_pm_planning(
     if status_event is not None:
         payload["status_event"] = status_event
     notify_state("working", **payload)
+    _queue_public_trace_acknowledgement(payload, tts_queue)
 
 
 def _handle_relay_control_message(
@@ -1299,6 +1526,7 @@ def _handle_relay_control_message(
     if text.startswith("__TRACE__:"):
         _handle_orchestration_trace_control(
             text[len("__TRACE__:"):],
+            tts_queue=tts_worker.input_queue,
             state_path=state_path,
         )
         return True
@@ -1417,7 +1645,11 @@ def _run_relay(
                     tts_worker.input_queue,
                     source_text=text,
                 )
-                _notify_pm_planning(relay_command, source_text=text)
+                _notify_pm_planning(
+                    relay_command,
+                    source_text=text,
+                    tts_queue=tts_worker.input_queue,
+                )
                 action = resolve_command_action(
                     text,
                     repo_path=Path.cwd(),
@@ -1434,6 +1666,7 @@ def _run_relay(
                     relay_command,
                     action,
                     orchestrator_session=orchestrator_session,
+                    tts_queue=tts_worker.input_queue,
                     source_text=text,
                 )
                 _publish_command(

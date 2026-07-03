@@ -392,6 +392,8 @@ Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claim
 
 When a meaningful orchestration milestone happens, mirror a short public trace to Relay Runner through the bridge control path. Use this for ticket-created, dispatch-started, dispatch-claimed, run-running, run-succeeded, run-failed, and board-change events. Keep the message user-safe and bounded; do not include raw shell commands, raw tool output, hidden reasoning, transcript dumps, secrets, or unbounded metadata. Codex and Claude use the same trace kinds and public copy.
 
+The bridge may speak the first safe public trace/status event as an early acknowledgement before your final response. Keep traces short and natural, but do not rely on traces to replace the final TTS outcome summary.
+
 ```bash
 printf '%s\n' '__TRACE__:{"kind":"ticket-created","ticket_id":"RR-123"}' > /tmp/voice_in.fifo
 printf '%s\n' '__TRACE__:{"kind":"dispatch-claimed","ticket_id":"RR-123","run_id":456}' > /tmp/voice_in.fifo
@@ -705,6 +707,8 @@ Interpret the text:
 Send curated orchestration traces to the notch:
 
 When a meaningful orchestration milestone happens, mirror a short public trace to Relay Runner through the bridge control path. Use this for ticket-created, dispatch-started, dispatch-claimed, run-running, run-succeeded, run-failed, and board-change events. Keep the message user-safe and bounded; do not include raw shell commands, raw tool output, hidden reasoning, transcript dumps, secrets, or unbounded metadata. Codex and Claude use the same trace kinds and public copy.
+
+The bridge may speak the first safe public trace/status event as an early acknowledgement before your final response. Keep traces short and natural, but do not rely on traces to replace the final TTS outcome summary.
 
 ```bash
 printf '%s\n' '__TRACE__:{"kind":"ticket-created","ticket_id":"RR-123"}' > /tmp/voice_in.fifo

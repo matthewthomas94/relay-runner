@@ -50,6 +50,9 @@ class FakeTTSWorker:
 
 
 class VoiceBridgePreemptionTests(unittest.TestCase):
+    def setUp(self):
+        voice_bridge._reset_public_trace_tts_state()
+
     def test_newer_command_suppresses_stale_tts_after_first_claimed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
@@ -279,6 +282,246 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 relay_command["relay_command_id"],
             )
             self.assertNotIn("source_text", status_event["command"])
+
+    def test_public_trace_acknowledgement_speaks_first_safe_status_event(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
+            relay_command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            payload = voice_bridge._orchestration_trace_payload(
+                kind="dispatch-started",
+                relay_command=relay_command,
+                ticket_id="RR-7",
+            )
+
+            queued = voice_bridge._queue_public_trace_acknowledgement(
+                payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+                delay_seconds=0,
+            )
+
+            self.assertTrue(queued)
+            self.assertEqual(tts_queue.get_nowait(), "Dispatching RR-7")
+
+    def test_public_trace_acknowledgement_waits_for_command_claim(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
+            relay_command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            Path(command_path).write_text("action: dispatch_ticket")
+            payload = voice_bridge._orchestration_trace_payload(
+                kind="dispatch-started",
+                relay_command=relay_command,
+                ticket_id="RR-7",
+            )
+
+            voice_bridge._queue_public_trace_acknowledgement(
+                payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+                delay_seconds=0,
+                max_wait_seconds=0.5,
+            )
+            self.assertTrue(tts_queue.empty())
+            os.remove(command_path)
+            for _ in range(20):
+                if not tts_queue.empty():
+                    break
+                threading.Event().wait(0.02)
+
+            self.assertEqual(tts_queue.get_nowait(), "Dispatching RR-7")
+
+    def test_public_trace_acknowledgement_drops_after_command_superseded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
+            first = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            voice_bridge._begin_relay_command(
+                "newer command",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            payload = voice_bridge._orchestration_trace_payload(
+                kind="dispatch-started",
+                relay_command=first,
+                ticket_id="RR-7",
+            )
+
+            voice_bridge._queue_public_trace_acknowledgement(
+                payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+                delay_seconds=0,
+            )
+
+            self.assertTrue(tts_queue.empty())
+
+    def test_public_trace_acknowledgement_does_not_replace_final_tts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
+            relay_command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            payload = voice_bridge._orchestration_trace_payload(
+                kind="dispatch-started",
+                relay_command=relay_command,
+                ticket_id="RR-7",
+            )
+
+            voice_bridge._queue_public_trace_acknowledgement(
+                payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+                delay_seconds=0,
+            )
+            final_payload = json.dumps({
+                "text": "Dispatched RR-7 to a worker.",
+                "relay_command_seq": relay_command["relay_command_seq"],
+                "relay_command_id": relay_command["relay_command_id"],
+            })
+            self.assertTrue(voice_bridge._queue_tts_text(
+                final_payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+            ))
+
+            self.assertEqual(tts_queue.get_nowait(), "Dispatching RR-7")
+            self.assertEqual(tts_queue.get_nowait(), "Dispatched RR-7 to a worker.")
+
+    def test_public_trace_acknowledgement_skips_when_final_tts_arrives_quickly(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
+            relay_command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            payload = voice_bridge._orchestration_trace_payload(
+                kind="dispatch-started",
+                relay_command=relay_command,
+                ticket_id="RR-7",
+            )
+
+            voice_bridge._queue_public_trace_acknowledgement(
+                payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+                delay_seconds=0.05,
+            )
+            final_payload = json.dumps({
+                "text": "Dispatched RR-7 to a worker.",
+                "relay_command_seq": relay_command["relay_command_seq"],
+                "relay_command_id": relay_command["relay_command_id"],
+            })
+            self.assertTrue(voice_bridge._queue_tts_text(
+                final_payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+            ))
+            threading.Event().wait(0.1)
+
+            self.assertEqual(tts_queue.get_nowait(), "Dispatched RR-7 to a worker.")
+            self.assertTrue(tts_queue.empty())
+
+    def test_public_trace_acknowledgement_suppresses_duplicate_final_tts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
+            relay_command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            payload = voice_bridge._orchestration_trace_payload(
+                kind="dispatch-started",
+                relay_command=relay_command,
+                ticket_id="RR-7",
+            )
+
+            voice_bridge._queue_public_trace_acknowledgement(
+                payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+                delay_seconds=0,
+            )
+            duplicate_payload = json.dumps({
+                "text": "Dispatching RR-7",
+                "relay_command_seq": relay_command["relay_command_seq"],
+                "relay_command_id": relay_command["relay_command_id"],
+            })
+
+            self.assertFalse(voice_bridge._queue_tts_text(
+                duplicate_payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+            ))
+            self.assertEqual(tts_queue.get_nowait(), "Dispatching RR-7")
+            self.assertTrue(tts_queue.empty())
+
+    def test_public_trace_acknowledgement_rejects_unsafe_trace_copy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
+            relay_command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            unsafe_payload = {
+                "status_event": {
+                    "phase": "planning",
+                    "message": "Running git status && cat secret.txt",
+                    "source": "orchestrator",
+                    "command": {
+                        "relay_command_seq": relay_command["relay_command_seq"],
+                        "relay_command_id": relay_command["relay_command_id"],
+                    },
+                }
+            }
+
+            queued = voice_bridge._queue_public_trace_acknowledgement(
+                unsafe_payload,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+                delay_seconds=0,
+            )
+
+            self.assertFalse(queued)
+            self.assertTrue(tts_queue.empty())
 
     def test_persistent_orchestrator_heartbeat_uses_dynamic_update_state(self):
         requests: list[tuple[str, dict]] = []
