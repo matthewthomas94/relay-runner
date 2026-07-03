@@ -246,6 +246,7 @@ enum NotchStatusGlyphMotion {
 enum NotchStatusPlacementPlanner {
     static let glyphSize = CGSize(width: 30, height: 34)
     static let compactLeadingWingWidth: CGFloat = 19
+    static let compactNotchLeadInWidth: CGFloat = glyphSize.height
     static let maximumActivityLabelWidth: CGFloat = 650
     static let maximumWorkingProgressLabelWidth: CGFloat = maximumActivityLabelWidth / 2
     static let fallbackSurfaceWidth: CGFloat = compactLeadingWingWidth + glyphSize.width
@@ -261,9 +262,9 @@ enum NotchStatusPlacementPlanner {
         activityLabelWidth: CGFloat = 0
     ) -> NotchStatusPlacement? {
         let labelWidth = max(0, min(activityLabelWidth, maximumActivityLabelWidth))
-        let hasActivityLabel = labelWidth > 0
-        let leadingSpacerWidth = hasActivityLabel ? 0 : compactLeadingWingWidth
         let notchFrame = notchFrame(for: geometry)
+        let hasActivityLabel = labelWidth > 0
+        let leadingSpacerWidth = hasActivityLabel ? 0 : (notchFrame == nil ? compactLeadingWingWidth : compactNotchLeadInWidth)
         let notchSpacerWidth = notchFrame?.width ?? 0
         let surfaceWidth: CGFloat
         let preferredX: CGFloat
@@ -1379,6 +1380,9 @@ private final class NotchStatusPillContentView: NSView {
             boundsWidth: rect.width,
             boundsHeight: rect.height
         )
+        if let topContact, topContact.startX > 0 {
+            return compactNotchCutoutPath(in: rect, topContact: topContact, bottomRadius: bottomRadius)
+        }
         let topRadius = topContact?.radius ?? 0
         let topStartX = rect.minX + (topContact?.startX ?? 0)
         let topEndX = rect.minX + (topContact?.endX ?? rect.width)
@@ -1406,26 +1410,55 @@ private final class NotchStatusPillContentView: NSView {
                 controlPoint2: NSPoint(x: topEndX - topRadius + topControl, y: rect.minY)
             )
         }
-        if topRadius > 0, topStartX > rect.minX {
-            let insetRadius = min(topRadius, topStartX - rect.minX)
-            let insetControl = insetRadius * 0.5522847498307936
-            path.line(to: NSPoint(x: topStartX, y: rect.minY))
+        path.line(to: NSPoint(x: topStartX + topRadius, y: rect.minY))
+        if topRadius > 0 {
             path.curve(
-                to: NSPoint(x: topStartX - insetRadius, y: rect.minY + insetRadius),
-                controlPoint1: NSPoint(x: topStartX - insetControl, y: rect.minY),
-                controlPoint2: NSPoint(x: topStartX - insetRadius, y: rect.minY + insetRadius - insetControl)
+                to: NSPoint(x: topStartX, y: rect.minY + topRadius),
+                controlPoint1: NSPoint(x: topStartX + topRadius - topControl, y: rect.minY),
+                controlPoint2: NSPoint(x: topStartX, y: rect.minY + topRadius - topControl)
             )
-            path.line(to: NSPoint(x: rect.minX, y: rect.minY + insetRadius))
-        } else {
-            path.line(to: NSPoint(x: topStartX + topRadius, y: rect.minY))
-            if topRadius > 0 {
-                path.curve(
-                    to: NSPoint(x: topStartX, y: rect.minY + topRadius),
-                    controlPoint1: NSPoint(x: topStartX + topRadius - topControl, y: rect.minY),
-                    controlPoint2: NSPoint(x: topStartX, y: rect.minY + topRadius - topControl)
-                )
-            }
         }
+        path.line(to: NSPoint(x: rect.minX, y: rect.minY + topRadius))
+        path.close()
+        return path
+    }
+
+    private func compactNotchCutoutPath(
+        in rect: NSRect,
+        topContact: NotchStatusSurfaceShape.TopContact,
+        bottomRadius: CGFloat
+    ) -> NSBezierPath {
+        let wallX = rect.minX + topContact.startX
+        let topEndX = rect.minX + topContact.endX
+        let topRadius = topContact.radius
+        let bottomControl = bottomRadius * 0.5522847498307936
+        let topControl = topRadius * 0.5522847498307936
+        let cutoutWidth = max(0, wallX - rect.minX)
+        let cutoutDepth = min(rect.height, max(topRadius, cutoutWidth))
+        let cutoutControlX = cutoutWidth * 0.5522847498307936
+        let cutoutControlY = cutoutDepth * 0.5522847498307936
+        let path = NSBezierPath()
+
+        path.move(to: NSPoint(x: wallX, y: rect.maxY))
+        path.line(to: NSPoint(x: rect.maxX - bottomRadius, y: rect.maxY))
+        path.curve(
+            to: NSPoint(x: rect.maxX, y: rect.maxY - bottomRadius),
+            controlPoint1: NSPoint(x: rect.maxX - bottomRadius + bottomControl, y: rect.maxY),
+            controlPoint2: NSPoint(x: rect.maxX, y: rect.maxY - bottomRadius + bottomControl)
+        )
+        path.line(to: NSPoint(x: rect.maxX, y: rect.minY + topRadius))
+        path.curve(
+            to: NSPoint(x: topEndX - topRadius, y: rect.minY),
+            controlPoint1: NSPoint(x: topEndX, y: rect.minY + topRadius - topControl),
+            controlPoint2: NSPoint(x: topEndX - topRadius + topControl, y: rect.minY)
+        )
+        path.line(to: NSPoint(x: rect.minX, y: rect.minY))
+        path.curve(
+            to: NSPoint(x: wallX, y: rect.minY + cutoutDepth),
+            controlPoint1: NSPoint(x: rect.minX + cutoutControlX, y: rect.minY),
+            controlPoint2: NSPoint(x: wallX, y: rect.minY + cutoutDepth - cutoutControlY)
+        )
+        path.line(to: NSPoint(x: wallX, y: rect.maxY))
         path.close()
         return path
     }

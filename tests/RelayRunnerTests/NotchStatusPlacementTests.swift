@@ -31,14 +31,14 @@ final class NotchStatusPlacementTests: XCTestCase {
 
         XCTAssertEqual(placement.notchSpacerWidth, 185)
         XCTAssertEqual(placement.activityLabelWidth, 0)
-        XCTAssertEqual(placement.leadingSpacerWidth, NotchStatusPlacementPlanner.compactLeadingWingWidth)
+        XCTAssertEqual(placement.leadingSpacerWidth, NotchStatusPlacementPlanner.compactNotchLeadInWidth)
         XCTAssertEqual(
             placement.visibleFrame.minX,
-            geometry.auxiliaryTopLeftArea.maxX - NotchStatusPlacementPlanner.compactLeadingWingWidth
+            geometry.auxiliaryTopLeftArea.maxX - NotchStatusPlacementPlanner.compactNotchLeadInWidth
         )
         XCTAssertEqual(
             placement.visibleFrame.width,
-            NotchStatusPlacementPlanner.compactLeadingWingWidth
+            NotchStatusPlacementPlanner.compactNotchLeadInWidth
                 + placement.notchSpacerWidth
                 + NotchStatusPlacementPlanner.glyphSize.width
         )
@@ -60,7 +60,7 @@ final class NotchStatusPlacementTests: XCTestCase {
             boundsWidth: placement.visibleFrame.width,
             boundsHeight: placement.visibleFrame.height
         ))
-        XCTAssertEqual(contact.startX, NotchStatusPlacementPlanner.compactLeadingWingWidth)
+        XCTAssertEqual(contact.startX, NotchStatusPlacementPlanner.compactNotchLeadInWidth)
         XCTAssertEqual(contact.endX, placement.visibleFrame.width)
         XCTAssertEqual(contact.radius, NotchStatusSurfaceShape.notchContactCornerRadius)
     }
