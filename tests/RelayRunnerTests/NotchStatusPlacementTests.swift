@@ -53,6 +53,16 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchStatusSurfaceShape.topContactCornerRadius(notchSpacerWidth: placement.notchSpacerWidth),
             NotchStatusSurfaceShape.notchContactCornerRadius
         )
+        let contact = try XCTUnwrap(NotchStatusSurfaceShape.topContact(
+            activityLabelWidth: placement.activityLabelWidth,
+            leadingSpacerWidth: placement.leadingSpacerWidth,
+            notchSpacerWidth: placement.notchSpacerWidth,
+            boundsWidth: placement.visibleFrame.width,
+            boundsHeight: placement.visibleFrame.height
+        ))
+        XCTAssertEqual(contact.startX, NotchStatusPlacementPlanner.compactLeadingWingWidth)
+        XCTAssertEqual(contact.endX, placement.visibleFrame.width)
+        XCTAssertEqual(contact.radius, NotchStatusSurfaceShape.notchContactCornerRadius)
     }
 
     func testPlacesContinuousPillAcrossNotchWithActivityLabels() throws {
@@ -83,6 +93,16 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
         XCTAssertEqual(placement.glyphScreenX, geometry.auxiliaryTopRightArea.minX)
         XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
+        let contact = try XCTUnwrap(NotchStatusSurfaceShape.topContact(
+            activityLabelWidth: placement.activityLabelWidth,
+            leadingSpacerWidth: placement.leadingSpacerWidth,
+            notchSpacerWidth: placement.notchSpacerWidth,
+            boundsWidth: placement.visibleFrame.width,
+            boundsHeight: placement.visibleFrame.height
+        ))
+        XCTAssertEqual(contact.startX, 0)
+        XCTAssertEqual(contact.endX, placement.visibleFrame.width)
+        XCTAssertEqual(contact.radius, NotchStatusSurfaceShape.notchContactCornerRadius)
 
         let compactPlacement = try XCTUnwrap(NotchStatusPlacementPlanner.placement(for: geometry))
         XCTAssertEqual(compactPlacement.glyphScreenX, placement.glyphScreenX)
@@ -108,6 +128,13 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchStatusSurfaceShape.topContactCornerRadius(notchSpacerWidth: placement.notchSpacerWidth),
             0
         )
+        XCTAssertNil(NotchStatusSurfaceShape.topContact(
+            activityLabelWidth: placement.activityLabelWidth,
+            leadingSpacerWidth: placement.leadingSpacerWidth,
+            notchSpacerWidth: placement.notchSpacerWidth,
+            boundsWidth: placement.visibleFrame.width,
+            boundsHeight: placement.visibleFrame.height
+        ))
     }
 
     func testCentersFallbackPillWithActivityLabelsWhenDisplayDoesNotReportNotchArea() throws {

@@ -357,10 +357,40 @@ enum NotchStatusPlacementPlanner {
 }
 
 enum NotchStatusSurfaceShape {
-    static let notchContactCornerRadius: CGFloat = 6
+    static let notchContactCornerRadius: CGFloat = 12
+
+    struct TopContact: Equatable {
+        let startX: CGFloat
+        let endX: CGFloat
+        let radius: CGFloat
+    }
 
     static func topContactCornerRadius(notchSpacerWidth: CGFloat) -> CGFloat {
         notchSpacerWidth > 0 ? notchContactCornerRadius : 0
+    }
+
+    static func topContact(
+        activityLabelWidth: CGFloat,
+        leadingSpacerWidth: CGFloat,
+        notchSpacerWidth: CGFloat,
+        boundsWidth: CGFloat,
+        boundsHeight: CGFloat
+    ) -> TopContact? {
+        guard notchSpacerWidth > 0,
+              boundsWidth > 0,
+              boundsHeight > 0 else {
+            return nil
+        }
+        let compactLeadingInset = activityLabelWidth > 0 ? 0 : max(0, leadingSpacerWidth)
+        let startX = min(compactLeadingInset, boundsWidth)
+        let endX = boundsWidth
+        let radius = min(
+            notchContactCornerRadius,
+            max(0, endX - startX) / 2,
+            boundsHeight / 2
+        )
+        guard radius > 0 else { return nil }
+        return TopContact(startX: startX, endX: endX, radius: radius)
     }
 }
 
@@ -1342,11 +1372,16 @@ private final class NotchStatusPillContentView: NSView {
 
     private func bottomRoundedPillPath(in rect: NSRect) -> NSBezierPath {
         let bottomRadius = min(rect.height / 2, rect.width / 2)
-        let topRadius = min(
-            NotchStatusSurfaceShape.topContactCornerRadius(notchSpacerWidth: notchSpacerWidth),
-            rect.width / 2,
-            rect.height - bottomRadius
+        let topContact = NotchStatusSurfaceShape.topContact(
+            activityLabelWidth: activityLabelWidth,
+            leadingSpacerWidth: leadingSpacerWidth,
+            notchSpacerWidth: notchSpacerWidth,
+            boundsWidth: rect.width,
+            boundsHeight: rect.height
         )
+        let topRadius = topContact?.radius ?? 0
+        let topStartX = rect.minX + (topContact?.startX ?? 0)
+        let topEndX = rect.minX + (topContact?.endX ?? rect.width)
         let bottomControl = bottomRadius * 0.5522847498307936
         let topControl = topRadius * 0.5522847498307936
         let path = NSBezierPath()
@@ -1366,19 +1401,20 @@ private final class NotchStatusPillContentView: NSView {
         path.line(to: NSPoint(x: rect.maxX, y: rect.minY + topRadius))
         if topRadius > 0 {
             path.curve(
-                to: NSPoint(x: rect.maxX - topRadius, y: rect.minY),
-                controlPoint1: NSPoint(x: rect.maxX, y: rect.minY + topRadius - topControl),
-                controlPoint2: NSPoint(x: rect.maxX - topRadius + topControl, y: rect.minY)
+                to: NSPoint(x: topEndX - topRadius, y: rect.minY),
+                controlPoint1: NSPoint(x: topEndX, y: rect.minY + topRadius - topControl),
+                controlPoint2: NSPoint(x: topEndX - topRadius + topControl, y: rect.minY)
             )
         }
-        path.line(to: NSPoint(x: rect.minX + topRadius, y: rect.minY))
+        path.line(to: NSPoint(x: topStartX + topRadius, y: rect.minY))
         if topRadius > 0 {
             path.curve(
-                to: NSPoint(x: rect.minX, y: rect.minY + topRadius),
-                controlPoint1: NSPoint(x: rect.minX + topRadius - topControl, y: rect.minY),
-                controlPoint2: NSPoint(x: rect.minX, y: rect.minY + topRadius - topControl)
+                to: NSPoint(x: topStartX, y: rect.minY + topRadius),
+                controlPoint1: NSPoint(x: topStartX + topRadius - topControl, y: rect.minY),
+                controlPoint2: NSPoint(x: topStartX, y: rect.minY + topRadius - topControl)
             )
         }
+        path.line(to: NSPoint(x: rect.minX, y: rect.minY + topRadius))
         path.close()
         return path
     }
