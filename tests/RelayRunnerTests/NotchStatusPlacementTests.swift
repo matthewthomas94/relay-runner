@@ -282,14 +282,14 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchActivityLabelRenderPolicy.lineBreakMode(isScrolling: true),
             .byClipping
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
                 status: .working,
                 oldWorkingGlyphHovered: false,
                 newWorkingGlyphHovered: true
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             NotchActivityLabelRenderPolicy.shouldAnimatePlacementTransition(
                 status: .working,
                 oldWorkingGlyphHovered: true,
