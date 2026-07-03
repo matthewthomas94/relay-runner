@@ -1442,12 +1442,34 @@ class OrchestratorCommandStore:
     def _init(self) -> None:
         with self._conn() as c:
             current = int(c.execute("PRAGMA user_version").fetchone()[0])
-            if current != self.SCHEMA_VERSION:
-                c.execute("DROP TABLE IF EXISTS orchestrator_commands")
+            if current == 0:
                 c.executescript(self.SCHEMA)
                 c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
-            else:
+                return
+            if current == 1:
+                existing_columns = {
+                    str(row["name"])
+                    for row in c.execute("PRAGMA table_info(orchestrator_commands)").fetchall()
+                }
+                migrations = {
+                    "ticket_id": "TEXT",
+                    "status_message": "TEXT",
+                    "error": "TEXT",
+                    "processed_at": "REAL",
+                }
+                for name, declaration in migrations.items():
+                    if name not in existing_columns:
+                        c.execute(f"ALTER TABLE orchestrator_commands ADD COLUMN {name} {declaration}")
                 c.executescript(self.SCHEMA)
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+                return
+            if current == self.SCHEMA_VERSION:
+                c.executescript(self.SCHEMA)
+                return
+            raise RuntimeError(
+                f"unsupported orchestrator_commands schema version {current}; "
+                f"expected <= {self.SCHEMA_VERSION}"
+            )
 
     @staticmethod
     def _public_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:

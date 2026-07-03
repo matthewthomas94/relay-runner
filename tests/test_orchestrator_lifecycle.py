@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -176,6 +177,61 @@ class OrchestratorLifecycleTests(unittest.TestCase):
                 private["source_text"],
                 "fix login with private transcript details",
             )
+
+    def test_orchestrator_command_store_migrates_v1_without_losing_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "commands.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE orchestrator_commands (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        relay_command_id TEXT NOT NULL UNIQUE,
+                        relay_command_seq INTEGER NOT NULL,
+                        session_id INTEGER,
+                        repo_path TEXT NOT NULL,
+                        provider_key TEXT,
+                        source_text TEXT NOT NULL,
+                        action TEXT,
+                        outcome TEXT,
+                        status TEXT NOT NULL,
+                        received_at REAL,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE INDEX idx_orchestrator_commands_repo ON orchestrator_commands(repo_path);
+                    CREATE INDEX idx_orchestrator_commands_status ON orchestrator_commands(status);
+                    PRAGMA user_version = 1;
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO orchestrator_commands("
+                    "relay_command_id, relay_command_seq, repo_path, source_text, "
+                    "action, outcome, status, created_at, updated_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "cmd-1",
+                        1,
+                        tmp,
+                        "preserve this private command",
+                        "create_ticket",
+                        "project work needs refined ticket",
+                        "received",
+                        10.0,
+                        10.0,
+                    ),
+                )
+
+            store = OrchestratorCommandStore(db_path)
+
+            private = store.get_private("cmd-1")
+            self.assertIsNotNone(private)
+            self.assertEqual(private["source_text"], "preserve this private command")
+            self.assertEqual(private["status"], "received")
+            self.assertIn("ticket_id", private)
+            self.assertIsNone(private["ticket_id"])
+            with sqlite3.connect(db_path) as conn:
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
 
     def test_daemon_rejects_stale_orchestrator_command_before_recording(self):
         with tempfile.TemporaryDirectory() as tmp:
