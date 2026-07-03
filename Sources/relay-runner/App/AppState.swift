@@ -809,6 +809,17 @@ final class AppState {
                     self.statusText = "Session"
                 }
                 return
+            case .waitForConsumer:
+                self.bridgeAliveCache = true
+                if self.statusText != "Voice command waiting" {
+                    self.statusText = "Voice command waiting"
+                    self.stateMachine.showProgramStatus(
+                        title: "Voice command waiting",
+                        body: "Relay Runner recorded a voice command, but the active Codex or Claude listener has not claimed it yet. Keep the agent turn running, or start a new session before speaking again."
+                    )
+                    self.syncNotchActivitySurface()
+                }
+                return
             case .waitForLaunch:
                 self.bridgeAliveCache = true
                 return
@@ -886,6 +897,7 @@ final class AppState {
     enum BridgeWatchdogAction: Equatable {
         case alive
         case keepDaemon
+        case waitForConsumer
         case waitForLaunch
         case recoverDaemon
         case reapOrphan
@@ -915,7 +927,7 @@ final class AppState {
         }
         if daemonAlive && !consumerAlive {
             if pendingDeliveryTimedOut {
-                return .recoverDaemon
+                return (menuSessionActive || wasAlive || hasSessionContext) ? .waitForConsumer : .reapOrphan
             }
             return (menuSessionActive || wasAlive || hasSessionContext) ? .keepDaemon : .reapOrphan
         }

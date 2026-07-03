@@ -88,7 +88,7 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
-    func testWatchdogRecoversTimedOutPendingVoiceCommand() {
+    func testWatchdogWaitsForConsumerWhenLiveDaemonHasTimedOutPendingVoiceCommand() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(
                 menuSessionActive: false,
@@ -98,6 +98,21 @@ final class BridgeRecoveryTests: XCTestCase {
                 wasAlive: true,
                 sessionBridgeSeen: false,
                 elapsedSinceSessionStart: 0,
+                pendingDeliveryTimedOut: true
+            ),
+            .waitForConsumer
+        )
+    }
+
+    func testWatchdogRecoversTimedOutPendingVoiceCommandWhenDaemonIsMissing() {
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: true,
+                daemonAlive: false,
+                consumerAlive: false,
+                wasAlive: true,
+                sessionBridgeSeen: true,
+                elapsedSinceSessionStart: 120,
                 pendingDeliveryTimedOut: true
             ),
             .recoverDaemon
