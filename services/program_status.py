@@ -444,6 +444,8 @@ def _project_board_state(ctx: dict[str, Any], ticket: dict[str, Any]) -> str:
     run_state = _run_state(latest_run)
     if run_state in {"active", "stalled"}:
         return "in_progress"
+    if run_state in {"awaiting_merge", "awaiting_review", "merge_conflict"}:
+        return "done"
     if ticket_state in {"inprogress", "in_progress"}:
         return "in_progress"
     if ticket_state in {"ready", "awaitingmerge", "awaiting_merge"}:

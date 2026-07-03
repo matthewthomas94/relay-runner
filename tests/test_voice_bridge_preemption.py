@@ -667,6 +667,12 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 state_path=state_path,
                 event_log_path=None,
             )
+            relay_command["context"] = (
+                "Title: Fix login retries\n"
+                "source_text: raw private utterance\n"
+                "Acceptance criteria:\n"
+                "- Retry errors are visible to users"
+            )
             action = voice_bridge.resolve_command_action(
                 "fix private login bug details",
                 repo_path=repo,
@@ -692,6 +698,9 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual(payload["session_id"], 7)
             self.assertEqual(payload["action"], "create_ticket")
             self.assertEqual(payload["repo_path"], str(repo.resolve()))
+            self.assertIn("Fix login retries", payload["context"])
+            self.assertIn("Retry errors are visible", payload["context"])
+            self.assertNotIn("source_text", payload["context"])
 
     def test_raw_instruction_fanout_rejects_stale_command_before_post(self):
         with tempfile.TemporaryDirectory() as temp_dir:

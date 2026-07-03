@@ -478,6 +478,14 @@ def _clean_optional_text(value: Any) -> str | None:
     return text or None
 
 
+def _clean_optional_multiline_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    lines = [re.sub(r"\s+", " ", line).strip() for line in str(value or "").splitlines()]
+    text = "\n".join(line for line in lines if line).strip()
+    return text or None
+
+
 def _clean_markdown(value: Any, field: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -662,22 +670,122 @@ def _autonomous_worker_sizing(general: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _autonomous_ticket_action(source_text: str, general: dict[str, Any]) -> dict[str, Any]:
+_GENERIC_TICKET_REQUEST_RE = re.compile(
+    r"\b(ticket|card|task|issue)\b.*\b(this|that|conversation|discussion|what\s+we\s+discussed|also)\b"
+    r"|\b(write|create|make)\b.*\b(ticket|card|task|issue)\b",
+    re.IGNORECASE,
+)
+_PRIVATE_CONTEXT_LINE_RE = re.compile(
+    r"\b(raw\s+transcript|source_text|hidden\s+reasoning|tool\s+log|shell\s+output|scratchpad|prompt)\b"
+    r"|(`|\$\(|&&|\|\||\s;\s|"
+    r"\b(?:bash|cat|curl|git|grep|npm|pnpm|python|python3|sh|swift|xcodebuild|yarn|zsh)\s+)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_refined_ticket_context(value: Any) -> str | None:
+    text = _clean_optional_multiline_text(value)
+    if not text:
+        return None
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = re.sub(r"\s+", " ", raw).strip()
+        if not line or _PRIVATE_CONTEXT_LINE_RE.search(line):
+            continue
+        lines.append(line)
+        if len(lines) >= 18:
+            break
+    sanitized = "\n".join(lines).strip()
+    return sanitized[:2400].rstrip() if sanitized else None
+
+
+def _context_title(context: str, source_text: str) -> str:
+    for line in context.splitlines():
+        match = re.match(r"^(?:title|ticket)\s*:\s*(.+)$", line, re.IGNORECASE)
+        candidate = match.group(1) if match else line
+        candidate = re.sub(r"^[-*]\s*(?:\[[ xX]\]\s*)?", "", candidate).strip()
+        if candidate:
+            title = candidate.rstrip(".")
+            return title[:73].rstrip() + "..." if len(title) > 76 else title
+    return refined_ticket_title(source_text)
+
+
+def _context_acceptance_criteria(context: str) -> list[str]:
+    criteria: list[str] = []
+    in_section = False
+    for line in context.splitlines():
+        stripped = line.strip()
+        if re.match(r"^acceptance\s+criteria\s*:?\s*$", stripped, re.IGNORECASE):
+            in_section = True
+            continue
+        bullet = re.match(r"^[-*]\s*(?:\[[ xX]\]\s*)?(.+)$", stripped)
+        if bullet and (in_section or len(criteria) < 4):
+            item = bullet.group(1).strip().rstrip(".")
+            if item:
+                criteria.append(item)
+        elif in_section and stripped and not re.match(r"^[A-Za-z ]+:$", stripped):
+            criteria.append(stripped.rstrip("."))
+        if len(criteria) >= 6:
+            break
+    return criteria
+
+
+def _generic_ticket_request_without_context(source_text: str) -> bool:
+    summary = refined_command_summary(source_text).lower()
+    generic_summary = any(
+        phrase in summary
+        for phrase in (
+            "ticket also",
+            "ticket conversation",
+            "ticket discussion",
+            "requested project change",
+        )
+    )
+    return bool(_GENERIC_TICKET_REQUEST_RE.search(source_text or "") and generic_summary)
+
+
+def _autonomous_ticket_action(
+    source_text: str,
+    general: dict[str, Any],
+    refined_context: str | None = None,
+) -> dict[str, Any]:
+    context = _sanitize_refined_ticket_context(refined_context)
+    if not context and _generic_ticket_request_without_context(source_text):
+        raise ValueError(
+            "Blocked generic ticket request: PM-refined conversation context is required "
+            "before creating a visible ticket."
+        )
+
     summary = refined_command_summary(source_text)
+    title = refined_ticket_title(source_text)
+    description = (
+        f"Backstage orchestrator summary: {summary}\n\n"
+        "Use the repository context to identify the affected files and exact behavior. "
+        "The raw Relay transcript remains private orchestrator metadata and is not part "
+        "of this visible ticket."
+    )
+    criteria = [
+        "The requested behavior summarized above is implemented in the active repo.",
+        "Focused verification covers the affected behavior or the run log explains why verification was not practical.",
+        "The worker run log records what changed and any follow-up needed.",
+    ]
+    if context:
+        title = _context_title(context, source_text)
+        description = (
+            "PM-refined context:\n\n"
+            f"{context}\n\n"
+            "Raw Relay transcripts, hidden reasoning, tool logs, and shell output remain "
+            "private orchestrator metadata and are not part of this visible ticket."
+        )
+        context_criteria = _context_acceptance_criteria(context)
+        if context_criteria:
+            criteria = context_criteria
+
     return {
         "kind": "create_ticket",
-        "title": refined_ticket_title(source_text),
-        "description": (
-            f"Backstage orchestrator summary: {summary}\n\n"
-            "Use the repository context to identify the affected files and exact behavior. "
-            "The raw Relay transcript remains private orchestrator metadata and is not part "
-            "of this visible ticket."
-        ),
-        "acceptance_criteria": [
-            "The requested behavior summarized above is implemented in the active repo.",
-            "Focused verification covers the affected behavior or the run log explains why verification was not practical.",
-            "The worker run log records what changed and any follow-up needed.",
-        ],
+        "title": title,
+        "description": description,
+        "acceptance_criteria": criteria,
         "priority": "medium",
         "depends_on": [],
         **_autonomous_worker_sizing(general),
@@ -1397,7 +1505,7 @@ class OrchestratorSessionStore:
 class OrchestratorCommandStore:
     """Private raw-command inbox for the persistent orchestrator."""
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS orchestrator_commands (
@@ -1408,6 +1516,7 @@ class OrchestratorCommandStore:
         repo_path TEXT NOT NULL,
         provider_key TEXT,
         source_text TEXT NOT NULL,
+        context TEXT,
         action TEXT,
         outcome TEXT,
         ticket_id TEXT,
@@ -1446,7 +1555,7 @@ class OrchestratorCommandStore:
                 c.executescript(self.SCHEMA)
                 c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 return
-            if current == 1:
+            if current in {1, 2}:
                 existing_columns = {
                     str(row["name"])
                     for row in c.execute("PRAGMA table_info(orchestrator_commands)").fetchall()
@@ -1456,6 +1565,7 @@ class OrchestratorCommandStore:
                     "status_message": "TEXT",
                     "error": "TEXT",
                     "processed_at": "REAL",
+                    "context": "TEXT",
                 }
                 for name, declaration in migrations.items():
                     if name not in existing_columns:
@@ -1475,6 +1585,7 @@ class OrchestratorCommandStore:
     def _public_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         data = dict(row)
         data.pop("source_text", None)
+        data.pop("context", None)
         return data
 
     def record(
@@ -1486,6 +1597,7 @@ class OrchestratorCommandStore:
         relay_command_id: str,
         session_id: int | None = None,
         provider_key: str | None = None,
+        context: str | None = None,
         action: str | None = None,
         outcome: str | None = None,
         received_at: float | None = None,
@@ -1509,6 +1621,7 @@ class OrchestratorCommandStore:
         repo = str(Path(repo_path).expanduser().resolve())
         now = time.time()
         provider = OrchestratorSessionStore._normalize_provider(provider_key) if provider_key else None
+        refined_context = _clean_optional_multiline_text(context)
         with self._conn() as c:
             existing = c.execute(
                 "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
@@ -1520,15 +1633,16 @@ class OrchestratorCommandStore:
             c.execute(
                 "INSERT INTO orchestrator_commands("
                 "relay_command_id, relay_command_seq, session_id, repo_path, provider_key, "
-                "source_text, action, outcome, ticket_id, status, status_message, error, "
+                "source_text, context, action, outcome, ticket_id, status, status_message, error, "
                 "received_at, processed_at, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(relay_command_id) DO UPDATE SET "
                 "relay_command_seq = excluded.relay_command_seq, "
                 "session_id = excluded.session_id, "
                 "repo_path = excluded.repo_path, "
                 "provider_key = excluded.provider_key, "
                 "source_text = excluded.source_text, "
+                "context = excluded.context, "
                 "action = excluded.action, "
                 "outcome = excluded.outcome, "
                 "ticket_id = excluded.ticket_id, "
@@ -1545,6 +1659,7 @@ class OrchestratorCommandStore:
                     repo,
                     provider,
                     source_text,
+                    refined_context,
                     action,
                     outcome,
                     None,
@@ -2907,6 +3022,7 @@ class Daemon:
         relay_command_id: str,
         session_id: int | None = None,
         provider: str | None = None,
+        context: str | None = None,
         action: str | None = None,
         outcome: str | None = None,
         received_at: float | None = None,
@@ -2921,6 +3037,7 @@ class Daemon:
             relay_command_id=relay_command_id,
             session_id=session_id,
             provider_key=provider,
+            context=context,
             action=action,
             outcome=outcome,
             received_at=received_at,
@@ -3073,7 +3190,11 @@ class Daemon:
         if not (repo / ".orchestrator" / "config.toml").is_file():
             raise ValueError(f"repo_path {repo} has no .orchestrator/config.toml")
 
-        actions = [_autonomous_ticket_action(str(command.get("source_text") or ""), self.cfg.get("general", {}))]
+        actions = [_autonomous_ticket_action(
+            str(command.get("source_text") or ""),
+            self.cfg.get("general", {}),
+            refined_context=str(command.get("context") or ""),
+        )]
         result = self.apply_orchestrator_actions(
             repo_path=str(repo),
             actions=actions,
@@ -3568,6 +3689,7 @@ class Handler(BaseHTTPRequestHandler):
                     relay_command_id=body.get("relay_command_id", ""),
                     session_id=body.get("session_id"),
                     provider=body.get("provider"),
+                    context=body.get("context"),
                     action=body.get("action"),
                     outcome=body.get("outcome"),
                     received_at=body.get("received_at"),
