@@ -111,6 +111,10 @@ class CommandActionsTests(unittest.TestCase):
             self.assertEqual(ticket_id, "RR-3")
             self.assertEqual(ticket_path, child_orch.resolve() / "RR-3.md")
             self.assertTrue(ticket_path.exists())
+            self.assertNotIn(
+                "Fix login retries after the foreground orchestrator resolved relay-runner.",
+                ticket_path.read_text(),
+            )
             self.assertFalse((parent_orch / "DE-12.md").exists())
             self.assertEqual((parent_orch / "config.toml").read_text(), 'prefix = "DE"\nnext_id = 12\n')
 

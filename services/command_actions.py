@@ -45,6 +45,73 @@ WORK_RE = re.compile(
 )
 PREFIX_RE = re.compile(r'^\s*prefix\s*=\s*["\']?([A-Za-z][A-Za-z0-9]*)["\']?\s*$', re.MULTILINE)
 NEXT_ID_RE = re.compile(r"^(\s*next_id\s*=\s*)(\d+)(\s*)$", re.MULTILINE)
+SUMMARY_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+SUMMARY_VERBS = {
+    "add": "Add",
+    "build": "Build",
+    "change": "Update",
+    "clean": "Clean up",
+    "create": "Create",
+    "debug": "Debug",
+    "delete": "Remove",
+    "design": "Design",
+    "fix": "Fix",
+    "implement": "Implement",
+    "install": "Install",
+    "make": "Implement",
+    "migrate": "Migrate",
+    "refactor": "Refactor",
+    "remove": "Remove",
+    "repair": "Repair",
+    "ship": "Ship",
+    "test": "Test",
+    "update": "Update",
+    "wire": "Wire",
+    "write": "Write",
+}
+SUMMARY_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "can",
+    "could",
+    "for",
+    "from",
+    "i",
+    "in",
+    "into",
+    "it",
+    "let",
+    "lets",
+    "me",
+    "my",
+    "of",
+    "on",
+    "our",
+    "please",
+    "that",
+    "the",
+    "this",
+    "to",
+    "we",
+    "with",
+    "you",
+}
+SUMMARY_PRIVATE_WORDS = {
+    "api",
+    "credential",
+    "credentials",
+    "key",
+    "passcode",
+    "password",
+    "private",
+    "secret",
+    "source_text",
+    "token",
+    "transcript",
+}
 
 
 @dataclass(frozen=True)
@@ -173,6 +240,40 @@ def create_ticket_for_command(
     )
     _write_next_id(config_path, config_text, ticket_number + 1)
     return ticket_id, ticket_path
+
+
+def refined_command_summary(source_text: str) -> str:
+    """Return a short, user-safe summary without copying the raw command."""
+    tokens = [token.lower() for token in SUMMARY_TOKEN_RE.findall(source_text or "")]
+    verb = "Implement"
+    verb_index = -1
+    for index, token in enumerate(tokens):
+        if token in SUMMARY_VERBS:
+            verb = SUMMARY_VERBS[token]
+            verb_index = index
+            break
+
+    subject_tokens: list[str] = []
+    for token in tokens[verb_index + 1 if verb_index >= 0 else 0:]:
+        if token in SUMMARY_VERBS or token in SUMMARY_STOP_WORDS or token in SUMMARY_PRIVATE_WORDS:
+            continue
+        if re.fullmatch(r"[a-z][a-z0-9]*-\d+", token):
+            continue
+        subject_tokens.append(token.replace("_", "-"))
+        if len(subject_tokens) >= 6:
+            break
+
+    subject = " ".join(subject_tokens).strip()
+    if not subject:
+        subject = "requested project change"
+    return f"{verb} {subject}."
+
+
+def refined_ticket_title(source_text: str) -> str:
+    title = refined_command_summary(source_text).rstrip(".")
+    if len(title) > 76:
+        title = title[:73].rstrip() + "..."
+    return title
 
 
 def format_command_for_agent(action: CommandAction) -> str:
@@ -305,17 +406,8 @@ def _ticket_body(
     relay_command: dict | None = None,
     general_config: dict | None = None,
 ) -> str:
-    title = _title_from_command(source_text)
-    quote = "\n".join(f"> {line}" if line else ">" for line in source_text.splitlines())
-    relay_fields = _relay_fields(relay_command)
-    relay_section = ""
-    if relay_fields:
-        relay_section = "\n## Relay command\n\n"
-        if relay_fields.get("relay_command_seq") is not None:
-            relay_section += f"- sequence: {relay_fields['relay_command_seq']}\n"
-        if relay_fields.get("relay_command_id"):
-            relay_section += f"- id: {relay_fields['relay_command_id']}\n"
-        relay_section += "- Newer Relay commands supersede stale ticket edits and dispatches.\n"
+    title = refined_ticket_title(source_text)
+    summary = refined_command_summary(source_text)
     return (
         "---\n"
         f"id: {ticket_id}\n"
@@ -328,24 +420,14 @@ def _ticket_body(
             f"{_worker_sizing_frontmatter(general_config)}"
             "---\n\n"
         "## Description\n\n"
-        "The persistent orchestrator prepared this project-work ticket:\n\n"
-        f"{quote}\n\n"
-        "Refine this ticket before dispatch if the worker would need more context.\n\n"
-        f"{relay_section}"
+        "The persistent orchestrator prepared this refined project-work ticket.\n\n"
+        f"Summary: {summary}\n\n"
+        "Use the repository context to identify the exact implementation path. "
+        "Raw Relay transcript text remains private orchestrator metadata.\n\n"
         "## Acceptance criteria\n\n"
         "- [ ] The ticket contains enough context for a worker to complete the change in one pass.\n"
         "- [ ] Implementation work is dispatched to a worker, unless the user explicitly asks to keep it inline.\n"
     )
-
-
-def _title_from_command(text: str) -> str:
-    title = re.sub(r"\s+", " ", (text or "").strip())
-    title = re.sub(r"^(please|can you|could you|let'?s|we need to)\s+", "", title, flags=re.IGNORECASE)
-    if not title:
-        title = "Captured Relay command"
-    if len(title) > 76:
-        title = title[:73].rstrip() + "..."
-    return title[:1].upper() + title[1:]
 
 
 def _worker_sizing_frontmatter(general_config: dict | None = None) -> str:

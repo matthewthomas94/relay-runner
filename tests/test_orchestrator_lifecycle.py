@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -9,6 +11,7 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
@@ -22,6 +25,7 @@ sys.modules.setdefault(
 import orchestrator  # noqa: E402
 import voice_bridge  # noqa: E402
 from orchestrator import Daemon, OrchestratorCommandStore, OrchestratorSessionStore  # noqa: E402
+from tickets import read as read_ticket  # noqa: E402
 
 
 class OrchestratorLifecycleTests(unittest.TestCase):
@@ -174,6 +178,61 @@ class OrchestratorLifecycleTests(unittest.TestCase):
                 "fix login with private transcript details",
             )
 
+    def test_orchestrator_command_store_migrates_v1_without_losing_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "commands.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE orchestrator_commands (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        relay_command_id TEXT NOT NULL UNIQUE,
+                        relay_command_seq INTEGER NOT NULL,
+                        session_id INTEGER,
+                        repo_path TEXT NOT NULL,
+                        provider_key TEXT,
+                        source_text TEXT NOT NULL,
+                        action TEXT,
+                        outcome TEXT,
+                        status TEXT NOT NULL,
+                        received_at REAL,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE INDEX idx_orchestrator_commands_repo ON orchestrator_commands(repo_path);
+                    CREATE INDEX idx_orchestrator_commands_status ON orchestrator_commands(status);
+                    PRAGMA user_version = 1;
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO orchestrator_commands("
+                    "relay_command_id, relay_command_seq, repo_path, source_text, "
+                    "action, outcome, status, created_at, updated_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "cmd-1",
+                        1,
+                        tmp,
+                        "preserve this private command",
+                        "create_ticket",
+                        "project work needs refined ticket",
+                        "received",
+                        10.0,
+                        10.0,
+                    ),
+                )
+
+            store = OrchestratorCommandStore(db_path)
+
+            private = store.get_private("cmd-1")
+            self.assertIsNotNone(private)
+            self.assertEqual(private["source_text"], "preserve this private command")
+            self.assertEqual(private["status"], "received")
+            self.assertIn("ticket_id", private)
+            self.assertIsNone(private["ticket_id"])
+            with sqlite3.connect(db_path) as conn:
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
+
     def test_daemon_rejects_stale_orchestrator_command_before_recording(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "voice_command_state.json"
@@ -198,6 +257,170 @@ class OrchestratorLifecycleTests(unittest.TestCase):
                 orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
 
             self.assertIsNone(daemon.orchestrator_commands.get_private("first"))
+
+    def test_daemon_authors_received_command_without_raw_transcript_leakage(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo = root / "repo"
+                self.make_git_repo(repo)
+                (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+                state_path = root / "voice_command_state.json"
+                state_path.write_text(json.dumps({
+                    "relay_command_seq": 7,
+                    "relay_command_id": f"{provider}-cmd",
+                }))
+                original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+                orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+                daemon = self.make_daemon(root, provider=provider)
+                notifications: list[tuple[str, dict]] = []
+                try:
+                    with patch("orchestrator._notify_state", lambda state, **payload: notifications.append((state, payload))):
+                        result = daemon.record_orchestrator_command(
+                            repo_path=str(repo),
+                            source_text="fix private login bug details",
+                            relay_command_seq=7,
+                            relay_command_id=f"{provider}-cmd",
+                            provider=provider,
+                        )
+                finally:
+                    orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+                command = result["orchestrator_command"]
+                self.assertEqual(command["status"], "authored")
+                self.assertEqual(command["ticket_id"], "RR-1")
+                self.assertNotIn("source_text", command)
+                ticket = read_ticket(repo / ".orchestrator/RR-1.md")
+                self.assertEqual(ticket["_raw_fields"]["worker_model"], "balanced")
+                self.assertEqual(ticket["_raw_fields"]["worker_effort"], "medium")
+                self.assertIn("Codex uses model_reasoning_effort", ticket["_raw_fields"]["worker_provider_notes"])
+                raw_ticket = (repo / ".orchestrator/RR-1.md").read_text()
+                self.assertNotIn("fix private login bug details", raw_ticket)
+                self.assertNotIn("source_text", raw_ticket)
+                self.assertIn("Fix login bug", raw_ticket)
+                self.assertEqual(notifications[-1][1]["status_event"]["phase"], "outcome")
+                self.assertEqual(notifications[-1][1]["status_event"]["ticket_id"], "RR-1")
+                self.assertNotIn("source_text", notifications[-1][1]["status_event"]["command"])
+
+    def test_daemon_marks_received_command_stale_before_ticket_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            state_path = root / "voice_command_state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 2,
+                "relay_command_id": "newer",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.orchestrator_commands.record(
+                repo_path=str(repo),
+                source_text="fix login bug",
+                relay_command_seq=1,
+                relay_command_id="older",
+                provider_key="codex",
+            )
+            try:
+                result = daemon.process_orchestrator_commands(repo_path=str(repo))
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+            self.assertEqual(result["processed"][0]["status"], "stale")
+            self.assertFalse((repo / ".orchestrator/RR-1.md").exists())
+
+    def test_daemon_dispatches_existing_ticket_from_received_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-7")
+            self.git(repo, "add", ".orchestrator/RR-7.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            state_path = root / "voice_command_state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 3,
+                "relay_command_id": "dispatch",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            daemon = self.make_daemon(root, provider="codex")
+            try:
+                with patch("orchestrator.create_worktree") as create_worktree, \
+                        patch.object(orchestrator.Worker, "start") as start_worker:
+                    result = daemon.record_orchestrator_command(
+                        repo_path=str(repo),
+                        source_text="dispatch RR-7",
+                        relay_command_seq=3,
+                        relay_command_id="dispatch",
+                        provider="codex",
+                    )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+            create_worktree.assert_called_once()
+            start_worker.assert_called_once()
+            command = result["orchestrator_command"]
+            self.assertEqual(command["status"], "authored")
+            self.assertEqual(command["ticket_id"], "RR-7")
+            self.assertEqual(command["outcome"], "dispatch-started")
+
+    def make_git_repo(self, repo: Path) -> None:
+        (repo / ".orchestrator").mkdir(parents=True)
+        self.git(repo, "init")
+        self.git(repo, "config", "user.email", "relay@example.test")
+        self.git(repo, "config", "user.name", "Relay Test")
+
+    def make_daemon(self, root: Path, *, provider: str) -> Daemon:
+        daemon = object.__new__(Daemon)
+        daemon.cfg = {}
+        daemon.workspace_root = root / "workspaces"
+        daemon.branch_prefix = "relay/"
+        daemon.workflow_path = Path(ROOT) / "services" / "orchestrator_workflow.md"
+        daemon.worker_timeout = 30
+        daemon.agent_kind = provider
+        daemon.agent_bin = provider
+        daemon.runs = orchestrator.RunsStore(root / "runs.db")
+        daemon.orchestrator_sessions = OrchestratorSessionStore(root / "sessions.db")
+        daemon.orchestrator_commands = OrchestratorCommandStore(root / "commands.db")
+        daemon._dispatch_lock = threading.Lock()
+        daemon._ticket_authoring_lock = threading.Lock()
+        daemon._orchestrator_action_request_ids = set()
+        daemon._workers = {}
+        daemon._workers_lock = threading.Lock()
+        return daemon
+
+    def write_ticket(self, repo: Path, ticket_id: str) -> None:
+        (repo / ".orchestrator" / f"{ticket_id}.md").write_text(
+            f"""---
+id: {ticket_id}
+title: {ticket_id}
+status: ready
+priority: medium
+depends_on: []
+run_id: null
+canceled: false
+worker_model: balanced
+worker_effort: medium
+worker_sizing_rationale: "Dispatch test ticket."
+worker_provider_notes: "Codex uses model_reasoning_effort; Claude uses --effort."
+---
+
+## Description
+
+Test ticket.
+"""
+        )
+
+    def git(self, repo: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
 
 if __name__ == "__main__":
