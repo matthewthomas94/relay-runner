@@ -14,7 +14,7 @@ final class ProcessManager {
     private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
     private static let bridgeProviderPath = "/tmp/voice_bridge.provider"
     private static let bridgeLaunchdLabel = "com.relay.voicebridge"
-    private static let pendingVoiceCommandTimeout: TimeInterval = 10
+    static let pendingVoiceCommandTimeout: TimeInterval = 10
     private static let staleHeartbeatTimeout: TimeInterval = 30
     private static let missingHeartbeatGrace: TimeInterval = 30
     private static let bridgeRuntimePaths = [
@@ -161,6 +161,16 @@ final class ProcessManager {
         Self.relayConsumerAlive()
     }
 
+    func pendingVoiceCommandDeliveryState(now: Date = Date()) -> PendingVoiceCommandDeliveryState {
+        Self.pendingVoiceCommandDeliveryState(
+            commandURL: URL(fileURLWithPath: Self.voiceCommandPath),
+            metaURL: URL(fileURLWithPath: Self.voiceCommandMetaPath),
+            stateURL: URL(fileURLWithPath: Self.voiceCommandStatePath),
+            claimedURL: URL(fileURLWithPath: Self.voiceCommandClaimedPath),
+            now: now
+        )
+    }
+
     func bridgeStopRequested() -> Bool {
         Self.bridgeStopRequested()
     }
@@ -223,11 +233,77 @@ final class ProcessManager {
         return true
     }
 
+    enum PendingVoiceCommandDeliveryState: Equatable {
+        case none
+        case waiting
+        case timedOut
+        case stale
+        case claimed
+    }
+
+    static func pendingVoiceCommandDeliveryState(
+        commandURL: URL,
+        metaURL: URL,
+        stateURL: URL,
+        claimedURL: URL,
+        now: Date,
+        timeout: TimeInterval = pendingVoiceCommandTimeout,
+        fileManager fm: FileManager = .default
+    ) -> PendingVoiceCommandDeliveryState {
+        guard fm.fileExists(atPath: commandURL.path),
+              let attrs = try? fm.attributesOfItem(atPath: commandURL.path),
+              let modified = attrs[.modificationDate] as? Date,
+              let metadata = readJSONDictionary(from: metaURL) else {
+            return .none
+        }
+
+        if let claimed = readJSONDictionary(from: claimedURL),
+           relayMetadataMatches(metadata, claimed) {
+            return .claimed
+        }
+
+        guard let state = readJSONDictionary(from: stateURL),
+              relayMetadataMatches(metadata, state) else {
+            return .stale
+        }
+
+        return now.timeIntervalSince(modified) > timeout ? .timedOut : .waiting
+    }
+
     private static func modificationDate(of path: String, fileManager fm: FileManager) -> Date? {
         guard fm.fileExists(atPath: path),
               let attrs = try? fm.attributesOfItem(atPath: path),
               let modified = attrs[.modificationDate] as? Date else { return nil }
         return modified
+    }
+
+    private static func readJSONDictionary(from url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+
+    private static func relayMetadataMatches(_ lhs: [String: Any], _ rhs: [String: Any]) -> Bool {
+        guard let lhsSeq = relayCommandSeq(lhs["relay_command_seq"]),
+              let rhsSeq = relayCommandSeq(rhs["relay_command_seq"]),
+              let lhsId = relayCommandId(lhs["relay_command_id"]),
+              let rhsId = relayCommandId(rhs["relay_command_id"]) else {
+            return false
+        }
+        return lhsSeq == rhsSeq && lhsId == rhsId
+    }
+
+    private static func relayCommandSeq(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String { return Int(string) }
+        return nil
+    }
+
+    private static func relayCommandId(_ value: Any?) -> String? {
+        (value as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     struct BridgeRecoveryContext: Equatable {
@@ -291,6 +367,51 @@ final class ProcessManager {
         RELAY_BRIDGE=\(shellQuoted(relayBridge))
         RELAY_PROVIDER=\(shellQuoted(provider))
         VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
+        REPLAY_DIR=$(mktemp -d /tmp/voice_bridge_replay.XXXXXX 2>/dev/null || true)
+        REPLAY_READY=0
+        cleanup_replay() {
+            [ -n "$REPLAY_DIR" ] && rm -rf "$REPLAY_DIR"
+        }
+        trap cleanup_replay EXIT
+        restore_replayed_command() {
+            [ "$REPLAY_READY" = "1" ] || return 0
+            [ -f /tmp/voice_bridge_stop_requested ] && return 1
+            if [ -f /tmp/voice_cmd_ready ]; then
+                echo "[relay-runner] app watchdog replay skipped; another voice command is already pending." >> "$VOICE_BRIDGE_LOG"
+                return 0
+            fi
+            if [ -f /tmp/voice_command_state.json ] && ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_command_state.json; then
+                echo "[relay-runner] app watchdog replay skipped; Relay command state was superseded." >> "$VOICE_BRIDGE_LOG"
+                return 0
+            fi
+            if [ -f /tmp/voice_cmd_ready.meta ] && ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_ready.meta; then
+                echo "[relay-runner] app watchdog replay skipped; newer ready metadata exists." >> "$VOICE_BRIDGE_LOG"
+                return 0
+            fi
+            if [ -f /tmp/voice_cmd_claimed.json ] && cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_claimed.json; then
+                echo "[relay-runner] app watchdog replay skipped; Relay command was already claimed." >> "$VOICE_BRIDGE_LOG"
+                return 0
+            fi
+            cp "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_ready.meta || return 1
+            cp "$REPLAY_DIR/voice_command_state.json" /tmp/voice_command_state.json || return 1
+            cp "$REPLAY_DIR/voice_cmd_ready" /tmp/voice_cmd_ready.replay || return 1
+            mv /tmp/voice_cmd_ready.replay /tmp/voice_cmd_ready || return 1
+            echo "[relay-runner] app watchdog replayed pending voice command after bridge recovery." >> "$VOICE_BRIDGE_LOG"
+        }
+        if [ -n "$REPLAY_DIR" ] && mv /tmp/voice_cmd_ready "$REPLAY_DIR/voice_cmd_ready" 2>/dev/null; then
+            if [ -f /tmp/voice_cmd_ready.meta ] && mv /tmp/voice_cmd_ready.meta "$REPLAY_DIR/voice_cmd_ready.meta" 2>/dev/null; then
+                cp /tmp/voice_command_state.json "$REPLAY_DIR/voice_command_state.json" 2>/dev/null || cp "$REPLAY_DIR/voice_cmd_ready.meta" "$REPLAY_DIR/voice_command_state.json"
+                if cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" "$REPLAY_DIR/voice_command_state.json" \
+                    && { [ ! -f /tmp/voice_cmd_claimed.json ] || ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_claimed.json; }; then
+                    REPLAY_READY=1
+                    echo "[relay-runner] app watchdog captured pending voice command for replay." >> "$VOICE_BRIDGE_LOG"
+                else
+                    echo "[relay-runner] app watchdog skipped pending voice command replay; metadata was stale or already claimed." >> "$VOICE_BRIDGE_LOG"
+                fi
+            else
+                echo "[relay-runner] app watchdog could not capture pending voice command metadata; replay disabled." >> "$VOICE_BRIDGE_LOG"
+            fi
+        fi
         launchctl remove com.relay.voicebridge 2>/dev/null || true
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
@@ -305,12 +426,16 @@ final class ProcessManager {
         for _ in $(seq 1 20); do
             if [ -S /tmp/voice_bridge.sock ]; then
                 echo "[relay-runner] app watchdog launchctl produced socket provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
+                restore_replayed_command
                 exit 0
             fi
             launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
             sleep 0.5
         done
-        [ -S /tmp/voice_bridge.sock ] && exit 0
+        if [ -S /tmp/voice_bridge.sock ]; then
+            restore_replayed_command
+            exit 0
+        fi
         echo "[relay-runner] app watchdog launchctl recovery did not produce a socket; submit_status=$submit_status uid=$(id -u) provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD; launchctl print follows." >> "$VOICE_BRIDGE_LOG"
         launchctl print "gui/$(id -u)/com.relay.voicebridge" >> "$VOICE_BRIDGE_LOG" 2>&1
         print_status=$?
@@ -323,6 +448,7 @@ final class ProcessManager {
         for _ in $(seq 1 20); do
             if [ -S /tmp/voice_bridge.sock ]; then
                 echo "[relay-runner] app watchdog direct fallback produced socket provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
+                restore_replayed_command
                 exit 0
             fi
             sleep 0.5

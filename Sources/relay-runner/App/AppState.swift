@@ -9,6 +9,12 @@ final class AppState {
         let statusText: String?
     }
 
+    struct BridgeRecoveryFailurePresentation: Equatable {
+        let statusText: String
+        let title: String
+        let body: String
+    }
+
     var config: AppConfig
     var isRunning = false
     var statusText = "Idle"
@@ -760,6 +766,8 @@ final class AppState {
             let hasSessionContext = self.processManager.bridgeRecoveryContext(
                 fallbackConfig: self.bridgeRecoveryFallbackConfig
             ) != nil
+            let pendingDeliveryState = self.processManager.pendingVoiceCommandDeliveryState()
+            let pendingDeliveryTimedOut = pendingDeliveryState == .timedOut
             let alive = ProcessManager.relaySessionAlive(
                 daemonAlive: daemonAlive,
                 consumerAlive: consumerAlive,
@@ -775,6 +783,7 @@ final class AppState {
                 wasAlive: wasAlive,
                 sessionBridgeSeen: self.sessionBridgeSeen,
                 elapsedSinceSessionStart: elapsed,
+                pendingDeliveryTimedOut: pendingDeliveryTimedOut,
                 stopRequested: self.processManager.bridgeStopRequested(),
                 recoverySuppressed: self.bridgeRecoverySuppressedForUpdate
             )
@@ -805,14 +814,17 @@ final class AppState {
                 return
             case .recoverDaemon:
                 self.bridgeAliveCache = false
-                if self.startBridgeRecovery(reason: wasAlive ? "bridge-lost" : "menu-session-lost") {
+                let reason = pendingDeliveryTimedOut
+                    ? "voice-delivery-timeout"
+                    : (wasAlive ? "bridge-lost" : "menu-session-lost")
+                if self.startBridgeRecovery(reason: reason) {
                     return
                 }
                 NSLog("[AppState] Bridge died but no recovery context was available")
                 self.menuSessionActive = false
                 self.activeSessionLaunchConfig = nil
                 self.sessionBridgeSeen = false
-                self.statusText = "Ready"
+                self.surfaceBridgeRecoveryFailure(reason: reason)
                 return
             case .markDead:
                 self.bridgeAliveCache = false
@@ -888,6 +900,7 @@ final class AppState {
         wasAlive: Bool,
         sessionBridgeSeen: Bool,
         elapsedSinceSessionStart: TimeInterval,
+        pendingDeliveryTimedOut: Bool = false,
         stopRequested: Bool = false,
         recoverySuppressed: Bool = false
     ) -> BridgeWatchdogAction {
@@ -901,6 +914,9 @@ final class AppState {
             return .alive
         }
         if daemonAlive && !consumerAlive {
+            if pendingDeliveryTimedOut {
+                return .recoverDaemon
+            }
             return (menuSessionActive || wasAlive || hasSessionContext) ? .keepDaemon : .reapOrphan
         }
         if menuSessionActive {
@@ -959,12 +975,33 @@ final class AppState {
                     self.menuSessionActive = false
                     self.activeSessionLaunchConfig = nil
                     self.sessionBridgeSeen = false
-                    self.statusText = "Ready"
+                    self.surfaceBridgeRecoveryFailure(reason: reason)
                     NSLog("[AppState] Voice bridge daemon recovery failed")
                 }
             }
         }
         return true
+    }
+
+    static func bridgeRecoveryFailurePresentation(reason: String) -> BridgeRecoveryFailurePresentation {
+        let detail = reason == "voice-delivery-timeout"
+            ? "a voice delivery timeout"
+            : "the bridge stopped responding"
+        return BridgeRecoveryFailurePresentation(
+            statusText: "Voice bridge recovery failed",
+            title: "Voice command not delivered",
+            body: (
+                "Relay Runner could not recover the active voice bridge after \(detail). "
+                + "Start a new session before speaking again."
+            )
+        )
+    }
+
+    private func surfaceBridgeRecoveryFailure(reason: String) {
+        let presentation = Self.bridgeRecoveryFailurePresentation(reason: reason)
+        statusText = presentation.statusText
+        stateMachine.showProgramStatus(title: presentation.title, body: presentation.body)
+        syncNotchActivitySurface()
     }
 
     private func showSessionPromptIfAllowed(now: Date = Date()) {
@@ -1158,6 +1195,16 @@ final class AppState {
             // can be stale for up to 3s after a bridge dies.
             // Also detect orphaned relay bridges (process alive but no consumer).
             if justStartedRecording {
+                if self.bridgeRecoveryInFlight {
+                    engine.cancelRecording()
+                    self.wasRecording = false
+                    self.stateMachine.showProgramStatus(
+                        title: "Voice session reconnecting",
+                        body: "Relay Runner is recovering the active voice bridge. Try again in a moment."
+                    )
+                    self.syncNotchActivitySurface()
+                    return
+                }
                 let bridgeProcessUp = self.processManager.bridgeAlive()
                 if bridgeProcessUp {
                     self.bridgeAliveCache = true
