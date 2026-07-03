@@ -155,15 +155,31 @@ class ProgramStatusTests(unittest.TestCase):
         done = build_program_status(store, query="done_lane", now=2000.0)
 
         self.assertEqual([item["ticket_id"] for item in backlog["items"]], ["RR-1"])
-        self.assertEqual([item["ticket_id"] for item in ready["items"]], ["RR-2", "RR-4"])
+        self.assertEqual([item["ticket_id"] for item in ready["items"]], ["RR-2"])
         self.assertEqual([item["ticket_id"] for item in in_progress["items"]], ["RR-3", "RR-5"])
-        self.assertEqual([item["ticket_id"] for item in done["items"]], ["RR-6"])
+        self.assertEqual([item["ticket_id"] for item in done["items"]], ["RR-4", "RR-6"])
         self.assertEqual(ready["items"][0]["priority"], "high")
         self.assertEqual(ready["items"][0]["depends_on"], ["RR-1"])
         self.assertEqual(ready["items"][0]["blocked_by"], ["RR-1"])
-        self.assertIn("Queued: 2 tickets", ready["message"])
-        self.assertEqual(ready["items"][1]["run_state"], "awaiting_merge")
-        self.assertEqual(ready["items"][1]["provider"], "Claude/sonnet")
+        self.assertIn("Queued: 1 ticket", ready["message"])
+        self.assertEqual(done["items"][0]["run_state"], "awaiting_merge")
+        self.assertEqual(done["items"][0]["provider"], "Claude/sonnet")
+
+    def test_manual_backlog_dispatch_awaiting_review_appears_done_and_review_pending(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        awaiting = _ticket(store, project, "RR-7", "Manual backlog dispatch", "backlog")
+        _run(store, project, awaiting, 107, "awaiting_review", "codex", model="gpt-5")
+
+        backlog = build_program_status(store, query="backlog_lane", now=2000.0)
+        done = build_program_status(store, query="done_lane", now=2000.0)
+        awaiting_merge = build_program_status(store, query="awaiting_merge", now=2000.0)
+
+        self.assertEqual(backlog["items"], [])
+        self.assertEqual([item["ticket_id"] for item in done["items"]], ["RR-7"])
+        self.assertEqual(done["items"][0]["run_state"], "awaiting_review")
+        self.assertEqual(awaiting_merge["items"][0]["status"], "awaiting review")
+        self.assertIn("RR-7 - Manual backlog dispatch (awaiting review", awaiting_merge["message"])
 
     def test_done_tickets_with_stale_active_runs_stay_out_of_active_lanes(self):
         store = self.make_store()
@@ -232,9 +248,9 @@ class ProgramStatusTests(unittest.TestCase):
         item = result["items"][0]
 
         self.assertEqual(item["backlog_tickets"], 1)
-        self.assertEqual(item["ready_tickets"], 2)
+        self.assertEqual(item["ready_tickets"], 1)
         self.assertEqual(item["in_progress_tickets"], 1)
-        self.assertEqual(item["done_tickets"], 1)
+        self.assertEqual(item["done_tickets"], 2)
         self.assertEqual(item["awaiting_merge"], 1)
 
     def test_awaiting_merge_query_distinguishes_review_and_conflict_states(self):

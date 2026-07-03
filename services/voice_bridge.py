@@ -943,6 +943,34 @@ def _metadata_for_action(action, relay_command: dict) -> dict:
     return metadata
 
 
+_PRIVATE_CONTEXT_LINE_RE = re.compile(
+    r"\b(raw\s+transcript|source_text|hidden\s+reasoning|tool\s+log|shell\s+output|scratchpad|prompt)\b"
+    r"|(`|\$\(|&&|\|\||\s;\s|"
+    r"\b(?:bash|cat|curl|git|grep|npm|pnpm|python|python3|sh|swift|xcodebuild|yarn|zsh)\s+)",
+    re.IGNORECASE,
+)
+
+
+def _sanitized_command_context(relay_command: dict) -> str | None:
+    value = (
+        relay_command.get("context")
+        or relay_command.get("refined_context")
+        or relay_command.get("conversation_context")
+    )
+    if value is None:
+        return None
+    lines: list[str] = []
+    for raw in str(value).splitlines():
+        line = re.sub(r"\s+", " ", raw).strip()
+        if not line or _PRIVATE_CONTEXT_LINE_RE.search(line):
+            continue
+        lines.append(line)
+        if len(lines) >= 18:
+            break
+    sanitized = "\n".join(lines).strip()
+    return sanitized[:2400].rstrip() if sanitized else None
+
+
 def _raw_instruction_payload(
     source_text: str,
     relay_command: dict,
@@ -965,6 +993,9 @@ def _raw_instruction_payload(
         "action": metadata.get("action"),
         "outcome": metadata.get("outcome"),
     }
+    context = _sanitized_command_context(relay_command)
+    if context:
+        payload["context"] = context
     if session_id is not None:
         payload["session_id"] = session_id
     return payload

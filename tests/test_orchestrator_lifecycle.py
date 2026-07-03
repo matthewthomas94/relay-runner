@@ -231,7 +231,25 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             self.assertIn("ticket_id", private)
             self.assertIsNone(private["ticket_id"])
             with sqlite3.connect(db_path) as conn:
-                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+
+    def test_orchestrator_command_store_keeps_refined_context_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = OrchestratorCommandStore(Path(tmp) / "commands.db")
+
+            public = store.record(
+                repo_path=tmp,
+                source_text="write the ticket from our discussion",
+                context="Title: Fix review follow-through\nAcceptance criteria:\n- Awaiting review is visible",
+                relay_command_seq=4,
+                relay_command_id="cmd-4",
+                provider_key="codex",
+            )
+
+            self.assertNotIn("source_text", public)
+            self.assertNotIn("context", public)
+            private = store.get_private("cmd-4")
+            self.assertIn("Fix review follow-through", private["context"])
 
     def test_daemon_rejects_stale_orchestrator_command_before_recording(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -301,6 +319,77 @@ class OrchestratorLifecycleTests(unittest.TestCase):
                 self.assertEqual(notifications[-1][1]["status_event"]["phase"], "outcome")
                 self.assertEqual(notifications[-1][1]["status_event"]["ticket_id"], "RR-1")
                 self.assertNotIn("source_text", notifications[-1][1]["status_event"]["command"])
+
+    def test_daemon_authors_generic_ticket_from_refined_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            state_path = root / "voice_command_state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 8,
+                "relay_command_id": "context-cmd",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            daemon = self.make_daemon(root, provider="codex")
+            try:
+                result = daemon.record_orchestrator_command(
+                    repo_path=str(repo),
+                    source_text="write ticket also orchestrator was meant review",
+                    context=(
+                        "Title: Fix review follow-through\n"
+                        "Description: Completed worker runs that reach AwaitingReview should be obvious in PM status and board lanes.\n"
+                        "source_text: do not include this private line\n"
+                        "Acceptance criteria:\n"
+                        "- Review-pending runs are not shown as untouched backlog work.\n"
+                        "- Codex and Claude users see equivalent review next-step status."
+                    ),
+                    relay_command_seq=8,
+                    relay_command_id="context-cmd",
+                    provider="codex",
+                )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+            self.assertEqual(result["orchestrator_command"]["status"], "authored")
+            raw_ticket = (repo / ".orchestrator/RR-1.md").read_text()
+            self.assertIn("title: Fix review follow-through", raw_ticket)
+            self.assertIn("Review-pending runs are not shown", raw_ticket)
+            self.assertIn("Codex and Claude users", raw_ticket)
+            self.assertNotIn("write ticket also orchestrator", raw_ticket)
+            self.assertNotIn("source_text", raw_ticket)
+
+    def test_daemon_blocks_generic_ticket_without_refined_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            state_path = root / "voice_command_state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 9,
+                "relay_command_id": "generic-cmd",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            daemon = self.make_daemon(root, provider="claude")
+            try:
+                result = daemon.record_orchestrator_command(
+                    repo_path=str(repo),
+                    source_text="write ticket also orchestrator was meant review",
+                    relay_command_seq=9,
+                    relay_command_id="generic-cmd",
+                    provider="claude",
+                )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+            command = result["orchestrator_command"]
+            self.assertEqual(command["status"], "blocked")
+            self.assertIn("Blocked while authoring a ticket", command["status_message"])
+            self.assertFalse((repo / ".orchestrator/RR-1.md").exists())
 
     def test_daemon_marks_received_command_stale_before_ticket_write(self):
         with tempfile.TemporaryDirectory() as tmp:
