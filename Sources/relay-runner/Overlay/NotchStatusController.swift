@@ -731,15 +731,17 @@ enum NotchActivityLabelRenderPolicy {
     }
 
     static func shouldAnimatePlacementTransition(
-        status _: NotchSessionStatus,
-        oldWorkingGlyphHovered _: Bool,
-        newWorkingGlyphHovered _: Bool
+        status: NotchSessionStatus,
+        oldWorkingGlyphHovered: Bool,
+        newWorkingGlyphHovered: Bool
     ) -> Bool {
         // Hover state is hit-tested inside the same window whose frame changes
         // to reveal the trace label. Animating that frame can make the glyph
         // briefly leave and re-enter its hover frame, producing a rapid
-        // expand/collapse loop.
-        false
+        // expand/collapse loop. Keep the hover transition itself animated now
+        // that the glyph is screen-anchored during frame updates, but still
+        // suppress no-op transitions.
+        status == .working && oldWorkingGlyphHovered != newWorkingGlyphHovered
     }
 
     static func shouldAnimateContentPlacementUpdate(
