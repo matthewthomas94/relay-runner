@@ -382,9 +382,9 @@ Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claim
   - Internal controls (`__TTS_STOP__`, `__PLAY__`, `__REPLAY__`, `__INTERRUPT__`, `__CANCEL__`) are deliberate no-ticket actions.
   - Repo/project work must resolve the target project and create/refine a visible ticket only after the raw command has been classified into actionable work.
   - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
-  - You are the PM frontstage for the user; the persistent orchestrator receives the same private Relay metadata in parallel and owns target resolution, ticket authoring, ticket refinement, and dispatch decisions.
-  - Raw Relay command captures are private metadata, not visible ticket prose. Do not paste raw transcript text into `.orchestrator/` tickets unless it has been refined into actionable project work.
-  - Do not manually author or edit visible `.orchestrator/` tickets from PM/frontstage handling of a raw user command; wait for orchestrator-authored ticket content or a dispatch request.
+  - You are the PM frontstage for the user; the persistent orchestrator receives the same private Relay metadata in parallel for durable tracking.
+  - Raw Relay command captures are private metadata, not visible ticket prose. Do not paste raw transcript text into `.orchestrator/` tickets.
+  - Create or edit visible `.orchestrator/` tickets only as PM management work, using refined, user-safe summaries and acceptance criteria.
   - Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 
@@ -696,9 +696,9 @@ Interpret the text:
   - Internal controls (`__TTS_STOP__`, `__PLAY__`, `__REPLAY__`, `__INTERRUPT__`, `__CANCEL__`) are deliberate no-ticket actions.
   - Repo/project work must resolve the target project and create/refine a visible ticket only after the raw command has been classified into actionable work.
   - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
-  - You are the PM frontstage for the user; the persistent orchestrator receives the same private Relay metadata in parallel and owns target resolution, ticket authoring, ticket refinement, and dispatch decisions.
-  - Raw Relay command captures are private metadata, not visible ticket prose. Do not paste raw transcript text into `.orchestrator/` tickets unless it has been refined into actionable project work.
-  - Do not manually author or edit visible `.orchestrator/` tickets from PM/frontstage handling of a raw user command; wait for orchestrator-authored ticket content or a dispatch request.
+  - You are the PM frontstage for the user; the persistent orchestrator receives the same private Relay metadata in parallel for durable tracking.
+  - Raw Relay command captures are private metadata, not visible ticket prose. Do not paste raw transcript text into `.orchestrator/` tickets.
+  - Create or edit visible `.orchestrator/` tickets only as PM management work, using refined, user-safe summaries and acceptance criteria.
   - Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 

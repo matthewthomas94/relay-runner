@@ -11,7 +11,7 @@ class SkillCleanupTests(unittest.TestCase):
 
         self.assertIn("You are the PM frontstage for the user", script)
         self.assertIn("Raw Relay command captures are private metadata", script)
-        self.assertIn("Do not manually author or edit visible `.orchestrator/` tickets", script)
+        self.assertIn("Create or edit visible `.orchestrator/` tickets only as PM management work", script)
         self.assertNotIn("The foreground session is the orchestrator", script)
 
     def test_relay_bridge_install_scrubs_legacy_pm_sync_surfaces(self):
@@ -36,7 +36,7 @@ class SkillCleanupTests(unittest.TestCase):
 
         self.assertIn("You are the PM frontstage for the user", script)
         self.assertIn("Raw Relay command captures are private metadata", script)
-        self.assertIn("Do not manually author or edit visible `.orchestrator/` tickets", script)
+        self.assertIn("Create or edit visible `.orchestrator/` tickets only as PM management work", script)
         self.assertNotIn("the foreground session is always the orchestrator", script)
 
 

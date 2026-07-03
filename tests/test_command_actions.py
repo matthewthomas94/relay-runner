@@ -38,7 +38,7 @@ class CommandActionsTests(unittest.TestCase):
         self.assertFalse(action.requires_ticket)
         self.assertEqual(action.reason, "trace")
 
-    def test_new_project_work_defers_visible_ticket_creation(self):
+    def test_new_project_work_requires_refined_management_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = repo / ".orchestrator"
@@ -57,13 +57,13 @@ class CommandActionsTests(unittest.TestCase):
             prompt = format_command_for_agent(action)
             self.assertIn("action: create_ticket", prompt)
             self.assertIn("ticket_id: null", prompt)
-            self.assertIn("No visible ticket has been written yet", prompt)
+            self.assertIn("Create or refine a visible ticket now", prompt)
             self.assertIn("You are the PM frontstage", prompt)
-            self.assertIn("The persistent orchestrator receives the same private raw command", prompt)
+            self.assertIn("persistent orchestrator receives the same private raw command", prompt)
             self.assertNotIn("You are the foreground orchestrator", prompt)
             self.assertIn("Raw Relay command captures are private metadata", prompt)
-            self.assertIn("Do not manually create or edit visible `.orchestrator/` tickets", prompt)
-            self.assertIn("Do not write the ticket yourself", prompt)
+            self.assertIn("Creating or editing visible `.orchestrator/` tickets is PM management work", prompt)
+            self.assertIn("Do not implement the ticket yourself", prompt)
 
     def test_relay_command_metadata_is_preserved_without_visible_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,7 +175,7 @@ class CommandActionsTests(unittest.TestCase):
             self.assertTrue(action.requires_ticket)
             self.assertIsNone(action.ticket_id)
             self.assertFalse((Path(tmp) / ".orchestrator").exists())
-            self.assertIn("No visible ticket has been written yet", format_command_for_agent(action))
+            self.assertIn("Create or refine a visible ticket now", format_command_for_agent(action))
 
 
 if __name__ == "__main__":

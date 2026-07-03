@@ -678,7 +678,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             with open(command_path) as f:
                 command = f.read()
             self.assertIn("ticket_id: null", command)
-            self.assertIn("No visible ticket has been written yet", command)
+            self.assertIn("Create or refine a visible ticket now", command)
             meta = json.loads(Path(meta_path).read_text())
             self.assertNotIn("ticket_id", meta)
             self.assertEqual(meta["action"], "create_ticket")

@@ -3,8 +3,9 @@
 The foreground Codex or Claude session is the PM frontstage. This module keeps
 voice/text command handling explicit before work routes backstage: controls are
 intentional no-ticket actions, ticket references attach to existing work, and
-new project-work requests are handed to the persistent orchestrator for target
-resolution and refined ticket creation.
+new project-work requests become refined management tickets before any worker
+implementation starts. Raw Relay captures stay private; visible ticket prose is
+actionable summary, not transcript dump.
 """
 
 from __future__ import annotations
@@ -137,7 +138,7 @@ def resolve_command_action(
         source_text=action.source_text,
         requires_ticket=True,
         repo_path=str(repo),
-        reason="visible ticket creation is deferred until the persistent orchestrator resolves the target project and refines the work",
+        reason="project work needs a refined visible ticket before dispatch; keep raw Relay transcript private",
         **_relay_fields(relay_command),
     )
 
@@ -207,23 +208,23 @@ def format_command_for_agent(action: CommandAction) -> str:
         [
             "",
             "PM frontstage contract:",
-            "- You are the PM frontstage for the user, not the persistent orchestrator or implementation worker.",
+            "- You are the PM frontstage for the user, not the implementation worker.",
             "- Keep the user-facing response concise and status-oriented; do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
-            "- The persistent orchestrator receives the same private raw command and Relay metadata in parallel; it owns target resolution, refined ticket creation, ticket edits, planning, and dispatch decisions.",
-            "- Raw Relay command captures are private metadata, not board cards; do not copy raw transcript text into a visible ticket unless the persistent orchestrator has refined it into actionable project work.",
-            "- Do not manually create or edit visible `.orchestrator/` tickets from PM frontstage raw-command handling; wait for an orchestrator-authored ticket or dispatch request.",
+            "- The persistent orchestrator receives the same private raw command and Relay metadata for durable tracking; the PM frontstage may create or refine visible tickets as management work.",
+            "- Raw Relay command captures are private metadata, not board cards; visible `.orchestrator/` tickets must use refined, user-safe summaries and acceptance criteria instead of transcript dumps.",
+            "- Creating or editing visible `.orchestrator/` tickets is PM management work. Implementation belongs to workers unless the user explicitly asks to keep it inline.",
             "- Relay command metadata is the stale-action guard. Before any user-visible follow-up, TTS, ticket edit, dispatch, or orchestrator action, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
             "- When a later dispatch request goes through relay-orchestrator, pass relay_command_seq and relay_command_id when they are present.",
-            "- Your user-facing response must name the PM outcome, such as waiting on the orchestrator plan, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.",
+            "- Your user-facing response must name the PM outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.",
         ]
     )
 
     if action.kind == "create_ticket":
-        lines.append("- No visible ticket has been written yet; report that the PM is waiting on the persistent orchestrator's refined ticket content. Do not write the ticket yourself.")
+        lines.append("- Create or refine a visible ticket now if the target project and scope are clear; otherwise ask one concise clarification. Do not implement the ticket yourself.")
     elif action.kind == "dispatch_ticket":
-        lines.append("- The persistent orchestrator owns dispatching the named ticket through relay-orchestrator; do not implement the ticket yourself.")
+        lines.append("- Dispatch the named ticket through relay-orchestrator; do not implement the ticket yourself.")
     elif action.kind == "update_ticket":
-        lines.append("- The persistent orchestrator owns editing the named ticket so it can survive a cold worker run; dispatch only after it is ready.")
+        lines.append("- Edit/refine the named ticket so it can survive a cold worker run; dispatch only after it is ready.")
     elif action.kind == "inspect_ticket":
         lines.append("- Inspect/report ticket or run state; do not implement the ticket yourself.")
     elif action.kind == "needs_project":
