@@ -38,6 +38,15 @@ class CommandActionsTests(unittest.TestCase):
         self.assertFalse(action.requires_ticket)
         self.assertEqual(action.reason, "trace")
 
+    def test_pending_work_instruction_is_not_routed_as_new_ticket(self):
+        action = classify_command(
+            "Once these tickets are done, review it, merge it, and rebuild and install the app."
+        )
+
+        self.assertEqual(action.kind, "control")
+        self.assertFalse(action.requires_ticket)
+        self.assertEqual(action.reason, "pending_work_instruction")
+
     def test_new_project_work_requires_refined_management_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

@@ -38,6 +38,10 @@ INLINE_RE = re.compile(
     r"\b(inline|in\s+this\s+session|do\s+it\s+here|don'?t\s+dispatch|without\s+(a\s+)?ticket)\b",
     re.IGNORECASE,
 )
+PENDING_WORK_RE = re.compile(
+    r"\b(once|when|after)\b.*\b(ticket|tickets|run|runs|worker|workers|done|finish|finished|complete|completed)\b",
+    re.IGNORECASE,
+)
 WORK_RE = re.compile(
     r"\b(add|build|change|clean\s+up|create|debug|delete|design|fix|implement|"
     r"install|make|migrate|refactor|remove|repair|ship|test|update|wire|write)\b",
@@ -160,6 +164,9 @@ def classify_command(text: str) -> CommandAction:
 
     if INLINE_RE.search(source):
         return CommandAction(kind="inline_work", source_text=source)
+
+    if PENDING_WORK_RE.search(source):
+        return CommandAction(kind="control", source_text=source, reason="pending_work_instruction")
 
     ticket_id = _extract_ticket_id(source)
     if ticket_id:
