@@ -7,6 +7,8 @@ struct BoardRevealTransitionPlan: Equatable {
     let fullWidthFrame: CGRect
     let expandedFrame: CGRect
     let glyphFrame: CGRect
+    let compactLeadingSpacerWidth: CGFloat
+    let compactNotchSpacerWidth: CGFloat
 }
 
 enum BoardRevealTransitionPlanner {
@@ -74,7 +76,9 @@ enum BoardRevealTransitionPlanner {
             compactFrame: compactFrame,
             fullWidthFrame: fullWidthFrame,
             expandedFrame: expandedFrame,
-            glyphFrame: glyphFrame
+            glyphFrame: glyphFrame,
+            compactLeadingSpacerWidth: notchPlacement?.leadingSpacerWidth ?? 0,
+            compactNotchSpacerWidth: notchPlacement?.notchSpacerWidth ?? 0
         )
     }
 }
@@ -333,7 +337,7 @@ private final class BoardRevealSurfaceView: NSView {
         super.draw(dirtyRect)
 
         NSColor(calibratedWhite: 0, alpha: 0.985).setFill()
-        bottomRoundedPath(in: surfaceFrame).fill()
+        surfacePath(in: surfaceFrame).fill()
         drawLoadingTextIfNeeded()
     }
 
@@ -391,6 +395,30 @@ private final class BoardRevealSurfaceView: NSView {
             height: size.height
         )
         text.draw(in: rect, withAttributes: attributes)
+    }
+
+    private func surfacePath(in rect: CGRect) -> NSBezierPath {
+        if let compactPath = compactNotchCutoutPath(in: rect) {
+            return compactPath
+        }
+        return bottomRoundedPath(in: rect)
+    }
+
+    private func compactNotchCutoutPath(in rect: CGRect) -> NSBezierPath? {
+        guard plan.compactNotchSpacerWidth > 0,
+              rect.height <= plan.compactFrame.height + 0.5,
+              rect.width <= plan.compactFrame.width + NotchStatusPlacementPlanner.glyphSize.height else {
+            return nil
+        }
+        let topContact = NotchStatusSurfaceShape.topContact(
+            activityLabelWidth: 0,
+            leadingSpacerWidth: plan.compactLeadingSpacerWidth,
+            notchSpacerWidth: plan.compactNotchSpacerWidth,
+            boundsWidth: rect.width,
+            boundsHeight: rect.height
+        )
+        guard let topContact else { return nil }
+        return NotchStatusSurfaceShape.compactNotchCutoutPath(in: rect, topContact: topContact)
     }
 
     private func bottomRoundedPath(in rect: CGRect) -> NSBezierPath {

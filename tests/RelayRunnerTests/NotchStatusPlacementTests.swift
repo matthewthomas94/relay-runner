@@ -41,10 +41,12 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchStatusPlacementPlanner.compactNotchLeadInWidth
                 + placement.notchSpacerWidth
                 + NotchStatusPlacementPlanner.glyphSize.width
+                + NotchStatusPlacementPlanner.compactNotchLeadOutWidth
         )
         XCTAssertEqual(
             placement.visibleFrame.maxX,
             geometry.auxiliaryTopRightArea.minX + NotchStatusPlacementPlanner.glyphSize.width
+                + NotchStatusPlacementPlanner.compactNotchLeadOutWidth
         )
         XCTAssertEqual(placement.glyphScreenX, geometry.auxiliaryTopRightArea.minX)
         XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)

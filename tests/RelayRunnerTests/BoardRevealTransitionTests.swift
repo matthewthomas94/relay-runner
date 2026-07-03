@@ -13,6 +13,8 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertEqual(plan.fullWidthFrame, CGRect(x: 0, y: 0, width: 1512, height: 34))
         XCTAssertEqual(plan.expandedFrame, CGRect(x: 0, y: 0, width: 1512, height: 735))
         XCTAssertEqual(plan.glyphFrame.maxX, plan.compactFrame.maxX)
+        XCTAssertEqual(plan.compactLeadingSpacerWidth, 0)
+        XCTAssertEqual(plan.compactNotchSpacerWidth, 0)
     }
 
     func testRevealPlanUsesNotchPlacementWhenAvailable() throws {
@@ -30,6 +32,8 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertEqual(plan.compactFrame.midX, placement.visibleFrame.midX - geometry.frame.minX)
         XCTAssertEqual(plan.glyphFrame.minX, placement.glyphScreenX - geometry.frame.minX)
         XCTAssertEqual(plan.fullWidthFrame.maxX, geometry.frame.width)
+        XCTAssertEqual(plan.compactLeadingSpacerWidth, placement.leadingSpacerWidth)
+        XCTAssertEqual(plan.compactNotchSpacerWidth, placement.notchSpacerWidth)
     }
 
     func testRevealPlanClampsExpandedHeightOnShortScreens() {
