@@ -28,6 +28,7 @@ Legacy `.pm/project-id` files are not required for Relay Runner program capture.
 ### Things to avoid
 
 - Don't drag tickets to `ready` casually — promotion equals dispatch. Refine first.
+- Don't manually author or edit visible `.orchestrator/` tickets from PM/frontstage handling of a raw user command. The persistent orchestrator owns refined ticket content; the PM reports that it is waiting on orchestrator-authored content or a dispatch request.
 - Don't push `relay/<id>` branches. They're throwaway by design; integrate into the working branch (typically `main`) before deleting.
 - Don't let a sub-agent edit `.orchestrator/` files other than its own ticket. That boundary is enforced in `services/orchestrator_workflow.md`. The daemon writes ticket files in exactly one case: flipping a dependent from `backlog` to `ready` after its predecessor finishes.
 - Don't ad-hoc fix the bundled `.app`'s scripts. The DMG-build action is the source of truth; commit fixes upstream and let the action rebuild.

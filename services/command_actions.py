@@ -211,6 +211,7 @@ def format_command_for_agent(action: CommandAction) -> str:
             "- Keep the user-facing response concise and status-oriented; do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
             "- The persistent orchestrator receives the same private raw command and Relay metadata in parallel; it owns target resolution, refined ticket creation, ticket edits, planning, and dispatch decisions.",
             "- Raw Relay command captures are private metadata, not board cards; do not copy raw transcript text into a visible ticket unless the persistent orchestrator has refined it into actionable project work.",
+            "- Do not manually create or edit visible `.orchestrator/` tickets from PM frontstage raw-command handling; wait for an orchestrator-authored ticket or dispatch request.",
             "- Relay command metadata is the stale-action guard. Before any user-visible follow-up, TTS, ticket edit, dispatch, or orchestrator action, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
             "- When a later dispatch request goes through relay-orchestrator, pass relay_command_seq and relay_command_id when they are present.",
             "- Your user-facing response must name the PM outcome, such as waiting on the orchestrator plan, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.",
@@ -218,7 +219,7 @@ def format_command_for_agent(action: CommandAction) -> str:
     )
 
     if action.kind == "create_ticket":
-        lines.append("- No visible ticket has been written yet; wait for the persistent orchestrator to resolve the target project and create refined ticket content.")
+        lines.append("- No visible ticket has been written yet; report that the PM is waiting on the persistent orchestrator's refined ticket content. Do not write the ticket yourself.")
     elif action.kind == "dispatch_ticket":
         lines.append("- The persistent orchestrator owns dispatching the named ticket through relay-orchestrator; do not implement the ticket yourself.")
     elif action.kind == "update_ticket":

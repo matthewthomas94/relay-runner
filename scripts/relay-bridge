@@ -384,6 +384,7 @@ Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claim
   - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
   - You are the PM frontstage for the user; the persistent orchestrator receives the same private Relay metadata in parallel and owns target resolution, ticket authoring, ticket refinement, and dispatch decisions.
   - Raw Relay command captures are private metadata, not visible ticket prose. Do not paste raw transcript text into `.orchestrator/` tickets unless it has been refined into actionable project work.
+  - Do not manually author or edit visible `.orchestrator/` tickets from PM/frontstage handling of a raw user command; wait for orchestrator-authored ticket content or a dispatch request.
   - Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 
@@ -697,6 +698,7 @@ Interpret the text:
   - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
   - You are the PM frontstage for the user; the persistent orchestrator receives the same private Relay metadata in parallel and owns target resolution, ticket authoring, ticket refinement, and dispatch decisions.
   - Raw Relay command captures are private metadata, not visible ticket prose. Do not paste raw transcript text into `.orchestrator/` tickets unless it has been refined into actionable project work.
+  - Do not manually author or edit visible `.orchestrator/` tickets from PM/frontstage handling of a raw user command; wait for orchestrator-authored ticket content or a dispatch request.
   - Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 

@@ -62,6 +62,8 @@ class CommandActionsTests(unittest.TestCase):
             self.assertIn("The persistent orchestrator receives the same private raw command", prompt)
             self.assertNotIn("You are the foreground orchestrator", prompt)
             self.assertIn("Raw Relay command captures are private metadata", prompt)
+            self.assertIn("Do not manually create or edit visible `.orchestrator/` tickets", prompt)
+            self.assertIn("Do not write the ticket yourself", prompt)
 
     def test_relay_command_metadata_is_preserved_without_visible_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
