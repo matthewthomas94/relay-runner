@@ -49,6 +49,10 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(placement.glyphScreenX, geometry.auxiliaryTopRightArea.minX)
         XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
         XCTAssertEqual(placement.visibleFrame.height, 34)
+        XCTAssertEqual(
+            NotchStatusSurfaceShape.topContactCornerRadius(notchSpacerWidth: placement.notchSpacerWidth),
+            NotchStatusSurfaceShape.notchContactCornerRadius
+        )
     }
 
     func testPlacesContinuousPillAcrossNotchWithActivityLabels() throws {
@@ -100,6 +104,10 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(placement.visibleFrame.midX, geometry.frame.midX)
         XCTAssertEqual(placement.glyphScreenX, placement.visibleFrame.maxX - NotchStatusPlacementPlanner.glyphSize.width)
         XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
+        XCTAssertEqual(
+            NotchStatusSurfaceShape.topContactCornerRadius(notchSpacerWidth: placement.notchSpacerWidth),
+            0
+        )
     }
 
     func testCentersFallbackPillWithActivityLabelsWhenDisplayDoesNotReportNotchArea() throws {

@@ -356,6 +356,14 @@ enum NotchStatusPlacementPlanner {
     }
 }
 
+enum NotchStatusSurfaceShape {
+    static let notchContactCornerRadius: CGFloat = 6
+
+    static func topContactCornerRadius(notchSpacerWidth: CGFloat) -> CGFloat {
+        notchSpacerWidth > 0 ? notchContactCornerRadius : 0
+    }
+}
+
 enum NotchActivityLabelPlanner {
     private static let maximumLabels = 3
 
@@ -1331,24 +1339,44 @@ private final class NotchStatusPillContentView: NSView {
     }
 
     private func bottomRoundedPillPath(in rect: NSRect) -> NSBezierPath {
-        let radius = min(rect.height / 2, rect.width / 2)
-        let control = radius * 0.5522847498307936
+        let bottomRadius = min(rect.height / 2, rect.width / 2)
+        let topRadius = min(
+            NotchStatusSurfaceShape.topContactCornerRadius(notchSpacerWidth: notchSpacerWidth),
+            rect.width / 2,
+            rect.height - bottomRadius
+        )
+        let bottomControl = bottomRadius * 0.5522847498307936
+        let topControl = topRadius * 0.5522847498307936
         let path = NSBezierPath()
 
-        path.move(to: NSPoint(x: rect.minX, y: rect.minY))
-        path.line(to: NSPoint(x: rect.maxX, y: rect.minY))
-        path.line(to: NSPoint(x: rect.maxX, y: rect.maxY - radius))
+        path.move(to: NSPoint(x: rect.minX, y: rect.maxY - bottomRadius))
         path.curve(
-            to: NSPoint(x: rect.maxX - radius, y: rect.maxY),
-            controlPoint1: NSPoint(x: rect.maxX, y: rect.maxY - radius + control),
-            controlPoint2: NSPoint(x: rect.maxX - radius + control, y: rect.maxY)
+            to: NSPoint(x: rect.minX + bottomRadius, y: rect.maxY),
+            controlPoint1: NSPoint(x: rect.minX, y: rect.maxY - bottomRadius + bottomControl),
+            controlPoint2: NSPoint(x: rect.minX + bottomRadius - bottomControl, y: rect.maxY)
         )
-        path.line(to: NSPoint(x: rect.minX + radius, y: rect.maxY))
+        path.line(to: NSPoint(x: rect.maxX - bottomRadius, y: rect.maxY))
         path.curve(
-            to: NSPoint(x: rect.minX, y: rect.maxY - radius),
-            controlPoint1: NSPoint(x: rect.minX + radius - control, y: rect.maxY),
-            controlPoint2: NSPoint(x: rect.minX, y: rect.maxY - radius + control)
+            to: NSPoint(x: rect.maxX, y: rect.maxY - bottomRadius),
+            controlPoint1: NSPoint(x: rect.maxX - bottomRadius + bottomControl, y: rect.maxY),
+            controlPoint2: NSPoint(x: rect.maxX, y: rect.maxY - bottomRadius + bottomControl)
         )
+        path.line(to: NSPoint(x: rect.maxX, y: rect.minY + topRadius))
+        if topRadius > 0 {
+            path.curve(
+                to: NSPoint(x: rect.maxX - topRadius, y: rect.minY),
+                controlPoint1: NSPoint(x: rect.maxX, y: rect.minY + topRadius - topControl),
+                controlPoint2: NSPoint(x: rect.maxX - topRadius + topControl, y: rect.minY)
+            )
+        }
+        path.line(to: NSPoint(x: rect.minX + topRadius, y: rect.minY))
+        if topRadius > 0 {
+            path.curve(
+                to: NSPoint(x: rect.minX, y: rect.minY + topRadius),
+                controlPoint1: NSPoint(x: rect.minX + topRadius - topControl, y: rect.minY),
+                controlPoint2: NSPoint(x: rect.minX, y: rect.minY + topRadius - topControl)
+            )
+        }
         path.close()
         return path
     }
