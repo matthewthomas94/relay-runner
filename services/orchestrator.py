@@ -39,9 +39,10 @@ from urllib.parse import parse_qs, urlparse
 # Reuse the existing config loader (sibling file).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
+from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
 from graphify_core import GraphifyCoreStore
 from graphify_ingest import ingest_registered_projects
-from pm_frontstage import OrchestrationTraceEvent, RelayCommandMetadata
+from pm_frontstage import OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata
 from program_status import build_program_status
 from session_capture import capture_session_review
 from tickets import (
@@ -67,7 +68,20 @@ ORCHESTRATOR_SESSION_STATES = frozenset({
     "stale",
 })
 ORCHESTRATOR_SESSION_STALE_AFTER_SECONDS = 30.0
-ORCHESTRATOR_COMMAND_STATUSES = frozenset({"received", "stale"})
+ORCHESTRATOR_COMMAND_STATUSES = frozenset({
+    "received",
+    "planning",
+    "authored",
+    "blocked",
+    "stale",
+    "failed",
+})
+ORCHESTRATOR_COMMAND_TERMINAL_STATUSES = frozenset({
+    "authored",
+    "blocked",
+    "stale",
+    "failed",
+})
 
 WORKER_SIZING_FIELDS = (
     "worker_model",
@@ -628,6 +642,46 @@ def _validate_relay_command(relay_command_seq: Any, relay_command_id: Any) -> No
     if _relay_command_current(relay_command_seq, str(relay_command_id or "")):
         return
     raise ValueError("stale Relay command: a newer voice command has superseded this action")
+
+
+def _autonomous_worker_sizing(general: dict[str, Any]) -> dict[str, str]:
+    defaults = _normalized_default_worker_sizing(general)
+    if defaults:
+        return defaults
+    return {
+        "worker_model": "balanced",
+        "worker_effort": "medium",
+        "worker_sizing_rationale": (
+            "Autonomous Relay command authoring used a conservative default "
+            "because the PM did not supply explicit sizing."
+        ),
+        "worker_provider_notes": (
+            "Codex uses model_reasoning_effort and Claude uses --effort; "
+            "the backstage authoring loop writes the same ticket schema for both providers."
+        ),
+    }
+
+
+def _autonomous_ticket_action(source_text: str, general: dict[str, Any]) -> dict[str, Any]:
+    summary = refined_command_summary(source_text)
+    return {
+        "kind": "create_ticket",
+        "title": refined_ticket_title(source_text),
+        "description": (
+            f"Backstage orchestrator summary: {summary}\n\n"
+            "Use the repository context to identify the affected files and exact behavior. "
+            "The raw Relay transcript remains private orchestrator metadata and is not part "
+            "of this visible ticket."
+        ),
+        "acceptance_criteria": [
+            "The requested behavior summarized above is implemented in the active repo.",
+            "Focused verification covers the affected behavior or the run log explains why verification was not practical.",
+            "The worker run log records what changed and any follow-up needed.",
+        ],
+        "priority": "medium",
+        "depends_on": [],
+        **_autonomous_worker_sizing(general),
+    }
 
 
 # -- live activity summary (RR-12) ------------------------------------------
@@ -1343,7 +1397,7 @@ class OrchestratorSessionStore:
 class OrchestratorCommandStore:
     """Private raw-command inbox for the persistent orchestrator."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS orchestrator_commands (
@@ -1356,8 +1410,12 @@ class OrchestratorCommandStore:
         source_text TEXT NOT NULL,
         action TEXT,
         outcome TEXT,
+        ticket_id TEXT,
         status TEXT NOT NULL,
+        status_message TEXT,
+        error TEXT,
         received_at REAL,
+        processed_at REAL,
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL
     );
@@ -1430,11 +1488,19 @@ class OrchestratorCommandStore:
         now = time.time()
         provider = OrchestratorSessionStore._normalize_provider(provider_key) if provider_key else None
         with self._conn() as c:
+            existing = c.execute(
+                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
+                (command_id,),
+            ).fetchone()
+            if existing is not None and existing["status"] in ORCHESTRATOR_COMMAND_TERMINAL_STATUSES:
+                return self._public_row(existing)
+
             c.execute(
                 "INSERT INTO orchestrator_commands("
                 "relay_command_id, relay_command_seq, session_id, repo_path, provider_key, "
-                "source_text, action, outcome, status, received_at, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "source_text, action, outcome, ticket_id, status, status_message, error, "
+                "received_at, processed_at, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(relay_command_id) DO UPDATE SET "
                 "relay_command_seq = excluded.relay_command_seq, "
                 "session_id = excluded.session_id, "
@@ -1443,8 +1509,12 @@ class OrchestratorCommandStore:
                 "source_text = excluded.source_text, "
                 "action = excluded.action, "
                 "outcome = excluded.outcome, "
+                "ticket_id = excluded.ticket_id, "
                 "status = excluded.status, "
+                "status_message = excluded.status_message, "
+                "error = excluded.error, "
                 "received_at = excluded.received_at, "
+                "processed_at = excluded.processed_at, "
                 "updated_at = excluded.updated_at",
                 (
                     command_id,
@@ -1455,8 +1525,12 @@ class OrchestratorCommandStore:
                     source_text,
                     action,
                     outcome,
+                    None,
                     command_status,
+                    None,
+                    None,
                     received_at,
+                    None,
                     now,
                     now,
                 ),
@@ -1467,6 +1541,57 @@ class OrchestratorCommandStore:
             ).fetchone()
             return self._public_row(row)
 
+    def update_status(
+        self,
+        command_id: str,
+        *,
+        status: str,
+        action: str | None = None,
+        outcome: str | None = None,
+        ticket_id: str | None = None,
+        status_message: str | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any] | None:
+        command_status = str(status or "").strip().lower()
+        if command_status not in ORCHESTRATOR_COMMAND_STATUSES:
+            raise ValueError(
+                "invalid orchestrator command status "
+                f"{status!r}; expected one of {', '.join(sorted(ORCHESTRATOR_COMMAND_STATUSES))}"
+            )
+        now = time.time()
+        processed_at = now if command_status in ORCHESTRATOR_COMMAND_TERMINAL_STATUSES else None
+        fields = ["status = ?", "updated_at = ?"]
+        values: list[Any] = [command_status, now]
+        if processed_at is not None:
+            fields.append("processed_at = ?")
+            values.append(processed_at)
+        if action is not None:
+            fields.append("action = ?")
+            values.append(action)
+        if outcome is not None:
+            fields.append("outcome = ?")
+            values.append(outcome)
+        if ticket_id is not None:
+            fields.append("ticket_id = ?")
+            values.append(ticket_id)
+        if status_message is not None:
+            fields.append("status_message = ?")
+            values.append(status_message)
+        if error is not None:
+            fields.append("error = ?")
+            values.append(error)
+        values.append(command_id)
+        with self._conn() as c:
+            c.execute(
+                f"UPDATE orchestrator_commands SET {', '.join(fields)} WHERE relay_command_id = ?",
+                values,
+            )
+            row = c.execute(
+                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
+                (command_id,),
+            ).fetchone()
+            return self._public_row(row) if row else None
+
     def get_private(self, command_id: str) -> dict[str, Any] | None:
         with self._conn() as c:
             row = c.execute(
@@ -1474,6 +1599,30 @@ class OrchestratorCommandStore:
                 (command_id,),
             ).fetchone()
             return dict(row) if row else None
+
+    def get_public(self, command_id: str) -> dict[str, Any] | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
+                (command_id,),
+            ).fetchone()
+            return self._public_row(row) if row else None
+
+    def pending(self, *, repo_path: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        params: list[Any] = ["received"]
+        repo_clause = ""
+        if repo_path:
+            repo_clause = "AND repo_path = ? "
+            params.append(str(Path(repo_path).expanduser().resolve()))
+        params.append(max(1, int(limit)))
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM orchestrator_commands WHERE status = ? "
+                f"{repo_clause}"
+                "ORDER BY relay_command_seq ASC, id ASC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -2687,6 +2836,10 @@ class Daemon:
             pid=pid,
             state=state,
         )
+        try:
+            self.process_orchestrator_commands(repo_path=str(repo), limit=10)
+        except Exception as e:  # noqa: BLE001 - activation must still succeed.
+            print(f"[orchestrator] command resume failed for {repo}: {e}", file=sys.stderr)
         return {"orchestrator_session": result}
 
     def heartbeat_orchestrator_session(
@@ -2750,7 +2903,221 @@ class Daemon:
             outcome=outcome,
             received_at=received_at,
         )
-        return {"orchestrator_command": result}
+        processing = self.process_orchestrator_commands(repo_path=repo_path, limit=10)
+        latest = self.orchestrator_commands.get_public(str(relay_command_id or "")) or result
+        return {"orchestrator_command": latest, "processing": processing}
+
+    def process_orchestrator_commands(
+        self,
+        *,
+        repo_path: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        commands = self.orchestrator_commands.pending(repo_path=repo_path, limit=limit)
+        processed: list[dict[str, Any]] = []
+        for command in commands:
+            processed.append(self._process_orchestrator_command(command))
+        return {"processed": processed}
+
+    def _process_orchestrator_command(self, command: dict[str, Any]) -> dict[str, Any]:
+        command_id = str(command.get("relay_command_id") or "")
+        if not command_id:
+            return {"status": "failed", "error": "missing relay_command_id"}
+        repo_path = str(command.get("repo_path") or "")
+        relay_command_seq = command.get("relay_command_seq")
+        relay_command_id = command.get("relay_command_id")
+        relay_metadata = {
+            "relay_command_seq": relay_command_seq,
+            "relay_command_id": relay_command_id,
+        }
+        if command.get("provider_key"):
+            relay_metadata["provider"] = command.get("provider_key")
+
+        if not _relay_command_current(relay_command_seq, str(relay_command_id or "")):
+            message = "Skipped stale Relay command because a newer command superseded it."
+            updated = self.orchestrator_commands.update_status(
+                command_id,
+                status="stale",
+                outcome="stale-command",
+                status_message=message,
+            )
+            return updated or {"relay_command_id": command_id, "status": "stale"}
+
+        self.orchestrator_commands.update_status(command_id, status="planning")
+        self._heartbeat_command_session(command, state="planning")
+
+        try:
+            action = resolve_command_action(
+                str(command.get("source_text") or ""),
+                repo_path=repo_path,
+                relay_command=relay_metadata,
+            )
+            if action.kind == "create_ticket":
+                result = self._author_ticket_for_command(command, relay_metadata)
+                self._heartbeat_command_session(command, state="idle")
+                return result
+            if action.kind == "dispatch_ticket" and action.ticket_id:
+                result = self.dispatch(
+                    ticket_id=action.ticket_id,
+                    repo_path=repo_path,
+                    source="orchestrator-command",
+                    relay_command_seq=relay_command_seq,
+                    relay_command_id=str(relay_command_id or ""),
+                )
+                run = result.get("run") or {}
+                message = (
+                    f"Dispatching {action.ticket_id}."
+                    if not result.get("already_active")
+                    else f"{action.ticket_id} already has an active or review-pending run."
+                )
+                updated = self.orchestrator_commands.update_status(
+                    command_id,
+                    status="authored",
+                    action=action.kind,
+                    outcome="dispatch-started",
+                    ticket_id=action.ticket_id,
+                    status_message=message,
+                )
+                self._heartbeat_command_session(command, state="awaiting_workers")
+                self._notify_command_outcome(
+                    command,
+                    message=message,
+                    ticket_id=action.ticket_id,
+                    run_id=run.get("id"),
+                )
+                return updated or {"relay_command_id": command_id, "status": "authored"}
+            if action.kind in {"update_ticket", "inspect_ticket"} and action.ticket_id:
+                message = (
+                    f"Clarification needed before changing {action.ticket_id}; "
+                    "the backstage loop will not guess at ticket edits from raw command text."
+                )
+                updated = self.orchestrator_commands.update_status(
+                    command_id,
+                    status="blocked",
+                    action=action.kind,
+                    outcome="clarification-needed",
+                    ticket_id=action.ticket_id,
+                    status_message=message,
+                )
+                self._heartbeat_command_session(command, state="blocked")
+                self._notify_command_outcome(command, message=message, ticket_id=action.ticket_id)
+                return updated or {"relay_command_id": command_id, "status": "blocked"}
+
+            message = "Clarification needed before creating or dispatching a ticket."
+            updated = self.orchestrator_commands.update_status(
+                command_id,
+                status="blocked",
+                action=action.kind,
+                outcome="clarification-needed",
+                status_message=message,
+            )
+            self._heartbeat_command_session(command, state="blocked")
+            self._notify_command_outcome(command, message=message)
+            return updated or {"relay_command_id": command_id, "status": "blocked"}
+        except ValueError as e:
+            status = "stale" if "stale Relay command" in str(e) else "blocked"
+            outcome = "stale-command" if status == "stale" else "blocked"
+            message = str(e) if status == "stale" else "Blocked while authoring a ticket."
+            updated = self.orchestrator_commands.update_status(
+                command_id,
+                status=status,
+                outcome=outcome,
+                status_message=message,
+                error=str(e),
+            )
+            if status != "stale":
+                self._heartbeat_command_session(command, state="blocked")
+                self._notify_command_outcome(command, message=message)
+            return updated or {"relay_command_id": command_id, "status": status, "error": str(e)}
+        except Exception as e:  # noqa: BLE001 - keep the daemon loop alive.
+            message = "Failed while authoring a ticket."
+            updated = self.orchestrator_commands.update_status(
+                command_id,
+                status="failed",
+                outcome="failed",
+                status_message=message,
+                error=str(e),
+            )
+            self._heartbeat_command_session(command, state="failed")
+            self._notify_command_outcome(command, message=message)
+            print(f"[orchestrator] command {command_id} failed: {e}", file=sys.stderr)
+            return updated or {"relay_command_id": command_id, "status": "failed", "error": str(e)}
+
+    def _author_ticket_for_command(self, command: dict[str, Any], relay_metadata: dict[str, Any]) -> dict[str, Any]:
+        command_id = str(command.get("relay_command_id") or "")
+        repo = Path(str(command.get("repo_path") or "")).expanduser().resolve()
+        if not repo.is_dir() or not (repo / ".git").exists():
+            raise ValueError(f"repo_path {repo} is not a git repository")
+        if not (repo / ".orchestrator" / "config.toml").is_file():
+            raise ValueError(f"repo_path {repo} has no .orchestrator/config.toml")
+
+        actions = [_autonomous_ticket_action(str(command.get("source_text") or ""), self.cfg.get("general", {}))]
+        result = self.apply_orchestrator_actions(
+            repo_path=str(repo),
+            actions=actions,
+            request_id=f"relay-command:{command_id}",
+            relay_command_seq=relay_metadata.get("relay_command_seq"),
+            relay_command_id=str(relay_metadata.get("relay_command_id") or ""),
+        )
+        ticket_id = None
+        if result.get("tickets_written"):
+            ticket_id = result["tickets_written"][0].get("ticket_id")
+        message = f"Created ticket {ticket_id}." if ticket_id else "Created a refined ticket."
+        updated = self.orchestrator_commands.update_status(
+            command_id,
+            status="authored",
+            action="create_ticket",
+            outcome="ticket-created",
+            ticket_id=ticket_id,
+            status_message=message,
+        )
+        self._notify_command_outcome(command, message=message, ticket_id=ticket_id)
+        return updated or {"relay_command_id": command_id, "status": "authored", "ticket_id": ticket_id}
+
+    def _heartbeat_command_session(self, command: dict[str, Any], *, state: str) -> None:
+        session_id = command.get("session_id")
+        repo_path = command.get("repo_path")
+        provider = command.get("provider_key")
+        try:
+            self.orchestrator_sessions.heartbeat(
+                session_id=int(session_id) if session_id is not None else None,
+                repo_path=str(repo_path) if repo_path else None,
+                provider_key=str(provider) if provider else None,
+                state=state,
+            )
+        except (TypeError, ValueError):
+            pass
+
+    def _notify_command_outcome(
+        self,
+        command: dict[str, Any],
+        *,
+        message: str,
+        ticket_id: str | None = None,
+        run_id: int | None = None,
+    ) -> None:
+        try:
+            metadata = RelayCommandMetadata.from_dict({
+                "relay_command_seq": command.get("relay_command_seq"),
+                "relay_command_id": command.get("relay_command_id"),
+                "provider": command.get("provider_key"),
+            })
+            event = PMStatusEvent(
+                phase="outcome",
+                message=message,
+                source="orchestrator",
+                command=metadata,
+                ticket_id=ticket_id,
+                run_id=run_id,
+            )
+        except ValueError as e:
+            print(f"[orchestrator] could not build command status event: {e}", file=sys.stderr)
+            return
+        _notify_state(
+            "working",
+            text=event.message,
+            status_event=event.to_dict(),
+        )
 
     def list_orchestrator_sessions(
         self,
@@ -3342,6 +3709,15 @@ def serve(daemon: Daemon) -> None:
             daemon.runs.write_index()
 
     threading.Thread(target=_prune_loop, name="runs-index-pruner", daemon=True).start()
+
+    def _command_loop():
+        while not stop.wait(2):
+            try:
+                daemon.process_orchestrator_commands(limit=10)
+            except Exception as e:  # noqa: BLE001 - keep the HTTP daemon alive.
+                print(f"[orchestrator] command processing loop failed: {e}", file=sys.stderr)
+
+    threading.Thread(target=_command_loop, name="orchestrator-command-loop", daemon=True).start()
 
     try:
         server.serve_forever(poll_interval=0.5)
