@@ -1406,15 +1406,26 @@ private final class NotchStatusPillContentView: NSView {
                 controlPoint2: NSPoint(x: topEndX - topRadius + topControl, y: rect.minY)
             )
         }
-        path.line(to: NSPoint(x: topStartX + topRadius, y: rect.minY))
-        if topRadius > 0 {
+        if topRadius > 0, topStartX > rect.minX {
+            let insetRadius = min(topRadius, topStartX - rect.minX)
+            let insetControl = insetRadius * 0.5522847498307936
+            path.line(to: NSPoint(x: topStartX, y: rect.minY))
             path.curve(
-                to: NSPoint(x: topStartX, y: rect.minY + topRadius),
-                controlPoint1: NSPoint(x: topStartX + topRadius - topControl, y: rect.minY),
-                controlPoint2: NSPoint(x: topStartX, y: rect.minY + topRadius - topControl)
+                to: NSPoint(x: topStartX - insetRadius, y: rect.minY + insetRadius),
+                controlPoint1: NSPoint(x: topStartX - insetControl, y: rect.minY),
+                controlPoint2: NSPoint(x: topStartX - insetRadius, y: rect.minY + insetRadius - insetControl)
             )
+            path.line(to: NSPoint(x: rect.minX, y: rect.minY + insetRadius))
+        } else {
+            path.line(to: NSPoint(x: topStartX + topRadius, y: rect.minY))
+            if topRadius > 0 {
+                path.curve(
+                    to: NSPoint(x: topStartX, y: rect.minY + topRadius),
+                    controlPoint1: NSPoint(x: topStartX + topRadius - topControl, y: rect.minY),
+                    controlPoint2: NSPoint(x: topStartX, y: rect.minY + topRadius - topControl)
+                )
+            }
         }
-        path.line(to: NSPoint(x: rect.minX, y: rect.minY + topRadius))
         path.close()
         return path
     }
