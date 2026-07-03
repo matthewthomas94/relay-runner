@@ -9,8 +9,9 @@ struct RunState: Equatable, Decodable {
     let ticketId: String
     let repoPath: String
     let runId: Int
-    /// Matches the daemon's run-state enum: Claimed | Running | Succeeded |
-    /// Failed | Stalled | Canceled.
+    /// Matches the daemon's run-state enum: Claimed | Running |
+    /// AwaitingReview | MergeConflict | Succeeded | Failed | Stalled |
+    /// Canceled.
     let state: String
     let lastError: String?
     /// ≤60-char summary of the worker's current tool call (RR-12), e.g.
@@ -83,10 +84,11 @@ struct RunState: Equatable, Decodable {
         switch state {
         case "Claimed", "Running", "Stalled":
             return .inProgress
-        case "Succeeded":
-            // Worker finished but the human hasn't merged yet (file still
-            // `ready`) → surface in Done with an "awaiting merge" pill.
-            return ticketStatus == .ready ? .done : nil
+        case "AwaitingReview", "Succeeded":
+            // Worker finished but the human hasn't reviewed/merged yet. Manual
+            // dispatches can originate from backlog, so the review-pending run
+            // state should own placement until it is accepted or retried.
+            return .done
         default:
             // Failed / Canceled: don't move the card, just badge it.
             return nil
@@ -102,8 +104,8 @@ struct RunState: Equatable, Decodable {
             return .stalled
         case "Failed":
             return .failed
-        case "Succeeded":
-            return ticketStatus == .ready ? .awaitingMerge : nil
+        case "AwaitingReview", "Succeeded":
+            return .awaitingMerge
         default:
             return nil
         }

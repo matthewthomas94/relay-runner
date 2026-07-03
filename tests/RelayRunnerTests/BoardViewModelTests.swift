@@ -32,6 +32,20 @@ final class BoardViewModelTests: XCTestCase {
         XCTAssertEqual(model.tickets(in: .backlog).map(\.id), ["RR-2", "RR-3", "RR-1"])
     }
 
+    func testAwaitingReviewRunMovesManualBacklogDispatchToDone() {
+        let model = BoardViewModel()
+        let ticket = ticket(id: "RR-122", status: .backlog)
+        model.tickets = [ticket]
+        model.runStates = [
+            "RR-122": runState(ticketId: "RR-122", state: "AwaitingReview", runId: 205),
+        ]
+
+        XCTAssertEqual(model.effectiveStatus(for: ticket), .done)
+        XCTAssertEqual(model.pill(for: ticket), .awaitingMerge)
+        XCTAssertEqual(model.tickets(in: .backlog).map(\.id), [])
+        XCTAssertEqual(model.tickets(in: .done).map(\.id), ["RR-122"])
+    }
+
     func testTicketOrderBetweenUsesSparseGapsBeforeRenumbering() {
         XCTAssertEqual(Ticket.orderBetween(previous: 10, next: 30), 20)
         XCTAssertEqual(Ticket.orderBetween(previous: 30, next: nil), 40)
