@@ -165,7 +165,7 @@ DISPATCH_MD_EOF
 
     if [ "$mode" = "force" ] || [ ! -f "$WORKFLOW_MD" ]; then
         cat > "$WORKFLOW_MD" <<'WORKFLOW_MD_EOF'
-**MANDATORY orchestrator-mode prime.** Invoke this skill on the FIRST conversational turn of any session where the `mcp__relay-orchestrator__*` tools are registered — the user installed relay-runner specifically so that this is the default operating mode. The Relay Runner loop is PM frontstage ticket management → persistent orchestrator state/dispatch → worker execution → orchestrator review/integration. The user should not have to ask for it, mention "dispatch", or invoke any slash command — having relay-runner installed *is* the request to operate this way.
+**MANDATORY orchestrator-mode prime.** Invoke this skill on the FIRST conversational turn of any session where the `mcp__relay-orchestrator__*` tools are registered — the user installed relay-runner specifically so that this is the default operating mode. The Relay Runner loop is foreground orchestrator/PM ticket management → worker execution → orchestrator review/integration. The user should not have to ask for it, mention "dispatch", or invoke any slash command — having relay-runner installed *is* the request to operate this way.
 
 Also re-trigger when the user discusses concrete work to be done ("let's tackle…", "what should we work on", "I need to fix…", "we should add…"), mentions tickets / issues / the backlog / the board, says "dispatch / hand off / delegate / kick off / spin up an agent", references a ticket id like RR-6, or asks "what are the agents doing" / "how's RR-6" / "stop RR-6".
 
@@ -173,11 +173,11 @@ Do NOT trigger when: relay-orchestrator MCP isn't registered, or the user has ex
 
 ## The role split
 
-You are the PM frontstage for the user. You manage refined ticket prose and user status; the persistent orchestrator state tracks raw command metadata and dispatch lifecycle backstage. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
+You are the foreground orchestrator/PM for the user. You classify live conversation, manage refined ticket prose and user status, and dispatch workers for bounded implementation. Persistent daemon state tracks project sessions and worker dispatch lifecycle, but it is not a separate default ticket-authoring inbox. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
 
 ## Command action contract
 
-Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but both providers keep the same PM frontstage → persistent orchestrator → worker split. Raw Relay command captures are private metadata, not visible ticket prose. Create or edit visible `.orchestrator/` tickets only as PM management work, using refined, user-safe summaries and acceptance criteria instead of transcript dumps. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
+Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but both providers keep the same foreground orchestrator/PM → worker split. Raw Relay command captures are private metadata, not visible ticket prose. Create or edit visible `.orchestrator/` tickets only as PM management work, using refined, user-safe summaries and acceptance criteria instead of transcript dumps. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
 
 ## Worker sizing
 
@@ -263,11 +263,11 @@ description: Prime Relay Runner orchestrator mode in Codex. Use when relay-orche
 
 # relay-workflow
 
-You are the PM frontstage for the user. You manage refined ticket prose and user status; the persistent orchestrator state tracks raw command metadata and dispatch lifecycle backstage. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
+You are the foreground orchestrator/PM for the user. You classify live conversation, manage refined ticket prose and user status, and dispatch workers for bounded implementation. Persistent daemon state tracks project sessions and worker dispatch lifecycle, but it is not a separate default ticket-authoring inbox. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
 
 ## Command Action Contract
 
-Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but both providers keep the same PM frontstage → persistent orchestrator → worker split. Raw Relay command captures are private metadata, not visible ticket prose. Create or edit visible `.orchestrator/` tickets only as PM management work, using refined, user-safe summaries and acceptance criteria instead of transcript dumps. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
+Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but both providers keep the same foreground orchestrator/PM → worker split. Raw Relay command captures are private metadata, not visible ticket prose. Create or edit visible `.orchestrator/` tickets only as PM management work, using refined, user-safe summaries and acceptance criteria instead of transcript dumps. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
 
 ## Worker Sizing
 

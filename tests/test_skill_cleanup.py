@@ -9,10 +9,10 @@ class SkillCleanupTests(unittest.TestCase):
     def test_relay_bridge_install_uses_pm_frontstage_wording(self):
         script = (ROOT / "scripts" / "relay-bridge").read_text()
 
-        self.assertIn("You are the PM frontstage for the user", script)
+        self.assertIn("You are the foreground orchestrator/PM for the user", script)
         self.assertIn("Raw Relay command captures are private metadata", script)
         self.assertIn("Create or edit visible `.orchestrator/` tickets only as PM management work", script)
-        self.assertNotIn("The foreground session is the orchestrator", script)
+        self.assertNotIn("persistent orchestrator receives the same private Relay metadata", script)
 
     def test_relay_bridge_install_scrubs_legacy_pm_sync_surfaces(self):
         script = (ROOT / "scripts" / "relay-bridge").read_text()
@@ -34,10 +34,10 @@ class SkillCleanupTests(unittest.TestCase):
     def test_relay_orchestrator_install_uses_pm_frontstage_wording(self):
         script = (ROOT / "scripts" / "relay-orchestrator").read_text()
 
-        self.assertIn("You are the PM frontstage for the user", script)
+        self.assertIn("You are the foreground orchestrator/PM for the user", script)
         self.assertIn("Raw Relay command captures are private metadata", script)
         self.assertIn("Create or edit visible `.orchestrator/` tickets only as PM management work", script)
-        self.assertNotIn("the foreground session is always the orchestrator", script)
+        self.assertNotIn("PM frontstage → persistent orchestrator → worker", script)
 
 
 if __name__ == "__main__":

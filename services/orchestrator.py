@@ -73,12 +73,14 @@ ORCHESTRATOR_COMMAND_STATUSES = frozenset({
     "planning",
     "authored",
     "blocked",
+    "handled",
     "stale",
     "failed",
 })
 ORCHESTRATOR_COMMAND_TERMINAL_STATUSES = frozenset({
     "authored",
     "blocked",
+    "handled",
     "stale",
     "failed",
 })
@@ -3141,6 +3143,18 @@ class Daemon:
                 self._heartbeat_command_session(command, state="blocked")
                 self._notify_command_outcome(command, message=message, ticket_id=action.ticket_id)
                 return updated or {"relay_command_id": command_id, "status": "blocked"}
+
+            if action.kind in {"conversation", "control", "inline_work"}:
+                message = "No backstage ticket action is needed for this Relay command."
+                updated = self.orchestrator_commands.update_status(
+                    command_id,
+                    status="handled",
+                    action=action.kind,
+                    outcome="non-work-command",
+                    status_message=message,
+                )
+                self._heartbeat_command_session(command, state="idle")
+                return updated or {"relay_command_id": command_id, "status": "handled"}
 
             message = "Clarification needed before creating or dispatching a ticket."
             updated = self.orchestrator_commands.update_status(

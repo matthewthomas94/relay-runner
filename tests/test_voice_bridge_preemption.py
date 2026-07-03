@@ -941,6 +941,16 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 "fix the signup bug",
             ])
 
+    def test_voice_commands_default_to_foreground_pm_without_raw_fanout(self):
+        relay_command = {"relay_command_seq": 1, "relay_command_id": "cmd-1"}
+        action = voice_bridge.resolve_command_action(
+            "fix the login bug",
+            repo_path="/tmp/repo",
+            relay_command=relay_command,
+        )
+
+        self.assertFalse(voice_bridge._should_fanout_raw_instruction_to_orchestrator(action))
+
     def test_private_command_event_log_is_bounded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             event_path = os.path.join(temp_dir, "voice_command_events.jsonl")

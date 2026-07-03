@@ -47,6 +47,42 @@ class CommandActionsTests(unittest.TestCase):
         self.assertFalse(action.requires_ticket)
         self.assertEqual(action.reason, "pending_work_instruction")
 
+    def test_project_work_with_orchestrator_process_words_still_creates_ticket(self):
+        action = classify_command(
+            "Add radiuses to the notch edges. When I hover to expand to see what "
+            "the traces are doing, add easing too. Those can be two separate "
+            "tickets, and I am watching to see if the PM writes and dispatches "
+            "the tickets or if the orchestrator does."
+        )
+
+        self.assertEqual(action.kind, "create_ticket")
+        self.assertTrue(action.requires_ticket)
+
+    def test_orchestrator_process_correction_is_not_routed_as_ticket_work(self):
+        action = classify_command(
+            "Why did you write the ticket? The entire point is so that you can "
+            "dispatch my raw response straight to the orchestrator. So the "
+            "orchestrator can write the ticket. Therefore, I can continue "
+            "talking to you without interrupting the ticket writing process."
+        )
+
+        self.assertEqual(action.kind, "control")
+        self.assertFalse(action.requires_ticket)
+        self.assertEqual(action.reason, "orchestration_process_correction")
+
+    def test_session_operations_stay_inline_instead_of_becoming_tickets(self):
+        samples = [
+            "commit everything to remote",
+            "rebuild and install when everything is ready and commit to remote",
+            "push main to origin",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                action = classify_command(sample)
+
+                self.assertEqual(action.kind, "inline_work")
+                self.assertFalse(action.requires_ticket)
+
     def test_new_project_work_requires_refined_management_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -68,7 +104,7 @@ class CommandActionsTests(unittest.TestCase):
             self.assertIn("ticket_id: null", prompt)
             self.assertIn("Create or refine a visible ticket now", prompt)
             self.assertIn("You are the PM frontstage", prompt)
-            self.assertIn("persistent orchestrator receives the same private raw command", prompt)
+            self.assertIn("foreground orchestrator/PM owns command classification", prompt)
             self.assertNotIn("You are the foreground orchestrator", prompt)
             self.assertIn("Raw Relay command captures are private metadata", prompt)
             self.assertIn("Creating or editing visible `.orchestrator/` tickets is PM management work", prompt)
@@ -98,7 +134,7 @@ class CommandActionsTests(unittest.TestCase):
             self.assertIn("relay_command_seq: 7", prompt)
             self.assertIn("relay_command_id: cmd-7", prompt)
             self.assertIn("pass relay_command_seq and relay_command_id", prompt)
-            self.assertIn("persistent orchestrator", prompt)
+            self.assertIn("foreground orchestrator/PM", prompt)
 
     def test_explicit_refined_ticket_creation_targets_resolved_child_repo(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -73,17 +73,16 @@ Codex and Claude use the same capture schema. The daemon does not scrape either 
 
 ## The intended workflow
 
-Relay Runner now runs as an RR-Loop with three roles: the PM frontstage talks to the user and manages refined ticket prose, persistent orchestrator state records raw Relay metadata and dispatch lifecycle, and each worker is a one-shot execution agent. Codex and Claude follow the same role split; only launch flags, auth flows, model names, and effort rendering differ.
+Relay Runner runs as a two-layer loop: the foreground orchestrator/PM talks to the user, decides whether a voice/text command is conversation or project work, writes refined ticket prose for worker-sized work, and reports status; each worker is a one-shot execution agent. Persistent daemon state still records active project sessions and worker dispatch lifecycle, but Relay voice text is not automatically fanned out to a separate ticket-authoring inbox. Codex and Claude follow the same role split; only launch flags, auth flows, model names, and effort rendering differ.
 
-1. **Raw instruction fanout.** `/relay-bridge` captures the user's voice or typed instruction once, then fans it out in parallel: the PM frontstage gets the live request for acknowledgement and status reporting, while persistent orchestrator state receives the same raw Relay metadata privately for durable command tracking.
-2. **PM acknowledgement and status.** The PM frontstage responds to the user first: clarifies ambiguity, reports waiting states, summarizes board or run changes, and names the action outcome. It does not silently become the worker or write raw transcript text into visible tickets.
-3. **Backstage ticket authoring.** The persistent orchestrator consumes current `received` project-work commands from its private command store, advances them through durable states (`planning`, `authored`, `blocked`, `stale`, or `failed`), and writes refined `.orchestrator/<ticket_id>.md` tickets through the same structured action path the PM uses. Authored command rows link to the visible ticket id; raw Relay command captures remain private metadata, not board cards or ticket body text.
-4. **PM worker creation.** Once a ticket is refined enough, the PM frontstage or backstage command loop moves it to `ready` or calls the shared dispatch path. The board auto-dispatches `ready`, and direct dispatch stays available for retries or explicit manual control.
-5. **Worker execution.** The daemon creates an isolated worktree on `relay/<id>`, renders the worker workflow prompt, and launches the configured agent. The worker claims the ticket, implements the change, verifies it, commits code, and appends a run log entry before exiting.
-6. **Review and merge.** The orchestrating session reviews completed worker branches, chooses merge order, resolves conflicts intentionally, and merges worker commits into the working branch. That merge publishes `done` on the board and triggers any dependent auto-promotion.
-7. **PM status updates.** The PM frontstage reports run ids, failures, completions, and next actions back to the user. It stays frontstage across the whole loop while workers do backstage work.
+1. **Acknowledgement and classification.** `/relay-bridge` captures the user's voice or typed instruction and publishes it to the foreground orchestrator/PM. The foreground session responds first: clarifies ambiguity, answers general questions directly, and only creates board work after deciding the command is real project work.
+2. **Ticket authoring.** Raw Relay command captures are private metadata, not board cards or ticket body text. The foreground orchestrator/PM writes refined `.orchestrator/<ticket_id>.md` tickets with actionable summaries and acceptance criteria when work should be delegated.
+3. **Worker creation.** Once a ticket is refined enough, the foreground orchestrator/PM moves it to `ready` or calls the shared dispatch path. The board auto-dispatches `ready`, and direct dispatch stays available for retries or explicit manual control.
+4. **Worker execution.** The daemon creates an isolated worktree on `relay/<id>`, renders the worker workflow prompt, and launches the configured agent. The worker claims the ticket, implements the change, verifies it, commits code, and appends a run log entry before exiting.
+5. **Review and merge.** The orchestrating session reviews completed worker branches, chooses merge order, resolves conflicts intentionally, and merges worker commits into the working branch. That merge publishes `done` on the board and triggers any dependent auto-promotion.
+6. **Status updates.** The foreground orchestrator/PM reports run ids, failures, completions, and next actions back to the user. It stays frontstage across the whole loop while workers do backstage work.
 
-The backstage command loop starts with the daemon and is also poked when a Relay bridge activates a project or records a new command. Codex and Claude share the same command states, stale-command checks, ticket schema, and dispatch API. Provider-specific differences stay at process launch and sizing rendering: Codex uses `model_reasoning_effort`, Claude uses `--effort`, and both providers use the same `low`, `medium`, `high`, and `xhigh` effort values for provider-neutral work.
+Codex and Claude share the same stale-command checks, ticket schema, and dispatch API. Provider-specific differences stay at process launch and sizing rendering: Codex uses `model_reasoning_effort`, Claude uses `--effort`, and both providers use the same `low`, `medium`, `high`, and `xhigh` effort values for provider-neutral work.
 
 There's no scheduler picking tickets off the backlog on its own — the user (or the dependency chain) controls what becomes `ready`. Once it's `ready`, the worker is on its way.
 
@@ -107,7 +106,7 @@ A repo's `.orchestrator/WORKFLOW.md` is a fine place to encode project conventio
 
 ## How tickets persist
 
-Tickets live as version-controlled markdown under `<repo>/.orchestrator/`. Reads/writes happen via the board UI (in the menu-bar app), the backstage command-authoring loop, and the sub-agent during a run. The daemon writes ticket files only through structured orchestrator actions or dependency progression, never by pasting raw Relay command text into markdown. That means:
+Tickets live as version-controlled markdown under `<repo>/.orchestrator/`. Reads/writes happen via the board UI (in the menu-bar app), the foreground orchestrator/PM, and the sub-agent during a run. The daemon writes ticket files only through structured orchestrator actions or dependency progression, never by pasting raw Relay command text into markdown. That means:
 
 - The audit trail is `git log <repo>/.orchestrator/<ticket_id>.md`. Free, attributable, full diffs.
 - Cloning the repo brings the board state with it.
@@ -139,7 +138,7 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | `<repo>/.orchestrator/config.toml` | Repo-scoped ticket counter (`prefix`, `next_id`) |
 | `~/Library/Application Support/relay-runner/orchestrator/runs.db` | Run history (SQLite) |
 | `~/Library/Application Support/relay-runner/orchestrator/orchestrator_sessions.db` | Persistent orchestrator lifecycle state |
-| `~/Library/Application Support/relay-runner/orchestrator/orchestrator_commands.db` | Private Relay command store and backstage authoring states |
+| `~/Library/Application Support/relay-runner/orchestrator/orchestrator_commands.db` | Legacy/private Relay command store for explicit structured orchestrator actions |
 | `~/Library/Application Support/relay-runner/workspaces/<sanitized-id>/` | Per-ticket worktree |
 | `~/Library/Application Support/relay-runner/workspaces/<sanitized-id>/.relay/run.log` | Worker stdout (full session trace) |
 | `~/Library/LaunchAgents/com.relay.orchestrator.plist` | launchd descriptor |

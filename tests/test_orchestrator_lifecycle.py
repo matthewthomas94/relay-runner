@@ -391,6 +391,36 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             self.assertIn("Blocked while authoring a ticket", command["status_message"])
             self.assertFalse((repo / ".orchestrator/RR-1.md").exists())
 
+    def test_daemon_marks_non_work_orchestrator_command_handled_without_ticket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            state_path = root / "voice_command_state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 10,
+                "relay_command_id": "conversation-cmd",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            daemon = self.make_daemon(root, provider="codex")
+            try:
+                result = daemon.record_orchestrator_command(
+                    repo_path=str(repo),
+                    source_text="why is the board not being updated",
+                    relay_command_seq=10,
+                    relay_command_id="conversation-cmd",
+                    provider="codex",
+                )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+            command = result["orchestrator_command"]
+            self.assertEqual(command["status"], "handled")
+            self.assertEqual(command["outcome"], "non-work-command")
+            self.assertFalse((repo / ".orchestrator/RR-1.md").exists())
+
     def test_daemon_marks_received_command_stale_before_ticket_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

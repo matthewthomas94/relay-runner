@@ -38,8 +38,23 @@ INLINE_RE = re.compile(
     r"\b(inline|in\s+this\s+session|do\s+it\s+here|don'?t\s+dispatch|without\s+(a\s+)?ticket)\b",
     re.IGNORECASE,
 )
+SESSION_OPERATION_RE = re.compile(
+    r"\b(?:rebuild|build)\b[^.?!]{0,80}\binstall\b"
+    r"|\bcommit\b[^.?!]{0,80}\b(?:remote|push|everything|all\s+changes|changes)\b"
+    r"|\bpush\b[^.?!]{0,80}\b(?:remote|origin|main)\b",
+    re.IGNORECASE,
+)
 PENDING_WORK_RE = re.compile(
-    r"\b(once|when|after)\b.*\b(ticket|tickets|run|runs|worker|workers|done|finish|finished|complete|completed)\b",
+    r"\b(?:once|when|after)\s+"
+    r"(?:(?:all|any|the|these|those|this|that)\s+)?"
+    r"(?:[A-Za-z][A-Za-z0-9]*-\d+|ticket|tickets|run|runs|worker|workers|it|they|these|those)\b"
+    r"[^.?!]*\b(done|finish|finished|complete|completed|merge|merged|review|reviewed)\b",
+    re.IGNORECASE,
+)
+ORCHESTRATION_CORRECTION_RE = re.compile(
+    r"\bwhy\s+did\s+you\s+(?:write|create|make|dispatch)\b.*\b(ticket|orchestrator)\b"
+    r"|\bthe\s+(?:entire\s+)?point\s+is\b.*\borchestrator\b.*\b(?:write|create|author)\b.*\bticket\b"
+    r"|\bso\s+(?:i|we)\s+can\s+continue\s+talking\b.*\b(ticket|orchestrator)\b",
     re.IGNORECASE,
 )
 WORK_RE = re.compile(
@@ -162,11 +177,17 @@ def classify_command(text: str) -> CommandAction:
         reason = CONTROL_COMMANDS.get(source, "trace" if source.startswith("__TRACE__:") else "status")
         return CommandAction(kind="control", source_text=source, reason=reason)
 
+    if ORCHESTRATION_CORRECTION_RE.search(source):
+        return CommandAction(kind="control", source_text=source, reason="orchestration_process_correction")
+
     if INLINE_RE.search(source):
         return CommandAction(kind="inline_work", source_text=source)
 
     if PENDING_WORK_RE.search(source):
         return CommandAction(kind="control", source_text=source, reason="pending_work_instruction")
+
+    if SESSION_OPERATION_RE.search(source):
+        return CommandAction(kind="inline_work", source_text=source)
 
     ticket_id = _extract_ticket_id(source)
     if ticket_id:
@@ -318,7 +339,7 @@ def format_command_for_agent(action: CommandAction) -> str:
             "PM frontstage contract:",
             "- You are the PM frontstage for the user, not the implementation worker.",
             "- Keep the user-facing response concise and status-oriented; do not perform substantive source-code implementation directly unless the source command explicitly asks for inline work.",
-            "- The persistent orchestrator receives the same private raw command and Relay metadata for durable tracking; the PM frontstage may create or refine visible tickets as management work.",
+            "- The foreground orchestrator/PM owns command classification and visible-ticket authoring for new raw work requests.",
             "- Raw Relay command captures are private metadata, not board cards; visible `.orchestrator/` tickets must use refined, user-safe summaries and acceptance criteria instead of transcript dumps.",
             "- Creating or editing visible `.orchestrator/` tickets is PM management work. Implementation belongs to workers unless the user explicitly asks to keep it inline.",
             "- Relay command metadata is the stale-action guard. Before any user-visible follow-up, TTS, ticket edit, dispatch, or orchestrator action, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
@@ -427,7 +448,7 @@ def _ticket_body(
             f"{_worker_sizing_frontmatter(general_config)}"
             "---\n\n"
         "## Description\n\n"
-        "The persistent orchestrator prepared this refined project-work ticket.\n\n"
+        "The foreground orchestrator/PM prepared this refined project-work ticket.\n\n"
         f"Summary: {summary}\n\n"
         "Use the repository context to identify the exact implementation path. "
         "Raw Relay transcript text remains private orchestrator metadata.\n\n"

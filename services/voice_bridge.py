@@ -1062,6 +1062,12 @@ def _fanout_raw_instruction_to_orchestrator(
     return thread
 
 
+def _should_fanout_raw_instruction_to_orchestrator(action) -> bool:
+    """Keep the default voice path two-layer: foreground PM first, workers next."""
+    del action
+    return False
+
+
 def _discard_pending_command(
     command_path: str = VOICE_CMD_FILE,
     meta_path: str = VOICE_CMD_META_FILE,
@@ -1686,13 +1692,14 @@ def _run_relay(
                     repo_path=Path.cwd(),
                     relay_command=relay_command,
                 )
-                _fanout_raw_instruction_to_orchestrator(
-                    text,
-                    relay_command,
-                    action,
-                    repo_path=Path.cwd(),
-                    orchestrator_session=orchestrator_session,
-                )
+                if _should_fanout_raw_instruction_to_orchestrator(action):
+                    _fanout_raw_instruction_to_orchestrator(
+                        text,
+                        relay_command,
+                        action,
+                        repo_path=Path.cwd(),
+                        orchestrator_session=orchestrator_session,
+                    )
                 _start_pm_update_mode(
                     relay_command,
                     action,
