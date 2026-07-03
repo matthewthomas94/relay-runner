@@ -104,6 +104,56 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
+    func testRecordingStartBlocksWhenVoiceCommandIsAlreadyWaiting() {
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true,
+                hasSessionContext: true,
+                pendingDeliveryState: .waiting
+            ),
+            .waitForPendingCommand
+        )
+
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true,
+                hasSessionContext: true,
+                pendingDeliveryState: .timedOut
+            ),
+            .waitForPendingCommand
+        )
+    }
+
+    func testRecordingStartBlocksWhenDaemonHasNoLiveConsumer() {
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: false,
+                hasSessionContext: true,
+                pendingDeliveryState: .none
+            ),
+            .waitForConsumer
+        )
+    }
+
+    func testRecordingStartAllowsHealthyBridge() {
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true,
+                hasSessionContext: true,
+                pendingDeliveryState: .none
+            ),
+            .allowRecording
+        )
+    }
+
     func testWatchdogRecoversTimedOutPendingVoiceCommandWhenDaemonIsMissing() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(

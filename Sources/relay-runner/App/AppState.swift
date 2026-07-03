@@ -812,12 +812,7 @@ final class AppState {
             case .waitForConsumer:
                 self.bridgeAliveCache = true
                 if self.statusText != "Voice command waiting" {
-                    self.statusText = "Voice command waiting"
-                    self.stateMachine.showProgramStatus(
-                        title: "Voice command waiting",
-                        body: "Relay Runner recorded a voice command, but the active Codex or Claude listener has not claimed it yet. Keep the agent turn running, or start a new session before speaking again."
-                    )
-                    self.syncNotchActivitySurface()
+                    self.surfaceVoiceCommandWaiting()
                 }
                 return
             case .waitForLaunch:
@@ -940,6 +935,36 @@ final class AppState {
         return .markDead
     }
 
+    enum RecordingStartBridgeAction: Equatable {
+        case allowRecording
+        case waitForBridgeRecovery
+        case recoverBridgeOrPrompt
+        case waitForPendingCommand
+        case waitForConsumer
+    }
+
+    static func recordingStartBridgeAction(
+        bridgeRecoveryInFlight: Bool,
+        daemonAlive: Bool,
+        consumerAlive: Bool,
+        hasSessionContext: Bool,
+        pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState
+    ) -> RecordingStartBridgeAction {
+        if bridgeRecoveryInFlight {
+            return .waitForBridgeRecovery
+        }
+        if !daemonAlive {
+            return .recoverBridgeOrPrompt
+        }
+        if pendingDeliveryState != .none {
+            return .waitForPendingCommand
+        }
+        if !consumerAlive {
+            return hasSessionContext ? .waitForConsumer : .recoverBridgeOrPrompt
+        }
+        return .allowRecording
+    }
+
     @discardableResult
     private func startBridgeRecovery(reason: String) -> Bool {
         if bridgeRecoverySuppressedForUpdate { return false }
@@ -1013,6 +1038,24 @@ final class AppState {
         let presentation = Self.bridgeRecoveryFailurePresentation(reason: reason)
         statusText = presentation.statusText
         stateMachine.showProgramStatus(title: presentation.title, body: presentation.body)
+        syncNotchActivitySurface()
+    }
+
+    private func surfaceVoiceCommandWaiting() {
+        statusText = "Voice command waiting"
+        stateMachine.showProgramStatus(
+            title: "Voice command waiting",
+            body: "Relay Runner recorded a voice command, but the active Codex or Claude listener has not claimed it yet. Keep the agent turn running, or start a new session before speaking again."
+        )
+        syncNotchActivitySurface()
+    }
+
+    private func surfaceVoiceListenerIdle() {
+        statusText = "Voice listener idle"
+        stateMachine.showProgramStatus(
+            title: "Voice listener idle",
+            body: "The Relay bridge is still running, but the active Codex or Claude turn is not listening for new voice commands. Start a new session before speaking again."
+        )
         syncNotchActivitySurface()
     }
 
@@ -1207,7 +1250,24 @@ final class AppState {
             // can be stale for up to 3s after a bridge dies.
             // Also detect orphaned relay bridges (process alive but no consumer).
             if justStartedRecording {
-                if self.bridgeRecoveryInFlight {
+                let daemonAlive = self.processManager.bridgeAlive()
+                let pendingDeliveryState = self.processManager.pendingVoiceCommandDeliveryState()
+                let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
+                let hasSessionContext = self.processManager.bridgeRecoveryContext(
+                    fallbackConfig: self.bridgeRecoveryFallbackConfig
+                ) != nil
+                let bridgeAction = Self.recordingStartBridgeAction(
+                    bridgeRecoveryInFlight: self.bridgeRecoveryInFlight,
+                    daemonAlive: daemonAlive,
+                    consumerAlive: consumerAlive,
+                    hasSessionContext: hasSessionContext,
+                    pendingDeliveryState: pendingDeliveryState
+                )
+
+                switch bridgeAction {
+                case .allowRecording:
+                    self.bridgeAliveCache = true
+                case .waitForBridgeRecovery:
                     engine.cancelRecording()
                     self.wasRecording = false
                     self.stateMachine.showProgramStatus(
@@ -1216,11 +1276,19 @@ final class AppState {
                     )
                     self.syncNotchActivitySurface()
                     return
-                }
-                let bridgeProcessUp = self.processManager.bridgeAlive()
-                if bridgeProcessUp {
+                case .waitForPendingCommand:
                     self.bridgeAliveCache = true
-                } else {
+                    engine.cancelRecording()
+                    self.wasRecording = false
+                    self.surfaceVoiceCommandWaiting()
+                    return
+                case .waitForConsumer:
+                    self.bridgeAliveCache = true
+                    engine.cancelRecording()
+                    self.wasRecording = false
+                    self.surfaceVoiceListenerIdle()
+                    return
+                case .recoverBridgeOrPrompt:
                     self.bridgeAliveCache = false
                     let recovering = self.menuSessionActive
                         && self.startBridgeRecovery(reason: "recording-start")
