@@ -1,5 +1,34 @@
 import Foundation
 
+private struct ProgramDashboardResponse: Decodable {
+    let summary: ProgramStatusResponse
+    let backlog: ProgramStatusResponse
+    let ready: ProgramStatusResponse
+    let inProgress: ProgramStatusResponse
+    let done: ProgramStatusResponse
+    let awaitingMerge: ProgramStatusResponse
+
+    var snapshot: ProgramDashboardSnapshot {
+        ProgramDashboardSnapshot(
+            summary: summary,
+            backlogWork: backlog,
+            readyWork: ready,
+            inProgressWork: inProgress,
+            doneWork: done,
+            awaitingMerge: awaitingMerge
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case summary
+        case backlog
+        case ready
+        case inProgress = "in_progress"
+        case done
+        case awaitingMerge = "awaiting_merge"
+    }
+}
+
 /// Fire-and-forget HTTP client for triggering orchestrator dispatches from
 /// the menu-bar app. Mirrors the port-discovery logic in the relay-orchestrator-mcp
 /// target's HTTPClient — they live in separate Swift modules and can't share
@@ -71,11 +100,13 @@ enum OrchestratorClient {
     }
 
     static func fetchProgramDashboard(limit: Int = 0) async throws -> ProgramDashboardSnapshot {
-        await sweepProgramReadyTicketsBeforeDashboard(trigger: "program-board-refresh")
-        return try await fetchProgramDashboardRefreshingStaleDaemon(
+        try await fetchProgramDashboardRefreshingStaleDaemon(
             limit: limit,
-            fetch: { query, limit in
-                try await fetchProgramStatus(query: query, limit: limit)
+            fetchDashboard: { limit in
+                try await fetchProgramDashboardSnapshot(
+                    limit: limit,
+                    trigger: "program-board-refresh"
+                )
             },
             refreshDaemon: {
                 await restartOrchestratorDaemonIfIdle()
@@ -83,19 +114,39 @@ enum OrchestratorClient {
         )
     }
 
+    static func fetchProgramDashboardSnapshot(
+        limit: Int = 0,
+        trigger: String = "program-board-refresh"
+    ) async throws -> ProgramDashboardSnapshot {
+        guard let req = programDashboardRequest(limit: limit, trigger: trigger, port: readPort()) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        let (data, response) = try await URLSession.shared.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw OrchestratorClientError.badStatus(status, body)
+        }
+        do {
+            return try JSONDecoder().decode(ProgramDashboardResponse.self, from: data).snapshot
+        } catch {
+            throw OrchestratorClientError.decodeFailed(error.localizedDescription)
+        }
+    }
+
     static func fetchProgramDashboardRefreshingStaleDaemon(
         limit: Int = 0,
-        fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse,
+        fetchDashboard: @escaping (_ limit: Int) async throws -> ProgramDashboardSnapshot,
         refreshDaemon: @escaping () async -> OrchestratorDaemonRefreshResult
     ) async throws -> ProgramDashboardSnapshot {
         do {
-            return try await buildProgramDashboard(limit: limit, fetch: fetch)
+            return try await fetchDashboard(limit)
         } catch {
             guard shouldRefreshDaemon(for: error) else { throw error }
             switch await refreshDaemon() {
             case .restarted:
                 do {
-                    return try await buildProgramDashboard(limit: limit, fetch: fetch)
+                    return try await fetchDashboard(limit)
                 } catch {
                     if shouldRefreshDaemon(for: error) {
                         throw OrchestratorClientError.daemonRefreshFailed(
@@ -114,6 +165,20 @@ enum OrchestratorClient {
                 throw OrchestratorClientError.daemonRefreshFailed(message)
             }
         }
+    }
+
+    static func fetchProgramDashboardRefreshingStaleDaemon(
+        limit: Int = 0,
+        fetch: @escaping (_ query: String, _ limit: Int) async throws -> ProgramStatusResponse,
+        refreshDaemon: @escaping () async -> OrchestratorDaemonRefreshResult
+    ) async throws -> ProgramDashboardSnapshot {
+        return try await fetchProgramDashboardRefreshingStaleDaemon(
+            limit: limit,
+            fetchDashboard: { limit in
+                try await buildProgramDashboard(limit: limit, fetch: fetch)
+            },
+            refreshDaemon: refreshDaemon
+        )
     }
 
     static func fetchProgramStatusOverlay(limit: Int = 6) async throws -> ProgramStatusOverlayMessage {
@@ -162,23 +227,6 @@ enum OrchestratorClient {
         )
     }
 
-    private static func sweepProgramReadyTicketsBeforeDashboard(trigger: String) async {
-        guard let req = programReadySweepRequest(trigger: trigger, port: readPort()) else {
-            NSLog("[orchestrator-client] could not build program ready-sweep request")
-            return
-        }
-        do {
-            let (data, response) = try await URLSession.shared.data(for: req)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status >= 400 {
-                let msg = String(data: data, encoding: .utf8) ?? "(no body)"
-                NSLog("[orchestrator-client] program-ready-sweep HTTP \(status): \(msg.prefix(200))")
-            }
-        } catch {
-            NSLog("[orchestrator-client] program-ready-sweep failed: \(error.localizedDescription)")
-        }
-    }
-
     static func fetchProgramStatus(query: String, limit: Int = 20) async throws -> ProgramStatusResponse {
         guard let req = programStatusRequest(query: query, limit: limit, port: readPort()) else {
             throw OrchestratorClientError.invalidRequest
@@ -202,6 +250,17 @@ enum OrchestratorClient {
             query: [
                 URLQueryItem(name: "query", value: query),
                 URLQueryItem(name: "limit", value: "\(limit)"),
+            ],
+            port: port
+        )
+    }
+
+    static func programDashboardRequest(limit: Int, trigger: String, port: Int) -> URLRequest? {
+        getRequest(
+            path: "/v1/program/dashboard",
+            query: [
+                URLQueryItem(name: "limit", value: "\(limit)"),
+                URLQueryItem(name: "trigger", value: trigger),
             ],
             port: port
         )
@@ -250,8 +309,13 @@ enum OrchestratorClient {
 
     private static func shouldRefreshDaemon(for error: Error) -> Bool {
         guard let clientError = error as? OrchestratorClientError,
-              case OrchestratorClientError.badStatus(400, let body) = clientError else { return false }
+              case OrchestratorClientError.badStatus(let status, let body) = clientError else { return false }
         let lower = body.lowercased()
+        if status == 404 {
+            return lower.contains("/v1/program/dashboard")
+                || lower.contains("program/dashboard")
+        }
+        guard status == 400 else { return false }
         guard lower.contains("unknown program status query") else { return false }
         return lower.contains("backlog_lane")
             || lower.contains("ready_lane")

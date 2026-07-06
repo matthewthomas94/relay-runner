@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+private struct BoardSnapshot {
+    let projectPath: String
+    let tickets: [Ticket]
+    let runStates: [String: RunState]
+}
+
 /// Manages the kanban-board overlay lifecycle. Owns a single
 /// `BoardOverlayPanel` and an `NSHostingView` rendering the SwiftUI tree.
 ///
@@ -28,6 +34,8 @@ final class BoardOverlayController {
     /// Polls the daemon's runs-index file while the board is visible so live
     /// run state (In-progress placement + status pills) tracks within ~1s.
     private var runStatePollTimer: Timer?
+    private var refreshTask: Task<Void, Never>?
+    private var runStateRefreshTask: Task<Void, Never>?
     private var currentProject: ProjectResolver.LinkedProject?
     private var cachedProjectPath: String?
     private var loadingStateHandler: ((Bool) -> Void)?
@@ -71,6 +79,8 @@ final class BoardOverlayController {
         if let m = localMonitor { NSEvent.removeMonitor(m) }
         themePollTimer?.invalidate()
         runStatePollTimer?.invalidate()
+        refreshTask?.cancel()
+        runStateRefreshTask?.cancel()
     }
 
     /// Install global keyboard hook: Esc dismisses while the board is visible.
@@ -202,19 +212,16 @@ final class BoardOverlayController {
 
         startThemePoll()
         startRunStatePoll()
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.isVisible else { return }
-            self.refreshVisibleProject(trigger: "board-show")
-            self.revealContainer?.setLoading(false)
-            if !hasCachedProject {
-                self.loadingStateHandler?(false)
-            }
-        }
+        refreshVisibleProject(trigger: "board-show", showsLoading: !hasCachedProject)
     }
 
     func hide() {
         guard isVisible else { return }
         loadingStateHandler?(false)
+        refreshTask?.cancel()
+        refreshTask = nil
+        runStateRefreshTask?.cancel()
+        runStateRefreshTask = nil
         // Cancel any open edit so reopening the board lands on a clean view.
         if model.editing != nil {
             cancelEditor()
@@ -268,25 +275,58 @@ final class BoardOverlayController {
         stopRunStatePoll()
         runStatePollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self, self.isVisible else { return }
-            let next = self.loadRunStates()
-            if next != self.model.runStates {
-                self.model.runStates = next
-            }
+            self.refreshRunStatesInBackground()
         }
     }
 
     private func stopRunStatePoll() {
         runStatePollTimer?.invalidate()
         runStatePollTimer = nil
+        runStateRefreshTask?.cancel()
+        runStateRefreshTask = nil
     }
 
-    private func refreshVisibleProject(trigger: String? = nil) {
+    private func refreshVisibleProject(trigger: String? = nil, showsLoading: Bool = false) {
         guard let project = currentProject else { return }
-        model.tickets = loadTickets()
-        model.runStates = loadRunStates()
-        cachedProjectPath = project.repoPath.path
-        if let trigger {
-            OrchestratorClient.sweepReadyTickets(repoPath: project.repoPath.path, trigger: trigger)
+
+        let projectPath = project.repoPath.path
+        refreshTask?.cancel()
+        if showsLoading {
+            revealContainer?.setLoading(true)
+            loadingStateHandler?(true)
+        }
+        refreshTask = Task { @MainActor [weak self] in
+            let snapshot = await Self.loadSnapshot(for: project)
+            guard let self, !Task.isCancelled else { return }
+            guard self.isVisible, self.currentProject?.repoPath.path == projectPath else { return }
+
+            self.model.tickets = snapshot.tickets
+            self.model.runStates = snapshot.runStates
+            self.cachedProjectPath = snapshot.projectPath
+            self.revealContainer?.setLoading(false)
+            if showsLoading {
+                self.loadingStateHandler?(false)
+            }
+            if let trigger {
+                OrchestratorClient.sweepReadyTickets(repoPath: snapshot.projectPath, trigger: trigger)
+            }
+        }
+    }
+
+    private func refreshRunStatesInBackground() {
+        guard runStateRefreshTask == nil else { return }
+        guard let project = currentProject else { return }
+
+        let projectPath = project.repoPath.path
+        runStateRefreshTask = Task { @MainActor [weak self] in
+            let next = await Self.loadRunStates(for: project)
+            guard let self else { return }
+            self.runStateRefreshTask = nil
+            guard !Task.isCancelled else { return }
+            guard self.isVisible, self.currentProject?.repoPath.path == projectPath else { return }
+            if next != self.model.runStates {
+                self.model.runStates = next
+            }
         }
     }
 
@@ -537,14 +577,20 @@ final class BoardOverlayController {
 
     // MARK: - Helpers
 
-    private func loadTickets() -> [Ticket] {
-        guard let project = currentProject else { return [] }
-        return ProjectResolver.scanTickets(in: project)
+    private static func loadSnapshot(for project: ProjectResolver.LinkedProject) async -> BoardSnapshot {
+        await Task.detached(priority: .userInitiated) {
+            BoardSnapshot(
+                projectPath: project.repoPath.path,
+                tickets: ProjectResolver.scanTickets(in: project),
+                runStates: RunStateStore.load(forRepo: project.repoPath)
+            )
+        }.value
     }
 
-    private func loadRunStates() -> [String: RunState] {
-        guard let project = currentProject else { return [:] }
-        return RunStateStore.load(forRepo: project.repoPath)
+    private static func loadRunStates(for project: ProjectResolver.LinkedProject) async -> [String: RunState] {
+        await Task.detached(priority: .utility) {
+            RunStateStore.load(forRepo: project.repoPath)
+        }.value
     }
 
     private func currentMouseScreen() -> NSScreen? {

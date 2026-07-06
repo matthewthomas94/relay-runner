@@ -43,7 +43,7 @@ from command_actions import refined_command_summary, refined_ticket_title, resol
 from graphify_core import GraphifyCoreStore
 from graphify_ingest import ingest_registered_projects
 from pm_frontstage import OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata
-from program_status import build_program_status
+from program_status import build_program_dashboard, build_program_status
 from session_capture import capture_session_review
 from tickets import (
     TicketParseError,
@@ -3520,6 +3520,27 @@ class Daemon:
             limit=limit,
         )
 
+    def program_dashboard(
+        self,
+        *,
+        provider: str | None = None,
+        limit: int = 0,
+        trigger: str | None = None,
+    ) -> dict:
+        self.sweep_program_ready_tickets(trigger=trigger or "program-board-refresh")
+        store = GraphifyCoreStore(self.graphify_path)
+        ingest_registered_projects(
+            store,
+            registry_path=self.program_registry_path,
+            runs_db_path=self.runs.path,
+            index_files=False,
+        )
+        return build_program_dashboard(
+            store,
+            provider=provider,
+            limit=limit,
+        )
+
     def session_capture(
         self,
         *,
@@ -3649,6 +3670,16 @@ class Handler(BaseHTTPRequestHandler):
                     query=status_query,
                     provider=provider,
                     limit=limit,
+                )
+
+            if method == "GET" and segments == ["v1", "program", "dashboard"]:
+                provider = (query.get("provider") or [None])[0]
+                limit = int((query.get("limit") or ["0"])[0])
+                trigger = (query.get("trigger") or ["program-board-refresh"])[0]
+                return 200, self.daemon.program_dashboard(
+                    provider=provider,
+                    limit=limit,
+                    trigger=trigger,
                 )
 
             if method == "GET" and segments == ["v1", "orchestrator-sessions"]:

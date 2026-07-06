@@ -28,12 +28,16 @@ enum BoardDarkSurfaceStyle {
 /// from a poll timer so live session state remains available to the board.
 @Observable
 final class BoardViewModel {
-    var tickets: [Ticket] = []
+    var tickets: [Ticket] = [] {
+        didSet { rebuildTicketCaches() }
+    }
     var theme: ParticleFieldRenderer.Theme?
     /// Live run state published by the daemon (runs.json), keyed by ticket id.
     /// Overlaid on ticket files for column placement and pill rendering — the
     /// ticket files themselves stay the source of truth for stable status.
-    var runStates: [String: RunState] = [:]
+    var runStates: [String: RunState] = [:] {
+        didSet { rebuildTicketCaches() }
+    }
     /// When non-nil, the editor modal is rendered over the columns and the
     /// hosting panel takes key focus so text fields receive input. The
     /// controller listens for changes here and updates panel key-eligibility
@@ -49,6 +53,9 @@ final class BoardViewModel {
     /// Per-card geometry in the same coordinate space — used to compute
     /// insert index during a drag.
     var cardFrames: [String: CGRect] = [:]
+
+    @ObservationIgnored private var laneTickets: [Ticket.Status: [Ticket]] = [:]
+    @ObservationIgnored private var ticketsByID: [String: Ticket] = [:]
 
     /// Column a ticket renders in: a live run can override the file's status
     /// (e.g. push a `ready` ticket into "In progress" while a worker grinds).
@@ -70,9 +77,7 @@ final class BoardViewModel {
     /// Tickets rendered in a lane, honoring live-run placement overrides
     /// rather than only the raw ticket-file status.
     func tickets(in status: Ticket.Status) -> [Ticket] {
-        tickets
-            .filter { effectiveStatus(for: $0) == status }
-            .sorted(by: Ticket.boardOrder)
+        laneTickets[status] ?? []
     }
 
     func upsertTicket(_ ticket: Ticket) {
@@ -99,9 +104,8 @@ final class BoardViewModel {
         guard effectiveStatus(for: ticket) == .ready, !ticket.dependsOn.isEmpty else {
             return []
         }
-        let byID = Dictionary(uniqueKeysWithValues: tickets.map { ($0.id, $0) })
         return ticket.dependsOn.filter { dependencyID in
-            guard let dependency = byID[dependencyID] else { return true }
+            guard let dependency = ticketsByID[dependencyID] else { return true }
             return dependency.status != .done
         }
     }
@@ -123,6 +127,19 @@ final class BoardViewModel {
             }
         }
         return DropTarget(status: status, index: index)
+    }
+
+    private func rebuildTicketCaches() {
+        ticketsByID = Dictionary(uniqueKeysWithValues: tickets.map { ($0.id, $0) })
+
+        var grouped: [Ticket.Status: [Ticket]] = [:]
+        for ticket in tickets {
+            grouped[effectiveStatus(for: ticket), default: []].append(ticket)
+        }
+        for status in Ticket.Status.allCases {
+            grouped[status] = (grouped[status] ?? []).sorted(by: Ticket.boardOrder)
+        }
+        laneTickets = grouped
     }
 }
 

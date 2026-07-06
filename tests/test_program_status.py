@@ -18,7 +18,7 @@ from graphify_core import (  # noqa: E402
     NODE_TICKET,
     GraphifyCoreStore,
 )
-from program_status import build_program_status  # noqa: E402
+from program_status import build_program_dashboard, build_program_status  # noqa: E402
 
 
 class ProgramStatusTests(unittest.TestCase):
@@ -252,6 +252,26 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual(item["in_progress_tickets"], 1)
         self.assertEqual(item["done_tickets"], 2)
         self.assertEqual(item["awaiting_merge"], 1)
+
+    def test_dashboard_returns_summary_and_board_lanes(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        _ticket(store, project, "RR-1", "Backlog work", "backlog")
+        _ticket(store, project, "RR-2", "Queued work", "ready")
+        active = _ticket(store, project, "RR-3", "Running work", "ready")
+        awaiting = _ticket(store, project, "RR-4", "Awaiting merge", "ready")
+        _ticket(store, project, "RR-5", "Finished work", "done")
+        _run(store, project, active, 101, "active", "codex", model="gpt-5")
+        _run(store, project, awaiting, 102, "awaiting_review", "claude", model="sonnet")
+
+        dashboard = build_program_dashboard(store, limit=0, now=2000.0)
+
+        self.assertEqual(dashboard["summary"]["query"], "summary")
+        self.assertEqual([item["ticket_id"] for item in dashboard["backlog"]["items"]], ["RR-1"])
+        self.assertEqual([item["ticket_id"] for item in dashboard["ready"]["items"]], ["RR-2"])
+        self.assertEqual([item["ticket_id"] for item in dashboard["in_progress"]["items"]], ["RR-3"])
+        self.assertEqual([item["ticket_id"] for item in dashboard["done"]["items"]], ["RR-4", "RR-5"])
+        self.assertEqual([item["ticket_id"] for item in dashboard["awaiting_merge"]["items"]], ["RR-4"])
 
     def test_awaiting_merge_query_distinguishes_review_and_conflict_states(self):
         store = self.make_store()

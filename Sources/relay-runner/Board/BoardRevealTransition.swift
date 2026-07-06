@@ -1,5 +1,4 @@
 import AppKit
-import CoreImage
 import QuartzCore
 
 struct BoardRevealTransitionPlan: Equatable {
@@ -131,7 +130,7 @@ final class BoardRevealContainerView: NSView {
         contentContainerView.autoresizingMask = [.width, .height]
         contentContainerView.alphaValue = 0
         contentContainerView.isHidden = true
-        installContentBlur(radius: Self.hiddenContentBlurRadius)
+        setContentYOffset(Self.hiddenContentYOffset)
         addSubview(contentContainerView)
 
         hostedContentView.frame = contentContainerView.bounds
@@ -220,8 +219,8 @@ final class BoardRevealContainerView: NSView {
         contentVisible = true
         contentContainerView.isHidden = false
         contentContainerView.alphaValue = 0
-        setContentBlur(radius: Self.hiddenContentBlurRadius)
-        animateContentBlur(from: Self.hiddenContentBlurRadius, to: 0, duration: 0.38)
+        setContentYOffset(Self.hiddenContentYOffset)
+        animateContentYOffset(from: Self.hiddenContentYOffset, to: 0, duration: 0.38)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.38
             context.timingFunction = Self.revealTiming
@@ -238,7 +237,7 @@ final class BoardRevealContainerView: NSView {
         }
 
         contentVisible = false
-        animateContentBlur(from: 0, to: Self.hiddenContentBlurRadius, duration: 0.22)
+        animateContentYOffset(from: 0, to: Self.hiddenContentYOffset, duration: 0.22)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.22
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.5, 0, 0.75, 0)
@@ -249,32 +248,23 @@ final class BoardRevealContainerView: NSView {
         }
     }
 
-    private func installContentBlur(radius: CGFloat) {
-        let filter = CIFilter(name: "CIGaussianBlur")
-        filter?.name = Self.contentBlurFilterName
-        filter?.setValue(radius, forKey: kCIInputRadiusKey)
-        contentContainerView.layer?.filters = filter.map { [$0] } ?? []
+    private func setContentYOffset(_ offset: CGFloat) {
+        contentContainerView.layer?.transform = CATransform3DMakeTranslation(0, offset, 0)
     }
 
-    private func setContentBlur(radius: CGFloat) {
-        guard let filter = contentContainerView.layer?.filters?.first as? CIFilter else { return }
-        filter.setValue(radius, forKey: kCIInputRadiusKey)
-    }
-
-    private func animateContentBlur(from: CGFloat, to: CGFloat, duration: CFTimeInterval) {
-        let animation = CABasicAnimation(keyPath: "filters.\(Self.contentBlurFilterName).inputRadius")
+    private func animateContentYOffset(from: CGFloat, to: CGFloat, duration: CFTimeInterval) {
+        let animation = CABasicAnimation(keyPath: "transform.translation.y")
         animation.fromValue = from
         animation.toValue = to
         animation.duration = duration
         animation.timingFunction = Self.revealTiming
         animation.fillMode = .forwards
         animation.isRemovedOnCompletion = false
-        contentContainerView.layer?.add(animation, forKey: "boardRevealContentBlur")
-        setContentBlur(radius: to)
+        contentContainerView.layer?.add(animation, forKey: "boardRevealContentYOffset")
+        setContentYOffset(to)
     }
 
-    private static let contentBlurFilterName = "boardRevealBlur"
-    private static let hiddenContentBlurRadius: CGFloat = 42
+    private static let hiddenContentYOffset: CGFloat = 14
     private static let revealTiming = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.28, 1.0)
 }
 

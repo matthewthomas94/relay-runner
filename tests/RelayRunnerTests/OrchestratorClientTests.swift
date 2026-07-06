@@ -59,6 +59,21 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertNil(request.httpBody)
     }
 
+    func testProgramDashboardRequestUsesDashboardEndpoint() throws {
+        let request = try XCTUnwrap(OrchestratorClient.programDashboardRequest(
+            limit: 0,
+            trigger: "program-board-refresh",
+            port: 8123
+        ))
+
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(
+            request.url?.absoluteString,
+            "http://127.0.0.1:8123/v1/program/dashboard?limit=0&trigger=program-board-refresh"
+        )
+        XCTAssertNil(request.httpBody)
+    }
+
     func testProgramDashboardFetchesCanonicalBoardLanes() async throws {
         let snapshot = try await OrchestratorClient.buildProgramDashboard(limit: 20) { query, _ in
             switch query {
@@ -131,6 +146,30 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(snapshot.doneWork.query, "done_lane")
     }
 
+    func testProgramDashboardRefreshesMissingDashboardEndpointAndRetries() async throws {
+        let recorder = SchemaRefreshRecorder()
+
+        let snapshot = try await OrchestratorClient.fetchProgramDashboardRefreshingStaleDaemon(
+            limit: 0,
+            fetchDashboard: { _ in
+                if !(await recorder.wasRefreshed()) {
+                    throw OrchestratorClientError.badStatus(
+                        404,
+                        #"{"error":"no route for GET /v1/program/dashboard"}"#
+                    )
+                }
+                return self.dashboardSnapshot()
+            },
+            refreshDaemon: {
+                await recorder.refresh(with: .restarted)
+            }
+        )
+
+        let refreshCount = await recorder.refreshCount()
+        XCTAssertEqual(refreshCount, 1)
+        XCTAssertEqual(snapshot.summary.query, "summary")
+    }
+
     func testProgramDashboardDefersStaleDaemonRestartWhileWorkersAreActive() async throws {
         let recorder = SchemaRefreshRecorder()
 
@@ -188,6 +227,17 @@ final class OrchestratorClientTests: XCTestCase {
             message: message,
             items: [],
             counts: ProgramStatusCounts(projects: projects, items: itemCount)
+        )
+    }
+
+    private func dashboardSnapshot() -> ProgramDashboardSnapshot {
+        ProgramDashboardSnapshot(
+            summary: response(query: "summary", message: "Summary"),
+            backlogWork: response(query: "backlog_lane", message: "Backlog"),
+            readyWork: response(query: "ready_lane", message: "Ready"),
+            inProgressWork: response(query: "in_progress_lane", message: "In progress"),
+            doneWork: response(query: "done_lane", message: "Done"),
+            awaitingMerge: response(query: "awaiting_merge", message: "Awaiting merge")
         )
     }
 

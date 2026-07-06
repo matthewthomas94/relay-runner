@@ -119,7 +119,56 @@ def build_program_status(
     item_limit = None if raw_limit <= 0 else max(1, min(raw_limit, 500))
     now = time.time() if now is None else now
     ctx = _context(store)
+    return _build_program_status_from_context(
+        ctx,
+        query=query,
+        provider_key=provider_key,
+        item_limit=item_limit,
+        now=now,
+        stale_after_seconds=stale_after_seconds,
+    )
 
+
+def build_program_dashboard(
+    store: GraphifyCoreStore,
+    *,
+    provider: str | None = None,
+    limit: int = 0,
+    now: float | None = None,
+    stale_after_seconds: int = STALE_AFTER_SECONDS,
+) -> dict[str, Any]:
+    provider_key = _provider_key(provider)
+    raw_limit = int(limit if limit is not None else 0)
+    item_limit = None if raw_limit <= 0 else max(1, min(raw_limit, 500))
+    now = time.time() if now is None else now
+    ctx = _context(store)
+    build = lambda query: _build_program_status_from_context(
+        ctx,
+        query=query,
+        provider_key=provider_key,
+        item_limit=item_limit,
+        now=now,
+        stale_after_seconds=stale_after_seconds,
+    )
+    return {
+        "summary": build(QUERY_SUMMARY),
+        "backlog": build(QUERY_BACKLOG_LANE),
+        "ready": build(QUERY_READY_LANE),
+        "in_progress": build(QUERY_IN_PROGRESS_LANE),
+        "done": build(QUERY_DONE_LANE),
+        "awaiting_merge": build(QUERY_AWAITING_MERGE),
+    }
+
+
+def _build_program_status_from_context(
+    ctx: dict[str, Any],
+    *,
+    query: str,
+    provider_key: str | None,
+    item_limit: int | None,
+    now: float,
+    stale_after_seconds: int,
+) -> dict[str, Any]:
     if not ctx["projects"]:
         return _response(
             query,

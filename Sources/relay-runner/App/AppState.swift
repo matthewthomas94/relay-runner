@@ -1,6 +1,12 @@
 import Foundation
 import SwiftUI
 
+private struct NotchActivitySnapshot {
+    let runStates: [RunState]
+    let tickets: [Ticket]
+    let ticketsByRunKey: [String: Ticket]
+}
+
 @Observable
 final class AppState {
     struct LaunchPlan: Equatable {
@@ -121,6 +127,7 @@ final class AppState {
     private var notchActivityRunStates: [RunState] = []
     private var notchActivityTickets: [Ticket] = []
     private var notchActivityTicketsByRunKey: [String: Ticket] = [:]
+    private var notchActivityTask: Task<Void, Never>?
     private var bridgeWatchdog: Timer?
     private var programStatusTask: Task<Void, Never>?
     /// True while a menu-started terminal session owns the bridge.
@@ -192,6 +199,8 @@ final class AppState {
     private func stopNotchActivityPolling() {
         notchActivityTimer?.invalidate()
         notchActivityTimer = nil
+        notchActivityTask?.cancel()
+        notchActivityTask = nil
         notchActivityRunStates = []
         notchActivityTickets = []
         notchActivityTicketsByRunKey = [:]
@@ -201,37 +210,33 @@ final class AppState {
 
     private func syncNotchActivityProjectState() {
         guard hasActiveSession else {
-            notchActivityRunStates = []
-            notchActivityTickets = []
-            notchActivityTicketsByRunKey = [:]
-            syncNotchActivitySurface()
+            clearNotchActivityProjectState()
             return
         }
 
-        let projects = ProjectResolver.resolveActivityProjects()
-        guard !projects.isEmpty else {
-            notchActivityRunStates = []
-            notchActivityTickets = []
-            notchActivityTicketsByRunKey = [:]
-            syncNotchActivitySurface()
-            return
-        }
-
-        var runStates: [RunState] = []
-        var tickets: [Ticket] = []
-        var ticketsByRunKey: [String: Ticket] = [:]
-        for project in projects {
-            runStates.append(contentsOf: Array(RunStateStore.load(forRepo: project.repoPath).values))
-            let projectTickets = ProjectResolver.scanTickets(in: project)
-            tickets.append(contentsOf: projectTickets)
-            let repoPath = project.repoPath.resolvingSymlinksInPath().path
-            for ticket in projectTickets {
-                ticketsByRunKey[Self.notchActivityRunKey(repoPath: repoPath, ticketId: ticket.id)] = ticket
+        guard notchActivityTask == nil else { return }
+        notchActivityTask = Task { @MainActor [weak self] in
+            let snapshot = await Self.loadNotchActivitySnapshot()
+            guard let self else { return }
+            self.notchActivityTask = nil
+            guard !Task.isCancelled else { return }
+            guard self.hasActiveSession else {
+                self.clearNotchActivityProjectState()
+                return
             }
+            self.notchActivityRunStates = snapshot.runStates
+            self.notchActivityTickets = snapshot.tickets
+            self.notchActivityTicketsByRunKey = snapshot.ticketsByRunKey
+            self.syncNotchActivitySurface()
         }
-        notchActivityRunStates = runStates
-        notchActivityTickets = tickets
-        notchActivityTicketsByRunKey = ticketsByRunKey
+    }
+
+    private func clearNotchActivityProjectState() {
+        notchActivityTask?.cancel()
+        notchActivityTask = nil
+        notchActivityRunStates = []
+        notchActivityTickets = []
+        notchActivityTicketsByRunKey = [:]
         syncNotchActivitySurface()
     }
 
@@ -279,6 +284,31 @@ final class AppState {
 
     private static func notchActivityRunKey(repoPath: String, ticketId: String) -> String {
         "\(repoPath)|\(ticketId)"
+    }
+
+    private static func loadNotchActivitySnapshot() async -> NotchActivitySnapshot {
+        await Task.detached(priority: .utility) {
+            let projects = ProjectResolver.resolveActivityProjects()
+            var runStates: [RunState] = []
+            var tickets: [Ticket] = []
+            var ticketsByRunKey: [String: Ticket] = [:]
+
+            for project in projects {
+                runStates.append(contentsOf: Array(RunStateStore.load(forRepo: project.repoPath).values))
+                let projectTickets = ProjectResolver.scanTickets(in: project)
+                tickets.append(contentsOf: projectTickets)
+                let repoPath = project.repoPath.resolvingSymlinksInPath().path
+                for ticket in projectTickets {
+                    ticketsByRunKey[notchActivityRunKey(repoPath: repoPath, ticketId: ticket.id)] = ticket
+                }
+            }
+
+            return NotchActivitySnapshot(
+                runStates: runStates,
+                tickets: tickets,
+                ticketsByRunKey: ticketsByRunKey
+            )
+        }.value
     }
 
     init(
