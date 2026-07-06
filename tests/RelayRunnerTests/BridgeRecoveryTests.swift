@@ -128,6 +128,24 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
+    func testRecordingStartIgnoresClaimedOrStaleVoiceCommandState() {
+        for state in [
+            ProcessManager.PendingVoiceCommandDeliveryState.claimed,
+            ProcessManager.PendingVoiceCommandDeliveryState.stale,
+        ] {
+            XCTAssertEqual(
+                AppState.recordingStartBridgeAction(
+                    bridgeRecoveryInFlight: false,
+                    daemonAlive: true,
+                    consumerAlive: true,
+                    hasSessionContext: true,
+                    pendingDeliveryState: state
+                ),
+                .allowRecording
+            )
+        }
+    }
+
     func testRecordingStartBlocksWhenDaemonHasNoLiveConsumer() {
         XCTAssertEqual(
             AppState.recordingStartBridgeAction(

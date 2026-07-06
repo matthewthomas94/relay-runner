@@ -975,7 +975,7 @@ final class AppState {
         if !daemonAlive {
             return .recoverBridgeOrPrompt
         }
-        if pendingDeliveryState != .none {
+        if pendingDeliveryState == .waiting || pendingDeliveryState == .timedOut {
             return .waitForPendingCommand
         }
         if !consumerAlive {

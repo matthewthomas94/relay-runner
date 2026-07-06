@@ -182,6 +182,9 @@ final class ProcessManager {
     static func relayConsumerAlive() -> Bool {
         relayConsumerAlive(
             voiceCommandPath: voiceCommandPath,
+            voiceCommandMetaPath: voiceCommandMetaPath,
+            voiceCommandStatePath: voiceCommandStatePath,
+            voiceCommandClaimedPath: voiceCommandClaimedPath,
             heartbeatPath: heartbeatPath,
             sessionMarkerPaths: [bridgeSocketPath, bridgeCwdPath],
             now: Date()
@@ -190,6 +193,9 @@ final class ProcessManager {
 
     static func relayConsumerAlive(
         voiceCommandPath: String,
+        voiceCommandMetaPath: String? = nil,
+        voiceCommandStatePath: String? = nil,
+        voiceCommandClaimedPath: String? = nil,
         heartbeatPath: String,
         sessionMarkerPaths: [String],
         now: Date,
@@ -197,9 +203,14 @@ final class ProcessManager {
     ) -> Bool {
         // Fast check: if a voice command has been pending for >10s, consumer is dead
         // (in normal flow, the agent reads voice_cmd_ready within ~1s)
-        if let modified = modificationDate(of: voiceCommandPath, fileManager: fm),
-           now.timeIntervalSince(modified) > pendingVoiceCommandTimeout {
-            NSLog("[ProcessManager] relay consumer missing: voice command pending for \(Int(now.timeIntervalSince(modified)))s")
+        if voiceCommandTimedOut(
+            voiceCommandPath: voiceCommandPath,
+            voiceCommandMetaPath: voiceCommandMetaPath,
+            voiceCommandStatePath: voiceCommandStatePath,
+            voiceCommandClaimedPath: voiceCommandClaimedPath,
+            now: now,
+            fileManager: fm
+        ) {
             return false
         }
 
@@ -231,6 +242,47 @@ final class ProcessManager {
             return false
         }
         return true
+    }
+
+    private static func voiceCommandTimedOut(
+        voiceCommandPath: String,
+        voiceCommandMetaPath: String?,
+        voiceCommandStatePath: String?,
+        voiceCommandClaimedPath: String?,
+        now: Date,
+        fileManager fm: FileManager
+    ) -> Bool {
+        guard let modified = modificationDate(of: voiceCommandPath, fileManager: fm) else {
+            return false
+        }
+
+        if let metaPath = voiceCommandMetaPath,
+           let statePath = voiceCommandStatePath,
+           let claimedPath = voiceCommandClaimedPath {
+            let state = pendingVoiceCommandDeliveryState(
+                commandURL: URL(fileURLWithPath: voiceCommandPath),
+                metaURL: URL(fileURLWithPath: metaPath),
+                stateURL: URL(fileURLWithPath: statePath),
+                claimedURL: URL(fileURLWithPath: claimedPath),
+                now: now,
+                fileManager: fm
+            )
+            switch state {
+            case .timedOut:
+                NSLog("[ProcessManager] relay consumer missing: voice command pending for \(Int(now.timeIntervalSince(modified)))s")
+                return true
+            case .waiting, .stale, .claimed:
+                return false
+            case .none:
+                break
+            }
+        }
+
+        if now.timeIntervalSince(modified) > pendingVoiceCommandTimeout {
+            NSLog("[ProcessManager] relay consumer missing: voice command pending for \(Int(now.timeIntervalSince(modified)))s")
+            return true
+        }
+        return false
     }
 
     enum PendingVoiceCommandDeliveryState: Equatable {
