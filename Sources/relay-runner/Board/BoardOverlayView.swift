@@ -759,7 +759,7 @@ private struct AgentActivityBadge: View {
 
 /// Live run-state pill driven by the daemon's runs-index. The dot color
 /// separates states at a glance (green running, amber stalled, red failed,
-/// blue awaiting-merge).
+/// blue awaiting review).
 private struct RunStatusPill: View {
     let pill: RunPill
 
@@ -768,7 +768,8 @@ private struct RunStatusPill: View {
         case .running:       return "Running"
         case .stalled:       return "Stalled"
         case .failed:        return "Failed"
-        case .awaitingMerge: return "Awaiting merge"
+        case .awaitingReview: return "Awaiting review"
+        case .mergeConflict: return "Merge conflict"
         }
     }
 
@@ -777,7 +778,8 @@ private struct RunStatusPill: View {
         case .running:       return Color(.sRGB, red: 52 / 255,  green: 211 / 255, blue: 153 / 255, opacity: 1.0)
         case .stalled:       return Color(.sRGB, red: 245 / 255, green: 180 / 255, blue: 40 / 255,  opacity: 1.0)
         case .failed:        return Color(.sRGB, red: 244 / 255, green: 60 / 255,  blue: 9 / 255,   opacity: 1.0)
-        case .awaitingMerge: return Color(.sRGB, red: 96 / 255,  green: 165 / 255, blue: 250 / 255, opacity: 1.0)
+        case .awaitingReview: return Color(.sRGB, red: 96 / 255,  green: 165 / 255, blue: 250 / 255, opacity: 1.0)
+        case .mergeConflict: return Color(.sRGB, red: 251 / 255, green: 146 / 255, blue: 60 / 255, opacity: 1.0)
         }
     }
 

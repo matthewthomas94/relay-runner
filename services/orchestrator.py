@@ -994,8 +994,8 @@ class RunsStore:
 
     ACTIVE_STATES = ("Claimed", "Running")
     # Completed entries linger in the runs-index file this long after `ended_at`
-    # so the board can render "Succeeded — awaiting merge" pills across the
-    # typical merge gap without flicker, then get pruned.
+    # so the board can render review-pending pills across the typical merge gap
+    # without flicker, then get pruned.
     INDEX_RETENTION_SECONDS = 300
 
     def __init__(self, path: Path, index_path: Path | None = None):
@@ -2601,15 +2601,9 @@ class Daemon:
     def _on_worker_complete(self, run_id: int) -> None:
         with self._workers_lock:
             self._workers.pop(run_id, None)
-        # Auto-progress dependents. Released both locks before re-entering
-        # dispatch so we don't deadlock against another caller that's mid-claim.
-        run = self.runs.get(run_id)
-        if not run or run.get("state") != "Succeeded":
-            return
-        try:
-            self._progress_dependents(repo_path=run["repo_path"], finished_ticket_id=run["ticket_id"])
-        except Exception as e:  # noqa: BLE001 — never crash the worker thread on follow-up failure
-            print(f"[orchestrator] dep-progression error for {run['ticket_id']}: {e}", file=sys.stderr)
+        # Successful workers enter AwaitingReview and remain unpublished on the
+        # source board. Accepting the review/merge is the only path that
+        # publishes `status: done` and progresses dependents.
 
     def _progress_dependents(self, *, repo_path: str, finished_ticket_id: str) -> None:
         """When a ticket is done in the source repo, dispatch dependents whose deps are done.

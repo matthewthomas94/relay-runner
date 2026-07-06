@@ -432,9 +432,9 @@ private struct ProgramMetricGrid: View {
             ProgramMetricTile(label: "Progress", value: "\(snapshot.inProgressWork.items.count)")
             ProgramMetricTile(label: "Done", value: "\(snapshot.doneWork.items.count)")
             ProgramMetricTile(
-                label: "Awaiting merge",
+                label: "Awaiting review",
                 value: "\(snapshot.awaitingMerge.items.count)",
-                help: "Agent work that has finished and is waiting to be merged back into its project."
+                help: "Agent work that has finished and is waiting for review before merge."
             )
         }
     }
@@ -923,7 +923,7 @@ private struct ProgramWorkCard: View {
     private var stateBadges: [String] {
         var labels: [String] = []
         if item.isAwaitingMerge {
-            labels.append("Awaiting merge")
+            labels.append("Awaiting review")
         } else if item.hasActiveWorker {
             labels.append(item.activeWorkerBadgeLabel ?? "Running")
         }
@@ -1015,7 +1015,7 @@ private struct ProgramTicketDetailPanel: View {
                             .foregroundStyle(ProgramBoardStyle.secondaryText)
                             .lineLimit(1)
                         if detail.item.isAwaitingMerge {
-                            ProgramInlineBadge(label: "Awaiting merge")
+                            ProgramInlineBadge(label: "Awaiting review")
                         }
                     }
                     Text(detail.title)

@@ -17,8 +17,8 @@ final class BoardViewModelTests: XCTestCase {
 
         XCTAssertEqual(model.tickets(in: .backlog).map(\.id), ["RR-1"])
         XCTAssertEqual(model.tickets(in: .ready).map(\.id), [])
-        XCTAssertEqual(model.tickets(in: .inProgress).map(\.id), ["RR-2"])
-        XCTAssertEqual(model.tickets(in: .done).map(\.id), ["RR-4", "RR-3"])
+        XCTAssertEqual(model.tickets(in: .inProgress).map(\.id), ["RR-3", "RR-2"])
+        XCTAssertEqual(model.tickets(in: .done).map(\.id), ["RR-4"])
     }
 
     func testLaneTicketsHonorBoardOrderWrittenByDragDrop() {
@@ -32,7 +32,7 @@ final class BoardViewModelTests: XCTestCase {
         XCTAssertEqual(model.tickets(in: .backlog).map(\.id), ["RR-2", "RR-3", "RR-1"])
     }
 
-    func testAwaitingReviewRunMovesManualBacklogDispatchToDone() {
+    func testAwaitingReviewRunMovesManualBacklogDispatchToInProgress() {
         let model = BoardViewModel()
         let ticket = ticket(id: "RR-122", status: .backlog)
         model.tickets = [ticket]
@@ -40,10 +40,26 @@ final class BoardViewModelTests: XCTestCase {
             "RR-122": runState(ticketId: "RR-122", state: "AwaitingReview", runId: 205),
         ]
 
-        XCTAssertEqual(model.effectiveStatus(for: ticket), .done)
-        XCTAssertEqual(model.pill(for: ticket), .awaitingMerge)
+        XCTAssertEqual(model.effectiveStatus(for: ticket), .inProgress)
+        XCTAssertEqual(model.pill(for: ticket), .awaitingReview)
         XCTAssertEqual(model.tickets(in: .backlog).map(\.id), [])
-        XCTAssertEqual(model.tickets(in: .done).map(\.id), ["RR-122"])
+        XCTAssertEqual(model.tickets(in: .inProgress).map(\.id), ["RR-122"])
+        XCTAssertEqual(model.tickets(in: .done).map(\.id), [])
+    }
+
+    func testMergeConflictRunStaysOutOfDone() {
+        let model = BoardViewModel()
+        let ticket = ticket(id: "RR-122", status: .ready)
+        model.tickets = [ticket]
+        model.runStates = [
+            "RR-122": runState(ticketId: "RR-122", state: "MergeConflict", runId: 205),
+        ]
+
+        XCTAssertEqual(model.effectiveStatus(for: ticket), .inProgress)
+        XCTAssertEqual(model.pill(for: ticket), .mergeConflict)
+        XCTAssertEqual(model.tickets(in: .ready).map(\.id), [])
+        XCTAssertEqual(model.tickets(in: .inProgress).map(\.id), ["RR-122"])
+        XCTAssertEqual(model.tickets(in: .done).map(\.id), [])
     }
 
     func testTicketOrderBetweenUsesSparseGapsBeforeRenumbering() {

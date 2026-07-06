@@ -639,13 +639,13 @@ enum ProgramStatusOverlayFormatter {
         guard !activeItems.isEmpty || !awaitingItems.isEmpty else {
             return ProgramStatusOverlayMessage(
                 title: "Program Status",
-                body: "No active workers or tickets awaiting merge."
+                body: "No active workers or tickets awaiting review."
             )
         }
 
         var lines: [String] = []
         append(items: activeItems, label: "Active", fallbackState: "active", to: &lines)
-        append(items: awaitingItems, label: "Awaiting merge", fallbackState: "awaiting merge", to: &lines)
+        append(items: awaitingItems, label: "Awaiting review", fallbackState: "awaiting review", to: &lines)
         return ProgramStatusOverlayMessage(title: "Program Status", body: lines.joined(separator: "\n"))
     }
 
@@ -697,7 +697,10 @@ enum ProgramStatusOverlayFormatter {
     }
 
     private static func humanState(_ state: String) -> String {
-        state.replacingOccurrences(of: "_", with: " ")
+        if state == "awaiting_merge" || state == "awaiting merge" {
+            return "awaiting review"
+        }
+        return state.replacingOccurrences(of: "_", with: " ")
     }
 
     private static func isDaemonUnavailable(_ error: URLError) -> Bool {
