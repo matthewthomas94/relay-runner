@@ -183,8 +183,9 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(stateMachine.state, .messageWaiting(preview: "Here is the detailed response."))
     }
 
-    func testBridgeWorkingEventStoresProgressWithoutChangingVisibleState() {
-        let stateMachine = StateMachine()
+    func testBridgeWorkingEventStoresFreshSanitizedProgressWithoutChangingVisibleState() {
+        var now = Date(timeIntervalSince1970: 1_000)
+        let stateMachine = StateMachine(now: { now })
 
         stateMachine.handleServiceEvent(
             source: "bridge",
@@ -198,6 +199,13 @@ final class StateMachineAcknowledgementTests: XCTestCase {
             stateMachine.workingProgress,
             "First pass found 102 SKILL.md files. Narrowing the audit now."
         )
+        XCTAssertEqual(
+            stateMachine.currentWorkingProgress(now: now),
+            "First pass found 102 SKILL.md files. Narrowing the audit now."
+        )
+
+        now = now.addingTimeInterval(StateMachine.workingProgressFreshnessDuration + 1)
+        XCTAssertNil(stateMachine.currentWorkingProgress(now: now))
 
         stateMachine.handleServiceEvent(
             source: "tts",
@@ -207,5 +215,26 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         )
 
         XCTAssertNil(stateMachine.workingProgress)
+    }
+
+    func testBridgeWorkingEventSuppressesRawPrivateAndIdleMonitoringText() {
+        let stateMachine = StateMachine()
+
+        for text in [
+            "git status --short",
+            "Reading hidden reasoning transcript",
+            "Relay mode waiting for voice input",
+            "Heartbeat refresh while monitoring bridge",
+        ] {
+            stateMachine.handleServiceEvent(
+                source: "bridge",
+                newState: "working",
+                text: text,
+                autoDismiss: nil
+            )
+
+            XCTAssertNil(stateMachine.workingProgress, text)
+            XCTAssertNil(stateMachine.currentWorkingProgress(), text)
+        }
     }
 }

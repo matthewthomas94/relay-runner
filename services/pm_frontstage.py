@@ -24,14 +24,23 @@ STATUS_PHASES = frozenset({"acknowledged", "planning", "outcome", "stale"})
 STATUS_SOURCES = frozenset({"pm", "orchestrator", "worker"})
 OUTCOME_KINDS = frozenset({"execute_solo", "delegate_plan", "needs_user"})
 TRACE_KINDS = frozenset({
+    "reading-context",
+    "ticket-updating",
     "ticket-created",
+    "dispatch-preparing",
     "dispatch-started",
     "dispatch-claimed",
     "run-running",
+    "run-reviewing",
     "run-review-needed",
+    "run-merging",
     "run-merged",
     "run-succeeded",
     "run-failed",
+    "running-tests",
+    "building",
+    "installing",
+    "preparing-response",
     "board-change",
 })
 TRACE_MESSAGE_MAX_LEN = 96
@@ -42,7 +51,7 @@ _COMMAND_LIKE_TRACE_RE = re.compile(
     re.IGNORECASE,
 )
 _PRIVATE_ACTIVITY_RE = re.compile(
-    r"(transcript|source_text|tool\s+log|reasoning|scratchpad|prompt)",
+    r"(transcript|source_text|tool\s+log|reasoning|scratchpad|prompt|secret|password|token|api[_ -]?key)",
     re.IGNORECASE,
 )
 
@@ -82,8 +91,8 @@ def _clip_update_message(message: str) -> str:
 
 def _public_trace_message(value: str) -> str:
     message = _public_message(value)
-    if _COMMAND_LIKE_TRACE_RE.search(message):
-        raise ValueError("trace messages must not contain raw commands or shell snippets")
+    if _COMMAND_LIKE_TRACE_RE.search(message) or _PRIVATE_ACTIVITY_RE.search(message):
+        raise ValueError("trace messages must not contain raw commands or private details")
     return _clip_public_message(message)
 
 
@@ -210,14 +219,23 @@ def default_orchestration_trace_message(
     ticket = _trace_ticket_label(ticket_id)
     run_suffix = f" run {run_id}" if run_id is not None else ""
     messages = {
+        "reading-context": "Reading project context",
+        "ticket-updating": f"Updating {ticket}",
         "ticket-created": f"Created ticket {ticket}",
+        "dispatch-preparing": f"Preparing {ticket} dispatch",
         "dispatch-started": f"Dispatching {ticket}",
         "dispatch-claimed": f"{ticket}{run_suffix} claimed",
         "run-running": f"{ticket}{run_suffix} running",
+        "run-reviewing": f"Reviewing {ticket}{run_suffix}",
         "run-review-needed": f"{ticket}{run_suffix} awaiting review",
+        "run-merging": f"Merging {ticket}{run_suffix}",
         "run-merged": f"{ticket}{run_suffix} merged",
         "run-succeeded": f"{ticket}{run_suffix} succeeded",
         "run-failed": f"{ticket}{run_suffix} failed",
+        "running-tests": "Running tests",
+        "building": "Building project",
+        "installing": "Installing dependencies",
+        "preparing-response": "Preparing response",
         "board-change": f"Board updated for {ticket}" if ticket_id else "Board updated",
     }
     return messages[kind]

@@ -88,6 +88,45 @@ class PMFrontstageTests(unittest.TestCase):
         self.assertEqual(status_event["phase"], "planning")
         self.assertEqual(status_event["message"], payload["message"])
 
+    def test_foreground_trace_kinds_cover_provider_neutral_main_agent_activity(self):
+        command = RelayCommandMetadata.from_dict(relay_command(9, "cmd-9"))
+
+        cases = {
+            "reading-context": "Reading project context",
+            "ticket-updating": "Updating RR-9",
+            "dispatch-preparing": "Preparing RR-9 dispatch",
+            "run-reviewing": "Reviewing RR-9 run 12",
+            "run-merging": "Merging RR-9 run 12",
+            "running-tests": "Running tests",
+            "building": "Building project",
+            "installing": "Installing dependencies",
+            "preparing-response": "Preparing response",
+        }
+
+        for kind, expected in cases.items():
+            with self.subTest(kind=kind):
+                event = OrchestrationTraceEvent(
+                    kind=kind,
+                    command=command,
+                    ticket_id="rr-9",
+                    run_id=12,
+                )
+
+                self.assertEqual(event.message, expected)
+                self.assertEqual(event.to_status_event_dict()["phase"], "planning")
+
+    def test_orchestration_trace_rejects_commands_and_private_details(self):
+        command = RelayCommandMetadata.from_dict(relay_command(10, "cmd-10"))
+
+        for message in ("git status --short", "Reviewed secret token from transcript"):
+            with self.subTest(message=message):
+                with self.assertRaises(ValueError):
+                    OrchestrationTraceEvent(
+                        kind="reading-context",
+                        command=command,
+                        message=message,
+                    )
+
     def test_orchestration_trace_rejects_raw_command_like_messages(self):
         with self.assertRaisesRegex(ValueError, "raw commands"):
             OrchestrationTraceEvent(
