@@ -71,11 +71,11 @@ The broker should expose one computed list for UI and support logs:
 
 | Field | Purpose |
 |---|---|
-| `id` | Stable requirement id, for example `relay.microphone`, `relay.inputMonitoring`, `parent.screenRecording`, `provider.auth`, `runtime.voiceBridge`, `worker.providerFlags`. |
+| `id` | Stable requirement id, for example `relay.microphone`, `relay.inputMonitoring`, `relay.screenRecording`, `provider.auth`, `runtime.voiceBridge`, `worker.providerFlags`. |
 | `owner` | `relayRunnerApp`, `relayHelper`, `parentHost`, `provider`, or `runtime`. |
 | `classification` | One of the classification values above. |
 | `provider` | `codex`, `claude`, or `all`. |
-| `targetDisplayName` | The app or helper the user must grant, such as Relay Runner, Terminal.app, Codex.app, or Claude.app. |
+| `targetDisplayName` | The app or helper the user must grant, such as Relay Runner. Parent host names are reserved for future protected APIs that still execute in those hosts. |
 | `status` | `granted`, `missing`, `deferred`, `restricted`, `needsRestart`, `notInstalled`, or `unknown`. |
 | `action` | In-app request, open Settings pane, reinstall tools, retry setup, sign in, restart host, or no action. |
 | `detail` | Short user-facing explanation that distinguishes privacy grants from runtime readiness. |
@@ -84,14 +84,14 @@ The same list can drive:
 
 - onboarding step selection and resume state;
 - Settings status rows;
-- parent-permission recovery after MCP preflight reports a missing grant;
+- app-permission recovery after the hosted Relay Actions or Relay Vision path reports a missing grant;
 - support/export diagnostics without including raw Relay transcripts or command captures.
 
 ## Verification targets
 
-- Fresh Codex setup with no grants: broker lists Microphone and Input Monitoring for Relay Runner, then parent Accessibility and Screen Recording for Codex.app and Terminal.app.
-- Fresh Claude setup with no grants: same requirement ids and copy shape, with Claude.app and Terminal.app as the default parent targets.
-- Detected non-default parent: broker replaces the default target list with the detected host for parent permission rows.
-- Screen Recording grant path: row remains `needsRestart` until the granted host has been relaunched and Relay Vision preflight confirms capture.
+- Fresh Codex setup with no grants: broker lists Microphone, optional Input Monitoring, Relay Runner Accessibility, and Relay Runner Screen Recording without asking for Codex.app or Terminal.app grants.
+- Fresh Claude setup with no grants: same requirement ids and copy shape, without asking for Claude.app or Terminal.app grants.
+- Detected non-default parent: provider metadata can still aid diagnostics, but Relay Actions and Relay Vision permission rows continue to target Relay Runner.
+- Screen Recording grant path: row remains `needsRestart` until Relay Runner has been relaunched if macOS requires it and Relay Vision confirms capture.
 - Worker run: provider flags are reported as provider setup/readiness, not as macOS privacy permissions.
 - Logs and ticket/run prose contain refined status only; raw Relay command captures remain private runtime metadata.

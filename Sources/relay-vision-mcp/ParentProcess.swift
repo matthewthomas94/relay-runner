@@ -1,21 +1,18 @@
 import Darwin
 import Foundation
 
-// Walks up the process tree from this MCP server's parent to find the
-// terminal (or IDE) that spawned the agent session. macOS attributes Screen Recording
-// permission to the *responsible* process — typically that's the terminal,
-// not Relay Runner — so the user has to grant Screen Recording to e.g.
-// Terminal.app, not (only) to Relay Runner.app. Without naming the right app
-// the user opens System Settings, grants Relay Runner, and is confused when
-// the next screenshot still fails.
+// Legacy parent-process detector retained for compatibility with older
+// app-side metadata flows and tests. Current Relay Actions/Vision protected
+// work is app-hosted, so normal Accessibility and Screen Recording grants
+// target Relay Runner rather than the terminal, IDE, Codex, or Claude host.
 //
 // The walk stops at the first known terminal/IDE host app, or at launchd
 // (pid 1). Native Codex.app / Claude.app matches are kept as fallbacks:
 // when their bundled CLI is run inside Terminal, the executable path still
 // contains `/Codex.app/` or `/Claude.app/`, but TCC belongs to Terminal.
 //
-// We don't try to be exhaustive — the goal is "you probably need to grant
-// Screen Recording to <X>", and a friendly fallback when detection fails.
+// We don't try to be exhaustive; this is now diagnostic metadata, not the
+// normal permission target.
 
 enum ParentProcess {
 
