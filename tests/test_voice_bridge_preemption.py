@@ -252,9 +252,10 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
     def test_voice_acknowledgement_defaults_to_immediate_delivery(self):
         self.assertEqual(voice_bridge.VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS, 0.0)
 
-    def test_pm_planning_status_event_uses_public_contract(self):
+    def test_voice_acknowledgement_stays_notch_only_without_generic_planning_response(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
             relay_command = voice_bridge._begin_relay_command(
                 "dispatch RR-7 to a worker",
                 state_path=state_path,
@@ -262,20 +263,23 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             )
             notifications: list[tuple[str, dict]] = []
 
-            voice_bridge._notify_pm_planning(
+            queued = voice_bridge._queue_voice_acknowledgement(
                 relay_command,
+                tts_queue,
+                command_path=os.path.join(temp_dir, "voice_cmd_ready"),
+                meta_path=os.path.join(temp_dir, "voice_cmd_ready.meta"),
+                state_path=state_path,
                 source_text="dispatch RR-7 to a worker",
+                delay_seconds=0,
                 notify_state=lambda state, **kwargs: notifications.append((state, kwargs)),
             )
 
-            self.assertEqual(notifications[0][0], "working")
-            self.assertEqual(
-                notifications[0][1]["text"],
-                "Checking the project and choosing the route.",
-            )
+            self.assertTrue(queued)
+            self.assertTrue(tts_queue.empty())
+            self.assertEqual([state for state, _ in notifications], ["acknowledgement"])
             status_event = notifications[0][1]["status_event"]
-            self.assertEqual(status_event["phase"], "planning")
-            self.assertEqual(status_event["source"], "orchestrator")
+            self.assertEqual(status_event["phase"], "acknowledged")
+            self.assertEqual(status_event["source"], "pm")
             self.assertEqual(status_event["message"], notifications[0][1]["text"])
             self.assertEqual(
                 status_event["command"]["relay_command_id"],

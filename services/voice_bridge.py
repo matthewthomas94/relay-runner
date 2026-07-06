@@ -1492,29 +1492,6 @@ def _queue_voice_acknowledgement(
     return True
 
 
-def _notify_pm_planning(
-    relay_command: dict,
-    *,
-    source_text: str | None = None,
-    tts_queue: queue.Queue | None = None,
-    notify_state=_notify_state,
-) -> None:
-    """Emit the PM-frontstage planning event before agent/orchestrator handling."""
-    message = "Checking the project and choosing the route."
-    status_event = _pm_status_event_payload(
-        phase="planning",
-        message=message,
-        source="orchestrator",
-        relay_command=relay_command,
-        source_text=source_text,
-    )
-    payload = {"text": message}
-    if status_event is not None:
-        payload["status_event"] = status_event
-    notify_state("working", **payload)
-    _queue_public_trace_acknowledgement(payload, tts_queue)
-
-
 def _handle_relay_control_message(
     text: str,
     tts_worker: TTSWorker,
@@ -1681,11 +1658,6 @@ def _run_relay(
                     relay_command,
                     tts_worker.input_queue,
                     source_text=text,
-                )
-                _notify_pm_planning(
-                    relay_command,
-                    source_text=text,
-                    tts_queue=tts_worker.input_queue,
                 )
                 action = resolve_command_action(
                     text,

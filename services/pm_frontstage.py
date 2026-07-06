@@ -841,13 +841,6 @@ class PMFrontstagePrototype:
             emit(self._stale_event(command))
             return PMRunResult(tuple(events), outcome=None, stale=True)
 
-        emit(PMStatusEvent(
-            phase="planning",
-            message="Checking the project and choosing the route.",
-            source="orchestrator",
-            command=command,
-        ))
-
         outcome = self.backstage_planner(source_text, relay_fields, repo_path)
         if not self._command_is_current(command, fallback=relay_fields):
             emit(self._stale_event(command))

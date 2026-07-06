@@ -118,7 +118,7 @@ class PMFrontstageTests(unittest.TestCase):
             repo_path="/tmp/repo",
         )
 
-        self.assertEqual(order, ["acknowledged", "planning", "planner", "outcome"])
+        self.assertEqual(order, ["acknowledged", "planner", "outcome"])
         self.assertEqual(result.outcome.kind, "execute_solo")
         self.assertFalse(result.stale)
 
@@ -256,7 +256,6 @@ class PMFrontstageTests(unittest.TestCase):
         self.assertIsNone(result.outcome)
         self.assertEqual([event.phase for event in result.status_events], [
             "acknowledged",
-            "planning",
             "stale",
         ])
 
@@ -282,14 +281,13 @@ class PMFrontstageTests(unittest.TestCase):
 
         lines = [json.loads(line) for line in proc.stdout.splitlines()]
         self.assertEqual(lines[0]["status_event"]["phase"], "acknowledged")
-        self.assertEqual(lines[1]["status_event"]["phase"], "planning")
-        self.assertEqual(lines[2]["status_event"]["phase"], "outcome")
-        self.assertEqual(lines[3]["outcome"]["kind"], "delegate_plan")
-        dispatch_payload = lines[3]["outcome"]["delegation_requests"][0]["dispatch_payload"]
+        self.assertEqual(lines[1]["status_event"]["phase"], "outcome")
+        self.assertEqual(lines[2]["outcome"]["kind"], "delegate_plan")
+        dispatch_payload = lines[2]["outcome"]["delegation_requests"][0]["dispatch_payload"]
         self.assertEqual(dispatch_payload["relay_command_seq"], 4)
         self.assertEqual(dispatch_payload["relay_command_id"], "cmd-4")
-        self.assertIn("Codex", lines[3]["provider_parity"])
-        self.assertIn("Claude", lines[3]["provider_parity"])
+        self.assertIn("Codex", lines[2]["provider_parity"])
+        self.assertIn("Claude", lines[2]["provider_parity"])
 
     def test_build_pm_update_snapshot_uses_durable_repo_scoped_sources(self):
         snapshot = build_pm_update_snapshot(
