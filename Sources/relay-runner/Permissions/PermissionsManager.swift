@@ -27,7 +27,7 @@ enum PermissionStatus: Equatable {
 ///   Relay Runner's app-hosted Relay Actions tool host to post CGEvents
 ///   (clicks, keystrokes).
 /// - Input Monitoring: required to capture non-Caps-Lock global activation
-///   keys and the double-tap Shift board hotkey.
+///   keys and the double-tap Shift Workspace hotkey.
 /// - Screen Recording: required by Relay Runner's app-hosted Relay Vision
 ///   screenshot tool. Without it, the screenshot tool returns a clear error
 ///   string but the rest of the app keeps working.

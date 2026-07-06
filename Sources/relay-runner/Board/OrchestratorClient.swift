@@ -150,7 +150,7 @@ enum OrchestratorClient {
                 } catch {
                     if shouldRefreshDaemon(for: error) {
                         throw OrchestratorClientError.daemonRefreshFailed(
-                            "Relay Runner restarted the orchestrator, but it still reports an older Program Board schema."
+                            "Relay Runner restarted the orchestrator, but it still reports an older Program Workspace schema."
                         )
                     }
                     throw error
@@ -409,7 +409,7 @@ enum OrchestratorClientError: Error, LocalizedError, Equatable {
             return "Could not decode orchestrator response: \(message)"
         case .daemonRefreshDeferred:
             return (
-                "Relay Runner needs to restart the orchestrator to load the bundled Program Board schema, "
+                "Relay Runner needs to restart the orchestrator to load the bundled Program Workspace schema, "
                 + "but active workers are running. Refresh again after those workers finish."
             )
         case .daemonRefreshFailed(let message):

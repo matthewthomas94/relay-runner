@@ -1001,7 +1001,7 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticketPath: nil,
                 description: nil,
                 acceptanceCriteria: nil,
-                unavailableMessage: "Ticket identity is unavailable for this Program Board item."
+                unavailableMessage: "Ticket identity is unavailable for this Program Workspace item."
             )
         }
 

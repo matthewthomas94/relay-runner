@@ -2,6 +2,29 @@ import XCTest
 @testable import relay_runner
 
 final class BoardViewModelTests: XCTestCase {
+    func testWorkspaceTabsNormalizeUnavailableInitialSelection() {
+        let model = WorkspaceViewModel()
+
+        model.configure(
+            showsWorkTab: false,
+            showsSettingsTab: true,
+            initialTab: .work
+        )
+
+        XCTAssertEqual(model.availableTabs, [.systemSettings])
+        XCTAssertEqual(model.selectedTab, .systemSettings)
+
+        model.configure(
+            showsWorkTab: true,
+            showsSettingsTab: true,
+            initialTab: .systemSettings
+        )
+        model.select(.work)
+
+        XCTAssertEqual(model.availableTabs, [.work, .systemSettings])
+        XCTAssertEqual(model.selectedTab, .work)
+    }
+
     func testLaneTicketsUseEffectiveRunPlacementForCounts() {
         let model = BoardViewModel()
         model.tickets = [

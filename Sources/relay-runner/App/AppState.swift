@@ -751,11 +751,24 @@ final class AppState {
         sttEngine?.toggleRecording()
     }
 
-    /// Show or hide the routed board overlay. Single-project sessions read
+    /// Show or hide the routed Workspace overlay. Single-project sessions read
     /// tickets from that repo's `.orchestrator/`; workspace sessions open the
-    /// read-only Program Board.
+    /// read-only Program work view.
     func toggleBoard() {
         boardOverlay.toggle()
+    }
+
+    func toggleWorkspace() {
+        toggleBoard()
+    }
+
+    func showWorkspaceSettings() {
+        if overlayController == nil { startOverlay() }
+        if programBoardOverlay.isVisible {
+            programBoardOverlay.showSettings()
+        } else {
+            boardOverlay.showSettings()
+        }
     }
 
     func activateProject(pathOrAlias: String, provider: String?) -> ProjectActivationReply {
@@ -1202,6 +1215,10 @@ final class AppState {
         boardOverlay.setLoadingStateHandler { [weak self] isLoading in
             self?.setProjectBoardLoading(isLoading)
         }
+        boardOverlay.setSettingsContentProvider { [weak self] in
+            guard let self else { return nil }
+            return AnyView(WorkspaceSettingsPanel(appState: self))
+        }
         programBoardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
             if case .actionGlow = state { return .stt }
@@ -1209,6 +1226,10 @@ final class AppState {
         }
         programBoardOverlay.setLoadingStateHandler { [weak self] isLoading in
             self?.setProgramBoardLoading(isLoading)
+        }
+        programBoardOverlay.setSettingsContentProvider { [weak self] in
+            guard let self else { return nil }
+            return AnyView(WorkspaceSettingsPanel(appState: self))
         }
         programBoardOverlay.setOpenProjectHandler { [weak self] repoPath in
             guard let self else { return }
