@@ -285,7 +285,9 @@ if [ -p /tmp/tts_in.fifo ]; then printf '%s\n' 'Voice bridge is ready. You can s
 
 ## Voice Interaction Loop
 
-Now enter a continuous loop. Repeat these steps until the user says "stop listening" or you receive `__INTERRUPT__`:
+Now enter a continuous monitoring loop. Do not treat setup confirmation, an idle wait, or a handled voice response as the end of the task. Keep a foreground wait loop active and continue claiming `/tmp/voice_cmd_ready` until the user explicitly says "stop listening", "exit voice", invokes `relay-stop`, `/tmp/voice_bridge_stop_requested` appears, or the bridge dies.
+
+If you receive `__INTERRUPT__`, handle it as a silent control action and immediately return to waiting. Do not exit bridge mode for `__INTERRUPT__`.
 
 ### Step 0: Scan the orchestrator board
 
@@ -464,9 +466,9 @@ PY
 
 Important: Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead. Only send the spoken summary, not the full detailed response.
 
-### Step 4: Loop
+### Step 4: Continue monitoring
 
-Go back to Step 1 and wait for the next voice command.
+Go back to Step 1 and wait for the next voice command. Do not stop polling because no command arrives for a while; an idle bridge session is still active. Only leave this loop for an explicit stop-listening/relay-stop request, `/tmp/voice_bridge_stop_requested`, or bridge death.
 
 ## Cleanup
 
@@ -613,7 +615,9 @@ if [ -p /tmp/tts_in.fifo ]; then printf '%s\n' 'Voice bridge is ready. You can s
 
 ## Voice Loop
 
-Repeat until the user asks to stop listening or the bridge dies.
+Bridge mode is an active monitoring contract. Do not treat setup confirmation, an idle wait, or a handled voice response as the end of the task. Keep a foreground wait loop active and continue claiming `/tmp/voice_cmd_ready` until the user explicitly asks to stop listening, invokes `relay-stop`, `/tmp/voice_bridge_stop_requested` appears, or the bridge dies.
+
+Do not send a final response just because startup succeeded or one voice command was handled if doing so would stop the wait loop. After each handled command and spoken summary, immediately return to this loop and wait for the next command.
 
 Before each wait, snapshot `.orchestrator/` if it exists and remember meaningful board changes:
 
@@ -718,7 +722,7 @@ printf '%s\n' '__TRACE__:{"kind":"run-succeeded","ticket_id":"RR-123","run_id":4
 
 These traces appear as the working-state notch label when no more specific compact activity label is active. Existing compact labels such as Listening, Response ready, worker state, bridge recovery, or ticket activity take priority over this stream.
 
-After your response, stop the heartbeat refresher and ensure the bridge session metadata remains intact. The Relay Runner app owns daemon recovery; if the daemon is missing here, preserve `/tmp/voice_bridge.cwd` and `/tmp/voice_bridge.provider`, wait briefly for the app watchdog, and skip TTS rather than deleting runtime context from the agent side:
+After each handled command, stop only that command's heartbeat refresher and ensure the bridge session metadata remains intact. This is not session cleanup, and it must not end bridge monitoring. The Relay Runner app owns daemon recovery; if the daemon is missing here, preserve `/tmp/voice_bridge.cwd` and `/tmp/voice_bridge.provider`, wait briefly for the app watchdog, and skip TTS rather than deleting runtime context from the agent side:
 
 ```bash
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
@@ -776,7 +780,11 @@ with os.fdopen(fd, "w") as fifo:
 PY
 ```
 
-Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead. Then return to waiting.
+Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead.
+
+### Continue monitoring
+
+After the spoken summary path completes, immediately go back to the top of the Voice Loop and wait for the next voice command. Do not stop polling because no command arrives for a while; an idle bridge session is still active. Only leave this loop for an explicit stop-listening/relay-stop request, `/tmp/voice_bridge_stop_requested`, or bridge death.
 
 ## Cleanup
 
