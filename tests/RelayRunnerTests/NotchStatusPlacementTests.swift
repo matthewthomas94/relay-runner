@@ -598,6 +598,56 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
+    func testWorkingHoverInteractionExtendsAcrossExpandedTraceSurface() {
+        let frame = NotchHoverInteractionPolicy.frame(
+            glyphFrame: NSRect(x: 118, y: 0, width: 30, height: 34),
+            boundsHeight: NotchStatusPlacementPlanner.glyphSize.height,
+            activityLabelWidth: NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth,
+            leadingSpacerWidth: NotchStatusPlacementPlanner.compactNotchLeadInWidth,
+            notchSpacerWidth: 185,
+            status: .working,
+            glyphHovered: true,
+            workingProgressLabel: "Reading source files while preparing the worker trace.",
+            hoverSlop: 8
+        )
+
+        XCTAssertTrue(frame.contains(CGPoint(x: 40, y: 10)))
+        XCTAssertTrue(frame.contains(CGPoint(x: 130, y: 10)))
+        XCTAssertGreaterThan(frame.maxX, 148)
+    }
+
+    func testHoverInteractionStaysGlyphOnlyWhenNotExpanded() {
+        let compactFrame = NotchHoverInteractionPolicy.frame(
+            glyphFrame: NSRect(x: 118, y: 0, width: 30, height: 34),
+            boundsHeight: NotchStatusPlacementPlanner.glyphSize.height,
+            activityLabelWidth: NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth,
+            leadingSpacerWidth: NotchStatusPlacementPlanner.compactNotchLeadInWidth,
+            notchSpacerWidth: 185,
+            status: .working,
+            glyphHovered: false,
+            workingProgressLabel: "Reading source files while preparing the worker trace.",
+            hoverSlop: 8
+        )
+
+        XCTAssertFalse(compactFrame.contains(CGPoint(x: 40, y: 10)))
+        XCTAssertTrue(compactFrame.contains(CGPoint(x: 130, y: 10)))
+
+        let noProgressFrame = NotchHoverInteractionPolicy.frame(
+            glyphFrame: NSRect(x: 118, y: 0, width: 30, height: 34),
+            boundsHeight: NotchStatusPlacementPlanner.glyphSize.height,
+            activityLabelWidth: NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth,
+            leadingSpacerWidth: NotchStatusPlacementPlanner.compactNotchLeadInWidth,
+            notchSpacerWidth: 185,
+            status: .working,
+            glyphHovered: true,
+            workingProgressLabel: nil,
+            hoverSlop: 8
+        )
+
+        XCTAssertFalse(noProgressFrame.contains(CGPoint(x: 40, y: 10)))
+        XCTAssertTrue(noProgressFrame.contains(CGPoint(x: 130, y: 10)))
+    }
+
     func testNotchSessionStatusMapsUserFacingStates() {
         XCTAssertEqual(
             NotchSessionStatus.resolve(for: .idle, hasActivityLabels: false),
