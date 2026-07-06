@@ -24,12 +24,13 @@ enum PermissionStatus: Equatable {
 /// degrades gracefully when any of them is denied:
 /// - Microphone: required to capture speech.
 /// - Accessibility: enables media-pause when recording starts; required by
-///   the Relay Actions MCP server to post CGEvents (clicks, keystrokes).
+///   Relay Runner's app-hosted Relay Actions tool host to post CGEvents
+///   (clicks, keystrokes).
 /// - Input Monitoring: required to capture non-Caps-Lock global activation
 ///   keys and the double-tap Shift board hotkey.
-/// - Screen Recording: required by the Relay Vision MCP server's
-///   `screenshot` tool. Without it, the screenshot tool returns a clear
-///   error string but the rest of the app keeps working.
+/// - Screen Recording: required by Relay Runner's app-hosted Relay Vision
+///   screenshot tool. Without it, the screenshot tool returns a clear error
+///   string but the rest of the app keeps working.
 enum PermissionKind: String, CaseIterable, Identifiable {
     case microphone
     case accessibility
@@ -63,10 +64,8 @@ final class PermissionsManager {
     private(set) var microphone: PermissionStatus = .notDetermined
     private(set) var accessibility: PermissionStatus = .notDetermined
     private(set) var inputMonitoring: PermissionStatus = .notDetermined
-    /// Screen Recording is gated only by the new Relay Vision MCP tools
-    /// (specifically `screenshot`). Voice features work even when this is
-    /// denied — onboarding therefore treats it as optional, surfaced when the
-    /// user first hits a vision-requiring prompt.
+    /// Screen Recording is gated only by Relay Runner's hosted Relay Vision
+    /// screenshot path. Voice features work even when this is denied.
     private(set) var screenRecording: PermissionStatus = .notDetermined
 
     /// Permissions blocked by a device policy. Only populated for
@@ -372,11 +371,9 @@ final class PermissionsManager {
 
     /// Screen Recording is checked via CGPreflightScreenCaptureAccess (macOS 11+).
     /// This API doesn't trigger a prompt — it just reads current TCC state.
-    /// To actually prompt, the caller invokes the Relay Actions `screenshot`
-    /// tool (which calls SCShareableContent.current and triggers the prompt
-    /// the first time). There's no programmatic "request" call that doesn't
-    /// also do the work, unlike CGRequestScreenCaptureAccess (which works but
-    /// can't be replaced with a no-op preflight).
+    /// To actually prompt, the app invokes CGRequestScreenCaptureAccess or the
+    /// hosted `screenshot` tool. Either path attributes the grant to Relay
+    /// Runner because the gated call runs in the app process.
     private static func checkScreenRecording() -> PermissionStatus {
         // The preflight API returns true only when granted; otherwise we
         // can't tell .denied from .notDetermined here. Treat both as .denied

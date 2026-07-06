@@ -1,13 +1,13 @@
 # macOS Permission Brokering
 
-**Status:** Proposed next implementation step
-**Ticket:** RR-134
+**Status:** Implemented direction
+**Ticket:** RR-141
 
 Relay Runner should own the user's permission experience wherever macOS allows it. The app cannot silently grant TCC permissions, and some permissions are tied to the executable that touches the protected API. The design goal is therefore:
 
 - centralize all checks, prompts, diagnostics, and recovery copy in Relay Runner;
 - keep Codex and Claude on equivalent user-facing flows;
-- be explicit when macOS requires the user to grant a terminal, IDE, native agent app, or helper binary instead of Relay Runner.
+- keep provider hosts such as Codex, Claude, Terminal, Warp, and VS Code out of Relay Actions and Relay Vision privacy grants.
 
 ## Classification
 
@@ -25,20 +25,20 @@ Relay Runner should own the user's permission experience wherever macOS allows i
 | Voice capture | `PermissionsManager.requestMicrophonePrompt`, `STTEngine` | Microphone for `com.relayrunner.app`; usage string in `Info.plist` | Relay Runner-brokerable | Relay Runner can reset only its own Microphone entry with `tccutil reset Microphone com.relayrunner.app`, show the in-app prompt again, poll status, and recover STT after a grant. |
 | TTS output | `tts_worker.py`, `preview_voice.py`, `afplay` | No TCC for local audio playback | Relay Runner-brokerable diagnostics | The app should report model/runtime/playback readiness, not ask for a privacy grant. |
 | Playback controls and recording gestures | `CapsLockGesture`, `MediaController`, `PermissionsManager` | Input Monitoring for global key capture; optional Accessibility for media-key fallback | Relay Runner-brokerable | Input Monitoring enables non-Caps-Lock activation keys and the double-tap Shift board hotkey. MediaRemote usually avoids Accessibility; the fallback media-key path needs Relay Runner Accessibility. |
-| Screen observation | `relay-vision-mcp` screenshot path and `PermissionPreflight.ensureScreenRecording` | Screen Recording | Unavoidable per-binary macOS state today; helper-process-brokerable only after an app-owned capture helper exists | The current MCP server runs inside the active agent session's process tree, so the grant may need to be applied to the terminal, IDE, Codex.app, Claude.app, or another parent. Screen Recording generally requires relaunching that host. |
-| Screen manipulation | `relay-actions-mcp` click/type/key/scroll and AX window tools | Accessibility | Unavoidable per-binary macOS state today; helper-process-brokerable only after an app-owned action helper exists | CGEvent posting and AX reads are checked in the process that performs them. Relay Runner can open Settings and show the parent-app wizard, but the current action helper must still see its own responsible host as trusted. |
+| Screen observation | Relay Vision MCP `screenshot` forwards to the Relay Runner app-hosted tool path | Screen Recording for Relay Runner | Relay Runner-brokerable | ScreenCaptureKit runs in the app process. If the app is not running, the MCP helper returns a clear "start Relay Runner" error. Screen Recording may still require relaunching Relay Runner after the user grants it. |
+| Screen manipulation | Relay Actions MCP `click`, `type`, `key`, and `scroll` forward to the Relay Runner app-hosted tool path | Accessibility for Relay Runner | Relay Runner-brokerable | CGEvent posting runs in the app process. Codex, Claude, Terminal, Warp, and VS Code keep the same MCP tool surface but no longer need Accessibility for these Relay tools. AX window-introspection tools that only read public window metadata remain helper-side. |
 | App automation | Current product path is Relay Actions UI automation; no first-class Apple Events automation feature | Accessibility for UI automation; Apple Events only if future app-owned scripts target other apps | Unavoidable per-binary macOS state for agent-run automation; helper-process-brokerable for future app-owned automation | If future broker code sends Apple Events directly from Relay Runner or a signed helper, add the required usage description and track AppleEvents as that binary's TCC state. Agent-run `osascript` or provider tools remain per-host/per-binary. |
 | Subprocess launch | `ProcessManager`, `scripts/relay-bridge`, launchd watchdog recovery | No privacy TCC for launching local subprocesses | Relay Runner-brokerable diagnostics; provider-specific launch rendering | Relay Runner can own executable discovery, PATH setup, venv install, launchd recovery, and clear errors. Codex and Claude differ in initial prompt/slash command shape, binary resolution, and bypass flag. |
 | Worker execution | `services/orchestrator.py`, `services/orchestrator_workflow.md`, provider CLIs | No new Relay Runner app TCC; provider CLI auth and sandbox/approval flags | Provider-specific, plus unavoidable per-binary state for any worker tool that touches macOS-protected APIs | Codex uses `--dangerously-bypass-approvals-and-sandbox` and `model_reasoning_effort`; Claude uses `--dangerously-skip-permissions` and `--effort`. Those bypass agent prompts, not macOS privacy prompts. |
 
 ## Current gaps
 
-The app already has `PermissionsManager` for Relay Runner app permissions, `ParentPermissionGuidance` for Codex/Claude parent targets, per-session parent onboarding, and MCP preflight messages that report missing parent grants back to the menu-bar app.
+The app has `PermissionsManager` for Relay Runner app permissions and an app-hosted socket path for Relay Actions and Relay Vision. Legacy parent-permission guidance remains only for compatibility with older helper binaries and is not part of the normal setup flow.
 
-The remaining gap is that these pieces are not modeled as one brokered permission domain. Settings currently lists only Relay Runner app permissions, while parent-app Accessibility and Screen Recording live in onboarding/preflight flows. The user cannot see a single "why is screen control unavailable?" surface that combines:
+The remaining gap is presenting these pieces as one brokered permission domain. Settings should list Relay Runner app permissions, app-hosted screen-control readiness, provider setup, and runtime checks together so the user can see a single "why is screen control unavailable?" surface that combines:
 
 - Relay Runner app grants such as Microphone and Input Monitoring;
-- parent-host grants such as Accessibility and Screen Recording for Terminal, Codex.app, Claude.app, or a detected host;
+- Relay Runner app grants such as Accessibility and Screen Recording for app-hosted Relay Actions and Relay Vision;
 - provider setup differences such as Codex/Claude auth, binary lookup, and bypass flag rendering;
 - runtime readiness such as voice bridge, MCP registration, venv, and worker daemon state.
 
@@ -47,23 +47,23 @@ The remaining gap is that these pieces are not modeled as one brokered permissio
 1. Add a `PermissionBroker` domain model in the app layer.
    - Represent each capability as a `PermissionRequirement` with id, display name, owner kind, current status, Settings action, verification method, recovery copy, and provider applicability.
    - Keep `PermissionsManager` as the source for Relay Runner app TCC state.
-   - Add parent-app requirement rows driven by `ParentPermissionGuidance`, `ParentOnboardingTracker`, and `parent_permission_revoked` events from Relay Actions and Relay Vision.
+   - Add Relay Runner app requirement rows for Accessibility and Screen Recording, verified by `PermissionsManager` and the app-hosted tool path.
    - Add non-TCC readiness rows for TTS playback, subprocess launch, MCP registration, and worker execution so they appear in the same diagnostics surface without being mislabeled as privacy grants.
 
 2. Route onboarding and Settings through the broker.
    - First-run setup should show Relay Runner-brokerable requirements first: Microphone, optional Input Monitoring, local voice runtime, provider tool install, and provider sign-in.
-   - Screen observation/manipulation requirements should be shown as parent-host requirements for both Codex and Claude. The content should use the same component and differ only in provider name and target app list.
-   - Status Settings should add a "Screen Control" or "Agent Host Permissions" section showing the detected/current parent targets, last missing permission reported by MCP preflight, and the exact restart requirement for Screen Recording.
+   - Screen observation/manipulation requirements should be shown as Relay Runner app requirements for both Codex and Claude.
+   - Status Settings should add a "Screen Control" section showing Relay Runner Accessibility and Screen Recording status plus the exact Relay Runner relaunch requirement for Screen Recording.
 
 3. Preserve provider parity.
-   - Codex and Claude both get the same broker requirement ids and status language for voice, hotkeys, parent Accessibility, parent Screen Recording, MCP registration, and workers.
+   - Codex and Claude both get the same broker requirement ids and status language for voice, hotkeys, Relay Runner Accessibility, Relay Runner Screen Recording, MCP registration, and workers.
    - Provider-specific rendering remains limited to known launch/auth differences: Codex native CLI path and initial prompt, Claude slash command path, Codex `model_reasoning_effort`, Claude `--effort`, and the existing bypass flags.
    - Any future provider must implement the same requirement set before it is treated as fully supported.
 
-4. Keep per-binary limits visible.
-   - The broker must never imply that granting Relay Runner Screen Recording fixes screenshots when the active MCP server is being evaluated as Terminal, Codex.app, Claude.app, or another host.
-   - The UI should say "Grant Screen Recording to <host>, then quit and reopen <host>" for current agent-spawned Relay Vision.
-   - If a future app-owned helper performs capture or CGEvents, that helper can move the row from "unavoidable per-binary" to "helper-process-brokerable", but the row should still name the helper's signed identity.
+4. Keep per-binary limits visible where they still exist.
+   - Relay Actions click/type/key/scroll and Relay Vision screenshot should not ask for parent-host grants.
+   - Future agent-run automation that touches other macOS-protected APIs must still name the process that performs that protected call.
+   - If a future signed helper performs protected work instead of the app, the row should name that helper's signed identity.
 
 ## Diagnostics surface
 

@@ -37,8 +37,15 @@ enum ProjectActivationOutcome {
     case menuBarUnavailable
 }
 
+enum HostedToolOutcome {
+    case succeeded(content: [[String: Any]])
+    case failed(message: String)
+    case menuBarUnavailable
+}
+
 enum ConfirmationClient {
     static let socketPath = "/tmp/relay_actions.sock"
+    private static let maxReplyBytes = 32 * 1024 * 1024
 
     static func notifyToolFired(toolName: String) {
         let payload: [String: Any] = ["type": "tool_fired", "tool": toolName]
@@ -113,10 +120,39 @@ enum ConfirmationClient {
         return .menuBarUnavailable
     }
 
-    /// Sent once on MCP server startup with the detected parent terminal/IDE
-    /// (or "unknown" if `ParentProcess.detectTerminal()` couldn't classify
-    /// the chain). The menu-bar app uses this to decide whether to surface
-    /// the per-parent permissions wizard.
+    static func requestHostedTool(name: String, arguments: [String: Any]) -> HostedToolOutcome {
+        let payload: [String: Any] = [
+            "type": "perform_tool",
+            "tool": name,
+            "arguments": arguments,
+        ]
+        guard let fd = openSocket() else { return .menuBarUnavailable }
+        defer { close(fd) }
+
+        guard sendJSONLine(fd: fd, payload: payload) else {
+            return .menuBarUnavailable
+        }
+
+        var tv = timeval(tv_sec: 30, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        guard let line = readLine(fd: fd, maxBytes: maxReplyBytes),
+              let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let result = json["result"] as? String else {
+            return .menuBarUnavailable
+        }
+
+        if result == "ok", let content = json["content"] as? [[String: Any]] {
+            return .succeeded(content: content)
+        }
+        if result == "error" {
+            return .failed(message: json["message"] as? String ?? "Relay Runner app-side tool host returned an error.")
+        }
+        return .menuBarUnavailable
+    }
+
+    /// Legacy compatibility hook for older app builds that tracked parent
+    /// terminal/IDE metadata.
     static func notifyParentDetected(parent: String) {
         let payload: [String: Any] = ["type": "parent_detected", "parent": parent]
         guard let fd = openSocket() else { return }
@@ -124,10 +160,8 @@ enum ConfirmationClient {
         _ = sendJSONLine(fd: fd, payload: payload)
     }
 
-    /// Sent by `PermissionPreflight` when a permission the parent should have
-    /// (per the wizard) is missing at action time — typically because the user
-    /// or macOS revoked it. Triggers the menu-bar app to reset onboarded state
-    /// for this parent and re-surface the wizard.
+    /// Legacy compatibility hook for older app builds that reacted to missing
+    /// parent-host permissions.
     static func notifyParentPermissionRevoked(parent: String, permission: String) {
         let payload: [String: Any] = [
             "type": "parent_permission_revoked",
@@ -219,17 +253,21 @@ enum ConfirmationClient {
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
     }
 
-    private static func readLine(fd: Int32) -> Data? {
-        var buffer = [UInt8](repeating: 0, count: 8192)
-        var total = 0
-        while total < buffer.count {
-            let n = recv(fd, &buffer[total], buffer.count - total, 0)
-            if n <= 0 { break }
-            total += n
-            if let nl = buffer[..<total].firstIndex(of: 0x0A) {
-                return Data(buffer[..<nl])
+    private static func readLine(fd: Int32, maxBytes: Int = 8192) -> Data? {
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: min(8192, maxBytes))
+        while data.count < maxBytes {
+            let limit = min(buffer.count, maxBytes - data.count)
+            let n = buffer.withUnsafeMutableBytes { ptr in
+                recv(fd, ptr.baseAddress, limit, 0)
             }
+            if n <= 0 { break }
+            if let nl = buffer[..<n].firstIndex(of: 0x0A) {
+                data.append(contentsOf: buffer[..<nl])
+                return data
+            }
+            data.append(contentsOf: buffer[..<n])
         }
-        return total > 0 ? Data(buffer[..<total]) : nil
+        return data.isEmpty ? nil : data
     }
 }

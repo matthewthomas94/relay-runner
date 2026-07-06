@@ -83,8 +83,9 @@ struct ProposeActionTool: MCPTool {
         // Stash the summary so the pre-flight permission warning can use it
         // verbatim: "To click Send in Slack, macOS needs to give …" instead of
         // a generic "to click at (x, y)". Pre-flight reads back through
-        // PermissionPreflight.recentPurpose() with a 15s TTL.
-        PermissionPreflight.recordProposedAction(summary: summary)
+        // The app-hosted tool request carries this recent purpose to Relay
+        // Runner so app-side permission prompts can name the action.
+        ActionPurposeContext.recordProposedAction(summary: summary)
 
         var effectiveRisk = risk
 

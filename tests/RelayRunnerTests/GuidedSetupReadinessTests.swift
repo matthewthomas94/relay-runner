@@ -52,7 +52,22 @@ final class GuidedSetupReadinessTests: XCTestCase {
         XCTAssertFalse(readiness.screenControlAndBoardReady)
         XCTAssertTrue(readiness.detail.contains("Start Session can launch Claude"))
         XCTAssertTrue(readiness.detail.contains("double-tap Shift board hotkey"))
-        XCTAssertTrue(readiness.detail.contains("Relay Actions and Relay Vision"))
+        XCTAssertFalse(readiness.detail.contains("Parent-app Accessibility"))
+    }
+
+    func testParentPermissionReviewNoLongerGatesScreenControlReadiness() {
+        let readiness = GuidedSetupReadiness(
+            provider: .claude,
+            microphone: .granted,
+            inputMonitoring: .granted,
+            pythonInstalled: true,
+            agentSignedIn: true,
+            parentPermissionsReviewed: false
+        )
+
+        XCTAssertEqual(readiness.mode, .fullyArmed)
+        XCTAssertTrue(readiness.screenControlAndBoardReady)
+        XCTAssertFalse(readiness.detail.contains("parent"))
     }
 
     func testRecoveryAfterDeferredPermissionsAreGrantedLater() {

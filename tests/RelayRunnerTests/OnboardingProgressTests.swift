@@ -28,10 +28,10 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(label, "2 of 7")
+        XCTAssertEqual(label, "2 of 5")
     }
 
-    func testFullFlowIncludesInputMonitoringBeforeParentPermissions() {
+    func testFullFlowIncludesInputMonitoringBeforeRuntimeSetup() {
         let label = OnboardingView.progressLabel(
             for: .inputMonitoring,
             simplified: false,
@@ -41,7 +41,7 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(label, "3 of 7")
+        XCTAssertEqual(label, "3 of 5")
     }
 
     func testSimplifiedInputMonitoringMissingShowsSingleRecoveryStep() {
@@ -59,7 +59,7 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(label, "1 of 1")
     }
 
-    func testSimplifiedProviderChoiceIncludesParentPermissionGuidance() {
+    func testSimplifiedProviderChoiceDoesNotIncludeParentPermissionGuidance() {
         let choice = OnboardingView.progressLabel(
             for: .agentChoice,
             simplified: true,
@@ -69,31 +69,31 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true,
             parentPermissionsReviewed: false
         )
-        let accessibility = OnboardingView.progressLabel(
+        let python = OnboardingView.progressLabel(
             for: .parentAccessibility,
             simplified: true,
             requiresAgentChoice: true,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            venvInstalled: false,
             agentSignedIn: true,
             parentPermissionsReviewed: false
         )
-        let screenRecording = OnboardingView.progressLabel(
+        let login = OnboardingView.progressLabel(
             for: .parentScreenRecording,
             simplified: true,
             requiresAgentChoice: true,
             permissionStatus: { _ in .granted },
             venvInstalled: true,
-            agentSignedIn: true,
+            agentSignedIn: false,
             parentPermissionsReviewed: false
         )
 
-        XCTAssertEqual(choice, "1 of 3")
-        XCTAssertEqual(accessibility, "2 of 3")
-        XCTAssertEqual(screenRecording, "3 of 3")
+        XCTAssertEqual(choice, "1 of 1")
+        XCTAssertNil(python)
+        XCTAssertNil(login)
     }
 
-    func testInterruptedSetupStillIncludesParentPermissionGuidanceAfterProviderChoice() {
+    func testInterruptedSetupSkipsParentPermissionGuidanceAfterProviderChoice() {
         let accessibility = OnboardingView.progressLabel(
             for: .parentAccessibility,
             simplified: true,
@@ -104,19 +104,8 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true,
             parentPermissionsReviewed: false
         )
-        let screenRecording = OnboardingView.progressLabel(
-            for: .parentScreenRecording,
-            simplified: true,
-            requiresAgentChoice: false,
-            requiresParentPermissionGuidance: true,
-            permissionStatus: { _ in .granted },
-            venvInstalled: true,
-            agentSignedIn: true,
-            parentPermissionsReviewed: false
-        )
 
-        XCTAssertEqual(accessibility, "1 of 2")
-        XCTAssertEqual(screenRecording, "2 of 2")
+        XCTAssertNil(accessibility)
     }
 
     func testResumeRestoresInterruptedInputMonitoringStep() {
@@ -134,36 +123,36 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(step, .inputMonitoring)
     }
 
-    func testGrantedInputMonitoringResumeContinuesToParentPermissions() {
+    func testGrantedInputMonitoringResumeContinuesToRuntimeSetup() {
         let next = OnboardingView.nextStepAfter(
             .inputMonitoring,
             requiresAgentChoice: false,
             requiresParentPermissionGuidance: true,
             parentPermissionsReviewed: false,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            venvInstalled: false,
             agentSignedIn: true
         )
 
-        XCTAssertEqual(next, .parentAccessibility)
+        XCTAssertEqual(next, .pythonSetup)
     }
 
-    func testLegacyParentPermissionsResumeStartsAtAccessibility() {
-        XCTAssertEqual(OnboardingView.Step(resumeID: .parentPermissions), .parentAccessibility)
+    func testLegacyParentPermissionsResumeSkipsToRuntimeSetup() {
+        XCTAssertEqual(OnboardingView.Step(resumeID: .parentPermissions), .pythonSetup)
     }
 
-    func testParentAccessibilityContinuesToScreenRecording() {
+    func testParentAccessibilityContinuesToRuntimeSetup() {
         let next = OnboardingView.nextStepAfter(
             .parentAccessibility,
             requiresAgentChoice: false,
             requiresParentPermissionGuidance: true,
             parentPermissionsReviewed: false,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            venvInstalled: false,
             agentSignedIn: true
         )
 
-        XCTAssertEqual(next, .parentScreenRecording)
+        XCTAssertEqual(next, .pythonSetup)
     }
 
     func testReadySummaryNamesDeferredInputMonitoringFeatures() {

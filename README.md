@@ -125,11 +125,12 @@ All settings live in the Settings window. Config is persisted to:
 
 ## Permissions
 
-Relay Runner uses up to three macOS privacy permissions, all optional with graceful fallback:
+Relay Runner uses up to four macOS privacy permissions, all optional with graceful fallback except Microphone for voice input:
 
 - **Microphone** — required to capture speech.
-- **Accessibility** — used to pause currently-playing media when you start recording. The app still works without it; you'll just have audio playing over your voice.
+- **Accessibility** — used to pause currently-playing media when you start recording and to host Relay Actions clicks, typing, keys, and scrolling from Codex or Claude. Grant this to Relay Runner, not the agent host.
 - **Input Monitoring** — required only when your activation key is *not* a modifier (Caps Lock / Option / etc.). Caps Lock-based triggering reads `NSEvent` modifier flags directly and doesn't need this permission. If you set the activation key to e.g. `F19`, macOS will ask for Input Monitoring at that point.
+- **Screen Recording** — used by Relay Vision screenshots. Grant this to Relay Runner, not Codex, Claude, Terminal, Warp, or VS Code.
 
 First-launch onboarding asks which coding agent to use, walks through the permissions needed for voice, and bootstraps the bundled Python environment so voice replies work immediately. If TCC ever resets the grants (a macOS update or app reinstall can do this), the Settings → Status tab surfaces a banner explaining what happened.
 

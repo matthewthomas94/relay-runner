@@ -80,7 +80,7 @@ struct GuidedSetupReadiness: Equatable {
     }
 
     var screenControlAndBoardReady: Bool {
-        inputMonitoring == .granted && parentPermissionsReviewed
+        inputMonitoring == .granted
     }
 
     var mode: Mode {
@@ -129,9 +129,6 @@ struct GuidedSetupReadiness: Equatable {
         var items: [String] = []
         if inputMonitoring != .granted {
             items.append("Input Monitoring is deferred, so non-Caps-Lock activation keys and the double-tap Shift board hotkey stay disabled.")
-        }
-        if !parentPermissionsReviewed {
-            items.append("Parent-app Accessibility and Screen Recording are deferred, so Relay Actions and Relay Vision may prompt again after the session starts.")
         }
         return items
     }
