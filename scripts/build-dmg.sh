@@ -102,25 +102,21 @@ if ! otool -l "$APP_DIR/Contents/MacOS/relay-runner" | grep -q "@executable_path
     install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_DIR/Contents/MacOS/relay-runner"
 fi
 
-# Helper binary: Relay Actions MCP server. Spawned by `claude` (not by the
-# menu-bar app) when a session is active and the MCP entry registered by
-# scripts/relay-bridge points here. Lives alongside the main binary so the TCC
-# attribution falls on the bundle (Screen Recording / Accessibility prompts
-# read "Relay Runner", not "relay-actions-mcp").
+# Helper binary: Relay Actions MCP server. Spawned by the active agent session
+# and registered by scripts/relay-bridge. It remains a protocol adapter; the
+# Accessibility-gated input work is forwarded to the menu-bar app so TCC
+# attribution belongs to Relay Runner.
 cp "$BUILD_DIR/relay-actions-mcp" "$APP_DIR/Contents/MacOS/relay-actions-mcp"
 
 # Helper binary: Relay Vision MCP server. The screenshot observation tool,
-# split out of relay-actions in RR-10. Same TCC-attribution rationale —
-# lives alongside the main binary so Screen Recording prompts read
-# "Relay Runner", not "relay-vision-mcp". Registered with `claude mcp add`
-# by scripts/relay-bridge.
+# split out of relay-actions in RR-10. It forwards ScreenCaptureKit work to
+# the menu-bar app so Screen Recording prompts/checks target Relay Runner.
 cp "$BUILD_DIR/relay-vision-mcp" "$APP_DIR/Contents/MacOS/relay-vision-mcp"
 
-# Helper binary: Relay Orchestrator MCP server. Same TCC-attribution rationale
-# as relay-actions-mcp — sits in MacOS/ alongside the bundle so MCP tools
-# inherit the bundle's identity. The orchestrator daemon process itself runs
-# under launchd (via scripts/relay-orchestrator) and is just a Python script,
-# but the MCP proxy is the Swift binary registered with `claude mcp add`.
+# Helper binary: Relay Orchestrator MCP server. The orchestrator daemon process
+# itself runs under launchd (via scripts/relay-orchestrator) and is just a
+# Python script, but the MCP proxy is the Swift binary registered with the
+# provider CLIs.
 cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"
 
 # App icon: compile AppIcon.iconset into AppIcon.icns via macOS iconutil.
