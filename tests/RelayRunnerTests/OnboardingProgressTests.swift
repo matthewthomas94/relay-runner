@@ -161,7 +161,7 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertNotNil(summary)
         XCTAssertTrue(summary?.contains("microphone permission alone") ?? false)
         XCTAssertTrue(summary?.contains("non-Caps-Lock activation keys") ?? false)
-        XCTAssertTrue(summary?.contains("double-tap Shift board hotkey") ?? false)
+        XCTAssertTrue(summary?.contains("double-tap Shift Workspace hotkey") ?? false)
     }
 
     func testReadySummaryClearsWhenInputMonitoringGranted() {

@@ -26,6 +26,7 @@ final class BoardOverlayController {
     /// Drives the SwiftUI view. Mutated by the controller (theme on every
     /// poll tick, tickets on each show) — the view re-renders automatically.
     private let model = BoardViewModel()
+    private let workspace = WorkspaceViewModel()
     /// Resolves the current particle-field theme (STT/TTS/none) so the
     /// board's glow matches whichever pill state is active.
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
@@ -40,6 +41,7 @@ final class BoardOverlayController {
     private var cachedProjectPath: String?
     private var loadingStateHandler: ((Bool) -> Void)?
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
+    private var settingsContentProvider: (() -> AnyView?)?
 
     private let boardRouteResolver: () -> ProjectResolver.BoardRoute
 
@@ -72,6 +74,10 @@ final class BoardOverlayController {
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
         self.workerSizingDefaultsProvider = provider
+    }
+
+    func setSettingsContentProvider(_ provider: @escaping () -> AnyView?) {
+        self.settingsContentProvider = provider
     }
 
     deinit {
@@ -152,9 +158,25 @@ final class BoardOverlayController {
         present(project: project)
     }
 
+    func showSettings() {
+        guard settingsContentProvider != nil else { return }
+        if isVisible {
+            workspace.select(.systemSettings)
+            updatePanelKeyEligibility()
+            return
+        }
+        presentSettingsOnly()
+    }
+
     private func present(project: ProjectResolver.LinkedProject) {
         guard !isVisible else { return }
         currentProject = project
+        let settingsContent = settingsContentProvider?()
+        workspace.configure(
+            showsWorkTab: true,
+            showsSettingsTab: settingsContent != nil,
+            initialTab: .work
+        )
 
         let p = panel ?? BoardOverlayPanel()
         let screen = currentMouseScreen()
@@ -177,7 +199,10 @@ final class BoardOverlayController {
         let contentFrame = NSRect(origin: .zero, size: p.frame.size)
         let hosting = NSHostingView(rootView: BoardOverlayView(
             model: model,
+            workspace: workspace,
+            settingsContent: settingsContent,
             onDismiss: { [weak self] in self?.hide() },
+            onWorkspaceTabChange: { [weak self] _ in self?.updatePanelKeyEligibility() },
             onDrop: { [weak self] id, status, idx in self?.handleDrop(ticketId: id, to: status, insertIndex: idx) },
             onCreate: { [weak self] status in self?.handleCreate(in: status) },
             onEdit: { [weak self] ticket in self?.openEditor(for: ticket) },
@@ -213,6 +238,66 @@ final class BoardOverlayController {
         startThemePoll()
         startRunStatePoll()
         refreshVisibleProject(trigger: "board-show", showsLoading: !hasCachedProject)
+    }
+
+    private func presentSettingsOnly() {
+        let settingsContent = settingsContentProvider?()
+        guard settingsContent != nil else { return }
+
+        currentProject = nil
+        model.editing = nil
+        model.dragState = nil
+        model.theme = themeResolver?()
+        workspace.configure(
+            showsWorkTab: false,
+            showsSettingsTab: true,
+            initialTab: .systemSettings
+        )
+
+        let p = panel ?? BoardOverlayPanel()
+        let screen = currentMouseScreen()
+        if let screen {
+            p.reframe(to: screen)
+        }
+
+        let contentFrame = NSRect(origin: .zero, size: p.frame.size)
+        let hosting = NSHostingView(rootView: BoardOverlayView(
+            model: model,
+            workspace: workspace,
+            settingsContent: settingsContent,
+            onDismiss: { [weak self] in self?.hide() },
+            onWorkspaceTabChange: { [weak self] _ in self?.updatePanelKeyEligibility() },
+            onDrop: { _, _, _ in },
+            onCreate: { _ in },
+            onEdit: { _ in },
+            onCommit: { _ in },
+            onCancel: {},
+            onDelete: { _ in }
+        ))
+        hosting.frame = contentFrame
+        hosting.autoresizingMask = [.width, .height]
+        hosting.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let container = BoardRevealContainerView(
+            frame: contentFrame,
+            contentView: hosting,
+            displayGeometry: screen.map(NotchStatusDisplayGeometry.init(screen:))
+                ?? NotchStatusDisplayGeometry(screenFrame: p.frame),
+            startsLoading: false
+        )
+        container.autoresizingMask = [.width, .height]
+
+        p.contentView = container
+        p.orderFrontRegardless()
+        self.panel = p
+        self.revealContainer = container
+        self.isVisible = true
+        updatePanelKeyEligibility()
+        DispatchQueue.main.async { [weak container] in
+            container?.animateReveal {}
+        }
+
+        startThemePoll()
     }
 
     func hide() {
@@ -346,7 +431,7 @@ final class BoardOverlayController {
             description: fullDescription,
             acceptanceCriteria: TicketParser.extractAcceptanceCriteria(ticket.body) ?? ""
         )
-        setPanelKeyEligible(true)
+        updatePanelKeyEligibility()
     }
 
     private func cancelEditor() {
@@ -359,7 +444,7 @@ final class BoardOverlayController {
             }
         }
         model.editing = nil
-        setPanelKeyEligible(false)
+        updatePanelKeyEligibility()
     }
 
     private func commitEditor(_ draft: TicketDraft) {
@@ -399,7 +484,7 @@ final class BoardOverlayController {
             NSLog("[relay-runner] failed to save ticket \(ticketToSave.id): \(error)")
         }
         model.editing = nil
-        setPanelKeyEligible(false)
+        updatePanelKeyEligibility()
 
         // Reconcile queued tickets after save. Covers
         // "create-in-queued-then-type-title": handleCreate opens the editor
@@ -440,7 +525,7 @@ final class BoardOverlayController {
             NSLog("[relay-runner] failed to delete ticket \(ticket.id): \(error)")
         }
         model.editing = nil
-        setPanelKeyEligible(false)
+        updatePanelKeyEligibility()
     }
 
     /// Drop handler: move `ticketId` into `status` at position `insertIndex`
@@ -573,6 +658,10 @@ final class BoardOverlayController {
         } else {
             panel.resignKey()
         }
+    }
+
+    private func updatePanelKeyEligibility() {
+        setPanelKeyEligible(model.editing != nil || workspace.selectedTab == .systemSettings)
     }
 
     // MARK: - Helpers

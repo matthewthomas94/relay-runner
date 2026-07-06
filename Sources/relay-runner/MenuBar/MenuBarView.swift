@@ -2,7 +2,6 @@ import SwiftUI
 
 struct MenuBarView: View {
     @Bindable var appState: AppState
-    @Environment(\.openSettings) private var openSettings
 
     private var statusLabel: String {
         if appState.hasActiveSession {
@@ -72,14 +71,10 @@ struct MenuBarView: View {
 
         Divider()
 
-        Button("Show Board") { appState.toggleBoard() }
+        Button("Show Workspace") { appState.toggleWorkspace() }
         Button("Show Status") { appState.showProgramStatus() }
 
-        Button("Settings\u{2026}") {
-            SettingsPresenter.open {
-                openSettings()
-            }
-        }
+        Button("Workspace Settings\u{2026}") { appState.showWorkspaceSettings() }
         .keyboardShortcut(",")
 
         Button("Check for Updates\u{2026}") {

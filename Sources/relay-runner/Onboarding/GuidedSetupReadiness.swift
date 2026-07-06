@@ -37,7 +37,7 @@ struct GuidedSetupPlan {
             ),
             Item(
                 id: "board-readiness",
-                title: "Prepare project boards",
+                title: "Prepare workspaces",
                 detail: "Use the selected workspace folder to find child repos or activate one repo without asking the model to classify the folder."
             ),
         ]
@@ -128,7 +128,7 @@ struct GuidedSetupReadiness: Equatable {
         guard voiceReady else { return [] }
         var items: [String] = []
         if inputMonitoring != .granted {
-            items.append("Input Monitoring is deferred, so non-Caps-Lock activation keys and the double-tap Shift board hotkey stay disabled.")
+            items.append("Input Monitoring is deferred, so non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey stay disabled.")
         }
         return items
     }
