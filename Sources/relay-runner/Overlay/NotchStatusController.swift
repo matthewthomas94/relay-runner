@@ -248,9 +248,11 @@ enum NotchStatusPlacementPlanner {
     static let compactLeadingWingWidth: CGFloat = 19
     static let compactNotchLeadInWidth: CGFloat = 8
     static let compactNotchLeadOutWidth: CGFloat = 8
+    static let fallbackNotchSpacerWidth: CGFloat = 190
     static let maximumActivityLabelWidth: CGFloat = 650
     static let maximumWorkingProgressLabelWidth: CGFloat = maximumActivityLabelWidth / 2
-    static let fallbackSurfaceWidth: CGFloat = compactLeadingWingWidth + glyphSize.width
+    static let fallbackSurfaceWidth: CGFloat =
+        compactNotchLeadInWidth + fallbackNotchSpacerWidth + glyphSize.width + compactNotchLeadOutWidth
 
     private static let screenEdgeGap: CGFloat = 8
     private static let activityLabelMeasurementPadding: CGFloat =
@@ -264,10 +266,9 @@ enum NotchStatusPlacementPlanner {
     ) -> NotchStatusPlacement? {
         let labelWidth = max(0, min(activityLabelWidth, maximumActivityLabelWidth))
         let notchFrame = notchFrame(for: geometry)
-        let hasActivityLabel = labelWidth > 0
-        let trailingLeadOutWidth = !hasActivityLabel && notchFrame != nil ? Self.compactNotchLeadOutWidth : 0
-        let leadingSpacerWidth = hasActivityLabel ? 0 : (notchFrame == nil ? compactLeadingWingWidth : compactNotchLeadInWidth)
-        let notchSpacerWidth = notchFrame?.width ?? 0
+        let trailingLeadOutWidth = Self.compactNotchLeadOutWidth
+        let leadingSpacerWidth = compactNotchLeadInWidth
+        let notchSpacerWidth = notchFrame?.width ?? fallbackNotchSpacerWidth
         let surfaceWidth: CGFloat
         let preferredX: CGFloat
         let notchedGlyphScreenX: CGFloat?
@@ -277,10 +278,7 @@ enum NotchStatusPlacementPlanner {
             preferredX = notchFrame.minX - labelWidth - leadingSpacerWidth
             notchedGlyphScreenX = notchFrame.maxX
         } else {
-            surfaceWidth = max(
-                hasActivityLabel ? labelWidth + glyphSize.width : leadingSpacerWidth + glyphSize.width,
-                glyphSize.width
-            )
+            surfaceWidth = labelWidth + leadingSpacerWidth + notchSpacerWidth + glyphSize.width + trailingLeadOutWidth
             preferredX = geometry.frame.midX - surfaceWidth / 2
             notchedGlyphScreenX = nil
         }
@@ -309,7 +307,7 @@ enum NotchStatusPlacementPlanner {
             width: surfaceWidth,
             height: glyphSize.height
         )
-        let glyphScreenX = notchedGlyphScreenX ?? visibleFrame.maxX - glyphSize.width
+        let glyphScreenX = notchedGlyphScreenX ?? visibleFrame.maxX - glyphSize.width - trailingLeadOutWidth
         let retractedFrame = CGRect(
             x: x,
             y: min(y + 2, maximumY),
@@ -384,7 +382,7 @@ enum NotchStatusSurfaceShape {
               boundsHeight > 0 else {
             return nil
         }
-        let compactLeadingInset = activityLabelWidth > 0 ? 0 : max(0, leadingSpacerWidth)
+        let compactLeadingInset = max(0, leadingSpacerWidth)
         let startX = min(compactLeadingInset, boundsWidth)
         let endX = boundsWidth
         let radius = min(
@@ -394,6 +392,29 @@ enum NotchStatusSurfaceShape {
         )
         guard radius > 0 else { return nil }
         return TopContact(startX: startX, endX: endX, radius: radius)
+    }
+
+    static func renderedTopShoulderRadius(
+        for topContact: TopContact?,
+        boundsHeight: CGFloat
+    ) -> CGFloat {
+        guard let topContact else { return 0 }
+        return min(topContact.radius, compactTopShoulderDepth(boundsHeight: boundsHeight))
+    }
+
+    static func renderedBottomCornerRadius(
+        for topContact: TopContact?,
+        boundsHeight: CGFloat,
+        availableWidth: CGFloat
+    ) -> CGFloat {
+        guard let topContact else {
+            return min(boundsHeight / 2, availableWidth / 2)
+        }
+        return min(
+            topContact.radius * 1.1,
+            boundsHeight * 0.38,
+            availableWidth / 2
+        )
     }
 
     static func compactNotchCutoutPath(
@@ -408,14 +429,14 @@ enum NotchStatusSurfaceShape {
         let rightWallX = rect.maxX - rightLeadOutWidth
         let leftCutoutWidth = max(0, leftWallX - rect.minX)
         let rightCutoutWidth = max(0, rect.maxX - rightWallX)
-        let baseRadius = min(
-            topContact.radius * 1.1,
-            rect.height * 0.38,
-            max(0, rightWallX - leftWallX) / 2
+        let baseRadius = renderedBottomCornerRadius(
+            for: topContact,
+            boundsHeight: rect.height,
+            availableWidth: max(0, rightWallX - leftWallX)
         )
         let cutoutDepth = min(
             rect.height - baseRadius,
-            max(4, rect.height * 0.22)
+            compactTopShoulderDepth(boundsHeight: rect.height)
         )
         let baseControl = baseRadius * 0.5522847498307936
         let leftCutoutControlX = leftCutoutWidth * 0.5522847498307936
@@ -450,6 +471,10 @@ enum NotchStatusSurfaceShape {
         path.line(to: NSPoint(x: leftWallX, y: rect.maxY - baseRadius))
         path.close()
         return path
+    }
+
+    private static func compactTopShoulderDepth(boundsHeight: CGFloat) -> CGFloat {
+        max(4, boundsHeight * 0.22)
     }
 }
 
@@ -775,6 +800,8 @@ enum NotchActivityLabelRenderPolicy {
     static let hoverScrollDelay: TimeInterval = 1.0
     static let scrollGap: CGFloat = 36
     static let textLeadingInset: CGFloat = 13
+    static let notchedTextLeadingInset: CGFloat =
+        textLeadingInset + NotchStatusPlacementPlanner.compactNotchLeadInWidth
     static let textRightGlyphClearance: CGFloat = 34
     static let textGlyphGap: CGFloat = 8
     static let textHeight: CGFloat = 16
@@ -857,12 +884,14 @@ enum NotchActivityLabelRenderPolicy {
     static func labelTextRect(
         activityLabelWidth: CGFloat,
         boundsHeight: CGFloat,
-        glyphFrame: NSRect? = nil
+        glyphFrame: NSRect? = nil,
+        isNotched: Bool = false
     ) -> NSRect {
+        let leadingInset = isNotched ? notchedTextLeadingInset : textLeadingInset
         var rect = NSRect(
-            x: textLeadingInset,
+            x: leadingInset,
             y: (boundsHeight - textHeight) / 2,
-            width: max(0, activityLabelWidth - textLeadingInset - textRightGlyphClearance),
+            width: max(0, activityLabelWidth - leadingInset - textRightGlyphClearance),
             height: textHeight
         )
         if let glyphFrame {
@@ -1430,7 +1459,6 @@ private final class NotchStatusPillContentView: NSView {
     }
 
     private func bottomRoundedPillPath(in rect: NSRect) -> NSBezierPath {
-        let bottomRadius = min(rect.height / 2, rect.width / 2)
         let topContact = NotchStatusSurfaceShape.topContact(
             activityLabelWidth: activityLabelWidth,
             leadingSpacerWidth: leadingSpacerWidth,
@@ -1441,7 +1469,15 @@ private final class NotchStatusPillContentView: NSView {
         if let topContact, topContact.startX > 0 {
             return NotchStatusSurfaceShape.compactNotchCutoutPath(in: rect, topContact: topContact)
         }
-        let topRadius = topContact?.radius ?? 0
+        let bottomRadius = NotchStatusSurfaceShape.renderedBottomCornerRadius(
+            for: topContact,
+            boundsHeight: rect.height,
+            availableWidth: rect.width
+        )
+        let topRadius = NotchStatusSurfaceShape.renderedTopShoulderRadius(
+            for: topContact,
+            boundsHeight: rect.height
+        )
         let topStartX = rect.minX + (topContact?.startX ?? 0)
         let topEndX = rect.minX + (topContact?.endX ?? rect.width)
         let bottomControl = bottomRadius * 0.5522847498307936
@@ -1491,7 +1527,8 @@ private final class NotchStatusPillContentView: NSView {
         let textRect = NotchActivityLabelRenderPolicy.labelTextRect(
             activityLabelWidth: activityLabelWidth,
             boundsHeight: bounds.height,
-            glyphFrame: glyphFrame
+            glyphFrame: glyphFrame,
+            isNotched: notchSpacerWidth > 0
         )
         guard textRect.width > 0 else { return activityLabelWidth }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion

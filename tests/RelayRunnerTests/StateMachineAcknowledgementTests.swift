@@ -28,6 +28,48 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(OverlayState.speaking.particleTheme, .tts)
     }
 
+    func testBottomPillStatusTitlesReuseNotchStatusLanguage() {
+        let states: [(OverlayState, String)] = [
+            (.listening, "Listening"),
+            (.recording, "Listening"),
+            (.sent, "Sending voice"),
+            (.cancelled(.stt), "Recording cancelled"),
+            (.cancelled(.tts), "Response cancelled"),
+            (.processing, "Thinking"),
+            (.messageWaiting(preview: "Done."), "Response ready"),
+            (.preparing, "Preparing speech"),
+            (.speaking, "Playing"),
+        ]
+
+        for (state, title) in states {
+            XCTAssertEqual(OverlayController.pillStatusTitle(for: state), title)
+            XCTAssertEqual(
+                OverlayController.pillStatusTitle(for: state),
+                NotchActivityLabelPlanner.label(for: state)
+            )
+        }
+
+        XCTAssertEqual(OverlayController.compactPillTitle(for: .recording, suffix: "..."), "Listening...")
+        XCTAssertEqual(OverlayController.compactPillTitle(for: .sent), "Sending voice")
+        XCTAssertEqual(OverlayController.compactPillTitle(for: .cancelled(.tts)), "Response cancelled")
+        XCTAssertEqual(OverlayController.compactPillTitle(for: .processing, suffix: "\u{2026}"), "Thinking\u{2026}")
+        XCTAssertEqual(OverlayController.compactPillTitle(for: .preparing, suffix: "..."), "Preparing speech...")
+        XCTAssertEqual(OverlayController.compactPillTitle(for: .messageWaiting(preview: nil), suffix: "..."), "Response ready...")
+        XCTAssertEqual(OverlayController.compactPillTitle(for: .speaking, suffix: "..."), "Playing...")
+        XCTAssertEqual(
+            OverlayController.fullPillTitle(for: .recording, actionHint: "Press Caps Lock to stop and send"),
+            "Listening \u{2014} Press Caps Lock to stop and send"
+        )
+        XCTAssertEqual(
+            OverlayController.fullPillTitle(for: .messageWaiting(preview: "Done."), actionHint: "Double tap Option to play"),
+            "Response ready \u{2014} Double tap Option to play"
+        )
+        XCTAssertEqual(
+            OverlayController.fullPillTitle(for: .speaking, actionHint: "Double tap Control to cancel"),
+            "Playing \u{2014} Double tap Control to cancel"
+        )
+    }
+
     func testBridgeAcknowledgementDuringSentIsDeferredUntilAfterSentWindowPlusPause() {
         var now = Date(timeIntervalSinceReferenceDate: 1_000)
         let stateMachine = StateMachine(now: { now })

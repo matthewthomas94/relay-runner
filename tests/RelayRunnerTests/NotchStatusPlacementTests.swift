@@ -65,6 +65,23 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(contact.startX, NotchStatusPlacementPlanner.compactNotchLeadInWidth)
         XCTAssertEqual(contact.endX, placement.visibleFrame.width)
         XCTAssertEqual(contact.radius, NotchStatusSurfaceShape.notchContactCornerRadius)
+        XCTAssertEqual(
+            NotchStatusSurfaceShape.renderedTopShoulderRadius(
+                for: contact,
+                boundsHeight: placement.visibleFrame.height
+            ),
+            7.48,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchStatusSurfaceShape.renderedBottomCornerRadius(
+                for: contact,
+                boundsHeight: placement.visibleFrame.height,
+                availableWidth: placement.visibleFrame.width
+            ),
+            12.92,
+            accuracy: 0.001
+        )
     }
 
     func testPlacesContinuousPillAcrossNotchWithActivityLabels() throws {
@@ -82,16 +99,20 @@ final class NotchStatusPlacementTests: XCTestCase {
 
         XCTAssertEqual(placement.notchSpacerWidth, 185)
         XCTAssertEqual(placement.activityLabelWidth, labelWidth)
-        XCTAssertEqual(placement.leadingSpacerWidth, 0)
+        XCTAssertEqual(placement.leadingSpacerWidth, NotchStatusPlacementPlanner.compactNotchLeadInWidth)
         XCTAssertEqual(
             placement.visibleFrame.minX,
-            geometry.auxiliaryTopLeftArea.maxX - labelWidth
+            geometry.auxiliaryTopLeftArea.maxX
+                - labelWidth
+                - NotchStatusPlacementPlanner.compactNotchLeadInWidth
         )
         XCTAssertEqual(
             placement.visibleFrame.width,
             labelWidth
+                + NotchStatusPlacementPlanner.compactNotchLeadInWidth
                 + placement.notchSpacerWidth
                 + NotchStatusPlacementPlanner.glyphSize.width
+                + NotchStatusPlacementPlanner.compactNotchLeadOutWidth
         )
         XCTAssertEqual(placement.glyphScreenX, geometry.auxiliaryTopRightArea.minX)
         XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
@@ -102,9 +123,29 @@ final class NotchStatusPlacementTests: XCTestCase {
             boundsWidth: placement.visibleFrame.width,
             boundsHeight: placement.visibleFrame.height
         ))
-        XCTAssertEqual(contact.startX, 0)
+        XCTAssertEqual(
+            contact.startX,
+            NotchStatusPlacementPlanner.compactNotchLeadInWidth
+        )
         XCTAssertEqual(contact.endX, placement.visibleFrame.width)
         XCTAssertEqual(contact.radius, NotchStatusSurfaceShape.notchContactCornerRadius)
+        XCTAssertEqual(
+            NotchStatusSurfaceShape.renderedTopShoulderRadius(
+                for: contact,
+                boundsHeight: placement.visibleFrame.height
+            ),
+            7.48,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchStatusSurfaceShape.renderedBottomCornerRadius(
+                for: contact,
+                boundsHeight: placement.visibleFrame.height,
+                availableWidth: placement.visibleFrame.width
+            ),
+            12.92,
+            accuracy: 0.001
+        )
 
         let compactPlacement = try XCTUnwrap(NotchStatusPlacementPlanner.placement(for: geometry))
         XCTAssertEqual(compactPlacement.glyphScreenX, placement.glyphScreenX)
@@ -119,24 +160,49 @@ final class NotchStatusPlacementTests: XCTestCase {
 
         let placement = try XCTUnwrap(NotchStatusPlacementPlanner.placement(for: geometry))
 
-        XCTAssertEqual(placement.notchSpacerWidth, 0)
+        XCTAssertEqual(placement.notchSpacerWidth, NotchStatusPlacementPlanner.fallbackNotchSpacerWidth)
         XCTAssertEqual(placement.activityLabelWidth, 0)
-        XCTAssertEqual(placement.leadingSpacerWidth, NotchStatusPlacementPlanner.compactLeadingWingWidth)
+        XCTAssertEqual(placement.leadingSpacerWidth, NotchStatusPlacementPlanner.compactNotchLeadInWidth)
         XCTAssertEqual(placement.visibleFrame.width, NotchStatusPlacementPlanner.fallbackSurfaceWidth)
         XCTAssertEqual(placement.visibleFrame.midX, geometry.frame.midX)
-        XCTAssertEqual(placement.glyphScreenX, placement.visibleFrame.maxX - NotchStatusPlacementPlanner.glyphSize.width)
+        XCTAssertEqual(
+            placement.glyphScreenX,
+            placement.visibleFrame.maxX
+                - NotchStatusPlacementPlanner.glyphSize.width
+                - NotchStatusPlacementPlanner.compactNotchLeadOutWidth
+        )
         XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
         XCTAssertEqual(
             NotchStatusSurfaceShape.topContactCornerRadius(notchSpacerWidth: placement.notchSpacerWidth),
-            0
+            NotchStatusSurfaceShape.notchContactCornerRadius
         )
-        XCTAssertNil(NotchStatusSurfaceShape.topContact(
+        let contact = try XCTUnwrap(NotchStatusSurfaceShape.topContact(
             activityLabelWidth: placement.activityLabelWidth,
             leadingSpacerWidth: placement.leadingSpacerWidth,
             notchSpacerWidth: placement.notchSpacerWidth,
             boundsWidth: placement.visibleFrame.width,
             boundsHeight: placement.visibleFrame.height
         ))
+        XCTAssertEqual(contact.startX, NotchStatusPlacementPlanner.compactNotchLeadInWidth)
+        XCTAssertEqual(contact.endX, placement.visibleFrame.width)
+        XCTAssertEqual(contact.radius, NotchStatusSurfaceShape.notchContactCornerRadius)
+        XCTAssertEqual(
+            NotchStatusSurfaceShape.renderedTopShoulderRadius(
+                for: contact,
+                boundsHeight: placement.visibleFrame.height
+            ),
+            7.48,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchStatusSurfaceShape.renderedBottomCornerRadius(
+                for: contact,
+                boundsHeight: placement.visibleFrame.height,
+                availableWidth: placement.visibleFrame.width
+            ),
+            12.92,
+            accuracy: 0.001
+        )
     }
 
     func testCentersFallbackPillWithActivityLabelsWhenDisplayDoesNotReportNotchArea() throws {
@@ -150,15 +216,20 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchStatusPlacementPlanner.placement(for: geometry, activityLabelWidth: labelWidth)
         )
 
-        XCTAssertEqual(placement.notchSpacerWidth, 0)
+        XCTAssertEqual(placement.notchSpacerWidth, NotchStatusPlacementPlanner.fallbackNotchSpacerWidth)
         XCTAssertEqual(placement.activityLabelWidth, labelWidth)
-        XCTAssertEqual(placement.leadingSpacerWidth, 0)
+        XCTAssertEqual(placement.leadingSpacerWidth, NotchStatusPlacementPlanner.compactNotchLeadInWidth)
         XCTAssertEqual(
             placement.visibleFrame.width,
-            labelWidth + NotchStatusPlacementPlanner.glyphSize.width
+            labelWidth + NotchStatusPlacementPlanner.fallbackSurfaceWidth
         )
         XCTAssertEqual(placement.visibleFrame.midX, geometry.frame.midX)
-        XCTAssertEqual(placement.glyphScreenX, placement.visibleFrame.maxX - NotchStatusPlacementPlanner.glyphSize.width)
+        XCTAssertEqual(
+            placement.glyphScreenX,
+            placement.visibleFrame.maxX
+                - NotchStatusPlacementPlanner.glyphSize.width
+                - NotchStatusPlacementPlanner.compactNotchLeadOutWidth
+        )
         XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
     }
 
@@ -173,6 +244,20 @@ final class NotchStatusPlacementTests: XCTestCase {
                 boundsHeight: NotchStatusPlacementPlanner.glyphSize.height
             ).width,
             63
+        )
+        let notchedListeningRect = NotchActivityLabelRenderPolicy.labelTextRect(
+            activityLabelWidth: NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"),
+            boundsHeight: NotchStatusPlacementPlanner.glyphSize.height,
+            isNotched: true
+        )
+        XCTAssertEqual(
+            notchedListeningRect.minX,
+            NotchActivityLabelRenderPolicy.notchedTextLeadingInset
+        )
+        XCTAssertEqual(
+            notchedListeningRect.maxX,
+            NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening")
+                - NotchActivityLabelRenderPolicy.textRightGlyphClearance
         )
         XCTAssertLessThan(
             NotchStatusPlacementPlanner.activityLabelWidth(for: "Moving ticket to Done, RR-100 is complete"),

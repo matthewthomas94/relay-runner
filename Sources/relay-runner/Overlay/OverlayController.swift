@@ -195,6 +195,20 @@ final class OverlayController {
     private var lastPartial: String = ""
     private var lastPreview: String?
 
+    static func pillStatusTitle(for state: OverlayState) -> String? {
+        NotchActivityLabelPlanner.label(for: state)
+    }
+
+    static func compactPillTitle(for state: OverlayState, suffix: String = "") -> String? {
+        guard let title = pillStatusTitle(for: state) else { return nil }
+        return title + suffix
+    }
+
+    static func fullPillTitle(for state: OverlayState, actionHint: String) -> String? {
+        guard let title = pillStatusTitle(for: state) else { return nil }
+        return "\(title) \u{2014} \(actionHint)"
+    }
+
     private func applyState(_ sm: StateMachine) {
         let state = sm.state
         let partial = sm.partialTranscription
@@ -214,36 +228,41 @@ final class OverlayController {
         // Pill
         switch state {
         case .listening:
-            if state != lastAppliedState {
-                pill.showCompact(title: "Listening...", theme: .stt)
+            if state != lastAppliedState,
+               let title = Self.compactPillTitle(for: state, suffix: "...") {
+                pill.showCompact(title: title, theme: .stt)
             }
 
         case .recording:
             if state != lastAppliedState {
                 // Always start with compact pill on recording entry
-                pill.showCompact(title: "Recording...", theme: .stt)
+                if let title = Self.compactPillTitle(for: state, suffix: "...") {
+                    pill.showCompact(title: title, theme: .stt)
+                }
             } else if !partial.isEmpty, config.live_transcription, partial != lastPartial {
                 // Only expand to full once transcription arrives
-                pill.showFull(title: "Recording \u{2014} Press Caps Lock to stop and send", body: partial, theme: .stt)
+                if let title = Self.fullPillTitle(for: state, actionHint: "Press Caps Lock to stop and send") {
+                    pill.showFull(title: title, body: partial, theme: .stt)
+                }
             }
 
         case .sent:
-            if state != lastAppliedState {
-                pill.showCompact(title: "Sent", theme: .stt)
+            if state != lastAppliedState,
+               let title = Self.compactPillTitle(for: state) {
+                pill.showCompact(title: title, theme: .stt)
             }
 
         case .cancelled(let source):
             if state != lastAppliedState {
-                if source == .stt {
-                    pill.showCompact(title: "Recording cancelled", theme: .stt)
-                } else {
-                    pill.showCompact(title: "Playback cancelled", theme: .tts)
+                if let title = Self.compactPillTitle(for: state) {
+                    pill.showCompact(title: title, theme: source == .stt ? .stt : .tts)
                 }
             }
 
         case .processing:
-            if state != lastAppliedState {
-                pill.showCompact(title: "Thinking\u{2026}", theme: .tts)
+            if state != lastAppliedState,
+               let title = Self.compactPillTitle(for: state, suffix: "\u{2026}") {
+                pill.showCompact(title: title, theme: .tts)
             }
 
         case .acknowledgement:
@@ -252,26 +271,31 @@ final class OverlayController {
             }
 
         case .preparing:
-            if state != lastAppliedState {
-                pill.showCompact(title: "Preparing...", theme: .tts)
+            if state != lastAppliedState,
+               let title = Self.compactPillTitle(for: state, suffix: "...") {
+                pill.showCompact(title: title, theme: .tts)
             }
 
         case .messageWaiting:
             if config.message_preview, let preview {
-                if preview != lastPreview || state != lastAppliedState {
-                    pill.showFull(title: "Message Queued \u{2014} Double tap Option to play", body: preview, theme: .tts)
+                if preview != lastPreview || state != lastAppliedState,
+                   let title = Self.fullPillTitle(for: state, actionHint: "Double tap Option to play") {
+                    pill.showFull(title: title, body: preview, theme: .tts)
                 }
-            } else if state != lastAppliedState {
-                pill.showCompact(title: "Message Queued...", theme: .tts)
+            } else if state != lastAppliedState,
+                      let title = Self.compactPillTitle(for: state, suffix: "...") {
+                pill.showCompact(title: title, theme: .tts)
             }
 
         case .speaking:
             if config.message_preview, let preview {
-                if state != lastAppliedState || preview != lastPreview {
-                    pill.showFull(title: "Message Playing \u{2014} Double tap Control to cancel", body: preview, theme: .tts)
+                if state != lastAppliedState || preview != lastPreview,
+                   let title = Self.fullPillTitle(for: state, actionHint: "Double tap Control to cancel") {
+                    pill.showFull(title: title, body: preview, theme: .tts)
                 }
-            } else if state != lastAppliedState {
-                pill.showCompact(title: "Message Playing...", theme: .tts)
+            } else if state != lastAppliedState,
+                      let title = Self.compactPillTitle(for: state, suffix: "...") {
+                pill.showCompact(title: title, theme: .tts)
             }
 
         case .sessionPrompt:
