@@ -14,6 +14,7 @@ final class ProgramBoardOverlayController {
     private(set) var isVisible = false
     private weak var revealContainer: BoardRevealContainerView?
     private let model = ProgramBoardViewModel()
+    private let workspace = WorkspaceViewModel()
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     private var openProjectHandler: ((String) -> Void)?
     private var loadingStateHandler: ((Bool) -> Void)?
@@ -21,6 +22,7 @@ final class ProgramBoardOverlayController {
     private var endSessionHandler: (() -> Void)?
     private var sessionActiveProvider: () -> Bool = { false }
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
+    private var settingsContentProvider: (() -> AnyView?)?
     private var themePollTimer: Timer?
     private var statusPollTimer: Timer?
 
@@ -52,6 +54,10 @@ final class ProgramBoardOverlayController {
         self.workerSizingDefaultsProvider = provider
     }
 
+    func setSettingsContentProvider(_ provider: @escaping () -> AnyView?) {
+        self.settingsContentProvider = provider
+    }
+
     static func sessionControlAction(
         hasActiveSession: Bool,
         selectedProjectPath: String?
@@ -70,6 +76,12 @@ final class ProgramBoardOverlayController {
 
     func show() {
         guard !isVisible else { return }
+        let settingsContent = settingsContentProvider?()
+        workspace.configure(
+            showsWorkTab: true,
+            showsSettingsTab: settingsContent != nil,
+            initialTab: .work
+        )
 
         let p = panel ?? BoardOverlayPanel()
         let screen = currentMouseScreen()
@@ -89,7 +101,10 @@ final class ProgramBoardOverlayController {
         let contentFrame = NSRect(origin: .zero, size: p.frame.size)
         let hosting = NSHostingView(rootView: ProgramBoardOverlayView(
             model: model,
+            workspace: workspace,
+            settingsContent: settingsContent,
             onDismiss: { [weak self] in self?.hide() },
+            onWorkspaceTabChange: { [weak self] _ in self?.updatePanelKeyEligibility() },
             onRefresh: { [weak self] in self?.model.reload() },
             onStartSession: { [weak self] in self?.startSession() },
             onEndSession: { [weak self] in self?.endSession() },
@@ -136,6 +151,18 @@ final class ProgramBoardOverlayController {
             if !hasCachedSnapshot {
                 self.loadingStateHandler?(false)
             }
+        }
+    }
+
+    func showSettings() {
+        guard settingsContentProvider != nil else { return }
+        if isVisible {
+            workspace.select(.systemSettings)
+            updatePanelKeyEligibility()
+        } else {
+            show()
+            workspace.select(.systemSettings)
+            updatePanelKeyEligibility()
         }
     }
 
@@ -216,13 +243,13 @@ final class ProgramBoardOverlayController {
     private func beginCreate(in lane: ProgramBoardLane) {
         model.beginCreate(in: lane)
         if model.creating != nil {
-            setPanelKeyEligible(true)
+            updatePanelKeyEligibility()
         }
     }
 
     private func cancelCreate() {
         model.cancelCreate()
-        setPanelKeyEligible(false)
+        updatePanelKeyEligibility()
     }
 
     private func commitCreate(_ request: ProgramBoardCreateRequest) {
@@ -242,20 +269,20 @@ final class ProgramBoardOverlayController {
             NSLog("[relay-runner] failed to create program ticket in \(request.repoPath): \(error)")
         }
         model.cancelCreate()
-        setPanelKeyEligible(false)
+        updatePanelKeyEligibility()
         model.refreshInBackground()
     }
 
     private func beginEdit(detail: ProgramTicketDetail) {
         model.beginEdit(detail: detail)
         if model.editing != nil {
-            setPanelKeyEligible(true)
+            updatePanelKeyEligibility()
         }
     }
 
     private func cancelEdit() {
         model.cancelEdit()
-        setPanelKeyEligible(false)
+        updatePanelKeyEligibility()
     }
 
     private func commitEdit(_ request: ProgramBoardEditRequest) {
@@ -275,7 +302,7 @@ final class ProgramBoardOverlayController {
             NSLog("[relay-runner] failed to save program ticket \(request.ticketID) in \(request.repoPath): \(error)")
         }
         model.cancelEdit()
-        setPanelKeyEligible(false)
+        updatePanelKeyEligibility()
         model.refreshInBackground()
     }
 
@@ -288,7 +315,7 @@ final class ProgramBoardOverlayController {
         }
         model.cancelEdit()
         model.clearSelectedTicket()
-        setPanelKeyEligible(false)
+        updatePanelKeyEligibility()
         model.refreshInBackground()
     }
 
@@ -334,6 +361,12 @@ final class ProgramBoardOverlayController {
         } else {
             panel.resignKey()
         }
+    }
+
+    private func updatePanelKeyEligibility() {
+        setPanelKeyEligible(
+            model.creating != nil || model.editing != nil || workspace.selectedTab == .systemSettings
+        )
     }
 
     private func currentMouseScreen() -> NSScreen? {

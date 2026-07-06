@@ -258,7 +258,10 @@ private extension View {
 
 struct BoardOverlayView: View {
     @Bindable var model: BoardViewModel
+    @Bindable var workspace: WorkspaceViewModel
+    let settingsContent: AnyView?
     let onDismiss: () -> Void
+    let onWorkspaceTabChange: (WorkspaceTab) -> Void
     /// Drag-drop handler. Called when a ticket is dropped on a column (or on
     /// a position within a column). The controller writes to disk and re-scans.
     let onDrop: (_ ticketId: String, _ status: Ticket.Status, _ insertIndex: Int) -> Void
@@ -282,10 +285,10 @@ struct BoardOverlayView: View {
     ]
 
     var body: some View {
-        ZStack {
-            // Background: clicking dismisses the board *only when no modal is
+        ZStack(alignment: .top) {
+            // Background: clicking dismisses the Workspace *only when no modal is
             // open*. When the editor is up, the same click cancels the modal
-            // instead — keeps the board state stable while editing.
+            // instead — keeps the work state stable while editing.
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -296,7 +299,23 @@ struct BoardOverlayView: View {
                     }
                 }
 
-            VStack(spacing: 0) {
+            WorkspaceOverlayHeader(
+                workspace: workspace,
+                onDismiss: onDismiss
+            )
+            .padding(.top, 28)
+            .zIndex(2)
+
+            if workspace.selectedTab == .systemSettings, let settingsContent {
+                VStack(spacing: 0) {
+                    settingsContent
+                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                .frame(maxWidth: .infinity, alignment: .top)
+            } else if workspace.showsWorkTab {
+                VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
                     ForEach(columns) { spec in
                         BoardColumnPanel(
@@ -313,6 +332,7 @@ struct BoardOverlayView: View {
                 .padding(.top, BoardSurfaceLayout.columnTopPadding)
                 .frame(maxWidth: .infinity, alignment: .top)
                 Spacer(minLength: 0)
+                }
             }
 
             // Drag ghost — lives inside the panel's coordinate space so it's
@@ -356,6 +376,9 @@ struct BoardOverlayView: View {
         .coordinateSpace(name: "board")
         .ignoresSafeArea()
         .animation(.easeInOut(duration: 0.15), value: model.editing != nil)
+        .onChange(of: workspace.selectedTab) { _, tab in
+            onWorkspaceTabChange(tab)
+        }
         .onPreferenceChange(ColumnFramesKey.self) { model.columnFrames = $0 }
         .onPreferenceChange(CardFramesKey.self) { model.cardFrames = $0 }
     }

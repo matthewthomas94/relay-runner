@@ -3,8 +3,8 @@ import Foundation
 struct ToggleBoardTool: MCPTool {
     let name = "toggle_board"
     let description = """
-        Toggle Relay Runner's local kanban board overlay. Use when the user asks to \
-        bring up, show, hide, or dismiss the board. Requires the Relay Runner menu-bar \
+        Toggle Relay Runner's Workspace overlay. Use when the user asks to \
+        bring up, show, hide, or dismiss the Workspace. Requires the Relay Runner menu-bar \
         app to be running; if no /relay-bridge session is active, Relay Runner shows \
         the standard "No session running" prompt.
         """
@@ -20,7 +20,7 @@ struct ToggleBoardTool: MCPTool {
 
         switch ConfirmationClient.requestBoardToggle() {
         case .delivered:
-            return [["type": "text", "text": "Board toggle requested."]]
+            return [["type": "text", "text": "Workspace toggle requested."]]
         case .menuBarUnavailable:
             throw MCPToolError(message: "Relay Runner menu-bar app did not acknowledge the board toggle request.")
         }
