@@ -13,7 +13,10 @@ enum ProgramBoardBackdropStyle {
 
 struct ProgramBoardOverlayView: View {
     @Bindable var model: ProgramBoardViewModel
+    @Bindable var workspace: WorkspaceViewModel
+    let settingsContent: AnyView?
     let onDismiss: () -> Void
+    let onWorkspaceTabChange: (WorkspaceTab) -> Void
     let onRefresh: () -> Void
     let onStartSession: () -> Void
     let onEndSession: () -> Void
@@ -48,22 +51,39 @@ struct ProgramBoardOverlayView: View {
                     }
                 }
 
-            VStack(spacing: 0) {
-                ProgramBoardContent(
-                    model: model,
-                    onRefresh: onRefresh,
-                    onStartSession: onStartSession,
-                    onEndSession: onEndSession,
-                    onDismiss: onDismiss,
-                    onOpenProject: onOpenProject,
-                    onCreateStart: onCreateStart,
-                    onEditStart: onEditStart,
-                    onDelete: onDelete,
-                    onDrop: onDrop
-                )
-                .padding(.top, BoardSurfaceLayout.columnTopPadding)
+            WorkspaceOverlayHeader(
+                workspace: workspace,
+                onDismiss: onDismiss
+            )
+            .padding(.top, 28)
+            .zIndex(2)
 
-                Spacer(minLength: 0)
+            if workspace.selectedTab == .systemSettings, let settingsContent {
+                VStack(spacing: 0) {
+                    settingsContent
+                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                .frame(maxWidth: .infinity, alignment: .top)
+            } else if workspace.showsWorkTab {
+                VStack(spacing: 0) {
+                    ProgramBoardContent(
+                        model: model,
+                        onRefresh: onRefresh,
+                        onStartSession: onStartSession,
+                        onEndSession: onEndSession,
+                        onDismiss: onDismiss,
+                        onOpenProject: onOpenProject,
+                        onCreateStart: onCreateStart,
+                        onEditStart: onEditStart,
+                        onDelete: onDelete,
+                        onDrop: onDrop
+                    )
+                    .padding(.top, BoardSurfaceLayout.columnTopPadding)
+
+                    Spacer(minLength: 0)
+                }
             }
 
             ProgramDragPreviewLayer(model: model)
@@ -108,6 +128,9 @@ struct ProgramBoardOverlayView: View {
         }
         .coordinateSpace(name: "programBoard")
         .ignoresSafeArea()
+        .onChange(of: workspace.selectedTab) { _, tab in
+            onWorkspaceTabChange(tab)
+        }
         .onPreferenceChange(ProgramColumnFramesKey.self) { model.columnFrames = $0 }
         .onPreferenceChange(ProgramCardFramesKey.self) { model.cardFrames = $0 }
     }
@@ -400,7 +423,7 @@ private struct ProgramBoardTitleBar: View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .center, spacing: 6) {
-                    Text("Program Board")
+                    Text("Program Workspace")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                     ProgramReloadButton(state: reloadState, action: onRefresh)
@@ -411,7 +434,7 @@ private struct ProgramBoardTitleBar: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            ProgramIconButton(systemName: "xmark", help: "Close Program Board", action: onDismiss)
+            ProgramIconButton(systemName: "xmark", help: "Close Program Workspace", action: onDismiss)
         }
     }
 }
@@ -1084,9 +1107,9 @@ private struct ProgramTicketDetailPanel: View {
                 }
                 ProgramDetailActionButton(
                     systemName: "rectangle.grid.2x2",
-                    title: "Open Board",
+                    title: "Open Workspace",
                     disabled: detail.identity?.projectPath == nil,
-                    help: "Open the owning project board"
+                    help: "Open the owning project workspace"
                 ) {
                     if let projectPath = detail.identity?.projectPath {
                         onOpenProject(projectPath)

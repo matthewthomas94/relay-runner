@@ -51,7 +51,7 @@ final class GuidedSetupReadinessTests: XCTestCase {
         XCTAssertTrue(readiness.voiceReady)
         XCTAssertFalse(readiness.screenControlAndBoardReady)
         XCTAssertTrue(readiness.detail.contains("Start Session can launch Claude"))
-        XCTAssertTrue(readiness.detail.contains("double-tap Shift board hotkey"))
+        XCTAssertTrue(readiness.detail.contains("double-tap Shift Workspace hotkey"))
         XCTAssertFalse(readiness.detail.contains("Parent-app Accessibility"))
     }
 

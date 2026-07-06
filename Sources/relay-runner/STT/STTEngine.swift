@@ -302,7 +302,7 @@ final class STTEngine: @unchecked Sendable {
 
                 case .boardToggle:
                     boardToggleRequested = true
-                    NSLog("[STTEngine] Board toggle requested (double-tap Shift)")
+                    NSLog("[STTEngine] Workspace toggle requested (double-tap Shift)")
                     continue
                 }
             }
