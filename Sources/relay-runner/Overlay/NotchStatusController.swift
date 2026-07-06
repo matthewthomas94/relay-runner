@@ -483,6 +483,7 @@ enum NotchActivityLabelPlanner {
 
     static func labels(
         for state: OverlayState,
+        foregroundActivity: String? = nil,
         activeRuns: [RunState] = [],
         tickets: [Ticket] = [],
         bridgeRecoveryInFlight: Bool = false,
@@ -490,6 +491,7 @@ enum NotchActivityLabelPlanner {
         now: Date = Date()
     ) -> [String] {
         var labels: [String] = []
+        let foregroundLabel = label(forWorkingProgress: foregroundActivity)
 
         if bridgeStartingUp {
             labels.append("Starting up...")
@@ -497,13 +499,17 @@ enum NotchActivityLabelPlanner {
         if bridgeRecoveryInFlight {
             labels.append("Reconnecting session")
         }
-        if let stateLabel = label(for: state) {
+        if let foregroundLabel {
+            labels.append(foregroundLabel)
+        } else if let stateLabel = label(for: state) {
             labels.append(stateLabel)
         }
 
-        let runLabels = sortedActiveRuns(activeRuns)
-            .compactMap { label(for: $0, now: now) }
-        labels.append(contentsOf: runLabels)
+        if foregroundLabel == nil {
+            let runLabels = sortedActiveRuns(activeRuns)
+                .compactMap { label(for: $0, now: now) }
+            labels.append(contentsOf: runLabels)
+        }
 
         if hasWaitingDependency(in: tickets) {
             labels.append("Waiting dependency")
@@ -517,6 +523,7 @@ enum NotchActivityLabelPlanner {
 
     static func hoverLabel(
         for state: OverlayState,
+        foregroundActivity: String? = nil,
         activeRuns: [RunState] = [],
         tickets: [Ticket] = [],
         bridgeRecoveryInFlight: Bool = false,
@@ -526,6 +533,9 @@ enum NotchActivityLabelPlanner {
     ) -> String? {
         let ticketsByID = Dictionary(tickets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
+        if let foregroundActivity = label(forWorkingProgress: foregroundActivity) {
+            return foregroundActivity
+        }
         if let runLabel = sortedActiveRuns(activeRuns)
             .compactMap({
                 let ticket = ticketForRun?($0) ?? ticketsByID[$0.ticketId]

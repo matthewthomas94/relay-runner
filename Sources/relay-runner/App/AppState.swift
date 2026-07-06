@@ -248,8 +248,11 @@ final class AppState {
             return
         }
 
+        let foregroundActivityLabel =
+            NotchActivityLabelPlanner.label(forWorkingProgress: stateMachine.currentWorkingProgress())
         let labels = NotchActivityLabelPlanner.labels(
             for: stateMachine.state,
+            foregroundActivity: foregroundActivityLabel,
             activeRuns: notchActivityRunStates,
             tickets: notchActivityTickets,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
@@ -257,6 +260,7 @@ final class AppState {
         )
         let hoverActivityLabel = NotchActivityLabelPlanner.hoverLabel(
             for: stateMachine.state,
+            foregroundActivity: foregroundActivityLabel,
             activeRuns: notchActivityRunStates,
             tickets: notchActivityTickets,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
@@ -268,9 +272,7 @@ final class AppState {
                 ]
             }
         )
-        let workingProgressLabel =
-            NotchActivityLabelPlanner.label(forWorkingProgress: stateMachine.workingProgress)
-            ?? hoverActivityLabel
+        let workingProgressLabel = foregroundActivityLabel ?? hoverActivityLabel
         notchStatusController.setStatus(
             NotchSessionStatus.resolve(
                 for: stateMachine.state,

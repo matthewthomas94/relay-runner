@@ -776,6 +776,70 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
+    func testForegroundActivityTakesPrecedenceOverWorkerActivity() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let run = RunState(
+            ticketId: "RR-145",
+            repoPath: "/repo",
+            runId: 218,
+            state: "Running",
+            lastError: nil,
+            activity: "Running Swift tests",
+            activityAt: now.timeIntervalSince1970
+        )
+
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.labels(
+                for: .idle,
+                foregroundActivity: "Reading project context",
+                activeRuns: [run],
+                now: now
+            ),
+            ["Reading project context"]
+        )
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.hoverLabel(
+                for: .idle,
+                foregroundActivity: "Reading project context",
+                activeRuns: [run],
+                now: now
+            ),
+            "Reading project context"
+        )
+    }
+
+    func testWorkerActivityFallsBackWhenForegroundActivityIsIdleOrMissing() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let run = RunState(
+            ticketId: "RR-145",
+            repoPath: "/repo",
+            runId: 218,
+            state: "Running",
+            lastError: nil,
+            activity: "Running Swift tests",
+            activityAt: now.timeIntervalSince1970
+        )
+
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.labels(
+                for: .idle,
+                foregroundActivity: nil,
+                activeRuns: [run],
+                now: now
+            ),
+            ["Running tests"]
+        )
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.labels(
+                for: .idle,
+                foregroundActivity: "   ",
+                activeRuns: [run],
+                now: now
+            ),
+            ["Running tests"]
+        )
+    }
+
     func testHoverActivityLabelIncludesActiveRunDetails() {
         let now = Date(timeIntervalSince1970: 2_000)
         let run = RunState(

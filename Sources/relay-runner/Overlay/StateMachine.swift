@@ -76,6 +76,7 @@ enum OverlayState: Equatable {
 final class StateMachine: @unchecked Sendable {
     static let sentAutoDismissDuration: TimeInterval = 1.5
     static let acknowledgementDelayAfterSent: TimeInterval = 1.0
+    static let workingProgressFreshnessDuration: TimeInterval = 12.0
 
     private struct PendingAcknowledgement {
         let text: String
@@ -87,6 +88,7 @@ final class StateMachine: @unchecked Sendable {
     private(set) var partialTranscription: String = ""
     private(set) var messagePreview: String?
     private(set) var workingProgress: String?
+    private(set) var workingProgressUpdatedAt: Date?
 
     private let now: () -> Date
     private var stateBeforeIdle: OverlayState = .idle
@@ -117,18 +119,18 @@ final class StateMachine: @unchecked Sendable {
         switch (source, newState) {
         case ("tts", "message_waiting"):
             pendingAcknowledgement = nil
-            workingProgress = nil
+            clearWorkingProgress()
             messagePreview = text
             state = .messageWaiting(preview: text)
 
         case ("tts", "preparing"):
             pendingAcknowledgement = nil
-            workingProgress = nil
+            clearWorkingProgress()
             state = .preparing
 
         case ("tts", "speaking"):
             pendingAcknowledgement = nil
-            workingProgress = nil
+            clearWorkingProgress()
             state = .speaking
 
         case ("tts", "idle"):
@@ -154,6 +156,7 @@ final class StateMachine: @unchecked Sendable {
 
         case ("bridge", "working"):
             workingProgress = Self.normalizedWorkingProgress(text)
+            workingProgressUpdatedAt = workingProgress == nil ? nil : now()
 
         case ("bridge", "acknowledgement"):
             let acknowledgement = acknowledgementState(
@@ -181,7 +184,7 @@ final class StateMachine: @unchecked Sendable {
             }
 
         case ("bridge", "idle"):
-            workingProgress = nil
+            clearWorkingProgress()
             if case .processing = state {
                 stateBeforeIdle = state
                 lastIdleTransitionTime = now()
@@ -322,9 +325,22 @@ final class StateMachine: @unchecked Sendable {
         state = .idle
         partialTranscription = ""
         messagePreview = nil
-        workingProgress = nil
+        clearWorkingProgress()
         sentEnteredAt = nil
         pendingAcknowledgement = nil
+    }
+
+    func currentWorkingProgress(now: Date = Date()) -> String? {
+        guard let workingProgress, let workingProgressUpdatedAt else { return nil }
+        guard now.timeIntervalSince(workingProgressUpdatedAt) <= Self.workingProgressFreshnessDuration else {
+            return nil
+        }
+        return workingProgress
+    }
+
+    private func clearWorkingProgress() {
+        workingProgress = nil
+        workingProgressUpdatedAt = nil
     }
 
     private static func normalizedWorkingProgress(_ text: String?) -> String? {
@@ -334,9 +350,51 @@ final class StateMachine: @unchecked Sendable {
             .filter { !$0.isEmpty }
         let normalized = words.joined(separator: " ")
         guard !normalized.isEmpty else { return nil }
+        guard isPublicWorkingProgress(normalized) else { return nil }
         if normalized.count <= 180 { return normalized }
         let clipped = String(normalized.prefix(177))
         return clipped.trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    }
+
+    private static func isPublicWorkingProgress(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        if lower.contains("transcript")
+            || lower.contains("source_text")
+            || lower.contains("tool log")
+            || lower.contains("reasoning")
+            || lower.contains("scratchpad")
+            || lower.contains("secret")
+            || lower.contains("password")
+            || lower.contains("token")
+            || lower.contains("api key") {
+            return false
+        }
+        if lower.contains("waiting for voice input")
+            || lower.contains("waiting for voice command")
+            || lower.contains("waiting for next relay command")
+            || lower.contains("relay mode waiting")
+            || lower.contains("heartbeat")
+            || lower.contains("monitoring bridge") {
+            return false
+        }
+        return !looksLikeRawCommand(text)
+    }
+
+    private static func looksLikeRawCommand(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        if text.contains(";")
+            || text.contains("&&")
+            || text.contains("||")
+            || text.contains("|")
+            || text.contains("$(")
+            || text.contains("`") {
+            return true
+        }
+        let commandPrefixes = [
+            "bash ", "cat ", "curl ", "git ", "grep ", "npm ", "pnpm ",
+            "python ", "python3 ", "sh ", "swift ", "xcodebuild ", "yarn ", "zsh "
+        ]
+        return commandPrefixes.contains { lower.hasPrefix($0) }
     }
 
     private func acknowledgementState(
