@@ -854,25 +854,14 @@ final class AppState {
                 )
             }
 
-            // Per-parent permissions wizard. Bridge alive = user has actively
-            // engaged voice from a particular terminal/IDE. That's the
-            // contextual moment for the wizard.
-            //
-            // We retry on every alive tick (not just the dead→alive transition)
-            // until the wizard either surfaces or the parent is confirmed
-            // already onboarded. Reason: MCP's `parent_detected` and the
-            // bridge process can come up in either order; on a cold start the
-            // bridge often appears first and `currentParent()` returns nil
-            // until the MCP server's startup message arrives ~1-2s later.
-            // The session-scoped flag prevents re-opening the wizard window
-            // every tick while the user has it dismissed.
             if alive {
-                if !wasAlive { wizardShownForCurrentBridgeSession = false }
-                if !wizardShownForCurrentBridgeSession {
-                    self.surfaceParentWizardIfNeeded()
-                }
+                // Legacy parent-permission metadata is ignored. Relay Runner
+                // now hosts Relay Actions/Vision gated calls in the app
+                // process, so Accessibility and Screen Recording belong to
+                // Relay Runner rather than the agent parent.
+                if !wasAlive { wizardShownForCurrentBridgeSession = true }
             } else if wasAlive {
-                // Bridge died — reset so the next /relay-bridge re-evaluates.
+                // Bridge died — reset the legacy session flag.
                 wizardShownForCurrentBridgeSession = false
             }
 
@@ -1120,19 +1109,12 @@ final class AppState {
         // RelayActionsMCP helper and the menu-bar app — drives perimeter
         // glow + double-tap confirmation for propose_action).
         //
-        // Wires one parent-onboarding callback for the revocation case:
-        // pre-flight discovered a missing permission for an already-onboarded
-        // parent → reset and re-surface so the user can re-grant. Proactive
-        // first-time wizard surfacing is driven by the bridge watchdog (see
-        // `surfaceParentWizardIfNeeded`), tied to "voice just started from
-        // this app" rather than "MCP server happened to spawn."
-        let onboardingController = parentOnboardingController
         let actions = ActionsConfirmBus(
             stateMachine: stateMachine,
-            onParentPermissionRevoked: { parent, _ in
-                guard parent != "unknown" else { return }
-                ParentOnboardingTracker.resetOnboarded(parent)
-                await MainActor.run { onboardingController.show(parent: parent) }
+            onParentPermissionRevoked: { _, _ in
+                // Compatibility with older helper binaries. Current helpers
+                // forward gated work to the app, so parent revocation is not
+                // actionable.
             },
             onToggleBoard: { [weak self] in
                 guard let self else { return }

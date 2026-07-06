@@ -23,6 +23,11 @@ import Foundation
 ///    — request/reply command that registers and activates a project through
 ///    the menu-bar app's project registry.
 ///
+/// 5. `{"type":"perform_tool","tool":"click|type|key|scroll|screenshot","arguments":{...}}`
+///    — request/reply command that runs permission-gated Relay Actions/Vision
+///    work in the Relay Runner app process. MCP helpers stay protocol adapters
+///    while the app owns Accessibility and Screen Recording attribution.
+///
 /// Stream socket (not datagram) so request/reply works on the same connection
 /// without connection-id juggling. Per-connection accept loop runs as long as
 /// the bus is started.
@@ -111,6 +116,7 @@ actor ActionsConfirmBus {
             close(sock)
             return
         }
+        chmod(ActionsConfirmBus.socketPath, S_IRUSR | S_IWUSR)
 
         // Backlog of 8 — propose_action calls are inherently sequential per
         // claude session, but we may have a tool_fired in flight while a
@@ -173,6 +179,10 @@ actor ActionsConfirmBus {
     private func handleConnection(fd: Int32) async {
         // Read one JSON line, dispatch, then either close (tool_fired) or
         // hold open (propose) until resolve() is called.
+        guard validatePeer(fd: fd) else {
+            close(fd)
+            return
+        }
         guard let data = readLine(fd: fd) else {
             close(fd)
             return
@@ -235,6 +245,24 @@ actor ActionsConfirmBus {
             case .activated(let repoPath):
                 writePayload(fd: fd, payload: ["result": "ok", "repo_path": repoPath])
             case .failed(let message):
+                writePayload(fd: fd, payload: ["result": "error", "message": message])
+            }
+            close(fd)
+
+        case "perform_tool":
+            guard let tool = json["tool"] as? String else {
+                writePayload(fd: fd, payload: [
+                    "result": "error",
+                    "message": "perform_tool requires a tool name.",
+                ])
+                close(fd)
+                return
+            }
+            let arguments = json["arguments"] as? [String: Any] ?? [:]
+            switch await RelayHostedTool.perform(tool: tool, arguments: arguments) {
+            case .success(let content):
+                writePayload(fd: fd, payload: ["result": "ok", "content": content])
+            case .failure(let message):
                 writePayload(fd: fd, payload: ["result": "error", "message": message])
             }
             close(fd)
@@ -373,9 +401,30 @@ actor ActionsConfirmBus {
             return
         }
         data.append(0x0A)
-        _ = data.withUnsafeBytes { ptr -> Int in
-            send(fd, ptr.baseAddress, data.count, 0)
+        data.withUnsafeBytes { ptr in
+            guard let base = ptr.baseAddress else { return }
+            var sent = 0
+            while sent < data.count {
+                let n = send(fd, base.advanced(by: sent), data.count - sent, 0)
+                if n <= 0 { break }
+                sent += n
+            }
         }
+    }
+
+    private func validatePeer(fd: Int32) -> Bool {
+        var uid = uid_t()
+        var gid = gid_t()
+        guard getpeereid(fd, &uid, &gid) == 0 else {
+            NSLog("[ActionsConfirmBus] getpeereid() failed: \(errno)")
+            return false
+        }
+        guard uid == getuid() else {
+            NSLog("[ActionsConfirmBus] rejected peer uid \(uid); expected \(getuid())")
+            return false
+        }
+        _ = gid
+        return true
     }
 }
 

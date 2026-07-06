@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// First-launch onboarding flow. Walks through agent choice, workspace folder, microphone
-/// access, optional Input Monitoring, optional parent-app permission guidance,
-/// local Python setup, and agent sign-in.
+/// First-launch onboarding flow. Walks through agent choice, workspace folder,
+/// microphone access, optional Input Monitoring, local Python setup, and agent
+/// sign-in.
 struct OnboardingView: View {
     static let workspaceFolderTitle = "Workspace folder"
     static let workspaceFolderHelpText = "New voice sessions start in this folder. Program Manager discovers child git repositories when this is a workspace."
@@ -61,10 +61,8 @@ struct OnboardingView: View {
     /// can guarantee an explicit pick rather than silently inheriting
     /// whatever was already in config.
     @State private var hasConfirmedWorkingDirectory: Bool = false
-    /// True when the user has walked through the parent-app permission
-    /// guidance for this setup run. macOS does not let Relay Runner verify
-    /// another app's TCC grants here; the session-time parent wizard still
-    /// reappears if Relay Actions or Relay Vision report a missing grant.
+    /// Kept for legacy resume-state compatibility. Current Relay Actions and
+    /// Relay Vision paths use Relay Runner app permissions.
     @State private var parentPermissionsReviewed: Bool = false
     /// Tracks permission panes opened automatically in this view lifetime,
     /// so resuming the step can be helpful without repeatedly yanking focus
@@ -175,10 +173,8 @@ struct OnboardingView: View {
             case .agentChoice:       self = .agentChoice
             case .microphone:        self = .microphone
             case .inputMonitoring:   self = .inputMonitoring
-            case .parentAccessibility, .parentPermissions:
-                self = .parentAccessibility
-            case .parentScreenRecording:
-                self = .parentScreenRecording
+            case .parentAccessibility, .parentScreenRecording, .parentPermissions:
+                self = .pythonSetup
             case .pythonSetup:       self = .pythonSetup
             case .agentLogin:        self = .agentLogin
             case .ready:             self = .ready
@@ -592,9 +588,9 @@ struct OnboardingView: View {
             }
 
             PermissionAppDragGuide(
-                title: "Drag \(selectedParentTargetNameList) into \(title)",
+                title: "Drag Relay Runner into \(title)",
                 settingsPane: title,
-                targets: selectedParentAppTargets,
+                targets: [PermissionAppTarget(displayName: "Relay Runner.app", bundleURL: Bundle.main.bundleURL)],
                 highlightTargets: true
             )
 
@@ -639,9 +635,9 @@ struct OnboardingView: View {
     private func parentPermissionStepExplanation(for kind: PermissionKind) -> String {
         switch kind {
         case .accessibility:
-            return "For clicks, typing, and scrolling, macOS grants control to the app running \(selectedAgentProvider.displayName). Turn on \(selectedParentTargetNameList) in Accessibility."
+            return "For clicks, typing, and scrolling, macOS grants control to Relay Runner's app-hosted tool process. Turn on Relay Runner in Accessibility."
         case .screenRecording:
-            return "For screenshots and visual grounding, macOS grants screen access to the app running \(selectedAgentProvider.displayName). Turn on \(selectedParentTargetNameList) in Screen Recording."
+            return "For screenshots and visual grounding, macOS grants screen access to Relay Runner's app-hosted tool process. Turn on Relay Runner in Screen Recording."
         default:
             return ""
         }
@@ -654,9 +650,9 @@ struct OnboardingView: View {
     private func parentPermissionVerificationDetail(for kind: PermissionKind) -> String {
         switch kind {
         case .accessibility:
-            return "macOS only exposes this check to the parent process. Relay Actions verifies Accessibility inside the next \(selectedAgentProvider.displayName) session before it clicks, types, or scrolls."
+            return "Relay Runner verifies Accessibility in the app before it clicks, types, or scrolls for Codex or Claude."
         case .screenRecording:
-            return "macOS applies Screen Recording to new processes only. After turning it on, quit and reopen the parent app; Relay Vision verifies it inside the next \(selectedAgentProvider.displayName) session."
+            return "macOS may require Relay Runner to relaunch after Screen Recording is granted. Relay Vision verifies capture in the app before returning screenshots."
         default:
             return ""
         }
@@ -838,9 +834,6 @@ struct OnboardingView: View {
                 if let inputMonitoringSummary {
                     inputMonitoringDeferredNotice(detail: inputMonitoringSummary)
                 }
-                if readiness.deferredItems.contains(where: { $0.contains("Parent-app") }) {
-                    parentPermissionsDeferredNotice
-                }
                 Text("Two ways to start a voice session:")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -888,32 +881,6 @@ struct OnboardingView: View {
             Button("Open Settings") {
                 requestInputMonitoringPermission()
             }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.10))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.orange.opacity(0.35))
-        )
-    }
-
-    private var parentPermissionsDeferredNotice: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "rectangle.on.rectangle")
-                .foregroundStyle(.orange)
-                .font(.title3)
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Parent app permissions deferred")
-                    .font(.callout).bold()
-                Text("Voice sessions can start. Relay Actions and Relay Vision may still need Accessibility and Screen Recording for \(selectedParentTargetList); Relay Runner will surface that guide again after the provider session starts if the MCP tools report a missing grant.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1236,11 +1203,6 @@ struct OnboardingView: View {
             if candidate == .agentChoice, requiresAgentChoice {
                 return candidate
             }
-            if candidate.isParentPermissionStep,
-               (requiresAgentChoice || requiresParentPermissionGuidance),
-               !parentPermissionsReviewed {
-                return candidate
-            }
             if let kind = candidate.kind, permissionStatus(kind) != .granted {
                 return candidate
             }
@@ -1280,8 +1242,7 @@ struct OnboardingView: View {
 
     private var progressLabel: String? {
         // Full flow always visits agent choice + microphone + optional
-        // Input Monitoring + parent Accessibility + parent Screen Recording
-        // + pythonSetup + agentLogin
+        // Input Monitoring + pythonSetup + agentLogin
         // (the last two briefly auto-advance when their state is already
         // ready, but they still get slots in the count). Simplified flow
         // only counts steps that actually need attention.
@@ -1329,16 +1290,11 @@ struct OnboardingView: View {
                                       agentSignedIn: Bool,
                                       parentPermissionsReviewed: Bool) -> [Step] {
         if !simplified {
-            return [.agentChoice, .microphone, .inputMonitoring, .parentAccessibility, .parentScreenRecording, .pythonSetup, .agentLogin]
+            return [.agentChoice, .microphone, .inputMonitoring, .pythonSetup, .agentLogin]
         }
         var steps: [Step] = []
         for s in Step.allCases {
             if s == .agentChoice, requiresAgentChoice {
-                steps.append(s)
-            }
-            if s.isParentPermissionStep,
-               (requiresAgentChoice || requiresParentPermissionGuidance),
-               !parentPermissionsReviewed {
                 steps.append(s)
             }
             if let kind = s.kind, permissionStatus(kind) != .granted {
@@ -1451,11 +1407,6 @@ struct OnboardingView: View {
                                      agentSignedIn: Bool) -> Step? {
         for s in Step.allCases {
             if s == .agentChoice, requiresAgentChoice {
-                return s
-            }
-            if s.isParentPermissionStep,
-               (requiresAgentChoice || requiresParentPermissionGuidance),
-               !parentPermissionsReviewed {
                 return s
             }
             if let kind = s.kind, permissionStatus(kind) != .granted {
