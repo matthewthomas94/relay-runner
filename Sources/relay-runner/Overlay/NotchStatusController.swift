@@ -902,6 +902,40 @@ enum NotchActivityLabelRenderPolicy {
     }
 }
 
+enum NotchHoverInteractionPolicy {
+    static func frame(
+        glyphFrame: NSRect,
+        boundsHeight: CGFloat,
+        activityLabelWidth: CGFloat,
+        leadingSpacerWidth: CGFloat,
+        notchSpacerWidth: CGFloat,
+        status: NotchSessionStatus,
+        glyphHovered: Bool,
+        workingProgressLabel: String?,
+        hoverSlop: CGFloat
+    ) -> NSRect {
+        let glyphHoverFrame = glyphFrame.insetBy(dx: -hoverSlop, dy: -hoverSlop)
+        guard status == .working,
+              glyphHovered,
+              let workingProgressLabel,
+              !workingProgressLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              activityLabelWidth > 0 else {
+            return glyphHoverFrame
+        }
+
+        let leadingWidth = activityLabelWidth + leadingSpacerWidth + notchSpacerWidth
+        return NSRect(
+            x: glyphFrame.minX - leadingWidth - hoverSlop,
+            y: -hoverSlop,
+            width: leadingWidth
+                + glyphFrame.width
+                + NotchStatusPlacementPlanner.compactNotchLeadOutWidth
+                + hoverSlop * 2,
+            height: boundsHeight + hoverSlop * 2
+        )
+    }
+}
+
 final class NotchStatusController {
     private var panel: NotchStatusPanel?
     private let pillView = NotchStatusPillContentView()
@@ -1664,7 +1698,7 @@ private final class NotchStatusPillContentView: NSView {
 
     private func updateGlyphHover(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        setGlyphHovered(bounds.contains(point) && glyphHoverFrame().contains(point))
+        setGlyphHovered(glyphHoverFrame().contains(point))
     }
 
     private func refreshGlyphHoverFromMouseLocation() {
@@ -1675,7 +1709,7 @@ private final class NotchStatusPillContentView: NSView {
 
         let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
         let point = convert(windowPoint, from: nil)
-        setGlyphHovered(bounds.contains(point) && glyphHoverFrame().contains(point))
+        setGlyphHovered(glyphHoverFrame().contains(point))
     }
 
     private func setGlyphHovered(_ hovered: Bool) {
@@ -1704,9 +1738,16 @@ private final class NotchStatusPillContentView: NSView {
     }
 
     private func glyphHoverFrame() -> NSRect {
-        currentGlyphFrame().insetBy(
-            dx: -Self.glyphHoverSlop,
-            dy: -Self.glyphHoverSlop
+        NotchHoverInteractionPolicy.frame(
+            glyphFrame: currentGlyphFrame(),
+            boundsHeight: bounds.height,
+            activityLabelWidth: activityLabelWidth,
+            leadingSpacerWidth: leadingSpacerWidth,
+            notchSpacerWidth: notchSpacerWidth,
+            status: status,
+            glyphHovered: glyphHovered,
+            workingProgressLabel: label,
+            hoverSlop: Self.glyphHoverSlop
         )
     }
 }
