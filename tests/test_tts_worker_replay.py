@@ -41,6 +41,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker._current_proc = None
         worker._last_wav = None
         worker._last_unheard_text = ""
+        worker._last_response_text = ""
         worker._rate = 1.0
         worker.played_texts = []
         worker.played_wavs = []
@@ -93,12 +94,31 @@ class TTSWorkerReplayTests(unittest.TestCase):
     def test_replay_falls_back_to_last_wav_without_unheard_text(self):
         worker = self.make_worker()
         worker._last_wav = self.temp_wav()
+        worker._last_response_text = "Previously spoken reply"
 
-        with patch.object(tts_worker.threading, "Thread", ImmediateThread):
+        with (
+            patch.object(tts_worker.threading, "Thread", ImmediateThread),
+            patch.object(tts_worker, "_notify_state") as notify_state,
+        ):
             worker.replay()
 
         self.assertEqual(worker.played_texts, [])
         self.assertEqual(worker.played_wavs, [worker._last_wav])
+        notify_state.assert_any_call("preparing", text="Previously spoken reply")
+
+    def test_replay_without_transcript_uses_last_wav_only(self):
+        worker = self.make_worker()
+        worker._last_wav = self.temp_wav()
+
+        with (
+            patch.object(tts_worker.threading, "Thread", ImmediateThread),
+            patch.object(tts_worker, "_notify_state") as notify_state,
+        ):
+            worker.replay()
+
+        self.assertEqual(worker.played_texts, [])
+        self.assertEqual(worker.played_wavs, [worker._last_wav])
+        notify_state.assert_not_called()
 
     def test_playing_new_pending_text_clears_stale_unheard_text(self):
         worker = self.make_worker()
