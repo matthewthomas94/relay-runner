@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
-from orchestrator import Daemon, RunsStore, Worker, validate_worker_completion  # noqa: E402
+from orchestrator import Daemon, ReviewWorker, RunsStore, Worker, validate_worker_completion  # noqa: E402
 from tickets import read as read_ticket  # noqa: E402
 
 
@@ -105,6 +105,21 @@ class OrchestratorDispatchTests(unittest.TestCase):
         self.assertIn("--effort", command)
         self.assertIn("xhigh", command)
         self.assertNotIn("model_reasoning_effort=xhigh", command)
+
+    def test_review_worker_uses_same_provider_effort_flags(self):
+        codex = object.__new__(ReviewWorker)
+        codex.agent_kind = "codex"
+        codex.agent_bin = "codex"
+        codex.run = {"model_alias": "gpt-5.5", "worker_effort": "high"}
+
+        claude = object.__new__(ReviewWorker)
+        claude.agent_kind = "claude"
+        claude.agent_bin = "claude"
+        claude.run = {"model_alias": "sonnet", "worker_effort": "xhigh"}
+
+        self.assertIn("model_reasoning_effort=high", ReviewWorker._command(codex))
+        self.assertIn("--effort", ReviewWorker._command(claude))
+        self.assertIn("xhigh", ReviewWorker._command(claude))
 
     def test_dispatch_refuses_ready_ticket_missing_worker_sizing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -729,6 +744,35 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertIn("code.txt", result["branch_diff_name_status"])
             self.assertEqual(result["verification_evidence"], "worker completion validation passed")
 
+    def test_worker_completion_dispatches_review_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "rr-1"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            self.git(repo, "worktree", "add", "-b", "relay/rr-1", str(workspace), "HEAD")
+
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(workspace),
+                branch="relay/rr-1",
+                state="AwaitingReview",
+                provider_key="codex",
+                model_alias="gpt-5.5",
+                worker_model="strong",
+                worker_effort="high",
+            )
+
+            with patch.object(daemon, "dispatch_review_worker") as dispatch_review_worker:
+                daemon._on_worker_complete(run_id)
+
+            dispatch_review_worker.assert_called_once_with(run_id, source="worker-completion")
+
     def test_worker_completion_does_not_progress_dependents_before_review_merge(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -747,14 +791,113 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 state="AwaitingReview",
                 provider_key="codex",
                 model_alias="gpt-5.5",
+                worker_model="strong",
+                worker_effort="high",
             )
             dispatches: list[dict] = []
             daemon.dispatch = lambda **kwargs: dispatches.append(kwargs)
 
-            daemon._on_worker_complete(run_id)
+            with patch.object(daemon, "dispatch_review_worker") as dispatch_review_worker:
+                daemon._on_worker_complete(run_id)
 
+            dispatch_review_worker.assert_called_once_with(run_id, source="worker-completion")
             self.assertEqual(dispatches, [])
             self.assertEqual(read_ticket(repo / ".orchestrator/RR-2.md")["status"], "backlog")
+
+    def test_dispatch_review_worker_carries_branch_context_and_marks_reviewing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "rr-1"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            self.git(repo, "worktree", "add", "-b", "relay/rr-1", str(workspace), "HEAD")
+            daemon = self.make_daemon(root, provider="claude")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(workspace),
+                branch="relay/rr-1",
+                state="AwaitingReview",
+                log_path=str(workspace / ".relay" / "run.log"),
+                provider_key="codex",
+                model_alias="gpt-5.5",
+                worker_model="strong",
+                worker_effort="high",
+                worker_provider_notes="Codex uses model_reasoning_effort; Claude uses --effort.",
+            )
+            self.write_ticket(
+                workspace,
+                "RR-1",
+                status="done",
+                run_id=run_id,
+                body=f"## Run log\n\n- **Run {run_id}** (attempt 1) - branch `relay/rr-1`\n",
+            )
+            (workspace / "code.txt").write_text("worker change\n")
+            self.git(workspace, "add", ".orchestrator/RR-1.md", "code.txt")
+            self.git(workspace, "commit", "-m", "feat: finish RR-1")
+
+            with patch.object(ReviewWorker, "start") as start_worker:
+                result = daemon.dispatch_review_worker(
+                    run_id,
+                    source="test",
+                    context="Run the focused Python tests.",
+                )
+
+            start_worker.assert_called_once()
+            self.assertTrue(result["review_dispatched"])
+            self.assertIn(run_id, daemon._review_workers)
+            review_worker = daemon._review_workers[run_id]
+            self.assertEqual(review_worker.agent_kind, "claude")
+            self.assertIn(f"Review implementation worker run {run_id}", review_worker.prompt)
+            self.assertIn("Implementation worker branch: `relay/rr-1`", review_worker.prompt)
+            self.assertIn(f"/v1/runs/{run_id}/review/decision", review_worker.prompt)
+            self.assertIn("Run the focused Python tests.", review_worker.prompt)
+
+    def test_review_worker_failure_returns_run_to_awaiting_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "rr-1"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            workspace.mkdir(parents=True)
+            agent = root / "fake-agent.sh"
+            agent.write_text("#!/bin/sh\necho review failed\nexit 7\n")
+            os.chmod(agent, 0o755)
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(workspace),
+                branch="relay/rr-1",
+                state="Reviewing",
+                log_path=str(workspace / ".relay" / "run.log"),
+                provider_key="codex",
+                model_alias="gpt-5.5",
+                worker_effort="high",
+            )
+            run = daemon.runs.get(run_id)
+            review = ReviewWorker(
+                run_id=run_id,
+                run=run,
+                prompt="review prompt",
+                agent_bin=str(agent),
+                agent_kind="codex",
+                store=daemon.runs,
+                log_path=workspace / ".relay" / "run.log",
+                timeout_seconds=30,
+            )
+
+            review._run()
+
+            updated = daemon.runs.get(run_id)
+            self.assertEqual(updated["state"], "AwaitingReview")
+            self.assertIn("review worker failed: exit=7", updated["last_error"])
 
     def test_accept_worker_run_merges_prunes_and_progresses_dependents(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -904,12 +1047,15 @@ class OrchestratorDispatchTests(unittest.TestCase):
         daemon.branch_prefix = "relay/"
         daemon.workflow_path = Path(ROOT) / "services" / "orchestrator_workflow.md"
         daemon.worker_timeout = 30
+        daemon.port = 7634
         daemon.agent_kind = provider
         daemon.agent_bin = provider
         daemon.runs = RunsStore(root / "runs.db")
         daemon._dispatch_lock = threading.Lock()
         daemon._workers = {}
         daemon._workers_lock = threading.Lock()
+        daemon._review_workers = {}
+        daemon._review_workers_lock = threading.Lock()
         return daemon
 
     def write_ticket(

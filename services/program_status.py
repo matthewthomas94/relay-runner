@@ -491,7 +491,7 @@ def _project_board_state(ctx: dict[str, Any], ticket: dict[str, Any]) -> str:
         return "done"
     latest_run = next(iter(ctx["runs_by_ticket"].get(ticket["id"], [])), None)
     run_state = _run_state(latest_run)
-    if run_state in {"active", "stalled"}:
+    if run_state in {"active", "reviewing", "stalled"}:
         return "in_progress"
     if run_state in {"awaiting_merge", "awaiting_review", "merge_conflict"}:
         return "in_progress"
@@ -706,6 +706,8 @@ def _run_state(run: dict[str, Any] | None) -> str:
     state = _key(body.get("program_state") or body.get("state") or body.get("raw_state"))
     if state in {"claimed", "running"}:
         return "active"
+    if state == "reviewing":
+        return "reviewing"
     if state in {"awaitingreview", "awaiting_review"}:
         return "awaiting_review"
     if state in {"mergeconflict", "merge_conflict"}:
@@ -716,7 +718,7 @@ def _run_state(run: dict[str, Any] | None) -> str:
 
 
 def _run_is_active(ctx: dict[str, Any], run: dict[str, Any]) -> bool:
-    return _run_state(run) == "active" and not _ticket_is_terminal(ctx["ticket_by_run"].get(run["id"]))
+    return _run_state(run) in {"active", "reviewing"} and not _ticket_is_terminal(ctx["ticket_by_run"].get(run["id"]))
 
 
 def _ticket_state(ticket: dict[str, Any]) -> str:

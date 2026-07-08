@@ -21,7 +21,7 @@ from command_actions import resolve_command_action
 
 
 STATUS_PHASES = frozenset({"acknowledged", "planning", "outcome", "stale"})
-STATUS_SOURCES = frozenset({"pm", "orchestrator", "worker"})
+STATUS_SOURCES = frozenset({"pm", "orchestrator", "worker", "review-worker"})
 OUTCOME_KINDS = frozenset({"execute_solo", "delegate_plan", "needs_user"})
 TRACE_KINDS = frozenset({
     "reading-context",
