@@ -10,8 +10,8 @@ struct RunState: Equatable, Decodable {
     let repoPath: String
     let runId: Int
     /// Matches the daemon's run-state enum: Claimed | Running |
-    /// AwaitingReview | MergeConflict | Succeeded | Failed | Stalled |
-    /// Canceled.
+    /// AwaitingReview | Reviewing | MergeConflict | Succeeded | Failed |
+    /// Stalled | Canceled.
     let state: String
     let lastError: String?
     /// ≤60-char summary of the worker's current tool call (RR-12), e.g.
@@ -61,7 +61,7 @@ struct RunState: Equatable, Decodable {
     }
 
     var isActive: Bool {
-        state == "Claimed" || state == "Running" || state == "Stalled"
+        state == "Claimed" || state == "Running" || state == "Reviewing" || state == "Stalled"
     }
 
     /// A worker silent this long reads as stalled, not working.
@@ -82,7 +82,7 @@ struct RunState: Equatable, Decodable {
     /// `status:`. `nil` means no override — placement falls back to the file.
     func placement(ticketStatus: Ticket.Status) -> Ticket.Status? {
         switch state {
-        case "Claimed", "Running", "Stalled":
+        case "Claimed", "Running", "Reviewing", "Stalled":
             return .inProgress
         case "AwaitingReview", "Succeeded":
             // Worker finished but the human hasn't reviewed/merged yet. Manual
@@ -98,7 +98,7 @@ struct RunState: Equatable, Decodable {
     /// The status pill to render on the card, or `nil` for no pill.
     func pill(ticketStatus: Ticket.Status) -> RunPill? {
         switch state {
-        case "Claimed", "Running":
+        case "Claimed", "Running", "Reviewing":
             return .running
         case "Stalled":
             return .stalled

@@ -91,8 +91,8 @@ WORKER_SIZING_FIELDS = (
     "worker_sizing_rationale",
     "worker_provider_notes",
 )
-REVIEW_BLOCKING_STATES = ("AwaitingReview", "MergeConflict", "Succeeded")
-MERGEABLE_REVIEW_STATES = ("AwaitingReview", "MergeConflict", "Succeeded")
+REVIEW_BLOCKING_STATES = ("AwaitingReview", "Reviewing", "MergeConflict", "Succeeded")
+MERGEABLE_REVIEW_STATES = REVIEW_BLOCKING_STATES
 WORKER_MODEL_TIERS = {
     "codex": {
         "fast": "gpt-5.4-mini",
@@ -1924,6 +1924,43 @@ def validate_worker_completion(
 # Worker
 # ---------------------------------------------------------------------------
 
+def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
+    model_alias = str(run.get("model_alias") or "").strip()
+    worker_effort = str(run.get("worker_effort") or "").strip()
+    if agent_kind == "claude":
+        # Claude stream-json gives assistant/tool_use/tool_result events. The
+        # same command shape is used for implementation and review workers so
+        # provider-facing effort semantics stay aligned.
+        cmd = [
+            agent_bin,
+            "-p",
+            "--dangerously-skip-permissions",
+            "--verbose",
+            "--output-format", "stream-json",
+        ]
+        if model_alias:
+            cmd.extend(["--model", model_alias])
+        if worker_effort:
+            cmd.extend(["--effort", worker_effort])
+        return cmd
+
+    # Codex exec --json emits JSONL events such as thread.started,
+    # item.started command_execution, item.completed, and turn.completed.
+    cmd = [
+        agent_bin,
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+    ]
+    if model_alias:
+        cmd.extend(["--model", model_alias])
+    if worker_effort:
+        cmd.extend(["--config", f"model_reasoning_effort={worker_effort}"])
+    return cmd
+
+
 class Worker:
     """One agent subprocess running against a worktree. Owns its own thread."""
 
@@ -2130,6 +2167,11 @@ class Worker:
                     source="worker",
                 )
         finally:
+            if self.proc and self.proc.stdout:
+                try:
+                    self.proc.stdout.close()
+                except OSError:
+                    pass
             try:
                 log.close()
             except OSError:
@@ -2137,41 +2179,11 @@ class Worker:
             self._notify_complete()
 
     def _command(self) -> list[str]:
-        model_alias = str(self.run.get("model_alias") or "").strip()
-        worker_effort = str(self.run.get("worker_effort") or "").strip()
-        if self.agent_kind == "claude":
-            # Claude stream-json gives assistant/tool_use/tool_result/result
-            # events. The worker parses tool_use blocks into the live board
-            # activity chip while teeing the full stream to the run log.
-            cmd = [
-                self.agent_bin,
-                "-p",
-                "--dangerously-skip-permissions",
-                "--verbose",
-                "--output-format", "stream-json",
-            ]
-            if model_alias:
-                cmd.extend(["--model", model_alias])
-            if worker_effort:
-                cmd.extend(["--effort", worker_effort])
-            return cmd
-
-        # Codex exec --json emits JSONL events such as thread.started,
-        # item.started command_execution, item.completed, and turn.completed.
-        # This is the non-interactive worker surface for Codex sub-agents.
-        cmd = [
-            self.agent_bin,
-            "exec",
-            "--json",
-            "--ephemeral",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--dangerously-bypass-hook-trust",
-        ]
-        if model_alias:
-            cmd.extend(["--model", model_alias])
-        if worker_effort:
-            cmd.extend(["--config", f"model_reasoning_effort={worker_effort}"])
-        return cmd
+        return _agent_command(
+            agent_kind=self.agent_kind,
+            agent_bin=self.agent_bin,
+            run=self.run,
+        )
 
     def _notify_complete(self):
         if self.on_complete:
@@ -2267,6 +2279,160 @@ class Worker:
             pass
 
 
+class ReviewWorker:
+    """Follow-up agent that reviews and merges a completed implementation run."""
+
+    def __init__(self, *, run_id: int, run: dict, prompt: str, agent_bin: str,
+                 agent_kind: str, store: RunsStore, log_path: Path,
+                 timeout_seconds: int, on_complete: Callable[[int], None] | None = None):
+        self.run_id = run_id
+        self.run = run
+        self.prompt = prompt
+        self.agent_bin = agent_bin
+        self.agent_kind = agent_kind
+        self.store = store
+        self.log_path = log_path
+        self.timeout_seconds = timeout_seconds
+        self.on_complete = on_complete
+        self.proc: subprocess.Popen | None = None
+        self.thread: threading.Thread | None = None
+        self._timed_out = False
+
+    def start(self) -> None:
+        self.thread = threading.Thread(
+            target=self._run,
+            name=f"review-worker-{self.run_id}",
+            daemon=True,
+        )
+        self.thread.start()
+
+    def _run(self) -> None:
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            log = self.log_path.open("a")
+        except OSError as e:
+            self.store.update(
+                self.run_id,
+                state="AwaitingReview",
+                last_error=f"Could not open review log: {e}",
+            )
+            self._notify_complete()
+            return
+
+        try:
+            log.write(f"\n[orchestrator] review_provider={self.agent_kind}\n")
+            log.write(f"[orchestrator] review_prompt_sha256={hashlib.sha256(self.prompt.encode('utf-8')).hexdigest()}\n")
+            cmd = self._command()
+            try:
+                self.proc = subprocess.Popen(
+                    cmd,
+                    cwd=self.run["repo_path"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+            except FileNotFoundError as e:
+                self.store.update(
+                    self.run_id,
+                    state="AwaitingReview",
+                    last_error=f"{self.agent_kind} review CLI not found: {e}",
+                )
+                log.write(f"[orchestrator] {self.agent_kind} review CLI not found: {e}\n")
+                return
+
+            self.store.update(self.run_id, state="Reviewing", pid=self.proc.pid)
+            _notify_orchestration_trace(
+                "run-reviewing",
+                ticket_id=self.run["ticket_id"],
+                run_id=self.run_id,
+                source="review-worker",
+            )
+
+            try:
+                if self.proc.stdin:
+                    self.proc.stdin.write(self.prompt)
+                    self.proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+            watchdog = threading.Timer(self.timeout_seconds, self._on_timeout)
+            watchdog.daemon = True
+            watchdog.start()
+            tail: collections.deque[str] = collections.deque(maxlen=5)
+            try:
+                for line in self.proc.stdout:  # type: ignore[union-attr]
+                    log.write(line)
+                    stripped = line.strip()
+                    if stripped:
+                        tail.append(stripped[:500])
+            finally:
+                log.flush()
+                watchdog.cancel()
+
+            self.proc.wait()
+            rc = self.proc.returncode
+            current = self.store.get(self.run_id) or {}
+            if current.get("state") in {"Merged", "MergeConflict", "Failed"}:
+                return
+
+            if self._timed_out:
+                reason = f"Review worker timed out after {self.timeout_seconds}s"
+            elif rc == 0:
+                reason = "review worker exited 0 without accepting or retrying run"
+            else:
+                reason = f"review worker failed: exit={rc}; tail={' / '.join(tail)[:500]}"
+            self.store.update(self.run_id, state="AwaitingReview", last_error=reason)
+            _notify_orchestration_trace(
+                "run-review-needed",
+                ticket_id=self.run["ticket_id"],
+                run_id=self.run_id,
+                source="review-worker",
+            )
+        finally:
+            if self.proc and self.proc.stdout:
+                try:
+                    self.proc.stdout.close()
+                except OSError:
+                    pass
+            try:
+                log.close()
+            except OSError:
+                pass
+            self._notify_complete()
+
+    def _command(self) -> list[str]:
+        return _agent_command(
+            agent_kind=self.agent_kind,
+            agent_bin=self.agent_bin,
+            run=self.run,
+        )
+
+    def _on_timeout(self) -> None:
+        self._timed_out = True
+        proc = self.proc
+        if not proc:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+        except OSError:
+            pass
+
+    def _notify_complete(self):
+        if self.on_complete:
+            try:
+                self.on_complete(self.run_id)
+            except Exception:  # noqa: BLE001 — don't let callback crash worker thread
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Daemon (orchestration logic + HTTP server)
 # ---------------------------------------------------------------------------
@@ -2296,6 +2462,8 @@ class Daemon:
         self._orchestrator_action_request_ids: set[str] = set()
         self._workers: dict[int, Worker] = {}
         self._workers_lock = threading.Lock()
+        self._review_workers: dict[int, ReviewWorker] = {}
+        self._review_workers_lock = threading.Lock()
 
         stalled = self.runs.reconcile_on_startup()
         if stalled:
@@ -2601,15 +2769,144 @@ class Daemon:
     def _on_worker_complete(self, run_id: int) -> None:
         with self._workers_lock:
             self._workers.pop(run_id, None)
-        # Auto-progress dependents. Released both locks before re-entering
-        # dispatch so we don't deadlock against another caller that's mid-claim.
         run = self.runs.get(run_id)
-        if not run or run.get("state") != "Succeeded":
+        if not run:
             return
-        try:
-            self._progress_dependents(repo_path=run["repo_path"], finished_ticket_id=run["ticket_id"])
-        except Exception as e:  # noqa: BLE001 — never crash the worker thread on follow-up failure
-            print(f"[orchestrator] dep-progression error for {run['ticket_id']}: {e}", file=sys.stderr)
+        if run.get("state") in {"AwaitingReview", "Succeeded"}:
+            try:
+                self.dispatch_review_worker(run_id, source="worker-completion")
+            except Exception as e:  # noqa: BLE001 — keep the completed run reviewable
+                self.runs.update(run_id, state="AwaitingReview", last_error=f"review dispatch failed: {e}")
+                print(f"[orchestrator] review dispatch failed for run {run_id}: {e}", file=sys.stderr)
+            return
+        # Dependency progression now happens only after the review worker
+        # accepts and merges the implementation branch.
+
+    def _on_review_worker_complete(self, run_id: int) -> None:
+        with self._review_workers_lock:
+            self._review_workers.pop(run_id, None)
+
+    def _build_review_prompt(self, run: dict, *, source: str, context: str | None = None) -> str:
+        repo_path = str(run["repo_path"])
+        branch = str(run["branch"])
+        ticket_id = str(run["ticket_id"])
+        run_id = int(run["id"])
+        target_branch = _git_text(repo_path, "branch", "--show-current") or self._resolve_default_branch(repo_path)
+        evidence = self.inspect_run_for_review(run_id)
+        context_block = f"\n## Additional context\n\n{context.strip()}\n" if context and context.strip() else ""
+        provider_notes = str(run.get("worker_provider_notes") or "none")
+        return f"""You are a relay-runner review/merge sub-agent.
+
+Review implementation worker run {run_id} for ticket {ticket_id}. The foreground orchestrator handed this to you so it does not perform the substantive review or merge itself.
+
+## Context
+
+- Source repo path: `{repo_path}`
+- Target branch: `{target_branch}`
+- Implementation worker branch: `{branch}`
+- Implementation worker worktree: `{run.get("workspace_path")}`
+- Implementation provider: `{run.get("provider_key") or "unknown"}`
+- Review provider: `{self.agent_kind}`
+- Worker model: `{run.get("worker_model") or "unknown"}`
+- Worker effort: `{run.get("worker_effort") or "unknown"}`
+- Provider notes: {provider_notes}
+- Dispatch source: `{source}`
+{context_block}
+## Evidence from the completed worker
+
+### Branch commits
+```text
+{evidence.get("branch_commits") or "(none)"}
+```
+
+### Changed paths
+```text
+{evidence.get("branch_diff_name_status") or "(none)"}
+```
+
+### Diff stat
+```text
+{evidence.get("branch_diff_stat") or "(none)"}
+```
+
+### Worker run log
+```text
+{evidence.get("ticket_run_log") or "(none)"}
+```
+
+### Worker log tail
+```text
+{evidence.get("log_tail") or "(none)"}
+```
+
+## What you must do
+
+1. Confirm the source repo and implementation branch exist.
+2. Inspect the worker branch changes against `{target_branch}`.
+3. Run the appropriate verification for the changed files.
+4. If the branch is acceptable, call the private daemon decision endpoint with `decision: accept`. If it needs follow-up, call the same endpoint with `decision: retry` and a concise reason.
+
+Use this command shape for the final decision:
+
+```bash
+python3 - <<'PY'
+import json, urllib.request
+body = json.dumps({{"decision": "accept"}}).encode()
+request = urllib.request.Request(
+    "http://127.0.0.1:{self.port}/v1/runs/{run_id}/review/decision",
+    data=body,
+    headers={{"Content-Type": "application/json"}},
+    method="POST",
+)
+print(urllib.request.urlopen(request, timeout=30).read().decode())
+PY
+```
+
+For a retry decision, send `{{"decision": "retry", "reason": "...", "redispatch": true}}`.
+
+Do not edit tickets directly. Do not push. The daemon merge path publishes `done` only after acceptance and merge succeeds.
+"""
+
+    def dispatch_review_worker(
+        self,
+        run_id: int,
+        *,
+        source: str = "direct",
+        context: str | None = None,
+    ) -> dict:
+        run = self.runs.get(run_id)
+        if not run:
+            raise ValueError(f"unknown run_id {run_id}")
+        if run.get("state") not in REVIEW_BLOCKING_STATES:
+            raise ValueError(f"run {run_id} is not awaiting review")
+
+        with self._review_workers_lock:
+            if run_id in self._review_workers:
+                return {"review_already_active": True, "run": self.runs.get(run_id)}
+
+            prompt = self._build_review_prompt(run, source=source, context=context)
+            raw_log_path = str(run.get("log_path") or "")
+            log_path = Path(raw_log_path) if raw_log_path else Path(str(run["workspace_path"])) / ".relay" / "run.log"
+            worker = ReviewWorker(
+                run_id=run_id,
+                run=run,
+                prompt=prompt,
+                agent_bin=self.agent_bin,
+                agent_kind=self.agent_kind,
+                store=self.runs,
+                log_path=log_path,
+                timeout_seconds=self.worker_timeout,
+                on_complete=self._on_review_worker_complete,
+            )
+            self._review_workers[run_id] = worker
+            worker.start()
+
+        print(
+            f"[orchestrator] review worker dispatched for {run['ticket_id']} "
+            f"run {run_id} from {source}: {self.agent_kind}",
+            file=sys.stderr,
+        )
+        return {"review_dispatched": True, "run": self.runs.get(run_id)}
 
     def _progress_dependents(self, *, repo_path: str, finished_ticket_id: str) -> None:
         """When a ticket is done in the source repo, dispatch dependents whose deps are done.
@@ -3807,6 +4104,16 @@ class Handler(BaseHTTPRequestHandler):
 
             if (method == "POST" and len(segments) == 4
                     and segments[:2] == ["v1", "runs"] and segments[3] == "review"):
+                body = _read_body(self)
+                return 202, self.daemon.dispatch_review_worker(
+                    int(segments[2]),
+                    source="review-endpoint",
+                    context=body.get("context"),
+                )
+
+            if (method == "POST" and len(segments) == 5
+                    and segments[:2] == ["v1", "runs"]
+                    and segments[3] == "review" and segments[4] == "decision"):
                 body = _read_body(self)
                 decision = str(body.get("decision") or "").strip().lower()
                 if decision == "accept":

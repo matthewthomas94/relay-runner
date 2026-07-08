@@ -698,6 +698,8 @@ def _run_state(raw_state: Any) -> str:
     state = str(raw_state or "").strip().lower().replace("-", "_").replace(" ", "_")
     if state in {"claimed", "running"}:
         return "active"
+    if state == "reviewing":
+        return "reviewing"
     if state in {"awaiting_review", "awaitingreview"}:
         return "awaiting_review"
     if state in {"merge_conflict", "mergeconflict"}:
