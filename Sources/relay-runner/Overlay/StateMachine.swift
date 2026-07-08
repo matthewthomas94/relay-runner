@@ -126,11 +126,17 @@ final class StateMachine: @unchecked Sendable {
         case ("tts", "preparing"):
             pendingAcknowledgement = nil
             clearWorkingProgress()
+            if let preview = normalizedMessagePreview(text) {
+                messagePreview = preview
+            }
             state = .preparing
 
         case ("tts", "speaking"):
             pendingAcknowledgement = nil
             clearWorkingProgress()
+            if let preview = normalizedMessagePreview(text) {
+                messagePreview = preview
+            }
             state = .speaking
 
         case ("tts", "idle"):
@@ -416,5 +422,10 @@ final class StateMachine: @unchecked Sendable {
         )
         partialTranscription = ""
         messagePreview = nil
+    }
+
+    private func normalizedMessagePreview(_ text: String?) -> String? {
+        let preview = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return preview.flatMap { $0.isEmpty ? nil : $0 }
     }
 }

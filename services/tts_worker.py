@@ -135,6 +135,7 @@ class TTSWorker:
         self._shutdown = False
         self._last_wav: str | None = None  # Path to last played WAV for replay
         self._last_unheard_text = ""
+        self._last_response_text = ""
 
         # Speculative TTS — generation runs in parallel with the pill so the
         # first sentence chunk is already on disk by the time the user
@@ -227,12 +228,15 @@ class TTSWorker:
 
                 full_text = self._pending_text.strip()
                 if was_empty and full_text:
+                    self._last_response_text = full_text
                     self._play_chime()
                     # Send the full text (capped generously) — the overlay
                     # pill grows vertically to fit it, so cropping here just
                     # hides the tail of long responses for no reason. 2000 is
                     # a soft safety net for pathological inputs.
                     _notify_state("message_waiting", text=full_text[:2000])
+                elif full_text:
+                    self._last_response_text = full_text
 
             # Kick off speculative TTS in parallel with the pill so audio is
             # ready by the time the user double-taps Option. Outside the main
@@ -299,8 +303,9 @@ class TTSWorker:
         if not chunks:
             return
 
+        self._last_response_text = text
         generation = self._begin_playback()
-        _notify_state("preparing")
+        _notify_state("preparing", text=text[:2000])
 
         t = threading.Thread(
             target=self._speak_chunks,
@@ -370,6 +375,8 @@ class TTSWorker:
         if not wav or not os.path.isfile(wav):
             print("[tts_worker] Nothing to replay", file=sys.stderr)
             return
+        if self._last_response_text:
+            _notify_state("preparing", text=self._last_response_text[:2000])
         self._playing = True
         self._paused = False
         t = threading.Thread(target=self._play_wav, args=(wav,), daemon=True)

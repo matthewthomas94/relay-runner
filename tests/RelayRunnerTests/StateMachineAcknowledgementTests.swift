@@ -183,6 +183,48 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(stateMachine.state, .messageWaiting(preview: "Here is the detailed response."))
     }
 
+    func testPreparingEventCanRestoreTranscriptPreviewAfterIdle() {
+        let stateMachine = StateMachine()
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Queued reply",
+            autoDismiss: nil
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "idle",
+            text: nil,
+            autoDismiss: nil
+        )
+        XCTAssertNil(stateMachine.messagePreview)
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "preparing",
+            text: "Queued reply",
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .preparing)
+        XCTAssertEqual(stateMachine.messagePreview, "Queued reply")
+    }
+
+    func testSpeakingEventCanRestoreTranscriptPreviewWithoutMessageWaiting() {
+        let stateMachine = StateMachine()
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "speaking",
+            text: "Previously spoken reply",
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .speaking)
+        XCTAssertEqual(stateMachine.messagePreview, "Previously spoken reply")
+    }
+
     func testBridgeWorkingEventStoresFreshSanitizedProgressWithoutChangingVisibleState() {
         var now = Date(timeIntervalSince1970: 1_000)
         let stateMachine = StateMachine(now: { now })
