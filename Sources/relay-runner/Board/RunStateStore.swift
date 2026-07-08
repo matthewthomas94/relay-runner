@@ -10,8 +10,8 @@ struct RunState: Equatable, Decodable {
     let repoPath: String
     let runId: Int
     /// Matches the daemon's run-state enum: Claimed | Running |
-    /// AwaitingReview | Reviewing | MergeConflict | Succeeded | Failed |
-    /// Stalled | Canceled.
+    /// AwaitingReview | Reviewing | MergeConflict | Succeeded | Merged |
+    /// Failed | Stalled | Canceled.
     let state: String
     let lastError: String?
     /// ≤60-char summary of the worker's current tool call (RR-12), e.g.
@@ -84,11 +84,12 @@ struct RunState: Equatable, Decodable {
         switch state {
         case "Claimed", "Running", "Reviewing", "Stalled":
             return .inProgress
-        case "AwaitingReview", "Succeeded":
-            // Worker finished but the human hasn't reviewed/merged yet. Manual
-            // dispatches can originate from backlog, so the review-pending run
-            // state should own placement until it is accepted or retried.
-            return .done
+        case "AwaitingReview", "Succeeded", "MergeConflict":
+            // Worker finished but review/merge has not published the ticket's
+            // `done` state to the source branch yet. Manual dispatches can
+            // originate from backlog, so the review-pending run state should
+            // own placement until it is accepted or retried.
+            return .inProgress
         default:
             // Failed / Canceled: don't move the card, just badge it.
             return nil
@@ -105,7 +106,9 @@ struct RunState: Equatable, Decodable {
         case "Failed":
             return .failed
         case "AwaitingReview", "Succeeded":
-            return .awaitingMerge
+            return .awaitingReview
+        case "MergeConflict":
+            return .mergeConflict
         default:
             return nil
         }
@@ -118,7 +121,8 @@ enum RunPill: Equatable {
     case running
     case stalled
     case failed
-    case awaitingMerge
+    case awaitingReview
+    case mergeConflict
 }
 
 /// Reads the daemon's runs-index file and projects it onto the active project.

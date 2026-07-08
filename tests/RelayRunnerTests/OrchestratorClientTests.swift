@@ -206,7 +206,7 @@ final class OrchestratorClientTests: XCTestCase {
         let queries = await recorder.queries
         XCTAssertEqual(Set(queries.map(\.query)), ["in_progress_lane", "awaiting_merge"])
         XCTAssertEqual(Set(queries.map(\.limit)), [6])
-        XCTAssertEqual(message.body, "No active workers or tickets awaiting merge.")
+        XCTAssertEqual(message.body, "No active workers or tickets awaiting review.")
     }
 
     private func jsonBody(_ request: URLRequest) throws -> [String: Any] {
@@ -237,7 +237,7 @@ final class OrchestratorClientTests: XCTestCase {
             readyWork: response(query: "ready_lane", message: "Ready"),
             inProgressWork: response(query: "in_progress_lane", message: "In progress"),
             doneWork: response(query: "done_lane", message: "Done"),
-            awaitingMerge: response(query: "awaiting_merge", message: "Awaiting merge")
+            awaitingMerge: response(query: "awaiting_merge", message: "Awaiting review")
         )
     }
 

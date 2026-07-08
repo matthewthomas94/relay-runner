@@ -754,6 +754,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.git(repo, "add", ".orchestrator/RR-1.md")
             self.git(repo, "commit", "-m", "add ticket")
             self.git(repo, "worktree", "add", "-b", "relay/rr-1", str(workspace), "HEAD")
+
             daemon = self.make_daemon(root, provider="codex")
             run_id = daemon.runs.insert(
                 ticket_id="RR-1",
@@ -771,6 +772,37 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 daemon._on_worker_complete(run_id)
 
             dispatch_review_worker.assert_called_once_with(run_id, source="worker-completion")
+
+    def test_worker_completion_does_not_progress_dependents_before_review_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.write_ticket(repo, "RR-2", status="backlog", run_id=None, depends_on=["RR-1"], sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md", ".orchestrator/RR-2.md")
+            self.git(repo, "commit", "-m", "add tickets")
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "workspaces" / "rr-1"),
+                branch="relay/rr-1",
+                state="AwaitingReview",
+                provider_key="codex",
+                model_alias="gpt-5.5",
+                worker_model="strong",
+                worker_effort="high",
+            )
+            dispatches: list[dict] = []
+            daemon.dispatch = lambda **kwargs: dispatches.append(kwargs)
+
+            with patch.object(daemon, "dispatch_review_worker") as dispatch_review_worker:
+                daemon._on_worker_complete(run_id)
+
+            dispatch_review_worker.assert_called_once_with(run_id, source="worker-completion")
+            self.assertEqual(dispatches, [])
+            self.assertEqual(read_ticket(repo / ".orchestrator/RR-2.md")["status"], "backlog")
 
     def test_dispatch_review_worker_carries_branch_context_and_marks_reviewing(self):
         with tempfile.TemporaryDirectory() as tmp:

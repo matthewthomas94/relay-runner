@@ -219,7 +219,7 @@ def _build_program_status_from_context(
         return _response(
             query,
             provider_key,
-            _items_text("Awaiting merge", "ticket", items, ctx, item_limit),
+            _items_text("Awaiting review", "ticket", items, ctx, item_limit),
             _limit_items(items, item_limit),
             ctx,
         )
@@ -494,7 +494,7 @@ def _project_board_state(ctx: dict[str, Any], ticket: dict[str, Any]) -> str:
     if run_state in {"active", "reviewing", "stalled"}:
         return "in_progress"
     if run_state in {"awaiting_merge", "awaiting_review", "merge_conflict"}:
-        return "done"
+        return "in_progress"
     if ticket_state in {"inprogress", "in_progress"}:
         return "in_progress"
     if ticket_state in {"ready", "awaitingmerge", "awaiting_merge"}:
@@ -565,7 +565,7 @@ def _awaiting_review_item(ctx: dict[str, Any], ticket: dict[str, Any]) -> dict[s
     status = {
         "awaiting_review": "awaiting review",
         "merge_conflict": "merge conflict",
-    }.get(_run_state(latest_run), "awaiting merge")
+    }.get(_run_state(latest_run), "awaiting review")
     return _ticket_item(ctx, ticket, status)
 
 
@@ -614,7 +614,7 @@ def _items_text(
             QUERY_DISCOVERY: "No discovery work",
             QUERY_READY: "No queued work",
             QUERY_BLOCKED: "No blocked work",
-            QUERY_AWAITING_MERGE: "No tickets awaiting merge",
+            QUERY_AWAITING_MERGE: "No tickets awaiting review",
             QUERY_DONE: "No done work",
             QUERY_STALE_RUNS: "No stale or stalled runs",
             QUERY_NEXT: "No immediate program attention items",
@@ -637,7 +637,7 @@ def _summary_text(items: list[dict[str, Any]], provider: str | None) -> str:
             _plural(item["open_tickets"], "open ticket"),
             _plural(item["active_runs"], "active run"),
             f"{item['blocked']} blocked",
-            f"{item['awaiting_merge']} awaiting merge",
+            f"{item['awaiting_merge']} awaiting review",
             _plural(item["stale_runs"], "stale run"),
         ]
         providers = ", ".join(item["providers"]) or "none recorded"

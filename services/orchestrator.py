@@ -994,8 +994,8 @@ class RunsStore:
 
     ACTIVE_STATES = ("Claimed", "Running")
     # Completed entries linger in the runs-index file this long after `ended_at`
-    # so the board can render "Succeeded — awaiting merge" pills across the
-    # typical merge gap without flicker, then get pruned.
+    # so the board can render review-pending pills across the typical merge gap
+    # without flicker, then get pruned.
     INDEX_RETENTION_SECONDS = 300
 
     def __init__(self, path: Path, index_path: Path | None = None):
