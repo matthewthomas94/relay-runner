@@ -729,6 +729,33 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertIn("code.txt", result["branch_diff_name_status"])
             self.assertEqual(result["verification_evidence"], "worker completion validation passed")
 
+    def test_worker_completion_does_not_progress_dependents_before_review_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.write_ticket(repo, "RR-2", status="backlog", run_id=None, depends_on=["RR-1"], sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md", ".orchestrator/RR-2.md")
+            self.git(repo, "commit", "-m", "add tickets")
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "workspaces" / "rr-1"),
+                branch="relay/rr-1",
+                state="AwaitingReview",
+                provider_key="codex",
+                model_alias="gpt-5.5",
+            )
+            dispatches: list[dict] = []
+            daemon.dispatch = lambda **kwargs: dispatches.append(kwargs)
+
+            daemon._on_worker_complete(run_id)
+
+            self.assertEqual(dispatches, [])
+            self.assertEqual(read_ticket(repo / ".orchestrator/RR-2.md")["status"], "backlog")
+
     def test_accept_worker_run_merges_prunes_and_progresses_dependents(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

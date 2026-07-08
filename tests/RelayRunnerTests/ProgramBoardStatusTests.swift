@@ -1060,7 +1060,7 @@ final class ProgramBoardStatusTests: XCTestCase {
             projectName: "Relay Runner",
             path: "/repo/relay-runner",
             ticketID: "RR-4",
-            title: "Awaiting merge",
+            title: "Awaiting review",
             status: "done",
             runID: 52,
             runState: "awaiting_merge",
@@ -1330,7 +1330,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         {
           "query": "awaiting_merge",
           "provider": null,
-          "message": "Awaiting merge: 1 ticket.",
+          "message": "Awaiting review: 1 ticket.",
           "items": [
             {
               "project": {"name": "Desktop Tools", "path": "/repo/desktop-tools"},
@@ -1354,9 +1354,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(message.body.contains("Active:"))
         XCTAssertTrue(message.body.contains("Relay Runner RR-58 - Show program status in response overlay"))
         XCTAssertTrue(message.body.contains("Codex/gpt-5, active, run 46"))
-        XCTAssertTrue(message.body.contains("Awaiting merge:"))
+        XCTAssertTrue(message.body.contains("Awaiting review:"))
         XCTAssertTrue(message.body.contains("Desktop Tools DT-12 - Check Claude parity"))
-        XCTAssertTrue(message.body.contains("Claude/sonnet, awaiting merge, run 52"))
+        XCTAssertTrue(message.body.contains("Claude/sonnet, awaiting review, run 52"))
     }
 
     func testProgramStatusOverlayFormatsEmptyState() {
@@ -1366,7 +1366,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
 
         XCTAssertEqual(message.title, "Program Status")
-        XCTAssertEqual(message.body, "No active workers or tickets awaiting merge.")
+        XCTAssertEqual(message.body, "No active workers or tickets awaiting review.")
     }
 
     func testProgramStatusOverlayFormatsUnavailableDaemonState() {
