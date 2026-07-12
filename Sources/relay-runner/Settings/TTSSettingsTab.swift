@@ -31,7 +31,7 @@ struct TTSSettingsTab: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Image(systemName: "play.circle.fill")
-                            .font(.title3)
+                            .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                     }
                 }
                 .buttonStyle(.borderless)
@@ -40,7 +40,7 @@ struct TTSSettingsTab: View {
             }
             if let previewError {
                 Text(previewError)
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }

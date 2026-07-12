@@ -263,12 +263,12 @@ struct OnboardingView: View {
     private var header: some View {
         HStack {
             Text(headerTitle)
-                .font(.title2).bold()
+                .font(AppTypography.font(.appTitle))
             Spacer()
             if let progress = progressLabel {
                 Text(progress)
                     .foregroundStyle(.secondary)
-                    .font(.subheadline)
+                    .font(AppTypography.font(.label))
             }
         }
         .padding(.top, 28)
@@ -310,7 +310,7 @@ struct OnboardingView: View {
     private var welcomeView: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Let's get Relay Runner set up.")
-                .font(.title3)
+                .font(AppTypography.font(.screenTitle))
             Text("First choose the coding agent, model, and workspace folder Relay Runner should use. Then we'll handle the small amount of setup needed for voice.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -321,7 +321,7 @@ struct OnboardingView: View {
     private var agentChoiceView: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Which coding agent should Relay Runner start with?")
-                .font(.title3).bold()
+                .font(AppTypography.font(.screenTitle))
             Text("Start Session will open this agent and model by default. You can switch later in Settings.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -345,7 +345,7 @@ struct OnboardingView: View {
             setupPlanView
 
             Text("macOS privacy permissions cannot be granted silently. The setup run opens the right prompt or Settings pane for each manual step, polls for Relay Runner permission changes, and continues when macOS reports the grant.")
-                .font(.caption)
+                .font(AppTypography.font(.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -356,18 +356,18 @@ struct OnboardingView: View {
         let plan = GuidedSetupPlan(provider: selectedAgentProvider)
         return VStack(alignment: .leading, spacing: 8) {
             Text("One guided setup run will:")
-                .font(.callout).bold()
+                .font(AppTypography.font(.cardHeading))
             ForEach(plan.items) { item in
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "checkmark.circle")
                         .foregroundStyle(.secondary)
-                        .font(.callout)
+                        .font(AppTypography.symbolFont(size: 12))
                         .frame(width: 18)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.title)
-                            .font(.callout)
+                            .font(AppTypography.font(.body))
                         Text(item.detail)
-                            .font(.caption)
+                            .font(AppTypography.font(.caption))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -388,7 +388,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Model")
-                    .font(.callout).bold()
+                    .font(AppTypography.font(.cardHeading))
                 Spacer()
                 Picker("Model", selection: $selectedModel) {
                     ForEach(GeneralConfig.modelOptions(for: selectedAgentProvider)) { option in
@@ -404,7 +404,7 @@ struct OnboardingView: View {
                 provider: selectedAgentProvider
             ) {
                 Text(note)
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -422,7 +422,7 @@ struct OnboardingView: View {
     private var reasoningEffortPicker: some View {
         HStack {
             Text("Reasoning effort")
-                .font(.callout).bold()
+                .font(AppTypography.font(.cardHeading))
             Spacer()
             Picker("Reasoning effort", selection: $selectedCodexReasoningEffort) {
                 ForEach(GeneralConfig.reasoningEffortOptions(for: selectedAgentProvider, model: selectedModel)) { option in
@@ -451,14 +451,14 @@ struct OnboardingView: View {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: selectedAgentProvider == provider ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(selectedAgentProvider == provider ? Color.accentColor : Color.secondary)
-                    .font(.title3)
+                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.headline)
+                        .font(AppTypography.font(.cardHeading))
                         .foregroundStyle(.primary)
                     Text(detail)
-                        .font(.callout)
+                        .font(AppTypography.font(.body))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -505,7 +505,7 @@ struct OnboardingView: View {
             HStack(spacing: 10) {
                 statusBadge(for: status)
                 Text(permissionTitle(for: kind))
-                    .font(.title3).bold()
+                    .font(AppTypography.font(.screenTitle))
             }
             Text(permissionExplanation(for: kind))
                 .foregroundStyle(.secondary)
@@ -516,7 +516,7 @@ struct OnboardingView: View {
             // for .denied/.restricted, where the only path is Settings.
             if kind != .microphone || status == .denied || status == .restricted {
                 Text(permissionInstruction(for: kind, status: status))
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(nsColor: .textBackgroundColor))
@@ -546,12 +546,12 @@ struct OnboardingView: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "lock.shield")
                 .foregroundStyle(.orange)
-                .font(.title3)
+                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
             VStack(alignment: .leading, spacing: 6) {
                 Text("This Mac may be blocking \(kind.displayName).")
-                    .font(.callout).bold()
+                    .font(AppTypography.font(.cardHeading))
                 Text(mdmBody(for: kind))
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -586,9 +586,9 @@ struct OnboardingView: View {
             HStack(spacing: 10) {
                 Image(systemName: parentPermissionStepIcon(for: kind))
                     .foregroundStyle(.tint)
-                    .font(.title3)
+                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 Text(title)
-                    .font(.title3).bold()
+                    .font(AppTypography.font(.screenTitle))
             }
 
             Text(parentPermissionStepExplanation(for: kind))
@@ -615,13 +615,13 @@ struct OnboardingView: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: kind == .screenRecording ? "arrow.clockwise.circle.fill" : "checkmark.seal")
                 .foregroundStyle(kind == .screenRecording ? .orange : .secondary)
-                .font(.title3)
+                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 4) {
                 Text(parentPermissionVerificationTitle(for: kind))
-                    .font(.callout).bold()
+                    .font(AppTypography.font(.cardHeading))
                 Text(parentPermissionVerificationDetail(for: kind))
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -687,7 +687,7 @@ struct OnboardingView: View {
             HStack(spacing: 10) {
                 pythonStatusBadge
                 Text("Python environment")
-                    .font(.title3).bold()
+                    .font(AppTypography.font(.screenTitle))
             }
             Text("Relay Runner uses a small Python helper for text-to-speech and the voice bridge. Setting up the environment takes about 30 seconds and only happens once per install.")
                 .foregroundStyle(.secondary)
@@ -704,11 +704,11 @@ struct OnboardingView: View {
         case .succeeded:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
-                .font(.title3)
+                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-                .font(.title3)
+                .font(AppTypography.font(.screenTitle))
         case .idle, .running:
             ProgressView().controlSize(.small)
         }
@@ -721,7 +721,7 @@ struct OnboardingView: View {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text("Preparing…")
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
             }
         case .running(let message, let progress):
@@ -739,25 +739,25 @@ struct OnboardingView: View {
                     ProgressView().controlSize(.small)
                 }
                 Text(message)
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .succeeded:
             Text("Done — Python environment ready.")
-                .font(.callout)
+                .font(AppTypography.font(.body))
                 .foregroundStyle(.green)
         case .failed(let message):
             VStack(alignment: .leading, spacing: 8) {
                 Text("Setup failed.")
-                    .font(.callout).bold()
+                    .font(AppTypography.font(.cardHeading))
                 Text(message)
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("You can retry now, or skip this step — Relay Runner will retry on the first voice session, but voice replies won't work until it succeeds.")
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -778,25 +778,25 @@ struct OnboardingView: View {
                 if agentSignedIn {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                        .font(.title3)
+                        .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 } else {
                     Image(systemName: "circle")
                         .foregroundStyle(.secondary)
-                        .font(.title3)
+                        .font(AppTypography.font(.screenTitle))
                 }
                 Text("Sign in to your agent")
-                    .font(.title3).bold()
+                    .font(AppTypography.font(.screenTitle))
             }
             Text("Relay Runner will start \(selectedAgentProvider.displayName) for voice sessions. Sign in once so sessions can connect without an authentication stop.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if agentSignedIn {
                 Text("Signed in — you're ready to go.")
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .foregroundStyle(.green)
             } else {
                 Text("Click the button below. A Terminal window will open and prompt you to sign in. This window will update automatically when you're done.")
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(nsColor: .textBackgroundColor))
@@ -823,11 +823,11 @@ struct OnboardingView: View {
                     .controlSize(.large)
             } else {
                 Image(systemName: readinessIcon(for: readiness.mode))
-                    .font(.system(size: 44))
+                    .font(AppTypography.symbolFont(size: 44))
                     .foregroundStyle(readinessColor(for: readiness.mode))
             }
             Text(isLoading ? "Almost ready\u{2026}" : readiness.title)
-                .font(.title2).bold()
+                .font(AppTypography.font(.appTitle))
             if isLoading, let status {
                 Text(status)
                     .foregroundStyle(.secondary)
@@ -839,7 +839,7 @@ struct OnboardingView: View {
             } else {
                 workingDirectoryPicker
                 Text(readiness.detail)
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -862,12 +862,12 @@ struct OnboardingView: View {
                     )
                 }
                 Text("Already running Codex, Claude Code, or a terminal? Restart it to load the Relay Runner skill or command.")
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Tap Caps Lock to start and stop recording in either mode.")
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
@@ -879,13 +879,13 @@ struct OnboardingView: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "keyboard.badge.eye")
                 .foregroundStyle(.orange)
-                .font(.title3)
+                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Input Monitoring deferred")
-                    .font(.callout).bold()
+                    .font(AppTypography.font(.cardHeading))
                 Text(detail)
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -914,15 +914,15 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text(Self.workspaceFolderTitle)
-                    .font(.callout).bold()
+                    .font(AppTypography.font(.cardHeading))
                 if !hasConfirmedWorkingDirectory {
                     Text("(required)")
-                        .font(.caption)
+                        .font(AppTypography.font(.caption))
                         .foregroundStyle(.orange)
                 }
             }
             Text(Self.workspaceFolderHelpText)
-                .font(.caption)
+                .font(AppTypography.font(.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
@@ -994,13 +994,13 @@ struct OnboardingView: View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon)
                 .foregroundStyle(.tint)
-                .font(.title3)
+                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.callout).bold()
+                    .font(AppTypography.font(.cardHeading))
                 Text(detail)
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1412,15 +1412,15 @@ struct OnboardingView: View {
         case .granted:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
-                .font(.title3)
+                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
         case .denied, .notDetermined:
             Image(systemName: "circle")
                 .foregroundStyle(.secondary)
-                .font(.title3)
+                .font(AppTypography.font(.screenTitle))
         case .restricted:
             Image(systemName: "lock.fill")
                 .foregroundStyle(.orange)
-                .font(.title3)
+                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
         }
     }
 

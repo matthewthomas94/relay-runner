@@ -149,7 +149,7 @@ private final class KeyInputView: NSView {
         path.stroke()
 
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12),
+            .font: AppTypography.appKitFont(.body),
             .foregroundColor: isHighlighted ? NSColor.secondaryLabelColor : NSColor.labelColor,
         ]
         let str = NSAttributedString(string: displayText, attributes: attrs)

@@ -136,9 +136,9 @@ struct RelayInstallerView: View {
 
             VStack(spacing: 8) {
                 Text("Install Relay Runner")
-                    .font(.title2.bold())
+                    .font(AppTypography.font(.appTitle))
                 Text(model.statusText)
-                    .font(.headline)
+                    .font(AppTypography.font(.cardHeading))
                 Text(model.detailText)
                     .foregroundStyle(.secondary)
             }
@@ -148,7 +148,7 @@ struct RelayInstallerView: View {
 
             if let errorText = model.errorText {
                 Text(errorText)
-                    .font(.callout)
+                    .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(width: 360)

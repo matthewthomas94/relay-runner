@@ -190,7 +190,7 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
         terminalView = RelayTerminalView(frame: .zero)
         terminalView.terminalDelegate = self
         terminalView.wantsLayer = true
-        terminalView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        terminalView.font = AppTypography.terminalGridFont(size: 13, weight: .regular)
 
         let background = NSColor(srgbRed: 8 / 255, green: 10 / 255, blue: 14 / 255, alpha: 1)
         terminalView.nativeBackgroundColor = background
@@ -333,7 +333,7 @@ struct EmbeddedTerminalTab: View {
             toolbar
             if case .failed(let message) = session.phase {
                 Text(message)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(AppTypography.font(.status))
                     .foregroundStyle(Color.red.opacity(0.88))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
@@ -364,15 +364,15 @@ struct EmbeddedTerminalTab: View {
     private var toolbar: some View {
         HStack(spacing: 10) {
             Image(systemName: "terminal")
-                .font(.system(size: 12, weight: .semibold))
+                .font(AppTypography.symbolFont(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(statusTitle)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(AppTypography.font(.status))
                     .foregroundStyle(.primary)
                 Text(displayDirectory)
-                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .font(AppTypography.monospacedFont(size: 10, weight: .regular))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -399,12 +399,12 @@ struct EmbeddedTerminalTab: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "terminal.fill")
-                .font(.system(size: 28, weight: .medium))
+                .font(AppTypography.symbolFont(size: 28, weight: .medium))
                 .foregroundStyle(.secondary)
             Text("Run the Relay session here")
-                .font(.system(size: 17, weight: .semibold))
+                .font(AppTypography.font(.screenTitle))
             Text(emptyStateDetail)
-                .font(.system(size: 12))
+                .font(AppTypography.font(.body))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440)

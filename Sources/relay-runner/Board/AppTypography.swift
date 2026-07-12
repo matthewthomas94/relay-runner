@@ -1,7 +1,8 @@
+import AppKit
 import CoreText
 import SwiftUI
 
-enum WorkspaceTypography {
+enum AppTypography {
     enum SystemWeight: Equatable {
         case regular
         case medium
@@ -9,6 +10,15 @@ enum WorkspaceTypography {
         case bold
 
         var fontWeight: Font.Weight {
+            switch self {
+            case .regular: return .regular
+            case .medium: return .medium
+            case .semibold: return .semibold
+            case .bold: return .bold
+            }
+        }
+
+        var nsFontWeight: NSFont.Weight {
             switch self {
             case .regular: return .regular
             case .medium: return .medium
@@ -40,15 +50,25 @@ enum WorkspaceTypography {
 
     enum Role: CaseIterable {
         case menuTab
+        case appTitle
+        case screenTitle
         case workspaceHeading
         case sectionHeading
+        case cardHeading
+        case controlHeading
         case projectTitle
         case ticketTitle
+        case body
+        case label
+        case field
         case metadata
         case supporting
         case action
+        case button
+        case status
         case count
         case caption
+        case smallCaption
     }
 
     struct Definition: Equatable {
@@ -74,6 +94,18 @@ enum WorkspaceTypography {
         return .system(size: resolved.size, weight: resolved.fallbackWeight.fontWeight)
     }
 
+    static func appKitFont(
+        _ role: Role,
+        availablePostScriptNames: Set<String> = installedPostScriptNames
+    ) -> NSFont {
+        let resolved = resolved(role, availablePostScriptNames: availablePostScriptNames)
+        if let postScriptName = resolved.postScriptName,
+           let font = NSFont(name: postScriptName, size: resolved.size) {
+            return font
+        }
+        return NSFont.systemFont(ofSize: resolved.size, weight: resolved.fallbackWeight.nsFontWeight)
+    }
+
     static func resolved(
         _ role: Role,
         availablePostScriptNames: Set<String>
@@ -96,26 +128,58 @@ enum WorkspaceTypography {
     static func definition(for role: Role) -> Definition {
         switch role {
         case .menuTab:
-            return Definition(face: .system, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .ppTelegrafRegular, size: 13, fallbackWeight: .semibold)
+        case .appTitle:
+            return Definition(face: .ppMoriSemibold, size: 22, fallbackWeight: .semibold)
+        case .screenTitle:
+            return Definition(face: .ppMoriSemibold, size: 17, fallbackWeight: .semibold)
         case .workspaceHeading:
             return Definition(face: .ppMoriSemibold, size: 14, fallbackWeight: .semibold)
         case .sectionHeading:
             return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+        case .cardHeading:
+            return Definition(face: .ppMoriSemibold, size: 12, fallbackWeight: .semibold)
+        case .controlHeading:
+            return Definition(face: .ppMoriSemibold, size: 11, fallbackWeight: .semibold)
         case .projectTitle:
             return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
         case .ticketTitle:
             return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+        case .body:
+            return Definition(face: .ppTelegrafRegular, size: 12, fallbackWeight: .regular)
+        case .label:
+            return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
+        case .field:
+            return Definition(face: .ppTelegrafRegular, size: 13, fallbackWeight: .regular)
         case .metadata:
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
         case .supporting:
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
         case .action:
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
+        case .button:
+            return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
+        case .status:
+            return Definition(face: .ppTelegrafRegular, size: 12, fallbackWeight: .semibold)
         case .count:
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
         case .caption:
             return Definition(face: .ppTelegrafRegular, size: 9, fallbackWeight: .regular)
+        case .smallCaption:
+            return Definition(face: .ppTelegrafRegular, size: 8, fallbackWeight: .regular)
         }
+    }
+
+    static func symbolFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight)
+    }
+
+    static func monospacedFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
+    }
+
+    static func terminalGridFont(size: CGFloat = 13, weight: NSFont.Weight = .regular) -> NSFont {
+        NSFont.monospacedSystemFont(ofSize: size, weight: weight)
     }
 
     private static let installedPostScriptNames: Set<String> = {

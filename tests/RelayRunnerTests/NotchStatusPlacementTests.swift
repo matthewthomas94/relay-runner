@@ -236,14 +236,20 @@ final class NotchStatusPlacementTests: XCTestCase {
     func testActivityLabelWidthMatchesUpdatedDesignScale() {
         XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: nil), 0)
         XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: ""), 0)
-        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Playing"), 99)
-        XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"), 110)
+        XCTAssertEqual(
+            NotchStatusPlacementPlanner.activityLabelWidth(for: "Playing"),
+            expectedActivityLabelWidth(for: "Playing")
+        )
+        XCTAssertEqual(
+            NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"),
+            expectedActivityLabelWidth(for: "Listening")
+        )
         XCTAssertGreaterThanOrEqual(
             NotchActivityLabelRenderPolicy.labelTextRect(
                 activityLabelWidth: NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"),
                 boundsHeight: NotchStatusPlacementPlanner.glyphSize.height
             ).width,
-            63
+            expectedActivityTextWidth(for: "Listening")
         )
         let notchedListeningRect = NotchActivityLabelRenderPolicy.labelTextRect(
             activityLabelWidth: NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening"),
@@ -269,6 +275,22 @@ final class NotchStatusPlacementTests: XCTestCase {
             ),
             NotchStatusPlacementPlanner.maximumActivityLabelWidth
         )
+    }
+
+    private func expectedActivityLabelWidth(for label: String) -> CGFloat {
+        let textWidth = (label as NSString).size(withAttributes: [
+            .font: AppTypography.appKitFont(.status),
+        ]).width
+        return ceil(textWidth)
+            + NotchActivityLabelRenderPolicy.textLeadingInset
+            + NotchActivityLabelRenderPolicy.textRightGlyphClearance
+            + 8
+    }
+
+    private func expectedActivityTextWidth(for label: String) -> CGFloat {
+        expectedActivityLabelWidth(for: label)
+            - NotchActivityLabelRenderPolicy.textLeadingInset
+            - NotchActivityLabelRenderPolicy.textRightGlyphClearance
     }
 
     func testActivityLabelsMapVoiceAndActionStatesToConciseCopy() {
