@@ -55,9 +55,15 @@ final class BoardViewModelTests: XCTestCase {
         XCTAssertFalse(WorkspaceTab.work.requiresKeyWindow)
         XCTAssertTrue(WorkspaceTab.terminal.requiresKeyWindow)
         XCTAssertTrue(WorkspaceTab.systemSettings.requiresKeyWindow)
+        XCTAssertEqual(WorkspaceTab.systemSettings.title, "Settings")
         XCTAssertTrue(WorkspaceTab.terminal.allowsEscapeDismissal(terminalHasFocus: false))
         XCTAssertFalse(WorkspaceTab.terminal.allowsEscapeDismissal(terminalHasFocus: true))
         XCTAssertTrue(WorkspaceTab.work.allowsEscapeDismissal(terminalHasFocus: true))
+    }
+
+    func testTrayIconAssetTracksActiveSessionState() {
+        XCTAssertEqual(TrayIconAsset.name(hasActiveSession: false), "TrayIcon")
+        XCTAssertEqual(TrayIconAsset.name(hasActiveSession: true), "TrayIconActive")
     }
 
     func testLaneTicketsUseEffectiveRunPlacementForCounts() {

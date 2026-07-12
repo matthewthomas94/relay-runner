@@ -49,7 +49,7 @@ struct RelayRunnerApp: App {
                 // Red dot badge signals a missing permission — per PRD this is a
                 // passive indicator, not a nag. The menu dropdown has the "Fix"
                 // actions; this just makes the user notice something's wrong.
-                    Image(appState.hasActiveSession ? "TrayIconActive" : "TrayIcon", bundle: RelayRunnerResources.bundle)
+                    Image(TrayIconAsset.name(hasActiveSession: appState.hasActiveSession), bundle: RelayRunnerResources.bundle)
                         .renderingMode(.original)
                         .overlay(alignment: .topTrailing) {
                             if !appState.permissions.allGranted {

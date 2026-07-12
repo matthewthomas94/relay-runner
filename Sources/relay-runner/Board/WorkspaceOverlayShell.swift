@@ -11,15 +11,7 @@ enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
         switch self {
         case .work: return "Work"
         case .terminal: return "Terminal"
-        case .systemSettings: return "System Settings"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .work: return "rectangle.3.group"
-        case .terminal: return "terminal"
-        case .systemSettings: return "gearshape"
+        case .systemSettings: return "Settings"
         }
     }
 
@@ -101,42 +93,32 @@ final class WorkspaceViewModel {
     }
 }
 
-struct WorkspaceOverlayHeader: View {
+enum TrayIconAsset {
+    static func name(hasActiveSession: Bool) -> String {
+        hasActiveSession ? "TrayIconActive" : "TrayIcon"
+    }
+}
+
+struct WorkspaceMenuBarStrip: View {
     @Bindable var workspace: WorkspaceViewModel
-    let onDismiss: () -> Void
+    let hasActiveSession: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
-            Text("Workspace")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.94))
+        HStack(alignment: .center, spacing: 12) {
+            Image(TrayIconAsset.name(hasActiveSession: hasActiveSession), bundle: RelayRunnerResources.bundle)
+                .renderingMode(.original)
+                .frame(width: 24, height: 24)
+                .accessibilityLabel(hasActiveSession ? "Relay Runner session active" : "Relay Runner session inactive")
 
-            HStack(spacing: 4) {
-                ForEach(workspace.availableTabs) { tab in
-                    WorkspaceTabButton(
-                        tab: tab,
-                        selected: workspace.selectedTab == tab,
-                        action: { workspace.select(tab) }
-                    )
-                }
+            ForEach(workspace.availableTabs) { tab in
+                WorkspaceTabButton(
+                    tab: tab,
+                    selected: workspace.selectedTab == tab,
+                    action: { workspace.select(tab) }
+                )
             }
-            .padding(3)
-            .background(BoardDarkCapsuleBackground())
-
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.72))
-                    .frame(width: 24, height: 24)
-                    .background(BoardDarkCircleBackground())
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .help("Close Workspace")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(BoardDarkCapsuleBackground(fill: BoardDarkSurfaceStyle.panelFill))
+        .frame(height: 24)
         .onTapGesture { }
     }
 }
@@ -145,23 +127,35 @@ private struct WorkspaceTabButton: View {
     let tab: WorkspaceTab
     let selected: Bool
     let action: () -> Void
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         Button(action: action) {
-            Label(tab.title, systemImage: tab.systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .labelStyle(.titleAndIcon)
+            Text(tab.title)
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(
-                    Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: selected ? 0.95 : 0.62)
+                    Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: selected || isHovered || isFocused ? 0.98 : 0.72)
                 )
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 2)
                 .frame(height: 24)
                 .background(
-                    Capsule()
-                        .fill(selected ? Color(.sRGB, red: 31 / 255, green: 41 / 255, blue: 55 / 255, opacity: 1) : .clear)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(tabFill)
                 )
         }
         .buttonStyle(.plain)
-        .help(tab.title)
+        .focusable()
+        .focused($isFocused)
+        .onHover { isHovered = $0 }
+        .accessibilityLabel("\(tab.title) tab")
+        .help("\(tab.title) tab")
+    }
+
+    private var tabFill: Color {
+        if selected { return Color.white.opacity(0.08) }
+        if isFocused { return Color.white.opacity(0.12) }
+        if isHovered { return Color.white.opacity(0.06) }
+        return Color.clear
     }
 }

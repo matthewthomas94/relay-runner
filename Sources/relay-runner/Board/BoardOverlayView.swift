@@ -2,10 +2,10 @@ import AppKit
 import SwiftUI
 
 enum BoardSurfaceLayout {
-    static let horizontalPadding: CGFloat = 24
-    static let columnSpacing: CGFloat = 10
-    static let columnTopPadding: CGFloat = 78
-    static let columnHeight: CGFloat = 633
+    static let horizontalPadding: CGFloat = 44
+    static let columnSpacing: CGFloat = 16
+    static let columnTopPadding: CGFloat = 65
+    static let columnHeight: CGFloat = 667
 }
 
 enum BoardDarkSurfaceStyle {
@@ -32,6 +32,7 @@ final class BoardViewModel {
         didSet { rebuildTicketCaches() }
     }
     var theme: ParticleFieldRenderer.Theme?
+    var hasActiveSession = false
     /// Live run state published by the daemon (runs.json), keyed by ticket id.
     /// Overlaid on ticket files for column placement and pill rendering — the
     /// ticket files themselves stay the source of truth for stable status.
@@ -286,7 +287,7 @@ struct BoardOverlayView: View {
     ]
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack(alignment: .topLeading) {
             // Background: clicking dismisses the Workspace *only when no modal is
             // open*. When the editor is up, the same click cancels the modal
             // instead — keeps the work state stable while editing.
@@ -300,11 +301,12 @@ struct BoardOverlayView: View {
                     }
                 }
 
-            WorkspaceOverlayHeader(
+            WorkspaceMenuBarStrip(
                 workspace: workspace,
-                onDismiss: onDismiss
+                hasActiveSession: model.hasActiveSession
             )
-            .padding(.top, 28)
+            .padding(.top, 7)
+            .padding(.leading, 20)
             .zIndex(2)
 
             if workspace.selectedTab == .terminal, let terminalContent {

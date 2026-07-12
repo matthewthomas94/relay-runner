@@ -354,6 +354,9 @@ final class AppState {
             guard let self else { return nil }
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
         }
+        boardOverlay.setSessionActiveProvider { [weak self] in
+            self?.hasActiveSession ?? false
+        }
         programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
             guard let self else { return nil }
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
