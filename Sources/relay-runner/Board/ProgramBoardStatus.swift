@@ -1412,6 +1412,21 @@ extension ProgramStatusItem {
         return "Running"
     }
 
+    var programCardMetadataParts: [String] {
+        [
+            cleanedProgramValue(ticketID) ?? "No ticket",
+            cleanedProgramValue(project?.name) ?? "Unknown project",
+        ]
+    }
+
+    var programAgentActivityLine: String? {
+        if let activity = cleanedProgramValue(activity),
+           hasActiveWorker || isAwaitingMerge {
+            return activity
+        }
+        return hasActiveWorker ? "Running" : nil
+    }
+
     var isProgramBoardDraggable: Bool {
         project?.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
             ticketID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&

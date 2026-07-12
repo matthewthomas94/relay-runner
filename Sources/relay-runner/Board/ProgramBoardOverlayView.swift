@@ -32,7 +32,7 @@ struct ProgramBoardOverlayView: View {
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack(alignment: .topLeading) {
             ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
                 .fill(Color.black.opacity(ProgramBoardBackdropStyle.backdropOpacity))
                 .frame(maxWidth: .infinity)
@@ -52,11 +52,12 @@ struct ProgramBoardOverlayView: View {
                     }
                 }
 
-            WorkspaceOverlayHeader(
+            WorkspaceMenuBarStrip(
                 workspace: workspace,
-                onDismiss: onDismiss
+                hasActiveSession: model.hasActiveSession
             )
-            .padding(.top, 28)
+            .padding(.top, 7)
+            .padding(.leading, 20)
             .zIndex(2)
 
             if workspace.selectedTab == .terminal,
@@ -315,7 +316,6 @@ private struct ProgramBoardContent: View {
                             onRefresh: onRefresh,
                             onStartSession: onStartSession,
                             onEndSession: onEndSession,
-                            onDismiss: onDismiss
                         )
                         ForEach(ProgramBoardLane.allCases) { lane in
                             ProgramWorkColumnPanel(
@@ -391,34 +391,30 @@ private struct ProgramOverviewColumn: View {
     let onRefresh: () -> Void
     let onStartSession: () -> Void
     let onEndSession: () -> Void
-    let onDismiss: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ProgramBoardTitleBar(
+            ProgramWorkspaceRow(
                 reloadState: reloadState,
+                hasActiveSession: hasActiveSession,
                 onRefresh: onRefresh,
-                onDismiss: onDismiss
+                onStartSession: onStartSession,
+                onEndSession: onEndSession
             )
 
             if let errorMessage {
                 ProgramErrorStrip(message: errorMessage)
             }
 
-            ProgramMetricGrid(snapshot: snapshot)
-
             ProgramProjectFilterHeader(
                 count: snapshot.projects.count,
                 selectedScopeTitle: selectedScopeTitle,
                 isAllSelected: selectedProjectPath == nil,
-                hasActiveSession: hasActiveSession,
-                onStartSession: onStartSession,
-                onEndSession: onEndSession,
                 onSelectAll: onSelectAll
             )
 
             BoardOverlayScrollView {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 12) {
                     ForEach(snapshot.projects) { item in
                         ProgramProjectCard(
                             item: item,
@@ -439,129 +435,91 @@ private struct ProgramOverviewColumn: View {
     }
 }
 
-private struct ProgramBoardTitleBar: View {
+private struct ProgramWorkspaceRow: View {
     let reloadState: ProgramBoardReloadState
+    let hasActiveSession: Bool
     let onRefresh: () -> Void
-    let onDismiss: () -> Void
+    let onStartSession: () -> Void
+    let onEndSession: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .center, spacing: 6) {
-                    Text("Program Workspace")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
-                    ProgramReloadButton(state: reloadState, action: onRefresh)
-                }
-                Text(reloadState.statusText)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(reloadState.isFailure ? ProgramBoardStyle.red : ProgramBoardStyle.secondaryText)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            ProgramIconButton(systemName: "xmark", help: "Close Program Workspace", action: onDismiss)
-        }
-    }
-}
-
-private struct ProgramMetricGrid: View {
-    let snapshot: ProgramDashboardSnapshot
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 8),
-        GridItem(.flexible(), spacing: 8),
-    ]
-
-    var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-            ProgramMetricTile(label: "Projects", value: "\(snapshot.projectCount)")
-            ProgramMetricTile(label: "Backlog", value: "\(snapshot.backlogWork.items.count)")
-            ProgramMetricTile(label: "Queued", value: "\(snapshot.readyWork.items.count)")
-            ProgramMetricTile(label: "Progress", value: "\(snapshot.inProgressWork.items.count)")
-            ProgramMetricTile(label: "Done", value: "\(snapshot.doneWork.items.count)")
-            ProgramMetricTile(
-                label: "Awaiting review",
-                value: "\(snapshot.awaitingMerge.items.count)",
-                help: "Agent work that has finished and is waiting for review before merge."
-            )
-        }
-    }
-}
-
-private struct ProgramMetricTile: View {
-    let label: String
-    let value: String
-    var help: String? = nil
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(ProgramBoardStyle.secondaryText)
-                .lineLimit(1)
-            Text(value)
-                .font(.system(size: 20, weight: .semibold))
+        HStack(alignment: .center, spacing: 8) {
+            Text("Workspace")
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
-                .monospacedDigit()
                 .lineLimit(1)
+            ProgramReloadButton(state: reloadState, action: onRefresh)
+            Spacer(minLength: 0)
+            if hasActiveSession {
+                ProgramEndSessionButton(action: onEndSession)
+            } else {
+                ProgramStartSessionButton(action: onStartSession)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ProgramCardBackground(cornerRadius: 12))
-        .help(help ?? label)
     }
+}
+
+struct ProgramProjectFilterPresentation: Equatable {
+    let count: Int
+    let selectedScopeTitle: String
+    let isAllSelected: Bool
+
+    var selectAllTitle: String { "Select all" }
+    var selectAllIsMuted: Bool { isAllSelected }
 }
 
 private struct ProgramProjectFilterHeader: View {
     let count: Int
     let selectedScopeTitle: String
     let isAllSelected: Bool
-    let hasActiveSession: Bool
-    let onStartSession: () -> Void
-    let onEndSession: () -> Void
     let onSelectAll: () -> Void
 
+    private var presentation: ProgramProjectFilterPresentation {
+        ProgramProjectFilterPresentation(
+            count: count,
+            selectedScopeTitle: selectedScopeTitle,
+            isAllSelected: isAllSelected
+        )
+    }
+
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("Projects")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
-                    Text("\(count)")
+                    Text("\(presentation.count)")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .monospacedDigit()
                 }
-                Text(selectedScopeTitle)
+                Text(presentation.selectedScopeTitle)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            HStack(alignment: .center, spacing: 6) {
-                if hasActiveSession {
-                    ProgramEndSessionButton(action: onEndSession)
-                } else {
-                    ProgramStartSessionButton(action: onStartSession)
-                }
-                Button(action: onSelectAll) {
-                    Text("All")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(isAllSelected ? ProgramBoardStyle.primaryText : ProgramBoardStyle.secondaryText)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            BoardDarkCapsuleBackground(
-                                fill: isAllSelected ? BoardDarkSurfaceStyle.panelFill : BoardDarkSurfaceStyle.contentFill,
-                                stroke: isAllSelected ? ProgramBoardStyle.secondaryText.opacity(0.45) : BoardDarkSurfaceStyle.border
-                            )
+            Button(action: onSelectAll) {
+                Text(presentation.selectAllTitle)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(
+                        presentation.selectAllIsMuted
+                            ? ProgramBoardStyle.mutedText.opacity(0.45)
+                            : ProgramBoardStyle.secondaryText
+                    )
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        BoardDarkCapsuleBackground(
+                            fill: BoardDarkSurfaceStyle.contentFill.opacity(presentation.selectAllIsMuted ? 0.55 : 1),
+                            stroke: BoardDarkSurfaceStyle.border.opacity(presentation.selectAllIsMuted ? 0.55 : 1)
                         )
-                }
-                .buttonStyle(.plain)
-                .help("Show tickets from all projects")
+                    )
             }
+            .buttonStyle(.plain)
+            .programButtonCursor()
+            .help("Show tickets from all projects")
         }
     }
 }
@@ -573,15 +531,15 @@ private struct ProgramProjectCard: View {
 
     var body: some View {
         Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(item.project?.name ?? "Unknown project")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    if !item.providers.isEmpty {
-                        Text(item.providers.joined(separator: ", "))
+                    if isSelected {
+                        Text("Selected")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(ProgramBoardStyle.secondaryText)
                             .lineLimit(1)
@@ -589,7 +547,7 @@ private struct ProgramProjectCard: View {
                 }
 
                 Text(item.project?.path ?? "unknown")
-                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -610,18 +568,17 @@ private struct ProgramProjectCard: View {
                         .lineLimit(2)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ProgramCardBackground(cornerRadius: 16))
+            .background(ProgramCardBackground(cornerRadius: 8))
             .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.white.opacity(isSelected ? 0.28 : 0), lineWidth: 0.75)
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? ProgramBoardStyle.secondaryText : BoardDarkSurfaceStyle.border, lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
         }
         .buttonStyle(.plain)
         .disabled(item.project?.path == nil)
+        .opacity(item.project?.path == nil ? 0.55 : 1)
         .help("Show tickets for \(item.project?.name ?? "this project")")
     }
 }
@@ -638,8 +595,8 @@ private struct ProjectBoardOverview: View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
             ProjectCount(label: "Backlog", value: item.backlogTickets ?? item.openTickets)
             ProjectCount(label: "Queued", value: item.readyTickets)
-            ProjectCount(label: "In progress", value: item.inProgressTickets ?? item.activeRuns)
             ProjectCount(label: "Done", value: item.doneTickets)
+            ProjectCount(label: "In progress", value: item.inProgressTickets ?? item.activeRuns)
         }
         .help("Project board overview")
     }
@@ -877,33 +834,25 @@ private struct ProgramWorkCard: View {
     let onEdit: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text(projectName)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(showsProjectContext ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.mutedText)
+                Text(metadataLine)
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                Text(ticketID)
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-
                 Spacer(minLength: 0)
 
-                ProgramIconButton(
-                    systemName: "square.and.pencil",
+                ProgramEditCapsuleButton(
+                    disabled: !canEdit,
                     help: editHelp,
                     action: onEdit
                 )
-                .disabled(!canEdit)
-                .opacity(canEdit ? 1.0 : 0.45)
             }
 
             Text(title)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)
@@ -941,16 +890,24 @@ private struct ProgramWorkCard: View {
                     .foregroundStyle(ProgramBoardStyle.red)
                     .lineLimit(2)
             }
+
+            if let activityLine {
+                Text(activityLine)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(activityLine)
+                    .accessibilityLabel("Agent activity: \(activityLine)")
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ProgramCardBackground(cornerRadius: 16))
+        .background(ProgramCardBackground(cornerRadius: 8))
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.white.opacity(isSelected ? 0.28 : 0), lineWidth: 0.75)
         )
-        .shadow(color: Color.black.opacity(0.40), radius: 8, x: 0, y: 3)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .help(cardHelp)
@@ -964,6 +921,10 @@ private struct ProgramWorkCard: View {
         cleaned(item.ticketID) ?? "No ticket"
     }
 
+    private var metadataLine: String {
+        item.programCardMetadataParts.joined(separator: "  ")
+    }
+
     private var title: String {
         cleaned(item.title) ?? "Untitled work"
     }
@@ -972,8 +933,6 @@ private struct ProgramWorkCard: View {
         var labels: [String] = []
         if item.isAwaitingMerge {
             labels.append("Awaiting review")
-        } else if item.hasActiveWorker {
-            labels.append(item.activeWorkerBadgeLabel ?? "Running")
         }
         if !item.blockedBy.isEmpty {
             labels.append("Waiting")
@@ -1006,10 +965,14 @@ private struct ProgramWorkCard: View {
         if let provider = cleaned(item.provider) {
             parts.append(provider)
         }
-        if !item.hasActiveWorker, let activity = cleaned(item.activity) {
+        if item.programAgentActivityLine == nil, let activity = cleaned(item.activity) {
             parts.append(activity)
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ")
+    }
+
+    private var activityLine: String? {
+        item.programAgentActivityLine
     }
 
     private var visibleStateLabel: String? {
@@ -1739,11 +1702,14 @@ private struct ProgramStatePanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ProgramBoardTitleBar(
-                reloadState: reloadState,
-                onRefresh: onRefresh,
-                onDismiss: onDismiss
-            )
+            HStack(alignment: .center, spacing: 8) {
+                Text("Workspace")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                ProgramReloadButton(state: reloadState, action: onRefresh)
+                Spacer(minLength: 0)
+                ProgramIconButton(systemName: "xmark", help: "Close Workspace", action: onDismiss)
+            }
             Spacer(minLength: 0)
             VStack(spacing: 8) {
                 Text(title)
@@ -1798,15 +1764,14 @@ private struct ProgramStartSessionButton: View {
         Button(action: action) {
             HStack(alignment: .center, spacing: 6) {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 9, weight: .bold))
-                Text("Start Session")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 10, weight: .bold))
+                Text("Start session")
+                    .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
             .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.96))
-            .padding(.horizontal, 9)
-            .frame(height: 24)
+            .frame(width: 130, height: 32)
             .background(BoardDarkCapsuleBackground())
             .contentShape(Capsule())
         }
@@ -1823,21 +1788,50 @@ private struct ProgramEndSessionButton: View {
         Button(action: action) {
             HStack(alignment: .center, spacing: 6) {
                 Image(systemName: "stop.fill")
-                    .font(.system(size: 9, weight: .bold))
-                Text("End Session")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 10, weight: .bold))
+                Text("End session")
+                    .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
             .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.96))
-            .padding(.horizontal, 9)
-            .frame(height: 24)
+            .frame(width: 130, height: 32)
             .background(BoardDarkCapsuleBackground())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .programButtonCursor()
         .help("End the active Relay Runner voice session")
+    }
+}
+
+private struct ProgramEditCapsuleButton: View {
+    let disabled: Bool
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: "pencil")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Edit")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(ProgramBoardStyle.primaryText.opacity(disabled ? 0.45 : 0.95))
+            .frame(width: 70, height: 24)
+            .background(
+                BoardDarkCapsuleBackground(
+                    fill: BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1),
+                    stroke: BoardDarkSurfaceStyle.border.opacity(disabled ? 0.55 : 1)
+                )
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .programButtonCursor(enabled: !disabled)
+        .help(help)
     }
 }
 
@@ -1952,7 +1946,7 @@ private struct ProgramBoardColumnChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 24)
-            .padding(.vertical, 18)
+            .padding(.vertical, 16)
             .frame(maxWidth: .infinity, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
             .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
             .shadow(

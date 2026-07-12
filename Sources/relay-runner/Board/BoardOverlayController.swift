@@ -47,6 +47,7 @@ final class BoardOverlayController {
     private var cachedProjectPath: String?
     private var loadingStateHandler: ((Bool) -> Void)?
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
+    private var sessionActiveProvider: () -> Bool = { false }
     private var settingsContentProvider: (() -> AnyView?)?
     private var terminalContentProvider: ((String?) -> AnyView?)?
     private var terminalHasFocusProvider: () -> Bool = { false }
@@ -83,6 +84,10 @@ final class BoardOverlayController {
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
         self.workerSizingDefaultsProvider = provider
+    }
+
+    func setSessionActiveProvider(_ provider: @escaping () -> Bool) {
+        self.sessionActiveProvider = provider
     }
 
     func setSettingsContentProvider(_ provider: @escaping () -> AnyView?) {
@@ -273,6 +278,7 @@ final class BoardOverlayController {
             model.runStates = [:]
         }
         model.theme = themeResolver?()
+        model.hasActiveSession = sessionActiveProvider()
         model.editing = nil
         model.dragState = nil
         if !hasCachedProject {
@@ -334,6 +340,7 @@ final class BoardOverlayController {
         model.editing = nil
         model.dragState = nil
         model.theme = themeResolver?()
+        model.hasActiveSession = sessionActiveProvider()
         workspace.configure(
             showsWorkTab: false,
             showsTerminalTab: terminalContent != nil,
@@ -434,6 +441,10 @@ final class BoardOverlayController {
             let next = self.themeResolver?()
             if next != self.model.theme {
                 self.model.theme = next
+            }
+            let hasActiveSession = self.sessionActiveProvider()
+            if hasActiveSession != self.model.hasActiveSession {
+                self.model.hasActiveSession = hasActiveSession
             }
         }
     }

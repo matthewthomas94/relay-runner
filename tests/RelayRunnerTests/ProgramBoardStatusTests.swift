@@ -14,11 +14,32 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(border?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
         XCTAssertEqual(border?.blueComponent ?? 0, 29 / 255, accuracy: 0.001)
         XCTAssertEqual(BoardDarkSurfaceStyle.columnCornerRadius, 12)
+        XCTAssertEqual(BoardSurfaceLayout.horizontalPadding, 44)
+        XCTAssertEqual(BoardSurfaceLayout.columnSpacing, 16)
+        XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 65)
+        XCTAssertEqual(BoardSurfaceLayout.columnHeight, 667)
         XCTAssertEqual(BoardDarkSurfaceStyle.shadowOpacity, 0.08, accuracy: 0.001)
         XCTAssertGreaterThan(
             ProgramBoardBackdropStyle.backdropHeight,
             BoardSurfaceLayout.columnTopPadding + BoardSurfaceLayout.columnHeight
         )
+    }
+
+    func testProgramProjectFilterPresentationMutesSelectAllOnlyForAllTickets() {
+        let allTickets = ProgramProjectFilterPresentation(
+            count: 8,
+            selectedScopeTitle: "All tickets",
+            isAllSelected: true
+        )
+        let selectedProject = ProgramProjectFilterPresentation(
+            count: 8,
+            selectedScopeTitle: "relay-runner",
+            isAllSelected: false
+        )
+
+        XCTAssertEqual(allTickets.selectAllTitle, "Select all")
+        XCTAssertTrue(allTickets.selectAllIsMuted)
+        XCTAssertFalse(selectedProject.selectAllIsMuted)
     }
 
     func testDecodesSummaryAndProviderNeutralWorkItems() throws {
@@ -535,6 +556,35 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         XCTAssertEqual(active.activeWorkerBadgeLabel, "Running Swift tests")
         XCTAssertEqual(fallback.activeWorkerBadgeLabel, "Running")
+    }
+
+    func testProgramStatusItemCardPresentationOrdersMetadataAndShowsAgentActivity() throws {
+        let codexActive = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-117",
+            title: "Add End Session",
+            status: "active",
+            runID: 155,
+            runState: "active",
+            activity: "Reviewing code",
+            provider: "Codex/gpt-5"
+        )
+        let claudeActive = try ticketItem(
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            ticketID: "RR-118",
+            title: "Check Claude parity",
+            status: "active",
+            runID: 156,
+            runState: "active",
+            activity: "Running Swift tests",
+            provider: "Claude/sonnet"
+        )
+
+        XCTAssertEqual(codexActive.programCardMetadataParts, ["RR-117", "Relay Runner"])
+        XCTAssertEqual(codexActive.programAgentActivityLine, "Reviewing code")
+        XCTAssertEqual(claudeActive.programAgentActivityLine, "Running Swift tests")
     }
 
     func testProgramBoardViewModelExposesSelectedProjectForSessionLaunch() throws {
