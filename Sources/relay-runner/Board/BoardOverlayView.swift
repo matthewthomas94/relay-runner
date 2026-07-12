@@ -428,11 +428,11 @@ private struct BoardColumnPanel: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 8) {
                 Text(spec.title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(WorkspaceTypography.font(.sectionHeading))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0))
                 Spacer(minLength: 0)
                 Text("\(tickets.count)")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(WorkspaceTypography.font(.count))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.65))
                     .monospacedDigit()
                 NewTicketButton(action: onCreate)
@@ -655,7 +655,7 @@ private struct TicketCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 Text(ticket.title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(WorkspaceTypography.font(.ticketTitle))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -679,7 +679,7 @@ private struct TicketCard: View {
             }
             if !waitingOn.isEmpty {
                 Text("Waiting on \(waitingOn.joined(separator: ", "))")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(WorkspaceTypography.font(.supporting))
                     .foregroundStyle(Color(.sRGB, red: 245 / 255, green: 180 / 255, blue: 40 / 255, opacity: 0.95))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -687,7 +687,7 @@ private struct TicketCard: View {
             }
             if let description = ticket.description {
                 Text(description)
-                    .font(.system(size: 12, weight: .regular))
+                    .font(WorkspaceTypography.font(.supporting))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.65))
                     .lineLimit(3)
                     .multilineTextAlignment(.leading)
@@ -721,7 +721,7 @@ private struct DependencyWaitingBadge: View {
                 .frame(width: 6, height: 6)
                 .opacity(0.9)
             Text("Waiting")
-                .font(.system(size: 10, weight: .semibold))
+                .font(WorkspaceTypography.font(.supporting))
                 .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
         }
         .padding(.horizontal, 7)
@@ -739,7 +739,7 @@ private struct ActivityChip: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .regular))
+            .font(WorkspaceTypography.font(.supporting))
             .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.5))
             .lineLimit(1)
             .truncationMode(.tail)
@@ -782,7 +782,7 @@ private struct AgentActivityBadge: View {
                 .frame(width: 6, height: 6)
                 .opacity(0.9)
             Text(activity.label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(WorkspaceTypography.font(.supporting))
                 .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
         }
         .padding(.horizontal, 7)
@@ -824,7 +824,7 @@ private struct RunStatusPill: View {
                 .frame(width: 6, height: 6)
                 .opacity(0.9)
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(WorkspaceTypography.font(.supporting))
                 .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
         }
         .padding(.horizontal, 7)
