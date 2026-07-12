@@ -8,37 +8,39 @@ final class GeneralConfigTests: XCTestCase {
             GeneralConfig.codexModelOptions,
             [
                 GeneralConfig.ModelOption(label: "Default", value: "default"),
-                GeneralConfig.ModelOption(label: "GPT-5.6 Sol Preview", value: "gpt-5.6-sol"),
-                GeneralConfig.ModelOption(label: "GPT-5.6 Terra Preview", value: "gpt-5.6-terra"),
-                GeneralConfig.ModelOption(label: "GPT-5.6 Luna Preview", value: "gpt-5.6-luna"),
+                GeneralConfig.ModelOption(label: "GPT-5.6 Sol", value: "gpt-5.6-sol"),
+                GeneralConfig.ModelOption(label: "GPT-5.6 Terra", value: "gpt-5.6-terra"),
+                GeneralConfig.ModelOption(label: "GPT-5.6 Luna", value: "gpt-5.6-luna"),
                 GeneralConfig.ModelOption(label: "GPT-5.5", value: "gpt-5.5"),
                 GeneralConfig.ModelOption(label: "GPT-5.4", value: "gpt-5.4"),
-                GeneralConfig.ModelOption(label: "GPT-5.4-Mini", value: "gpt-5.4-mini"),
-                GeneralConfig.ModelOption(label: "GPT-5.3-Codex-Spark", value: "gpt-5.3-codex-spark"),
+                GeneralConfig.ModelOption(label: "GPT-5.4 Mini", value: "gpt-5.4-mini"),
+                GeneralConfig.ModelOption(label: "GPT-5.3 Codex Spark", value: "gpt-5.3-codex-spark"),
             ]
         )
     }
 
-    func testGPT56PreviewModelsAreCodexOnlyLimitedPreviewOptions() {
-        let previewModels = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    func testGPT56ModelsAreCodexOnlyPlanGatedOptions() {
+        let models = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
 
-        for model in previewModels {
+        for model in models {
             XCTAssertTrue(GeneralConfig.isModel(model, validFor: .codex))
             XCTAssertTrue(GeneralConfig.requiresLimitedPreviewAccess(model, for: .codex))
             XCTAssertFalse(GeneralConfig.isModel(model, validFor: .claude))
             XCTAssertFalse(GeneralConfig.requiresLimitedPreviewAccess(model, for: .claude))
         }
         XCTAssertEqual(
-            GeneralConfig.limitedPreviewAccessNote,
-            "Limited preview access: requires an approved Codex workspace."
+            GeneralConfig.codexPlanAccessNote,
+            "GPT-5.6 models and Ultra effort depend on your Codex plan."
         )
     }
 
-    func testClaudeModelOptionsRemainClaudeScoped() {
+    func testClaudeModelOptionsMatchClaudeCode2175Aliases() {
         XCTAssertEqual(
             GeneralConfig.claudeModelOptions,
             [
                 GeneralConfig.ModelOption(label: "Default", value: "default"),
+                GeneralConfig.ModelOption(label: "Best", value: "best"),
+                GeneralConfig.ModelOption(label: "Fable", value: "fable"),
                 GeneralConfig.ModelOption(label: "Opus", value: "opus"),
                 GeneralConfig.ModelOption(label: "Sonnet", value: "sonnet"),
                 GeneralConfig.ModelOption(label: "Haiku", value: "haiku"),
@@ -46,7 +48,7 @@ final class GeneralConfigTests: XCTestCase {
         )
     }
 
-    func testCodexReasoningEffortOptionsMatchCurrentPublicCodexValues() {
+    func testLegacyCodexReasoningEffortOptionsRemainSharedBaseValues() {
         XCTAssertEqual(
             GeneralConfig.codexReasoningEffortOptions,
             [
@@ -62,26 +64,53 @@ final class GeneralConfigTests: XCTestCase {
         )
     }
 
-    func testClaudeReasoningEffortOptionsIncludeMax() {
-        XCTAssertEqual(
-            GeneralConfig.claudeReasoningEffortOptions,
-            [
-                GeneralConfig.ReasoningEffortOption(label: "Default", value: "default"),
-                GeneralConfig.ReasoningEffortOption(label: "Low", value: "low"),
-                GeneralConfig.ReasoningEffortOption(label: "Medium", value: "medium"),
-                GeneralConfig.ReasoningEffortOption(label: "High", value: "high"),
-                GeneralConfig.ReasoningEffortOption(label: "Extra High", value: "xhigh"),
-                GeneralConfig.ReasoningEffortOption(label: "Max", value: "max"),
-            ]
+    func testModelAwareReasoningEffortMatrixMatchesRR150() {
+        let codexMatrix = Dictionary(
+            uniqueKeysWithValues: GeneralConfig.modelEffortMatrix(for: .codex)
+                .map { ($0.model, $0.efforts) }
         )
         XCTAssertEqual(
-            GeneralConfig.normalizedOrchestratorEffort("max", for: .claude),
-            "max"
+            codexMatrix["gpt-5.6-sol"],
+            ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
         )
         XCTAssertEqual(
-            GeneralConfig.normalizedOrchestratorEffort("max", for: .codex),
+            codexMatrix["gpt-5.6-terra"],
+            ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
+        )
+        XCTAssertEqual(
+            codexMatrix["gpt-5.6-luna"],
+            ["default", "low", "medium", "high", "xhigh", "max"]
+        )
+        XCTAssertEqual(codexMatrix["gpt-5.5"], ["default", "low", "medium", "high", "xhigh"])
+        XCTAssertEqual(codexMatrix["gpt-5.4"], ["default", "low", "medium", "high", "xhigh"])
+        XCTAssertEqual(codexMatrix["gpt-5.4-mini"], ["default", "low", "medium", "high", "xhigh"])
+        XCTAssertEqual(codexMatrix["gpt-5.3-codex-spark"], ["default", "low", "medium", "high", "xhigh"])
+        XCTAssertEqual(codexMatrix["default"], ["default"])
+
+        let claudeMatrix = Dictionary(
+            uniqueKeysWithValues: GeneralConfig.modelEffortMatrix(for: .claude)
+                .map { ($0.model, $0.efforts) }
+        )
+        XCTAssertEqual(claudeMatrix["best"], ["default", "low", "medium", "high", "xhigh", "max"])
+        XCTAssertEqual(claudeMatrix["fable"], ["default", "low", "medium", "high", "xhigh", "max"])
+        XCTAssertEqual(claudeMatrix["opus"], ["default", "low", "medium", "high", "xhigh", "max"])
+        XCTAssertEqual(claudeMatrix["sonnet"], ["default", "low", "medium", "high", "max"])
+        XCTAssertEqual(claudeMatrix["haiku"], ["default"])
+        XCTAssertEqual(claudeMatrix["default"], ["default"])
+
+        XCTAssertEqual(
+            GeneralConfig.normalizedOrchestratorEffort("ultra", for: .codex, model: "gpt-5.6-sol"),
+            "ultra"
+        )
+        XCTAssertEqual(
+            GeneralConfig.normalizedOrchestratorEffort("ultra", for: .codex, model: "gpt-5.6-luna"),
             GeneralConfig.defaultReasoningEffort
         )
+        XCTAssertEqual(
+            GeneralConfig.normalizedOrchestratorEffort("xhigh", for: .claude, model: "sonnet"),
+            GeneralConfig.defaultReasoningEffort
+        )
+        XCTAssertEqual(GeneralConfig.normalizedOrchestratorEffort("max", for: .claude, model: "sonnet"), "max")
     }
 
     func testSubagentDefaultOptionsAreProviderNeutralSharedValues() {
@@ -111,6 +140,7 @@ final class GeneralConfigTests: XCTestCase {
     func testInvalidCodexReasoningEffortNormalizesToDefault() {
         var config = GeneralConfig()
         config.provider = .codex
+        config.model = "gpt-5.5"
         config.codex_reasoning_effort = "max"
 
         config.normalize(providerWasExplicit: true)
@@ -123,15 +153,15 @@ final class GeneralConfigTests: XCTestCase {
         config.provider = .codex
         config.command = "codex"
         config.model = "gpt-5.6-sol"
-        config.codex_reasoning_effort = "high"
+        config.orchestrator_effort = "ultra"
 
         config.selectProvider(.claude)
 
         XCTAssertEqual(config.provider, .claude)
         XCTAssertEqual(config.command, "claude")
         XCTAssertEqual(config.model, GeneralConfig.defaultModel)
-        XCTAssertEqual(config.codex_reasoning_effort, "high")
-        XCTAssertEqual(config.orchestrator_effort, "high")
+        XCTAssertEqual(config.codex_reasoning_effort, "default")
+        XCTAssertEqual(config.orchestrator_effort, "default")
     }
 
     func testWorkspaceFolderResolvesLegacyWorkingDirectoryValues() {

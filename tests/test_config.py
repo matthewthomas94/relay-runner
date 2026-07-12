@@ -60,19 +60,20 @@ class ConfigTests(unittest.TestCase):
                 f.write(
                     """
                     [general]
-                    provider = "claude"
-                    command = "claude"
+                    provider = "codex"
+                    command = "codex"
+                    model = "gpt-5.5"
                     codex_reasoning_effort = " XHIGH "
                     """
                 )
 
             config = load_config(path)
 
-        self.assertEqual(config["general"]["provider"], "claude")
+        self.assertEqual(config["general"]["provider"], "codex")
         self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
         self.assertEqual(config["general"]["codex_reasoning_effort"], "xhigh")
 
-    def test_load_config_allows_claude_orchestrator_effort_max(self):
+    def test_load_config_allows_model_specific_claude_orchestrator_effort_max(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "config.toml")
             with open(path, "w", encoding="utf-8") as f:
@@ -81,12 +82,14 @@ class ConfigTests(unittest.TestCase):
                     [general]
                     provider = "claude"
                     command = "claude"
+                    model = "fable"
                     orchestrator_effort = "max"
                     """
                 )
 
             config = load_config(path)
 
+        self.assertEqual(config["general"]["model"], "fable")
         self.assertEqual(config["general"]["orchestrator_effort"], "max")
         self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
 
@@ -108,6 +111,47 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config["general"]["orchestrator_effort"], "default")
         self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
+
+    def test_load_config_applies_rr150_model_effort_matrix(self):
+        cases = [
+            ("codex", "gpt-5.6-sol", "ultra", "ultra"),
+            ("codex", "gpt-5.6-terra", "ultra", "ultra"),
+            ("codex", "gpt-5.6-luna", "max", "max"),
+            ("codex", "gpt-5.6-luna", "ultra", "default"),
+            ("codex", "gpt-5.5", "xhigh", "xhigh"),
+            ("codex", "gpt-5.5", "max", "default"),
+            ("codex", "gpt-5.3-codex-spark", "xhigh", "xhigh"),
+            ("codex", "default", "low", "default"),
+            ("claude", "best", "max", "max"),
+            ("claude", "fable", "xhigh", "xhigh"),
+            ("claude", "opus", "max", "max"),
+            ("claude", "sonnet", "max", "max"),
+            ("claude", "sonnet", "xhigh", "default"),
+            ("claude", "haiku", "low", "default"),
+            ("claude", "default", "low", "default"),
+        ]
+
+        for provider, model, effort, expected in cases:
+            with self.subTest(provider=provider, model=model, effort=effort), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "config.toml"
+                path.write_text(
+                    "\n".join(
+                        [
+                            "[general]",
+                            f'provider = "{provider}"',
+                            f'command = "{provider}"',
+                            f'model = "{model}"',
+                            f'orchestrator_effort = "{effort}"',
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+
+                config = load_config(str(path))
+
+                self.assertEqual(config["general"]["model"], model)
+                self.assertEqual(config["general"]["orchestrator_effort"], expected)
 
     def test_load_config_normalizes_subagent_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -106,7 +106,8 @@ struct OnboardingView: View {
             ? initialModel
             : GeneralConfig.defaultModel
         let startingCodexReasoningEffort = GeneralConfig.normalizedCodexReasoningEffort(
-            initialCodexReasoningEffort
+            initialCodexReasoningEffort,
+            model: startingModel
         )
         let startingParentReviewed = resumeState?.parentPermissionsReviewed ?? false
         // Simplified flow (re-prompt after initial onboarding): jump to the
@@ -222,6 +223,7 @@ struct OnboardingView: View {
         }
         .onChange(of: selectedModel) { _, new in
             onSetModel(new)
+            normalizeSelectedEffortForCurrentChoice()
             persistResume()
         }
         .onChange(of: selectedCodexReasoningEffort) { _, new in
@@ -340,9 +342,7 @@ struct OnboardingView: View {
             }
 
             modelPicker
-            if selectedAgentProvider == .codex {
-                codexReasoningEffortPicker
-            }
+            reasoningEffortPicker
             workingDirectoryPicker
             setupPlanView
 
@@ -400,8 +400,12 @@ struct OnboardingView: View {
                 .labelsHidden()
                 .frame(width: 180)
             }
-            if GeneralConfig.requiresLimitedPreviewAccess(selectedModel, for: selectedAgentProvider) {
-                Text(GeneralConfig.limitedPreviewAccessNote)
+            if let note = GeneralConfig.accessNote(
+                for: selectedModel,
+                effort: selectedCodexReasoningEffort,
+                provider: selectedAgentProvider
+            ) {
+                Text(note)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -417,13 +421,13 @@ struct OnboardingView: View {
         )
     }
 
-    private var codexReasoningEffortPicker: some View {
+    private var reasoningEffortPicker: some View {
         HStack {
             Text("Reasoning effort")
                 .font(.callout).bold()
             Spacer()
             Picker("Reasoning effort", selection: $selectedCodexReasoningEffort) {
-                ForEach(GeneralConfig.codexReasoningEffortOptions) { option in
+                ForEach(GeneralConfig.reasoningEffortOptions(for: selectedAgentProvider, model: selectedModel)) { option in
                     Text(option.label).tag(option.value)
                 }
             }
@@ -481,9 +485,19 @@ struct OnboardingView: View {
         if !GeneralConfig.isModel(selectedModel, validFor: provider) {
             selectedModel = GeneralConfig.defaultModel
         }
+        normalizeSelectedEffortForCurrentChoice()
         agentSignedIn = AgentAuth.isAuthenticated(for: provider)
         onSetAgentProvider(provider)
         onSetModel(selectedModel)
+        onSetCodexReasoningEffort(selectedCodexReasoningEffort)
+    }
+
+    private func normalizeSelectedEffortForCurrentChoice() {
+        selectedCodexReasoningEffort = GeneralConfig.normalizedOrchestratorEffort(
+            selectedCodexReasoningEffort,
+            for: selectedAgentProvider,
+            model: selectedModel
+        )
     }
 
     private func permissionView(for kind: PermissionKind) -> some View {

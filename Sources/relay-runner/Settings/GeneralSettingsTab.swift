@@ -24,20 +24,24 @@ struct GeneralSettingsTab: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Picker(Self.orchestratorModelLabel, selection: $config.model) {
+                Picker(Self.orchestratorModelLabel, selection: modelSelection) {
                     ForEach(GeneralConfig.modelOptions(for: config.provider)) { option in
                         Text(option.label).tag(option.value)
                     }
                 }
-                if GeneralConfig.requiresLimitedPreviewAccess(config.model, for: config.provider) {
-                    Text(GeneralConfig.limitedPreviewAccessNote)
+                if let note = GeneralConfig.accessNote(
+                    for: config.model,
+                    effort: config.orchestrator_effort,
+                    provider: config.provider
+                ) {
+                    Text(note)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
             Picker(Self.orchestratorEffortLabel, selection: orchestratorEffortSelection) {
-                ForEach(GeneralConfig.reasoningEffortOptions(for: config.provider)) { option in
+                ForEach(GeneralConfig.reasoningEffortOptions(for: config.provider, model: config.model)) { option in
                     Text(option.label).tag(option.value)
                 }
             }
@@ -128,10 +132,30 @@ struct GeneralSettingsTab: View {
             set: {
                 config.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
                     $0,
-                    for: config.provider
+                    for: config.provider,
+                    model: config.model
                 )
                 config.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
-                    config.orchestrator_effort
+                    config.orchestrator_effort,
+                    model: config.model
+                )
+            }
+        )
+    }
+
+    private var modelSelection: Binding<String> {
+        Binding(
+            get: { config.model },
+            set: {
+                config.model = GeneralConfig.normalizeModel($0, for: config.provider)
+                config.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
+                    config.orchestrator_effort,
+                    for: config.provider,
+                    model: config.model
+                )
+                config.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
+                    config.orchestrator_effort,
+                    model: config.model
                 )
             }
         )

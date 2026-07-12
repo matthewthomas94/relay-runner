@@ -140,7 +140,8 @@ final class ConfigManager {
 
         lines.append("[general]")
         let legacyCodexEffort = GeneralConfig.normalizedCodexReasoningEffort(
-            c.general.orchestrator_effort
+            c.general.orchestrator_effort,
+            model: c.general.model
         )
         lines.append("provider = \"\(c.general.provider.rawValue)\"")
         lines.append("command = \"\(c.general.command)\"")
