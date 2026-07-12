@@ -205,8 +205,8 @@ final class OverlayController {
     }
 
     static func fullPillTitle(for state: OverlayState, actionHint: String) -> String? {
-        guard let title = pillStatusTitle(for: state) else { return nil }
-        return "\(title) \u{2014} \(actionHint)"
+        guard pillStatusTitle(for: state) != nil else { return nil }
+        return actionHint
     }
 
     private func applyState(_ sm: StateMachine) {

@@ -58,15 +58,19 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(OverlayController.compactPillTitle(for: .speaking, suffix: "..."), "Playing...")
         XCTAssertEqual(
             OverlayController.fullPillTitle(for: .recording, actionHint: "Press Caps Lock to stop and send"),
-            "Listening \u{2014} Press Caps Lock to stop and send"
+            "Press Caps Lock to stop and send"
         )
         XCTAssertEqual(
             OverlayController.fullPillTitle(for: .messageWaiting(preview: "Done."), actionHint: "Double tap Option to play"),
-            "Response ready \u{2014} Double tap Option to play"
+            "Double tap Option to play"
         )
         XCTAssertEqual(
             OverlayController.fullPillTitle(for: .speaking, actionHint: "Double tap Control to cancel"),
-            "Playing \u{2014} Double tap Control to cancel"
+            "Double tap Control to cancel"
+        )
+        XCTAssertEqual(
+            OverlayController.fullPillTitle(for: .idle, actionHint: "Ignored"),
+            nil
         )
     }
 
