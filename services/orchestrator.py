@@ -282,13 +282,17 @@ def _find_agent_bin(agent: str, configured: str = "") -> str:
             return fallback
         raise RuntimeError("claude CLI not found on PATH or at ~/.local/bin/claude")
 
+    bundled_candidates = (
+        "/Applications/ChatGPT.app/Contents/Resources/codex",
+        "/Applications/Codex.app/Contents/Resources/codex",
+    )
+    for candidate in bundled_candidates:
+        if os.access(candidate, os.X_OK):
+            return candidate
     p = shutil.which("codex")
     if p:
         return p
-    fallback = "/Applications/Codex.app/Contents/Resources/codex"
-    if os.access(fallback, os.X_OK):
-        return fallback
-    raise RuntimeError("codex CLI not found on PATH or in /Applications/Codex.app")
+    raise RuntimeError("codex CLI not found on PATH or in the ChatGPT/Codex applications")
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ final class BoardViewModelTests: XCTestCase {
 
         model.configure(
             showsWorkTab: false,
+            showsTerminalTab: false,
             showsSettingsTab: true,
             initialTab: .work
         )
@@ -16,13 +17,47 @@ final class BoardViewModelTests: XCTestCase {
 
         model.configure(
             showsWorkTab: true,
+            showsTerminalTab: true,
             showsSettingsTab: true,
             initialTab: .systemSettings
         )
         model.select(.work)
 
+        XCTAssertEqual(model.availableTabs, [.work, .terminal, .systemSettings])
+        XCTAssertEqual(model.selectedTab, .work)
+    }
+
+    func testWorkspaceTabsSupportTerminalOnlyAndNormalizeUnavailableTerminal() {
+        let model = WorkspaceViewModel()
+
+        model.configure(
+            showsWorkTab: false,
+            showsTerminalTab: true,
+            showsSettingsTab: false,
+            initialTab: .terminal
+        )
+
+        XCTAssertEqual(model.availableTabs, [.terminal])
+        XCTAssertEqual(model.selectedTab, .terminal)
+
+        model.configure(
+            showsWorkTab: true,
+            showsTerminalTab: false,
+            showsSettingsTab: true,
+            initialTab: .terminal
+        )
+
         XCTAssertEqual(model.availableTabs, [.work, .systemSettings])
         XCTAssertEqual(model.selectedTab, .work)
+    }
+
+    func testTerminalTabKeyAndEscapeBehaviorTracksTerminalFocus() {
+        XCTAssertFalse(WorkspaceTab.work.requiresKeyWindow)
+        XCTAssertTrue(WorkspaceTab.terminal.requiresKeyWindow)
+        XCTAssertTrue(WorkspaceTab.systemSettings.requiresKeyWindow)
+        XCTAssertTrue(WorkspaceTab.terminal.allowsEscapeDismissal(terminalHasFocus: false))
+        XCTAssertFalse(WorkspaceTab.terminal.allowsEscapeDismissal(terminalHasFocus: true))
+        XCTAssertTrue(WorkspaceTab.work.allowsEscapeDismissal(terminalHasFocus: true))
     }
 
     func testLaneTicketsUseEffectiveRunPlacementForCounts() {

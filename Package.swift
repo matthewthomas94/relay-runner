@@ -8,6 +8,7 @@ let package = Package(
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4"),
         .package(url: "https://github.com/LebJe/TOMLKit.git", from: "0.5.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.9.3"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.14.0"),
     ],
     targets: [
         .executableTarget(
@@ -15,6 +16,7 @@ let package = Package(
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "TOMLKit", package: "TOMLKit"),
             ],
             path: "Sources/relay-runner",

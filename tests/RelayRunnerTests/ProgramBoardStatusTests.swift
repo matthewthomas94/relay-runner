@@ -1390,25 +1390,36 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertNil(stateMachine.messagePreview)
     }
 
-    func testProgramBoardContentPresentationHidesNoSnapshotFallbacks() {
+    func testProgramBoardContentPresentationDistinguishesLoadingAndFirstLoadFailure() {
         XCTAssertEqual(
             ProgramBoardContentPresentation.resolve(
                 hasSnapshot: false,
-                hasRegisteredProjects: false
+                hasRegisteredProjects: false,
+                reloadState: .loading
             ),
             .empty
         )
         XCTAssertEqual(
             ProgramBoardContentPresentation.resolve(
+                hasSnapshot: false,
+                hasRegisteredProjects: false,
+                reloadState: .failed("daemon unavailable")
+            ),
+            .loadFailure
+        )
+        XCTAssertEqual(
+            ProgramBoardContentPresentation.resolve(
                 hasSnapshot: true,
-                hasRegisteredProjects: false
+                hasRegisteredProjects: false,
+                reloadState: .succeeded
             ),
             .noRegisteredProjects
         )
         XCTAssertEqual(
             ProgramBoardContentPresentation.resolve(
                 hasSnapshot: true,
-                hasRegisteredProjects: true
+                hasRegisteredProjects: true,
+                reloadState: .succeeded
             ),
             .board
         )

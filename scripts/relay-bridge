@@ -213,7 +213,7 @@ Connect voice I/O to this Claude session. You become a voice-interactive assista
 1. Verify the Relay Runner app is running:
 
 ```bash
-pgrep -f 'relay-runner' > /dev/null 2>&1 && echo "app: ok" || echo "app: NOT RUNNING"
+if [ "${RELAY_RUNNER_APP_SESSION:-0}" = "1" ] || pgrep -f 'relay-runner' > /dev/null 2>&1; then echo "app: ok"; else echo "app: NOT RUNNING"; fi
 ```
 
 If not running, tell the user to start the Relay Runner menu bar app, then try `/relay-bridge` again. Do not proceed.
@@ -543,7 +543,7 @@ Connect voice I/O to this Codex session. You become a voice-interactive assistan
 1. Verify the Relay Runner app is running:
 
 ```bash
-pgrep -f 'relay-runner' > /dev/null 2>&1 && echo "app: ok" || echo "app: NOT RUNNING"
+if [ "${RELAY_RUNNER_APP_SESSION:-0}" = "1" ] || pgrep -f 'relay-runner' > /dev/null 2>&1; then echo "app: ok"; else echo "app: NOT RUNNING"; fi
 ```
 
 If not running, tell the user to start the Relay Runner menu bar app, then stop.
@@ -836,7 +836,9 @@ find_claude_bin() {
 }
 
 find_codex_bin() {
-    if [ -x "/Applications/Codex.app/Contents/Resources/codex" ]; then
+    if [ -x "/Applications/ChatGPT.app/Contents/Resources/codex" ]; then
+        echo "/Applications/ChatGPT.app/Contents/Resources/codex"
+    elif [ -x "/Applications/Codex.app/Contents/Resources/codex" ]; then
         echo "/Applications/Codex.app/Contents/Resources/codex"
     elif command -v codex >/dev/null 2>&1; then
         command -v codex
@@ -1370,7 +1372,7 @@ ensure_fifo "$VOICE_FIFO"
 
 # -- Note: STT is now handled by the Relay Runner menu bar app --
 # -- This script only starts the Python voice bridge in relay mode --
-if ! pgrep -f 'relay-runner' > /dev/null 2>&1; then
+if [ "${RELAY_RUNNER_APP_SESSION:-0}" != "1" ] && ! pgrep -f 'relay-runner' > /dev/null 2>&1; then
     echo "[relay-bridge] Warning: Relay Runner app is not running. STT will not be available."
     echo "[relay-bridge] Start the Relay Runner menu bar app for speech-to-text."
 fi

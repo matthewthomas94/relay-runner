@@ -34,4 +34,25 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertEqual(blank.general.working_directory, "/Users/example/dev")
         XCTAssertEqual(config.general.working_directory, "/Users/example/dev")
     }
+
+    func testSessionLaunchRequestDefaultsToEmbeddedAndPreservesExternalFallback() {
+        var config = AppConfig()
+        config.general.working_directory = "/Users/example/dev"
+
+        let embedded = AppState.sessionLaunchRequest(
+            from: config,
+            workingDirectory: "/Users/example/dev/project"
+        )
+        let external = AppState.sessionLaunchRequest(
+            from: config,
+            workingDirectory: nil,
+            destination: .externalTerminal
+        )
+
+        XCTAssertEqual(embedded.destination, .embedded)
+        XCTAssertEqual(embedded.config.general.working_directory, "/Users/example/dev/project")
+        XCTAssertEqual(external.destination, .externalTerminal)
+        XCTAssertEqual(external.config.general.working_directory, "/Users/example/dev")
+        XCTAssertEqual(config.general.working_directory, "/Users/example/dev")
+    }
 }

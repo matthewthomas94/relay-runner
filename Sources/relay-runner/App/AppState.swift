@@ -9,6 +9,16 @@ private struct NotchActivitySnapshot {
 
 @Observable
 final class AppState {
+    enum SessionLaunchDestination: Equatable {
+        case embedded
+        case externalTerminal
+    }
+
+    struct SessionLaunchRequest: Equatable {
+        let config: AppConfig
+        let destination: SessionLaunchDestination
+    }
+
     struct LaunchPlan: Equatable {
         let startsOverlay: Bool
         let startsAwareness: Bool
@@ -54,6 +64,7 @@ final class AppState {
 
     let configManager = ConfigManager.shared
     let processManager = ProcessManager()
+    let embeddedTerminal = EmbeddedTerminalSession()
     let permissions = PermissionsManager()
     // @ObservationIgnored: @Observable's macro expansion doesn't compose with
     // `lazy`. The controller is stateless from the UI's perspective — views
@@ -344,6 +355,9 @@ final class AppState {
         programBoardOverlay.setSessionActiveProvider { [weak self] in
             self?.hasActiveSession ?? false
         }
+        embeddedTerminal.setExitHandler { [weak self] _ in
+            self?.embeddedTerminalDidExit()
+        }
         notchStatusController.setGlyphClickHandler { [weak self] in
             self?.toggleBoard()
         }
@@ -529,6 +543,15 @@ final class AppState {
 
     /// End the active voice session and revert to awareness mode.
     func endSession() {
+        embeddedTerminal.end()
+        resetActiveSessionState()
+    }
+
+    private func embeddedTerminalDidExit() {
+        resetActiveSessionState()
+    }
+
+    private func resetActiveSessionState() {
         processManager.killBridge(stopRequested: true)
         menuSessionActive = false
         activeSessionLaunchConfig = nil
@@ -550,6 +573,7 @@ final class AppState {
     func stopServices() {
         guard isRunning else { return }
         stopBridgeWatchdog()
+        embeddedTerminal.shutdown()
         menuSessionActive = false
         activeSessionLaunchConfig = nil
         bridgeRecoveryInFlight = false
@@ -564,6 +588,7 @@ final class AppState {
     func prepareForSparkleRelaunch() {
         bridgeRecoverySuppressedForUpdate = true
         stopBridgeWatchdog()
+        embeddedTerminal.shutdown()
         menuSessionActive = false
         activeSessionLaunchConfig = nil
         bridgeAliveCache = false
@@ -656,15 +681,20 @@ final class AppState {
         return hasExplicitWorkspace && oldGeneral.provider != newGeneral.provider
     }
 
-    func newSession(workingDirectory: String? = nil) {
+    func newSession(
+        workingDirectory: String? = nil,
+        destination: SessionLaunchDestination = .embedded
+    ) {
         guard permissions.microphone == .granted else {
             onboarding.showAlways()
             return
         }
-        let launchConfig = Self.sessionLaunchConfig(
+        let request = Self.sessionLaunchRequest(
             from: config,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            destination: destination
         )
+        let launchConfig = request.config
         // Mark first-session-run before we do anything else — the
         // onboarding controller uses this flag to decide whether to
         // re-show the All Set screen on next launch. Marking on
@@ -675,6 +705,9 @@ final class AppState {
         // Kill any existing voice bridge so only one session is active
         processManager.clearBridgeStopRequested()
         processManager.killBridge()
+        if embeddedTerminal.phase.isActive || embeddedTerminal.isEmbeddedProcessRunning {
+            embeddedTerminal.end()
+        }
         menuSessionActive = true
         sessionStartTime = Date()
         sessionBridgeSeen = false
@@ -692,13 +725,63 @@ final class AppState {
             }
         }
 
-        // Launch a normal agent terminal and pre-fire relay-bridge voice mode.
-        processManager.launchNewSession(config: launchConfig)
+        let sessionDirectory = WorkspaceFolder.url(from: launchConfig.general.working_directory).path
+        do {
+            try embeddedTerminal.beginPreparing(
+                providerName: launchConfig.general.provider.displayName,
+                workingDirectory: sessionDirectory
+            )
+            let prepared = try processManager.prepareNewSession(config: launchConfig)
+            switch request.destination {
+            case .embedded:
+                try embeddedTerminal.start(prepared)
+            case .externalTerminal:
+                guard processManager.launchPreparedSessionInTerminal(prepared) else {
+                    throw ProcessManager.SessionLaunchPreparationError.externalTerminalLaunch
+                }
+                embeddedTerminal.markExternal(
+                    providerName: launchConfig.general.provider.displayName,
+                    workingDirectory: prepared.workingDirectory
+                )
+            }
+        } catch {
+            embeddedTerminal.markFailed(error)
+            menuSessionActive = false
+            activeSessionLaunchConfig = nil
+            bridgeAliveCache = false
+            sessionBridgeSeen = false
+            sessionStartTime = .distantPast
+            statusText = "Ready"
+            NSLog("[AppState] Failed to start session: \(error)")
+        }
         isRunning = true
-        statusText = "Session"
+        if menuSessionActive {
+            statusText = "Session"
+        }
 
         // Ensure overlay is running
         if overlayController == nil { startOverlay() }
+        if request.destination == .externalTerminal && menuSessionActive {
+            if programBoardOverlay.isVisible {
+                programBoardOverlay.hide()
+            }
+            if boardOverlay.isVisible {
+                boardOverlay.hide()
+            }
+        } else {
+            boardOverlay.showTerminal()
+        }
+    }
+
+    static func sessionLaunchRequest(
+        from config: AppConfig,
+        workingDirectory: String?,
+        destination: SessionLaunchDestination = .embedded
+    ) -> SessionLaunchRequest {
+        SessionLaunchRequest(
+            config: sessionLaunchConfig(from: config, workingDirectory: workingDirectory),
+            destination: destination
+        )
     }
 
     static func sessionLaunchConfig(from config: AppConfig, workingDirectory: String?) -> AppConfig {
@@ -832,6 +915,10 @@ final class AppState {
                 stopRequested: self.processManager.bridgeStopRequested(),
                 recoverySuppressed: self.bridgeRecoverySuppressedForUpdate
             )
+
+            if daemonAlive {
+                self.boardOverlay.refreshRouteIfNeeded()
+            }
 
             switch action {
             case .reapOrphan:
@@ -1069,6 +1156,9 @@ final class AppState {
     }
 
     private func surfaceBridgeRecoveryFailure(reason: String) {
+        if embeddedTerminal.phase == .running {
+            embeddedTerminal.end()
+        }
         let presentation = Self.bridgeRecoveryFailurePresentation(reason: reason)
         statusText = presentation.statusText
         stateMachine.showProgramStatus(title: presentation.title, body: presentation.body)
@@ -1211,8 +1301,16 @@ final class AppState {
         boardOverlay.setNoSessionHandler { [weak self] in
             self?.showSessionPromptIfAllowed()
         }
-        boardOverlay.setProgramBoardHandler { [weak self] in
-            self?.programBoardOverlay.toggle()
+        boardOverlay.setProgramBoardHandler { [weak self] initialTab in
+            guard let self else { return }
+            switch initialTab {
+            case .terminal:
+                self.programBoardOverlay.showTerminal()
+            case .systemSettings:
+                self.programBoardOverlay.showSettings()
+            case .work:
+                self.programBoardOverlay.toggle()
+            }
         }
         boardOverlay.setLoadingStateHandler { [weak self] isLoading in
             self?.setProjectBoardLoading(isLoading)
@@ -1221,6 +1319,19 @@ final class AppState {
             guard let self else { return nil }
             return AnyView(WorkspaceSettingsPanel(appState: self))
         }
+        boardOverlay.setTerminalContentProvider { [weak self] workingDirectory in
+            guard let self else { return nil }
+            return AnyView(
+                WorkspaceTerminalPanel(
+                    appState: self,
+                    workingDirectory: workingDirectory
+                )
+            )
+        }
+        boardOverlay.setTerminalFocusProvider(
+            hasFocus: { [weak self] in self?.embeddedTerminal.hasTerminalFocus ?? false },
+            focus: { [weak self] in self?.embeddedTerminal.focus() }
+        )
         programBoardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
             if case .actionGlow = state { return .stt }
@@ -1232,6 +1343,18 @@ final class AppState {
         programBoardOverlay.setSettingsContentProvider { [weak self] in
             guard let self else { return nil }
             return AnyView(WorkspaceSettingsPanel(appState: self))
+        }
+        programBoardOverlay.setTerminalContentProvider { [weak self] workingDirectory in
+            guard let self else { return nil }
+            return AnyView(
+                WorkspaceTerminalPanel(
+                    appState: self,
+                    workingDirectory: workingDirectory
+                )
+            )
+        }
+        programBoardOverlay.setTerminalFocusHandler { [weak self] in
+            self?.embeddedTerminal.focus()
         }
         programBoardOverlay.setOpenProjectHandler { [weak self] repoPath in
             guard let self else { return }

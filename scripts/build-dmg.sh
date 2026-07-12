@@ -156,6 +156,18 @@ if [ -d "$RESOURCE_BUNDLE" ]; then
     fi
 fi
 
+# SwiftTerm ships its optional Metal shaders as an SPM resource bundle. The
+# embedded terminal currently uses the Core Graphics renderer, but packaging
+# the bundle keeps the dependency complete and allows a later renderer switch
+# without a release-only resource failure.
+SWIFTTERM_RESOURCE_BUNDLE="$BUILD_DIR/SwiftTerm_SwiftTerm.bundle"
+if [ -d "$SWIFTTERM_RESOURCE_BUNDLE" ]; then
+    cp -R "$SWIFTTERM_RESOURCE_BUNDLE" "$APP_DIR/Contents/Resources/"
+else
+    echo "error: SwiftTerm resource bundle not found after swift build" >&2
+    exit 1
+fi
+
 # Python services
 for f in voice_bridge.py command_actions.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py \
          graphify_core.py graphify_ingest.py orchestrator.py orchestrator_workflow.md \

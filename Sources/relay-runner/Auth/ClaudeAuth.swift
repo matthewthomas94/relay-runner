@@ -71,7 +71,7 @@ enum ClaudeAuth {
 
 enum CodexAuth {
     static var codexBinaryPath: String {
-        "/Applications/Codex.app/Contents/Resources/codex"
+        ProcessManager.resolveAgentBinary("codex", target: .codex)
     }
 
     static var isAuthenticated: Bool {

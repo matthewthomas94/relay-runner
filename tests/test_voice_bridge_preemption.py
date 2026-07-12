@@ -1019,7 +1019,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             script.index("Then send the TTS response with the claimed Relay command metadata.")
         ]
         codex_cleanup = script[
-            script.index("After your response, stop the heartbeat refresher"):
+            script.index("After each handled command, stop only that command's heartbeat refresher"):
             script.index("Write only the spoken summary to TTS, tagged with the claimed Relay command metadata.")
         ]
 

@@ -23,6 +23,8 @@ final class ProgramBoardOverlayController {
     private var sessionActiveProvider: () -> Bool = { false }
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
     private var settingsContentProvider: (() -> AnyView?)?
+    private var terminalContentProvider: ((String?) -> AnyView?)?
+    private var terminalFocusHandler: (() -> Void)?
     private var themePollTimer: Timer?
     private var statusPollTimer: Timer?
 
@@ -58,6 +60,14 @@ final class ProgramBoardOverlayController {
         self.settingsContentProvider = provider
     }
 
+    func setTerminalContentProvider(_ provider: @escaping (String?) -> AnyView?) {
+        terminalContentProvider = provider
+    }
+
+    func setTerminalFocusHandler(_ handler: @escaping () -> Void) {
+        terminalFocusHandler = handler
+    }
+
     static func sessionControlAction(
         hasActiveSession: Bool,
         selectedProjectPath: String?
@@ -75,12 +85,17 @@ final class ProgramBoardOverlayController {
     }
 
     func show() {
+        show(initialTab: .work)
+    }
+
+    private func show(initialTab: WorkspaceTab) {
         guard !isVisible else { return }
         let settingsContent = settingsContentProvider?()
         workspace.configure(
             showsWorkTab: true,
+            showsTerminalTab: terminalContentProvider != nil,
             showsSettingsTab: settingsContent != nil,
-            initialTab: .work
+            initialTab: initialTab
         )
 
         let p = panel ?? BoardOverlayPanel()
@@ -103,6 +118,9 @@ final class ProgramBoardOverlayController {
             model: model,
             workspace: workspace,
             settingsContent: settingsContent,
+            terminalContent: { [weak self] projectPath in
+                self?.terminalContentProvider?(projectPath)
+            },
             onDismiss: { [weak self] in self?.hide() },
             onWorkspaceTabChange: { [weak self] _ in self?.updatePanelKeyEligibility() },
             onRefresh: { [weak self] in self?.model.reload() },
@@ -138,6 +156,7 @@ final class ProgramBoardOverlayController {
         panel = p
         revealContainer = container
         isVisible = true
+        updatePanelKeyEligibility()
         DispatchQueue.main.async { [weak container] in
             container?.animateReveal {}
         }
@@ -166,6 +185,15 @@ final class ProgramBoardOverlayController {
         }
     }
 
+    func showTerminal() {
+        if isVisible {
+            workspace.select(.terminal)
+            updatePanelKeyEligibility()
+        } else {
+            show(initialTab: .terminal)
+        }
+    }
+
     func hide() {
         guard isVisible else { return }
         loadingStateHandler?(false)
@@ -181,6 +209,7 @@ final class ProgramBoardOverlayController {
         if let container {
             container.animateDismiss { [weak self, weak panelToDismiss] in
                 guard let panelToDismiss else { return }
+                if let self, self.revealContainer !== container { return }
                 panelToDismiss.orderOut(nil)
                 if let self, self.panel === panelToDismiss {
                     self.panel?.contentView = nil
@@ -365,8 +394,13 @@ final class ProgramBoardOverlayController {
 
     private func updatePanelKeyEligibility() {
         setPanelKeyEligible(
-            model.creating != nil || model.editing != nil || workspace.selectedTab == .systemSettings
+            model.creating != nil || model.editing != nil || workspace.selectedTab.requiresKeyWindow
         )
+        if workspace.selectedTab == .terminal {
+            DispatchQueue.main.async { [weak self] in
+                self?.terminalFocusHandler?()
+            }
+        }
     }
 
     private func currentMouseScreen() -> NSScreen? {

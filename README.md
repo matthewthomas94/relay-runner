@@ -47,10 +47,10 @@ All speech-to-text and text-to-speech runs **on-device**. No voice data leaves y
 ### Quickest path
 
 1. Click the Relay Runner menu bar icon → **Start Session…**.
-2. A terminal opens, runs the configured agent, and auto-starts a voice session.
-3. Tap **Caps Lock** to speak; the agent responds in the terminal and via TTS.
+2. Workspace opens to its embedded **Terminal** tab, runs the configured agent, and auto-starts a voice session.
+3. Tap **Caps Lock** to speak; the agent responds in the embedded terminal and via TTS.
 
-The session is a normal Codex or Claude terminal session. By default, **Start Session…** launches the agent with its permission-bypass flag so voice flow isn't interrupted by per-tool approval prompts. You can turn that off in **Settings → General**.
+The session is a normal Codex or Claude terminal session hosted inside Relay Runner. Closing Workspace leaves it running; **End Session** stops it. The Terminal tab also offers **Open in Terminal.app** as a compatibility fallback. By default, **Start Session…** launches the agent with its permission-bypass flag so voice flow isn't interrupted by per-tool approval prompts. You can turn that off in **Settings → General**.
 
 ### From an existing terminal
 
@@ -92,7 +92,7 @@ All settings live in the Settings window. Config is persisted to:
 - **LLM Provider** — Codex (default) or Claude. **Start Session…** launches the selected provider's CLI.
 - **Model** — provider-specific choices. Codex offers Default, GPT-5.5, GPT-5.4, GPT-5.4-Mini, and GPT-5.3-Codex-Spark; Claude offers Default, Opus, Sonnet, and Haiku. *Default* lets the selected provider use its normal account-level setting; the others pass `--model <alias>` to the CLI for this session.
 - **Working directory** — where new voice sessions open
-- **Terminal** — Warp, iTerm2, Terminal, Kitty, or Alacritty
+- **Terminal tab** — hosts the active Codex or Claude session inside Workspace, with Terminal.app available as a fallback
 - **Bypass agent permission prompts** — when on (default), sessions launched from **Start Session…** run with the configured agent's bypass flag so voice flow isn't interrupted. Turn off if you want the agent to ask before each tool use; voice still works, you'll just answer prompts in the terminal.
 - **Auto-start services on app launch**
 - **Relay Skills** — install/reinstall relay-bridge and relay-stop support for Codex and Claude Code
@@ -161,6 +161,7 @@ Swift (via SPM):
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) — Parakeet STT on the Apple Neural Engine
 - [TOMLKit](https://github.com/LebJe/TOMLKit) — config file parsing
+- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) — embedded terminal emulation and local pseudo-terminal hosting
 
 Python (installed into a local venv on first run):
 
@@ -178,6 +179,7 @@ Sources/relay-runner/     Swift app
   STT/                    Audio capture, Parakeet engine, hotkey gesture
   Overlay/                Awareness pill, particle renderer, state machine
   Settings/               SwiftUI settings window (tabs)
+  Terminal/               Embedded terminal process ownership and Workspace UI
   Config/                 TOML config I/O
   Resources/              Asset catalog (app icon, tray icons)
 services/                 Python voice bridge + Kokoro TTS worker
@@ -226,5 +228,6 @@ SOFTWARE.
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) by FluidInference for Parakeet on the ANE
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) for the TTS voices
+- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) by Miguel de Icaza for embedded terminal emulation
 - Codex by OpenAI
 - [Claude Code](https://github.com/anthropics/claude-code) by Anthropic

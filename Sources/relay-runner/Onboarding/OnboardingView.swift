@@ -841,7 +841,7 @@ struct OnboardingView: View {
                     sessionMethodRow(
                         icon: "menubar.rectangle",
                         title: "From the menu bar",
-                        detail: "Click the Relay Runner icon, then choose \u{201C}Start Session\u{2026}\u{201D}. A terminal opens with the configured agent already listening."
+                        detail: "Click the Relay Runner icon, then choose \u{201C}Start Session\u{2026}\u{201D}. Workspace opens to an embedded terminal with the configured agent already listening."
                     )
                     sessionMethodRow(
                         icon: "terminal",

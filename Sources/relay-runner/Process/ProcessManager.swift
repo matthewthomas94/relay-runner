@@ -591,19 +591,47 @@ final class ProcessManager {
         }
     }
 
-    /// Launch the configured agent in a new terminal tab and have it start
-    /// Relay Runner voice mode on the first turn. Claude uses the
-    /// `/relay-bridge` slash command; Codex uses the installed relay-bridge
-    /// skill and a normal initial prompt.
+    struct PreparedSessionLaunch: Equatable {
+        let executable: String
+        let arguments: [String]
+        let launcherPath: String
+        let workingDirectory: String
+    }
+
+    enum SessionLaunchPreparationError: LocalizedError {
+        case externalTerminalLaunch
+        case launcherPermissions(Int32)
+        case invalidWorkingDirectory(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .externalTerminalLaunch:
+                return "Terminal.app could not open the Relay Runner session."
+            case .launcherPermissions(let status):
+                return "Could not prepare the Relay Runner session launcher (chmod exited with status \(status))."
+            case .invalidWorkingDirectory(let path):
+                return "The session workspace folder is unavailable: \(path)"
+            }
+        }
+    }
+
+    /// Prepare the provider command shared by embedded and external terminal
+    /// launches. Claude uses `/relay-bridge`; Codex uses the installed
+    /// relay-bridge skill and a normal initial prompt.
     ///
-    /// The launcher still calls `relay-bridge --venv-only` first so the
-    /// Python venv, Kokoro model, and agent CLI are all in place before
-    /// the command/skill runs (which spawns the daemon that needs them).
-    /// The command/skill files have to exist on disk before launch too,
-    /// otherwise relay startup is silently treated as a literal prompt;
-    /// we self-heal by reinstalling them if they've gone missing.
-    func launchNewSession(config: AppConfig) {
+    /// The launcher calls `relay-bridge --venv-only` first so the Python venv,
+    /// Kokoro model, and provider CLI are ready before the interactive agent
+    /// starts. Refreshing the skill files here also keeps every launch path on
+    /// the same shipped relay contract.
+    func prepareNewSession(config: AppConfig) throws -> PreparedSessionLaunch {
         Self.clearBridgeStopRequested()
+
+        let workingDirectory = WorkspaceFolder.url(from: config.general.working_directory).path
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: workingDirectory, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw SessionLaunchPreparationError.invalidWorkingDirectory(workingDirectory)
+        }
 
         let configPath = ConfigManager.shared.configPath.path
         let relayBridge = bundledRelayBridge.path
@@ -628,20 +656,46 @@ final class ProcessManager {
             agentBinary: agentBinary,
             config: config
         )
-        try? script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
+        try script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
         let chmod = Process()
         chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
         chmod.arguments = ["+x", launcher]
-        try? chmod.run()
+        try chmod.run()
         chmod.waitUntilExit()
+        guard chmod.terminationStatus == 0 else {
+            throw SessionLaunchPreparationError.launcherPermissions(chmod.terminationStatus)
+        }
 
         // Pre-create the legacy voice_in fifo for any old-path consumers;
         // the new --relay daemon manages /tmp/voice_bridge.sock,
         // /tmp/voice_cmd_ready, /tmp/tts_in.fifo, and the heartbeat itself.
         ensureFifo()
 
-        launchInTerminal(command: launcher)
+        return PreparedSessionLaunch(
+            executable: "/bin/bash",
+            arguments: [launcher],
+            launcherPath: launcher,
+            workingDirectory: workingDirectory
+        )
+    }
+
+    /// Launch the prepared session in Terminal.app. Kept as a compatibility
+    /// path when the embedded terminal cannot be used or the user prefers a
+    /// separate terminal window.
+    @discardableResult
+    func launchPreparedSessionInTerminal(_ launch: PreparedSessionLaunch) -> Bool {
+        launchInTerminal(command: launch.launcherPath)
+    }
+
+    @discardableResult
+    func launchNewSession(config: AppConfig) -> Bool {
+        do {
+            return launchPreparedSessionInTerminal(try prepareNewSession(config: config))
+        } catch {
+            NSLog("[ProcessManager] Failed to prepare new session: \(error)")
+            return false
+        }
     }
 
     enum AgentTarget {
@@ -692,11 +746,15 @@ final class ProcessManager {
         # dropped a binary moments ago and the shell profile may not know yet.
         export PATH="$HOME/.local/bin:$PATH"
         export RELAY_RUNNER_PROVIDER=\(Self.shellQuoted(target.providerMetadataValue))
+        # The agent can execute bootstrap checks inside its own sandbox, where
+        # process enumeration may not see the Relay Runner host. This marker is
+        # advisory session context, not a security boundary.
+        export RELAY_RUNNER_APP_SESSION=1
         \(cdLine)
         # Interactive agent session with Relay Runner voice mode pre-fired.
-        \(launchLine)
-        echo ''
-        echo '[Relay Runner] Session ended.'
+        # Replacing this launcher process keeps the PTY child PID aligned with
+        # the agent, so End Session terminates the interactive process cleanly.
+        exec \(launchLine)
         """
     }
 
@@ -709,21 +767,28 @@ final class ProcessManager {
 
     /// Resolve the configured agent binary. For Codex, prefer the desktop
     /// app's bundled CLI; for Claude, prefer the installer symlink.
-    private static func resolveAgentBinary(_ command: String, target: AgentTarget) -> String {
+    static func resolveAgentBinary(
+        _ command: String,
+        target: AgentTarget,
+        isExecutable: (String) -> Bool = FileManager.default.isExecutableFile(atPath:)
+    ) -> String {
         let trimmed = command.trimmingCharacters(in: .whitespaces)
         if !trimmed.isEmpty && trimmed.hasPrefix("/") {
             return trimmed
         }
         switch target {
         case .codex:
-            let bundled = "/Applications/Codex.app/Contents/Resources/codex"
-            if FileManager.default.isExecutableFile(atPath: bundled) {
+            let bundledCandidates = [
+                "/Applications/ChatGPT.app/Contents/Resources/codex",
+                "/Applications/Codex.app/Contents/Resources/codex",
+            ]
+            if let bundled = bundledCandidates.first(where: isExecutable) {
                 return bundled
             }
             return "codex"
         case .claude:
             let local = ClaudeAuth.claudeBinaryPath
-            if FileManager.default.isExecutableFile(atPath: local) {
+            if isExecutable(local) {
                 return local
             }
             return "claude"
@@ -959,17 +1024,17 @@ final class ProcessManager {
     }
 
     /// Launch a command in Terminal.app via AppleScript `do script`.
-    private func launchInTerminal(command: String) {
+    private func launchInTerminal(command: String) -> Bool {
         let appleScript = """
         tell application "Terminal"
             activate
             do script "bash '\(command)'"
         end tell
         """
-        runAppleScript(appleScript)
+        return runAppleScript(appleScript)
     }
 
-    private func runAppleScript(_ script: String) {
+    private func runAppleScript(_ script: String) -> Bool {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         proc.arguments = ["-e", script]
@@ -982,8 +1047,10 @@ final class ProcessManager {
             if proc.terminationStatus != 0, let errStr = String(data: errData, encoding: .utf8) {
                 NSLog("[ProcessManager] osascript failed (\(proc.terminationStatus)): \(errStr)")
             }
+            return proc.terminationStatus == 0
         } catch {
             NSLog("[ProcessManager] osascript launch error: \(error)")
+            return false
         }
     }
 }

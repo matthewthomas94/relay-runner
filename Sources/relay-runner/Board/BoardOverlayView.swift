@@ -260,6 +260,7 @@ struct BoardOverlayView: View {
     @Bindable var model: BoardViewModel
     @Bindable var workspace: WorkspaceViewModel
     let settingsContent: AnyView?
+    let terminalContent: AnyView?
     let onDismiss: () -> Void
     let onWorkspaceTabChange: (WorkspaceTab) -> Void
     /// Drag-drop handler. Called when a ticket is dropped on a column (or on
@@ -306,7 +307,15 @@ struct BoardOverlayView: View {
             .padding(.top, 28)
             .zIndex(2)
 
-            if workspace.selectedTab == .systemSettings, let settingsContent {
+            if workspace.selectedTab == .terminal, let terminalContent {
+                VStack(spacing: 0) {
+                    terminalContent
+                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                .frame(maxWidth: .infinity, alignment: .top)
+            } else if workspace.selectedTab == .systemSettings, let settingsContent {
                 VStack(spacing: 0) {
                     settingsContent
                         .padding(.top, BoardSurfaceLayout.columnTopPadding)

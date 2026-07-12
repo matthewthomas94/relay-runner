@@ -77,7 +77,9 @@ find_claude_bin() {
 }
 
 find_codex_bin() {
-    if [ -x "/Applications/Codex.app/Contents/Resources/codex" ]; then
+    if [ -x "/Applications/ChatGPT.app/Contents/Resources/codex" ]; then
+        echo "/Applications/ChatGPT.app/Contents/Resources/codex"
+    elif [ -x "/Applications/Codex.app/Contents/Resources/codex" ]; then
         echo "/Applications/Codex.app/Contents/Resources/codex"
     elif command -v codex >/dev/null 2>&1; then
         command -v codex

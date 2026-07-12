@@ -18,6 +18,12 @@ private struct BoardSnapshot {
 /// plain stored property without forcing AppState onto the main actor.
 final class BoardOverlayController {
 
+    enum UtilityRouteUpgrade: Equatable {
+        case none
+        case project
+        case programBoard
+    }
+
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
     private weak var revealContainer: BoardRevealContainerView?
@@ -42,6 +48,9 @@ final class BoardOverlayController {
     private var loadingStateHandler: ((Bool) -> Void)?
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
     private var settingsContentProvider: (() -> AnyView?)?
+    private var terminalContentProvider: ((String?) -> AnyView?)?
+    private var terminalHasFocusProvider: () -> Bool = { false }
+    private var terminalFocusHandler: (() -> Void)?
 
     private let boardRouteResolver: () -> ProjectResolver.BoardRoute
 
@@ -63,8 +72,8 @@ final class BoardOverlayController {
         self.noSessionHandler = handler
     }
 
-    private var programBoardHandler: (() -> Void)?
-    func setProgramBoardHandler(_ handler: @escaping () -> Void) {
+    private var programBoardHandler: ((WorkspaceTab) -> Void)?
+    func setProgramBoardHandler(_ handler: @escaping (WorkspaceTab) -> Void) {
         self.programBoardHandler = handler
     }
 
@@ -78,6 +87,18 @@ final class BoardOverlayController {
 
     func setSettingsContentProvider(_ provider: @escaping () -> AnyView?) {
         self.settingsContentProvider = provider
+    }
+
+    func setTerminalContentProvider(_ provider: @escaping (String?) -> AnyView?) {
+        terminalContentProvider = provider
+    }
+
+    func setTerminalFocusProvider(
+        hasFocus: @escaping () -> Bool,
+        focus: @escaping () -> Void
+    ) {
+        terminalHasFocusProvider = hasFocus
+        terminalFocusHandler = focus
     }
 
     deinit {
@@ -118,7 +139,11 @@ final class BoardOverlayController {
         switch event.type {
         case .keyDown:
             // Esc: cancel an open editor first, otherwise dismiss the board.
-            if event.keyCode == 53, isVisible {
+            if event.keyCode == 53,
+               isVisible,
+               workspace.selectedTab.allowsEscapeDismissal(
+                   terminalHasFocus: terminalHasFocusProvider()
+               ) {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     if self.model.editing != nil { self.cancelEditor() } else { self.hide() }
@@ -134,6 +159,10 @@ final class BoardOverlayController {
     }
 
     func show() {
+        show(initialTab: .work)
+    }
+
+    private func show(initialTab: WorkspaceTab) {
         guard !isVisible else { return }
 
         // Board routing follows the active workspace/project distinction: a
@@ -144,18 +173,70 @@ final class BoardOverlayController {
         case .project(let resolvedProject):
             project = resolvedProject
         case .programBoard:
-            programBoardHandler?()
+            programBoardHandler?(initialTab)
             return
         case .unavailable:
-            noSessionHandler?()
+            if terminalContentProvider != nil || settingsContentProvider != nil {
+                presentUtility(initialTab: initialTab == .work ? .terminal : initialTab)
+            } else {
+                noSessionHandler?()
+            }
             return
         }
-        present(project: project)
+        present(project: project, initialTab: initialTab)
     }
 
     func show(project: ProjectResolver.LinkedProject) {
         if isVisible { hide() }
-        present(project: project)
+        present(project: project, initialTab: .work)
+    }
+
+    func showTerminal() {
+        if isVisible {
+            workspace.select(.terminal)
+            updatePanelKeyEligibility()
+        } else {
+            show(initialTab: .terminal)
+        }
+    }
+
+    /// A session can expose Terminal before its bridge metadata exists. Once
+    /// routing becomes available, replace that utility-only surface while
+    /// preserving the tab the user was already using.
+    func refreshRouteIfNeeded() {
+        guard isVisible, !workspace.showsWorkTab else { return }
+        let route = boardRouteResolver()
+        let initialTab = workspace.selectedTab
+
+        switch Self.utilityRouteUpgrade(
+            isVisible: isVisible,
+            showsWorkTab: workspace.showsWorkTab,
+            route: route
+        ) {
+        case .project:
+            guard case .project(let project) = route else { return }
+            hide()
+            present(project: project, initialTab: initialTab)
+        case .programBoard:
+            guard let programBoardHandler else { return }
+            hide()
+            programBoardHandler(initialTab)
+        case .none:
+            return
+        }
+    }
+
+    static func utilityRouteUpgrade(
+        isVisible: Bool,
+        showsWorkTab: Bool,
+        route: ProjectResolver.BoardRoute
+    ) -> UtilityRouteUpgrade {
+        guard isVisible, !showsWorkTab else { return .none }
+        switch route {
+        case .project: return .project
+        case .programBoard: return .programBoard
+        case .unavailable: return .none
+        }
     }
 
     func showSettings() {
@@ -165,17 +246,19 @@ final class BoardOverlayController {
             updatePanelKeyEligibility()
             return
         }
-        presentSettingsOnly()
+        presentUtility(initialTab: .systemSettings)
     }
 
-    private func present(project: ProjectResolver.LinkedProject) {
+    private func present(project: ProjectResolver.LinkedProject, initialTab: WorkspaceTab) {
         guard !isVisible else { return }
         currentProject = project
         let settingsContent = settingsContentProvider?()
+        let terminalContent = terminalContentProvider?(project.repoPath.path)
         workspace.configure(
             showsWorkTab: true,
+            showsTerminalTab: terminalContent != nil,
             showsSettingsTab: settingsContent != nil,
-            initialTab: .work
+            initialTab: initialTab
         )
 
         let p = panel ?? BoardOverlayPanel()
@@ -201,6 +284,7 @@ final class BoardOverlayController {
             model: model,
             workspace: workspace,
             settingsContent: settingsContent,
+            terminalContent: terminalContent,
             onDismiss: { [weak self] in self?.hide() },
             onWorkspaceTabChange: { [weak self] _ in self?.updatePanelKeyEligibility() },
             onDrop: { [weak self] id, status, idx in self?.handleDrop(ticketId: id, to: status, insertIndex: idx) },
@@ -231,6 +315,7 @@ final class BoardOverlayController {
         self.panel = p
         self.revealContainer = container
         self.isVisible = true
+        updatePanelKeyEligibility()
         DispatchQueue.main.async { [weak container] in
             container?.animateReveal {}
         }
@@ -240,9 +325,10 @@ final class BoardOverlayController {
         refreshVisibleProject(trigger: "board-show", showsLoading: !hasCachedProject)
     }
 
-    private func presentSettingsOnly() {
+    private func presentUtility(initialTab: WorkspaceTab) {
         let settingsContent = settingsContentProvider?()
-        guard settingsContent != nil else { return }
+        let terminalContent = terminalContentProvider?(nil)
+        guard settingsContent != nil || terminalContent != nil else { return }
 
         currentProject = nil
         model.editing = nil
@@ -250,8 +336,9 @@ final class BoardOverlayController {
         model.theme = themeResolver?()
         workspace.configure(
             showsWorkTab: false,
-            showsSettingsTab: true,
-            initialTab: .systemSettings
+            showsTerminalTab: terminalContent != nil,
+            showsSettingsTab: settingsContent != nil,
+            initialTab: initialTab
         )
 
         let p = panel ?? BoardOverlayPanel()
@@ -265,6 +352,7 @@ final class BoardOverlayController {
             model: model,
             workspace: workspace,
             settingsContent: settingsContent,
+            terminalContent: terminalContent,
             onDismiss: { [weak self] in self?.hide() },
             onWorkspaceTabChange: { [weak self] _ in self?.updatePanelKeyEligibility() },
             onDrop: { _, _, _ in },
@@ -313,6 +401,7 @@ final class BoardOverlayController {
         }
         model.dragState = nil
         currentProject = nil
+        setPanelKeyEligible(false)
         stopThemePoll()
         stopRunStatePoll()
         isVisible = false
@@ -321,6 +410,7 @@ final class BoardOverlayController {
         if let container {
             container.animateDismiss { [weak self, weak panelToDismiss] in
                 guard let panelToDismiss else { return }
+                if let self, self.revealContainer !== container { return }
                 panelToDismiss.orderOut(nil)
                 if let self, self.panel === panelToDismiss {
                     self.panel?.contentView = nil
@@ -661,7 +751,12 @@ final class BoardOverlayController {
     }
 
     private func updatePanelKeyEligibility() {
-        setPanelKeyEligible(model.editing != nil || workspace.selectedTab == .systemSettings)
+        setPanelKeyEligible(model.editing != nil || workspace.selectedTab.requiresKeyWindow)
+        if workspace.selectedTab == .terminal {
+            DispatchQueue.main.async { [weak self] in
+                self?.terminalFocusHandler?()
+            }
+        }
     }
 
     // MARK: - Helpers

@@ -2,6 +2,7 @@ import SwiftUI
 
 enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
     case work
+    case terminal
     case systemSettings
 
     var id: String { rawValue }
@@ -9,6 +10,7 @@ enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
     var title: String {
         switch self {
         case .work: return "Work"
+        case .terminal: return "Terminal"
         case .systemSettings: return "System Settings"
         }
     }
@@ -16,8 +18,17 @@ enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
     var systemImage: String {
         switch self {
         case .work: return "rectangle.3.group"
+        case .terminal: return "terminal"
         case .systemSettings: return "gearshape"
         }
+    }
+
+    var requiresKeyWindow: Bool {
+        self == .terminal || self == .systemSettings
+    }
+
+    func allowsEscapeDismissal(terminalHasFocus: Bool) -> Bool {
+        self != .terminal || !terminalHasFocus
     }
 }
 
@@ -25,25 +36,30 @@ enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
 final class WorkspaceViewModel {
     var selectedTab: WorkspaceTab = .work
     var showsWorkTab = true
+    var showsTerminalTab = true
     var showsSettingsTab = false
 
     var availableTabs: [WorkspaceTab] {
         WorkspaceViewModel.availableTabs(
             showsWorkTab: showsWorkTab,
+            showsTerminalTab: showsTerminalTab,
             showsSettingsTab: showsSettingsTab
         )
     }
 
     func configure(
         showsWorkTab: Bool,
+        showsTerminalTab: Bool,
         showsSettingsTab: Bool,
         initialTab: WorkspaceTab
     ) {
         self.showsWorkTab = showsWorkTab
+        self.showsTerminalTab = showsTerminalTab
         self.showsSettingsTab = showsSettingsTab
         selectedTab = Self.normalized(
             initialTab,
             showsWorkTab: showsWorkTab,
+            showsTerminalTab: showsTerminalTab,
             showsSettingsTab: showsSettingsTab
         )
     }
@@ -52,13 +68,19 @@ final class WorkspaceViewModel {
         selectedTab = Self.normalized(
             tab,
             showsWorkTab: showsWorkTab,
+            showsTerminalTab: showsTerminalTab,
             showsSettingsTab: showsSettingsTab
         )
     }
 
-    static func availableTabs(showsWorkTab: Bool, showsSettingsTab: Bool) -> [WorkspaceTab] {
+    static func availableTabs(
+        showsWorkTab: Bool,
+        showsTerminalTab: Bool,
+        showsSettingsTab: Bool
+    ) -> [WorkspaceTab] {
         var tabs: [WorkspaceTab] = []
         if showsWorkTab { tabs.append(.work) }
+        if showsTerminalTab { tabs.append(.terminal) }
         if showsSettingsTab { tabs.append(.systemSettings) }
         return tabs
     }
@@ -66,9 +88,14 @@ final class WorkspaceViewModel {
     static func normalized(
         _ tab: WorkspaceTab,
         showsWorkTab: Bool,
+        showsTerminalTab: Bool,
         showsSettingsTab: Bool
     ) -> WorkspaceTab {
-        let tabs = availableTabs(showsWorkTab: showsWorkTab, showsSettingsTab: showsSettingsTab)
+        let tabs = availableTabs(
+            showsWorkTab: showsWorkTab,
+            showsTerminalTab: showsTerminalTab,
+            showsSettingsTab: showsSettingsTab
+        )
         if tabs.contains(tab) { return tab }
         return tabs.first ?? .work
     }

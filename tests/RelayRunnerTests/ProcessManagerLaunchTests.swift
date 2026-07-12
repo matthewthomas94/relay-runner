@@ -20,9 +20,10 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(codexScript.contains("'/Relay Runner/relay-bridge' --venv-only"))
         XCTAssertTrue(codexScript.contains("rm -f /tmp/voice_bridge_stop_requested"))
         XCTAssertTrue(codexScript.contains("export RELAY_RUNNER_PROVIDER='codex'"))
+        XCTAssertTrue(codexScript.contains("export RELAY_RUNNER_APP_SESSION=1"))
         XCTAssertTrue(codexScript.contains("cd '/Users/example/dev workspace'"))
         XCTAssertTrue(codexScript.contains(
-            "'/usr/local/bin/codex' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
+            "exec '/usr/local/bin/codex' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
         ))
 
         var claudeConfig = AppConfig()
@@ -38,9 +39,10 @@ final class ProcessManagerLaunchTests: XCTestCase {
         )
 
         XCTAssertTrue(claudeScript.contains("export RELAY_RUNNER_PROVIDER='claude'"))
+        XCTAssertTrue(claudeScript.contains("export RELAY_RUNNER_APP_SESSION=1"))
         XCTAssertTrue(claudeScript.contains("cd '/Users/example/dev workspace'"))
         XCTAssertTrue(claudeScript.contains(
-            "'/usr/local/bin/claude' --effort 'high' --dangerously-skip-permissions \"/relay-bridge\""
+            "exec '/usr/local/bin/claude' --effort 'high' --dangerously-skip-permissions \"/relay-bridge\""
         ))
         XCTAssertFalse(claudeScript.contains("model_reasoning_effort"))
         XCTAssertFalse(claudeScript.contains(" -c "))
@@ -158,5 +160,58 @@ final class ProcessManagerLaunchTests: XCTestCase {
 
         XCTAssertFalse(script.contains("model_reasoning_effort"))
         XCTAssertFalse(script.contains(" -c "))
+    }
+
+    func testPreparedSessionLaunchCarriesSharedEmbeddedAndExternalCommand() {
+        let launch = ProcessManager.PreparedSessionLaunch(
+            executable: "/bin/bash",
+            arguments: ["/tmp/voice_bridge_launch.command"],
+            launcherPath: "/tmp/voice_bridge_launch.command",
+            workingDirectory: "/Users/example/dev"
+        )
+
+        XCTAssertEqual(launch.executable, "/bin/bash")
+        XCTAssertEqual(launch.arguments, [launch.launcherPath])
+        XCTAssertEqual(launch.workingDirectory, "/Users/example/dev")
+    }
+
+    func testCodexBinaryResolutionPrefersCurrentChatGPTAppThenLegacyCodexApp() {
+        let chatGPT = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        let legacy = "/Applications/Codex.app/Contents/Resources/codex"
+
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(
+                "codex",
+                target: .codex,
+                isExecutable: { $0 == chatGPT || $0 == legacy }
+            ),
+            chatGPT
+        )
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(
+                "codex",
+                target: .codex,
+                isExecutable: { $0 == legacy }
+            ),
+            legacy
+        )
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(
+                "codex",
+                target: .codex,
+                isExecutable: { _ in false }
+            ),
+            "codex"
+        )
+    }
+
+    func testOnboardingUsesTheSameCurrentThenLegacyCodexBundleOrder() {
+        XCTAssertEqual(
+            VenvInstaller.codexCLIPaths,
+            [
+                "/Applications/ChatGPT.app/Contents/Resources/codex",
+                "/Applications/Codex.app/Contents/Resources/codex",
+            ]
+        )
     }
 }

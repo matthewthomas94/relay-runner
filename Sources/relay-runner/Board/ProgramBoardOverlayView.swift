@@ -15,6 +15,7 @@ struct ProgramBoardOverlayView: View {
     @Bindable var model: ProgramBoardViewModel
     @Bindable var workspace: WorkspaceViewModel
     let settingsContent: AnyView?
+    let terminalContent: (String?) -> AnyView?
     let onDismiss: () -> Void
     let onWorkspaceTabChange: (WorkspaceTab) -> Void
     let onRefresh: () -> Void
@@ -58,7 +59,16 @@ struct ProgramBoardOverlayView: View {
             .padding(.top, 28)
             .zIndex(2)
 
-            if workspace.selectedTab == .systemSettings, let settingsContent {
+            if workspace.selectedTab == .terminal,
+               let terminalContent = terminalContent(model.selectedSessionProjectPath) {
+                VStack(spacing: 0) {
+                    terminalContent
+                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                .frame(maxWidth: .infinity, alignment: .top)
+            } else if workspace.selectedTab == .systemSettings, let settingsContent {
                 VStack(spacing: 0) {
                     settingsContent
                         .padding(.top, BoardSurfaceLayout.columnTopPadding)
@@ -254,13 +264,18 @@ private extension View {
 enum ProgramBoardContentPresentation: Equatable {
     case board
     case noRegisteredProjects
+    case loadFailure
     case empty
 
     static func resolve(
         hasSnapshot: Bool,
-        hasRegisteredProjects: Bool
+        hasRegisteredProjects: Bool,
+        reloadState: ProgramBoardReloadState
     ) -> ProgramBoardContentPresentation {
-        guard hasSnapshot else { return .empty }
+        guard hasSnapshot else {
+            if case .failed = reloadState { return .loadFailure }
+            return .empty
+        }
         return hasRegisteredProjects ? .board : .noRegisteredProjects
     }
 }
@@ -280,7 +295,8 @@ private struct ProgramBoardContent: View {
     var body: some View {
         switch ProgramBoardContentPresentation.resolve(
             hasSnapshot: model.snapshot != nil,
-            hasRegisteredProjects: model.snapshot?.hasRegisteredProjects ?? false
+            hasRegisteredProjects: model.snapshot?.hasRegisteredProjects ?? false,
+            reloadState: model.reloadState
         ) {
         case .board:
             if let snapshot = model.snapshot {
@@ -342,6 +358,15 @@ private struct ProgramBoardContent: View {
                     onDismiss: onDismiss
                 )
             }
+        case .loadFailure:
+            ProgramStatePanel(
+                title: "Work unavailable",
+                detail: model.errorMessage ?? "Relay Runner orchestrator is not reachable.",
+                reloadState: model.reloadState,
+                theme: model.theme,
+                onRefresh: onRefresh,
+                onDismiss: onDismiss
+            )
         case .empty:
             emptySurface
         }

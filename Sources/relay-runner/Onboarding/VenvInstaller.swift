@@ -65,7 +65,8 @@ final class VenvInstaller {
         return fm.isExecutableFile(atPath: userVenvPython)
             && fm.fileExists(atPath: kokoroModelPath)
             && fm.fileExists(atPath: kokoroVoicesPath)
-            && (fm.isExecutableFile(atPath: codexCLIPath) || fm.isExecutableFile(atPath: claudeCLIPath))
+            && (codexCLIPaths.contains { fm.isExecutableFile(atPath: $0) }
+                || fm.isExecutableFile(atPath: claudeCLIPath))
             && fm.fileExists(atPath: bridgeSkillPath)
             && fm.fileExists(atPath: stopSkillPath)
             && fm.fileExists(atPath: codexBridgeSkillPath)
@@ -88,9 +89,10 @@ final class VenvInstaller {
         (NSHomeDirectory() as NSString)
             .appendingPathComponent(".local/bin/claude")
     }
-    private static var codexCLIPath: String {
-        "/Applications/Codex.app/Contents/Resources/codex"
-    }
+    static let codexCLIPaths = [
+        "/Applications/ChatGPT.app/Contents/Resources/codex",
+        "/Applications/Codex.app/Contents/Resources/codex",
+    ]
     /// Match relay-bridge's RELAY_SKILLS_OK gate — both command/skill files
     /// must exist for the install to be considered complete.
     private static var bridgeSkillPath: String {

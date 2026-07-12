@@ -39,6 +39,30 @@ class SkillCleanupTests(unittest.TestCase):
         self.assertIn("Create or edit visible `.orchestrator/` tickets only as PM management work", script)
         self.assertNotIn("PM frontstage → persistent orchestrator → worker", script)
 
+    def test_provider_bridge_skills_accept_app_managed_sessions(self):
+        script = (ROOT / "scripts" / "relay-bridge").read_text()
+        preflight = (
+            'if [ "${RELAY_RUNNER_APP_SESSION:-0}" = "1" ] '
+            "|| pgrep -f 'relay-runner' > /dev/null 2>&1"
+        )
+
+        self.assertEqual(script.count(preflight), 2)
+        self.assertIn(
+            'if [ "${RELAY_RUNNER_APP_SESSION:-0}" != "1" ] '
+            "&& ! pgrep -f 'relay-runner' > /dev/null 2>&1",
+            script,
+        )
+
+    def test_shell_installers_prefer_chatgpt_codex_before_legacy_app(self):
+        chatgpt = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        legacy = "/Applications/Codex.app/Contents/Resources/codex"
+
+        for relative_path in ["scripts/relay-bridge", "scripts/relay-orchestrator"]:
+            script = (ROOT / relative_path).read_text()
+            self.assertIn(chatgpt, script)
+            self.assertIn(legacy, script)
+            self.assertLess(script.index(chatgpt), script.index(legacy))
+
 
 if __name__ == "__main__":
     unittest.main()
