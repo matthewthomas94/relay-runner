@@ -445,7 +445,7 @@ private struct ProgramWorkspaceRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Text("Workspace")
-                .font(.system(size: 16, weight: .semibold))
+                .font(WorkspaceTypography.font(.workspaceHeading))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
                 .lineLimit(1)
             ProgramReloadButton(state: reloadState, action: onRefresh)
@@ -487,22 +487,22 @@ private struct ProgramProjectFilterHeader: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("Projects")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(WorkspaceTypography.font(.sectionHeading))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                     Text("\(presentation.count)")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(WorkspaceTypography.font(.count))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .monospacedDigit()
                 }
                 Text(presentation.selectedScopeTitle)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(WorkspaceTypography.font(.metadata))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
             Button(action: onSelectAll) {
                 Text(presentation.selectAllTitle)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(WorkspaceTypography.font(.action))
                     .foregroundStyle(
                         presentation.selectAllIsMuted
                             ? ProgramBoardStyle.mutedText.opacity(0.45)
@@ -534,20 +534,20 @@ private struct ProgramProjectCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(item.project?.name ?? "Unknown project")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(WorkspaceTypography.font(.projectTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                         .lineLimit(1)
                     Spacer(minLength: 0)
                     if isSelected {
                         Text("Selected")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(WorkspaceTypography.font(.caption))
                             .foregroundStyle(ProgramBoardStyle.secondaryText)
                             .lineLimit(1)
                     }
                 }
 
                 Text(item.project?.path ?? "unknown")
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .font(WorkspaceTypography.font(.metadata))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -556,14 +556,14 @@ private struct ProgramProjectCard: View {
 
                 if let stale = item.staleRuns, stale > 0 {
                     Text("\(stale) stale")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(WorkspaceTypography.font(.supporting))
                         .foregroundStyle(ProgramBoardStyle.red)
                         .lineLimit(1)
                 }
 
                 if !item.providerHealth.isEmpty {
                     Text(item.providerHealth.joined(separator: "  "))
-                        .font(.system(size: 10, weight: .medium))
+                        .font(WorkspaceTypography.font(.supporting))
                         .foregroundStyle(ProgramBoardStyle.red)
                         .lineLimit(2)
                 }
@@ -609,11 +609,11 @@ private struct ProjectCount: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             Text(label)
-                .font(.system(size: 9, weight: .medium))
+                .font(WorkspaceTypography.font(.caption))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(1)
             Text("\(value ?? 0)")
-                .font(.system(size: 10, weight: .semibold))
+                .font(WorkspaceTypography.font(.count))
                 .foregroundStyle(ProgramBoardStyle.secondaryText)
                 .monospacedDigit()
                 .lineLimit(1)
@@ -648,13 +648,13 @@ private struct ProgramWorkColumnPanel: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 8) {
                 Text(lane.title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(WorkspaceTypography.font(.sectionHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
                 Text("\(items.count)")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(WorkspaceTypography.font(.count))
                     .foregroundStyle(ProgramBoardStyle.secondaryText)
                     .monospacedDigit()
                 if canCreate {
@@ -837,7 +837,7 @@ private struct ProgramWorkCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Text(metadataLine)
-                    .font(.system(size: 14, weight: .regular))
+                    .font(WorkspaceTypography.font(.metadata))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -852,7 +852,7 @@ private struct ProgramWorkCard: View {
             }
 
             Text(title)
-                .font(.system(size: 16, weight: .semibold))
+                .font(WorkspaceTypography.font(.ticketTitle))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)
@@ -870,7 +870,7 @@ private struct ProgramWorkCard: View {
 
             if let dependencyText {
                 Text(dependencyText)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(WorkspaceTypography.font(.supporting))
                     .foregroundStyle(item.blockedBy.isEmpty ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.red)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -878,7 +878,7 @@ private struct ProgramWorkCard: View {
 
             if let statusText {
                 Text(statusText)
-                    .font(.system(size: 10, weight: .regular))
+                    .font(WorkspaceTypography.font(.supporting))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -886,14 +886,14 @@ private struct ProgramWorkCard: View {
 
             if let lastError = item.lastError, !lastError.isEmpty {
                 Text(lastError)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(WorkspaceTypography.font(.supporting))
                     .foregroundStyle(ProgramBoardStyle.red)
                     .lineLimit(2)
             }
 
             if let activityLine {
                 Text(activityLine)
-                    .font(.system(size: 12, weight: .regular))
+                    .font(WorkspaceTypography.font(.supporting))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -1704,7 +1704,7 @@ private struct ProgramStatePanel: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 8) {
                 Text("Workspace")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(WorkspaceTypography.font(.workspaceHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 ProgramReloadButton(state: reloadState, action: onRefresh)
                 Spacer(minLength: 0)
@@ -1713,11 +1713,11 @@ private struct ProgramStatePanel: View {
             Spacer(minLength: 0)
             VStack(spacing: 8) {
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(WorkspaceTypography.font(.sectionHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 if let detail, !detail.isEmpty {
                     Text(detail)
-                        .font(.system(size: 12, weight: .regular))
+                        .font(WorkspaceTypography.font(.supporting))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .multilineTextAlignment(.center)
                         .lineLimit(3)
@@ -1747,7 +1747,7 @@ private struct ProgramErrorStrip: View {
 
     var body: some View {
         Text(message)
-            .font(.system(size: 11, weight: .medium))
+            .font(WorkspaceTypography.font(.supporting))
             .foregroundStyle(ProgramBoardStyle.red)
             .lineLimit(2)
             .padding(.horizontal, 10)
@@ -1766,7 +1766,7 @@ private struct ProgramStartSessionButton: View {
                 Image(systemName: "play.fill")
                     .font(.system(size: 10, weight: .bold))
                 Text("Start session")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(WorkspaceTypography.font(.action))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
@@ -1790,7 +1790,7 @@ private struct ProgramEndSessionButton: View {
                 Image(systemName: "stop.fill")
                     .font(.system(size: 10, weight: .bold))
                 Text("End session")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(WorkspaceTypography.font(.action))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
@@ -1816,7 +1816,7 @@ private struct ProgramEditCapsuleButton: View {
                 Image(systemName: "pencil")
                     .font(.system(size: 10, weight: .semibold))
                 Text("Edit")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(WorkspaceTypography.font(.action))
                     .lineLimit(1)
             }
             .foregroundStyle(ProgramBoardStyle.primaryText.opacity(disabled ? 0.45 : 0.95))
@@ -1923,7 +1923,7 @@ private struct ProgramInlineBadge: View {
 
     var body: some View {
         Text(label)
-            .font(.system(size: 9, weight: .semibold))
+            .font(WorkspaceTypography.font(.caption))
             .foregroundStyle(ProgramBoardStyle.secondaryText)
             .lineLimit(1)
             .padding(.horizontal, 6)
