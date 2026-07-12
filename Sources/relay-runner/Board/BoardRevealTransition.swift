@@ -374,7 +374,7 @@ private final class BoardRevealSurfaceView: NSView {
 
         let text = "Loading..." as NSString
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .font: AppTypography.appKitFont(.sectionHeading),
             .foregroundColor: NSColor.white.withAlphaComponent(0.92),
         ]
         let size = text.size(withAttributes: attributes)

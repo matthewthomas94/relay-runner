@@ -133,7 +133,7 @@ private struct WorkspaceTabButton: View {
     var body: some View {
         Button(action: action) {
             Text(tab.title)
-                .font(WorkspaceTypography.font(.menuTab))
+                .font(AppTypography.font(.menuTab))
                 .foregroundStyle(
                     Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: selected || isHovered || isFocused ? 0.98 : 0.72)
                 )

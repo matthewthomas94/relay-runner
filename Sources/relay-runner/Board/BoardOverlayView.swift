@@ -428,11 +428,11 @@ private struct BoardColumnPanel: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 8) {
                 Text(spec.title)
-                    .font(WorkspaceTypography.font(.sectionHeading))
+                    .font(AppTypography.font(.sectionHeading))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0))
                 Spacer(minLength: 0)
                 Text("\(tickets.count)")
-                    .font(WorkspaceTypography.font(.count))
+                    .font(AppTypography.font(.count))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.65))
                     .monospacedDigit()
                 NewTicketButton(action: onCreate)
@@ -594,7 +594,7 @@ private struct NewTicketButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "plus")
-                .font(.system(size: 12, weight: .semibold))
+                .font(AppTypography.symbolFont(size: 12, weight: .semibold))
                 .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
                 .frame(width: 22, height: 22)
                 .background(BoardDarkCircleBackground())
@@ -655,7 +655,7 @@ private struct TicketCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 Text(ticket.title)
-                    .font(WorkspaceTypography.font(.ticketTitle))
+                    .font(AppTypography.font(.ticketTitle))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -679,7 +679,7 @@ private struct TicketCard: View {
             }
             if !waitingOn.isEmpty {
                 Text("Waiting on \(waitingOn.joined(separator: ", "))")
-                    .font(WorkspaceTypography.font(.supporting))
+                    .font(AppTypography.font(.supporting))
                     .foregroundStyle(Color(.sRGB, red: 245 / 255, green: 180 / 255, blue: 40 / 255, opacity: 0.95))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -687,7 +687,7 @@ private struct TicketCard: View {
             }
             if let description = ticket.description {
                 Text(description)
-                    .font(WorkspaceTypography.font(.supporting))
+                    .font(AppTypography.font(.supporting))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.65))
                     .lineLimit(3)
                     .multilineTextAlignment(.leading)
@@ -721,7 +721,7 @@ private struct DependencyWaitingBadge: View {
                 .frame(width: 6, height: 6)
                 .opacity(0.9)
             Text("Waiting")
-                .font(WorkspaceTypography.font(.supporting))
+                .font(AppTypography.font(.supporting))
                 .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
         }
         .padding(.horizontal, 7)
@@ -739,7 +739,7 @@ private struct ActivityChip: View {
 
     var body: some View {
         Text(text)
-            .font(WorkspaceTypography.font(.supporting))
+            .font(AppTypography.font(.supporting))
             .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.5))
             .lineLimit(1)
             .truncationMode(.tail)
@@ -782,7 +782,7 @@ private struct AgentActivityBadge: View {
                 .frame(width: 6, height: 6)
                 .opacity(0.9)
             Text(activity.label)
-                .font(WorkspaceTypography.font(.supporting))
+                .font(AppTypography.font(.supporting))
                 .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
         }
         .padding(.horizontal, 7)
@@ -824,7 +824,7 @@ private struct RunStatusPill: View {
                 .frame(width: 6, height: 6)
                 .opacity(0.9)
             Text(label)
-                .font(WorkspaceTypography.font(.supporting))
+                .font(AppTypography.font(.supporting))
                 .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.85))
         }
         .padding(.horizontal, 7)
@@ -897,12 +897,12 @@ private struct TicketEditorModal: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .center, spacing: 8) {
                     Text(original.id)
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
                         .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.55))
                     Spacer(minLength: 0)
                     Button(action: onDelete) {
                         Image(systemName: "trash")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(AppTypography.symbolFont(size: 12, weight: .semibold))
                             .foregroundStyle(Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 0.90))
                             .frame(width: 24, height: 24)
                             .background(BoardDarkCircleBackground())
@@ -914,7 +914,7 @@ private struct TicketEditorModal: View {
                 }
 
                 TextField("Title", text: $title, axis: .vertical)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(AppTypography.font(.screenTitle))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0))
                     .textFieldStyle(.plain)
                     .focused($titleFocused)
@@ -923,7 +923,7 @@ private struct TicketEditorModal: View {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Status")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(AppTypography.font(.controlHeading))
                             .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.55))
                             .textCase(.uppercase)
                         Picker("Status", selection: $status) {
@@ -936,7 +936,7 @@ private struct TicketEditorModal: View {
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Priority")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(AppTypography.font(.controlHeading))
                             .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.55))
                             .textCase(.uppercase)
                         Picker("Priority", selection: $priority) {
@@ -954,12 +954,12 @@ private struct TicketEditorModal: View {
                     .background(Color.white.opacity(0.12))
 
                 Text("Description")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(AppTypography.font(.controlHeading))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.55))
                     .textCase(.uppercase)
 
                 TextEditor(text: $description)
-                    .font(.system(size: 13, weight: .regular))
+                    .font(AppTypography.font(.field))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.90))
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 160, maxHeight: 280)
@@ -974,12 +974,12 @@ private struct TicketEditorModal: View {
                     )
 
                 Text("Acceptance criteria")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(AppTypography.font(.controlHeading))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.55))
                     .textCase(.uppercase)
 
                 TextEditor(text: $acceptanceCriteria)
-                    .font(.system(size: 13, weight: .regular))
+                    .font(AppTypography.font(.field))
                     .foregroundStyle(Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.90))
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 120, maxHeight: 220)

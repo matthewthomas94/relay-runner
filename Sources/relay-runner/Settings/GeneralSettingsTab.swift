@@ -35,7 +35,7 @@ struct GeneralSettingsTab: View {
                     provider: config.provider
                 ) {
                     Text(note)
-                        .font(.caption)
+                        .font(AppTypography.font(.caption))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -73,7 +73,7 @@ struct GeneralSettingsTab: View {
                     Button("Browse\u{2026}") { pickDirectory() }
                 }
                 Text(Self.workspaceFolderHelpText)
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
             }
 
@@ -83,7 +83,7 @@ struct GeneralSettingsTab: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Bypass agent permission prompts")
                     Text("When on, sessions launched from Relay Runner skip per-tool approval. Voice flow is much smoother, but anything the agent proposes runs without confirmation.")
-                        .font(.caption)
+                        .font(AppTypography.font(.caption))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -94,7 +94,7 @@ struct GeneralSettingsTab: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Relay Skills")
                     Text("Adds relay-bridge and relay-stop support to Codex and Claude Code")
-                        .font(.caption)
+                        .font(AppTypography.font(.caption))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()

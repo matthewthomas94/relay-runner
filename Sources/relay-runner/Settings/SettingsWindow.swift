@@ -90,7 +90,7 @@ private struct SettingsContent: View {
             HStack {
                 if style == .workspace {
                     Text(hasChanges ? "Unsaved changes" : "Settings are up to date")
-                        .font(.caption)
+                        .font(AppTypography.font(.caption))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()

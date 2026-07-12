@@ -330,7 +330,7 @@ enum NotchStatusPlacementPlanner {
               !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return 0
         }
-        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let font = AppTypography.appKitFont(.status)
         let textWidth = (label as NSString).size(withAttributes: [.font: font]).width
         return min(maximumActivityLabelWidth, ceil(textWidth) + activityLabelMeasurementPadding)
     }
@@ -1564,7 +1564,7 @@ private final class NotchStatusPillContentView: NSView {
     private func drawLabelIfNeeded() -> CGFloat {
         guard let label, activityLabelWidth > 0 else { return 0 }
 
-        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let font = AppTypography.appKitFont(.status)
         let labelString = label as NSString
         let textWidth = labelString.size(withAttributes: [.font: font]).width
         let glyphFrame = currentGlyphFrame(labelWidth: activityLabelWidth)

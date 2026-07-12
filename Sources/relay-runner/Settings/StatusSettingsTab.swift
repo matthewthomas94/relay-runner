@@ -61,12 +61,12 @@ struct StatusSettingsTab: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "arrow.counterclockwise.circle.fill")
                 .foregroundStyle(.orange)
-                .font(.title3)
+                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
             VStack(alignment: .leading, spacing: 4) {
                 Text("Permissions were reset")
-                    .font(.subheadline).bold()
+                    .font(AppTypography.font(.cardHeading))
                 Text("\(names) showed as granted on a previous run but appear denied now. macOS sometimes resets permissions after an OS update or app reinstall — re-grant below to continue using the affected features.")
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -162,7 +162,7 @@ struct StatusSettingsTab: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                 Text(detail)
-                    .font(.caption)
+                    .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

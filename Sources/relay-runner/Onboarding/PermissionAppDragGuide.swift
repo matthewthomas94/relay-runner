@@ -53,7 +53,7 @@ struct PermissionAppDragGuide: View {
                 Image(systemName: "arrow.up.forward.app")
                     .foregroundStyle(.tint)
                 Text(title)
-                    .font(.callout).bold()
+                    .font(AppTypography.font(.cardHeading))
             }
             HStack(alignment: .center, spacing: 12) {
                 LazyVGrid(columns: iconColumns, alignment: .leading, spacing: 10) {
@@ -67,14 +67,14 @@ struct PermissionAppDragGuide: View {
 
                 Image(systemName: "arrow.right")
                     .foregroundStyle(.secondary)
-                    .font(.title3)
+                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
 
                 permissionListMock
                     .frame(width: 168)
             }
 
             Text("Literally drag the relevant app icon into the window that just opened, then turn on its switch.")
-                .font(.caption)
+                .font(AppTypography.font(.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -129,7 +129,7 @@ struct PermissionAppDragGuide: View {
                 radius: isHighlighted ? 10 : 0
             )
             Text(target.displayName)
-                .font(.caption)
+                .font(AppTypography.font(.caption))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .padding(.horizontal, 6)
@@ -180,7 +180,7 @@ struct PermissionAppDragGuide: View {
     private var permissionListMock: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(settingsPane)
-                .font(.caption).bold()
+                .font(AppTypography.font(.caption))
                 .padding(.horizontal, 8)
                 .padding(.top, 8)
                 .padding(.bottom, 6)
@@ -193,14 +193,14 @@ struct PermissionAppDragGuide: View {
 
             HStack(spacing: 4) {
                 Image(systemName: "plus")
-                    .font(.caption)
+                    .font(AppTypography.symbolFont(size: 9))
                     .foregroundStyle(.secondary)
                 Image(systemName: "minus")
-                    .font(.caption)
+                    .font(AppTypography.symbolFont(size: 9))
                     .foregroundStyle(.secondary.opacity(0.5))
                 Spacer()
                 Text("Drop app here")
-                    .font(.caption2).bold()
+                    .font(AppTypography.font(.smallCaption))
                     .foregroundStyle(Color.accentColor)
             }
             .padding(.horizontal, 8)
@@ -219,7 +219,7 @@ struct PermissionAppDragGuide: View {
         HStack(spacing: 7) {
             permissionRowIcon(row)
             Text(row.displayName)
-                .font(.caption)
+                .font(AppTypography.font(.caption))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -251,7 +251,7 @@ struct PermissionAppDragGuide: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         } else {
             Text(row.fallbackInitial)
-                .font(.caption2).bold()
+                .font(AppTypography.font(.smallCaption))
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 18, height: 18)
                 .background(Color(nsColor: .textBackgroundColor))
