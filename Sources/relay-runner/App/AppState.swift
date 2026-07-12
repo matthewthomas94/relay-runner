@@ -89,9 +89,19 @@ final class AppState {
             setModel: { [weak self] model in
                 guard let self else { return }
                 var newConfig = self.config
-                newConfig.general.model = GeneralConfig.isModel(model, validFor: newConfig.general.provider)
-                    ? model
-                    : GeneralConfig.defaultModel
+                newConfig.general.model = GeneralConfig.normalizeModel(
+                    model,
+                    for: newConfig.general.provider
+                )
+                newConfig.general.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
+                    newConfig.general.orchestrator_effort,
+                    for: newConfig.general.provider,
+                    model: newConfig.general.model
+                )
+                newConfig.general.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
+                    newConfig.general.orchestrator_effort,
+                    model: newConfig.general.model
+                )
                 self.saveConfig(newConfig)
             },
             setCodexReasoningEffort: { [weak self] effort in
@@ -99,10 +109,12 @@ final class AppState {
                 var newConfig = self.config
                 newConfig.general.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
                     effort,
-                    for: newConfig.general.provider
+                    for: newConfig.general.provider,
+                    model: newConfig.general.model
                 )
                 newConfig.general.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
-                    newConfig.general.orchestrator_effort
+                    newConfig.general.orchestrator_effort,
+                    model: newConfig.general.model
                 )
                 self.saveConfig(newConfig)
             },

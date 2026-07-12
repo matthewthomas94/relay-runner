@@ -90,7 +90,8 @@ All settings live in the Settings window. Config is persisted to:
 ### General
 
 - **LLM Provider** — Codex (default) or Claude. **Start Session…** launches the selected provider's CLI.
-- **Model** — provider-specific choices. Codex offers Default, GPT-5.5, GPT-5.4, GPT-5.4-Mini, and GPT-5.3-Codex-Spark; Claude offers Default, Opus, Sonnet, and Haiku. *Default* lets the selected provider use its normal account-level setting; the others pass `--model <alias>` to the CLI for this session.
+- **Model** — provider-specific choices. Codex offers Default, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.4 Mini, and GPT-5.3 Codex Spark; Claude offers Default, Best, Fable, Opus, Sonnet, and Haiku. *Default* lets the selected provider use its normal account-level setting; the others pass `--model <alias>` to the CLI for this session. GPT-5.6 and Ultra effort depend on your Codex plan; Fable depends on Claude plan or usage-credit eligibility and is unavailable with zero data retention.
+- **Orchestrator Effort** — provider/model-specific session effort. Codex Sol/Terra support Default through Ultra, Luna supports Default through Max, older named Codex models stop at Extra High, Claude Best/Fable/Opus support Default through Max, Sonnet omits Extra High, and Haiku/default account models omit explicit effort.
 - **Working directory** — where new voice sessions open
 - **Terminal tab** — hosts the active Codex or Claude session inside Workspace, with Terminal.app available as a fallback
 - **Bypass agent permission prompts** — when on (default), sessions launched from **Start Session…** run with the configured agent's bypass flag so voice flow isn't interrupted. Turn off if you want the agent to ask before each tool use; voice still works, you'll just answer prompts in the terminal.

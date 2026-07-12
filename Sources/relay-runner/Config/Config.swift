@@ -80,38 +80,46 @@ struct GeneralConfig: Codable, Equatable {
 
     static let codexModelOptions: [ModelOption] = [
         ModelOption(label: "Default", value: defaultModel),
-        ModelOption(label: "GPT-5.6 Sol Preview", value: "gpt-5.6-sol"),
-        ModelOption(label: "GPT-5.6 Terra Preview", value: "gpt-5.6-terra"),
-        ModelOption(label: "GPT-5.6 Luna Preview", value: "gpt-5.6-luna"),
+        ModelOption(label: "GPT-5.6 Sol", value: "gpt-5.6-sol"),
+        ModelOption(label: "GPT-5.6 Terra", value: "gpt-5.6-terra"),
+        ModelOption(label: "GPT-5.6 Luna", value: "gpt-5.6-luna"),
         ModelOption(label: "GPT-5.5", value: "gpt-5.5"),
         ModelOption(label: "GPT-5.4", value: "gpt-5.4"),
-        ModelOption(label: "GPT-5.4-Mini", value: "gpt-5.4-mini"),
-        ModelOption(label: "GPT-5.3-Codex-Spark", value: "gpt-5.3-codex-spark"),
+        ModelOption(label: "GPT-5.4 Mini", value: "gpt-5.4-mini"),
+        ModelOption(label: "GPT-5.3 Codex Spark", value: "gpt-5.3-codex-spark"),
     ]
 
-    static let limitedPreviewAccessNote = "Limited preview access: requires an approved Codex workspace."
+    static let codexPlanAccessNote = "GPT-5.6 models and Ultra effort depend on your Codex plan."
+    static let claudeFableAccessNote = "Fable requires an eligible Claude plan or usage credits and is unavailable with zero data retention."
+    static let claudeBestAccessNote = "Best selects Fable when available, otherwise the latest Opus."
 
     static let claudeModelOptions: [ModelOption] = [
         ModelOption(label: "Default", value: defaultModel),
+        ModelOption(label: "Best", value: "best"),
+        ModelOption(label: "Fable", value: "fable"),
         ModelOption(label: "Opus", value: "opus"),
         ModelOption(label: "Sonnet", value: "sonnet"),
         ModelOption(label: "Haiku", value: "haiku"),
     ]
 
-    static let codexReasoningEffortOptions: [ReasoningEffortOption] = [
+    static let defaultReasoningEffortOptions: [ReasoningEffortOption] = [
         ReasoningEffortOption(label: "Default", value: defaultCodexReasoningEffort),
+    ]
+
+    static let baseReasoningEffortOptions: [ReasoningEffortOption] = [
+        ReasoningEffortOption(label: "Default", value: defaultReasoningEffort),
         ReasoningEffortOption(label: "Low", value: "low"),
         ReasoningEffortOption(label: "Medium", value: "medium"),
         ReasoningEffortOption(label: "High", value: "high"),
         ReasoningEffortOption(label: "Extra High", value: "xhigh"),
     ]
 
-    static let claudeReasoningEffortOptions: [ReasoningEffortOption] = [
-        ReasoningEffortOption(label: "Default", value: defaultReasoningEffort),
-        ReasoningEffortOption(label: "Low", value: "low"),
-        ReasoningEffortOption(label: "Medium", value: "medium"),
-        ReasoningEffortOption(label: "High", value: "high"),
-        ReasoningEffortOption(label: "Extra High", value: "xhigh"),
+    static let maxReasoningEffortOption = ReasoningEffortOption(label: "Max", value: "max")
+    static let ultraReasoningEffortOption = ReasoningEffortOption(label: "Ultra", value: "ultra")
+
+    static let codexReasoningEffortOptions: [ReasoningEffortOption] = baseReasoningEffortOptions
+
+    static let claudeReasoningEffortOptions: [ReasoningEffortOption] = baseReasoningEffortOptions + [
         ReasoningEffortOption(label: "Max", value: "max"),
     ]
 
@@ -155,34 +163,93 @@ struct GeneralConfig: Codable, Equatable {
     }
 
     static func requiresLimitedPreviewAccess(_ model: String, for provider: AgentProvider) -> Bool {
-        guard provider == .codex else { return false }
-        switch model.trimmingCharacters(in: .whitespaces).lowercased() {
-        case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
-            return true
-        default:
-            return false
+        accessNote(for: model, effort: defaultReasoningEffort, provider: provider) != nil
+    }
+
+    static func accessNote(for model: String, effort: String, provider: AgentProvider) -> String? {
+        let normalizedModel = model.trimmingCharacters(in: .whitespaces).lowercased()
+        let normalizedEffort = effort.trimmingCharacters(in: .whitespaces).lowercased()
+        switch provider {
+        case .codex:
+            if ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].contains(normalizedModel)
+                || normalizedEffort == "ultra" {
+                return codexPlanAccessNote
+            }
+        case .claude:
+            if normalizedModel == "fable" {
+                return claudeFableAccessNote
+            }
+            if normalizedModel == "best" {
+                return claudeBestAccessNote
+            }
+        }
+        return nil
+    }
+
+    static func reasoningEffortOptions(for provider: AgentProvider, model: String) -> [ReasoningEffortOption] {
+        let normalizedModel = model.trimmingCharacters(in: .whitespaces).lowercased()
+        switch provider {
+        case .codex:
+            switch normalizedModel {
+            case "gpt-5.6-sol", "gpt-5.6-terra":
+                return baseReasoningEffortOptions + [maxReasoningEffortOption, ultraReasoningEffortOption]
+            case "gpt-5.6-luna":
+                return baseReasoningEffortOptions + [maxReasoningEffortOption]
+            case "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark":
+                return baseReasoningEffortOptions
+            default:
+                return defaultReasoningEffortOptions
+            }
+        case .claude:
+            switch normalizedModel {
+            case "best", "fable", "opus":
+                return baseReasoningEffortOptions + [maxReasoningEffortOption]
+            case "sonnet":
+                return [
+                    ReasoningEffortOption(label: "Default", value: defaultReasoningEffort),
+                    ReasoningEffortOption(label: "Low", value: "low"),
+                    ReasoningEffortOption(label: "Medium", value: "medium"),
+                    ReasoningEffortOption(label: "High", value: "high"),
+                    maxReasoningEffortOption,
+                ]
+            default:
+                return defaultReasoningEffortOptions
+            }
         }
     }
 
-    static func normalizedCodexReasoningEffort(_ effort: String) -> String {
+    static func isEffort(_ effort: String, validFor provider: AgentProvider, model: String) -> Bool {
         let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return codexReasoningEffortOptions.contains { $0.value == normalized }
+        return reasoningEffortOptions(for: provider, model: model).contains { $0.value == normalized }
+    }
+
+    static func normalizedCodexReasoningEffort(_ effort: String, model: String = defaultModel) -> String {
+        let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return isEffort(normalized, validFor: .codex, model: model)
             ? normalized
             : defaultCodexReasoningEffort
     }
 
-    static func reasoningEffortOptions(for provider: AgentProvider) -> [ReasoningEffortOption] {
-        switch provider {
-        case .codex: return codexReasoningEffortOptions
-        case .claude: return claudeReasoningEffortOptions
+    static func normalizedOrchestratorEffort(
+        _ effort: String,
+        for provider: AgentProvider,
+        model: String = defaultModel
+    ) -> String {
+        let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return isEffort(normalized, validFor: provider, model: model)
+            ? normalized
+            : defaultReasoningEffort
+    }
+
+    static func modelEffortMatrix(for provider: AgentProvider) -> [(model: String, efforts: [String])] {
+        modelOptions(for: provider).map { option in
+            (option.value, reasoningEffortOptions(for: provider, model: option.value).map(\.value))
         }
     }
 
-    static func normalizedOrchestratorEffort(_ effort: String, for provider: AgentProvider) -> String {
-        let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return reasoningEffortOptions(for: provider).contains { $0.value == normalized }
-            ? normalized
-            : defaultReasoningEffort
+    static func normalizeModel(_ model: String, for provider: AgentProvider) -> String {
+        let normalized = model.trimmingCharacters(in: .whitespaces).lowercased()
+        return Self.isModel(normalized, validFor: provider) ? normalized : Self.defaultModel
     }
 
     static func normalizedSubagentModel(_ model: String) -> String {
@@ -211,7 +278,7 @@ struct GeneralConfig: Codable, Equatable {
 
     var effectiveOrchestratorEffort: String {
         if orchestrator_effort == Self.defaultReasoningEffort {
-            let legacy = Self.normalizedCodexReasoningEffort(codex_reasoning_effort)
+            let legacy = Self.normalizedCodexReasoningEffort(codex_reasoning_effort, model: model)
             if legacy != Self.defaultCodexReasoningEffort {
                 return legacy
             }
@@ -249,16 +316,22 @@ struct GeneralConfig: Codable, Equatable {
     }
 
     private mutating func normalizeSelectedModel() {
-        let normalized = model.trimmingCharacters(in: .whitespaces).lowercased()
-        model = Self.isModel(normalized, validFor: provider) ? normalized : Self.defaultModel
+        model = Self.normalizeModel(model, for: provider)
     }
 
     private mutating func normalizeOrchestratorEffort(legacyCodexWasExplicit: Bool) {
         if legacyCodexWasExplicit && orchestrator_effort == Self.defaultReasoningEffort {
             orchestrator_effort = codex_reasoning_effort
         }
-        orchestrator_effort = Self.normalizedOrchestratorEffort(orchestrator_effort, for: provider)
-        codex_reasoning_effort = Self.normalizedCodexReasoningEffort(orchestrator_effort)
+        orchestrator_effort = Self.normalizedOrchestratorEffort(
+            orchestrator_effort,
+            for: provider,
+            model: model
+        )
+        codex_reasoning_effort = Self.normalizedCodexReasoningEffort(
+            orchestrator_effort,
+            model: model
+        )
     }
 
     private mutating func normalizeSubagentDefaults() {

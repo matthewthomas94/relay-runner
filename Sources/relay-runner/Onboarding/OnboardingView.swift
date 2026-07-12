@@ -102,11 +102,10 @@ struct OnboardingView: View {
         self.onStartSession = onStartSession
         self.onFinish = onFinish
         let startingProvider = resumeState?.provider ?? initialAgentProvider
-        let startingModel = GeneralConfig.isModel(initialModel, validFor: startingProvider)
-            ? initialModel
-            : GeneralConfig.defaultModel
-        let startingCodexReasoningEffort = GeneralConfig.normalizedCodexReasoningEffort(
-            initialCodexReasoningEffort
+        let startingSelection = Self.normalizedInitialSelection(
+            provider: startingProvider,
+            model: initialModel,
+            effort: initialCodexReasoningEffort
         )
         let startingParentReviewed = resumeState?.parentPermissionsReviewed ?? false
         // Simplified flow (re-prompt after initial onboarding): jump to the
@@ -124,8 +123,8 @@ struct OnboardingView: View {
         _step = State(initialValue: initial)
         _workingDirectory = State(initialValue: initialWorkingDirectory)
         _selectedAgentProvider = State(initialValue: startingProvider)
-        _selectedModel = State(initialValue: startingModel)
-        _selectedCodexReasoningEffort = State(initialValue: startingCodexReasoningEffort)
+        _selectedModel = State(initialValue: startingSelection.model)
+        _selectedCodexReasoningEffort = State(initialValue: startingSelection.effort)
         _agentSignedIn = State(initialValue: AgentAuth.isAuthenticated(for: startingProvider))
         _parentPermissionsReviewed = State(initialValue: startingParentReviewed)
     }
@@ -222,6 +221,7 @@ struct OnboardingView: View {
         }
         .onChange(of: selectedModel) { _, new in
             onSetModel(new)
+            normalizeSelectedEffortForCurrentChoice()
             persistResume()
         }
         .onChange(of: selectedCodexReasoningEffort) { _, new in
@@ -340,9 +340,7 @@ struct OnboardingView: View {
             }
 
             modelPicker
-            if selectedAgentProvider == .codex {
-                codexReasoningEffortPicker
-            }
+            reasoningEffortPicker
             workingDirectoryPicker
             setupPlanView
 
@@ -400,8 +398,12 @@ struct OnboardingView: View {
                 .labelsHidden()
                 .frame(width: 180)
             }
-            if GeneralConfig.requiresLimitedPreviewAccess(selectedModel, for: selectedAgentProvider) {
-                Text(GeneralConfig.limitedPreviewAccessNote)
+            if let note = GeneralConfig.accessNote(
+                for: selectedModel,
+                effort: selectedCodexReasoningEffort,
+                provider: selectedAgentProvider
+            ) {
+                Text(note)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -417,13 +419,13 @@ struct OnboardingView: View {
         )
     }
 
-    private var codexReasoningEffortPicker: some View {
+    private var reasoningEffortPicker: some View {
         HStack {
             Text("Reasoning effort")
                 .font(.callout).bold()
             Spacer()
             Picker("Reasoning effort", selection: $selectedCodexReasoningEffort) {
-                ForEach(GeneralConfig.codexReasoningEffortOptions) { option in
+                ForEach(GeneralConfig.reasoningEffortOptions(for: selectedAgentProvider, model: selectedModel)) { option in
                     Text(option.label).tag(option.value)
                 }
             }
@@ -481,9 +483,19 @@ struct OnboardingView: View {
         if !GeneralConfig.isModel(selectedModel, validFor: provider) {
             selectedModel = GeneralConfig.defaultModel
         }
+        normalizeSelectedEffortForCurrentChoice()
         agentSignedIn = AgentAuth.isAuthenticated(for: provider)
         onSetAgentProvider(provider)
         onSetModel(selectedModel)
+        onSetCodexReasoningEffort(selectedCodexReasoningEffort)
+    }
+
+    private func normalizeSelectedEffortForCurrentChoice() {
+        selectedCodexReasoningEffort = GeneralConfig.normalizedOrchestratorEffort(
+            selectedCodexReasoningEffort,
+            for: selectedAgentProvider,
+            model: selectedModel
+        )
     }
 
     private func permissionView(for kind: PermissionKind) -> some View {
@@ -1155,11 +1167,14 @@ struct OnboardingView: View {
     }
 
     private func beginGuidedSetup() {
-        onSetAgentProvider(selectedAgentProvider)
-        onSetModel(selectedModel)
-        if selectedAgentProvider == .codex {
-            onSetCodexReasoningEffort(selectedCodexReasoningEffort)
-        }
+        Self.persistGuidedSetupSelection(
+            provider: selectedAgentProvider,
+            model: selectedModel,
+            effort: selectedCodexReasoningEffort,
+            onSetAgentProvider: onSetAgentProvider,
+            onSetModel: onSetModel,
+            onSetEffort: onSetCodexReasoningEffort
+        )
         onSetWorkingDirectory(workingDirectory)
         agentSignedIn = AgentAuth.isAuthenticated(for: selectedAgentProvider)
         venvInstaller.install()
@@ -1170,6 +1185,40 @@ struct OnboardingView: View {
         guard status == .granted, step.kind == kind else { return }
         // Small delay so the user sees the green check before the view flips
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
+    }
+
+    static func normalizedInitialSelection(
+        provider: GeneralConfig.AgentProvider,
+        model: String,
+        effort: String
+    ) -> (model: String, effort: String) {
+        let normalizedModel = GeneralConfig.normalizeModel(model, for: provider)
+        return (
+            normalizedModel,
+            GeneralConfig.normalizedOrchestratorEffort(
+                effort,
+                for: provider,
+                model: normalizedModel
+            )
+        )
+    }
+
+    static func persistGuidedSetupSelection(
+        provider: GeneralConfig.AgentProvider,
+        model: String,
+        effort: String,
+        onSetAgentProvider: (GeneralConfig.AgentProvider) -> Void,
+        onSetModel: (String) -> Void,
+        onSetEffort: (String) -> Void
+    ) {
+        let selection = normalizedInitialSelection(
+            provider: provider,
+            model: model,
+            effort: effort
+        )
+        onSetAgentProvider(provider)
+        onSetModel(selection.model)
+        onSetEffort(selection.effort)
     }
 
     /// The next step (after `from`) that still needs the user's attention —

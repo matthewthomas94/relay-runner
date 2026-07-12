@@ -9,9 +9,11 @@ final class ConfigManagerTests: XCTestCase {
         let manager = ConfigManager(configDir: configDir)
         var config = AppConfig()
         config.general.provider = .claude
+        config.general.model = "fable"
         config.general.orchestrator_effort = "max"
         config.general.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
-            config.general.orchestrator_effort
+            config.general.orchestrator_effort,
+            model: config.general.model
         )
         config.general.subagent_sizing_policy = .userDefault
         config.general.subagent_model = "strong"
@@ -25,6 +27,7 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertTrue(raw.contains("codex_reasoning_effort = \"default\""))
         XCTAssertTrue(raw.contains("subagent_sizing_policy = \"user_default\""))
         XCTAssertEqual(loaded.general.provider, .claude)
+        XCTAssertEqual(loaded.general.model, "fable")
         XCTAssertEqual(loaded.general.orchestrator_effort, "max")
         XCTAssertEqual(loaded.general.codex_reasoning_effort, GeneralConfig.defaultCodexReasoningEffort)
         XCTAssertEqual(loaded.general.subagent_sizing_policy, .userDefault)
@@ -40,11 +43,13 @@ final class ConfigManagerTests: XCTestCase {
         [general]
         provider = "codex"
         command = "codex"
+        model = "gpt-5.5"
         codex_reasoning_effort = "high"
         """.write(to: manager.configPath, atomically: true, encoding: .utf8)
 
         let loaded = manager.load()
 
+        XCTAssertEqual(loaded.general.model, "gpt-5.5")
         XCTAssertEqual(loaded.general.orchestrator_effort, "high")
         XCTAssertEqual(loaded.general.codex_reasoning_effort, "high")
     }

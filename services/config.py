@@ -216,13 +216,28 @@ def _migrate_config(
             "gpt-5.4-mini",
             "gpt-5.3-codex-spark",
         },
-        "claude": {"default", "opus", "sonnet", "haiku"},
+        "claude": {"default", "best", "fable", "opus", "sonnet", "haiku"},
     }
     model = str(general.get("model", "default")).strip().lower()
     general["model"] = model if model in valid_models[provider] else "default"
 
-    valid_codex_reasoning_efforts = {"default", "low", "medium", "high", "xhigh"}
-    valid_claude_reasoning_efforts = valid_codex_reasoning_efforts | {"max"}
+    base_reasoning_efforts = {"default", "low", "medium", "high", "xhigh"}
+
+    def valid_session_efforts(provider_name: str, model_name: str) -> set[str]:
+        if provider_name == "codex":
+            if model_name in {"gpt-5.6-sol", "gpt-5.6-terra"}:
+                return base_reasoning_efforts | {"max", "ultra"}
+            if model_name == "gpt-5.6-luna":
+                return base_reasoning_efforts | {"max"}
+            if model_name in {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"}:
+                return base_reasoning_efforts
+            return {"default"}
+        if model_name in {"best", "fable", "opus"}:
+            return base_reasoning_efforts | {"max"}
+        if model_name == "sonnet":
+            return {"default", "low", "medium", "high", "max"}
+        return {"default"}
+
     codex_reasoning_effort = (
         str(general.get("codex_reasoning_effort", "default")).strip().lower()
     )
@@ -232,14 +247,15 @@ def _migrate_config(
         else codex_reasoning_effort
     )
     orchestrator_effort = str(raw_orchestrator_effort or "default").strip().lower()
-    valid_orchestrator_efforts = (
-        valid_claude_reasoning_efforts if provider == "claude" else valid_codex_reasoning_efforts
-    )
+    valid_orchestrator_efforts = valid_session_efforts(provider, general["model"])
     if orchestrator_effort not in valid_orchestrator_efforts:
         orchestrator_effort = "default"
     general["orchestrator_effort"] = orchestrator_effort
+    codex_efforts_for_model = valid_session_efforts("codex", general["model"])
     general["codex_reasoning_effort"] = (
-        orchestrator_effort if orchestrator_effort in valid_codex_reasoning_efforts else "default"
+        orchestrator_effort
+        if provider == "codex" and orchestrator_effort in codex_efforts_for_model
+        else "default"
     )
 
     policy = str(general.get("subagent_sizing_policy", "orchestrator_decides")).strip().lower()

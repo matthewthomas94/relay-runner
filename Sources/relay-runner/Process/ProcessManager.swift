@@ -721,7 +721,8 @@ final class ProcessManager {
         let modelFlag = Self.modelFlag(config.general.model, target: target)
         let reasoningEffortFlag = Self.orchestratorEffortFlag(
             config.general.effectiveOrchestratorEffort,
-            target: target
+            target: target,
+            model: config.general.model
         )
         let cdLine = Self.cdLine(config.general.working_directory, homeDirectory: homeDirectory)
         let launchLine = Self.agentLaunchLine(
@@ -811,13 +812,13 @@ final class ProcessManager {
         return "--model \(Self.shellQuoted(v)) "
     }
 
-    private static func orchestratorEffortFlag(_ raw: String, target: AgentTarget) -> String {
+    private static func orchestratorEffortFlag(_ raw: String, target: AgentTarget, model: String) -> String {
         let provider: GeneralConfig.AgentProvider
         switch target {
         case .codex: provider = .codex
         case .claude: provider = .claude
         }
-        let effort = GeneralConfig.normalizedOrchestratorEffort(raw, for: provider)
+        let effort = GeneralConfig.normalizedOrchestratorEffort(raw, for: provider, model: model)
         guard effort != GeneralConfig.defaultReasoningEffort else { return "" }
         switch target {
         case .codex:
