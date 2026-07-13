@@ -16,4 +16,15 @@ final class SettingsWindowTests: XCTestCase {
             XCTAssertFalse(category.systemImage.isEmpty)
         }
     }
+
+    func testWorkspaceSurfacesDoNotApplyArbitraryMaxWidthCaps() {
+        XCTAssertNil(WorkspaceSurfaceSizing.terminalMaxWidth)
+        XCTAssertNil(WorkspaceSurfaceSizing.settingsMaxWidth)
+    }
+
+    func testStandaloneSettingsWindowKeepsItsFixedSize() {
+        XCTAssertEqual(SettingsContentStyle.window.fixedFrame?.width, 720)
+        XCTAssertEqual(SettingsContentStyle.window.fixedFrame?.height, 560)
+        XCTAssertNil(SettingsContentStyle.workspace.fixedFrame)
+    }
 }
