@@ -128,7 +128,7 @@ enum AppTypography {
     static func definition(for role: Role) -> Definition {
         switch role {
         case .menuTab:
-            return Definition(face: .ppTelegrafRegular, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
         case .appTitle:
             return Definition(face: .ppMoriSemibold, size: 22, fallbackWeight: .semibold)
         case .screenTitle:
@@ -160,7 +160,7 @@ enum AppTypography {
         case .button:
             return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
         case .status:
-            return Definition(face: .ppTelegrafRegular, size: 12, fallbackWeight: .semibold)
+            return Definition(face: .ppMoriSemibold, size: 12, fallbackWeight: .semibold)
         case .count:
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
         case .caption:

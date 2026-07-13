@@ -25,16 +25,18 @@ final class AppTypographyTests: XCTestCase {
         XCTAssertEqual(AppTypography.definition(for: .caption).size, 9)
     }
 
-    func testHeadingRolesUseMoriAndInterfaceRolesUseTelegraf() {
-        XCTAssertEqual(AppTypography.definition(for: .appTitle).face, .ppMoriSemibold)
-        XCTAssertEqual(AppTypography.definition(for: .screenTitle).face, .ppMoriSemibold)
-        XCTAssertEqual(AppTypography.definition(for: .sectionHeading).face, .ppMoriSemibold)
-        XCTAssertEqual(AppTypography.definition(for: .controlHeading).face, .ppMoriSemibold)
-        XCTAssertEqual(AppTypography.definition(for: .body).face, .ppTelegrafRegular)
-        XCTAssertEqual(AppTypography.definition(for: .label).face, .ppTelegrafRegular)
-        XCTAssertEqual(AppTypography.definition(for: .button).face, .ppTelegrafRegular)
-        XCTAssertEqual(AppTypography.definition(for: .status).face, .ppTelegrafRegular)
-        XCTAssertEqual(AppTypography.definition(for: .menuTab).face, .ppTelegrafRegular)
+    func testSemanticRolesChoosePPFaceByWeight() {
+        for role in AppTypography.Role.allCases {
+            let definition = AppTypography.definition(for: role)
+            let expectedFace: AppTypography.Face = switch definition.fallbackWeight {
+            case .regular:
+                .ppTelegrafRegular
+            case .medium, .semibold, .bold:
+                .ppMoriSemibold
+            }
+
+            XCTAssertEqual(definition.face, expectedFace, "Unexpected face for \(role)")
+        }
     }
 
     func testAppTypographyPrefersInstalledPPFontsForAppContent() {
@@ -65,7 +67,7 @@ final class AppTypographyTests: XCTestCase {
         )
         XCTAssertEqual(
             AppTypography.resolved(.menuTab, availablePostScriptNames: available),
-            .init(postScriptName: "PPTelegraf-Regular", size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: "PPMori-SemiBold", size: 13, fallbackWeight: .semibold)
         )
     }
 
