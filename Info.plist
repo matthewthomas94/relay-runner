@@ -15,9 +15,9 @@
     <key>CFBundleDisplayName</key>
     <string>Relay Runner</string>
     <key>CFBundleVersion</key>
-    <string>24</string>
+    <string>25</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.4.20</string>
+    <string>0.4.21</string>
     <!-- Sparkle update feed and EdDSA public key. Keep these in sync with docs/release-updates.md. -->
     <key>SUFeedURL</key>
     <string>https://github.com/matthewthomas94/relay-runner-updates/releases/latest/download/appcast.xml</string>
