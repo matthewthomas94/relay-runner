@@ -16,105 +16,141 @@ struct GeneralSettingsTab: View {
     @State private var showOverwriteAlert = false
 
     var body: some View {
-        Form {
-            Picker("LLM Provider", selection: providerSelection) {
-                ForEach(GeneralConfig.AgentProvider.allCases) { provider in
-                    Text(provider.displayName).tag(provider)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Picker(Self.orchestratorModelLabel, selection: modelSelection) {
-                    ForEach(GeneralConfig.modelOptions(for: config.provider)) { option in
-                        Text(option.label).tag(option.value)
-                    }
-                }
-                if let note = GeneralConfig.accessNote(
-                    for: config.model,
-                    effort: config.orchestrator_effort,
-                    provider: config.provider
-                ) {
-                    Text(note)
-                        .font(AppTypography.font(.caption))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Picker(Self.orchestratorEffortLabel, selection: orchestratorEffortSelection) {
-                ForEach(GeneralConfig.reasoningEffortOptions(for: config.provider, model: config.model)) { option in
-                    Text(option.label).tag(option.value)
-                }
-            }
-
-            Picker(Self.subagentSizingLabel, selection: $config.subagent_sizing_policy) {
-                ForEach(GeneralConfig.SubagentSizingPolicy.allCases) { policy in
-                    Text(policy.displayName).tag(policy)
-                }
-            }
-
-            if config.subagent_sizing_policy == .userDefault {
-                Picker(Self.subagentModelLabel, selection: subagentModelSelection) {
-                    ForEach(GeneralConfig.subagentModelOptions) { option in
-                        Text(option.label).tag(option.value)
+        SettingsStack {
+            SettingsSection("Agent") {
+                SettingsRow {
+                    Picker("LLM Provider", selection: providerSelection) {
+                        ForEach(GeneralConfig.AgentProvider.allCases) { provider in
+                            Text(provider.displayName).tag(provider)
+                        }
                     }
                 }
 
-                Picker(Self.subagentEffortLabel, selection: subagentEffortSelection) {
-                    ForEach(GeneralConfig.subagentEffortOptions) { option in
-                        Text(option.label).tag(option.value)
+                SettingsDivider()
+
+                SettingsRow {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Picker(Self.orchestratorModelLabel, selection: modelSelection) {
+                            ForEach(GeneralConfig.modelOptions(for: config.provider)) { option in
+                                Text(option.label).tag(option.value)
+                            }
+                        }
+                        if let note = GeneralConfig.accessNote(
+                            for: config.model,
+                            effort: config.orchestrator_effort,
+                            provider: config.provider
+                        ) {
+                            Text(note)
+                                .font(AppTypography.font(.caption))
+                                .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                        }
+                    }
+                }
+
+                SettingsDivider()
+
+                SettingsRow {
+                    Picker(Self.orchestratorEffortLabel, selection: orchestratorEffortSelection) {
+                        ForEach(GeneralConfig.reasoningEffortOptions(for: config.provider, model: config.model)) { option in
+                            Text(option.label).tag(option.value)
+                        }
                     }
                 }
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(Self.workspaceFolderLabel)
-                HStack {
-                    TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text("~ (home)"))
-                    Button("Browse\u{2026}") { pickDirectory() }
+            SettingsSection("Sub-agents") {
+                SettingsRow {
+                    Picker(Self.subagentSizingLabel, selection: $config.subagent_sizing_policy) {
+                        ForEach(GeneralConfig.SubagentSizingPolicy.allCases) { policy in
+                            Text(policy.displayName).tag(policy)
+                        }
+                    }
                 }
-                Text(Self.workspaceFolderHelpText)
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(.secondary)
-            }
 
-            Toggle("Auto-start services on app launch", isOn: $config.auto_start)
+                if config.subagent_sizing_policy == .userDefault {
+                    SettingsDivider()
 
-            Toggle(isOn: $config.bypass_permissions) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Bypass agent permission prompts")
-                    Text("When on, sessions launched from Relay Runner skip per-tool approval. Voice flow is much smoother, but anything the agent proposes runs without confirmation.")
-                        .font(AppTypography.font(.caption))
-                        .foregroundStyle(.secondary)
-                }
-            }
+                    SettingsRow {
+                        Picker(Self.subagentModelLabel, selection: subagentModelSelection) {
+                            ForEach(GeneralConfig.subagentModelOptions) { option in
+                                Text(option.label).tag(option.value)
+                            }
+                        }
+                    }
 
-            Divider()
+                    SettingsDivider()
 
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Relay Skills")
-                    Text("Adds relay-bridge and relay-stop support to Codex and Claude Code")
-                        .font(AppTypography.font(.caption))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if showSkillSuccess {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                }
-                Button(skillInstalled ? "Reinstall" : "Install") {
-                    if skillInstalled {
-                        showOverwriteAlert = true
-                    } else {
-                        doInstallSkill()
+                    SettingsRow {
+                        Picker(Self.subagentEffortLabel, selection: subagentEffortSelection) {
+                            ForEach(GeneralConfig.subagentEffortOptions) { option in
+                                Text(option.label).tag(option.value)
+                            }
+                        }
                     }
                 }
             }
-            .alert("Overwrite existing skills?", isPresented: $showOverwriteAlert) {
-                Button("Overwrite", role: .destructive) { doInstallSkill() }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("This will replace the installed Relay Runner voice command/skill files with the default versions.")
+
+            SettingsSection("Workspace") {
+                SettingsRow {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(Self.workspaceFolderLabel)
+                        HStack {
+                            TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text("~ (home)"))
+                            Button("Browse\u{2026}") { pickDirectory() }
+                        }
+                        Text(Self.workspaceFolderHelpText)
+                            .font(AppTypography.font(.caption))
+                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                    }
+                }
+            }
+
+            SettingsSection("Startup") {
+                SettingsRow {
+                    Toggle("Auto-start services on app launch", isOn: $config.auto_start)
+                }
+
+                SettingsDivider()
+
+                SettingsRow {
+                    Toggle(isOn: $config.bypass_permissions) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Bypass agent permission prompts")
+                            Text("When on, sessions launched from Relay Runner skip per-tool approval. Voice flow is much smoother, but anything the agent proposes runs without confirmation.")
+                                .font(AppTypography.font(.caption))
+                                .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                        }
+                    }
+                }
+            }
+
+            SettingsSection("Relay Skills") {
+                SettingsRow {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Relay Skills")
+                        Text("Adds relay-bridge and relay-stop support to Codex and Claude Code")
+                            .font(AppTypography.font(.caption))
+                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                    }
+                    Spacer()
+                    if showSkillSuccess {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                    Button(skillInstalled ? "Reinstall" : "Install") {
+                        if skillInstalled {
+                            showOverwriteAlert = true
+                        } else {
+                            doInstallSkill()
+                        }
+                    }
+                }
+                .alert("Overwrite existing skills?", isPresented: $showOverwriteAlert) {
+                    Button("Overwrite", role: .destructive) { doInstallSkill() }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("This will replace the installed Relay Runner voice command/skill files with the default versions.")
+                }
             }
         }
     }

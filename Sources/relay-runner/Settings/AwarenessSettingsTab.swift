@@ -4,16 +4,27 @@ struct AwarenessSettingsTab: View {
     @Binding var config: AwarenessConfig
 
     var body: some View {
-        Form {
-            Section("Overlay") {
-                Toggle("Particle field", isOn: $config.screen_glow)
-                Toggle("Live transcription", isOn: $config.live_transcription)
-                Toggle("Message preview", isOn: $config.message_preview)
-                Toggle("Live captions during playback", isOn: $config.live_captions)
+        SettingsStack {
+            SettingsSection("Overlay") {
+                SettingsRow {
+                    Toggle("Particle field", isOn: $config.screen_glow)
+                }
+                SettingsDivider()
+                SettingsRow {
+                    Toggle("Live transcription", isOn: $config.live_transcription)
+                }
+                SettingsDivider()
+                SettingsRow {
+                    Toggle("Message preview", isOn: $config.message_preview)
+                }
+                SettingsDivider()
+                SettingsRow {
+                    Toggle("Live captions during playback", isOn: $config.live_captions)
+                }
             }
 
-            Section("Particle Field") {
-                HStack {
+            SettingsSection("Particle Field") {
+                SettingsRow {
                     Text("Intensity")
                     Slider(value: $config.glow_intensity, in: 0.1...1.0, step: 0.05)
                     Text("\(Int(config.glow_intensity * 100))%")
