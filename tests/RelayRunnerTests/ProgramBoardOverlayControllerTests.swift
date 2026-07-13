@@ -28,4 +28,23 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
 
         XCTAssertEqual(action, .end)
     }
+
+    func testSessionToolbarPresentationSwitchesBetweenStartAndEnd() {
+        XCTAssertEqual(
+            ProgramSessionToolbarPresentation.resolve(hasActiveSession: false),
+            ProgramSessionToolbarPresentation(
+                title: "Start session",
+                systemName: "play.fill",
+                help: "Start a Relay Runner voice session"
+            )
+        )
+        XCTAssertEqual(
+            ProgramSessionToolbarPresentation.resolve(hasActiveSession: true),
+            ProgramSessionToolbarPresentation(
+                title: "End session",
+                systemName: "stop.fill",
+                help: "End the active Relay Runner voice session"
+            )
+        )
+    }
 }

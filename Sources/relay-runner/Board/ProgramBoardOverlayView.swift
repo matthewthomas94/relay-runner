@@ -11,6 +11,46 @@ enum ProgramBoardBackdropStyle {
     }
 }
 
+enum ProgramBoardLayout {
+    static let panelHorizontalPadding: CGFloat = 8
+    static let panelVerticalPadding: CGFloat = 16
+    static let headerHorizontalInset: CGFloat = 16
+    static let headerLeadingInset: CGFloat = panelHorizontalPadding + headerHorizontalInset
+    static let statusHeaderHeight: CGFloat = 32
+    static let workHeaderHeight: CGFloat = 36
+    static let projectFilterHeight: CGFloat = 36
+    static let overviewSectionSpacing: CGFloat = 12
+    static let workSectionSpacing: CGFloat = 16
+    static let dropIndicatorHeight: CGFloat = 3
+    static let dropIndicatorBottomPadding: CGFloat = 4
+    static let workCardTopOffset: CGFloat = 100
+    static var workScrollTopPadding: CGFloat {
+        workCardTopOffset
+            - panelVerticalPadding
+            - workHeaderHeight
+            - workSectionSpacing
+            - dropIndicatorHeight
+            - dropIndicatorBottomPadding
+    }
+    static var projectListTopOffset: CGFloat {
+        panelVerticalPadding
+            + statusHeaderHeight
+            + overviewSectionSpacing
+            + projectFilterHeight
+            + overviewSectionSpacing
+    }
+    static let projectCardHeight: CGFloat = 136
+    static let projectCardSpacing: CGFloat = 8
+    static let sessionToolbarTopPadding: CGFloat = 6
+    static let sessionToolbarTrailingPadding: CGFloat = 20
+    static let sessionButtonWidth: CGFloat = 126
+    static let sessionButtonHeight: CGFloat = 32
+    static let sessionButtonHorizontalPadding: CGFloat = 12
+    static let sessionButtonVerticalPadding: CGFloat = 8
+    static let sessionButtonGap: CGFloat = 4
+    static let sessionButtonIconSize: CGFloat = 14
+}
+
 struct ProgramBoardOverlayView: View {
     @Bindable var model: ProgramBoardViewModel
     @Bindable var workspace: WorkspaceViewModel
@@ -60,6 +100,18 @@ struct ProgramBoardOverlayView: View {
             .padding(.leading, 20)
             .zIndex(2)
 
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                ProgramSessionToolbarControl(
+                    hasActiveSession: model.hasActiveSession,
+                    onStartSession: onStartSession,
+                    onEndSession: onEndSession
+                )
+            }
+            .padding(.top, ProgramBoardLayout.sessionToolbarTopPadding)
+            .padding(.trailing, ProgramBoardLayout.sessionToolbarTrailingPadding)
+            .zIndex(2)
+
             if workspace.selectedTab == .terminal,
                let terminalContent = terminalContent(model.selectedSessionProjectPath) {
                 VStack(spacing: 0) {
@@ -82,8 +134,6 @@ struct ProgramBoardOverlayView: View {
                     ProgramBoardContent(
                         model: model,
                         onRefresh: onRefresh,
-                        onStartSession: onStartSession,
-                        onEndSession: onEndSession,
                         onDismiss: onDismiss,
                         onOpenProject: onOpenProject,
                         onCreateStart: onCreateStart,
@@ -284,8 +334,6 @@ enum ProgramBoardContentPresentation: Equatable {
 private struct ProgramBoardContent: View {
     @Bindable var model: ProgramBoardViewModel
     let onRefresh: () -> Void
-    let onStartSession: () -> Void
-    let onEndSession: () -> Void
     let onDismiss: () -> Void
     let onOpenProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
@@ -310,12 +358,9 @@ private struct ProgramBoardContent: View {
                             errorMessage: model.errorMessage,
                             reloadState: model.reloadState,
                             theme: model.theme,
-                            hasActiveSession: model.hasActiveSession,
                             onSelectAll: model.selectAllProjects,
                             onSelectProject: model.selectProject,
-                            onRefresh: onRefresh,
-                            onStartSession: onStartSession,
-                            onEndSession: onEndSession,
+                            onRefresh: onRefresh
                         )
                         ForEach(ProgramBoardLane.allCases) { lane in
                             ProgramWorkColumnPanel(
@@ -385,21 +430,15 @@ private struct ProgramOverviewColumn: View {
     let errorMessage: String?
     let reloadState: ProgramBoardReloadState
     let theme: ParticleFieldRenderer.Theme?
-    let hasActiveSession: Bool
     let onSelectAll: () -> Void
     let onSelectProject: (String) -> Void
     let onRefresh: () -> Void
-    let onStartSession: () -> Void
-    let onEndSession: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            ProgramWorkspaceRow(
+        VStack(alignment: .leading, spacing: ProgramBoardLayout.overviewSectionSpacing) {
+            ProgramStatusHeader(
                 reloadState: reloadState,
-                hasActiveSession: hasActiveSession,
-                onRefresh: onRefresh,
-                onStartSession: onStartSession,
-                onEndSession: onEndSession
+                onRefresh: onRefresh
             )
 
             if let errorMessage {
@@ -414,7 +453,7 @@ private struct ProgramOverviewColumn: View {
             )
 
             BoardOverlayScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: ProgramBoardLayout.projectCardSpacing) {
                     ForEach(snapshot.projects) { item in
                         ProgramProjectCard(
                             item: item,
@@ -435,27 +474,21 @@ private struct ProgramOverviewColumn: View {
     }
 }
 
-private struct ProgramWorkspaceRow: View {
+private struct ProgramStatusHeader: View {
     let reloadState: ProgramBoardReloadState
-    let hasActiveSession: Bool
     let onRefresh: () -> Void
-    let onStartSession: () -> Void
-    let onEndSession: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            Text("Workspace")
+            Text("Status")
                 .font(AppTypography.font(.workspaceHeading))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
                 .lineLimit(1)
             ProgramReloadButton(state: reloadState, action: onRefresh)
             Spacer(minLength: 0)
-            if hasActiveSession {
-                ProgramEndSessionButton(action: onEndSession)
-            } else {
-                ProgramStartSessionButton(action: onStartSession)
-            }
         }
+        .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
+        .frame(height: ProgramBoardLayout.statusHeaderHeight)
     }
 }
 
@@ -521,6 +554,8 @@ private struct ProgramProjectFilterHeader: View {
             .programButtonCursor()
             .help("Show tickets from all projects")
         }
+        .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
+        .frame(height: ProgramBoardLayout.projectFilterHeight)
     }
 }
 
@@ -569,7 +604,7 @@ private struct ProgramProjectCard: View {
                 }
             }
             .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectCardHeight, alignment: .leading)
             .background(ProgramCardBackground(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
@@ -645,7 +680,7 @@ private struct ProgramWorkColumnPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: ProgramBoardLayout.workSectionSpacing) {
             HStack(alignment: .center, spacing: 8) {
                 Text(lane.title)
                     .font(AppTypography.font(.sectionHeading))
@@ -665,7 +700,8 @@ private struct ProgramWorkColumnPanel: View {
                     )
                 }
             }
-            .padding(.bottom, 4)
+            .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
+            .frame(height: ProgramBoardLayout.workHeaderHeight)
 
             ProgramColumnTicketScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -710,9 +746,7 @@ private struct ProgramColumnTicketScrollView<Content: View>: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             content
-                .padding(.horizontal, 6)
-                .padding(.vertical, 28)
-                .padding(.trailing, 12)
+                .padding(.top, ProgramBoardLayout.workScrollTopPadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxHeight: .infinity)
@@ -726,9 +760,9 @@ private struct ProgramDropIndicator: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 2)
             .fill(indicatorColor)
-            .frame(height: 3)
+            .frame(height: ProgramBoardLayout.dropIndicatorHeight)
             .padding(.horizontal, 4)
-            .padding(.bottom, 4)
+            .padding(.bottom, ProgramBoardLayout.dropIndicatorBottomPadding)
             .animation(.easeOut(duration: 0.10), value: target)
             .help(target?.isValid == false ? "Cannot drop this ticket here" : "Drop ticket here")
     }
@@ -1703,7 +1737,7 @@ private struct ProgramStatePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 8) {
-                Text("Workspace")
+                Text("Status")
                     .font(AppTypography.font(.workspaceHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 ProgramReloadButton(state: reloadState, action: onRefresh)
@@ -1757,51 +1791,71 @@ private struct ProgramErrorStrip: View {
     }
 }
 
-private struct ProgramStartSessionButton: View {
-    let action: () -> Void
+struct ProgramSessionToolbarPresentation: Equatable {
+    let title: String
+    let systemName: String
+    let help: String
 
-    var body: some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: 6) {
-                Image(systemName: "play.fill")
-                    .font(AppTypography.symbolFont(size: 10, weight: .bold))
-                Text("Start session")
-                    .font(AppTypography.font(.action))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.96))
-            .frame(width: 130, height: 32)
-            .background(BoardDarkCapsuleBackground())
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .programButtonCursor()
-        .help("Start a Relay Runner voice session")
+    static func resolve(hasActiveSession: Bool) -> ProgramSessionToolbarPresentation {
+        hasActiveSession
+            ? ProgramSessionToolbarPresentation(
+                title: "End session",
+                systemName: "stop.fill",
+                help: "End the active Relay Runner voice session"
+            )
+            : ProgramSessionToolbarPresentation(
+                title: "Start session",
+                systemName: "play.fill",
+                help: "Start a Relay Runner voice session"
+            )
     }
 }
 
-private struct ProgramEndSessionButton: View {
+private struct ProgramSessionToolbarControl: View {
+    let hasActiveSession: Bool
+    let onStartSession: () -> Void
+    let onEndSession: () -> Void
+
+    private var presentation: ProgramSessionToolbarPresentation {
+        ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasActiveSession)
+    }
+
+    var body: some View {
+        ProgramSessionButton(presentation: presentation) {
+            if hasActiveSession {
+                onEndSession()
+            } else {
+                onStartSession()
+            }
+        }
+    }
+}
+
+private struct ProgramSessionButton: View {
+    let presentation: ProgramSessionToolbarPresentation
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(alignment: .center, spacing: 6) {
-                Image(systemName: "stop.fill")
-                    .font(AppTypography.symbolFont(size: 10, weight: .bold))
-                Text("End session")
+            HStack(alignment: .center, spacing: ProgramBoardLayout.sessionButtonGap) {
+                Image(systemName: presentation.systemName)
+                    .font(AppTypography.symbolFont(size: ProgramBoardLayout.sessionButtonIconSize, weight: .bold))
+                    .frame(width: ProgramBoardLayout.sessionButtonIconSize, height: ProgramBoardLayout.sessionButtonIconSize)
+                Text(presentation.title)
                     .font(AppTypography.font(.action))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
             .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.96))
-            .frame(width: 130, height: 32)
+            .padding(.horizontal, ProgramBoardLayout.sessionButtonHorizontalPadding)
+            .padding(.vertical, ProgramBoardLayout.sessionButtonVerticalPadding)
+            .frame(width: ProgramBoardLayout.sessionButtonWidth, height: ProgramBoardLayout.sessionButtonHeight)
             .background(BoardDarkCapsuleBackground())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .programButtonCursor()
-        .help("End the active Relay Runner voice session")
+        .help(presentation.help)
     }
 }
 
@@ -1945,8 +1999,8 @@ private struct ProgramBoardColumnChrome: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, 24)
-            .padding(.vertical, 16)
+            .padding(.horizontal, ProgramBoardLayout.panelHorizontalPadding)
+            .padding(.vertical, ProgramBoardLayout.panelVerticalPadding)
             .frame(maxWidth: .infinity, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
             .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
             .shadow(
