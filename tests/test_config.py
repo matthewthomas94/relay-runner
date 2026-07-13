@@ -52,6 +52,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["general"]["subagent_sizing_policy"], "orchestrator_decides")
         self.assertEqual(config["general"]["subagent_model"], "balanced")
         self.assertEqual(config["general"]["subagent_effort"], "medium")
+        self.assertTrue(config["general"]["messenger_enabled"])
+        self.assertEqual(config["general"]["messenger_model"], "default")
+        self.assertEqual(config["general"]["messenger_effort"], "default")
 
     def test_load_config_normalizes_codex_reasoning_effort(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,6 +174,46 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["general"]["subagent_sizing_policy"], "user_default")
         self.assertEqual(config["general"]["subagent_model"], "strong")
         self.assertEqual(config["general"]["subagent_effort"], "xhigh")
+
+    def test_load_config_preserves_provider_valid_messenger_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                """
+                [general]
+                provider = "claude"
+                command = "claude"
+                messenger_enabled = false
+                messenger_model = "sonnet"
+                messenger_effort = "low"
+                """,
+                encoding="utf-8",
+            )
+
+            config = load_config(str(path))
+
+        self.assertFalse(config["general"]["messenger_enabled"])
+        self.assertEqual(config["general"]["messenger_model"], "sonnet")
+        self.assertEqual(config["general"]["messenger_effort"], "low")
+
+    def test_load_config_resets_cross_provider_messenger_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                """
+                [general]
+                provider = "codex"
+                command = "codex"
+                messenger_model = "haiku"
+                messenger_effort = "ultra"
+                """,
+                encoding="utf-8",
+            )
+
+            config = load_config(str(path))
+
+        self.assertEqual(config["general"]["messenger_model"], "default")
+        self.assertEqual(config["general"]["messenger_effort"], "default")
 
 
 if __name__ == "__main__":

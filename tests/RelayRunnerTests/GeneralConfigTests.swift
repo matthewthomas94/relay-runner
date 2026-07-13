@@ -164,6 +164,27 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(config.orchestrator_effort, "default")
     }
 
+    func testMessengerSettingsRemainProviderScoped() {
+        var config = GeneralConfig()
+        config.provider = .codex
+        config.messenger_model = "gpt-5.6-terra"
+        config.messenger_effort = "ultra"
+
+        config.selectProvider(.claude)
+
+        XCTAssertTrue(config.messenger_enabled)
+        XCTAssertEqual(config.messenger_model, GeneralConfig.defaultMessengerModel)
+        XCTAssertEqual(config.messenger_effort, GeneralConfig.defaultMessengerEffort)
+        XCTAssertEqual(
+            GeneralConfig.normalizedMessengerEffort("low", for: .claude, model: "sonnet"),
+            "low"
+        )
+        XCTAssertEqual(
+            GeneralConfig.normalizedMessengerEffort("low", for: .claude, model: "haiku"),
+            GeneralConfig.defaultMessengerEffort
+        )
+    }
+
     func testWorkspaceFolderResolvesLegacyWorkingDirectoryValues() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
 

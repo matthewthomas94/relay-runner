@@ -92,6 +92,8 @@ class PMFrontstageTests(unittest.TestCase):
         command = RelayCommandMetadata.from_dict(relay_command(9, "cmd-9"))
 
         cases = {
+            "reasoning-summary": "Considering the next step",
+            "clarification-request": "I need a little more detail",
             "reading-context": "Reading project context",
             "ticket-updating": "Updating RR-9",
             "dispatch-preparing": "Preparing RR-9 dispatch",
@@ -143,6 +145,19 @@ class PMFrontstageTests(unittest.TestCase):
             OrchestrationTraceEvent(
                 kind="board-change",
                 message="git status && cat secret.txt",
+            )
+
+    def test_reasoning_summary_allows_public_assessment_but_rejects_hidden_chain_of_thought(self):
+        event = OrchestrationTraceEvent(
+            kind="reasoning-summary",
+            message="My current reasoning is to inspect the bridge boundary first",
+        )
+
+        self.assertIn("reasoning", event.message)
+        with self.assertRaises(ValueError):
+            OrchestrationTraceEvent(
+                kind="reasoning-summary",
+                message="Here is my hidden chain-of-thought",
             )
 
     def test_acknowledgement_is_emitted_before_backstage_planning(self):

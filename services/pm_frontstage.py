@@ -24,6 +24,8 @@ STATUS_PHASES = frozenset({"acknowledged", "planning", "outcome", "stale"})
 STATUS_SOURCES = frozenset({"pm", "orchestrator", "worker", "review-worker"})
 OUTCOME_KINDS = frozenset({"execute_solo", "delegate_plan", "needs_user"})
 TRACE_KINDS = frozenset({
+    "reasoning-summary",
+    "clarification-request",
     "reading-context",
     "ticket-updating",
     "ticket-created",
@@ -51,7 +53,7 @@ _COMMAND_LIKE_TRACE_RE = re.compile(
     re.IGNORECASE,
 )
 _PRIVATE_ACTIVITY_RE = re.compile(
-    r"(transcript|source_text|tool\s+log|reasoning|scratchpad|prompt|secret|password|token|api[_ -]?key)",
+    r"(transcript|source_text|tool\s+log|hidden\s+reasoning|chain[- ]of[- ]thought|scratchpad|prompt|secret|password|token|api[_ -]?key)",
     re.IGNORECASE,
 )
 
@@ -219,6 +221,8 @@ def default_orchestration_trace_message(
     ticket = _trace_ticket_label(ticket_id)
     run_suffix = f" run {run_id}" if run_id is not None else ""
     messages = {
+        "reasoning-summary": "Considering the next step",
+        "clarification-request": "I need a little more detail",
         "reading-context": "Reading project context",
         "ticket-updating": f"Updating {ticket}",
         "ticket-created": f"Created ticket {ticket}",

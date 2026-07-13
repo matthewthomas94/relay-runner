@@ -38,6 +38,13 @@ class CommandActionsTests(unittest.TestCase):
         self.assertFalse(action.requires_ticket)
         self.assertEqual(action.reason, "trace")
 
+    def test_orchestrator_reply_control_is_not_routed_as_ticket_work(self):
+        action = classify_command('__ORCHESTRATOR_REPLY__:{"text":"Done"}')
+
+        self.assertEqual(action.kind, "control")
+        self.assertFalse(action.requires_ticket)
+        self.assertEqual(action.reason, "orchestrator_reply")
+
     def test_pending_work_instruction_is_not_routed_as_new_ticket(self):
         action = classify_command(
             "Once these tickets are done, review it, merge it, and rebuild and install the app."

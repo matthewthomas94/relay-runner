@@ -84,6 +84,9 @@ final class ConfigManager {
                 config.general.orchestrator_effort = v
             }
             if let v = tomlString(general, "codex_reasoning_effort") { config.general.codex_reasoning_effort = v }
+            if let v = tomlBool(general, "messenger_enabled") { config.general.messenger_enabled = v }
+            if let v = tomlString(general, "messenger_model") { config.general.messenger_model = v }
+            if let v = tomlString(general, "messenger_effort") { config.general.messenger_effort = v }
             if let v = tomlString(general, "subagent_sizing_policy") {
                 config.general.subagent_sizing_policy = GeneralConfig.normalizedSubagentSizingPolicy(v)
             }
@@ -152,6 +155,9 @@ final class ConfigManager {
         lines.append("model = \"\(c.general.model)\"")
         lines.append("orchestrator_effort = \"\(c.general.orchestrator_effort)\"")
         lines.append("codex_reasoning_effort = \"\(legacyCodexEffort)\"")
+        lines.append("messenger_enabled = \(c.general.messenger_enabled)")
+        lines.append("messenger_model = \"\(c.general.messenger_model)\"")
+        lines.append("messenger_effort = \"\(c.general.messenger_effort)\"")
         lines.append("subagent_sizing_policy = \"\(c.general.subagent_sizing_policy.rawValue)\"")
         lines.append("subagent_model = \"\(c.general.subagent_model)\"")
         lines.append("subagent_effort = \"\(c.general.subagent_effort)\"")

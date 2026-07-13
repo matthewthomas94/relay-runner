@@ -26,6 +26,10 @@ The bridge records its launching cwd to `/tmp/voice_bridge.cwd` so the menu-bar 
 
 When relay mode starts, the bridge also registers a persistent orchestrator lifecycle row in `orchestrator_sessions.db`, keyed by the resolved cwd. The row stores provider, model, effort, heartbeat, and readable state (`idle`, `planning`, `awaiting_workers`, `reviewing`, `blocked`, `failed`, `stopped`, or `stale`). It is durable daemon state, not a warm model process, so an idle orchestrator session does not spend tokens. Codex and Claude use the same registration and heartbeat path; provider changes on the same project reuse the row and record the change.
 
+The bridge also starts a separate persistent **messenger model process** for the lifetime of the voice session. This process is deliberately tool-free: it cannot plan work, edit tickets, dispatch workers, or take actions. Every user turn is queued to the messenger before the same turn is published to the foreground orchestrator, so model warmup or inference never blocks orchestrator delivery. The foreground session remains authoritative and mirrors provider-visible reasoning summaries, public progress, and worker lifecycle milestones into the messenger context. Hidden chain-of-thought is neither requested nor exposed. Final foreground responses return through an `__ORCHESTRATOR_REPLY__` event; only the messenger normally supplies the spoken wording to Kokoro. If the messenger provider fails, the bridge speaks the authoritative final response directly rather than losing it.
+
+Messenger defaults favor latency: Codex uses `gpt-5.6-terra` at `low` effort, while Claude uses `haiku` at provider-default effort. Codex keeps a warm `app-server` process and ephemeral read-only thread; Claude keeps a warm stream-JSON process. Both disable tools and MCP access. Optional `[general]` keys are `messenger_enabled`, `messenger_model`, and `messenger_effort`; leaving model and effort as `default` selects those provider-specific fast defaults. Parakeet STT and Kokoro TTS remain local and unchanged.
+
 ### 2. Write a ticket
 
 Open the menu-bar Board (double-tap Shift to toggle) and create a ticket via the column's `+` button. The board writes the file to `<repo>/.orchestrator/<TICKET_ID>.md` and bumps `<repo>/.orchestrator/config.toml`'s `next_id`. Existing configs keep their configured prefix; fresh repos derive one from the repo name. Commit both to the working branch — that's the ticket's audit trail going forward.
@@ -73,14 +77,14 @@ Codex and Claude use the same capture schema. The daemon does not scrape either 
 
 ## The intended workflow
 
-Relay Runner runs as a two-layer loop: the foreground orchestrator/PM talks to the user, decides whether a voice/text command is conversation or project work, writes refined ticket prose for worker-sized work, and reports status; each worker is a one-shot execution agent. Persistent daemon state still records active project sessions and worker dispatch lifecycle, but Relay voice text is not automatically fanned out to a separate ticket-authoring inbox. Codex and Claude follow the same role split; only launch flags, auth flows, model names, and effort rendering differ.
+Relay Runner runs as a three-role loop: the fast messenger owns spoken conversation, the foreground orchestrator/PM makes authoritative project decisions and reports public context, and each worker is a one-shot execution agent. Persistent daemon state still records active project sessions and worker dispatch lifecycle, but Relay voice text is not automatically fanned out to a separate ticket-authoring inbox. Codex and Claude follow the same role split; only launch flags, auth flows, model names, and effort rendering differ.
 
-1. **Acknowledgement and classification.** `/relay-bridge` captures the user's voice or typed instruction and publishes it to the foreground orchestrator/PM. The foreground session responds first: clarifies ambiguity, answers general questions directly, and only creates board work after deciding the command is real project work.
+1. **Parallel delivery and classification.** `/relay-bridge` captures the user's voice or typed instruction and immediately queues it to the persistent messenger, then publishes the same command to the foreground orchestrator/PM. The notch shows receipt without a generic spoken acknowledgement. The foreground session clarifies ambiguity, answers general questions, and only creates board work after deciding the command is real project work.
 2. **Ticket authoring.** Raw Relay command captures are private metadata, not board cards or ticket body text. The foreground orchestrator/PM writes refined `.orchestrator/<ticket_id>.md` tickets with actionable summaries and acceptance criteria when work should be delegated.
 3. **Worker creation.** Once a ticket is refined enough, the foreground orchestrator/PM moves it to `ready` or calls the shared dispatch path. The board auto-dispatches `ready`, and direct dispatch stays available for retries or explicit manual control.
 4. **Worker execution.** The daemon creates an isolated worktree on `relay/<id>`, renders the worker workflow prompt, and launches the configured agent. The worker claims the ticket, implements the change, verifies it, commits code, and appends a run log entry before exiting.
 5. **Review and merge.** The orchestrating session reviews completed worker branches, chooses merge order, resolves conflicts intentionally, and merges worker commits into the working branch. That merge publishes `done` on the board and triggers any dependent auto-promotion.
-6. **Status updates.** The foreground orchestrator/PM reports run ids, failures, completions, and next actions back to the user. It stays frontstage across the whole loop while workers do backstage work.
+6. **Status and response synthesis.** The foreground orchestrator/PM mirrors provider-visible progress and worker events to the messenger, then sends its authoritative final response. The messenger uses that bounded public context to speak concise updates and the final outcome while the orchestrator stays frontstage and workers do backstage work.
 
 Codex and Claude share the same stale-command checks, ticket schema, and dispatch API. Provider-specific differences stay at process launch and sizing rendering: Codex uses `model_reasoning_effort`, Claude uses `--effort`, and both providers use the same `low`, `medium`, `high`, and `xhigh` effort values for provider-neutral work.
 
@@ -131,6 +135,7 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | Path | Purpose |
 |---|---|
 | `services/orchestrator.py` | The daemon (HTTP server + SQLite + worker spawn) |
+| `services/messenger.py` | Persistent tool-free Codex/Claude messenger backends and event runtime |
 | `services/orchestrator_workflow.md` | Default workflow template |
 | `Sources/relay-orchestrator-mcp/` | Swift MCP proxy (HTTP → MCP tools) |
 | `scripts/relay-orchestrator` | Launcher / installer |

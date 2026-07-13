@@ -75,6 +75,8 @@ struct GeneralConfig: Codable, Equatable {
     static let defaultModel = "default"
     static let defaultReasoningEffort = "default"
     static let defaultCodexReasoningEffort = defaultReasoningEffort
+    static let defaultMessengerModel = defaultModel
+    static let defaultMessengerEffort = defaultReasoningEffort
     static let defaultSubagentModel = "balanced"
     static let defaultSubagentEffort = "medium"
 
@@ -146,6 +148,9 @@ struct GeneralConfig: Codable, Equatable {
     var orchestrator_effort: String = defaultReasoningEffort
     /// Legacy Codex-only key. Kept for migration and older config readers.
     var codex_reasoning_effort: String = defaultCodexReasoningEffort
+    var messenger_enabled: Bool = true
+    var messenger_model: String = defaultMessengerModel
+    var messenger_effort: String = defaultMessengerEffort
     var subagent_sizing_policy: SubagentSizingPolicy = .orchestratorDecides
     var subagent_model: String = defaultSubagentModel
     var subagent_effort: String = defaultSubagentEffort
@@ -271,6 +276,25 @@ struct GeneralConfig: Codable, Equatable {
             ?? .orchestratorDecides
     }
 
+    static func normalizedMessengerModel(_ model: String, for provider: AgentProvider) -> String {
+        normalizeModel(model, for: provider)
+    }
+
+    static func normalizedMessengerEffort(
+        _ effort: String,
+        for provider: AgentProvider,
+        model: String
+    ) -> String {
+        let normalizedModel = normalizeModel(model, for: provider)
+        let effectiveModel: String
+        if normalizedModel == defaultMessengerModel {
+            effectiveModel = provider == .codex ? "gpt-5.6-terra" : "haiku"
+        } else {
+            effectiveModel = normalizedModel
+        }
+        return normalizedOrchestratorEffort(effort, for: provider, model: effectiveModel)
+    }
+
     static func inferProvider(from command: String) -> AgentProvider {
         let name = URL(fileURLWithPath: command).lastPathComponent.lowercased()
         return name.contains("claude") ? .claude : .codex
@@ -293,6 +317,7 @@ struct GeneralConfig: Codable, Equatable {
         }
         normalizeSelectedModel()
         normalizeOrchestratorEffort(legacyCodexWasExplicit: true)
+        normalizeMessengerDefaults()
         normalizeSubagentDefaults()
     }
 
@@ -308,6 +333,7 @@ struct GeneralConfig: Codable, Equatable {
             orchestrator_effort = codex_reasoning_effort
         }
         normalizeOrchestratorEffort(legacyCodexWasExplicit: !orchestratorEffortWasExplicit)
+        normalizeMessengerDefaults()
         normalizeSubagentDefaults()
     }
 
@@ -337,6 +363,20 @@ struct GeneralConfig: Codable, Equatable {
     private mutating func normalizeSubagentDefaults() {
         subagent_model = Self.normalizedSubagentModel(subagent_model)
         subagent_effort = Self.normalizedSubagentEffort(subagent_effort)
+    }
+
+    private mutating func normalizeMessengerDefaults() {
+        let originalModel = messenger_model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        messenger_model = Self.normalizedMessengerModel(originalModel, for: provider)
+        if originalModel != messenger_model {
+            messenger_effort = Self.defaultMessengerEffort
+            return
+        }
+        messenger_effort = Self.normalizedMessengerEffort(
+            messenger_effort,
+            for: provider,
+            model: messenger_model
+        )
     }
 
     /// Resolve legacy terminal short names to full app paths.

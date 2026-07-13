@@ -122,6 +122,9 @@ def load_config(config_path: str | None = None) -> dict:
             "model": "default",
             "orchestrator_effort": "default",
             "codex_reasoning_effort": "default",
+            "messenger_enabled": True,
+            "messenger_model": "default",
+            "messenger_effort": "default",
             "subagent_sizing_policy": "orchestrator_decides",
             "subagent_model": "balanced",
             "subagent_effort": "medium",
@@ -257,6 +260,20 @@ def _migrate_config(
         if provider == "codex" and orchestrator_effort in codex_efforts_for_model
         else "default"
     )
+
+    messenger_model = str(general.get("messenger_model", "default")).strip().lower()
+    if messenger_model not in valid_models[provider]:
+        messenger_model = "default"
+        messenger_effort = "default"
+    else:
+        messenger_effort = str(general.get("messenger_effort", "default")).strip().lower()
+        effective_messenger_model = messenger_model
+        if effective_messenger_model == "default":
+            effective_messenger_model = "gpt-5.6-terra" if provider == "codex" else "haiku"
+        if messenger_effort not in valid_session_efforts(provider, effective_messenger_model):
+            messenger_effort = "default"
+    general["messenger_model"] = messenger_model
+    general["messenger_effort"] = messenger_effort
 
     policy = str(general.get("subagent_sizing_policy", "orchestrator_decides")).strip().lower()
     general["subagent_sizing_policy"] = (

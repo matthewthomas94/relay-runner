@@ -2,7 +2,7 @@
 
 A native macOS menu bar app that gives Codex or [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) a voice — speak prompts, hear responses, watch a live transcription overlay.
 
-All speech-to-text and text-to-speech runs **on-device**. No voice data leaves your machine; only the transcribed text reaches your configured agent, the same way typing would.
+All speech-to-text and text-to-speech runs **on-device**. No audio leaves your machine; only the transcribed text and public orchestration context reach your configured Codex or Claude sessions, the same way typed text would.
 
 > **Status:** early release. Codex is the default target; Claude Code remains supported via configuration.
 
@@ -11,13 +11,15 @@ All speech-to-text and text-to-speech runs **on-device**. No voice data leaves y
 ## How it works
 
 ```
-  mic  ──►  STT (Parakeet, on-device)  ──►  codex/claude CLI  ──►  TTS (Kokoro, on-device)  ──►  speakers
-                                      │
-                                      └──►  overlay pill (live transcript + response)
+  mic ─► STT (Parakeet, local) ─► bridge ─┬─► foreground orchestrator ─► workers
+                                          └─► fast messenger ◄─ public progress/final
+                                                     │
+                                                     └─► TTS (Kokoro, local) ─► speakers
 ```
 
 - **Menu bar app** (SwiftUI) handles UI, hotkeys, audio capture, STT, and the on-screen awareness overlay
-- **Python bridge** (`voice_bridge.py`) relays transcribed text into the active agent session and reads spoken summaries back out to the TTS engine
+- **Python bridge** (`voice_bridge.py`) delivers each turn to the foreground orchestrator and a persistent tool-free messenger, then routes messenger speech to Kokoro
+- **Messenger runtime** (`messenger.py`) keeps Codex Terra/low or Claude Haiku warm, consumes only user turns plus public orchestrator/worker context, and never plans or takes actions
 
 ---
 
@@ -92,6 +94,7 @@ All settings live in the Settings window. Config is persisted to:
 - **LLM Provider** — Codex (default) or Claude. **Start Session…** launches the selected provider's CLI.
 - **Model** — provider-specific choices. Codex offers Default, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.4 Mini, and GPT-5.3 Codex Spark; Claude offers Default, Best, Fable, Opus, Sonnet, and Haiku. *Default* lets the selected provider use its normal account-level setting; the others pass `--model <alias>` to the CLI for this session. GPT-5.6 and Ultra effort depend on your Codex plan; Fable depends on Claude plan or usage-credit eligibility and is unavailable with zero data retention.
 - **Orchestrator Effort** — provider/model-specific session effort. Codex Sol/Terra support Default through Ultra, Luna supports Default through Max, older named Codex models stop at Extra High, Claude Best/Fable/Opus support Default through Max, Sonnet omits Extra High, and Haiku/default account models omit explicit effort.
+- **Messenger** — enabled by default and selected independently from the orchestrator: Codex uses GPT-5.6 Terra at Low effort; Claude uses Haiku at provider-default effort. Advanced TOML overrides are `messenger_enabled`, `messenger_model`, and `messenger_effort` under `[general]`.
 - **Working directory** — where new voice sessions open
 - **Terminal tab** — hosts the active Codex or Claude session inside Workspace, with Terminal.app available as a fallback
 - **Bypass agent permission prompts** — when on (default), sessions launched from **Start Session…** run with the configured agent's bypass flag so voice flow isn't interrupted. Turn off if you want the agent to ask before each tool use; voice still works, you'll just answer prompts in the terminal.

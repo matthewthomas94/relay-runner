@@ -18,6 +18,9 @@ final class ConfigManagerTests: XCTestCase {
         config.general.subagent_sizing_policy = .userDefault
         config.general.subagent_model = "strong"
         config.general.subagent_effort = "xhigh"
+        config.general.messenger_enabled = false
+        config.general.messenger_model = "sonnet"
+        config.general.messenger_effort = "low"
 
         try manager.save(config)
         let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
@@ -26,6 +29,8 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertTrue(raw.contains("orchestrator_effort = \"max\""))
         XCTAssertTrue(raw.contains("codex_reasoning_effort = \"default\""))
         XCTAssertTrue(raw.contains("subagent_sizing_policy = \"user_default\""))
+        XCTAssertTrue(raw.contains("messenger_enabled = false"))
+        XCTAssertTrue(raw.contains("messenger_model = \"sonnet\""))
         XCTAssertEqual(loaded.general.provider, .claude)
         XCTAssertEqual(loaded.general.model, "fable")
         XCTAssertEqual(loaded.general.orchestrator_effort, "max")
@@ -33,6 +38,9 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertEqual(loaded.general.subagent_sizing_policy, .userDefault)
         XCTAssertEqual(loaded.general.subagent_model, "strong")
         XCTAssertEqual(loaded.general.subagent_effort, "xhigh")
+        XCTAssertFalse(loaded.general.messenger_enabled)
+        XCTAssertEqual(loaded.general.messenger_model, "sonnet")
+        XCTAssertEqual(loaded.general.messenger_effort, "low")
     }
 
     func testLegacyCodexReasoningEffortMigratesToOrchestratorEffort() throws {
@@ -67,6 +75,8 @@ final class ConfigManagerTests: XCTestCase {
         subagent_sizing_policy = "always"
         subagent_model = "opus"
         subagent_effort = "max"
+        messenger_model = "haiku"
+        messenger_effort = "ultra"
         """.write(to: manager.configPath, atomically: true, encoding: .utf8)
 
         let loaded = manager.load()
@@ -76,6 +86,8 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertEqual(loaded.general.subagent_sizing_policy, .orchestratorDecides)
         XCTAssertEqual(loaded.general.subagent_model, GeneralConfig.defaultSubagentModel)
         XCTAssertEqual(loaded.general.subagent_effort, GeneralConfig.defaultSubagentEffort)
+        XCTAssertEqual(loaded.general.messenger_model, GeneralConfig.defaultMessengerModel)
+        XCTAssertEqual(loaded.general.messenger_effort, GeneralConfig.defaultMessengerEffort)
     }
 
     private func temporaryConfigDir() -> URL {

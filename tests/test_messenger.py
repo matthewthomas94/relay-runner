@@ -1,0 +1,314 @@
+from __future__ import annotations
+
+import os
+import json
+import queue
+import sys
+import threading
+import time
+import unittest
+
+
+ROOT = os.path.dirname(os.path.dirname(__file__))
+SERVICES = os.path.join(ROOT, "services")
+sys.path.insert(0, SERVICES)
+
+from messenger import (  # noqa: E402
+    MESSENGER_SYSTEM_PROMPT,
+    ClaudeMessengerBackend,
+    CodexMessengerBackend,
+    MessengerConfig,
+    MessengerRuntime,
+)
+
+
+class FakeBackend:
+    def __init__(self, responses: list[str] | None = None):
+        self.responses: queue.Queue[str] = queue.Queue()
+        for response in responses or []:
+            self.responses.put(response)
+        self.prompts: list[str] = []
+        self.started = threading.Event()
+        self.interrupt_count = 0
+        self.shutdown_count = 0
+
+    def start(self) -> None:
+        self.started.set()
+
+    def ask(self, prompt: str, timeout: float = 60.0) -> str:
+        self.prompts.append(prompt)
+        return self.responses.get(timeout=timeout)
+
+    def interrupt(self) -> None:
+        self.interrupt_count += 1
+
+    def shutdown(self) -> None:
+        self.shutdown_count += 1
+
+
+def wait_until(predicate, timeout: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return bool(predicate())
+
+
+class MessengerConfigTests(unittest.TestCase):
+    def test_provider_defaults_select_fast_messenger_models(self):
+        codex = MessengerConfig.from_app_config({"general": {"provider": "codex"}})
+        claude = MessengerConfig.from_app_config({"general": {"provider": "claude"}})
+
+        self.assertTrue(codex.enabled)
+        self.assertEqual(codex.model, "gpt-5.6-terra")
+        self.assertEqual(codex.effort, "low")
+        self.assertEqual(claude.model, "haiku")
+        self.assertEqual(claude.effort, "default")
+
+    def test_explicit_messenger_settings_are_provider_validated(self):
+        config = MessengerConfig.from_app_config({
+            "general": {
+                "provider": "claude",
+                "messenger_enabled": False,
+                "messenger_model": "sonnet",
+                "messenger_effort": "low",
+                "command": "/opt/bin/claude",
+            }
+        })
+
+        self.assertFalse(config.enabled)
+        self.assertEqual(config.command, "/opt/bin/claude")
+        self.assertEqual(config.model, "sonnet")
+        self.assertEqual(config.effort, "low")
+
+        invalid = MessengerConfig.from_app_config({
+            "general": {
+                "provider": "codex",
+                "messenger_model": "haiku",
+                "messenger_effort": "ultra",
+            }
+        })
+        self.assertEqual(invalid.model, "gpt-5.6-terra")
+        self.assertEqual(invalid.effort, "low")
+
+    def test_prompt_forbids_work_and_hidden_reasoning(self):
+        self.assertIn("Never use tools", MESSENGER_SYSTEM_PROMPT)
+        self.assertIn("provider-visible", MESSENGER_SYSTEM_PROMPT)
+        self.assertIn("hidden chain-of-thought", MESSENGER_SYSTEM_PROMPT)
+        self.assertIn("__SILENT__", MESSENGER_SYSTEM_PROMPT)
+
+
+class MessengerBackendContractTests(unittest.TestCase):
+    def test_codex_backend_uses_persistent_app_server_without_tools(self):
+        config = MessengerConfig(
+            enabled=True,
+            provider="codex",
+            command="/opt/bin/codex",
+            model="gpt-5.6-terra",
+            effort="low",
+            cwd="/tmp/project",
+        )
+        backend = CodexMessengerBackend(config)
+
+        command = backend.spawn_command()
+        params = backend.thread_start_params()
+
+        self.assertEqual(command[:3], ["/opt/bin/codex", "app-server", "--stdio"])
+        self.assertIn("features.shell_tool=false", command)
+        self.assertIn("features.unified_exec=false", command)
+        self.assertEqual(params["model"], "gpt-5.6-terra")
+        self.assertEqual(params["sandbox"], "read-only")
+        self.assertEqual(params["approvalPolicy"], "never")
+        self.assertEqual(params["dynamicTools"], [])
+        self.assertTrue(params["ephemeral"])
+
+    def test_codex_backend_collects_completed_agent_message(self):
+        config = MessengerConfig(True, "codex", "codex", "gpt-5.6-terra", "low", "/tmp")
+        backend = CodexMessengerBackend(config)
+        event = threading.Event()
+        backend._turn_events["turn-1"] = event
+
+        backend._handle_message({
+            "method": "item/completed",
+            "params": {
+                "turnId": "turn-1",
+                "item": {"id": "item-1", "type": "agentMessage", "text": "Fast reply"},
+            },
+        })
+        backend._handle_message({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turn": {"id": "turn-1", "status": "completed", "items": []},
+            },
+        })
+
+        self.assertTrue(event.is_set())
+        self.assertEqual(backend._turn_text["turn-1"], "Fast reply")
+
+    def test_claude_backend_uses_stream_json_haiku_without_tools(self):
+        config = MessengerConfig(
+            enabled=True,
+            provider="claude",
+            command="claude",
+            model="haiku",
+            effort="default",
+            cwd="/tmp/project",
+        )
+        backend = ClaudeMessengerBackend(config)
+
+        command = backend.spawn_command()
+
+        self.assertIn("--input-format", command)
+        self.assertIn("stream-json", command)
+        self.assertIn("--output-format", command)
+        self.assertIn("--tools", command)
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertEqual(command[command.index("--model") + 1], "haiku")
+        self.assertNotIn("--effort", command)
+
+    def test_claude_backend_collects_stream_result_and_session_id(self):
+        class FakeProcess:
+            stdout = iter([
+                json.dumps({"type": "system", "session_id": "session-1"}) + "\n",
+                json.dumps({"type": "result", "session_id": "session-1", "result": "Fast reply"}) + "\n",
+            ])
+
+        config = MessengerConfig(True, "claude", "claude", "haiku", "default", "/tmp")
+        backend = ClaudeMessengerBackend(config)
+        pending = {"event": threading.Event(), "text": "", "error": None}
+        process = FakeProcess()
+        backend._pending = pending
+        backend._proc = process
+
+        backend._read_stream(process)
+
+        self.assertEqual(backend._session_id, "session-1")
+        self.assertTrue(pending["event"].is_set())
+        self.assertEqual(pending["text"], "Fast reply")
+
+
+class MessengerRuntimeTests(unittest.TestCase):
+    def test_user_turn_is_processed_asynchronously_and_silent_is_not_spoken(self):
+        backend = FakeBackend(["__SILENT__"])
+        spoken: list[tuple[str, int, str]] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append((text, seq, command_id)),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            runtime.submit_user(
+                "Implement the new architecture",
+                {"relay_command_seq": 4, "relay_command_id": "cmd-4"},
+            )
+
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+            self.assertEqual(spoken, [])
+            self.assertIn("Implement the new architecture", backend.prompts[0])
+            self.assertIn("Do not merely acknowledge", backend.prompts[0])
+        finally:
+            runtime.shutdown()
+
+    def test_trace_and_final_share_bounded_context_and_only_current_reply_speaks(self):
+        backend = FakeBackend([
+            "__SILENT__",
+            "The orchestrator is checking the bridge wiring now.",
+            "The messenger architecture is implemented and verified.",
+        ])
+        spoken: list[tuple[str, int, str]] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append((text, seq, command_id)),
+            is_current=lambda seq, command_id: seq == 7 and command_id == "cmd-7",
+            context_limit=6,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 7, "relay_command_id": "cmd-7"}
+            runtime.submit_user("Build the fast messenger", command)
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+
+            runtime.submit_trace({
+                "kind": "reasoning-summary",
+                "message": "Checking the voice bridge wiring",
+                "command": command,
+            })
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            self.assertGreaterEqual(backend.interrupt_count, 1)
+
+            runtime.submit_final({"text": "Implemented and verified.", **command})
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+
+            self.assertEqual(spoken[0][0], "The orchestrator is checking the bridge wiring now.")
+            self.assertEqual(spoken[1][0], "The messenger architecture is implemented and verified.")
+            self.assertIn("Checking the voice bridge wiring", backend.prompts[1])
+            self.assertIn("Implemented and verified.", backend.prompts[2])
+            self.assertLessEqual(runtime.context_size, 6)
+        finally:
+            runtime.shutdown()
+
+    def test_silent_final_falls_back_to_authoritative_text(self):
+        backend = FakeBackend(["__SILENT__", "__SILENT__"])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 11, "relay_command_id": "cmd-11"}
+            runtime.submit_user("Give me the result", command)
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+            runtime.submit_final({"text": "The authoritative result is ready.", **command})
+
+            self.assertTrue(wait_until(lambda: spoken == ["The authoritative result is ready."]))
+        finally:
+            runtime.shutdown()
+
+    def test_new_user_turn_interrupts_inflight_messenger_only(self):
+        backend = FakeBackend(["__SILENT__", "__SILENT__"])
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: None,
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            runtime.submit_user("First", {"relay_command_seq": 1, "relay_command_id": "one"})
+            runtime.submit_user("Second", {"relay_command_seq": 2, "relay_command_id": "two"})
+
+            self.assertGreaterEqual(backend.interrupt_count, 1)
+        finally:
+            runtime.shutdown()
+
+    def test_clarification_trace_is_rendered_as_a_direct_user_question(self):
+        backend = FakeBackend(["__SILENT__", "Which repository should I use?"])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 9, "relay_command_id": "cmd-9"}
+            runtime.submit_user("Fix the tests", command)
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+            runtime.submit_trace({
+                "kind": "clarification-request",
+                "message": "Ask which repository should be changed",
+                "command": command,
+            })
+
+            self.assertTrue(wait_until(lambda: spoken == ["Which repository should I use?"]))
+            self.assertIn("authoritative clarification request", backend.prompts[1])
+        finally:
+            runtime.shutdown()
+
+
+if __name__ == "__main__":
+    unittest.main()

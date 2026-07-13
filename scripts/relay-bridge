@@ -12,7 +12,7 @@
 # services/voice_bridge.py for legacy manual debugging.
 #
 # Voice commands are written to /tmp/voice_cmd_ready for the agent to pick up,
-# and TTS input is read from /tmp/tts_in.fifo.
+# and a persistent tool-free messenger owns normal TTS replies.
 
 set -euo pipefail
 
@@ -277,11 +277,7 @@ for i in $(seq 1 60); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && b
 
 If the bridge failed to start, tell the user to check `/tmp/voice_bridge.log` and stop here.
 
-4. Once the bridge is up, speak a one-time startup confirmation:
-
-```bash
-if [ -p /tmp/tts_in.fifo ]; then printf '%s\n' 'Voice bridge is ready. You can speak at any point.' > /tmp/tts_in.fifo; fi
-```
+4. Once the bridge is up, do not speak a startup acknowledgement. The Relay Runner notch owns the ready status.
 
 ## Voice Interaction Loop
 
@@ -390,13 +386,14 @@ Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claim
   - Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 
-### Step 2.5: Send curated orchestration traces to the notch
+### Step 2.5: Send provider-visible orchestration context to the messenger
 
-When a meaningful orchestration milestone happens, mirror a short public trace to Relay Runner through the bridge control path. Use this for ticket-created, dispatch-started, dispatch-claimed, run-running, run-succeeded, run-failed, and board-change events. Keep the message user-safe and bounded; do not include raw shell commands, raw tool output, hidden reasoning, transcript dumps, secrets, or unbounded metadata. Codex and Claude use the same trace kinds and public copy.
+Whenever you produce a provider-visible reasoning summary or meaningful progress update, mirror a short public version to Relay Runner through the bridge control path. The persistent messenger reads this stream as conversational context while you remain the authoritative orchestrator. Use `reasoning-summary` for your public assessment or next-step summary, `clarification-request` when you need the messenger to ask the user something, plus ticket-created, dispatch-started, dispatch-claimed, run-running, run-succeeded, run-failed, and board-change for lifecycle milestones. Keep each message user-safe and bounded; never include hidden chain-of-thought, raw shell commands, raw tool output, transcript dumps, secrets, or unbounded metadata. Codex and Claude use the same trace kinds and public copy.
 
-The bridge may speak the first safe public trace/status event as an early acknowledgement before your final response. Keep traces short and natural, but do not rely on traces to replace the final TTS outcome summary.
+The bridge never speaks trace text directly. The messenger decides whether an update is useful and voices it naturally. Do not send a generic acknowledgement just to fill silence.
 
 ```bash
+printf '%s\n' '__TRACE__:{"kind":"reasoning-summary","message":"Checking how the current bridge routes replies"}' > /tmp/voice_in.fifo
 printf '%s\n' '__TRACE__:{"kind":"ticket-created","ticket_id":"RR-123"}' > /tmp/voice_in.fifo
 printf '%s\n' '__TRACE__:{"kind":"dispatch-claimed","ticket_id":"RR-123","run_id":456}' > /tmp/voice_in.fifo
 printf '%s\n' '__TRACE__:{"kind":"run-succeeded","ticket_id":"RR-123","run_id":456}' > /tmp/voice_in.fifo
@@ -404,7 +401,7 @@ printf '%s\n' '__TRACE__:{"kind":"run-succeeded","ticket_id":"RR-123","run_id":4
 
 These traces appear as the working-state notch label when no more specific compact activity label is active. Existing compact labels such as Listening, Response ready, worker state, bridge recovery, or ticket activity take priority over this stream.
 
-### Step 3: Speak your response
+### Step 3: Send the authoritative response to the messenger
 
 After generating your response, tear down the background heartbeat refresher spawned in Step 1, then ensure the bridge session metadata remains intact. The Relay Runner app owns daemon recovery; if the daemon is missing here, preserve `/tmp/voice_bridge.cwd` and `/tmp/voice_bridge.provider`, wait briefly for the app watchdog, and skip TTS rather than deleting runtime context from the agent side:
 
@@ -434,7 +431,7 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
 fi
 ```
 
-Then send the TTS response with the claimed Relay command metadata. Keep it concise and conversational (strip markdown formatting, code blocks, and verbose explanations — speak the key points). Use a nonblocking FIFO open so a missing/recovering bridge cannot hang the final-response cleanup:
+Then send your authoritative user-facing response to the messenger with the claimed Relay command metadata. Include the real outcome and any relevant next step; the messenger will turn it into concise spoken language. Use a nonblocking FIFO open so a missing or recovering bridge cannot hang final-response cleanup:
 
 ```bash
 python3 - <<'PY'
@@ -443,7 +440,7 @@ import json
 import os
 from pathlib import Path
 
-payload = {"text": "YOUR_SPOKEN_RESPONSE"}
+payload = {"text": "YOUR_AUTHORITATIVE_RESPONSE"}
 claim_path = Path("/tmp/voice_cmd_claimed.json")
 if claim_path.is_file():
     try:
@@ -454,17 +451,17 @@ if claim_path.is_file():
     except (OSError, json.JSONDecodeError):
         pass
 try:
-    fd = os.open("/tmp/tts_in.fifo", os.O_WRONLY | os.O_NONBLOCK)
+    fd = os.open("/tmp/voice_in.fifo", os.O_WRONLY | os.O_NONBLOCK)
 except OSError as exc:
     if exc.errno in (errno.ENOENT, errno.ENXIO):
         raise SystemExit(0)
     raise
 with os.fdopen(fd, "w") as fifo:
-    print(json.dumps(payload), file=fifo)
+    print("__ORCHESTRATOR_REPLY__:" + json.dumps(payload), file=fifo)
 PY
 ```
 
-Important: Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead. Only send the spoken summary, not the full detailed response.
+Important: Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not send a stale reply; handle the newer message instead.
 
 ### Step 4: Continue monitoring
 
@@ -607,11 +604,7 @@ for i in $(seq 1 60); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && b
 
 If the bridge failed, tell the user to check `/tmp/voice_bridge.log` and stop.
 
-4. Once the bridge is up, speak a one-time startup confirmation:
-
-```bash
-if [ -p /tmp/tts_in.fifo ]; then printf '%s\n' 'Voice bridge is ready. You can speak at any point.' > /tmp/tts_in.fifo; fi
-```
+4. Once the bridge is up, do not speak a startup acknowledgement. The Relay Runner notch owns the ready status.
 
 ## Voice Loop
 
@@ -708,13 +701,14 @@ Interpret the text:
   - Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline.
   - Your response must name the action outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.
 
-Send curated orchestration traces to the notch:
+Send provider-visible orchestration context to the messenger:
 
-When a meaningful orchestration milestone happens, mirror a short public trace to Relay Runner through the bridge control path. Use this for ticket-created, dispatch-started, dispatch-claimed, run-running, run-succeeded, run-failed, and board-change events. Keep the message user-safe and bounded; do not include raw shell commands, raw tool output, hidden reasoning, transcript dumps, secrets, or unbounded metadata. Codex and Claude use the same trace kinds and public copy.
+Whenever you produce a provider-visible reasoning summary or meaningful progress update, mirror a short public version to Relay Runner through the bridge control path. The persistent messenger reads this stream as conversational context while you remain the authoritative orchestrator. Use `reasoning-summary` for your public assessment or next-step summary, `clarification-request` when you need the messenger to ask the user something, plus ticket-created, dispatch-started, dispatch-claimed, run-running, run-succeeded, run-failed, and board-change for lifecycle milestones. Keep each message user-safe and bounded; never include hidden chain-of-thought, raw shell commands, raw tool output, transcript dumps, secrets, or unbounded metadata. Codex and Claude use the same trace kinds and public copy.
 
-The bridge may speak the first safe public trace/status event as an early acknowledgement before your final response. Keep traces short and natural, but do not rely on traces to replace the final TTS outcome summary.
+The bridge never speaks trace text directly. The messenger decides whether an update is useful and voices it naturally. Do not send a generic acknowledgement just to fill silence.
 
 ```bash
+printf '%s\n' '__TRACE__:{"kind":"reasoning-summary","message":"Checking how the current bridge routes replies"}' > /tmp/voice_in.fifo
 printf '%s\n' '__TRACE__:{"kind":"ticket-created","ticket_id":"RR-123"}' > /tmp/voice_in.fifo
 printf '%s\n' '__TRACE__:{"kind":"dispatch-claimed","ticket_id":"RR-123","run_id":456}' > /tmp/voice_in.fifo
 printf '%s\n' '__TRACE__:{"kind":"run-succeeded","ticket_id":"RR-123","run_id":456}' > /tmp/voice_in.fifo
@@ -750,7 +744,7 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
 fi
 ```
 
-Write only the spoken summary to TTS, tagged with the claimed Relay command metadata. Keep it to 1-3 conversational sentences and strip markdown/code details. Use a nonblocking FIFO open so a missing/recovering bridge cannot hang the final-response cleanup:
+Send the authoritative user-facing response to the messenger, tagged with the claimed Relay command metadata. Include the real outcome and relevant next step; the messenger will produce the concise spoken wording. Use a nonblocking FIFO open so a missing or recovering bridge cannot hang final-response cleanup:
 
 ```bash
 python3 - <<'PY'
@@ -759,7 +753,7 @@ import json
 import os
 from pathlib import Path
 
-payload = {"text": "YOUR_SPOKEN_RESPONSE"}
+payload = {"text": "YOUR_AUTHORITATIVE_RESPONSE"}
 claim_path = Path("/tmp/voice_cmd_claimed.json")
 if claim_path.is_file():
     try:
@@ -770,17 +764,17 @@ if claim_path.is_file():
     except (OSError, json.JSONDecodeError):
         pass
 try:
-    fd = os.open("/tmp/tts_in.fifo", os.O_WRONLY | os.O_NONBLOCK)
+    fd = os.open("/tmp/voice_in.fifo", os.O_WRONLY | os.O_NONBLOCK)
 except OSError as exc:
     if exc.errno in (errno.ENOENT, errno.ENXIO):
         raise SystemExit(0)
     raise
 with os.fdopen(fd, "w") as fifo:
-    print(json.dumps(payload), file=fifo)
+    print("__ORCHESTRATOR_REPLY__:" + json.dumps(payload), file=fifo)
 PY
 ```
 
-Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not write stale TTS; handle the newer message instead.
+Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not send a stale reply; handle the newer message instead.
 
 ### Continue monitoring
 
