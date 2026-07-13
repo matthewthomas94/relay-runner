@@ -53,6 +53,7 @@ enum AppTypography {
         case appTitle
         case screenTitle
         case workspaceHeading
+        case programProjectsHeading
         case sectionHeading
         case cardHeading
         case controlHeading
@@ -64,6 +65,8 @@ enum AppTypography {
         case metadata
         case supporting
         case action
+        case programAction
+        case programEmptyState
         case button
         case status
         case count
@@ -135,6 +138,8 @@ enum AppTypography {
             return Definition(face: .ppMoriSemibold, size: 17, fallbackWeight: .semibold)
         case .workspaceHeading:
             return Definition(face: .ppMoriSemibold, size: 14, fallbackWeight: .semibold)
+        case .programProjectsHeading:
+            return Definition(face: .ppMoriSemibold, size: 16, fallbackWeight: .semibold)
         case .sectionHeading:
             return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
         case .cardHeading:
@@ -157,6 +162,10 @@ enum AppTypography {
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
         case .action:
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
+        case .programAction:
+            return Definition(face: .ppTelegrafRegular, size: 14, fallbackWeight: .regular)
+        case .programEmptyState:
+            return Definition(face: .ppTelegrafRegular, size: 14, fallbackWeight: .regular)
         case .button:
             return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
         case .status:

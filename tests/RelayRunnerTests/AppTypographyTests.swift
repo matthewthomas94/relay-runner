@@ -14,6 +14,7 @@ final class AppTypographyTests: XCTestCase {
         XCTAssertEqual(AppTypography.definition(for: .appTitle).size, 22)
         XCTAssertEqual(AppTypography.definition(for: .screenTitle).size, 17)
         XCTAssertEqual(AppTypography.definition(for: .workspaceHeading).size, 14)
+        XCTAssertEqual(AppTypography.definition(for: .programProjectsHeading).size, 16)
         XCTAssertEqual(AppTypography.definition(for: .sectionHeading).size, 13)
         XCTAssertEqual(AppTypography.definition(for: .projectTitle).size, 13)
         XCTAssertEqual(AppTypography.definition(for: .ticketTitle).size, 13)
@@ -21,6 +22,8 @@ final class AppTypographyTests: XCTestCase {
         XCTAssertEqual(AppTypography.definition(for: .metadata).size, 10)
         XCTAssertEqual(AppTypography.definition(for: .supporting).size, 10)
         XCTAssertEqual(AppTypography.definition(for: .action).size, 10)
+        XCTAssertEqual(AppTypography.definition(for: .programAction).size, 14)
+        XCTAssertEqual(AppTypography.definition(for: .programEmptyState).size, 14)
         XCTAssertEqual(AppTypography.definition(for: .count).size, 10)
         XCTAssertEqual(AppTypography.definition(for: .caption).size, 9)
     }
@@ -64,6 +67,10 @@ final class AppTypographyTests: XCTestCase {
         XCTAssertEqual(
             AppTypography.resolved(.action, availablePostScriptNames: available),
             .init(postScriptName: "PPTelegraf-Regular", size: 10, fallbackWeight: .regular)
+        )
+        XCTAssertEqual(
+            AppTypography.resolved(.programAction, availablePostScriptNames: available),
+            .init(postScriptName: "PPTelegraf-Regular", size: 14, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.menuTab, availablePostScriptNames: available),

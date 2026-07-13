@@ -30,39 +30,74 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(ProgramBoardLayout.panelVerticalPadding, 16)
         XCTAssertEqual(ProgramBoardLayout.headerHorizontalInset, 16)
         XCTAssertEqual(ProgramBoardLayout.headerLeadingInset, 24)
-        XCTAssertEqual(ProgramBoardLayout.statusHeaderHeight, 32)
+        XCTAssertEqual(ProgramBoardLayout.projectsHeaderHeight, 32)
+        XCTAssertEqual(ProgramBoardLayout.projectsHeaderRefreshSize, 12)
+        XCTAssertEqual(ProgramBoardLayout.projectsHeaderGap, 12)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonWidth, 82)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHeight, 32)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHorizontalPadding, 12)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonVerticalPadding, 8)
         XCTAssertEqual(ProgramBoardLayout.workHeaderHeight, 36)
         XCTAssertEqual(ProgramBoardLayout.workCardTopOffset, 100)
-        XCTAssertEqual(ProgramBoardLayout.projectListTopOffset, 108)
+        XCTAssertEqual(ProgramBoardLayout.projectHeaderToListSpacing, 48)
+        XCTAssertEqual(ProgramBoardLayout.projectListTopOffset, 96)
         XCTAssertEqual(ProgramBoardLayout.projectCardHeight, 136)
         XCTAssertEqual(ProgramBoardLayout.projectCardSpacing, 8)
     }
 
+    func testProgramBoardProjectListInsetsPreserveLaneAlignedCardEdges() {
+        XCTAssertEqual(ProgramBoardLayout.projectScrollContentInsets.top, 0)
+        XCTAssertEqual(ProgramBoardLayout.projectScrollContentInsets.leading, 0)
+        XCTAssertEqual(ProgramBoardLayout.projectScrollContentInsets.trailing, 0)
+        XCTAssertEqual(ProgramBoardLayout.projectScrollContentInsets.bottom, 28)
+    }
+
+    func testProgramBoardEmptyLanePresentationMatchesFigmaBody() {
+        let disabled = ProgramBoardStyle.disabledTextNSColor.usingColorSpace(.sRGB)
+
+        XCTAssertEqual(ProgramBoardLayout.emptyLaneBodyHeight, 551)
+        XCTAssertEqual(disabled?.redComponent ?? 0, 100 / 255, accuracy: 0.001)
+        XCTAssertEqual(disabled?.greenComponent ?? 0, 116 / 255, accuracy: 0.001)
+        XCTAssertEqual(disabled?.blueComponent ?? 0, 139 / 255, accuracy: 0.001)
+    }
+
     func testProgramBoardSessionToolbarMatchesFigmaPlacementAndControlSize() {
+        let fill = ProgramBoardStyle.sessionControlFillNSColor.usingColorSpace(.sRGB)
+        let text = ProgramBoardStyle.neutralTextNSColor.usingColorSpace(.sRGB)
+
         XCTAssertEqual(ProgramBoardLayout.sessionToolbarTopPadding, 6)
-        XCTAssertEqual(ProgramBoardLayout.sessionToolbarTrailingPadding, 20)
+        XCTAssertEqual(ProgramBoardLayout.sessionToolbarTrailingPadding, 40)
         XCTAssertEqual(ProgramBoardLayout.sessionButtonWidth, 126)
         XCTAssertEqual(ProgramBoardLayout.sessionButtonHeight, 32)
         XCTAssertEqual(ProgramBoardLayout.sessionButtonHorizontalPadding, 12)
         XCTAssertEqual(ProgramBoardLayout.sessionButtonVerticalPadding, 8)
         XCTAssertEqual(ProgramBoardLayout.sessionButtonGap, 4)
         XCTAssertEqual(ProgramBoardLayout.sessionButtonIconSize, 14)
+        XCTAssertEqual(fill?.redComponent ?? 0, 30 / 255, accuracy: 0.001)
+        XCTAssertEqual(fill?.greenComponent ?? 0, 41 / 255, accuracy: 0.001)
+        XCTAssertEqual(fill?.blueComponent ?? 0, 59 / 255, accuracy: 0.001)
+        XCTAssertEqual(text?.redComponent ?? 0, 248 / 255, accuracy: 0.001)
+        XCTAssertEqual(text?.greenComponent ?? 0, 250 / 255, accuracy: 0.001)
+        XCTAssertEqual(text?.blueComponent ?? 0, 252 / 255, accuracy: 0.001)
     }
 
-    func testProgramProjectFilterPresentationMutesSelectAllOnlyForAllTickets() {
-        let allTickets = ProgramProjectFilterPresentation(
-            count: 8,
-            selectedScopeTitle: "All tickets",
+    func testProgramBoardSessionToolbarEndsFortyPointsFromReferenceScreenEdge() {
+        let screenWidth: CGFloat = 1_728
+        let buttonTrailingEdge = screenWidth - ProgramBoardLayout.sessionToolbarTrailingPadding
+
+        XCTAssertEqual(screenWidth - buttonTrailingEdge, 40)
+    }
+
+    func testProgramProjectsHeaderPresentationMutesSelectAllOnlyForAllProjects() {
+        let allProjects = ProgramProjectsHeaderPresentation(
             isAllSelected: true
         )
-        let selectedProject = ProgramProjectFilterPresentation(
-            count: 8,
-            selectedScopeTitle: "relay-runner",
+        let selectedProject = ProgramProjectsHeaderPresentation(
             isAllSelected: false
         )
 
-        XCTAssertEqual(allTickets.selectAllTitle, "Select all")
-        XCTAssertTrue(allTickets.selectAllIsMuted)
+        XCTAssertEqual(allProjects.selectAllTitle, "Select all")
+        XCTAssertTrue(allProjects.selectAllIsMuted)
         XCTAssertFalse(selectedProject.selectAllIsMuted)
     }
 

@@ -16,10 +16,16 @@ enum ProgramBoardLayout {
     static let panelVerticalPadding: CGFloat = 16
     static let headerHorizontalInset: CGFloat = 16
     static let headerLeadingInset: CGFloat = panelHorizontalPadding + headerHorizontalInset
-    static let statusHeaderHeight: CGFloat = 32
+    static let projectsHeaderHeight: CGFloat = 32
+    static let projectsHeaderRefreshSize: CGFloat = 12
+    static let projectsHeaderGap: CGFloat = 12
+    static let selectAllButtonWidth: CGFloat = 82
+    static let selectAllButtonHeight: CGFloat = 32
+    static let selectAllButtonHorizontalPadding: CGFloat = 12
+    static let selectAllButtonVerticalPadding: CGFloat = 8
     static let workHeaderHeight: CGFloat = 36
-    static let projectFilterHeight: CGFloat = 36
     static let overviewSectionSpacing: CGFloat = 12
+    static let projectHeaderToListSpacing: CGFloat = 48
     static let workSectionSpacing: CGFloat = 16
     static let dropIndicatorHeight: CGFloat = 3
     static let dropIndicatorBottomPadding: CGFloat = 4
@@ -34,15 +40,21 @@ enum ProgramBoardLayout {
     }
     static var projectListTopOffset: CGFloat {
         panelVerticalPadding
-            + statusHeaderHeight
-            + overviewSectionSpacing
-            + projectFilterHeight
-            + overviewSectionSpacing
+            + projectsHeaderHeight
+            + projectHeaderToListSpacing
+    }
+    static var projectScrollContentInsets: EdgeInsets {
+        EdgeInsets(top: 0, leading: 0, bottom: 28, trailing: 0)
+    }
+    static var emptyLaneBodyHeight: CGFloat {
+        BoardSurfaceLayout.columnHeight
+            - workCardTopOffset
+            - panelVerticalPadding
     }
     static let projectCardHeight: CGFloat = 136
     static let projectCardSpacing: CGFloat = 8
     static let sessionToolbarTopPadding: CGFloat = 6
-    static let sessionToolbarTrailingPadding: CGFloat = 20
+    static let sessionToolbarTrailingPadding: CGFloat = 40
     static let sessionButtonWidth: CGFloat = 126
     static let sessionButtonHeight: CGFloat = 32
     static let sessionButtonHorizontalPadding: CGFloat = 12
@@ -354,7 +366,6 @@ private struct ProgramBoardContent: View {
                         ProgramOverviewColumn(
                             snapshot: snapshot,
                             selectedProjectPath: model.selectedProjectPath,
-                            selectedScopeTitle: model.selectedScopeTitle,
                             errorMessage: model.errorMessage,
                             reloadState: model.reloadState,
                             theme: model.theme,
@@ -426,7 +437,6 @@ private struct ProgramBoardContent: View {
 private struct ProgramOverviewColumn: View {
     let snapshot: ProgramDashboardSnapshot
     let selectedProjectPath: String?
-    let selectedScopeTitle: String
     let errorMessage: String?
     let reloadState: ProgramBoardReloadState
     let theme: ParticleFieldRenderer.Theme?
@@ -435,24 +445,20 @@ private struct ProgramOverviewColumn: View {
     let onRefresh: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: ProgramBoardLayout.overviewSectionSpacing) {
-            ProgramStatusHeader(
+        VStack(alignment: .leading, spacing: 0) {
+            ProgramProjectsHeader(
+                isAllSelected: selectedProjectPath == nil,
                 reloadState: reloadState,
+                onSelectAll: onSelectAll,
                 onRefresh: onRefresh
             )
 
             if let errorMessage {
                 ProgramErrorStrip(message: errorMessage)
+                    .padding(.top, ProgramBoardLayout.overviewSectionSpacing)
             }
 
-            ProgramProjectFilterHeader(
-                count: snapshot.projects.count,
-                selectedScopeTitle: selectedScopeTitle,
-                isAllSelected: selectedProjectPath == nil,
-                onSelectAll: onSelectAll
-            )
-
-            BoardOverlayScrollView(contentInsets: BoardOverlayScrollContentInsets.columnAligned) {
+            BoardOverlayScrollView(contentInsets: ProgramBoardLayout.projectScrollContentInsets) {
                 VStack(alignment: .leading, spacing: ProgramBoardLayout.projectCardSpacing) {
                     ForEach(snapshot.projects) { item in
                         ProgramProjectCard(
@@ -467,6 +473,7 @@ private struct ProgramOverviewColumn: View {
                     }
                 }
             }
+            .padding(.top, ProgramBoardLayout.projectHeaderToListSpacing)
 
             Spacer(minLength: 0)
         }
@@ -474,79 +481,52 @@ private struct ProgramOverviewColumn: View {
     }
 }
 
-private struct ProgramStatusHeader: View {
-    let reloadState: ProgramBoardReloadState
-    let onRefresh: () -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Text("Status")
-                .font(AppTypography.font(.workspaceHeading))
-                .foregroundStyle(ProgramBoardStyle.primaryText)
-                .lineLimit(1)
-            ProgramReloadButton(state: reloadState, action: onRefresh)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
-        .frame(height: ProgramBoardLayout.statusHeaderHeight)
-    }
-}
-
-struct ProgramProjectFilterPresentation: Equatable {
-    let count: Int
-    let selectedScopeTitle: String
+struct ProgramProjectsHeaderPresentation: Equatable {
     let isAllSelected: Bool
 
     var selectAllTitle: String { "Select all" }
     var selectAllIsMuted: Bool { isAllSelected }
 }
 
-private struct ProgramProjectFilterHeader: View {
-    let count: Int
-    let selectedScopeTitle: String
+private struct ProgramProjectsHeader: View {
     let isAllSelected: Bool
+    let reloadState: ProgramBoardReloadState
     let onSelectAll: () -> Void
+    let onRefresh: () -> Void
 
-    private var presentation: ProgramProjectFilterPresentation {
-        ProgramProjectFilterPresentation(
-            count: count,
-            selectedScopeTitle: selectedScopeTitle,
-            isAllSelected: isAllSelected
-        )
+    private var presentation: ProgramProjectsHeaderPresentation {
+        ProgramProjectsHeaderPresentation(isAllSelected: isAllSelected)
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Projects")
-                        .font(AppTypography.font(.sectionHeading))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
-                    Text("\(presentation.count)")
-                        .font(AppTypography.font(.count))
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                        .monospacedDigit()
-                }
-                Text(presentation.selectedScopeTitle)
-                    .font(AppTypography.font(.metadata))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
+        HStack(alignment: .center, spacing: 0) {
+            HStack(alignment: .center, spacing: ProgramBoardLayout.projectsHeaderGap) {
+                Text("Projects")
+                    .font(AppTypography.font(.programProjectsHeading))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
                     .lineLimit(1)
+                ProgramProjectsRefreshButton(state: reloadState, action: onRefresh)
             }
             Spacer(minLength: 0)
             Button(action: onSelectAll) {
                 Text(presentation.selectAllTitle)
-                    .font(AppTypography.font(.action))
+                    .font(AppTypography.font(.programAction))
                     .foregroundStyle(
                         presentation.selectAllIsMuted
-                            ? ProgramBoardStyle.mutedText.opacity(0.45)
+                            ? ProgramBoardStyle.disabledText
                             : ProgramBoardStyle.secondaryText
                     )
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
+                    .lineLimit(1)
+                    .padding(.horizontal, ProgramBoardLayout.selectAllButtonHorizontalPadding)
+                    .padding(.vertical, ProgramBoardLayout.selectAllButtonVerticalPadding)
+                    .frame(
+                        width: ProgramBoardLayout.selectAllButtonWidth,
+                        height: ProgramBoardLayout.selectAllButtonHeight
+                    )
                     .background(
                         BoardDarkCapsuleBackground(
-                            fill: BoardDarkSurfaceStyle.contentFill.opacity(presentation.selectAllIsMuted ? 0.55 : 1),
-                            stroke: BoardDarkSurfaceStyle.border.opacity(presentation.selectAllIsMuted ? 0.55 : 1)
+                            fill: BoardDarkSurfaceStyle.contentFill,
+                            stroke: BoardDarkSurfaceStyle.border
                         )
                     )
             }
@@ -555,7 +535,37 @@ private struct ProgramProjectFilterHeader: View {
             .help("Show tickets from all projects")
         }
         .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
-        .frame(height: ProgramBoardLayout.projectFilterHeight)
+        .frame(height: ProgramBoardLayout.projectsHeaderHeight)
+    }
+}
+
+private struct ProgramProjectsRefreshButton: View {
+    let state: ProgramBoardReloadState
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if state.isLoading {
+                    ProgressView()
+                        .scaleEffect(0.45)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: state.iconName)
+                        .font(AppTypography.symbolFont(size: ProgramBoardLayout.projectsHeaderRefreshSize, weight: .semibold))
+                        .foregroundStyle(state.iconColor)
+                }
+            }
+            .frame(
+                width: ProgramBoardLayout.projectsHeaderRefreshSize,
+                height: ProgramBoardLayout.projectsHeaderRefreshSize
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(state.isLoading)
+        .programButtonCursor(enabled: !state.isLoading)
+        .help(state.helpText)
     }
 }
 
@@ -1718,11 +1728,15 @@ private struct ProgramColumnEmpty: View {
 
     var body: some View {
         Text(text)
-            .font(AppTypography.font(.label))
-            .foregroundStyle(ProgramBoardStyle.mutedText)
-            .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
-            .padding(.horizontal, 10)
-            .background(ProgramCardBackground(cornerRadius: 14))
+            .font(AppTypography.font(.programEmptyState))
+            .foregroundStyle(ProgramBoardStyle.disabledText)
+            .lineLimit(1)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: ProgramBoardLayout.emptyLaneBodyHeight,
+                maxHeight: ProgramBoardLayout.emptyLaneBodyHeight,
+                alignment: .center
+            )
     }
 }
 
@@ -1842,15 +1856,18 @@ private struct ProgramSessionButton: View {
                     .font(AppTypography.symbolFont(size: ProgramBoardLayout.sessionButtonIconSize, weight: .bold))
                     .frame(width: ProgramBoardLayout.sessionButtonIconSize, height: ProgramBoardLayout.sessionButtonIconSize)
                 Text(presentation.title)
-                    .font(AppTypography.font(.action))
+                    .font(AppTypography.font(.programAction))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
-            .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.96))
+            .foregroundStyle(ProgramBoardStyle.neutralText)
             .padding(.horizontal, ProgramBoardLayout.sessionButtonHorizontalPadding)
             .padding(.vertical, ProgramBoardLayout.sessionButtonVerticalPadding)
             .frame(width: ProgramBoardLayout.sessionButtonWidth, height: ProgramBoardLayout.sessionButtonHeight)
-            .background(BoardDarkCapsuleBackground())
+            .background(
+                Capsule()
+                    .fill(ProgramBoardStyle.sessionControlFill)
+            )
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -2098,10 +2115,17 @@ private extension ProgramBoardReloadState {
     }
 }
 
-private enum ProgramBoardStyle {
+enum ProgramBoardStyle {
+    static let disabledTextNSColor = NSColor(srgbRed: 100 / 255, green: 116 / 255, blue: 139 / 255, alpha: 1)
+    static let neutralTextNSColor = NSColor(srgbRed: 248 / 255, green: 250 / 255, blue: 252 / 255, alpha: 1)
+    static let sessionControlFillNSColor = NSColor(srgbRed: 30 / 255, green: 41 / 255, blue: 59 / 255, alpha: 1)
+
     static let primaryText = Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0)
     static let secondaryText = Color(.sRGB, red: 203 / 255, green: 213 / 255, blue: 225 / 255, opacity: 0.78)
     static let mutedText = Color(.sRGB, red: 148 / 255, green: 163 / 255, blue: 184 / 255, opacity: 0.82)
+    static let disabledText = Color(nsColor: disabledTextNSColor)
+    static let neutralText = Color(nsColor: neutralTextNSColor)
+    static let sessionControlFill = Color(nsColor: sessionControlFillNSColor)
     static let red = Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 1.0)
     static let green = Color(.sRGB, red: 52 / 255, green: 211 / 255, blue: 153 / 255, opacity: 1.0)
 }
