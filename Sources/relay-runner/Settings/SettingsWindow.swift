@@ -13,14 +13,14 @@ struct WorkspaceSettingsPanel: View {
 
     var body: some View {
         SettingsContent(appState: appState, style: .workspace)
-            .frame(maxWidth: 940, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight)
+            .frame(maxWidth: WorkspaceSurfaceSizing.settingsMaxWidth, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight)
             .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
             .shadow(color: Color.black.opacity(0.18), radius: 18, x: 0, y: 10)
             .environment(\.colorScheme, .dark)
     }
 }
 
-private enum SettingsContentStyle {
+enum SettingsContentStyle {
     case window
     case workspace
 
