@@ -1,10 +1,20 @@
 import AppKit
 import SwiftUI
 
+enum BoardOverlayScrollContentInsets {
+    static let standard = EdgeInsets(top: 28, leading: 6, bottom: 28, trailing: 18)
+    static let columnAligned = EdgeInsets(top: 28, leading: 0, bottom: 28, trailing: 0)
+}
+
 struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
+    let contentInsets: EdgeInsets
     let content: Content
 
-    init(@ViewBuilder content: () -> Content) {
+    init(
+        contentInsets: EdgeInsets = BoardOverlayScrollContentInsets.standard,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.contentInsets = contentInsets
         self.content = content()
     }
 
@@ -18,9 +28,7 @@ struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
 
     private var scrollContent: some View {
         content
-            .padding(.horizontal, 6)
-            .padding(.vertical, 28)
-            .padding(.trailing, 12)
+            .padding(contentInsets)
     }
 }
 

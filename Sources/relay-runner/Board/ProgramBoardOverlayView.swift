@@ -452,7 +452,7 @@ private struct ProgramOverviewColumn: View {
                 onSelectAll: onSelectAll
             )
 
-            BoardOverlayScrollView {
+            BoardOverlayScrollView(contentInsets: BoardOverlayScrollContentInsets.columnAligned) {
                 VStack(alignment: .leading, spacing: ProgramBoardLayout.projectCardSpacing) {
                     ForEach(snapshot.projects) { item in
                         ProgramProjectCard(

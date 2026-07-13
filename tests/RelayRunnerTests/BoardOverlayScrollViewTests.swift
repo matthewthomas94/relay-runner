@@ -5,6 +5,19 @@ import XCTest
 
 @MainActor
 final class BoardOverlayScrollViewTests: XCTestCase {
+    func testColumnAlignedContentInsetsMatchLaneEdges() {
+        XCTAssertEqual(BoardOverlayScrollContentInsets.columnAligned.leading, 0)
+        XCTAssertEqual(BoardOverlayScrollContentInsets.columnAligned.trailing, 0)
+        XCTAssertEqual(
+            BoardOverlayScrollContentInsets.columnAligned.top,
+            BoardOverlayScrollContentInsets.standard.top
+        )
+        XCTAssertEqual(
+            BoardOverlayScrollContentInsets.columnAligned.bottom,
+            BoardOverlayScrollContentInsets.standard.bottom
+        )
+    }
+
     func testShortContentKeepsInsetEdgesWhileDocumentFillsViewport() throws {
         let container = BoardOverlayScrollContainer(rootView: AnyView(Rectangle().frame(height: 40)))
 
