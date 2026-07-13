@@ -1,6 +1,6 @@
 import CoreGraphics
 
 enum WorkspaceSurfaceSizing {
-    static let terminalMaxWidth: CGFloat? = nil
-    static let settingsMaxWidth: CGFloat? = nil
+    static let terminalMaxWidth: CGFloat = .infinity
+    static let settingsMaxWidth: CGFloat = .infinity
 }
