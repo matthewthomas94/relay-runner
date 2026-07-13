@@ -55,6 +55,7 @@ final class BoardViewModelTests: XCTestCase {
         XCTAssertFalse(WorkspaceTab.work.requiresKeyWindow)
         XCTAssertTrue(WorkspaceTab.terminal.requiresKeyWindow)
         XCTAssertTrue(WorkspaceTab.systemSettings.requiresKeyWindow)
+        XCTAssertEqual(WorkspaceTab.work.title, "Workspace")
         XCTAssertEqual(WorkspaceTab.systemSettings.title, "Settings")
         XCTAssertTrue(WorkspaceTab.terminal.allowsEscapeDismissal(terminalHasFocus: false))
         XCTAssertFalse(WorkspaceTab.terminal.allowsEscapeDismissal(terminalHasFocus: true))

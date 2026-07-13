@@ -25,6 +25,30 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
     }
 
+    func testProgramBoardLayoutMatchesFigmaInteriorSpacing() {
+        XCTAssertEqual(ProgramBoardLayout.panelHorizontalPadding, 8)
+        XCTAssertEqual(ProgramBoardLayout.panelVerticalPadding, 16)
+        XCTAssertEqual(ProgramBoardLayout.headerHorizontalInset, 16)
+        XCTAssertEqual(ProgramBoardLayout.headerLeadingInset, 24)
+        XCTAssertEqual(ProgramBoardLayout.statusHeaderHeight, 32)
+        XCTAssertEqual(ProgramBoardLayout.workHeaderHeight, 36)
+        XCTAssertEqual(ProgramBoardLayout.workCardTopOffset, 100)
+        XCTAssertEqual(ProgramBoardLayout.projectListTopOffset, 108)
+        XCTAssertEqual(ProgramBoardLayout.projectCardHeight, 136)
+        XCTAssertEqual(ProgramBoardLayout.projectCardSpacing, 8)
+    }
+
+    func testProgramBoardSessionToolbarMatchesFigmaPlacementAndControlSize() {
+        XCTAssertEqual(ProgramBoardLayout.sessionToolbarTopPadding, 6)
+        XCTAssertEqual(ProgramBoardLayout.sessionToolbarTrailingPadding, 20)
+        XCTAssertEqual(ProgramBoardLayout.sessionButtonWidth, 126)
+        XCTAssertEqual(ProgramBoardLayout.sessionButtonHeight, 32)
+        XCTAssertEqual(ProgramBoardLayout.sessionButtonHorizontalPadding, 12)
+        XCTAssertEqual(ProgramBoardLayout.sessionButtonVerticalPadding, 8)
+        XCTAssertEqual(ProgramBoardLayout.sessionButtonGap, 4)
+        XCTAssertEqual(ProgramBoardLayout.sessionButtonIconSize, 14)
+    }
+
     func testProgramProjectFilterPresentationMutesSelectAllOnlyForAllTickets() {
         let allTickets = ProgramProjectFilterPresentation(
             count: 8,
