@@ -19,50 +19,70 @@ struct TTSSettingsTab: View {
     @State private var previewError: String?
 
     var body: some View {
-        Form {
-            HStack {
-                Picker("Voice", selection: $config.voice) {
-                    ForEach(voices, id: \.self) { voice in
-                        Text(formatVoiceName(voice)).tag(voice)
+        SettingsStack {
+            SettingsSection("Voice") {
+                SettingsRow {
+                    Picker("Voice", selection: $config.voice) {
+                        ForEach(voices, id: \.self) { voice in
+                            Text(formatVoiceName(voice)).tag(voice)
+                        }
+                    }
+                    Button(action: previewSelectedVoice) {
+                        if isPreviewing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "play.circle.fill")
+                                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isPreviewing)
+                    .help("Preview this voice")
+                }
+
+                if let previewError {
+                    SettingsDivider()
+                    SettingsRow {
+                        Text(previewError)
+                            .font(AppTypography.font(.caption))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Button(action: previewSelectedVoice) {
-                    if isPreviewing {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "play.circle.fill")
-                            .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+            }
+
+            SettingsSection("Playback") {
+                SettingsRow {
+                    Picker("Playback Mode", selection: $config.auto_play) {
+                        Text("Auto-play").tag(true)
+                        Text("Queue").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                SettingsDivider()
+
+                SettingsRow {
+                    Text("Speech Speed: \(String(format: "%.1f", config.rate))x")
+                    Slider(value: $config.rate, in: 0.5...2.0, step: 0.1)
+                }
+            }
+
+            SettingsSection("Notifications") {
+                SettingsRow {
+                    Picker("Notification Chime", selection: $config.chime) {
+                        ForEach(chimes, id: \.self) { chime in
+                            Text(chime).tag(chime)
+                        }
                     }
                 }
-                .buttonStyle(.borderless)
-                .disabled(isPreviewing)
-                .help("Preview this voice")
-            }
-            if let previewError {
-                Text(previewError)
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
-            Picker("Playback Mode", selection: $config.auto_play) {
-                Text("Auto-play").tag(true)
-                Text("Queue").tag(false)
-            }
-            .pickerStyle(.segmented)
+                SettingsDivider()
 
-            HStack {
-                Text("Speech Speed: \(String(format: "%.1f", config.rate))x")
-                Slider(value: $config.rate, in: 0.5...2.0, step: 0.1)
-            }
-
-            Picker("Notification Chime", selection: $config.chime) {
-                ForEach(chimes, id: \.self) { chime in
-                    Text(chime).tag(chime)
+                SettingsRow {
+                    Toggle("Show macOS notification on new message", isOn: $config.show_notification)
                 }
             }
-
-            Toggle("Show macOS notification on new message", isOn: $config.show_notification)
         }
         .onAppear { loadChimes() }
     }

@@ -18,31 +18,41 @@ struct StatusSettingsTab: View {
     private let refreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        Form {
+        SettingsStack {
             if !appState.permissions.resetSinceLastRun.isEmpty {
-                Section {
-                    staleGrantBanner
+                SettingsSection {
+                    SettingsRow {
+                        staleGrantBanner
+                    }
                 }
             }
-            Section("Privacy Permissions") {
+
+            SettingsSection("Privacy Permissions") {
                 permissionRow(.microphone)
+                SettingsDivider()
                 permissionRow(.accessibility)
+                SettingsDivider()
                 permissionRow(.inputMonitoring)
             }
 
-            Section("Runtime") {
+            SettingsSection("Runtime") {
                 pythonEnvRow
+                SettingsDivider()
                 sttModelRow
+                SettingsDivider()
                 voiceBridgeRow
             }
 
-            Section {
-                Button("Re-run Setup Walkthrough\u{2026}") {
-                    appState.onboarding.showAlways()
+            SettingsSection {
+                SettingsRow {
+                    Text("Setup walkthrough")
+                    Spacer(minLength: 0)
+                    Button("Re-run Setup Walkthrough\u{2026}") {
+                        appState.onboarding.showAlways()
+                    }
                 }
             }
         }
-        .formStyle(.grouped)
         .onAppear { refresh() }
         .onReceive(refreshTimer) { _ in refresh() }
     }
@@ -78,6 +88,7 @@ struct StatusSettingsTab: View {
             }
             .buttonStyle(.borderless)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Rows
@@ -156,14 +167,14 @@ struct StatusSettingsTab: View {
                            state: RowState,
                            detail: String,
                            action: RowAction?) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        SettingsRow {
             stateIcon(state)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                 Text(detail)
                     .font(AppTypography.font(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
