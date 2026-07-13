@@ -27,7 +27,7 @@ If you need user permission for a risky screen action:
 2. **If the action is genuinely high-stakes** (irreversible, sends a message, spends money, deletes data) and you're not confident the user wants it: **ask via a normal text message in the chat** with a clear summary, and wait for an explicit "yes" before proceeding. Do **not** call `propose_action`.
 3. **Never** route confirmations through native computer-use prompts. Same reason — bypasses the project's stack.
 
-## Toggling the Workspace
+## Toggling the local kanban board
 
 When the user says "bring up the Workspace", "show the Workspace", or similar, call `mcp__relay-actions__toggle_board`. The tool routes through `/tmp/relay_actions.sock` into the menu-bar app and toggles `AppState.toggleWorkspace()`. A live bridge rooted in a single git repo opens that repo's Workspace work tab; a live bridge rooted in a workspace folder with child git repos opens the read-only Program Workspace without creating a parent `.orchestrator/`; no active `/relay-bridge` session shows the standard "No session running" pill.
 
