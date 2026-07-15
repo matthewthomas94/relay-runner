@@ -167,6 +167,23 @@ final class RelayTerminalInputTrackerTests: XCTestCase {
         tracker.record(data: ArraySlice([13]))
         XCTAssertFalse(tracker.hasUnsubmittedInput)
     }
+
+    func testTrackerUnderstandsKittyKeyboardClearAndEditingEvents() {
+        var tracker = RelayTerminalInputTracker()
+
+        tracker.record(data: ArraySlice(Array("/rel".utf8)))
+        tracker.record(data: ArraySlice(Array("\u{1B}[117;5u".utf8)))
+        XCTAssertFalse(tracker.hasUnsubmittedInput)
+
+        tracker.record(data: ArraySlice(Array("\u{1B}[120u".utf8)))
+        XCTAssertTrue(tracker.hasUnsubmittedInput)
+
+        tracker.record(data: ArraySlice(Array("\u{1B}[127u".utf8)))
+        XCTAssertFalse(tracker.hasUnsubmittedInput)
+
+        tracker.record(data: ArraySlice(Array("\u{1B}[120;1:3u".utf8)))
+        XCTAssertFalse(tracker.hasUnsubmittedInput)
+    }
 }
 
 final class RelayTerminalViewInputOriginTests: XCTestCase {

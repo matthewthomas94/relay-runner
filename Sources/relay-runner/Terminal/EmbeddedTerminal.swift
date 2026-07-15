@@ -194,6 +194,8 @@ struct RelayTerminalInputTracker: Equatable {
     var hasUnsubmittedInput: Bool { pendingByteCount > 0 }
 
     mutating func record(data: ArraySlice<UInt8>) {
+        if recordKittyKeyEvent(data) { return }
+
         for byte in data {
             switch byte {
             case 3, 21:
@@ -209,6 +211,52 @@ struct RelayTerminalInputTracker: Equatable {
                 break
             }
         }
+    }
+
+    private mutating func recordKittyKeyEvent(_ data: ArraySlice<UInt8>) -> Bool {
+        guard data.count >= 4,
+              data[data.startIndex] == 27,
+              data[data.index(after: data.startIndex)] == 91,
+              data[data.index(before: data.endIndex)] == 117 else {
+            return false
+        }
+
+        let bodyStart = data.index(data.startIndex, offsetBy: 2)
+        let bodyEnd = data.index(before: data.endIndex)
+        let fields = String(decoding: data[bodyStart..<bodyEnd], as: UTF8.self)
+            .split(separator: ";", omittingEmptySubsequences: false)
+        guard let keyField = fields.first,
+              let keyCode = Int(keyField.split(separator: ":", omittingEmptySubsequences: false)[0]) else {
+            return false
+        }
+
+        let modifierField = fields.count > 1 ? fields[1] : ""
+        let modifierParts = modifierField.split(separator: ":", omittingEmptySubsequences: false)
+        let modifierMask = max(0, (Int(modifierParts.first ?? "") ?? 1) - 1)
+        let eventType = modifierParts.count > 1 ? Int(modifierParts[1]) ?? 1 : 1
+        if eventType == 3 { return true }
+
+        let controlIsPressed = modifierMask & 4 != 0
+        if controlIsPressed {
+            if keyCode == 99 || keyCode == 117 {
+                pendingByteCount = 0
+            }
+            return true
+        }
+
+        switch keyCode {
+        case 3, 10, 13, 21:
+            pendingByteCount = 0
+        case 8, 127:
+            pendingByteCount = max(0, pendingByteCount - 1)
+        case 9:
+            pendingByteCount += 1
+        case 32...0x10ffff where !(0xe000...0xf8ff).contains(keyCode):
+            pendingByteCount += 1
+        default:
+            break
+        }
+        return true
     }
 }
 
