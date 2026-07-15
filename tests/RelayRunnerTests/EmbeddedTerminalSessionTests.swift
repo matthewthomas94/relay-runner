@@ -1,4 +1,5 @@
 import AppKit
+import SwiftTerm
 import XCTest
 @testable import relay_runner
 
@@ -168,6 +169,22 @@ final class RelayTerminalInputTrackerTests: XCTestCase {
     }
 }
 
+final class RelayTerminalViewInputOriginTests: XCTestCase {
+    func testTerminalProtocolRepliesAreDistinctFromUserInput() {
+        let view = RelayTerminalView(frame: .zero)
+        let delegate = TerminalInputOriginCapturingDelegate(view: view)
+        view.terminalDelegate = delegate
+
+        view.send(
+            source: view.getTerminal(),
+            data: ArraySlice(Array("\u{1B}[1;1R".utf8))
+        )
+        view.send(data: ArraySlice(Array("typed".utf8)))
+
+        XCTAssertEqual(delegate.terminalResponseFlags, [true, false])
+    }
+}
+
 final class RelayVoiceCommandDeliveryTests: XCTestCase {
     func testClaimCopiesMetadataAndInjectsNormalPrompt() throws {
         let fixture = try makeFixture()
@@ -250,6 +267,27 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             )
         )
     }
+}
+
+private final class TerminalInputOriginCapturingDelegate: TerminalViewDelegate {
+    private weak var relayView: RelayTerminalView?
+    private(set) var terminalResponseFlags: [Bool] = []
+
+    init(view: RelayTerminalView) {
+        relayView = view
+    }
+
+    func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        terminalResponseFlags.append(relayView?.isSendingTerminalResponse == true)
+    }
+
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: TerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func scrolled(source: TerminalView, position: Double) {}
+    func clipboardCopy(source: TerminalView, content: Data) {}
+    func clipboardRead(source: TerminalView) -> Data? { nil }
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 }
 
 private final class FakeEmbeddedTerminalProcess: EmbeddedTerminalProcess {

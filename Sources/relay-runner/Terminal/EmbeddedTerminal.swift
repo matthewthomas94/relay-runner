@@ -171,10 +171,18 @@ final class EmbeddedTerminalSession {
     }
 }
 
-private final class RelayTerminalView: TerminalView {
+final class RelayTerminalView: TerminalView {
+    private(set) var isSendingTerminalResponse = false
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
+    }
+
+    override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        isSendingTerminalResponse = true
+        defer { isSendingTerminalResponse = false }
+        super.send(source: source, data: data)
     }
 }
 
@@ -394,7 +402,9 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        voiceDelivery?.recordUserInput(data)
+        if !terminalView.isSendingTerminalResponse {
+            voiceDelivery?.recordUserInput(data)
+        }
         localProcess.send(data: data)
     }
 
