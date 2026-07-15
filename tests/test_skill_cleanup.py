@@ -53,6 +53,7 @@ class SkillCleanupTests(unittest.TestCase):
             script,
         )
         self.assertIn("--start-daemon", script)
+        self.assertIn('[relay-bridge] Voice bridge ready.', script)
         self.assertIn("nonblocking app-managed transport", script)
         self.assertIn("bridge startup, heartbeat, and PTY delivery", script)
 

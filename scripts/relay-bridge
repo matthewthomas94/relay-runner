@@ -1435,8 +1435,11 @@ fi
 # -- Start voice bridge --
 echo "[relay-bridge] Starting voice bridge..."
 if $START_DAEMON_ONLY; then
-    start_voice_bridge_daemon
-    exit $?
+    if start_voice_bridge_daemon; then
+        echo "[relay-bridge] Voice bridge ready."
+        exit 0
+    fi
+    exit 1
 fi
 
 # Record the launching cwd so the menu-bar Board knows which repo the active
