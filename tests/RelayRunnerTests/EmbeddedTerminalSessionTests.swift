@@ -183,7 +183,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
 
         XCTAssertTrue(delivery.claimAndSendIfPossible())
 
-        XCTAssertEqual(sent, ["Fix the bridge\n"])
+        XCTAssertEqual(sent, ["Fix the bridge\r"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path))
         XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.heartbeat.path))
@@ -212,6 +212,10 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
     }
 
     func testInterruptPayloadUsesControlCWithoutPromptText() {
+        XCTAssertEqual(
+            RelayVoiceCommandDelivery.providerInputPayload(for: "Fix the bridge\n"),
+            Array("Fix the bridge\r".utf8)
+        )
         XCTAssertEqual(RelayVoiceCommandDelivery.providerInputPayload(for: "__INTERRUPT__"), [3])
         XCTAssertNil(RelayVoiceCommandDelivery.providerInputPayload(for: "__BRIDGE_DIED__"))
     }

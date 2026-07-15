@@ -316,7 +316,7 @@ final class RelayVoiceCommandDelivery {
         if trimmed.hasPrefix("__") {
             return nil
         }
-        return Array((trimmed + "\n").utf8)
+        return Array((trimmed + "\r").utf8)
     }
 
     private func touchHeartbeat() {
