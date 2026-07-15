@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -29,6 +29,15 @@ CODEX_DEFAULT_EFFORT = "low"
 CLAUDE_DEFAULT_MODEL = "haiku"
 CLAUDE_DEFAULT_EFFORT = "default"
 SILENT_RESPONSE = "__SILENT__"
+CODEX_CLI_CANDIDATES = (
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+)
+CLAUDE_CLI_CANDIDATES = (
+    "~/.local/bin/claude",
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+)
 
 _CODEX_MODELS = frozenset({
     "gpt-5.6-sol",
@@ -167,6 +176,45 @@ def _command_prefix(command: str) -> list[str]:
         return [expanded]
     parts = shlex.split(command)
     return parts or [command]
+
+
+def _is_executable(path: str) -> bool:
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def resolve_messenger_command(
+    provider: str,
+    command: str,
+    *,
+    is_executable: Callable[[str], bool] = _is_executable,
+    which: Callable[[str], str | None] = shutil.which,
+) -> list[str] | None:
+    prefix = _command_prefix(command)
+    if not prefix:
+        return None
+    executable = os.path.expanduser(prefix[0])
+    args = prefix[1:]
+
+    if os.path.isabs(executable) or os.sep in executable:
+        return [executable, *args] if is_executable(executable) else None
+
+    candidates: tuple[str, ...]
+    if provider == "codex" and executable == "codex":
+        candidates = CODEX_CLI_CANDIDATES
+    elif provider == "claude" and executable == "claude":
+        candidates = CLAUDE_CLI_CANDIDATES
+    else:
+        candidates = ()
+
+    for candidate in candidates:
+        expanded = os.path.expanduser(candidate)
+        if is_executable(expanded):
+            return [expanded, *args]
+
+    resolved = which(executable)
+    if resolved:
+        return [resolved, *args]
+    return None
 
 
 class MessengerBackend(Protocol):
@@ -947,10 +995,12 @@ def create_messenger_runtime(
     if not config.enabled:
         print("[messenger] disabled by config", file=sys.stderr)
         return None
-    executable = _command_prefix(config.command)[0]
-    if not os.path.exists(executable) and shutil.which(executable) is None:
+    resolved_command = resolve_messenger_command(config.provider, config.command)
+    if resolved_command is None:
+        executable = _command_prefix(config.command)[0]
         print(f"[messenger] provider command not found: {executable}", file=sys.stderr)
         return None
+    config = replace(config, command=shlex.join(resolved_command))
     backend: MessengerBackend
     if config.provider == "claude":
         backend = ClaudeMessengerBackend(config)

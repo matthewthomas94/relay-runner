@@ -49,6 +49,28 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(claudeScript.contains(" -c "))
     }
 
+    func testEmbeddedLaunchScriptStartsBridgeDaemonAndLeavesProviderPromptUsable() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+        var config = AppConfig()
+        config.general.provider = .codex
+        config.general.working_directory = "~/dev workspace"
+
+        let script = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/relay-bridge",
+            target: .codex,
+            agentBinary: "/usr/local/bin/codex",
+            config: config,
+            voiceDelivery: .appOwned,
+            homeDirectory: home
+        )
+
+        XCTAssertTrue(script.contains("'/Relay Runner/relay-bridge' --start-daemon"))
+        XCTAssertFalse(script.contains("--venv-only"))
+        XCTAssertFalse(script.contains("Use the relay-bridge skill now."))
+        XCTAssertFalse(script.contains("\"/relay-bridge\""))
+        XCTAssertTrue(script.contains("exec '/usr/local/bin/codex' --dangerously-bypass-approvals-and-sandbox"))
+    }
+
     func testLaunchScriptUsesHomeDirectoryWhenWorkspaceFolderIsUnset() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         var config = AppConfig()
@@ -243,12 +265,16 @@ final class ProcessManagerLaunchTests: XCTestCase {
             executable: "/bin/bash",
             arguments: ["/tmp/voice_bridge_launch.command"],
             launcherPath: "/tmp/voice_bridge_launch.command",
-            workingDirectory: "/Users/example/dev"
+            workingDirectory: "/Users/example/dev",
+            target: .codex,
+            voiceDelivery: .appOwned
         )
 
         XCTAssertEqual(launch.executable, "/bin/bash")
         XCTAssertEqual(launch.arguments, [launch.launcherPath])
         XCTAssertEqual(launch.workingDirectory, "/Users/example/dev")
+        XCTAssertEqual(launch.target, .codex)
+        XCTAssertEqual(launch.voiceDelivery, .appOwned)
     }
 
     func testCodexBinaryResolutionPrefersCurrentChatGPTAppThenLegacyCodexApp() {

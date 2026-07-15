@@ -143,7 +143,107 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
             executable: "/bin/bash",
             arguments: ["/tmp/voice_bridge_launch.command"],
             launcherPath: "/tmp/voice_bridge_launch.command",
-            workingDirectory: "/repo"
+            workingDirectory: "/repo",
+            target: .codex,
+            voiceDelivery: .appOwned
+        )
+    }
+}
+
+final class RelayTerminalInputTrackerTests: XCTestCase {
+    func testTrackerDefersVoiceDeliveryWhilePromptTextIsUnsubmitted() {
+        var tracker = RelayTerminalInputTracker()
+
+        tracker.record(data: ArraySlice(Array("partial".utf8)))
+        XCTAssertTrue(tracker.hasUnsubmittedInput)
+
+        tracker.record(data: ArraySlice([127, 127, 127, 127, 127, 127, 127]))
+        XCTAssertFalse(tracker.hasUnsubmittedInput)
+
+        tracker.record(data: ArraySlice(Array("next".utf8)))
+        XCTAssertTrue(tracker.hasUnsubmittedInput)
+
+        tracker.record(data: ArraySlice([13]))
+        XCTAssertFalse(tracker.hasUnsubmittedInput)
+    }
+}
+
+final class RelayVoiceCommandDeliveryTests: XCTestCase {
+    func testClaimCopiesMetadataAndInjectsNormalPrompt() throws {
+        let fixture = try makeFixture()
+        try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        let metadata = #"{"relay_command_id":"cmd-1","relay_command_seq":1}"#
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+
+        XCTAssertEqual(sent, ["Fix the bridge\n"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path))
+        XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.heartbeat.path))
+    }
+
+    func testDeliveryDefersWhenTypedInputIsPending() throws {
+        let fixture = try makeFixture()
+        try "Do the work\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            isRunning: { true }
+        )
+        delivery.recordUserInput(ArraySlice(Array("manual".utf8)))
+
+        let queued = expectation(description: "input tracker updated")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            queued.fulfill()
+        }
+        wait(for: [queued], timeout: 1)
+
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        XCTAssertEqual(sent, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path))
+    }
+
+    func testInterruptPayloadUsesControlCWithoutPromptText() {
+        XCTAssertEqual(RelayVoiceCommandDelivery.providerInputPayload(for: "__INTERRUPT__"), [3])
+        XCTAssertNil(RelayVoiceCommandDelivery.providerInputPayload(for: "__BRIDGE_DIED__"))
+    }
+
+    private func makeFixture() throws -> (
+        root: URL,
+        command: URL,
+        metadata: URL,
+        claimed: URL,
+        heartbeat: URL,
+        paths: RelayVoiceCommandDelivery.Paths
+    ) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RelayVoiceCommandDeliveryTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let command = root.appendingPathComponent("voice_cmd_ready")
+        let metadata = root.appendingPathComponent("voice_cmd_ready.meta")
+        let claimed = root.appendingPathComponent("voice_cmd_claimed.json")
+        let heartbeat = root.appendingPathComponent("voice_bridge_heartbeat")
+        return (
+            root: root,
+            command: command,
+            metadata: metadata,
+            claimed: claimed,
+            heartbeat: heartbeat,
+            paths: RelayVoiceCommandDelivery.Paths(
+                command: command.path,
+                metadata: metadata.path,
+                claimed: claimed.path,
+                heartbeat: heartbeat.path
+            )
         )
     }
 }

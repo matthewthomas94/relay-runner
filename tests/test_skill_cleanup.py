@@ -52,6 +52,9 @@ class SkillCleanupTests(unittest.TestCase):
             "&& ! pgrep -f 'relay-runner' > /dev/null 2>&1",
             script,
         )
+        self.assertIn("--start-daemon", script)
+        self.assertIn("nonblocking app-managed transport", script)
+        self.assertIn("bridge startup, heartbeat, and PTY delivery", script)
 
     def test_shell_installers_prefer_chatgpt_codex_before_legacy_app(self):
         chatgpt = "/Applications/ChatGPT.app/Contents/Resources/codex"

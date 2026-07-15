@@ -19,6 +19,7 @@ from messenger import (  # noqa: E402
     CodexMessengerBackend,
     MessengerConfig,
     MessengerRuntime,
+    resolve_messenger_command,
 )
 
 
@@ -97,6 +98,49 @@ class MessengerConfigTests(unittest.TestCase):
         self.assertIn("provider-visible", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("hidden chain-of-thought", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("__SILENT__", MESSENGER_SYSTEM_PROMPT)
+
+    def test_codex_command_resolution_prefers_bundled_chatgpt_cli_without_path(self):
+        chatgpt = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        legacy = "/Applications/Codex.app/Contents/Resources/codex"
+
+        self.assertEqual(
+            resolve_messenger_command(
+                "codex",
+                "codex",
+                is_executable=lambda path: path in {chatgpt, legacy},
+                which=lambda name: None,
+            ),
+            [chatgpt],
+        )
+        self.assertEqual(
+            resolve_messenger_command(
+                "codex",
+                "codex",
+                is_executable=lambda path: path == legacy,
+                which=lambda name: None,
+            ),
+            [legacy],
+        )
+
+    def test_claude_command_resolution_uses_configured_or_known_installed_binary(self):
+        self.assertEqual(
+            resolve_messenger_command(
+                "claude",
+                "/custom/bin/claude --flag",
+                is_executable=lambda path: path == "/custom/bin/claude",
+                which=lambda name: None,
+            ),
+            ["/custom/bin/claude", "--flag"],
+        )
+        self.assertEqual(
+            resolve_messenger_command(
+                "claude",
+                "claude",
+                is_executable=lambda path: path.endswith("/.local/bin/claude"),
+                which=lambda name: None,
+            ),
+            [os.path.expanduser("~/.local/bin/claude")],
+        )
 
 
 class MessengerBackendContractTests(unittest.TestCase):

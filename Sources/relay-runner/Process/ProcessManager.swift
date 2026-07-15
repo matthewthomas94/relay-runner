@@ -591,11 +591,22 @@ final class ProcessManager {
         }
     }
 
+    enum SessionVoiceDelivery: Equatable {
+        /// Relay Runner owns the bridge daemon and injects voice turns into the
+        /// embedded PTY, leaving the provider at its normal interactive prompt.
+        case appOwned
+        /// The installed relay-bridge command/skill owns the foreground loop.
+        /// This remains the transport for manual and external Terminal sessions.
+        case agentSkill
+    }
+
     struct PreparedSessionLaunch: Equatable {
         let executable: String
         let arguments: [String]
         let launcherPath: String
         let workingDirectory: String
+        let target: AgentTarget
+        let voiceDelivery: SessionVoiceDelivery
     }
 
     enum SessionLaunchPreparationError: LocalizedError {
@@ -616,14 +627,18 @@ final class ProcessManager {
     }
 
     /// Prepare the provider command shared by embedded and external terminal
-    /// launches. Claude uses `/relay-bridge`; Codex uses the installed
-    /// relay-bridge skill and a normal initial prompt.
+    /// launches. Embedded Start Session uses app-owned PTY delivery so the
+    /// terminal remains a normal interactive provider prompt; external/manual
+    /// sessions still rely on the installed relay-bridge command/skill loop.
     ///
     /// The launcher calls `relay-bridge --venv-only` first so the Python venv,
     /// Kokoro model, and provider CLI are ready before the interactive agent
     /// starts. Refreshing the skill files here also keeps every launch path on
     /// the same shipped relay contract.
-    func prepareNewSession(config: AppConfig) throws -> PreparedSessionLaunch {
+    func prepareNewSession(
+        config: AppConfig,
+        voiceDelivery: SessionVoiceDelivery = .agentSkill
+    ) throws -> PreparedSessionLaunch {
         Self.clearBridgeStopRequested()
 
         let workingDirectory = WorkspaceFolder.url(from: config.general.working_directory).path
@@ -654,7 +669,8 @@ final class ProcessManager {
             relayBridge: relayBridge,
             target: target,
             agentBinary: agentBinary,
-            config: config
+            config: config,
+            voiceDelivery: voiceDelivery
         )
         try script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
@@ -676,7 +692,9 @@ final class ProcessManager {
             executable: "/bin/bash",
             arguments: [launcher],
             launcherPath: launcher,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            target: target,
+            voiceDelivery: voiceDelivery
         )
     }
 
@@ -698,7 +716,7 @@ final class ProcessManager {
         }
     }
 
-    enum AgentTarget {
+    enum AgentTarget: Equatable {
         case codex
         case claude
 
@@ -715,6 +733,7 @@ final class ProcessManager {
         target: AgentTarget,
         agentBinary: String,
         config: AppConfig,
+        voiceDelivery: SessionVoiceDelivery = .agentSkill,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> String {
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
@@ -725,23 +744,25 @@ final class ProcessManager {
             model: config.general.model
         )
         let cdLine = Self.cdLine(config.general.working_directory, homeDirectory: homeDirectory)
+        let bridgeStartLine = Self.bridgeStartLine(
+            relayBridge: relayBridge,
+            voiceDelivery: voiceDelivery
+        )
         let launchLine = Self.agentLaunchLine(
             binary: agentBinary,
             target: target,
             modelFlag: modelFlag,
             reasoningEffortFlag: reasoningEffortFlag,
-            bypassFlag: bypassFlag
+            bypassFlag: bypassFlag,
+            voiceDelivery: voiceDelivery
         )
         return """
         #!/bin/bash
         \(Self.shellProfileSource())
-        # Ensure venv + deps + speech-model + relay skills are installed.
-        # relay-bridge short-circuits in well under a second when everything's
-        # already in place; on first run it does the full no-admin install.
-        # Either way, the user sees its progress in the Terminal that just
-        # opened.
+        # Ensure venv + deps + speech-model + relay skills are installed. In
+        # embedded sessions, also start the bridge daemon before the provider so
+        # voice turns can be injected without a blocking bootstrap prompt.
         rm -f /tmp/voice_bridge_stop_requested
-        \(Self.shellQuoted(relayBridge)) --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }
         # Keep common agent install locations on PATH for tools launched from
         # this session. On fresh installs the relay-bridge install may have
         # dropped a binary moments ago and the shell profile may not know yet.
@@ -752,6 +773,7 @@ final class ProcessManager {
         # advisory session context, not a security boundary.
         export RELAY_RUNNER_APP_SESSION=1
         \(cdLine)
+        \(bridgeStartLine)
         # Interactive agent session with Relay Runner voice mode pre-fired.
         # Replacing this launcher process keeps the PTY child PID aligned with
         # the agent, so End Session terminates the interactive process cleanly.
@@ -843,13 +865,31 @@ final class ProcessManager {
         target: AgentTarget,
         modelFlag: String,
         reasoningEffortFlag: String,
-        bypassFlag: String
+        bypassFlag: String,
+        voiceDelivery: SessionVoiceDelivery
     ) -> String {
+        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(bypassFlag)"
+            .trimmingCharacters(in: .whitespaces)
+        guard voiceDelivery == .agentSkill else {
+            return prefix
+        }
         switch target {
         case .codex:
-            return "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(bypassFlag)\(Self.shellQuoted("Use the relay-bridge skill now."))"
+            return "\(prefix) \(Self.shellQuoted("Use the relay-bridge skill now."))"
         case .claude:
-            return "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(bypassFlag)\"/relay-bridge\""
+            return "\(prefix) \"/relay-bridge\""
+        }
+    }
+
+    private static func bridgeStartLine(
+        relayBridge: String,
+        voiceDelivery: SessionVoiceDelivery
+    ) -> String {
+        switch voiceDelivery {
+        case .appOwned:
+            return "\(Self.shellQuoted(relayBridge)) --start-daemon || { echo '[Relay Runner] Voice bridge failed.'; exit 1; }"
+        case .agentSkill:
+            return "\(Self.shellQuoted(relayBridge)) --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }"
         }
     }
 

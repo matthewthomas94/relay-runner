@@ -752,7 +752,12 @@ final class AppState {
                 providerName: launchConfig.general.provider.displayName,
                 workingDirectory: sessionDirectory
             )
-            let prepared = try processManager.prepareNewSession(config: launchConfig)
+            let voiceDelivery: ProcessManager.SessionVoiceDelivery =
+                (request.destination == .embedded) ? .appOwned : .agentSkill
+            let prepared = try processManager.prepareNewSession(
+                config: launchConfig,
+                voiceDelivery: voiceDelivery
+            )
             switch request.destination {
             case .embedded:
                 try embeddedTerminal.start(prepared)
