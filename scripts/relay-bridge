@@ -5,6 +5,7 @@
 #   relay-bridge                     # Relay daemon for Start Session / relay-bridge skills
 #   relay-bridge --relay             # Same as default; kept for existing skill launchers
 #   relay-bridge --venv-only         # Run venv bootstrap and exit 0 (used by onboarding)
+#   relay-bridge --start-daemon      # Bootstrap, launch detached bridge daemon, exit
 #   relay-bridge --install-skills    # Force-write Relay skills/commands and exit 0
 #
 # Supported voice sessions run through Start Session or the installed
@@ -84,6 +85,7 @@ export PYTHONDONTWRITEBYTECODE=1
 VENV_ONLY=false
 INSTALL_SKILLS_ONLY=false
 ROTATE_LOG_ONLY=false
+START_DAEMON_ONLY=false
 
 # Emit a progress marker the SwiftUI installer can parse to drive a
 # determinate progress bar. Format: `RELAY_PROGRESS:<percent>:<label>`.
@@ -206,9 +208,11 @@ install_skills() {
         # __RELAY_BRIDGE__ gets sed-substituted below so the path lands
         # in the .md verbatim.
         cat > "$bridge_md" <<'BRIDGE_MD_EOF'
-Connect voice I/O to this Claude session. You become a voice-interactive assistant: listen for spoken input, respond, and speak the response aloud via TTS.
+Connect voice I/O to this Claude session when invoked manually. Relay Runner's menu-bar Start Session path owns a nonblocking app-managed transport instead of running this foreground loop.
 
 ## Setup
+
+If `${RELAY_RUNNER_APP_SESSION:-0}` is `1`, the menu-bar Start Session path already owns bridge startup, heartbeat, and PTY delivery. Do not run this command unless the user explicitly asked to replace that app-managed session with a manual `/relay-bridge` loop.
 
 1. Verify the Relay Runner app is running:
 
@@ -528,14 +532,16 @@ STOP_MD_EOF
         cat > "$codex_bridge_md" <<'CODEX_BRIDGE_MD_EOF'
 ---
 name: relay-bridge
-description: Connect voice I/O to this Codex session. Use when the user wants a Relay Runner voice session, says to start listening, or launches Codex from Relay Runner.
+description: Connect voice I/O to an existing Codex session. Use for manual voice sessions; Relay Runner Start Session uses app-managed nonblocking delivery.
 ---
 
 # relay-bridge
 
-Connect voice I/O to this Codex session. You become a voice-interactive assistant: listen for spoken input, respond normally in the terminal, and write a concise spoken summary to Relay Runner TTS.
+Connect voice I/O to this Codex session when invoked manually. Relay Runner's menu-bar Start Session path owns a nonblocking app-managed transport instead of running this foreground loop.
 
 ## Setup
+
+If `${RELAY_RUNNER_APP_SESSION:-0}` is `1`, the menu-bar Start Session path already owns bridge startup, heartbeat, and PTY delivery. Do not run this skill unless the user explicitly asked to replace that app-managed session with a manual relay-bridge loop.
 
 1. Verify the Relay Runner app is running:
 
@@ -911,12 +917,67 @@ register_mcp_for_available_agents() {
     fi
 }
 
+start_voice_bridge_daemon() {
+    local relay_cwd="${PWD}"
+    local relay_bridge="$SCRIPT_DIR/relay-bridge"
+    local relay_provider="${RELAY_RUNNER_PROVIDER:-}"
+    local voice_bridge_log
+    voice_bridge_log="$(voice_bridge_log_path)"
+
+    VOICE_BRIDGE_LOG_REASON=start \
+        VOICE_BRIDGE_LOG_PROVIDER="${relay_provider:-none}" \
+        VOICE_BRIDGE_LOG_CWD="$relay_cwd" \
+        "$relay_bridge" --rotate-log
+
+    launchctl remove com.relay.voicebridge 2>/dev/null || true
+    echo "[relay-bridge] launching via launchctl provider=${relay_provider:-none} cwd=$relay_cwd bridge=$relay_bridge" >> "$voice_bridge_log"
+    set +e
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" >> "$voice_bridge_log" 2>&1
+    local submit_status=$?
+    set -e
+    echo "[relay-bridge] launchctl submit exit_status=$submit_status provider=${relay_provider:-none}" >> "$voice_bridge_log"
+    for i in $(seq 1 20); do
+        if [ -S "$BRIDGE_SOCK" ]; then
+            echo "[relay-bridge] launchctl produced socket after ${i} checks provider=${relay_provider:-none}" >> "$voice_bridge_log"
+            return 0
+        fi
+        launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
+    if [ -S "$BRIDGE_SOCK" ]; then
+        echo "[relay-bridge] launchctl produced socket provider=${relay_provider:-none}" >> "$voice_bridge_log"
+        return 0
+    fi
+
+    echo "[relay-bridge] launchctl did not produce a socket; submit_status=$submit_status uid=$(id -u) provider=${relay_provider:-none} cwd=$relay_cwd; launchctl print follows." >> "$voice_bridge_log"
+    set +e
+    launchctl print "gui/$(id -u)/com.relay.voicebridge" >> "$voice_bridge_log" 2>&1
+    local print_status=$?
+    set -e
+    [ "$print_status" -eq 0 ] || echo "[relay-bridge] launchctl print exit_status=$print_status" >> "$voice_bridge_log"
+    echo "[relay-bridge] falling back to direct background launch." >> "$voice_bridge_log"
+    launchctl remove com.relay.voicebridge 2>/dev/null || true
+    nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" >> "$voice_bridge_log" 2>&1 &
+    local fallback_pid=$!
+    echo "[relay-bridge] direct fallback launched pid=$fallback_pid provider=${relay_provider:-none}" >> "$voice_bridge_log"
+    for i in $(seq 1 20); do
+        if [ -S "$BRIDGE_SOCK" ]; then
+            echo "[relay-bridge] direct fallback produced socket after ${i} checks provider=${relay_provider:-none}" >> "$voice_bridge_log"
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "[relay-bridge] direct fallback did not produce a socket provider=${relay_provider:-none}" >> "$voice_bridge_log"
+    return 1
+}
+
 __rb_args=()
 for arg in "$@"; do
     case "$arg" in
         --venv-only) VENV_ONLY=true ;;
         --install-skills) INSTALL_SKILLS_ONLY=true ;;
         --rotate-log) ROTATE_LOG_ONLY=true ;;
+        --start-daemon) START_DAEMON_ONLY=true ;;
         *) __rb_args+=("$arg") ;;
     esac
 done
@@ -1373,6 +1434,11 @@ fi
 
 # -- Start voice bridge --
 echo "[relay-bridge] Starting voice bridge..."
+if $START_DAEMON_ONLY; then
+    start_voice_bridge_daemon
+    exit $?
+fi
+
 # Record the launching cwd so the menu-bar Board knows which repo the active
 # session is pointed at. Written before exec so it's in place by the time
 # the socket appears; cleaned up by the kill block above on next restart and

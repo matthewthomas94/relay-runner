@@ -180,11 +180,163 @@ private final class RelayTerminalView: TerminalView {
 
 /// SwiftTerm adapter with OSC 52 clipboard access denied. Explicit user copy
 /// and paste still use TerminalView's normal AppKit commands.
+struct RelayTerminalInputTracker: Equatable {
+    private(set) var pendingByteCount = 0
+
+    var hasUnsubmittedInput: Bool { pendingByteCount > 0 }
+
+    mutating func record(data: ArraySlice<UInt8>) {
+        for byte in data {
+            switch byte {
+            case 3, 21:
+                // Ctrl-C / Ctrl-U clears a partial prompt in both Codex and Claude.
+                pendingByteCount = 0
+            case 10, 13:
+                pendingByteCount = 0
+            case 8, 127:
+                pendingByteCount = max(0, pendingByteCount - 1)
+            case 9, 32...126:
+                pendingByteCount += 1
+            default:
+                break
+            }
+        }
+    }
+}
+
+final class RelayVoiceCommandDelivery {
+    struct Paths: Equatable {
+        var command = "/tmp/voice_cmd_ready"
+        var metadata = "/tmp/voice_cmd_ready.meta"
+        var claimed = "/tmp/voice_cmd_claimed.json"
+        var heartbeat = "/tmp/voice_bridge_heartbeat"
+    }
+
+    struct ClaimedCommand: Equatable {
+        let text: String
+        let metadata: Data?
+    }
+
+    typealias Send = (ArraySlice<UInt8>) -> Void
+
+    private let paths: Paths
+    private let send: Send
+    private let isRunning: () -> Bool
+    private let fileManager: FileManager
+    private let queue = DispatchQueue(label: "relay-runner.voice-command-delivery")
+    private var timer: DispatchSourceTimer?
+    private var inputTracker = RelayTerminalInputTracker()
+
+    init(
+        paths: Paths = Paths(),
+        send: @escaping Send,
+        isRunning: @escaping () -> Bool,
+        fileManager: FileManager = .default
+    ) {
+        self.paths = paths
+        self.send = send
+        self.isRunning = isRunning
+        self.fileManager = fileManager
+    }
+
+    func start() {
+        queue.async { [weak self] in
+            guard let self, self.timer == nil else { return }
+            let timer = DispatchSource.makeTimerSource(queue: self.queue)
+            timer.schedule(deadline: .now(), repeating: .milliseconds(200))
+            timer.setEventHandler { [weak self] in
+                self?.claimAndSendIfPossible()
+            }
+            self.timer = timer
+            timer.resume()
+        }
+    }
+
+    func stop() {
+        queue.sync {
+            timer?.cancel()
+            timer = nil
+        }
+    }
+
+    func recordUserInput(_ data: ArraySlice<UInt8>) {
+        queue.async { [weak self] in
+            self?.inputTracker.record(data: data)
+        }
+    }
+
+    @discardableResult
+    func claimAndSendIfPossible() -> Bool {
+        touchHeartbeat()
+        guard isRunning(), !inputTracker.hasUnsubmittedInput else { return false }
+        guard let command = claimNextCommand() else { return false }
+        guard let payload = Self.providerInputPayload(for: command.text) else { return true }
+        send(ArraySlice(payload))
+        return true
+    }
+
+    func claimNextCommand() -> ClaimedCommand? {
+        let commandURL = URL(fileURLWithPath: paths.command)
+        let metadataURL = URL(fileURLWithPath: paths.metadata)
+        let claimedURL = URL(fileURLWithPath: paths.claimed)
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice_cmd_claim.\(UUID().uuidString)")
+        let tempMetadataURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice_cmd_claim.\(UUID().uuidString).meta")
+
+        do {
+            try fileManager.moveItem(at: commandURL, to: tempURL)
+        } catch {
+            return nil
+        }
+
+        var metadataData: Data?
+        if fileManager.fileExists(atPath: metadataURL.path),
+           (try? fileManager.moveItem(at: metadataURL, to: tempMetadataURL)) != nil {
+            metadataData = try? Data(contentsOf: tempMetadataURL)
+            if let metadataData {
+                try? metadataData.write(to: claimedURL, options: .atomic)
+            }
+        }
+
+        let rawText = (try? String(contentsOf: tempURL, encoding: .utf8)) ?? ""
+        try? fileManager.removeItem(at: tempURL)
+        try? fileManager.removeItem(at: tempMetadataURL)
+
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        return ClaimedCommand(text: text, metadata: metadataData)
+    }
+
+    static func providerInputPayload(for text: String) -> [UInt8]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "__INTERRUPT__" {
+            return [3]
+        }
+        if trimmed.hasPrefix("__") {
+            return nil
+        }
+        return Array((trimmed + "\n").utf8)
+    }
+
+    private func touchHeartbeat() {
+        if fileManager.fileExists(atPath: paths.heartbeat) {
+            try? fileManager.setAttributes(
+                [.modificationDate: Date()],
+                ofItemAtPath: paths.heartbeat
+            )
+        } else {
+            _ = fileManager.createFile(atPath: paths.heartbeat, contents: Data())
+        }
+    }
+}
+
 private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDelegate, LocalProcessDelegate {
     let terminalView: RelayTerminalView
     lazy var localProcess = LocalProcess(delegate: self)
     var onExit: ((Int32?) -> Void)?
     var onTitle: ((String) -> Void)?
+    private var voiceDelivery: RelayVoiceCommandDelivery?
 
     init() {
         terminalView = RelayTerminalView(frame: .zero)
@@ -205,6 +357,8 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     var hasFocus: Bool { terminalView.hasFocus }
 
     func start(_ launch: ProcessManager.PreparedSessionLaunch) throws {
+        voiceDelivery?.stop()
+        voiceDelivery = nil
         localProcess.startProcess(
             executable: launch.executable,
             args: launch.arguments,
@@ -212,6 +366,21 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
             currentDirectory: launch.workingDirectory
         )
         guard localProcess.running else { throw EmbeddedTerminalProcessError.couldNotStart }
+        if launch.voiceDelivery == .appOwned {
+            let delivery = RelayVoiceCommandDelivery(
+                send: { [weak self] data in
+                    let bytes = Array(data)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.localProcess.send(data: ArraySlice(bytes))
+                    }
+                },
+                isRunning: { [weak self] in
+                    self?.localProcess.running == true
+                }
+            )
+            voiceDelivery = delivery
+            delivery.start()
+        }
     }
 
     func focus() {
@@ -219,10 +388,13 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     }
 
     func terminate() {
+        voiceDelivery?.stop()
+        voiceDelivery = nil
         localProcess.terminate()
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        voiceDelivery?.recordUserInput(data)
         localProcess.send(data: data)
     }
 
@@ -258,6 +430,8 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     }
 
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
+        voiceDelivery?.stop()
+        voiceDelivery = nil
         onExit?(exitCode)
     }
 
