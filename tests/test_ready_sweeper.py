@@ -346,6 +346,70 @@ class ReadySweeperTests(unittest.TestCase):
                 ],
             )
 
+    def test_program_sweeper_limits_dispatch_to_requested_repo_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            demo = root / "aurora-web"
+            personal = root / "brain-stack"
+            self.make_repo(demo)
+            self.make_repo(personal)
+            self.write_ticket(demo, "AW-1", status="ready")
+            self.write_ticket(personal, "BS-1", status="ready")
+
+            registry = root / "projects.json"
+            registry.write_text(json.dumps({
+                "projects": [
+                    {"id": str(demo.resolve()), "repoPath": str(demo.resolve())},
+                    {"id": str(personal.resolve()), "repoPath": str(personal.resolve())},
+                ],
+            }))
+
+            daemon = object.__new__(Daemon)
+            daemon.program_registry_path = registry
+            daemon.runs = FakeRuns()
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs) or {
+                "already_active": False,
+                "run": {"id": 1},
+            }
+
+            Daemon.sweep_program_ready_tickets(
+                daemon,
+                trigger="program-board-refresh",
+                repo_paths=[str(demo)],
+            )
+
+            self.assertEqual(calls, [{
+                "ticket_id": "AW-1",
+                "repo_path": str(demo.resolve()),
+                "source": "ready-sweeper",
+            }])
+
+    def test_program_dashboard_route_forwards_repeated_repo_path_scope(self):
+        calls: list[dict] = []
+
+        class FakeDaemon:
+            def program_dashboard(self, **kwargs):
+                calls.append(kwargs)
+                return {"summary": {"items": []}}
+
+        handler = object.__new__(Handler)
+        handler.daemon = FakeDaemon()
+
+        status, _ = Handler._route(
+            handler,
+            "GET",
+            "/v1/program/dashboard?limit=0&trigger=refresh&repo_path=%2Fdemo%2Faurora-web&repo_path=%2Fdemo%2Fharbor-api",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(calls, [{
+            "provider": None,
+            "limit": 0,
+            "trigger": "refresh",
+            "repo_paths": ["/demo/aurora-web", "/demo/harbor-api"],
+        }])
+
     def test_program_sweeper_preserves_active_project_that_matches_historical_workspace_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

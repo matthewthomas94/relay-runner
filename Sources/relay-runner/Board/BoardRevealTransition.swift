@@ -12,7 +12,12 @@ struct BoardRevealTransitionPlan: Equatable {
 
 enum BoardRevealTransitionPlanner {
     static let minimumCompactWidth: CGFloat = 236
-    static let expandedSurfaceHeight: CGFloat = 735
+    static var expandedSurfaceHeight: CGFloat {
+        ProgramBoardBackdropStyle.backdropHeight
+    }
+    static var expandedSurfaceCornerRadius: CGFloat {
+        ProgramBoardBackdropStyle.bottomCornerRadius
+    }
     static let bottomScreenMargin: CGFloat = 54
 
     static func plan(for geometry: NotchStatusDisplayGeometry) -> BoardRevealTransitionPlan {
@@ -162,6 +167,17 @@ final class BoardRevealContainerView: NSView {
         revealView.setLoading(loading)
         glyphView.setLoading(loading)
         revealContentIfReady()
+    }
+
+    func setUpdateCheckActive(_ active: Bool) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.setUpdateCheckActive(active)
+            }
+            return
+        }
+
+        glyphView.setLoading(active)
     }
 
     func animateReveal(completion: @escaping () -> Void) {
@@ -372,7 +388,7 @@ private final class BoardRevealSurfaceView: NSView {
     private func drawLoadingTextIfNeeded() {
         guard loading, surfaceFrame.height > plan.fullWidthFrame.height + 40 else { return }
 
-        let text = "Loading..." as NSString
+        let text = BoardUpdateStatus.workingLabel as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: AppTypography.appKitFont(.sectionHeading),
             .foregroundColor: NSColor.white.withAlphaComponent(0.92),
@@ -412,7 +428,11 @@ private final class BoardRevealSurfaceView: NSView {
     }
 
     private func bottomRoundedPath(in rect: CGRect) -> NSBezierPath {
-        let radius = min(18, rect.height / 2, rect.width / 2)
+        let radius = min(
+            BoardRevealTransitionPlanner.expandedSurfaceCornerRadius,
+            rect.height / 2,
+            rect.width / 2
+        )
         let control = radius * 0.5522847498307936
         let path = NSBezierPath()
 

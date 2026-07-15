@@ -3,8 +3,10 @@ import SwiftUI
 
 enum ProgramBoardBackdropStyle {
     static let backdropOpacity: Double = 1.0
-    static let bottomCornerRadius: CGFloat = 14
-    static let bottomPadding: CGFloat = 24
+    static let bottomPadding: CGFloat = BoardSurfaceLayout.columnSpacing
+    static var bottomCornerRadius: CGFloat {
+        BoardDarkSurfaceStyle.workspaceCornerRadius
+    }
 
     static var backdropHeight: CGFloat {
         BoardSurfaceLayout.columnTopPadding + BoardSurfaceLayout.columnHeight + bottomPadding
@@ -17,12 +19,11 @@ enum ProgramBoardLayout {
     static let headerHorizontalInset: CGFloat = 16
     static let headerLeadingInset: CGFloat = panelHorizontalPadding + headerHorizontalInset
     static let projectsHeaderHeight: CGFloat = 32
-    static let projectsHeaderRefreshSize: CGFloat = 12
-    static let projectsHeaderGap: CGFloat = 12
-    static let selectAllButtonWidth: CGFloat = 82
-    static let selectAllButtonHeight: CGFloat = 32
-    static let selectAllButtonHorizontalPadding: CGFloat = 12
-    static let selectAllButtonVerticalPadding: CGFloat = 8
+    static let selectAllButtonWidth: CGFloat = 68
+    static let selectAllButtonHeight: CGFloat = 24
+    static let selectAllButtonHorizontalPadding: CGFloat = 8
+    static let selectAllButtonVerticalPadding: CGFloat = 4
+    static let newTicketButtonSize: CGFloat = selectAllButtonHeight
     static let workHeaderHeight: CGFloat = 36
     static let overviewSectionSpacing: CGFloat = 12
     static let projectHeaderToListSpacing: CGFloat = 48
@@ -53,14 +54,10 @@ enum ProgramBoardLayout {
     }
     static let projectCardHeight: CGFloat = 136
     static let projectCardSpacing: CGFloat = 8
-    static let sessionToolbarTopPadding: CGFloat = 6
+    static let statePanelHeight: CGFloat = BoardSurfaceLayout.columnHeight
+    static let statePanelHorizontalPadding: CGFloat = BoardSurfaceLayout.horizontalPadding
+    static let sessionToolbarTopPadding: CGFloat = BoardSurfaceLayout.navigationTopPadding
     static let sessionToolbarTrailingPadding: CGFloat = 40
-    static let sessionButtonWidth: CGFloat = 126
-    static let sessionButtonHeight: CGFloat = 32
-    static let sessionButtonHorizontalPadding: CGFloat = 12
-    static let sessionButtonVerticalPadding: CGFloat = 8
-    static let sessionButtonGap: CGFloat = 4
-    static let sessionButtonIconSize: CGFloat = 14
 }
 
 struct ProgramBoardOverlayView: View {
@@ -89,7 +86,6 @@ struct ProgramBoardOverlayView: View {
                 .fill(Color.black.opacity(ProgramBoardBackdropStyle.backdropOpacity))
                 .frame(maxWidth: .infinity)
                 .frame(height: ProgramBoardBackdropStyle.backdropHeight)
-                .ignoresSafeArea(edges: .top)
                 .allowsHitTesting(false)
 
             Color.clear
@@ -108,7 +104,7 @@ struct ProgramBoardOverlayView: View {
                 workspace: workspace,
                 hasActiveSession: model.hasActiveSession
             )
-            .padding(.top, 7)
+            .padding(.top, BoardSurfaceLayout.navigationTopPadding)
             .padding(.leading, 20)
             .zIndex(2)
 
@@ -200,7 +196,7 @@ struct ProgramBoardOverlayView: View {
             }
         }
         .coordinateSpace(name: "programBoard")
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: .top)
         .onChange(of: workspace.selectedTab) { _, tab in
             onWorkspaceTabChange(tab)
         }
@@ -366,12 +362,11 @@ private struct ProgramBoardContent: View {
                         ProgramOverviewColumn(
                             snapshot: snapshot,
                             selectedProjectPath: model.selectedProjectPath,
+                            selectedScopeTitle: model.selectedScopeTitle,
                             errorMessage: model.errorMessage,
-                            reloadState: model.reloadState,
                             theme: model.theme,
                             onSelectAll: model.selectAllProjects,
-                            onSelectProject: model.selectProject,
-                            onRefresh: onRefresh
+                            onSelectProject: model.selectProject
                         )
                         ForEach(ProgramBoardLane.allCases) { lane in
                             ProgramWorkColumnPanel(
@@ -413,16 +408,18 @@ private struct ProgramBoardContent: View {
                     onRefresh: onRefresh,
                     onDismiss: onDismiss
                 )
+                .padding(.horizontal, ProgramBoardLayout.statePanelHorizontalPadding)
             }
         case .loadFailure:
             ProgramStatePanel(
-                title: "Work unavailable",
+                title: "Work temporarily unavailable",
                 detail: model.errorMessage ?? "Relay Runner orchestrator is not reachable.",
                 reloadState: model.reloadState,
                 theme: model.theme,
                 onRefresh: onRefresh,
                 onDismiss: onDismiss
             )
+            .padding(.horizontal, ProgramBoardLayout.statePanelHorizontalPadding)
         case .empty:
             emptySurface
         }
@@ -437,20 +434,18 @@ private struct ProgramBoardContent: View {
 private struct ProgramOverviewColumn: View {
     let snapshot: ProgramDashboardSnapshot
     let selectedProjectPath: String?
+    let selectedScopeTitle: String
     let errorMessage: String?
-    let reloadState: ProgramBoardReloadState
     let theme: ParticleFieldRenderer.Theme?
     let onSelectAll: () -> Void
     let onSelectProject: (String) -> Void
-    let onRefresh: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ProgramProjectsHeader(
                 isAllSelected: selectedProjectPath == nil,
-                reloadState: reloadState,
-                onSelectAll: onSelectAll,
-                onRefresh: onRefresh
+                selectedScopeTitle: selectedScopeTitle,
+                onSelectAll: onSelectAll
             )
 
             if let errorMessage {
@@ -483,37 +478,43 @@ private struct ProgramOverviewColumn: View {
 
 struct ProgramProjectsHeaderPresentation: Equatable {
     let isAllSelected: Bool
+    let selectedScopeTitle: String
 
     var selectAllTitle: String { "Select all" }
-    var selectAllIsMuted: Bool { isAllSelected }
+    var selectAllUsesActiveText: Bool { isAllSelected }
 }
 
 private struct ProgramProjectsHeader: View {
     let isAllSelected: Bool
-    let reloadState: ProgramBoardReloadState
+    let selectedScopeTitle: String
     let onSelectAll: () -> Void
-    let onRefresh: () -> Void
 
     private var presentation: ProgramProjectsHeaderPresentation {
-        ProgramProjectsHeaderPresentation(isAllSelected: isAllSelected)
+        ProgramProjectsHeaderPresentation(
+            isAllSelected: isAllSelected,
+            selectedScopeTitle: selectedScopeTitle
+        )
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 0) {
-            HStack(alignment: .center, spacing: ProgramBoardLayout.projectsHeaderGap) {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Projects")
                     .font(AppTypography.font(.programProjectsHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                     .lineLimit(1)
-                ProgramProjectsRefreshButton(state: reloadState, action: onRefresh)
+                Text(presentation.selectedScopeTitle)
+                    .font(AppTypography.font(.metadata))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
             }
             Spacer(minLength: 0)
             Button(action: onSelectAll) {
                 Text(presentation.selectAllTitle)
                     .font(AppTypography.font(.programAction))
                     .foregroundStyle(
-                        presentation.selectAllIsMuted
-                            ? ProgramBoardStyle.disabledText
+                        presentation.selectAllUsesActiveText
+                            ? ProgramBoardStyle.neutralText
                             : ProgramBoardStyle.secondaryText
                     )
                     .lineLimit(1)
@@ -535,37 +536,7 @@ private struct ProgramProjectsHeader: View {
             .help("Show tickets from all projects")
         }
         .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
-        .frame(height: ProgramBoardLayout.projectsHeaderHeight)
-    }
-}
-
-private struct ProgramProjectsRefreshButton: View {
-    let state: ProgramBoardReloadState
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                if state.isLoading {
-                    ProgressView()
-                        .scaleEffect(0.45)
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: state.iconName)
-                        .font(AppTypography.symbolFont(size: ProgramBoardLayout.projectsHeaderRefreshSize, weight: .semibold))
-                        .foregroundStyle(state.iconColor)
-                }
-            }
-            .frame(
-                width: ProgramBoardLayout.projectsHeaderRefreshSize,
-                height: ProgramBoardLayout.projectsHeaderRefreshSize
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(state.isLoading)
-        .programButtonCursor(enabled: !state.isLoading)
-        .help(state.helpText)
+        .frame(height: ProgramBoardLayout.projectsHeaderHeight, alignment: .top)
     }
 }
 
@@ -615,9 +586,9 @@ private struct ProgramProjectCard: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectCardHeight, alignment: .leading)
-            .background(ProgramCardBackground(cornerRadius: 8))
+            .background(ProgramCardBackground(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius))
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius)
                     .stroke(isSelected ? ProgramBoardStyle.secondaryText : BoardDarkSurfaceStyle.border, lineWidth: 1)
             )
         }
@@ -706,6 +677,7 @@ private struct ProgramWorkColumnPanel: View {
                     ProgramIconButton(
                         systemName: "plus",
                         help: "New \(lane.title.lowercased()) ticket",
+                        size: ProgramBoardLayout.newTicketButtonSize,
                         action: onCreate
                     )
                 }
@@ -947,9 +919,9 @@ private struct ProgramWorkCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ProgramCardBackground(cornerRadius: 8))
+        .background(ProgramCardBackground(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius)
                 .stroke(Color.white.opacity(isSelected ? 0.28 : 0), lineWidth: 0.75)
         )
         .contentShape(Rectangle())
@@ -1170,7 +1142,7 @@ private struct ProgramTicketDetailPanel: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
         .frame(width: 560, height: 633, alignment: .topLeading)
-        .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius))
+        .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
         .shadow(
             color: ProgramBoardColumnChrome.shadowColor(for: theme),
             radius: BoardDarkSurfaceStyle.shadowRadius,
@@ -1518,7 +1490,7 @@ private struct ProgramTicketEditModal: View {
             }
             .padding(20)
             .frame(width: 560)
-            .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius))
+            .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
             .shadow(
                 color: Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity),
                 radius: BoardDarkSurfaceStyle.shadowRadius,
@@ -1702,7 +1674,7 @@ private struct ProgramTicketCreateModal: View {
             }
             .padding(20)
             .frame(width: 520)
-            .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius))
+            .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
             .shadow(
                 color: Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity),
                 radius: BoardDarkSurfaceStyle.shadowRadius,
@@ -1754,7 +1726,6 @@ private struct ProgramStatePanel: View {
                 Text("Status")
                     .font(AppTypography.font(.workspaceHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
-                ProgramReloadButton(state: reloadState, action: onRefresh)
                 Spacer(minLength: 0)
                 ProgramIconButton(systemName: "xmark", help: "Close Workspace", action: onDismiss)
             }
@@ -1771,14 +1742,36 @@ private struct ProgramStatePanel: View {
                         .lineLimit(3)
                         .frame(maxWidth: 560)
                 }
+                Button(action: onRefresh) {
+                    Text("Try again")
+                        .font(AppTypography.font(.programAction))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                        .padding(.horizontal, 12)
+                        .frame(height: ProgramBoardLayout.selectAllButtonHeight)
+                        .background(
+                            BoardDarkCapsuleBackground(
+                                fill: BoardDarkSurfaceStyle.contentFill,
+                                stroke: BoardDarkSurfaceStyle.border
+                            )
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(reloadState.isLoading)
+                .programButtonCursor(enabled: !reloadState.isLoading)
+                .help("Try loading workspace work again")
             }
             .frame(maxWidth: .infinity)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
-        .frame(width: 640, height: 360, alignment: .topLeading)
-        .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.pillCornerRadius))
+        .frame(
+            maxWidth: .infinity,
+            minHeight: ProgramBoardLayout.statePanelHeight,
+            maxHeight: ProgramBoardLayout.statePanelHeight,
+            alignment: .topLeading
+        )
+        .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
         .shadow(
             color: ProgramBoardColumnChrome.shadowColor(for: theme),
             radius: BoardDarkSurfaceStyle.shadowRadius,
@@ -1850,29 +1843,13 @@ private struct ProgramSessionButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: ProgramBoardLayout.sessionButtonGap) {
-                Image(systemName: presentation.systemName)
-                    .font(AppTypography.symbolFont(size: ProgramBoardLayout.sessionButtonIconSize, weight: .bold))
-                    .frame(width: ProgramBoardLayout.sessionButtonIconSize, height: ProgramBoardLayout.sessionButtonIconSize)
-                Text(presentation.title)
-                    .font(AppTypography.font(.programAction))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .foregroundStyle(ProgramBoardStyle.neutralText)
-            .padding(.horizontal, ProgramBoardLayout.sessionButtonHorizontalPadding)
-            .padding(.vertical, ProgramBoardLayout.sessionButtonVerticalPadding)
-            .frame(width: ProgramBoardLayout.sessionButtonWidth, height: ProgramBoardLayout.sessionButtonHeight)
-            .background(
-                Capsule()
-                    .fill(ProgramBoardStyle.sessionControlFill)
-            )
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .programButtonCursor()
-        .help(presentation.help)
+        WorkspaceNavigationButton(
+            title: presentation.title,
+            systemName: presentation.systemName,
+            accessibilityLabel: presentation.title,
+            help: presentation.help,
+            action: action
+        )
     }
 }
 
@@ -1910,17 +1887,20 @@ private struct ProgramIconButton: View {
     let systemName: String
     let help: String
     let iconColor: Color
+    let size: CGFloat
     let action: () -> Void
 
     init(
         systemName: String,
         help: String,
         iconColor: Color = ProgramBoardStyle.primaryText,
+        size: CGFloat = 22,
         action: @escaping () -> Void
     ) {
         self.systemName = systemName
         self.help = help
         self.iconColor = iconColor
+        self.size = size
         self.action = action
     }
 
@@ -1929,41 +1909,13 @@ private struct ProgramIconButton: View {
             Image(systemName: systemName)
                 .font(AppTypography.symbolFont(size: 12, weight: .semibold))
                 .foregroundStyle(iconColor)
-                .frame(width: 22, height: 22)
+                .frame(width: size, height: size)
                 .background(BoardDarkCircleBackground())
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .programButtonCursor()
         .help(help)
-    }
-}
-
-private struct ProgramReloadButton: View {
-    let state: ProgramBoardReloadState
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                if state.isLoading {
-                    ProgressView()
-                        .scaleEffect(0.58)
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: state.iconName)
-                        .font(AppTypography.symbolFont(size: 11, weight: .semibold))
-                        .foregroundStyle(state.iconColor)
-                }
-            }
-            .frame(width: 22, height: 22)
-            .background(BoardDarkCircleBackground())
-            .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .disabled(state.isLoading)
-        .programButtonCursor(enabled: !state.isLoading)
-        .help(state.helpText)
     }
 }
 
@@ -2060,72 +2012,15 @@ private extension ProgramBoardLane {
     }
 }
 
-private extension ProgramBoardReloadState {
-    var statusText: String {
-        switch self {
-        case .idle:
-            return "Workspace status"
-        case .loading:
-            return "Refreshing..."
-        case .succeeded:
-            return "Updated"
-        case .failed:
-            return "Refresh failed"
-        }
-    }
-
-    var iconName: String {
-        switch self {
-        case .idle, .loading:
-            return "arrow.clockwise"
-        case .succeeded:
-            return "checkmark"
-        case .failed:
-            return "exclamationmark"
-        }
-    }
-
-    var iconColor: Color {
-        switch self {
-        case .succeeded:
-            return ProgramBoardStyle.green
-        case .failed:
-            return ProgramBoardStyle.red
-        case .idle, .loading:
-            return ProgramBoardStyle.primaryText
-        }
-    }
-
-    var helpText: String {
-        switch self {
-        case .idle:
-            return "Refresh program status"
-        case .loading:
-            return "Refreshing program status"
-        case .succeeded:
-            return "Program status updated"
-        case .failed(let message):
-            return "Refresh failed: \(message)"
-        }
-    }
-
-    var isFailure: Bool {
-        if case .failed = self { return true }
-        return false
-    }
-}
-
 enum ProgramBoardStyle {
     static let disabledTextNSColor = NSColor(srgbRed: 100 / 255, green: 116 / 255, blue: 139 / 255, alpha: 1)
     static let neutralTextNSColor = NSColor(srgbRed: 248 / 255, green: 250 / 255, blue: 252 / 255, alpha: 1)
-    static let sessionControlFillNSColor = NSColor(srgbRed: 30 / 255, green: 41 / 255, blue: 59 / 255, alpha: 1)
 
     static let primaryText = Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0)
     static let secondaryText = Color(.sRGB, red: 203 / 255, green: 213 / 255, blue: 225 / 255, opacity: 0.78)
     static let mutedText = Color(.sRGB, red: 148 / 255, green: 163 / 255, blue: 184 / 255, opacity: 0.82)
     static let disabledText = Color(nsColor: disabledTextNSColor)
     static let neutralText = Color(nsColor: neutralTextNSColor)
-    static let sessionControlFill = Color(nsColor: sessionControlFillNSColor)
     static let red = Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 1.0)
     static let green = Color(.sRGB, red: 52 / 255, green: 211 / 255, blue: 153 / 255, opacity: 1.0)
 }

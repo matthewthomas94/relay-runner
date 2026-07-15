@@ -41,6 +41,13 @@ enum OrchestratorClient {
 
     private static let portFile = "/tmp/relay_orchestrator.port"
     private static let defaultPort = 7634
+    private static let programDashboardConnectionRetryDelaysNanoseconds: [UInt64] = [
+        150_000_000,
+        300_000_000,
+        600_000_000,
+        1_000_000_000,
+        1_500_000_000,
+    ]
 
     /// Dispatch a ticket. Returns immediately; the request runs on URLSession's
     /// own queue. The daemon's `find_active` makes this idempotent — re-dispatching
@@ -99,26 +106,71 @@ enum OrchestratorClient {
         )
     }
 
-    static func fetchProgramDashboard(limit: Int = 0) async throws -> ProgramDashboardSnapshot {
-        try await fetchProgramDashboardRefreshingStaleDaemon(
-            limit: limit,
-            fetchDashboard: { limit in
-                try await fetchProgramDashboardSnapshot(
-                    limit: limit,
-                    trigger: "program-board-refresh"
-                )
-            },
-            refreshDaemon: {
-                await restartOrchestratorDaemonIfIdle()
+    static func fetchProgramDashboard(
+        limit: Int = 0,
+        repoPaths: [String] = []
+    ) async throws -> ProgramDashboardSnapshot {
+        try await fetchProgramDashboardRetryingTransientConnection {
+            try await fetchProgramDashboardRefreshingStaleDaemon(
+                limit: limit,
+                fetchDashboard: { limit in
+                    try await fetchProgramDashboardSnapshot(
+                        limit: limit,
+                        trigger: "program-board-refresh",
+                        repoPaths: repoPaths
+                    )
+                },
+                refreshDaemon: {
+                    await restartOrchestratorDaemonIfIdle()
+                }
+            )
+        }
+    }
+
+    static func fetchProgramDashboardRetryingTransientConnection(
+        retryDelaysNanoseconds: [UInt64] = programDashboardConnectionRetryDelaysNanoseconds,
+        fetchDashboard: @escaping () async throws -> ProgramDashboardSnapshot,
+        sleep: @escaping (UInt64) async throws -> Void = { delay in
+            try await Task.sleep(nanoseconds: delay)
+        }
+    ) async throws -> ProgramDashboardSnapshot {
+        var retryDelays = retryDelaysNanoseconds.makeIterator()
+        while true {
+            do {
+                return try await fetchDashboard()
+            } catch {
+                guard isTransientDaemonConnectionError(error),
+                      let retryDelay = retryDelays.next() else {
+                    throw error
+                }
+                try Task.checkCancellation()
+                try await sleep(retryDelay)
             }
-        )
+        }
+    }
+
+    static func isTransientDaemonConnectionError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else { return false }
+        switch URLError.Code(rawValue: nsError.code) {
+        case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .timedOut:
+            return true
+        default:
+            return false
+        }
     }
 
     static func fetchProgramDashboardSnapshot(
         limit: Int = 0,
-        trigger: String = "program-board-refresh"
+        trigger: String = "program-board-refresh",
+        repoPaths: [String] = []
     ) async throws -> ProgramDashboardSnapshot {
-        guard let req = programDashboardRequest(limit: limit, trigger: trigger, port: readPort()) else {
+        guard let req = programDashboardRequest(
+            limit: limit,
+            trigger: trigger,
+            repoPaths: repoPaths,
+            port: readPort()
+        ) else {
             throw OrchestratorClientError.invalidRequest
         }
         let (data, response) = try await URLSession.shared.data(for: req)
@@ -255,13 +307,18 @@ enum OrchestratorClient {
         )
     }
 
-    static func programDashboardRequest(limit: Int, trigger: String, port: Int) -> URLRequest? {
+    static func programDashboardRequest(
+        limit: Int,
+        trigger: String,
+        repoPaths: [String] = [],
+        port: Int
+    ) -> URLRequest? {
         getRequest(
             path: "/v1/program/dashboard",
             query: [
                 URLQueryItem(name: "limit", value: "\(limit)"),
                 URLQueryItem(name: "trigger", value: trigger),
-            ],
+            ] + repoPaths.map { URLQueryItem(name: "repo_path", value: $0) },
             port: port
         )
     }

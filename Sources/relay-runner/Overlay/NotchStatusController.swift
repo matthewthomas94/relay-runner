@@ -2,6 +2,10 @@ import AppKit
 import Darwin
 import QuartzCore
 
+enum BoardUpdateStatus {
+    static let workingLabel = "Checking for updates"
+}
+
 struct NotchStatusDisplayGeometry: Equatable {
     let frame: CGRect
     let visibleFrame: CGRect
@@ -807,6 +811,7 @@ enum NotchStatusAnimationPolicy {
 }
 
 enum NotchActivityLabelRenderPolicy {
+    static let workingStatusRevealDuration: TimeInterval = 2.0
     static let hoverScrollDelay: TimeInterval = 1.0
     static let scrollGap: CGFloat = 36
     static let textLeadingInset: CGFloat = 13
@@ -891,6 +896,21 @@ enum NotchActivityLabelRenderPolicy {
         return false
     }
 
+    static func shouldDeferContentUpdate(
+        previousActivityLabelWidth: CGFloat,
+        nextActivityLabelWidth: CGFloat,
+        animated: Bool
+    ) -> Bool {
+        animated && previousActivityLabelWidth > nextActivityLabelWidth
+    }
+
+    static func shouldApplyDeferredContentUpdate(
+        scheduledGeneration: Int,
+        currentGeneration: Int
+    ) -> Bool {
+        scheduledGeneration == currentGeneration
+    }
+
     static func labelTextRect(
         activityLabelWidth: CGFloat,
         boundsHeight: CGFloat,
@@ -909,6 +929,37 @@ enum NotchActivityLabelRenderPolicy {
             rect.size.width = max(0, maxTextX - rect.minX)
         }
         return rect
+    }
+}
+
+struct NotchStatusPresentationUpdatePlan: Equatable {
+    let shouldRestartWorkingReveal: Bool
+    let shouldAnimatePlacement: Bool
+}
+
+enum NotchStatusPresentationUpdatePolicy {
+    static func plan(
+        statusChanged: Bool,
+        activityLabelsChanged: Bool,
+        workingProgressChanged: Bool,
+        nextStatus: NotchSessionStatus,
+        workingRevealWasActive: Bool,
+        workingGlyphHovered: Bool
+    ) -> NotchStatusPresentationUpdatePlan {
+        let presentationChanged = statusChanged || activityLabelsChanged || workingProgressChanged
+        let shouldRestartWorkingReveal = nextStatus == .working && presentationChanged
+        let shouldAnimatePlacement: Bool
+        if nextStatus == .working {
+            shouldAnimatePlacement = shouldRestartWorkingReveal
+                && !workingRevealWasActive
+                && !workingGlyphHovered
+        } else {
+            shouldAnimatePlacement = presentationChanged
+        }
+        return NotchStatusPresentationUpdatePlan(
+            shouldRestartWorkingReveal: shouldRestartWorkingReveal,
+            shouldAnimatePlacement: shouldAnimatePlacement
+        )
     }
 }
 
@@ -954,10 +1005,13 @@ final class NotchStatusController {
     private var activityLabels: [String] = []
     private var workingProgressLabel: String?
     private var workingGlyphHovered = false
+    private var workingStatusRevealActive = false
     private var activityIndex = 0
     private var carouselTimer: Timer?
+    private var workingStatusRevealTimer: Timer?
     private var screenParametersObserver: NSObjectProtocol?
     private var lastPlacement: NotchStatusPlacement?
+    private var placementAnimationGeneration = 0
     private var loggedMissingNotch = false
 
     init() {
@@ -968,6 +1022,7 @@ final class NotchStatusController {
 
     deinit {
         carouselTimer?.invalidate()
+        workingStatusRevealTimer?.invalidate()
         removeScreenParametersObserver()
     }
 
@@ -992,8 +1047,10 @@ final class NotchStatusController {
 
         self.active = active
         if active {
+            beginWorkingStatusRevealIfNeeded()
             show()
         } else {
+            stopWorkingStatusReveal()
             hide()
         }
     }
@@ -1002,32 +1059,38 @@ final class NotchStatusController {
         pillView.onGlyphClicked = handler
     }
 
-    func setStatus(_ status: NotchSessionStatus) {
+    func setPresentation(
+        status nextStatus: NotchSessionStatus,
+        activityLabels labels: [String],
+        workingProgressLabel label: String?
+    ) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
-                self?.setStatus(status)
-            }
-            return
-        }
-
-        guard self.status != status else { return }
-        self.status = status
-        if status != .working {
-            workingGlyphHovered = false
-        }
-        updateStatusContent()
-    }
-
-    func setActivityLabels(_ labels: [String]) {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async { [weak self] in
-                self?.setActivityLabels(labels)
+                self?.setPresentation(
+                    status: nextStatus,
+                    activityLabels: labels,
+                    workingProgressLabel: label
+                )
             }
             return
         }
 
         let compactLabels = Array(labels.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-        guard compactLabels != activityLabels else {
+        let normalized = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let progress = normalized?.isEmpty == true ? nil : normalized
+        let statusChanged = status != nextStatus
+        let activityLabelsChanged = activityLabels != compactLabels
+        let workingProgressChanged = workingProgressLabel != progress
+        let plan = NotchStatusPresentationUpdatePolicy.plan(
+            statusChanged: statusChanged,
+            activityLabelsChanged: activityLabelsChanged,
+            workingProgressChanged: workingProgressChanged,
+            nextStatus: nextStatus,
+            workingRevealWasActive: workingStatusRevealActive,
+            workingGlyphHovered: workingGlyphHovered
+        )
+
+        guard statusChanged || activityLabelsChanged || workingProgressChanged else {
             if active {
                 updatePlacement(animated: false)
             } else {
@@ -1036,44 +1099,47 @@ final class NotchStatusController {
             return
         }
 
-        activityLabels = compactLabels
-        activityIndex = 0
-        updateCarousel()
+        status = nextStatus
+        if activityLabelsChanged {
+            activityLabels = compactLabels
+            activityIndex = 0
+            updateCarousel()
+        }
+        workingProgressLabel = progress
+        if nextStatus == .working {
+            if plan.shouldRestartWorkingReveal {
+                beginWorkingStatusRevealIfNeeded()
+            }
+        } else {
+            workingGlyphHovered = false
+            stopWorkingStatusReveal()
+        }
+
         if active {
-            updatePlacement(animated: shouldAnimateContentPlacementUpdate)
+            updatePlacement(
+                animated: plan.shouldAnimatePlacement && shouldAnimateContentPlacementUpdate
+            )
         } else {
             updateStatusContent()
         }
     }
 
-    func setWorkingProgressLabel(_ label: String?) {
+    func clearWorkingActivity() {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
-                self?.setWorkingProgressLabel(label)
+                self?.clearWorkingActivity()
             }
             return
         }
-
-        let normalized = label?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let progress = normalized?.isEmpty == true ? nil : normalized
-        guard progress != workingProgressLabel else {
-            if active {
-                updatePlacement(animated: false)
-            } else {
-                updateStatusContent()
-            }
-            return
-        }
-
-        workingProgressLabel = progress
-        if active {
-            updatePlacement(animated: false)
-        } else {
-            updateStatusContent()
-        }
+        setPresentation(
+            status: status,
+            activityLabels: [],
+            workingProgressLabel: nil
+        )
     }
 
     private func show() {
+        placementAnimationGeneration &+= 1
         installScreenParametersObserver()
 
         guard let placement = currentPlacement() else {
@@ -1107,6 +1173,7 @@ final class NotchStatusController {
     }
 
     private func hide() {
+        placementAnimationGeneration &+= 1
         removeScreenParametersObserver()
         stopCarousel()
 
@@ -1126,24 +1193,45 @@ final class NotchStatusController {
     }
 
     private func updatePlacement(animated: Bool) {
+        let previousPlacement = lastPlacement
         guard let placement = currentPlacement() else {
+            placementAnimationGeneration &+= 1
             panel?.orderOut(nil)
             return
         }
         lastPlacement = placement
+        placementAnimationGeneration &+= 1
+        let animationGeneration = placementAnimationGeneration
 
         guard let panel else {
             show()
             return
         }
         if animated {
-            updateStatusContent()
+            let shouldDeferContentUpdate = NotchActivityLabelRenderPolicy.shouldDeferContentUpdate(
+                previousActivityLabelWidth: previousPlacement?.activityLabelWidth ?? 0,
+                nextActivityLabelWidth: placement.activityLabelWidth,
+                animated: true
+            )
+            if !shouldDeferContentUpdate {
+                updateStatusContent()
+            }
             let duration = animationDuration(0.36)
             pillView.redrawDuringFrameAnimation(duration: duration)
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = duration
                 context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.28, 1.0)
                 panel.animator().setFrame(placement.visibleFrame, display: true)
+            } completionHandler: { [weak self] in
+                guard shouldDeferContentUpdate,
+                      let self,
+                      NotchActivityLabelRenderPolicy.shouldApplyDeferredContentUpdate(
+                        scheduledGeneration: animationGeneration,
+                        currentGeneration: self.placementAnimationGeneration
+                      ) else {
+                    return
+                }
+                self.updateStatusContent()
             }
         } else {
             panel.setFrame(placement.visibleFrame, display: true)
@@ -1185,8 +1273,14 @@ final class NotchStatusController {
     private func advanceActivityLabel() {
         guard !activityLabels.isEmpty else { return }
         activityIndex = (activityIndex + 1) % activityLabels.count
+        let workingRevealWasActive = workingStatusRevealActive
+        beginWorkingStatusRevealIfNeeded()
         if active {
-            updatePlacement(animated: shouldAnimateContentPlacementUpdate)
+            updatePlacement(
+                animated: !workingRevealWasActive
+                    && !workingGlyphHovered
+                    && shouldAnimateContentPlacementUpdate
+            )
         } else {
             updateStatusContent()
         }
@@ -1217,7 +1311,8 @@ final class NotchStatusController {
             status: status,
             compactLabel: activityLabels[safe: activityIndex],
             workingProgressLabel: workingProgressLabel,
-            workingGlyphHovered: workingGlyphHovered
+            workingGlyphHovered: workingGlyphHovered,
+            workingStatusRevealActive: workingStatusRevealActive
         )
         return NotchStatusPlacementPlanner.placement(
             for: NotchStatusDisplayGeometry(screen: screen),
@@ -1230,7 +1325,8 @@ final class NotchStatusController {
             status: status,
             compactLabel: activityLabels[safe: activityIndex],
             workingProgressLabel: workingProgressLabel,
-            workingGlyphHovered: workingGlyphHovered
+            workingGlyphHovered: workingGlyphHovered,
+            workingStatusRevealActive: workingStatusRevealActive
         )
     }
 
@@ -1238,13 +1334,17 @@ final class NotchStatusController {
         status: NotchSessionStatus,
         compactLabel: String?,
         workingProgressLabel: String?,
-        workingGlyphHovered: Bool
+        workingGlyphHovered: Bool,
+        workingStatusRevealActive: Bool
     ) -> String? {
-        if status == .working,
-           workingGlyphHovered,
-           let workingProgressLabel,
-           !workingProgressLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return workingProgressLabel
+        if status == .working {
+            if workingGlyphHovered,
+               let workingProgressLabel,
+               !workingProgressLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return workingProgressLabel
+            }
+            guard workingStatusRevealActive else { return nil }
+            return compactLabel ?? workingProgressLabel
         }
         return compactLabel
     }
@@ -1253,15 +1353,20 @@ final class NotchStatusController {
         status: NotchSessionStatus,
         compactLabel: String?,
         workingProgressLabel: String?,
-        workingGlyphHovered: Bool
+        workingGlyphHovered: Bool,
+        workingStatusRevealActive: Bool
     ) -> CGFloat {
-        if status == .working,
-           workingGlyphHovered,
-           let workingProgressLabel,
-           !workingProgressLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
-        }
-        return NotchStatusPlacementPlanner.activityLabelWidth(for: compactLabel)
+        let label = displayedActivityLabel(
+            status: status,
+            compactLabel: compactLabel,
+            workingProgressLabel: workingProgressLabel,
+            workingGlyphHovered: workingGlyphHovered,
+            workingStatusRevealActive: workingStatusRevealActive
+        )
+        let measuredWidth = NotchStatusPlacementPlanner.activityLabelWidth(for: label)
+        return status == .working
+            ? min(measuredWidth, NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth)
+            : measuredWidth
     }
 
     private var shouldAnimateContentPlacementUpdate: Bool {
@@ -1293,6 +1398,35 @@ final class NotchStatusController {
         } else {
             updateStatusContent()
         }
+    }
+
+    private func beginWorkingStatusRevealIfNeeded() {
+        guard status == .working else { return }
+        workingStatusRevealTimer?.invalidate()
+        workingStatusRevealActive = true
+
+        let timer = Timer(
+            timeInterval: NotchActivityLabelRenderPolicy.workingStatusRevealDuration,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.workingStatusRevealTimer = nil
+            guard self.workingStatusRevealActive else { return }
+            self.workingStatusRevealActive = false
+            if self.active {
+                self.updatePlacement(animated: !self.workingGlyphHovered)
+            } else {
+                self.updateStatusContent()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        workingStatusRevealTimer = timer
+    }
+
+    private func stopWorkingStatusReveal() {
+        workingStatusRevealTimer?.invalidate()
+        workingStatusRevealTimer = nil
+        workingStatusRevealActive = false
     }
 
     private func installScreenParametersObserver() {

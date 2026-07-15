@@ -3068,8 +3068,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             "skipped": skipped,
         }
 
-    def sweep_program_ready_tickets(self, *, trigger: str | None = None) -> dict:
-        """Reconcile queued tickets across every registered project.
+    def sweep_program_ready_tickets(
+        self,
+        *,
+        trigger: str | None = None,
+        repo_paths: list[str] | None = None,
+    ) -> dict:
+        """Reconcile queued tickets across the requested registered projects.
 
         Program Board refresh uses this instead of requiring each project board
         to be opened. Each ticket still dispatches through `dispatch()`, so
@@ -3078,7 +3083,17 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         projects: list[dict[str, Any]] = []
         dispatched: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
-        for repo_path in _registered_project_repo_paths(self.program_registry_path):
+        registered_repo_paths = _registered_project_repo_paths(self.program_registry_path)
+        if repo_paths is not None:
+            requested_repo_paths = {
+                str(Path(path).expanduser().resolve())
+                for path in repo_paths
+                if str(path).strip()
+            }
+            registered_repo_paths = [
+                path for path in registered_repo_paths if path in requested_repo_paths
+            ]
+        for repo_path in registered_repo_paths:
             try:
                 result = self.sweep_ready_tickets(
                     repo_path=repo_path,
@@ -3827,8 +3842,12 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         provider: str | None = None,
         limit: int = 0,
         trigger: str | None = None,
+        repo_paths: list[str] | None = None,
     ) -> dict:
-        self.sweep_program_ready_tickets(trigger=trigger or "program-board-refresh")
+        self.sweep_program_ready_tickets(
+            trigger=trigger or "program-board-refresh",
+            repo_paths=repo_paths,
+        )
         store = GraphifyCoreStore(self.graphify_path)
         ingest_registered_projects(
             store,
@@ -3839,6 +3858,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         return build_program_dashboard(
             store,
             provider=provider,
+            repo_paths=repo_paths,
             limit=limit,
         )
 
@@ -3977,10 +3997,12 @@ class Handler(BaseHTTPRequestHandler):
                 provider = (query.get("provider") or [None])[0]
                 limit = int((query.get("limit") or ["0"])[0])
                 trigger = (query.get("trigger") or ["program-board-refresh"])[0]
+                repo_paths = query.get("repo_path")
                 return 200, self.daemon.program_dashboard(
                     provider=provider,
                     limit=limit,
                     trigger=trigger,
+                    repo_paths=repo_paths,
                 )
 
             if method == "GET" and segments == ["v1", "orchestrator-sessions"]:

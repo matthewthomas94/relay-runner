@@ -13,36 +13,70 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(border?.redComponent ?? 0, 17 / 255, accuracy: 0.001)
         XCTAssertEqual(border?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
         XCTAssertEqual(border?.blueComponent ?? 0, 29 / 255, accuracy: 0.001)
-        XCTAssertEqual(BoardDarkSurfaceStyle.columnCornerRadius, 12)
-        XCTAssertEqual(BoardSurfaceLayout.horizontalPadding, 44)
-        XCTAssertEqual(BoardSurfaceLayout.columnSpacing, 16)
-        XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 65)
+        XCTAssertEqual(BoardDarkSurfaceStyle.workspaceCornerRadius, 24)
+        XCTAssertEqual(BoardDarkSurfaceStyle.columnCornerRadius, 16)
+        XCTAssertEqual(BoardDarkSurfaceStyle.nestedCardCornerRadius, 14)
+        XCTAssertEqual(BoardDarkSurfaceStyle.floatingPanelCornerRadius, 16)
+        XCTAssertEqual(BoardSurfaceLayout.horizontalPadding, 8)
+        XCTAssertEqual(BoardSurfaceLayout.columnSpacing, 12)
+        XCTAssertEqual(BoardSurfaceLayout.navigationTopPadding, 7)
+        XCTAssertEqual(BoardSurfaceLayout.navigationHeight, 24)
+        XCTAssertEqual(BoardSurfaceLayout.navigationToPanelSpacing, 16)
+        XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 47)
         XCTAssertEqual(BoardSurfaceLayout.columnHeight, 667)
+        XCTAssertEqual(ProgramBoardBackdropStyle.bottomPadding, 12)
+        XCTAssertEqual(
+            ProgramBoardBackdropStyle.bottomPadding,
+            BoardSurfaceLayout.columnSpacing
+        )
+        XCTAssertEqual(ProgramBoardBackdropStyle.bottomCornerRadius, 24)
+        XCTAssertEqual(
+            ProgramBoardBackdropStyle.bottomCornerRadius,
+            BoardDarkSurfaceStyle.workspaceCornerRadius
+        )
+        XCTAssertLessThanOrEqual(
+            BoardDarkSurfaceStyle.columnCornerRadius,
+            BoardDarkSurfaceStyle.workspaceCornerRadius
+        )
+        XCTAssertLessThanOrEqual(
+            BoardDarkSurfaceStyle.nestedCardCornerRadius,
+            BoardDarkSurfaceStyle.columnCornerRadius
+        )
+        XCTAssertLessThanOrEqual(
+            BoardDarkSurfaceStyle.floatingPanelCornerRadius,
+            BoardDarkSurfaceStyle.workspaceCornerRadius
+        )
         XCTAssertEqual(BoardDarkSurfaceStyle.shadowOpacity, 0.08, accuracy: 0.001)
-        XCTAssertGreaterThan(
+        XCTAssertEqual(
             ProgramBoardBackdropStyle.backdropHeight,
-            BoardSurfaceLayout.columnTopPadding + BoardSurfaceLayout.columnHeight
+            BoardSurfaceLayout.columnTopPadding
+                + BoardSurfaceLayout.columnHeight
+                + ProgramBoardBackdropStyle.bottomPadding
         )
     }
 
-    func testProgramBoardLayoutMatchesFigmaInteriorSpacing() {
+    func testProgramBoardLayoutUsesCompactHeaderControls() {
         XCTAssertEqual(ProgramBoardLayout.panelHorizontalPadding, 8)
         XCTAssertEqual(ProgramBoardLayout.panelVerticalPadding, 16)
         XCTAssertEqual(ProgramBoardLayout.headerHorizontalInset, 16)
         XCTAssertEqual(ProgramBoardLayout.headerLeadingInset, 24)
         XCTAssertEqual(ProgramBoardLayout.projectsHeaderHeight, 32)
-        XCTAssertEqual(ProgramBoardLayout.projectsHeaderRefreshSize, 12)
-        XCTAssertEqual(ProgramBoardLayout.projectsHeaderGap, 12)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonWidth, 82)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHeight, 32)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHorizontalPadding, 12)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonVerticalPadding, 8)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonWidth, 68)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHeight, 24)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHorizontalPadding, 8)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonVerticalPadding, 4)
+        XCTAssertEqual(
+            ProgramBoardLayout.newTicketButtonSize,
+            ProgramBoardLayout.selectAllButtonHeight
+        )
         XCTAssertEqual(ProgramBoardLayout.workHeaderHeight, 36)
         XCTAssertEqual(ProgramBoardLayout.workCardTopOffset, 100)
         XCTAssertEqual(ProgramBoardLayout.projectHeaderToListSpacing, 48)
         XCTAssertEqual(ProgramBoardLayout.projectListTopOffset, 96)
         XCTAssertEqual(ProgramBoardLayout.projectCardHeight, 136)
         XCTAssertEqual(ProgramBoardLayout.projectCardSpacing, 8)
+        XCTAssertEqual(ProgramBoardLayout.statePanelHeight, BoardSurfaceLayout.columnHeight)
+        XCTAssertEqual(ProgramBoardLayout.statePanelHorizontalPadding, BoardSurfaceLayout.horizontalPadding)
     }
 
     func testProgramBoardProjectListInsetsPreserveLaneAlignedCardEdges() {
@@ -61,24 +95,25 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(disabled?.blueComponent ?? 0, 139 / 255, accuracy: 0.001)
     }
 
-    func testProgramBoardSessionToolbarMatchesFigmaPlacementAndControlSize() {
-        let fill = ProgramBoardStyle.sessionControlFillNSColor.usingColorSpace(.sRGB)
-        let text = ProgramBoardStyle.neutralTextNSColor.usingColorSpace(.sRGB)
-
-        XCTAssertEqual(ProgramBoardLayout.sessionToolbarTopPadding, 6)
+    func testProgramBoardSessionToolbarMatchesWorkspaceNavigation() {
+        XCTAssertEqual(
+            ProgramBoardLayout.sessionToolbarTopPadding,
+            BoardSurfaceLayout.navigationTopPadding
+        )
         XCTAssertEqual(ProgramBoardLayout.sessionToolbarTrailingPadding, 40)
-        XCTAssertEqual(ProgramBoardLayout.sessionButtonWidth, 126)
-        XCTAssertEqual(ProgramBoardLayout.sessionButtonHeight, 32)
-        XCTAssertEqual(ProgramBoardLayout.sessionButtonHorizontalPadding, 12)
-        XCTAssertEqual(ProgramBoardLayout.sessionButtonVerticalPadding, 8)
-        XCTAssertEqual(ProgramBoardLayout.sessionButtonGap, 4)
-        XCTAssertEqual(ProgramBoardLayout.sessionButtonIconSize, 14)
-        XCTAssertEqual(fill?.redComponent ?? 0, 30 / 255, accuracy: 0.001)
-        XCTAssertEqual(fill?.greenComponent ?? 0, 41 / 255, accuracy: 0.001)
-        XCTAssertEqual(fill?.blueComponent ?? 0, 59 / 255, accuracy: 0.001)
-        XCTAssertEqual(text?.redComponent ?? 0, 248 / 255, accuracy: 0.001)
-        XCTAssertEqual(text?.greenComponent ?? 0, 250 / 255, accuracy: 0.001)
-        XCTAssertEqual(text?.blueComponent ?? 0, 252 / 255, accuracy: 0.001)
+        XCTAssertEqual(
+            WorkspaceNavigationStyle.controlHeight,
+            BoardSurfaceLayout.navigationHeight
+        )
+        XCTAssertEqual(WorkspaceNavigationStyle.horizontalPadding, 2)
+        XCTAssertEqual(WorkspaceNavigationStyle.cornerRadius, 4)
+        XCTAssertEqual(WorkspaceNavigationStyle.iconTextSpacing, 6)
+        XCTAssertEqual(WorkspaceNavigationStyle.iconSize, 10)
+        XCTAssertTrue(WorkspaceNavigationStyle.systemFocusEffectDisabled)
+        XCTAssertLessThan(
+            WorkspaceNavigationStyle.iconSize,
+            AppTypography.definition(for: .menuTab).size
+        )
     }
 
     func testProgramBoardSessionToolbarEndsFortyPointsFromReferenceScreenEdge() {
@@ -88,17 +123,30 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(screenWidth - buttonTrailingEdge, 40)
     }
 
-    func testProgramProjectsHeaderPresentationMutesSelectAllOnlyForAllProjects() {
+    func testProgramProjectsHeaderPresentationUsesActiveTextForAllProjects() {
         let allProjects = ProgramProjectsHeaderPresentation(
-            isAllSelected: true
+            isAllSelected: true,
+            selectedScopeTitle: "All projects"
         )
         let selectedProject = ProgramProjectsHeaderPresentation(
-            isAllSelected: false
+            isAllSelected: false,
+            selectedScopeTitle: "mentistic"
         )
 
         XCTAssertEqual(allProjects.selectAllTitle, "Select all")
-        XCTAssertTrue(allProjects.selectAllIsMuted)
-        XCTAssertFalse(selectedProject.selectAllIsMuted)
+        XCTAssertEqual(allProjects.selectedScopeTitle, "All projects")
+        XCTAssertTrue(allProjects.selectAllUsesActiveText)
+        XCTAssertEqual(selectedProject.selectedScopeTitle, "mentistic")
+        XCTAssertFalse(selectedProject.selectAllUsesActiveText)
+
+        let activeText = ProgramBoardStyle.neutralTextNSColor.usingColorSpace(.sRGB)
+        XCTAssertEqual(activeText?.redComponent ?? 0, 248 / 255, accuracy: 0.001)
+        XCTAssertEqual(activeText?.greenComponent ?? 0, 250 / 255, accuracy: 0.001)
+        XCTAssertEqual(activeText?.blueComponent ?? 0, 252 / 255, accuracy: 0.001)
+    }
+
+    func testBoardUpdateCheckUsesUserFacingNotchStatus() {
+        XCTAssertEqual(BoardUpdateStatus.workingLabel, "Checking for updates")
     }
 
     func testDecodesSummaryAndProviderNeutralWorkItems() throws {
@@ -401,7 +449,7 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         model.selectAllProjects()
         XCTAssertTrue(model.isAllSelected)
-        XCTAssertEqual(model.selectedScopeTitle, "All tickets")
+        XCTAssertEqual(model.selectedScopeTitle, "All projects")
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
     }
 
@@ -527,6 +575,20 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1"])
     }
 
+    func testProgramBoardViewModelReloadPassesWorkspaceProjectScopeToDashboardFetcher() async throws {
+        let snapshot = try programBoardSnapshot(
+            clientPath: "/demo/aurora-web",
+            toolsPath: "/demo/harbor-api"
+        )
+        let spy = ScopedProgramDashboardFetchSpy(snapshot: snapshot)
+        let model = ProgramBoardViewModel(fetchDashboard: spy.fetch)
+        model.projectPaths = ["/demo/aurora-web", "/demo/harbor-api"]
+
+        await model.reload().value
+
+        XCTAssertEqual(spy.scopes, [["/demo/aurora-web", "/demo/harbor-api"]])
+    }
+
     func testProgramBoardViewModelReloadFailureKeepsPreviousDataVisible() async throws {
         let previous = try programBoardSnapshot(
             clientPath: "/repo/client-dashboard",
@@ -545,6 +607,13 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.errorMessage, "daemon unavailable")
         XCTAssertEqual(model.reloadState, .failed("daemon unavailable"))
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
+    }
+
+    func testProgramBoardViewModelExplainsPersistentLocalServiceFailure() {
+        XCTAssertEqual(
+            ProgramBoardViewModel.reloadErrorMessage(for: URLError(.cannotConnectToHost)),
+            "Relay Runner couldn’t reconnect to its local workspace service. Try again, or reopen the app if the problem continues."
+        )
     }
 
     func testProgramBoardViewModelPrepareForOpeningPreservesVisibleSnapshot() throws {
@@ -1777,6 +1846,20 @@ private final class ProgramDashboardFetchSpy {
         defer { lock.unlock() }
         calls += 1
         return results.count > 1 ? results.removeFirst() : results[0]
+    }
+}
+
+private final class ScopedProgramDashboardFetchSpy {
+    private let snapshot: ProgramDashboardSnapshot
+    private(set) var scopes: [[String]] = []
+
+    init(snapshot: ProgramDashboardSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func fetch(repoPaths: [String]) async throws -> ProgramDashboardSnapshot {
+        scopes.append(repoPaths)
+        return snapshot
     }
 }
 

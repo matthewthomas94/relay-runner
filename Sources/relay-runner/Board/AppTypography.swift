@@ -139,7 +139,7 @@ enum AppTypography {
         case .workspaceHeading:
             return Definition(face: .ppMoriSemibold, size: 14, fallbackWeight: .semibold)
         case .programProjectsHeading:
-            return Definition(face: .ppMoriSemibold, size: 16, fallbackWeight: .semibold)
+            return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
         case .sectionHeading:
             return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
         case .cardHeading:
@@ -163,9 +163,9 @@ enum AppTypography {
         case .action:
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
         case .programAction:
-            return Definition(face: .ppTelegrafRegular, size: 14, fallbackWeight: .regular)
+            return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
         case .programEmptyState:
-            return Definition(face: .ppTelegrafRegular, size: 14, fallbackWeight: .regular)
+            return Definition(face: .ppTelegrafRegular, size: 13, fallbackWeight: .regular)
         case .button:
             return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
         case .status:

@@ -11,6 +11,7 @@ struct GeneralSettingsTab: View {
     static let subagentEffortLabel = "Sub-agent Effort"
 
     @Binding var config: GeneralConfig
+    var onOpenExternalWindow: () -> Void = {}
     @State private var skillInstalled = ProcessManager().isSkillInstalled
     @State private var showSkillSuccess = false
     @State private var showOverwriteAlert = false
@@ -228,8 +229,21 @@ struct GeneralSettingsTab: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.message = Self.workspaceFolderPanelMessage
-        if panel.runModal() == .OK, let url = panel.url {
-            config.working_directory = url.path
+        if let path = Self.pickWorkspaceDirectory(
+            onOpenExternalWindow: onOpenExternalWindow,
+            chooseDirectory: {
+                panel.runModal() == .OK ? panel.url : nil
+            }
+        ) {
+            config.working_directory = path
         }
+    }
+
+    static func pickWorkspaceDirectory(
+        onOpenExternalWindow: () -> Void,
+        chooseDirectory: () -> URL?
+    ) -> String? {
+        onOpenExternalWindow()
+        return chooseDirectory()?.path
     }
 }

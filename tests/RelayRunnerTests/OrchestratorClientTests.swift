@@ -63,13 +63,14 @@ final class OrchestratorClientTests: XCTestCase {
         let request = try XCTUnwrap(OrchestratorClient.programDashboardRequest(
             limit: 0,
             trigger: "program-board-refresh",
+            repoPaths: ["/repo/aurora-web", "/repo/harbor api"],
             port: 8123
         ))
 
         XCTAssertEqual(request.httpMethod, "GET")
         XCTAssertEqual(
             request.url?.absoluteString,
-            "http://127.0.0.1:8123/v1/program/dashboard?limit=0&trigger=program-board-refresh"
+            "http://127.0.0.1:8123/v1/program/dashboard?limit=0&trigger=program-board-refresh&repo_path=/repo/aurora-web&repo_path=/repo/harbor%20api"
         )
         XCTAssertNil(request.httpBody)
     }
@@ -120,6 +121,73 @@ final class OrchestratorClientTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    func testProgramDashboardRetriesTransientDaemonRestartFailures() async throws {
+        let recorder = FetchAttemptRecorder()
+
+        let snapshot = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+            retryDelaysNanoseconds: [0, 0],
+            fetchDashboard: {
+                let attempt = await recorder.nextAttempt()
+                if attempt < 3 {
+                    throw URLError(.cannotConnectToHost)
+                }
+                return self.dashboardSnapshot()
+            },
+            sleep: { _ in }
+        )
+
+        let attemptCount = await recorder.count()
+        XCTAssertEqual(attemptCount, 3)
+        XCTAssertEqual(snapshot.summary.query, "summary")
+    }
+
+    func testProgramDashboardDoesNotRetryPermanentFailures() async throws {
+        let recorder = FetchAttemptRecorder()
+
+        do {
+            _ = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+                retryDelaysNanoseconds: [0, 0],
+                fetchDashboard: {
+                    _ = await recorder.nextAttempt()
+                    throw OrchestratorClientError.badStatus(500, "daemon failed")
+                },
+                sleep: { _ in }
+            )
+            XCTFail("Expected dashboard fetch to fail")
+        } catch OrchestratorClientError.badStatus(let status, let body) {
+            XCTAssertEqual(status, 500)
+            XCTAssertEqual(body, "daemon failed")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let attemptCount = await recorder.count()
+        XCTAssertEqual(attemptCount, 1)
+    }
+
+    func testProgramDashboardStopsAfterBoundedTransientRetries() async throws {
+        let recorder = FetchAttemptRecorder()
+
+        do {
+            _ = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+                retryDelaysNanoseconds: [0, 0],
+                fetchDashboard: {
+                    _ = await recorder.nextAttempt()
+                    throw URLError(.networkConnectionLost)
+                },
+                sleep: { _ in }
+            )
+            XCTFail("Expected dashboard fetch to fail")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .networkConnectionLost)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let attemptCount = await recorder.count()
+        XCTAssertEqual(attemptCount, 3)
     }
 
     func testProgramDashboardRefreshesStaleDaemonSchemaAndRetries() async throws {
@@ -287,5 +355,18 @@ private actor SchemaRefreshRecorder {
 
     func refreshCount() -> Int {
         count
+    }
+}
+
+private actor FetchAttemptRecorder {
+    private var attempts = 0
+
+    func nextAttempt() -> Int {
+        attempts += 1
+        return attempts
+    }
+
+    func count() -> Int {
+        attempts
     }
 }

@@ -1055,6 +1055,7 @@ struct ProgramTicketDetail: Equatable, Identifiable {
 @Observable
 final class ProgramBoardViewModel {
     var snapshot: ProgramDashboardSnapshot?
+    var projectPaths: [String] = []
     var reloadState: ProgramBoardReloadState = .idle
     var errorMessage: String?
     var theme: ParticleFieldRenderer.Theme?
@@ -1071,12 +1072,16 @@ final class ProgramBoardViewModel {
     var isLoading: Bool { reloadState.isLoading }
 
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
-    @ObservationIgnored private var fetchDashboard: () async throws -> ProgramDashboardSnapshot
+    @ObservationIgnored private var fetchDashboard: ([String]) async throws -> ProgramDashboardSnapshot
 
-    init(fetchDashboard: @escaping () async throws -> ProgramDashboardSnapshot = {
-        try await OrchestratorClient.fetchProgramDashboard()
+    init(fetchDashboard: @escaping ([String]) async throws -> ProgramDashboardSnapshot = { repoPaths in
+        try await OrchestratorClient.fetchProgramDashboard(repoPaths: repoPaths)
     }) {
         self.fetchDashboard = fetchDashboard
+    }
+
+    convenience init(fetchDashboard: @escaping () async throws -> ProgramDashboardSnapshot) {
+        self.init(fetchDashboard: { _ in try await fetchDashboard() })
     }
 
     deinit {
@@ -1093,20 +1098,31 @@ final class ProgramBoardViewModel {
         endDrag()
     }
 
+    func setProjectScope(_ paths: [String]) {
+        var seen = Set<String>()
+        let paths = paths.filter { seen.insert($0).inserted }
+        guard paths != projectPaths else { return }
+        projectPaths = paths
+        snapshot = nil
+        selectedProjectPath = nil
+        selectedTicketDetail = nil
+    }
+
     @discardableResult
     func reload() -> Task<Void, Never> {
         reloadTask?.cancel()
         reloadState = .loading
         errorMessage = nil
         let fetchDashboard = fetchDashboard
+        let projectPaths = projectPaths
         let task = Task { [weak self] in
             do {
-                let snapshot = try await fetchDashboard()
+                let snapshot = try await fetchDashboard(projectPaths)
                 guard !Task.isCancelled else { return }
                 await self?.finishReload(snapshot: snapshot)
             } catch {
                 guard !Task.isCancelled else { return }
-                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let message = Self.reloadErrorMessage(for: error)
                 await self?.finishReload(errorMessage: message)
             }
         }
@@ -1119,14 +1135,15 @@ final class ProgramBoardViewModel {
         reloadTask?.cancel()
         errorMessage = nil
         let fetchDashboard = fetchDashboard
+        let projectPaths = projectPaths
         let task = Task { [weak self] in
             do {
-                let snapshot = try await fetchDashboard()
+                let snapshot = try await fetchDashboard(projectPaths)
                 guard !Task.isCancelled else { return }
                 await self?.finishReload(snapshot: snapshot)
             } catch {
                 guard !Task.isCancelled else { return }
-                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let message = Self.reloadErrorMessage(for: error)
                 await self?.finishReload(errorMessage: message)
             }
         }
@@ -1134,12 +1151,22 @@ final class ProgramBoardViewModel {
         return task
     }
 
+    static func reloadErrorMessage(for error: Error) -> String {
+        if OrchestratorClient.isTransientDaemonConnectionError(error) {
+            return (
+                "Relay Runner couldn’t reconnect to its local workspace service. "
+                + "Try again, or reopen the app if the problem continues."
+            )
+        }
+        return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+
     var isAllSelected: Bool {
         selectedProjectPath == nil
     }
 
     var selectedScopeTitle: String {
-        guard let selectedProjectPath else { return "All tickets" }
+        guard let selectedProjectPath else { return "All projects" }
         return snapshot?.projectName(for: selectedProjectPath) ?? "Selected project"
     }
 

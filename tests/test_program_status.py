@@ -275,6 +275,30 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual([item["ticket_id"] for item in dashboard["done"]["items"]], ["RR-5"])
         self.assertEqual([item["ticket_id"] for item in dashboard["awaiting_merge"]["items"]], ["RR-4"])
 
+    def test_dashboard_limits_projects_and_lanes_to_requested_repo_paths(self):
+        store = self.make_store()
+        demo = _project(store, "/demo/aurora-web", "Aurora Web")
+        personal = _project(store, "/dev/brain-stack", "Brain Stack")
+        _ticket(store, demo, "AW-1", "Demo work", "backlog")
+        _ticket(store, personal, "BS-1", "Personal work", "backlog")
+
+        dashboard = build_program_dashboard(
+            store,
+            repo_paths=["/demo/aurora-web"],
+            limit=0,
+            now=2000.0,
+        )
+
+        self.assertEqual(
+            [item["project"]["path"] for item in dashboard["summary"]["items"]],
+            ["/demo/aurora-web"],
+        )
+        self.assertEqual(
+            [item["ticket_id"] for item in dashboard["backlog"]["items"]],
+            ["AW-1"],
+        )
+        self.assertEqual(dashboard["summary"]["counts"]["projects"], 1)
+
     def test_awaiting_merge_query_distinguishes_review_and_conflict_states(self):
         store = self.make_store()
         project = _project(store, "/tmp/relay-runner", "Relay Runner")

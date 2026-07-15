@@ -12,11 +12,16 @@ final class ProgramBoardOverlayController {
 
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
+    private(set) var isSuspendedForExternalWindow = false
+    private var lastSelectedTab: WorkspaceTab = .work
     private weak var revealContainer: BoardRevealContainerView?
+    private var updateCheckTask: Task<Void, Never>?
+    private var contentLoadBlocked = false
     private let model = ProgramBoardViewModel()
     private let workspace = WorkspaceViewModel()
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     private var openProjectHandler: ((String) -> Void)?
+    private var projectScopeProvider: () -> [String] = { [] }
     private var loadingStateHandler: ((Bool) -> Void)?
     private var startSessionHandler: ((String?) -> Void)?
     private var endSessionHandler: (() -> Void)?
@@ -34,6 +39,10 @@ final class ProgramBoardOverlayController {
 
     func setOpenProjectHandler(_ handler: @escaping (String) -> Void) {
         self.openProjectHandler = handler
+    }
+
+    func setProjectScopeProvider(_ provider: @escaping () -> [String]) {
+        projectScopeProvider = provider
     }
 
     func setLoadingStateHandler(_ handler: @escaping (Bool) -> Void) {
@@ -76,6 +85,7 @@ final class ProgramBoardOverlayController {
     }
 
     deinit {
+        updateCheckTask?.cancel()
         themePollTimer?.invalidate()
         statusPollTimer?.invalidate()
     }
@@ -85,10 +95,11 @@ final class ProgramBoardOverlayController {
     }
 
     func show() {
-        show(initialTab: .work)
+        show(initialTab: lastSelectedTab)
     }
 
     private func show(initialTab: WorkspaceTab) {
+        if resumeAfterExternalWindow(initialTab: initialTab) { return }
         guard !isVisible else { return }
         let settingsContent = settingsContentProvider?()
         workspace.configure(
@@ -97,6 +108,7 @@ final class ProgramBoardOverlayController {
             showsSettingsTab: settingsContent != nil,
             initialTab: initialTab
         )
+        lastSelectedTab = workspace.selectedTab
 
         let p = panel ?? BoardOverlayPanel()
         let screen = currentMouseScreen()
@@ -104,14 +116,12 @@ final class ProgramBoardOverlayController {
             p.reframe(to: screen)
         }
 
+        model.setProjectScope(projectScopeProvider())
         let hasCachedSnapshot = model.snapshot != nil
+        contentLoadBlocked = !hasCachedSnapshot
         model.prepareForOpening()
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
-        let reloadTask = hasCachedSnapshot ? model.refreshInBackground() : model.reload()
-        if !hasCachedSnapshot {
-            loadingStateHandler?(true)
-        }
 
         let contentFrame = NSRect(origin: .zero, size: p.frame.size)
         let hosting = NSHostingView(rootView: ProgramBoardOverlayView(
@@ -122,8 +132,8 @@ final class ProgramBoardOverlayController {
                 self?.terminalContentProvider?(projectPath)
             },
             onDismiss: { [weak self] in self?.hide() },
-            onWorkspaceTabChange: { [weak self] _ in self?.updatePanelKeyEligibility() },
-            onRefresh: { [weak self] in self?.model.reload() },
+            onWorkspaceTabChange: { [weak self] tab in self?.workspaceTabDidChange(tab) },
+            onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
             onStartSession: { [weak self] in self?.startSession() },
             onEndSession: { [weak self] in self?.endSession() },
             onOpenProject: { [weak self] repoPath in self?.openProjectHandler?(repoPath) },
@@ -163,39 +173,76 @@ final class ProgramBoardOverlayController {
 
         startThemePoll()
         startStatusPoll()
-        Task { @MainActor [weak self, weak container] in
-            await reloadTask.value
-            guard let self, self.isVisible else { return }
-            container?.setLoading(false)
-            if !hasCachedSnapshot {
-                self.loadingStateHandler?(false)
-            }
-        }
+        checkForUpdates(inBackground: hasCachedSnapshot)
     }
 
     func showSettings() {
         guard settingsContentProvider != nil else { return }
         if isVisible {
-            workspace.select(.systemSettings)
-            updatePanelKeyEligibility()
+            selectWorkspaceTab(.systemSettings)
         } else {
-            show()
-            workspace.select(.systemSettings)
-            updatePanelKeyEligibility()
+            show(initialTab: .systemSettings)
         }
     }
 
     func showTerminal() {
         if isVisible {
-            workspace.select(.terminal)
-            updatePanelKeyEligibility()
+            selectWorkspaceTab(.terminal)
         } else {
             show(initialTab: .terminal)
         }
     }
 
+    func suspendForExternalWindow() {
+        guard isVisible else { return }
+        updateCheckTask?.cancel()
+        updateCheckTask = nil
+        loadingStateHandler?(false)
+        revealContainer?.setUpdateCheckActive(false)
+        lastSelectedTab = workspace.selectedTab
+        setPanelKeyEligible(false)
+        stopThemePoll()
+        stopStatusPoll()
+        isVisible = false
+        isSuspendedForExternalWindow = true
+        panel?.orderOut(nil)
+    }
+
+    private func resumeAfterExternalWindow(initialTab: WorkspaceTab) -> Bool {
+        guard isSuspendedForExternalWindow,
+              let panel,
+              panel.contentView != nil else { return false }
+
+        isSuspendedForExternalWindow = false
+        workspace.select(initialTab)
+        lastSelectedTab = workspace.selectedTab
+        model.theme = themeResolver?()
+        model.hasActiveSession = sessionActiveProvider()
+        contentLoadBlocked = model.snapshot == nil
+        isVisible = true
+        panel.orderFrontRegardless()
+        updatePanelKeyEligibility()
+        startThemePoll()
+        startStatusPoll()
+        checkForUpdates(inBackground: model.snapshot != nil)
+        return true
+    }
+
+    private func selectWorkspaceTab(_ tab: WorkspaceTab) {
+        workspace.select(tab)
+        workspaceTabDidChange(workspace.selectedTab)
+    }
+
+    private func workspaceTabDidChange(_ tab: WorkspaceTab) {
+        lastSelectedTab = tab
+        updatePanelKeyEligibility()
+    }
+
     func hide() {
         guard isVisible else { return }
+        updateCheckTask?.cancel()
+        updateCheckTask = nil
+        contentLoadBlocked = false
         loadingStateHandler?(false)
         model.endDrag()
         model.cancelCreate()
@@ -248,13 +295,41 @@ final class ProgramBoardOverlayController {
         statusPollTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             guard let self, self.isVisible else { return }
             guard self.model.editing == nil else { return }
-            self.model.reload()
+            self.checkForUpdates(inBackground: false)
         }
     }
 
     private func stopStatusPoll() {
         statusPollTimer?.invalidate()
         statusPollTimer = nil
+    }
+
+    private func checkForUpdates(inBackground: Bool) {
+        updateCheckTask?.cancel()
+        model.setProjectScope(projectScopeProvider())
+        if contentLoadBlocked {
+            revealContainer?.setLoading(true)
+        } else {
+            revealContainer?.setUpdateCheckActive(true)
+        }
+        loadingStateHandler?(true)
+
+        let reloadTask = inBackground ? model.refreshInBackground() : model.reload()
+        let blocksContent = contentLoadBlocked
+        updateCheckTask = Task { @MainActor [weak self] in
+            await reloadTask.value
+            guard !Task.isCancelled, let self else { return }
+            self.updateCheckTask = nil
+            guard self.isVisible else { return }
+
+            if blocksContent {
+                self.contentLoadBlocked = false
+                self.revealContainer?.setLoading(false)
+            } else {
+                self.revealContainer?.setUpdateCheckActive(false)
+            }
+            self.loadingStateHandler?(false)
+        }
     }
 
     private func startSession() {
@@ -299,7 +374,7 @@ final class ProgramBoardOverlayController {
         }
         model.cancelCreate()
         updatePanelKeyEligibility()
-        model.refreshInBackground()
+        checkForUpdates(inBackground: true)
     }
 
     private func beginEdit(detail: ProgramTicketDetail) {
@@ -332,7 +407,7 @@ final class ProgramBoardOverlayController {
         }
         model.cancelEdit()
         updatePanelKeyEligibility()
-        model.refreshInBackground()
+        checkForUpdates(inBackground: true)
     }
 
     private func handleDelete(_ request: ProgramBoardDeleteRequest) {
@@ -345,7 +420,7 @@ final class ProgramBoardOverlayController {
         model.cancelEdit()
         model.clearSelectedTicket()
         updatePanelKeyEligibility()
-        model.refreshInBackground()
+        checkForUpdates(inBackground: true)
     }
 
     private func handleDrop(
@@ -373,11 +448,11 @@ final class ProgramBoardOverlayController {
                     trigger: dispatch.source
                 )
             }
-            model.refreshInBackground()
+            checkForUpdates(inBackground: true)
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             NSLog("[relay-runner] failed to move program ticket \(unresolved.ticketID): \(message)")
-            model.reload()
+            checkForUpdates(inBackground: false)
             model.reportDropFailure(message)
         }
     }

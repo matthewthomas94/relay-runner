@@ -26,6 +26,8 @@ final class BoardOverlayController {
 
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
+    private(set) var isSuspendedForExternalWindow = false
+    private var lastSelectedTab: WorkspaceTab = .work
     private weak var revealContainer: BoardRevealContainerView?
     private var globalMonitor: Any?
     private var localMonitor: Any?
@@ -164,10 +166,11 @@ final class BoardOverlayController {
     }
 
     func show() {
-        show(initialTab: .work)
+        show(initialTab: lastSelectedTab)
     }
 
     private func show(initialTab: WorkspaceTab) {
+        if resumeAfterExternalWindow(initialTab: initialTab) { return }
         guard !isVisible else { return }
 
         // Board routing follows the active workspace/project distinction: a
@@ -198,8 +201,7 @@ final class BoardOverlayController {
 
     func showTerminal() {
         if isVisible {
-            workspace.select(.terminal)
-            updatePanelKeyEligibility()
+            selectWorkspaceTab(.terminal)
         } else {
             show(initialTab: .terminal)
         }
@@ -247,10 +249,10 @@ final class BoardOverlayController {
     func showSettings() {
         guard settingsContentProvider != nil else { return }
         if isVisible {
-            workspace.select(.systemSettings)
-            updatePanelKeyEligibility()
+            selectWorkspaceTab(.systemSettings)
             return
         }
+        if resumeAfterExternalWindow(initialTab: .systemSettings) { return }
         presentUtility(initialTab: .systemSettings)
     }
 
@@ -265,6 +267,7 @@ final class BoardOverlayController {
             showsSettingsTab: settingsContent != nil,
             initialTab: initialTab
         )
+        lastSelectedTab = workspace.selectedTab
 
         let p = panel ?? BoardOverlayPanel()
         let screen = currentMouseScreen()
@@ -292,7 +295,7 @@ final class BoardOverlayController {
             settingsContent: settingsContent,
             terminalContent: terminalContent,
             onDismiss: { [weak self] in self?.hide() },
-            onWorkspaceTabChange: { [weak self] _ in self?.updatePanelKeyEligibility() },
+            onWorkspaceTabChange: { [weak self] tab in self?.workspaceTabDidChange(tab) },
             onDrop: { [weak self] id, status, idx in self?.handleDrop(ticketId: id, to: status, insertIndex: idx) },
             onCreate: { [weak self] status in self?.handleCreate(in: status) },
             onEdit: { [weak self] ticket in self?.openEditor(for: ticket) },
@@ -347,6 +350,7 @@ final class BoardOverlayController {
             showsSettingsTab: settingsContent != nil,
             initialTab: initialTab
         )
+        lastSelectedTab = workspace.selectedTab
 
         let p = panel ?? BoardOverlayPanel()
         let screen = currentMouseScreen()
@@ -361,7 +365,7 @@ final class BoardOverlayController {
             settingsContent: settingsContent,
             terminalContent: terminalContent,
             onDismiss: { [weak self] in self?.hide() },
-            onWorkspaceTabChange: { [weak self] _ in self?.updatePanelKeyEligibility() },
+            onWorkspaceTabChange: { [weak self] tab in self?.workspaceTabDidChange(tab) },
             onDrop: { _, _, _ in },
             onCreate: { _ in },
             onEdit: { _ in },
@@ -393,6 +397,53 @@ final class BoardOverlayController {
         }
 
         startThemePoll()
+    }
+
+    func suspendForExternalWindow() {
+        guard isVisible else { return }
+        loadingStateHandler?(false)
+        refreshTask?.cancel()
+        refreshTask = nil
+        runStateRefreshTask?.cancel()
+        runStateRefreshTask = nil
+        lastSelectedTab = workspace.selectedTab
+        setPanelKeyEligible(false)
+        stopThemePoll()
+        stopRunStatePoll()
+        isVisible = false
+        isSuspendedForExternalWindow = true
+        panel?.orderOut(nil)
+    }
+
+    private func resumeAfterExternalWindow(initialTab: WorkspaceTab) -> Bool {
+        guard isSuspendedForExternalWindow,
+              let panel,
+              panel.contentView != nil else { return false }
+
+        isSuspendedForExternalWindow = false
+        workspace.select(initialTab)
+        lastSelectedTab = workspace.selectedTab
+        model.theme = themeResolver?()
+        model.hasActiveSession = sessionActiveProvider()
+        isVisible = true
+        panel.orderFrontRegardless()
+        updatePanelKeyEligibility()
+        startThemePoll()
+        if currentProject != nil {
+            startRunStatePoll()
+            refreshVisibleProject(trigger: "board-resume")
+        }
+        return true
+    }
+
+    private func selectWorkspaceTab(_ tab: WorkspaceTab) {
+        workspace.select(tab)
+        workspaceTabDidChange(workspace.selectedTab)
+    }
+
+    private func workspaceTabDidChange(_ tab: WorkspaceTab) {
+        lastSelectedTab = tab
+        updatePanelKeyEligibility()
     }
 
     func hide() {

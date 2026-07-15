@@ -323,10 +323,6 @@ struct EmbeddedTerminalTab: View {
     @Bindable var session: EmbeddedTerminalSession
     let providerName: String
     let workingDirectory: String
-    let hasActiveSession: Bool
-    let onStart: () -> Void
-    let onEnd: () -> Void
-    let onOpenExternal: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -377,19 +373,7 @@ struct EmbeddedTerminalTab: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-
             Spacer(minLength: 12)
-
-            if hasActiveSession {
-                Button("End Session", action: onEnd)
-                    .buttonStyle(.bordered)
-            } else {
-                Button("Open in Terminal.app", action: onOpenExternal)
-                    .buttonStyle(.bordered)
-                Button("Start \(providerName)", action: onStart)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-            }
         }
         .controlSize(.small)
         .padding(.horizontal, 14)
@@ -429,7 +413,7 @@ struct EmbeddedTerminalTab: View {
     private var emptyStateDetail: String {
         switch session.phase {
         case .external:
-            return "This Relay session is running in Terminal.app. End it here before starting an embedded session."
+            return "This Relay session is running in Terminal.app. Use the Workspace session control to end it before starting an embedded session."
         case .ended, .exited:
             return "The previous session has ended. Start again from the toolbar when you're ready."
         case .failed(let message):
@@ -453,20 +437,7 @@ struct WorkspaceTerminalPanel: View {
         EmbeddedTerminalTab(
             session: appState.embeddedTerminal,
             providerName: appState.config.general.provider.displayName,
-            workingDirectory: resolvedWorkingDirectory,
-            hasActiveSession: appState.hasActiveSession,
-            onStart: {
-                appState.newSession(workingDirectory: workingDirectory)
-            },
-            onEnd: {
-                appState.endSession()
-            },
-            onOpenExternal: {
-                appState.newSession(
-                    workingDirectory: workingDirectory,
-                    destination: .externalTerminal
-                )
-            }
+            workingDirectory: resolvedWorkingDirectory
         )
     }
 

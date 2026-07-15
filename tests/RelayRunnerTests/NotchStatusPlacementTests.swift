@@ -321,8 +321,10 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
-    func testWorkingProgressIsHoverOnly() {
+    func testWorkingProgressUsesTimedRevealAndHover() {
         let progress = "The first pass found 102 SKILL.md files across user and plugin roots."
+
+        XCTAssertEqual(NotchActivityLabelRenderPolicy.workingStatusRevealDuration, 2.0)
 
         XCTAssertEqual(
             NotchActivityLabelPlanner.labels(for: .processing),
@@ -333,7 +335,8 @@ final class NotchStatusPlacementTests: XCTestCase {
                 status: .working,
                 compactLabel: nil,
                 workingProgressLabel: progress,
-                workingGlyphHovered: false
+                workingGlyphHovered: false,
+                workingStatusRevealActive: false
             ),
             nil
         )
@@ -342,7 +345,18 @@ final class NotchStatusPlacementTests: XCTestCase {
                 status: .working,
                 compactLabel: nil,
                 workingProgressLabel: progress,
-                workingGlyphHovered: true
+                workingGlyphHovered: false,
+                workingStatusRevealActive: true
+            ),
+            progress
+        )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabel(
+                status: .working,
+                compactLabel: nil,
+                workingProgressLabel: progress,
+                workingGlyphHovered: true,
+                workingStatusRevealActive: false
             ),
             progress
         )
@@ -351,7 +365,8 @@ final class NotchStatusPlacementTests: XCTestCase {
                 status: .working,
                 compactLabel: nil,
                 workingProgressLabel: progress,
-                workingGlyphHovered: false
+                workingGlyphHovered: false,
+                workingStatusRevealActive: false
             ),
             0
         )
@@ -360,8 +375,25 @@ final class NotchStatusPlacementTests: XCTestCase {
                 status: .working,
                 compactLabel: nil,
                 workingProgressLabel: progress,
-                workingGlyphHovered: true
+                workingGlyphHovered: true,
+                workingStatusRevealActive: false
             ),
+            NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
+        )
+        let shortProgress = "Running tests"
+        let shortProgressWidth = NotchStatusController.displayedActivityLabelWidth(
+            status: .working,
+            compactLabel: nil,
+            workingProgressLabel: shortProgress,
+            workingGlyphHovered: true,
+            workingStatusRevealActive: false
+        )
+        XCTAssertEqual(
+            shortProgressWidth,
+            NotchStatusPlacementPlanner.activityLabelWidth(for: shortProgress)
+        )
+        XCTAssertLessThan(
+            shortProgressWidth,
             NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
         )
 
@@ -389,18 +421,121 @@ final class NotchStatusPlacementTests: XCTestCase {
                 status: .working,
                 compactLabel: "Running tests",
                 workingProgressLabel: progress,
-                workingGlyphHovered: false
+                workingGlyphHovered: false,
+                workingStatusRevealActive: true
             ),
             "Running tests"
+        )
+        XCTAssertNil(
+            NotchStatusController.displayedActivityLabel(
+                status: .working,
+                compactLabel: "Running tests",
+                workingProgressLabel: progress,
+                workingGlyphHovered: false,
+                workingStatusRevealActive: false
+            )
         )
         XCTAssertEqual(
             NotchStatusController.displayedActivityLabel(
                 status: .working,
                 compactLabel: "Running tests",
                 workingProgressLabel: progress,
-                workingGlyphHovered: true
+                workingGlyphHovered: true,
+                workingStatusRevealActive: false
             ),
             progress
+        )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabel(
+                status: .listening,
+                compactLabel: "Listening",
+                workingProgressLabel: nil,
+                workingGlyphHovered: false,
+                workingStatusRevealActive: false
+            ),
+            "Listening"
+        )
+    }
+
+    func testWorkingPresentationRefreshOnlyAnimatesFirstReveal() {
+        let initialReveal = NotchStatusPresentationUpdatePolicy.plan(
+            statusChanged: true,
+            activityLabelsChanged: false,
+            workingProgressChanged: true,
+            nextStatus: .working,
+            workingRevealWasActive: false,
+            workingGlyphHovered: false
+        )
+        XCTAssertTrue(initialReveal.shouldRestartWorkingReveal)
+        XCTAssertTrue(initialReveal.shouldAnimatePlacement)
+
+        let refreshWhileVisible = NotchStatusPresentationUpdatePolicy.plan(
+            statusChanged: false,
+            activityLabelsChanged: true,
+            workingProgressChanged: true,
+            nextStatus: .working,
+            workingRevealWasActive: true,
+            workingGlyphHovered: false
+        )
+        XCTAssertTrue(refreshWhileVisible.shouldRestartWorkingReveal)
+        XCTAssertFalse(refreshWhileVisible.shouldAnimatePlacement)
+
+        let refreshWhileHovered = NotchStatusPresentationUpdatePolicy.plan(
+            statusChanged: false,
+            activityLabelsChanged: true,
+            workingProgressChanged: false,
+            nextStatus: .working,
+            workingRevealWasActive: false,
+            workingGlyphHovered: true
+        )
+        XCTAssertTrue(refreshWhileHovered.shouldRestartWorkingReveal)
+        XCTAssertFalse(refreshWhileHovered.shouldAnimatePlacement)
+
+        let leaveWorking = NotchStatusPresentationUpdatePolicy.plan(
+            statusChanged: true,
+            activityLabelsChanged: true,
+            workingProgressChanged: true,
+            nextStatus: .notWorking,
+            workingRevealWasActive: true,
+            workingGlyphHovered: false
+        )
+        XCTAssertFalse(leaveWorking.shouldRestartWorkingReveal)
+        XCTAssertTrue(leaveWorking.shouldAnimatePlacement)
+    }
+
+    func testPlacementContractionDefersContentUntilCurrentAnimationCompletes() {
+        XCTAssertTrue(
+            NotchActivityLabelRenderPolicy.shouldDeferContentUpdate(
+                previousActivityLabelWidth: 180,
+                nextActivityLabelWidth: 0,
+                animated: true
+            )
+        )
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldDeferContentUpdate(
+                previousActivityLabelWidth: 0,
+                nextActivityLabelWidth: 180,
+                animated: true
+            )
+        )
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldDeferContentUpdate(
+                previousActivityLabelWidth: 180,
+                nextActivityLabelWidth: 0,
+                animated: false
+            )
+        )
+        XCTAssertTrue(
+            NotchActivityLabelRenderPolicy.shouldApplyDeferredContentUpdate(
+                scheduledGeneration: 7,
+                currentGeneration: 7
+            )
+        )
+        XCTAssertFalse(
+            NotchActivityLabelRenderPolicy.shouldApplyDeferredContentUpdate(
+                scheduledGeneration: 7,
+                currentGeneration: 8
+            )
         )
     }
 

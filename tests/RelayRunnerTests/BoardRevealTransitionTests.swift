@@ -11,7 +11,18 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertEqual(plan.compactFrame.height, NotchStatusPlacementPlanner.glyphSize.height)
         XCTAssertEqual(plan.compactFrame.midX, screen.width / 2)
         XCTAssertEqual(plan.fullWidthFrame, CGRect(x: 0, y: 0, width: 1512, height: 34))
-        XCTAssertEqual(plan.expandedFrame, CGRect(x: 0, y: 0, width: 1512, height: 735))
+        XCTAssertEqual(
+            plan.expandedFrame,
+            CGRect(x: 0, y: 0, width: 1512, height: ProgramBoardBackdropStyle.backdropHeight)
+        )
+        XCTAssertEqual(
+            BoardRevealTransitionPlanner.expandedSurfaceHeight,
+            ProgramBoardBackdropStyle.backdropHeight
+        )
+        XCTAssertEqual(
+            BoardRevealTransitionPlanner.expandedSurfaceCornerRadius,
+            ProgramBoardBackdropStyle.bottomCornerRadius
+        )
         XCTAssertEqual(plan.glyphFrame.maxX, plan.compactFrame.maxX)
         XCTAssertEqual(plan.compactLeadingSpacerWidth, 0)
         XCTAssertEqual(plan.compactNotchSpacerWidth, 0)

@@ -227,8 +227,7 @@ final class AppState {
         notchActivityRunStates = []
         notchActivityTickets = []
         notchActivityTicketsByRunKey = [:]
-        notchStatusController.setWorkingProgressLabel(nil)
-        notchStatusController.setActivityLabels([])
+        notchStatusController.clearWorkingActivity()
     }
 
     private func syncNotchActivityProjectState() {
@@ -264,10 +263,13 @@ final class AppState {
     }
 
     private func syncNotchActivitySurface() {
-        guard hasActiveSession else {
-            notchStatusController.setStatus(.notWorking)
-            notchStatusController.setWorkingProgressLabel(nil)
-            notchStatusController.setActivityLabels([])
+        let boardIsLoading = projectBoardLoading || programBoardLoading
+        guard hasActiveSession || boardIsLoading else {
+            notchStatusController.setPresentation(
+                status: .notWorking,
+                activityLabels: [],
+                workingProgressLabel: nil
+            )
             return
         }
 
@@ -295,16 +297,17 @@ final class AppState {
                 ]
             }
         )
-        let workingProgressLabel = foregroundActivityLabel ?? hoverActivityLabel
-        notchStatusController.setStatus(
-            NotchSessionStatus.resolve(
+        let workingProgressLabel = foregroundActivityLabel
+            ?? (boardIsLoading ? BoardUpdateStatus.workingLabel : hoverActivityLabel)
+        notchStatusController.setPresentation(
+            status: NotchSessionStatus.resolve(
                 for: stateMachine.state,
                 hasActivityLabels: !labels.isEmpty || workingProgressLabel != nil,
-                boardIsLoading: projectBoardLoading || programBoardLoading
-            )
+                boardIsLoading: boardIsLoading
+            ),
+            activityLabels: labels,
+            workingProgressLabel: workingProgressLabel
         )
-        notchStatusController.setWorkingProgressLabel(workingProgressLabel)
-        notchStatusController.setActivityLabels(labels)
     }
 
     private static func notchActivityRunKey(repoPath: String, ticketId: String) -> String {
@@ -369,6 +372,9 @@ final class AppState {
         }
         programBoardOverlay.setSessionActiveProvider { [weak self] in
             self?.hasActiveSession ?? false
+        }
+        programBoardOverlay.setProjectScopeProvider {
+            ProjectResolver.resolveActivityProjects().map(\.repoPath.path)
         }
         embeddedTerminal.setExitHandler { [weak self] _ in
             self?.embeddedTerminalDidExit()
@@ -855,7 +861,26 @@ final class AppState {
     /// tickets from that repo's `.orchestrator/`; workspace sessions open the
     /// read-only Program work view.
     func toggleBoard() {
-        boardOverlay.toggle()
+        if Self.workspaceToggleTarget(
+            programBoardVisible: programBoardOverlay.isVisible,
+            programBoardSuspended: programBoardOverlay.isSuspendedForExternalWindow
+        ) == .programBoard {
+            programBoardOverlay.toggle()
+        } else {
+            boardOverlay.toggle()
+        }
+    }
+
+    enum WorkspaceToggleTarget: Equatable {
+        case projectBoard
+        case programBoard
+    }
+
+    static func workspaceToggleTarget(
+        programBoardVisible: Bool,
+        programBoardSuspended: Bool
+    ) -> WorkspaceToggleTarget {
+        programBoardVisible || programBoardSuspended ? .programBoard : .projectBoard
     }
 
     func toggleWorkspace() {
@@ -864,7 +889,7 @@ final class AppState {
 
     func showWorkspaceSettings() {
         if overlayController == nil { startOverlay() }
-        if programBoardOverlay.isVisible {
+        if programBoardOverlay.isVisible || programBoardOverlay.isSuspendedForExternalWindow {
             programBoardOverlay.showSettings()
         } else {
             boardOverlay.showSettings()
@@ -1332,7 +1357,12 @@ final class AppState {
         }
         boardOverlay.setSettingsContentProvider { [weak self] in
             guard let self else { return nil }
-            return AnyView(WorkspaceSettingsPanel(appState: self))
+            return AnyView(WorkspaceSettingsPanel(
+                appState: self,
+                onOpenExternalWindow: { [weak self] in
+                    self?.suspendWorkspaceForExternalWindow()
+                }
+            ))
         }
         boardOverlay.setTerminalContentProvider { [weak self] workingDirectory in
             guard let self else { return nil }
@@ -1357,7 +1387,12 @@ final class AppState {
         }
         programBoardOverlay.setSettingsContentProvider { [weak self] in
             guard let self else { return nil }
-            return AnyView(WorkspaceSettingsPanel(appState: self))
+            return AnyView(WorkspaceSettingsPanel(
+                appState: self,
+                onOpenExternalWindow: { [weak self] in
+                    self?.suspendWorkspaceForExternalWindow()
+                }
+            ))
         }
         programBoardOverlay.setTerminalContentProvider { [weak self] workingDirectory in
             guard let self else { return nil }
@@ -1499,6 +1534,11 @@ final class AppState {
         guard programBoardLoading != isLoading else { return }
         programBoardLoading = isLoading
         syncNotchActivitySurface()
+    }
+
+    private func suspendWorkspaceForExternalWindow() {
+        boardOverlay.suspendForExternalWindow()
+        programBoardOverlay.suspendForExternalWindow()
     }
 
     private func stopOverlay() {

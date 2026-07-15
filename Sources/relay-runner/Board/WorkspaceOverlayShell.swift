@@ -99,6 +99,20 @@ enum TrayIconAsset {
     }
 }
 
+enum WorkspaceNavigationStyle {
+    static let controlHeight: CGFloat = BoardSurfaceLayout.navigationHeight
+    static let horizontalPadding: CGFloat = 2
+    static let cornerRadius: CGFloat = 4
+    static let iconTextSpacing: CGFloat = 6
+    static let iconSize: CGFloat = 10
+    static let systemFocusEffectDisabled = true
+    static let activeTextOpacity: Double = 0.98
+    static let inactiveTextOpacity: Double = 0.72
+    static let selectedFillOpacity: Double = 0.08
+    static let focusedFillOpacity: Double = 0.12
+    static let hoveredFillOpacity: Double = 0.06
+}
+
 struct WorkspaceMenuBarStrip: View {
     @Bindable var workspace: WorkspaceViewModel
     let hasActiveSession: Bool
@@ -107,7 +121,10 @@ struct WorkspaceMenuBarStrip: View {
         HStack(alignment: .center, spacing: 12) {
             Image(TrayIconAsset.name(hasActiveSession: hasActiveSession), bundle: RelayRunnerResources.bundle)
                 .renderingMode(.original)
-                .frame(width: 24, height: 24)
+                .frame(
+                    width: BoardSurfaceLayout.navigationHeight,
+                    height: BoardSurfaceLayout.navigationHeight
+                )
                 .accessibilityLabel(hasActiveSession ? "Relay Runner session active" : "Relay Runner session inactive")
 
             ForEach(workspace.availableTabs) { tab in
@@ -118,7 +135,7 @@ struct WorkspaceMenuBarStrip: View {
                 )
             }
         }
-        .frame(height: 24)
+        .frame(height: BoardSurfaceLayout.navigationHeight)
         .onTapGesture { }
     }
 }
@@ -127,35 +144,100 @@ private struct WorkspaceTabButton: View {
     let tab: WorkspaceTab
     let selected: Bool
     let action: () -> Void
+
+    var body: some View {
+        WorkspaceNavigationButton(
+            title: tab.title,
+            selected: selected,
+            accessibilityLabel: "\(tab.title) tab",
+            help: "\(tab.title) tab",
+            action: action
+        )
+    }
+}
+
+struct WorkspaceNavigationButton: View {
+    let title: String
+    let systemName: String?
+    let selected: Bool
+    let accessibilityLabel: String
+    let help: String
+    let action: () -> Void
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
 
+    init(
+        title: String,
+        systemName: String? = nil,
+        selected: Bool = false,
+        accessibilityLabel: String? = nil,
+        help: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.systemName = systemName
+        self.selected = selected
+        self.accessibilityLabel = accessibilityLabel ?? title
+        self.help = help ?? title
+        self.action = action
+    }
+
     var body: some View {
         Button(action: action) {
-            Text(tab.title)
-                .font(AppTypography.font(.menuTab))
-                .foregroundStyle(
-                    Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: selected || isHovered || isFocused ? 0.98 : 0.72)
+            HStack(alignment: .center, spacing: WorkspaceNavigationStyle.iconTextSpacing) {
+                if let systemName {
+                    Image(systemName: systemName)
+                        .font(AppTypography.symbolFont(
+                            size: WorkspaceNavigationStyle.iconSize,
+                            weight: .bold
+                        ))
+                        .frame(
+                            width: WorkspaceNavigationStyle.iconSize,
+                            height: WorkspaceNavigationStyle.iconSize
+                        )
+                }
+                Text(title)
+                    .font(AppTypography.font(.menuTab))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(
+                Color(
+                    .sRGB,
+                    red: 226 / 255,
+                    green: 232 / 255,
+                    blue: 240 / 255,
+                    opacity: foregroundOpacity
                 )
-                .padding(.horizontal, 2)
-                .frame(height: 24)
-                .background(
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(tabFill)
-                )
+            )
+            .padding(.horizontal, WorkspaceNavigationStyle.horizontalPadding)
+            .frame(height: WorkspaceNavigationStyle.controlHeight)
+            .background(
+                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius)
+                    .fill(buttonFill)
+            )
+            .contentShape(
+                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius)
+            )
         }
         .buttonStyle(.plain)
         .focusable()
+        .focusEffectDisabled(WorkspaceNavigationStyle.systemFocusEffectDisabled)
         .focused($isFocused)
         .onHover { isHovered = $0 }
-        .accessibilityLabel("\(tab.title) tab")
-        .help("\(tab.title) tab")
+        .accessibilityLabel(accessibilityLabel)
+        .help(help)
     }
 
-    private var tabFill: Color {
-        if selected { return Color.white.opacity(0.08) }
-        if isFocused { return Color.white.opacity(0.12) }
-        if isHovered { return Color.white.opacity(0.06) }
+    private var foregroundOpacity: Double {
+        selected || isHovered || isFocused
+            ? WorkspaceNavigationStyle.activeTextOpacity
+            : WorkspaceNavigationStyle.inactiveTextOpacity
+    }
+
+    private var buttonFill: Color {
+        if selected { return Color.white.opacity(WorkspaceNavigationStyle.selectedFillOpacity) }
+        if isFocused { return Color.white.opacity(WorkspaceNavigationStyle.focusedFillOpacity) }
+        if isHovered { return Color.white.opacity(WorkspaceNavigationStyle.hoveredFillOpacity) }
         return Color.clear
     }
 }

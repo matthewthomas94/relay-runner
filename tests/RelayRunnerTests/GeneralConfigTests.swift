@@ -2,6 +2,21 @@ import XCTest
 @testable import relay_runner
 
 final class GeneralConfigTests: XCTestCase {
+    func testWorkspacePickerDismissesWorkspaceBeforePresentingPanel() {
+        var events: [String] = []
+
+        let path = GeneralSettingsTab.pickWorkspaceDirectory(
+            onOpenExternalWindow: { events.append("dismiss") },
+            chooseDirectory: {
+                events.append("picker")
+                return URL(fileURLWithPath: "/Users/example/demo-workspace")
+            }
+        )
+
+        XCTAssertEqual(events, ["dismiss", "picker"])
+        XCTAssertEqual(path, "/Users/example/demo-workspace")
+    }
+
 
     func testCodexModelOptionsMatchCurrentCatalog() {
         XCTAssertEqual(

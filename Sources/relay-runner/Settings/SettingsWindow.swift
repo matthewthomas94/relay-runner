@@ -10,9 +10,22 @@ struct SettingsWindow: View {
 
 struct WorkspaceSettingsPanel: View {
     @Bindable var appState: AppState
+    let onOpenExternalWindow: () -> Void
+
+    init(
+        appState: AppState,
+        onOpenExternalWindow: @escaping () -> Void = {}
+    ) {
+        self.appState = appState
+        self.onOpenExternalWindow = onOpenExternalWindow
+    }
 
     var body: some View {
-        SettingsContent(appState: appState, style: .workspace)
+        SettingsContent(
+            appState: appState,
+            style: .workspace,
+            onOpenExternalWindow: onOpenExternalWindow
+        )
             .frame(maxWidth: WorkspaceSurfaceSizing.settingsMaxWidth, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight)
             .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
             .shadow(color: Color.black.opacity(0.18), radius: 18, x: 0, y: 10)
@@ -96,14 +109,20 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
 private struct SettingsContent: View {
     @Bindable var appState: AppState
     let style: SettingsContentStyle
+    let onOpenExternalWindow: () -> Void
 
     @State private var draft: AppConfig
     @State private var saving = false
     @State private var selectedCategory: SettingsCategory = .status
 
-    init(appState: AppState, style: SettingsContentStyle) {
+    init(
+        appState: AppState,
+        style: SettingsContentStyle,
+        onOpenExternalWindow: @escaping () -> Void = {}
+    ) {
         self.appState = appState
         self.style = style
+        self.onOpenExternalWindow = onOpenExternalWindow
         self._draft = State(initialValue: appState.config)
     }
 
@@ -156,7 +175,10 @@ private struct SettingsContent: View {
         case .textToSpeech:
             TTSSettingsTab(config: $draft.tts)
         case .general:
-            GeneralSettingsTab(config: $draft.general)
+            GeneralSettingsTab(
+                config: $draft.general,
+                onOpenExternalWindow: onOpenExternalWindow
+            )
         case .awareness:
             AwarenessSettingsTab(config: $draft.awareness)
         }

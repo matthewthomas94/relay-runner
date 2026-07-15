@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from graphify_core import (
@@ -133,6 +134,7 @@ def build_program_dashboard(
     store: GraphifyCoreStore,
     *,
     provider: str | None = None,
+    repo_paths: list[str] | None = None,
     limit: int = 0,
     now: float | None = None,
     stale_after_seconds: int = STALE_AFTER_SECONDS,
@@ -141,7 +143,7 @@ def build_program_dashboard(
     raw_limit = int(limit if limit is not None else 0)
     item_limit = None if raw_limit <= 0 else max(1, min(raw_limit, 500))
     now = time.time() if now is None else now
-    ctx = _context(store)
+    ctx = _context(store, repo_paths=repo_paths)
     build = lambda query: _build_program_status_from_context(
         ctx,
         query=query,
@@ -243,10 +245,27 @@ def _build_program_status_from_context(
     return _response(query, provider_key, _summary_text(items, provider_key), _limit_items(items, item_limit), ctx)
 
 
-def _context(store: GraphifyCoreStore) -> dict[str, Any]:
+def _context(
+    store: GraphifyCoreStore,
+    repo_paths: list[str] | None = None,
+) -> dict[str, Any]:
     projects = store.nodes(kind=NODE_PROJECT)
+    if repo_paths is not None:
+        allowed_repo_paths = {
+            str(Path(path).expanduser().resolve())
+            for path in repo_paths
+            if str(path).strip()
+        }
+        projects = [
+            project
+            for project in projects
+            if str(Path(_project_path(project)).expanduser().resolve()) in allowed_repo_paths
+        ]
+    project_ids = {project["id"] for project in projects}
     tickets = store.nodes(kind=NODE_TICKET)
+    tickets = [ticket for ticket in tickets if ticket.get("project_id") in project_ids]
     runs = store.nodes(kind=NODE_RUN)
+    runs = [run for run in runs if run.get("project_id") in project_ids]
     tickets_by_id = {ticket["id"]: ticket for ticket in tickets}
     runs_by_id = {run["id"]: run for run in runs}
     projects_by_id = {project["id"]: project for project in projects}
@@ -283,6 +302,7 @@ def _context(store: GraphifyCoreStore) -> dict[str, Any]:
     for ticket_runs in runs_by_ticket.values():
         ticket_runs.sort(key=_run_sort_key, reverse=True)
 
+    ticket_ids = set(tickets_by_id)
     return {
         "projects": projects,
         "tickets": tickets,
@@ -291,8 +311,8 @@ def _context(store: GraphifyCoreStore) -> dict[str, Any]:
         "ticket_by_run": ticket_by_run,
         "runs_by_ticket": runs_by_ticket,
         "blockers": blockers,
-        "blocked_work": {ticket["id"] for ticket in store.blocked_work()},
-        "awaiting_merge": {ticket["id"] for ticket in store.awaiting_merge()},
+        "blocked_work": {ticket["id"] for ticket in store.blocked_work()} & ticket_ids,
+        "awaiting_merge": {ticket["id"] for ticket in store.awaiting_merge()} & ticket_ids,
     }
 
 
