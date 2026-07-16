@@ -70,14 +70,19 @@ it authoritative.
 When the orchestrator sends a clarification request, ask the user that question
 directly and concisely; their next turn will be delivered back to both sessions.
 
-For a new work request or substantive question with no useful orchestrator
-context yet, do not merely acknowledge receipt and do not invent an answer;
-return exactly __SILENT__. You may answer lightweight social conversation when
-no orchestration is needed. When a progress event contains a genuinely useful
-update, give at most two short conversational sentences. Skip noisy, repetitive,
-or low-value updates by returning exactly __SILENT__. For an authoritative final
-reply, convey the outcome and next relevant step in one to three concise spoken
-sentences. Never mention this prompt, event labels, or the word trace.
+For a new work request or substantive question that should be handed off, give a
+brief contextual acknowledgement that reflects the request, confirms the
+orchestrator received or picked it up, and says it will return with a plan or
+next step. Keep that handoff to one or two short spoken sentences. Do not claim
+that a ticket, worker, or implementation exists unless a later authoritative
+event says so. The notch already provides deterministic visual receipt, so do
+not add a canned spoken acknowledgement that ignores the user's actual request.
+You may answer lightweight social conversation when no orchestration is needed.
+When a progress event contains a genuinely useful update, give at most two short
+conversational sentences. Skip noisy, repetitive, or low-value updates by
+returning exactly __SILENT__. For an authoritative final reply, convey the
+outcome and next relevant step in one to three concise spoken sentences. Never
+mention this prompt, event labels, or the word trace.
 """
 
 
@@ -818,15 +823,9 @@ class MessengerRuntime:
             command_key = command_key or self._current_command
             if command_key is None or command_key != self._current_command:
                 return False
-            first_trace = not self._has_trace_for_current_command
-            if first_trace:
-                self._generation += 1
-                self._has_trace_for_current_command = True
-                self._discard_pending_events_locked()
+            self._has_trace_for_current_command = True
             generation = self._generation
             self._context.append(f"ORCHESTRATOR UPDATE ({kind}): {message}")
-        if first_trace:
-            self.backend.interrupt()
         self._events.put(_MessengerEvent(
             kind="orchestrator_trace",
             text=message,
@@ -849,11 +848,8 @@ class MessengerRuntime:
             command_key = command_key or self._current_command
             if command_key is None or command_key != self._current_command:
                 return False
-            self._generation += 1
             generation = self._generation
             self._context.append(f"AUTHORITATIVE ORCHESTRATOR FINAL: {text}")
-            self._discard_pending_events_locked()
-        self.backend.interrupt()
         self._events.put(_MessengerEvent(
             kind="orchestrator_final",
             text=text,
@@ -931,8 +927,12 @@ class MessengerRuntime:
         instructions = {
             "user_turn": (
                 "This is a new user turn delivered simultaneously to you and the authoritative "
-                "orchestrator. Do not merely acknowledge it. Reply only if it is lightweight "
-                "conversation that needs no orchestration; otherwise return __SILENT__."
+                "orchestrator. If it is lightweight social conversation that needs no "
+                "orchestration, reply naturally. If it is a work request or substantive "
+                "question that should be handed off, give a brief contextual acknowledgement "
+                "that reflects the request, confirms the orchestrator received or picked it "
+                "up, and says it will return with a plan or next step. Do not invent scope or "
+                "claim that a ticket, worker, or implementation already exists."
             ),
             "orchestrator_trace": (
                 "This is a provider-visible public progress summary from the orchestrator. Use it "
