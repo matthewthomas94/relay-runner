@@ -754,6 +754,10 @@ final class ProcessManager {
             modelFlag: modelFlag,
             reasoningEffortFlag: reasoningEffortFlag,
             bypassFlag: bypassFlag,
+            appOwnedInstructionFlag: Self.appOwnedInstructionFlag(
+                target: target,
+                voiceDelivery: voiceDelivery
+            ),
             voiceDelivery: voiceDelivery
         )
         return """
@@ -860,15 +864,62 @@ final class ProcessManager {
         }
     }
 
+    static let appOwnedRelayInstructions = """
+    You are the app-owned foreground Relay orchestrator/PM in Relay Runner integrated terminal.
+    Relay Runner has already started the voice bridge and injects each claimed voice turn into this provider prompt; do not invoke relay-bridge or start a polling loop.
+    For every voice turn, read /tmp/voice_cmd_claimed.json and treat its relay_command_seq and relay_command_id as authority. Before follow-up actions, compare /tmp/voice_command_state.json; if a newer command is present, stop stale work and handle the newest intent.
+    Resolve each command as non-work/control, direct action, ticket creation/refinement, ticket update, worker dispatch, or clarification. Raw Relay command captures are private metadata and must not appear in visible .orchestrator tickets. Do not implement substantial project work inline unless the user explicitly asks.
+    Use mcp__relay-actions__* for screen manipulation and mcp__relay-vision__screenshot for screenshots; never use native computer-use fallbacks for those capabilities, and do not call propose_action.
+    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. Send the final spoken outcome as __ORCHESTRATOR_REPLY__ with the claimed seq/id. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
+    Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible in this terminal.
+    """
+
+    private static func appOwnedInstructionFlag(
+        target: AgentTarget,
+        voiceDelivery: SessionVoiceDelivery
+    ) -> String {
+        guard voiceDelivery == .appOwned else { return "" }
+        let instructions = appOwnedRelayInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch target {
+        case .codex:
+            return "-c \(Self.shellQuoted("developer_instructions=\(tomlBasicStringLiteral(instructions))")) "
+        case .claude:
+            return "--append-system-prompt \(Self.shellQuoted(instructions)) "
+        }
+    }
+
+    private static func tomlBasicStringLiteral(_ value: String) -> String {
+        var escaped = "\""
+        for character in value {
+            switch character {
+            case "\\":
+                escaped += "\\\\"
+            case "\"":
+                escaped += "\\\""
+            case "\n":
+                escaped += "\\n"
+            case "\r":
+                escaped += "\\r"
+            case "\t":
+                escaped += "\\t"
+            default:
+                escaped.append(character)
+            }
+        }
+        escaped += "\""
+        return escaped
+    }
+
     private static func agentLaunchLine(
         binary: String,
         target: AgentTarget,
         modelFlag: String,
         reasoningEffortFlag: String,
         bypassFlag: String,
+        appOwnedInstructionFlag: String,
         voiceDelivery: SessionVoiceDelivery
     ) -> String {
-        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(bypassFlag)"
+        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(appOwnedInstructionFlag)\(bypassFlag)"
             .trimmingCharacters(in: .whitespaces)
         guard voiceDelivery == .agentSkill else {
             return prefix

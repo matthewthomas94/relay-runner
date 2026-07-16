@@ -184,6 +184,17 @@ final class RelayTerminalInputTrackerTests: XCTestCase {
         tracker.record(data: ArraySlice(Array("\u{1B}[120;1:3u".utf8)))
         XCTAssertFalse(tracker.hasUnsubmittedInput)
     }
+
+    func testTrackerIgnoresNativeNavigationShortcuts() {
+        var tracker = RelayTerminalInputTracker()
+
+        tracker.record(data: ArraySlice([27, 98]))
+        tracker.record(data: ArraySlice([27, 102]))
+        tracker.record(data: ArraySlice([1]))
+        tracker.record(data: ArraySlice([5]))
+
+        XCTAssertFalse(tracker.hasUnsubmittedInput)
+    }
 }
 
 final class RelayTerminalViewInputOriginTests: XCTestCase {
@@ -200,27 +211,72 @@ final class RelayTerminalViewInputOriginTests: XCTestCase {
 
         XCTAssertEqual(delegate.terminalResponseFlags, [true, false])
     }
+
+    func testNavigationShortcutsAreMarkedAsNonPromptInput() {
+        let view = RelayTerminalView(frame: .zero)
+        let delegate = TerminalInputOriginCapturingDelegate(view: view)
+        view.terminalDelegate = delegate
+
+        XCTAssertTrue(view.performKeyEquivalent(with: keyEvent(keyCode: 123, modifiers: .option)))
+        XCTAssertTrue(view.performKeyEquivalent(with: keyEvent(keyCode: 124, modifiers: .option)))
+        XCTAssertTrue(view.performKeyEquivalent(with: keyEvent(keyCode: 123, modifiers: .command)))
+        XCTAssertTrue(view.performKeyEquivalent(with: keyEvent(keyCode: 124, modifiers: .command)))
+
+        XCTAssertEqual(delegate.payloads, [[27, 98], [27, 102], [1], [5]])
+        XCTAssertEqual(delegate.navigationShortcutFlags, [true, true, true, true])
+        XCTAssertEqual(delegate.terminalResponseFlags, [false, false, false, false])
+    }
+
+    func testNavigationShortcutPayloadRequiresPlainOptionOrCommandArrow() {
+        XCTAssertEqual(
+            RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 123, modifiers: .option)),
+            [27, 98]
+        )
+        XCTAssertEqual(
+            RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 124, modifiers: .option)),
+            [27, 102]
+        )
+        XCTAssertEqual(
+            RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 123, modifiers: .command)),
+            [1]
+        )
+        XCTAssertEqual(
+            RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 124, modifiers: .command)),
+            [5]
+        )
+        XCTAssertNil(RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 123, modifiers: [.option, .shift])))
+        XCTAssertNil(RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 125, modifiers: .option)))
+    }
 }
 
 final class RelayVoiceCommandDeliveryTests: XCTestCase {
-    func testClaimCopiesMetadataAndInjectsNormalPrompt() throws {
+    func testClaimCopiesMetadataAfterSplitPromptAndSubmitEvents() throws {
         let fixture = try makeFixture()
         try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
         let metadata = #"{"relay_command_id":"cmd-1","relay_command_seq":1}"#
         try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
         var sent: [String] = []
+        var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
         let delivery = RelayVoiceCommandDelivery(
             paths: fixture.paths,
             send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            schedule: { delay, _, work in scheduled.append((delay, work)) },
             isRunning: { true }
         )
 
         XCTAssertTrue(delivery.claimAndSendIfPossible())
 
-        XCTAssertEqual(sent, ["Fix the bridge\r"])
+        XCTAssertEqual(sent, ["Fix the bridge"])
+        XCTAssertEqual(scheduled.count, 1)
+        XCTAssertGreaterThanOrEqual(scheduled[0].delay, 0.05)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path))
-        XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.claimed.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.heartbeat.path))
+
+        scheduled[0].work()
+
+        XCTAssertEqual(sent, ["Fix the bridge", "\r"])
+        XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata)
     }
 
     func testDeliveryDefersWhenTypedInputIsPending() throws {
@@ -247,11 +303,11 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
 
     func testInterruptPayloadUsesControlCWithoutPromptText() {
         XCTAssertEqual(
-            RelayVoiceCommandDelivery.providerInputPayload(for: "Fix the bridge\n"),
-            Array("Fix the bridge\r".utf8)
+            RelayVoiceCommandDelivery.providerInputEvents(for: "Fix the bridge\n"),
+            [Array("Fix the bridge".utf8), [13]]
         )
-        XCTAssertEqual(RelayVoiceCommandDelivery.providerInputPayload(for: "__INTERRUPT__"), [3])
-        XCTAssertNil(RelayVoiceCommandDelivery.providerInputPayload(for: "__BRIDGE_DIED__"))
+        XCTAssertEqual(RelayVoiceCommandDelivery.providerInputEvents(for: "__INTERRUPT__"), [[3]])
+        XCTAssertNil(RelayVoiceCommandDelivery.providerInputEvents(for: "__BRIDGE_DIED__"))
     }
 
     private func makeFixture() throws -> (
@@ -289,6 +345,8 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
 private final class TerminalInputOriginCapturingDelegate: TerminalViewDelegate {
     private weak var relayView: RelayTerminalView?
     private(set) var terminalResponseFlags: [Bool] = []
+    private(set) var navigationShortcutFlags: [Bool] = []
+    private(set) var payloads: [[UInt8]] = []
 
     init(view: RelayTerminalView) {
         relayView = view
@@ -296,6 +354,8 @@ private final class TerminalInputOriginCapturingDelegate: TerminalViewDelegate {
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         terminalResponseFlags.append(relayView?.isSendingTerminalResponse == true)
+        navigationShortcutFlags.append(relayView?.isSendingNavigationShortcut == true)
+        payloads.append(Array(data))
     }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
@@ -305,6 +365,24 @@ private final class TerminalInputOriginCapturingDelegate: TerminalViewDelegate {
     func clipboardCopy(source: TerminalView, content: Data) {}
     func clipboardRead(source: TerminalView) -> Data? { nil }
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+}
+
+private func keyEvent(
+    keyCode: UInt16,
+    modifiers: NSEvent.ModifierFlags
+) -> NSEvent {
+    NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: modifiers,
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: "",
+        charactersIgnoringModifiers: "",
+        isARepeat: false,
+        keyCode: keyCode
+    )!
 }
 
 private final class FakeEmbeddedTerminalProcess: EmbeddedTerminalProcess {

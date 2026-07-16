@@ -68,7 +68,71 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(script.contains("--venv-only"))
         XCTAssertFalse(script.contains("Use the relay-bridge skill now."))
         XCTAssertFalse(script.contains("\"/relay-bridge\""))
-        XCTAssertTrue(script.contains("exec '/usr/local/bin/codex' --dangerously-bypass-approvals-and-sandbox"))
+        XCTAssertTrue(script.contains("developer_instructions="))
+        XCTAssertTrue(script.contains("exec '/usr/local/bin/codex'"))
+        XCTAssertTrue(script.contains("--dangerously-bypass-approvals-and-sandbox"))
+    }
+
+    func testEmbeddedLaunchScriptPassesEquivalentHiddenRelayInstructionsForCodexAndClaude() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+
+        var codexConfig = AppConfig()
+        codexConfig.general.provider = .codex
+        let codexScript = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/relay-bridge",
+            target: .codex,
+            agentBinary: "/usr/local/bin/codex",
+            config: codexConfig,
+            voiceDelivery: .appOwned,
+            homeDirectory: home
+        )
+
+        var claudeConfig = AppConfig()
+        claudeConfig.general.provider = .claude
+        let claudeScript = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/relay-bridge",
+            target: .claude,
+            agentBinary: "/usr/local/bin/claude",
+            config: claudeConfig,
+            voiceDelivery: .appOwned,
+            homeDirectory: home
+        )
+
+        XCTAssertTrue(codexScript.contains("-c 'developer_instructions="))
+        XCTAssertTrue(claudeScript.contains("--append-system-prompt '"))
+        for phrase in [
+            "app-owned foreground Relay orchestrator/PM",
+            "Raw Relay command captures are private metadata",
+            "mcp__relay-actions__*",
+            "mcp__relay-vision__screenshot",
+            "__TRACE__",
+            "__ORCHESTRATOR_REPLY__",
+            "Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible",
+        ] {
+            XCTAssertTrue(codexScript.contains(phrase), phrase)
+            XCTAssertTrue(claudeScript.contains(phrase), phrase)
+        }
+        XCTAssertFalse(codexScript.contains("Use the relay-bridge skill now."))
+        XCTAssertFalse(claudeScript.contains("\"/relay-bridge\""))
+    }
+
+    func testExternalLaunchScriptDoesNotInjectAppOwnedHiddenInstructions() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+        var config = AppConfig()
+        config.general.provider = .codex
+
+        let script = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/relay-bridge",
+            target: .codex,
+            agentBinary: "/usr/local/bin/codex",
+            config: config,
+            voiceDelivery: .agentSkill,
+            homeDirectory: home
+        )
+
+        XCTAssertFalse(script.contains("developer_instructions="))
+        XCTAssertFalse(script.contains("--append-system-prompt"))
+        XCTAssertTrue(script.contains("Use the relay-bridge skill now."))
     }
 
     func testLaunchScriptUsesHomeDirectoryWhenWorkspaceFolderIsUnset() {
