@@ -1,0 +1,910 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Relay Runner Architecture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: oklch(0.975 0.012 245);
+        --bg-strong: oklch(0.945 0.018 245);
+        --panel: oklch(0.995 0.006 250);
+        --panel-strong: oklch(0.968 0.012 248);
+        --line: oklch(0.82 0.03 245);
+        --line-strong: oklch(0.64 0.11 248);
+        --text: oklch(0.27 0.026 252);
+        --muted: oklch(0.46 0.022 246);
+        --accent: oklch(0.6 0.17 255);
+        --accent-soft: oklch(0.92 0.05 252);
+        --success: oklch(0.71 0.14 160);
+        --warning: oklch(0.76 0.13 84);
+        --shadow: 0 20px 48px rgba(34, 56, 88, 0.08);
+        --radius-lg: 24px;
+        --radius-md: 18px;
+        --radius-sm: 12px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, oklch(0.99 0.03 236), transparent 30%),
+          radial-gradient(circle at top right, oklch(0.97 0.04 266), transparent 28%),
+          linear-gradient(180deg, oklch(0.985 0.012 248), var(--bg) 48%, oklch(0.985 0.014 230));
+        line-height: 1.5;
+      }
+
+      a {
+        color: oklch(0.47 0.18 256);
+      }
+
+      a:hover,
+      a:focus-visible {
+        color: oklch(0.42 0.19 256);
+      }
+
+      .page {
+        width: min(1200px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 40px 0 64px;
+      }
+
+      .hero,
+      .section,
+      .source-map {
+        background: color-mix(in oklab, var(--panel) 90%, white 10%);
+        border: 1px solid color-mix(in oklab, var(--line) 72%, white 28%);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+      }
+
+      .hero {
+        padding: 32px;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -90px -90px auto;
+        width: 220px;
+        aspect-ratio: 1;
+        border-radius: 999px;
+        background: radial-gradient(circle, color-mix(in oklab, var(--accent) 20%, transparent), transparent 70%);
+        pointer-events: none;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: oklch(0.36 0.09 255);
+        font-size: 0.84rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        line-height: 1.08;
+      }
+
+      h1 {
+        margin-top: 18px;
+        max-width: 12ch;
+        font-size: 2.8rem;
+        letter-spacing: -0.05em;
+      }
+
+      .hero p,
+      .section-intro,
+      .source-map p {
+        max-width: 72ch;
+        color: var(--muted);
+        font-size: 1rem;
+      }
+
+      .hero p {
+        margin: 18px 0 0;
+      }
+
+      .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.85fr);
+        gap: 24px;
+        align-items: end;
+      }
+
+      .hero-notes {
+        display: grid;
+        gap: 12px;
+      }
+
+      .note {
+        padding: 14px 16px;
+        border-radius: var(--radius-md);
+        background: var(--panel-strong);
+        border: 1px solid color-mix(in oklab, var(--line) 76%, white 24%);
+      }
+
+      .note strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 0.96rem;
+      }
+
+      .stack {
+        display: grid;
+        gap: 24px;
+        margin-top: 24px;
+      }
+
+      .section {
+        padding: 28px;
+      }
+
+      .section-header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 18px;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 20px;
+      }
+
+      .section-header p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .diagram {
+        display: grid;
+        gap: 20px;
+      }
+
+      .lane-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 16px;
+        align-items: stretch;
+      }
+
+      .cluster {
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+        border-radius: var(--radius-md);
+        background: linear-gradient(180deg, color-mix(in oklab, var(--panel) 88%, white 12%), color-mix(in oklab, var(--bg-strong) 76%, white 24%));
+        border: 1px solid color-mix(in oklab, var(--line) 72%, white 28%);
+      }
+
+      .cluster h3 {
+        font-size: 1.02rem;
+        letter-spacing: -0.02em;
+      }
+
+      .role {
+        display: grid;
+        gap: 8px;
+        padding: 14px;
+        border-radius: var(--radius-sm);
+        background: var(--panel);
+        border: 1px solid color-mix(in oklab, var(--line) 72%, white 28%);
+        min-height: 100%;
+      }
+
+      .role strong {
+        font-size: 0.98rem;
+      }
+
+      .role p,
+      .legend-item p,
+      .mini p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .role ul,
+      .source-map ul,
+      .mini ul {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--muted);
+      }
+
+      .role li,
+      .source-map li,
+      .mini li {
+        margin: 6px 0 0;
+      }
+
+      .connector {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--panel) 72%, var(--accent-soft) 28%);
+        border: 1px solid color-mix(in oklab, var(--line-strong) 36%, white 64%);
+        color: oklch(0.39 0.08 252);
+        font-size: 0.84rem;
+        font-weight: 700;
+        text-align: center;
+      }
+
+      .arrow-row {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 16px;
+        align-items: center;
+      }
+
+      .parallel {
+        display: grid;
+        grid-template-columns: 1.1fr 0.45fr 1fr 0.45fr 1fr;
+        gap: 16px;
+        align-items: stretch;
+      }
+
+      .bridge-box {
+        display: grid;
+        gap: 12px;
+      }
+
+      .split {
+        display: grid;
+        gap: 12px;
+        align-content: center;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        align-self: start;
+        width: fit-content;
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--warning) 18%, white 82%);
+        color: oklch(0.48 0.08 84);
+        font-size: 0.76rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+
+      .pill.success {
+        background: color-mix(in oklab, var(--success) 20%, white 80%);
+        color: oklch(0.43 0.08 164);
+      }
+
+      .tool-lane,
+      .ticket-lane {
+        display: grid;
+        gap: 16px;
+      }
+
+      .tool-grid {
+        display: grid;
+        grid-template-columns: 1.1fr 0.38fr 1fr 0.38fr 0.9fr;
+        gap: 16px;
+        align-items: stretch;
+      }
+
+      .ticket-grid {
+        display: grid;
+        grid-template-columns: 1fr 0.3fr 1fr 0.3fr 1fr 0.3fr 1fr;
+        gap: 14px;
+        align-items: stretch;
+      }
+
+      .status-rail {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .status {
+        padding: 10px 12px;
+        border-radius: 999px;
+        background: var(--panel);
+        border: 1px solid color-mix(in oklab, var(--line) 78%, white 22%);
+        text-align: center;
+        font-size: 0.82rem;
+        font-weight: 700;
+      }
+
+      .status.ready {
+        background: color-mix(in oklab, var(--accent) 9%, white 91%);
+      }
+
+      .status.active {
+        background: color-mix(in oklab, var(--warning) 16%, white 84%);
+      }
+
+      .status.done {
+        background: color-mix(in oklab, var(--success) 16%, white 84%);
+      }
+
+      .mini-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .mini {
+        padding: 16px;
+        border-radius: var(--radius-md);
+        background: var(--panel);
+        border: 1px solid color-mix(in oklab, var(--line) 74%, white 26%);
+      }
+
+      .legend {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .legend-item {
+        display: grid;
+        gap: 8px;
+        padding: 14px;
+        border-radius: var(--radius-md);
+        background: var(--panel);
+        border: 1px solid color-mix(in oklab, var(--line) 74%, white 26%);
+      }
+
+      .legend-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        width: fit-content;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 700;
+      }
+
+      .legend-chip.control {
+        background: color-mix(in oklab, var(--accent) 11%, white 89%);
+        color: oklch(0.41 0.12 252);
+      }
+
+      .legend-chip.public {
+        background: color-mix(in oklab, var(--success) 16%, white 84%);
+        color: oklch(0.43 0.08 164);
+      }
+
+      .legend-chip.private {
+        background: color-mix(in oklab, var(--warning) 16%, white 84%);
+        color: oklch(0.49 0.08 84);
+      }
+
+      .source-map {
+        padding: 28px;
+        margin-top: 24px;
+      }
+
+      .source-columns {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px 28px;
+      }
+
+      code {
+        font-family: ui-monospace, "SFMono-Regular", SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.93em;
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        .hero,
+        .section,
+        .source-map,
+        .role,
+        .connector,
+        .legend-item {
+          transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+        }
+
+        .role:hover,
+        .role:focus-within,
+        .legend-item:hover,
+        .legend-item:focus-within {
+          transform: translateY(-2px);
+          box-shadow: 0 14px 28px rgba(32, 48, 79, 0.1);
+          border-color: color-mix(in oklab, var(--line-strong) 48%, white 52%);
+        }
+      }
+
+      @media (max-width: 980px) {
+        .hero-grid,
+        .parallel,
+        .tool-grid,
+        .ticket-grid,
+        .legend,
+        .source-columns,
+        .mini-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .lane-grid,
+        .arrow-row {
+          grid-template-columns: 1fr;
+        }
+
+        .status-rail {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        h1 {
+          font-size: 2.25rem;
+          max-width: 13ch;
+        }
+
+        .connector::before {
+          content: "↓ ";
+        }
+      }
+
+      @media (max-width: 620px) {
+        .page {
+          width: min(100% - 20px, 1200px);
+          padding-top: 18px;
+          padding-bottom: 32px;
+        }
+
+        .hero,
+        .section,
+        .source-map {
+          padding: 20px;
+          border-radius: 20px;
+        }
+
+        h1 {
+          font-size: 1.9rem;
+        }
+
+        .status-rail {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero" aria-labelledby="page-title">
+        <div class="hero-grid">
+          <div>
+            <span class="eyebrow">Relay Runner overview</span>
+            <h1 id="page-title">One voice turn, one authority chain, many local workers.</h1>
+            <p>
+              Relay Runner keeps voice interaction, project planning, tool use, board state,
+              and code changes inside the local repo and the running macOS app. The messenger
+              speaks, the foreground orchestrator decides, the daemon dispatches, and workers
+              execute in isolated worktrees.
+            </p>
+          </div>
+          <div class="hero-notes" aria-label="Key architecture guarantees">
+            <div class="note">
+              <strong>Provider parity</strong>
+              Codex and Claude share the same architecture, ticket flow, and authority boundaries.
+              Differences stay in transport, model names, and CLI flags.
+            </div>
+            <div class="note">
+              <strong>Privacy boundary</strong>
+              Raw voice captures stay private runtime metadata until the foreground orchestrator
+              refines them into user-safe ticket prose.
+            </div>
+            <div class="note">
+              <strong>Newest intent wins</strong>
+              Seq/id metadata lets the foreground session suppress stale follow-up actions and stale spoken output.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="stack">
+        <section class="section" aria-labelledby="main-flow-title">
+          <div class="section-header">
+            <div>
+              <h2 id="main-flow-title">Main Flow</h2>
+              <p class="section-intro">
+                The app-owned bridge fans a voice turn out in parallel, but only the foreground
+                orchestrator can classify work, touch tickets, dispatch workers, or issue the final answer.
+              </p>
+            </div>
+            <span class="pill">Parallel intake</span>
+          </div>
+
+          <div class="diagram">
+            <div class="parallel">
+              <div class="bridge-box">
+                <div class="cluster">
+                  <h3>User and App Shell</h3>
+                  <div class="role">
+                    <strong>User</strong>
+                    <p>Speaks a request or types a turn inside the active repo session.</p>
+                  </div>
+                  <div class="role">
+                    <strong>Relay Runner app + voice bridge</strong>
+                    <p>
+                      Local STT/TTS, provider launch, bridge sockets, and project routing.
+                      The notch owns receipt and readiness feedback.
+                    </p>
+                    <ul>
+                      <li>Records newest-intent <code>seq/id</code> as input arrives</li>
+                      <li>Publishes the same turn to messenger and orchestrator concurrently</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+              <div class="split">
+                <div class="connector" aria-hidden="true">same turn, queued first</div>
+                <div class="connector" aria-hidden="true">same turn, authoritative path</div>
+              </div>
+              <div class="cluster">
+                <h3>Persistent Messenger</h3>
+                <div class="role">
+                  <strong>Tool-free messenger</strong>
+                  <p>
+                    Warm, fast, and deliberately limited. It turns user turns plus public
+                    orchestrator context into spoken updates, but it cannot plan or act.
+                  </p>
+                  <ul>
+                    <li>Codex and Claude both run a provider-specific low-latency messenger</li>
+                    <li>Returns <code>__SILENT__</code> when acknowledgement would be noise</li>
+                  </ul>
+                </div>
+              </div>
+              <div class="split">
+                <div class="connector" aria-hidden="true">public traces only</div>
+                <div class="connector" aria-hidden="true">authoritative final reply</div>
+              </div>
+              <div class="cluster">
+                <h3>Foreground Authority</h3>
+                <div class="role">
+                  <strong>Foreground orchestrator / PM</strong>
+                  <p>
+                    The authoritative Codex or Claude session. It classifies commands,
+                    answers directly when possible, authors refined tickets, and manages workers.
+                  </p>
+                  <ul>
+                    <li>Checks newest-intent metadata before follow-up actions and spoken output</li>
+                    <li>Never turns raw command captures into visible ticket prose unchanged</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div class="mini-grid">
+              <article class="mini">
+                <h3>Command action contract</h3>
+                <p>
+                  Each substantive turn becomes one explicit action: answer inline, create/refine a ticket,
+                  update an existing ticket, dispatch ready work, or steer running work.
+                </p>
+              </article>
+              <article class="mini">
+                <h3>Private metadata</h3>
+                <p>
+                  Raw voice transcripts, relay command files, and seq/id claims stay runtime evidence,
+                  not board cards. Visible tickets are rewritten as cold-start-safe work items.
+                </p>
+              </article>
+              <article class="mini">
+                <h3>Provider-neutral authority</h3>
+                <p>
+                  Codex and Claude differ in launch details, not in who can decide, dispatch, review,
+                  or publish outcomes.
+                </p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="direct-actions-title">
+          <div class="section-header">
+            <div>
+              <h2 id="direct-actions-title">Direct Actions And Screen Feedback</h2>
+              <p class="section-intro">
+                The messenger never gains tools. When the foreground session needs to inspect or manipulate
+                the screen, it uses the Relay stack directly and ActionGlow signals that the app is acting.
+              </p>
+            </div>
+            <span class="pill success">Tool path</span>
+          </div>
+
+          <div class="tool-lane">
+            <div class="tool-grid">
+              <div class="role">
+                <strong>Foreground orchestrator / PM</strong>
+                <p>
+                  Decides whether the request is a direct action, a question, or work that belongs on the board.
+                </p>
+              </div>
+              <div class="connector" aria-hidden="true">observe</div>
+              <div class="role">
+                <strong>Relay Vision</strong>
+                <p>
+                  <code>mcp__relay-vision__screenshot</code> captures the screen for “look at my screen”
+                  style requests without implying manipulation.
+                </p>
+              </div>
+              <div class="connector" aria-hidden="true">pulse</div>
+              <div class="role">
+                <strong>ActionGlow overlay</strong>
+                <p>
+                  Automatic perimeter feedback. It pulses when Relay Vision or Relay Actions fires and is
+                  a visibility signal, not a confirmation gate.
+                </p>
+              </div>
+            </div>
+
+            <div class="tool-grid">
+              <div class="role">
+                <strong>Foreground orchestrator / PM</strong>
+                <p>
+                  For state-changing UI work it uses the custom screen-control path, not native computer-use fallbacks.
+                </p>
+              </div>
+              <div class="connector" aria-hidden="true">manipulate</div>
+              <div class="role">
+                <strong>Relay Actions</strong>
+                <p>
+                  <code>click</code>, <code>type</code>, <code>scroll</code>, <code>key</code>,
+                  <code>list_windows</code>, and <code>frontmost_app</code>.
+                </p>
+                <ul>
+                  <li>Direct execution is normal for ordinary actions</li>
+                  <li>Genuinely high-stakes actions still require an explicit human yes in chat</li>
+                </ul>
+              </div>
+              <div class="connector" aria-hidden="true">same pulse</div>
+              <div class="role">
+                <strong>User sees the signal</strong>
+                <p>
+                  The overlay shows that local screen control is active while the messenger remains tool-free.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="ticket-flow-title">
+          <div class="section-header">
+            <div>
+              <h2 id="ticket-flow-title">Ticket And Worker Flow</h2>
+              <p class="section-intro">
+                Work that should outlive the current turn becomes a refined repo-local ticket. The board is the
+                source of truth, and <code>ready</code> is the dispatch trigger.
+              </p>
+            </div>
+            <span class="pill">Repo-local state</span>
+          </div>
+
+          <div class="ticket-lane">
+            <div class="status-rail" aria-label="Ticket lifecycle">
+              <div class="status">backlog</div>
+              <div class="status ready">ready</div>
+              <div class="status active">in_progress</div>
+              <div class="status done">done</div>
+            </div>
+
+            <div class="ticket-grid">
+              <div class="role">
+                <strong>Refined ticket in <code>.orchestrator/</code></strong>
+                <p>
+                  The foreground orchestrator writes title, description, acceptance criteria,
+                  sizing fields, and dependencies into version-controlled markdown.
+                </p>
+              </div>
+              <div class="connector" aria-hidden="true">move to ready</div>
+              <div class="role">
+                <strong>Board + daemon dispatch</strong>
+                <p>
+                  The board auto-calls dispatch as soon as a card lands in <code>ready</code>.
+                  Manual dispatch uses the same daemon path.
+                </p>
+              </div>
+              <div class="connector" aria-hidden="true">spawn worktree</div>
+              <div class="role">
+                <strong>Implementation worker</strong>
+                <p>
+                  A one-shot Codex or Claude worker runs in an isolated <code>relay/&lt;id&gt;</code> branch
+                  and worktree, claims the ticket, verifies the change, commits code, and appends a run log.
+                </p>
+              </div>
+              <div class="connector" aria-hidden="true">review evidence</div>
+              <div class="role">
+                <strong>Review / merge worker</strong>
+                <p>
+                  Review and merge stay distinct. Accepted merge publishes the finished branch back to the
+                  working branch and only then makes the board state truly complete.
+                </p>
+              </div>
+            </div>
+
+            <div class="mini-grid">
+              <article class="mini">
+                <h3>Dependency progression</h3>
+                <p>
+                  Only the first ticket in a chain needs a manual move to <code>ready</code>. When a predecessor
+                  is merged and published as done, dependents can auto-promote from <code>backlog</code> to <code>ready</code>.
+                </p>
+              </article>
+              <article class="mini">
+                <h3>Worker boundary</h3>
+                <p>
+                  Workers can edit code in their worktree and their own ticket file. They do not rewrite other
+                  board state or other tickets.
+                </p>
+              </article>
+              <article class="mini">
+                <h3>Audit trail</h3>
+                <p>
+                  Ticket diffs, worker commits, review evidence, and merge publication all live in git instead of
+                  an external orchestration service.
+                </p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="response-loop-title">
+          <div class="section-header">
+            <div>
+              <h2 id="response-loop-title">Response Loop And Preemption</h2>
+              <p class="section-intro">
+                The bridge can deliver turns in parallel without losing control because public traces,
+                final replies, and stale-command checks all route back through the same foreground authority.
+              </p>
+            </div>
+            <span class="pill">Newest intent wins</span>
+          </div>
+
+          <div class="lane-grid">
+            <article class="cluster">
+              <h3>1. Claim the newest turn</h3>
+              <div class="role">
+                <strong>Relay command state</strong>
+                <p>
+                  The bridge records a newest-intent <code>seq/id</code> when input arrives and copies claimed
+                  metadata for the active action. Both providers follow the same stale-action contract.
+                </p>
+              </div>
+            </article>
+            <article class="cluster">
+              <h3>2. Check before follow-up</h3>
+              <div class="role">
+                <strong>Foreground checkpoints</strong>
+                <p>
+                  If a newer command appears, already-running shell or MCP work may finish, but no follow-up
+                  action, ticket edit, or spoken reply may continue under stale intent.
+                </p>
+              </div>
+            </article>
+            <article class="cluster">
+              <h3>3. Mirror bounded context</h3>
+              <div class="role">
+                <strong>Public-only updates</strong>
+                <p>
+                  Reasoning summaries, worker lifecycle traces, clarification requests, and the final authoritative
+                  outcome are mirrored to the messenger without exposing hidden chain-of-thought or raw transcripts.
+                </p>
+              </div>
+            </article>
+            <article class="cluster">
+              <h3>4. Speak the outcome</h3>
+              <div class="role">
+                <strong>Messenger to user</strong>
+                <p>
+                  The messenger speaks the bounded reply through local TTS. If the messenger fails,
+                  the authoritative foreground reply can still be spoken directly.
+                </p>
+              </div>
+            </article>
+            <article class="cluster">
+              <h3>5. Keep the repo clean</h3>
+              <div class="role">
+                <strong>User-safe ticket prose</strong>
+                <p>
+                  Private runtime metadata stays private unless the foreground session deliberately refines it into
+                  a visible ticket that another worker can pick up cold.
+                </p>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="legend-title">
+          <div class="section-header">
+            <div>
+              <h2 id="legend-title">Legend</h2>
+              <p class="section-intro">
+                Three simple cues keep the diagram readable without relying on color alone.
+              </p>
+            </div>
+          </div>
+
+          <div class="legend">
+            <article class="legend-item">
+              <span class="legend-chip control">Control path</span>
+              <p>
+                Foreground orchestrator decisions, ticket changes, daemon dispatch, and worker review flow.
+              </p>
+            </article>
+            <article class="legend-item">
+              <span class="legend-chip public">Public response path</span>
+              <p>
+                Public traces, clarification requests, and the authoritative final reply mirrored back to speech.
+              </p>
+            </article>
+            <article class="legend-item">
+              <span class="legend-chip private">Private runtime metadata</span>
+              <p>
+                Seq/id state, raw captures, and relay command evidence that inform decisions but do not appear as visible ticket prose.
+              </p>
+            </article>
+          </div>
+        </section>
+      </div>
+
+      <section class="source-map" aria-labelledby="sources-title">
+        <h2 id="sources-title">Source Map</h2>
+        <p>
+          These are the current repo entry points behind the diagram. Open them directly when you need the exact
+          implementation or wording.
+        </p>
+        <div class="source-columns">
+          <div>
+            <h3>Workflow and authority</h3>
+            <ul>
+              <li><a href="../AGENTS.md"><code>AGENTS.md</code></a></li>
+              <li><a href="orchestrator.md"><code>docs/orchestrator.md</code></a></li>
+              <li><a href="../services/instructions/orchestration-workflow.md"><code>services/instructions/orchestration-workflow.md</code></a></li>
+              <li><a href="../services/orchestrator_workflow.md"><code>services/orchestrator_workflow.md</code></a></li>
+            </ul>
+          </div>
+          <div>
+            <h3>Bridge and messenger</h3>
+            <ul>
+              <li><a href="../services/voice_bridge.py"><code>services/voice_bridge.py</code></a></li>
+              <li><a href="../services/messenger.py"><code>services/messenger.py</code></a></li>
+              <li><a href="../services/orchestrator.py"><code>services/orchestrator.py</code></a></li>
+            </ul>
+          </div>
+          <div>
+            <h3>Board and ticket model</h3>
+            <ul>
+              <li><a href="specs/orchestrator-tickets.md"><code>docs/specs/orchestrator-tickets.md</code></a></li>
+              <li><a href="../services/tickets.py"><code>services/tickets.py</code></a></li>
+            </ul>
+          </div>
+          <div>
+            <h3>Relay stack</h3>
+            <ul>
+              <li><a href="specs/relay-actions.md"><code>docs/specs/relay-actions.md</code></a></li>
+              <li><a href="specs/relay-vision.md"><code>docs/specs/relay-vision.md</code></a></li>
+              <li><a href="../Sources/relay-runner/Overlay/"><code>Sources/relay-runner/Overlay/</code></a></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
