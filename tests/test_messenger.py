@@ -114,7 +114,8 @@ class MessengerConfigTests(unittest.TestCase):
         self.assertIn("Never use tools", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("provider-visible", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("hidden chain-of-thought", MESSENGER_SYSTEM_PROMPT)
-        self.assertIn("explicitly names\nthe orchestrator", MESSENGER_SYSTEM_PROMPT)
+        self.assertIn("first-person singular", MESSENGER_SYSTEM_PROMPT)
+        self.assertIn("refer to them directly", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("__SILENT__", MESSENGER_SYSTEM_PROMPT)
 
     def test_codex_command_resolution_prefers_bundled_chatgpt_cli_without_path(self):
@@ -253,7 +254,7 @@ class MessengerBackendContractTests(unittest.TestCase):
 
 class MessengerRuntimeTests(unittest.TestCase):
     def test_task_user_turn_generates_contextual_handoff_acknowledgement(self):
-        backend = FakeBackend(["I picked up the architecture request, and the orchestrator will come back with the next step."])
+        backend = FakeBackend(["I picked up the architecture request, and I’ll come back with the next step."])
         spoken: list[tuple[str, int, str]] = []
         runtime = MessengerRuntime(
             backend,
@@ -271,12 +272,12 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertTrue(wait_until(lambda: len(spoken) == 1))
             self.assertIn("Implement the new architecture", backend.prompts[0])
             self.assertIn("brief contextual acknowledgement", backend.prompts[0])
-            self.assertIn("explicitly uses the word orchestrator", backend.prompts[0])
-            self.assertIn("orchestrator received or picked it up", backend.prompts[0])
+            self.assertIn("uses first-person singular language", backend.prompts[0])
+            self.assertIn("refer to the workers directly", backend.prompts[0])
             self.assertEqual(
                 spoken[0],
                 (
-                    "I picked up the architecture request, and the orchestrator will come back with the next step.",
+                    "I picked up the architecture request, and I’ll come back with the next step.",
                     4,
                     "cmd-4",
                 ),
@@ -286,8 +287,8 @@ class MessengerRuntimeTests(unittest.TestCase):
 
     def test_trace_and_final_share_bounded_context_and_only_current_reply_speaks(self):
         backend = FakeBackend([
-            "I picked up the messenger work, and the orchestrator will return with the next step.",
-            "The orchestrator is checking the bridge wiring now.",
+            "I picked up the messenger work, and I’ll return with the next step.",
+            "I’m checking the bridge wiring now.",
             "The messenger architecture is implemented and verified.",
         ])
         spoken: list[tuple[str, int, str]] = []
@@ -315,9 +316,9 @@ class MessengerRuntimeTests(unittest.TestCase):
 
             self.assertEqual(
                 spoken[0][0],
-                "I picked up the messenger work, and the orchestrator will return with the next step.",
+                "I picked up the messenger work, and I’ll return with the next step.",
             )
-            self.assertEqual(spoken[1][0], "The orchestrator is checking the bridge wiring now.")
+            self.assertEqual(spoken[1][0], "I’m checking the bridge wiring now.")
             self.assertEqual(spoken[2][0], "The messenger architecture is implemented and verified.")
             self.assertIn("Checking the voice bridge wiring", backend.prompts[1])
             self.assertIn("Implemented and verified.", backend.prompts[2])
@@ -363,8 +364,8 @@ class MessengerRuntimeTests(unittest.TestCase):
 
     def test_first_trace_waits_for_inflight_task_handoff_before_speaking(self):
         backend = BlockingBackend(
-            "I picked up the bridge fix request, and the orchestrator will return with a plan.",
-            ["The orchestrator is checking the bridge wiring now."],
+            "I picked up the bridge fix request, and I’ll return with a plan.",
+            ["I’m checking the bridge wiring now."],
         )
         spoken: list[str] = []
         runtime = MessengerRuntime(
@@ -393,15 +394,15 @@ class MessengerRuntimeTests(unittest.TestCase):
 
             self.assertTrue(wait_until(lambda: len(spoken) == 2 and len(backend.prompts) == 2, timeout=2.0))
             self.assertEqual(spoken, [
-                "I picked up the bridge fix request, and the orchestrator will return with a plan.",
-                "The orchestrator is checking the bridge wiring now.",
+                "I picked up the bridge fix request, and I’ll return with a plan.",
+                "I’m checking the bridge wiring now.",
             ])
         finally:
             runtime.shutdown()
 
     def test_clarification_trace_is_rendered_as_a_direct_user_question(self):
         backend = FakeBackend([
-            "I picked up the test fix request, and the orchestrator will come back with the next step.",
+            "I picked up the test fix request, and I’ll come back with the next step.",
             "Which repository should I use?",
         ])
         spoken: list[str] = []
@@ -422,7 +423,7 @@ class MessengerRuntimeTests(unittest.TestCase):
             })
 
             self.assertTrue(wait_until(lambda: spoken == [
-                "I picked up the test fix request, and the orchestrator will come back with the next step.",
+                "I picked up the test fix request, and I’ll come back with the next step.",
                 "Which repository should I use?",
             ]))
             self.assertIn("authoritative clarification request", backend.prompts[1])
