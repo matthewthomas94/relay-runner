@@ -315,7 +315,7 @@ final class OverlayController {
         case .sessionReady:
             if state != lastAppliedState,
                let title = Self.compactPillTitle(for: state) {
-                pill.showCompact(title: title, theme: .stt)
+                pill.showCompact(title: title, theme: .tts)
             }
 
         case .programStatus(let title, let body):

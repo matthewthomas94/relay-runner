@@ -15,8 +15,8 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(OverlayState.listening.particleTheme, .stt)
 
         XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.sessionReady), "Session ready")
-        XCTAssertEqual(OverlayState.sessionReady.particleTheme, .stt)
-        XCTAssertEqual(OverlayState.sessionReady.pillTheme, .stt)
+        XCTAssertEqual(OverlayState.sessionReady.particleTheme, .tts)
+        XCTAssertEqual(OverlayState.sessionReady.pillTheme, .tts)
 
         XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.processing), "Thinking")
         XCTAssertEqual(OverlayState.processing.particleTheme, .tts)

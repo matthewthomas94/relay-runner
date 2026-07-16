@@ -49,9 +49,9 @@ enum OverlayState: Equatable {
         switch self {
         case .idle, .paused, .sent, .cancelled(_), .acknowledgement, .sessionPrompt, .actionGlow:
             return nil
-        case .listening, .recording, .sessionReady:
+        case .listening, .recording:
             return .stt
-        case .processing, .messageWaiting, .preparing, .speaking, .programStatus:
+        case .processing, .messageWaiting, .preparing, .speaking, .sessionReady, .programStatus:
             return .tts
         }
     }
@@ -59,11 +59,11 @@ enum OverlayState: Equatable {
     /// Which pill color theme to use.
     var pillTheme: TranscriptionPill.Theme {
         switch self {
-        case .recording, .sent, .cancelled(.stt), .sessionReady:
+        case .recording, .sent, .cancelled(.stt):
             return .stt
         case .cancelled(.tts):
             return .tts
-        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking, .programStatus, .actionGlow:
+        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking, .sessionReady, .programStatus, .actionGlow:
             return .tts
         default:
             return .tts
