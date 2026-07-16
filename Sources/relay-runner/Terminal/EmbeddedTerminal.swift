@@ -173,16 +173,100 @@ final class EmbeddedTerminalSession {
 
 final class RelayTerminalView: TerminalView {
     private(set) var isSendingTerminalResponse = false
+    private(set) var isSendingNavigationShortcut = false
+    private var navigationKeyMonitor: Any?
+
+    deinit {
+        uninstallNavigationKeyMonitor()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            uninstallNavigationKeyMonitor()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        installNavigationKeyMonitorIfNeeded()
+    }
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
     }
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if handleNavigationShortcut(event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func send(source: Terminal, data: ArraySlice<UInt8>) {
         isSendingTerminalResponse = true
         defer { isSendingTerminalResponse = false }
         super.send(source: source, data: data)
+    }
+
+    @discardableResult
+    func handleNavigationShortcut(_ event: NSEvent) -> Bool {
+        guard let payload = Self.navigationShortcutPayload(for: event) else { return false }
+        sendNavigationShortcut(payload)
+        return true
+    }
+
+    func sendNavigationShortcut(_ payload: [UInt8]) {
+        isSendingNavigationShortcut = true
+        defer { isSendingNavigationShortcut = false }
+        send(data: ArraySlice(payload))
+    }
+
+    static func navigationShortcutPayload(for event: NSEvent) -> [UInt8]? {
+        switch event.keyCode {
+        case 123:
+            return navigationShortcutPayload(left: true, modifierFlags: event.modifierFlags)
+        case 124:
+            return navigationShortcutPayload(left: false, modifierFlags: event.modifierFlags)
+        default:
+            return nil
+        }
+    }
+
+    private static func navigationShortcutPayload(
+        left: Bool,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> [UInt8]? {
+        let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let semanticFlags = flags.intersection([.command, .option, .control, .shift])
+        switch semanticFlags {
+        case .option:
+            return left ? [27, 98] : [27, 102] // Esc-b / Esc-f.
+        case .command:
+            return left ? [1] : [5] // Ctrl-A / Ctrl-E.
+        default:
+            return nil
+        }
+    }
+
+    private func installNavigationKeyMonitorIfNeeded() {
+        guard window != nil, navigationKeyMonitor == nil else { return }
+        navigationKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self,
+                  event.window === self.window,
+                  self.window?.firstResponder === self,
+                  self.handleNavigationShortcut(event) else {
+                return event
+            }
+            return nil
+        }
+    }
+
+    private func uninstallNavigationKeyMonitor() {
+        guard let navigationKeyMonitor else { return }
+        NSEvent.removeMonitor(navigationKeyMonitor)
+        self.navigationKeyMonitor = nil
     }
 }
 
@@ -195,6 +279,7 @@ struct RelayTerminalInputTracker: Equatable {
 
     mutating func record(data: ArraySlice<UInt8>) {
         if recordKittyKeyEvent(data) { return }
+        if isNavigationShortcut(data) { return }
 
         for byte in data {
             switch byte {
@@ -211,6 +296,11 @@ struct RelayTerminalInputTracker: Equatable {
                 break
             }
         }
+    }
+
+    private func isNavigationShortcut(_ data: ArraySlice<UInt8>) -> Bool {
+        let bytes = Array(data)
+        return bytes == [27, 98] || bytes == [27, 102] || bytes == [1] || bytes == [5]
     }
 
     private mutating func recordKittyKeyEvent(_ data: ArraySlice<UInt8>) -> Bool {
@@ -274,9 +364,12 @@ final class RelayVoiceCommandDelivery {
     }
 
     typealias Send = (ArraySlice<UInt8>) -> Void
+    typealias Schedule = (TimeInterval, DispatchQueue, @escaping () -> Void) -> Void
 
     private let paths: Paths
     private let send: Send
+    private let schedule: Schedule
+    private let submitDelay: TimeInterval
     private let isRunning: () -> Bool
     private let fileManager: FileManager
     private let queue = DispatchQueue(label: "relay-runner.voice-command-delivery")
@@ -286,11 +379,17 @@ final class RelayVoiceCommandDelivery {
     init(
         paths: Paths = Paths(),
         send: @escaping Send,
+        submitDelay: TimeInterval = 0.12,
+        schedule: @escaping Schedule = { delay, queue, work in
+            queue.asyncAfter(deadline: .now() + delay, execute: work)
+        },
         isRunning: @escaping () -> Bool,
         fileManager: FileManager = .default
     ) {
         self.paths = paths
         self.send = send
+        self.submitDelay = submitDelay
+        self.schedule = schedule
         self.isRunning = isRunning
         self.fileManager = fileManager
     }
@@ -326,15 +425,28 @@ final class RelayVoiceCommandDelivery {
         touchHeartbeat()
         guard isRunning(), !inputTracker.hasUnsubmittedInput else { return false }
         guard let command = claimNextCommand() else { return false }
-        guard let payload = Self.providerInputPayload(for: command.text) else { return true }
-        send(ArraySlice(payload))
+        guard let events = Self.providerInputEvents(for: command.text),
+              let first = events.first else { return true }
+        send(ArraySlice(first))
+        guard events.count > 1 else {
+            writeClaimedMetadata(command.metadata)
+            return true
+        }
+        let remaining = Array(events.dropFirst())
+        schedule(submitDelay, queue) { [weak self] in
+            guard let self, self.isRunning() else { return }
+            self.touchHeartbeat()
+            for event in remaining {
+                self.send(ArraySlice(event))
+            }
+            self.writeClaimedMetadata(command.metadata)
+        }
         return true
     }
 
     func claimNextCommand() -> ClaimedCommand? {
         let commandURL = URL(fileURLWithPath: paths.command)
         let metadataURL = URL(fileURLWithPath: paths.metadata)
-        let claimedURL = URL(fileURLWithPath: paths.claimed)
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("voice_cmd_claim.\(UUID().uuidString)")
         let tempMetadataURL = FileManager.default.temporaryDirectory
@@ -350,9 +462,6 @@ final class RelayVoiceCommandDelivery {
         if fileManager.fileExists(atPath: metadataURL.path),
            (try? fileManager.moveItem(at: metadataURL, to: tempMetadataURL)) != nil {
             metadataData = try? Data(contentsOf: tempMetadataURL)
-            if let metadataData {
-                try? metadataData.write(to: claimedURL, options: .atomic)
-            }
         }
 
         let rawText = (try? String(contentsOf: tempURL, encoding: .utf8)) ?? ""
@@ -364,15 +473,21 @@ final class RelayVoiceCommandDelivery {
         return ClaimedCommand(text: text, metadata: metadataData)
     }
 
-    static func providerInputPayload(for text: String) -> [UInt8]? {
+    static func providerInputEvents(for text: String) -> [[UInt8]]? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed == "__INTERRUPT__" {
-            return [3]
+            return [[3]]
         }
         if trimmed.hasPrefix("__") {
             return nil
         }
-        return Array((trimmed + "\r").utf8)
+        return [Array(trimmed.utf8), [13]]
+    }
+
+    private func writeClaimedMetadata(_ metadata: Data?) {
+        guard let metadata else { return }
+        let claimedURL = URL(fileURLWithPath: paths.claimed)
+        try? metadata.write(to: claimedURL, options: .atomic)
     }
 
     private func touchHeartbeat() {
@@ -450,7 +565,8 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        if !terminalView.isSendingTerminalResponse {
+        if !terminalView.isSendingTerminalResponse,
+           !terminalView.isSendingNavigationShortcut {
             voiceDelivery?.recordUserInput(data)
         }
         localProcess.send(data: data)
