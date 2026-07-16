@@ -102,6 +102,8 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(claudeScript.contains("--append-system-prompt '"))
         for phrase in [
             "app-owned foreground Relay orchestrator/PM",
+            "only when its prompt text exactly matches source_text",
+            "normal typed turn and do not use claimed metadata",
             "Raw Relay command captures are private metadata",
             "mcp__relay-actions__*",
             "mcp__relay-vision__screenshot",
