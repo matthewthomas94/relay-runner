@@ -172,6 +172,74 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
+    func testSessionReadySurfacesOnlyForFirstHealthyMenuConsumerHeartbeat() {
+        XCTAssertTrue(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true
+            )
+        )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: false
+            )
+        )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: true,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true
+            )
+        )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: true,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true
+            )
+        )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: false,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true
+            )
+        )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: true,
+                daemonAlive: true,
+                consumerAlive: true
+            )
+        )
+    }
+
     func testWatchdogRecoversTimedOutPendingVoiceCommandWhenDaemonIsMissing() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(

@@ -299,6 +299,7 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchActivityLabelPlanner.labels(for: .idle, bridgeStartingUp: true),
             ["Starting up..."]
         )
+        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .sessionReady), ["Session ready"])
         XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .recording), ["Listening"])
         XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .sent), ["Sending voice"])
         XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .speaking), ["Playing"])
@@ -832,6 +833,10 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
         XCTAssertEqual(
             NotchSessionStatus.resolve(for: .processing, hasActivityLabels: false),
+            .working
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: .sessionReady, hasActivityLabels: false),
             .working
         )
         XCTAssertEqual(

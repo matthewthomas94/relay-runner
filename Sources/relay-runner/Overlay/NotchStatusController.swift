@@ -76,7 +76,7 @@ enum NotchSessionStatus: String, Equatable {
             return .listening
         case .messageWaiting, .preparing, .speaking:
             return .playing
-        case .sent, .processing, .acknowledgement, .sessionPrompt, .programStatus, .actionGlow:
+        case .sent, .processing, .acknowledgement, .sessionPrompt, .sessionReady, .programStatus, .actionGlow:
             return .working
         default:
             return hasActivityLabels || boardIsLoading ? .working : .notWorking
@@ -584,6 +584,8 @@ enum NotchActivityLabelPlanner {
             return "Playing"
         case .sessionPrompt:
             return "Waiting session"
+        case .sessionReady:
+            return "Session ready"
         case .programStatus:
             return "Checking status"
         case .actionGlow(let prompt):
