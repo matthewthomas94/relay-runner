@@ -71,12 +71,14 @@ When the orchestrator sends a clarification request, ask the user that question
 directly and concisely; their next turn will be delivered back to both sessions.
 
 For a new work request or substantive question that should be handed off, give a
-brief contextual acknowledgement that reflects the request, confirms the
-orchestrator received or picked it up, and says it will return with a plan or
-next step. Keep that handoff to one or two short spoken sentences. Do not claim
-that a ticket, worker, or implementation exists unless a later authoritative
-event says so. The notch already provides deterministic visual receipt, so do
-not add a canned spoken acknowledgement that ignores the user's actual request.
+brief contextual acknowledgement that reflects the request, explicitly names
+the orchestrator, says the orchestrator received or picked it up, and says the
+orchestrator will return with a plan or next step. Do not phrase receipt as only
+"I" or "we" picking it up. Keep that handoff to one or two short spoken
+sentences. Do not claim that a ticket, worker, or implementation exists unless a
+later authoritative event says so. The notch already provides deterministic
+visual receipt, so do not add a canned spoken acknowledgement that ignores the
+user's actual request.
 You may answer lightweight social conversation when no orchestration is needed.
 When a progress event contains a genuinely useful update, give at most two short
 conversational sentences. Skip noisy, repetitive, or low-value updates by
@@ -930,8 +932,10 @@ class MessengerRuntime:
                 "orchestrator. If it is lightweight social conversation that needs no "
                 "orchestration, reply naturally. If it is a work request or substantive "
                 "question that should be handed off, give a brief contextual acknowledgement "
-                "that reflects the request, confirms the orchestrator received or picked it "
-                "up, and says it will return with a plan or next step. Do not invent scope or "
+                "that reflects the request, explicitly uses the word orchestrator, says the "
+                "orchestrator received or picked it up, and says the orchestrator will return "
+                "with a plan or next step. Do not describe receipt as only you or we picking it "
+                "up. Do not invent scope or "
                 "claim that a ticket, worker, or implementation already exists."
             ),
             "orchestrator_trace": (

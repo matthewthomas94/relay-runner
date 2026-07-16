@@ -114,6 +114,7 @@ class MessengerConfigTests(unittest.TestCase):
         self.assertIn("Never use tools", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("provider-visible", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("hidden chain-of-thought", MESSENGER_SYSTEM_PROMPT)
+        self.assertIn("explicitly names\nthe orchestrator", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("__SILENT__", MESSENGER_SYSTEM_PROMPT)
 
     def test_codex_command_resolution_prefers_bundled_chatgpt_cli_without_path(self):
@@ -270,6 +271,7 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertTrue(wait_until(lambda: len(spoken) == 1))
             self.assertIn("Implement the new architecture", backend.prompts[0])
             self.assertIn("brief contextual acknowledgement", backend.prompts[0])
+            self.assertIn("explicitly uses the word orchestrator", backend.prompts[0])
             self.assertIn("orchestrator received or picked it up", backend.prompts[0])
             self.assertEqual(
                 spoken[0],
