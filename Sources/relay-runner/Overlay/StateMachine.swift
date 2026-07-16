@@ -33,6 +33,7 @@ enum OverlayState: Equatable {
     case speaking
     case paused
     case sessionPrompt   // No session running — prompt user to start one
+    case sessionReady
     case programStatus(title: String, body: String)
     /// RelayActionsMCP has fired at least one tool recently. Triggers the
     /// purple perimeter overlay. `awaitingConfirmation` is non-nil while a
@@ -48,7 +49,7 @@ enum OverlayState: Equatable {
         switch self {
         case .idle, .paused, .sent, .cancelled(_), .acknowledgement, .sessionPrompt, .actionGlow:
             return nil
-        case .listening, .recording:
+        case .listening, .recording, .sessionReady:
             return .stt
         case .processing, .messageWaiting, .preparing, .speaking, .programStatus:
             return .tts
@@ -58,7 +59,7 @@ enum OverlayState: Equatable {
     /// Which pill color theme to use.
     var pillTheme: TranscriptionPill.Theme {
         switch self {
-        case .recording, .sent, .cancelled(.stt):
+        case .recording, .sent, .cancelled(.stt), .sessionReady:
             return .stt
         case .cancelled(.tts):
             return .tts
@@ -281,6 +282,23 @@ final class StateMachine: @unchecked Sendable {
 
     func dismissSessionPrompt() {
         if case .sessionPrompt = state {
+            state = .idle
+        }
+    }
+
+    func showSessionReady() {
+        switch state {
+        case .idle, .paused:
+            state = .sessionReady
+            partialTranscription = ""
+            messagePreview = nil
+        default:
+            break
+        }
+    }
+
+    func dismissSessionReady() {
+        if case .sessionReady = state {
             state = .idle
         }
     }

@@ -165,6 +165,8 @@ final class OverlayController {
             sm.dismissProcessing()
         case .sessionPrompt:
             sm.dismissSessionPrompt()
+        case .sessionReady:
+            sm.dismissSessionReady()
         case .programStatus:
             sm.dismissProgramStatus()
         default:
@@ -182,6 +184,8 @@ final class OverlayController {
             return 1.0
         case .sessionPrompt:
             return 5.0
+        case .sessionReady:
+            return 2.0
         case .programStatus:
             return 6.0
         default:
@@ -306,6 +310,12 @@ final class OverlayController {
                     theme: .stt,
                     suppressShadow: true
                 )
+            }
+
+        case .sessionReady:
+            if state != lastAppliedState,
+               let title = Self.compactPillTitle(for: state) {
+                pill.showCompact(title: title, theme: .stt)
             }
 
         case .programStatus(let title, let body):

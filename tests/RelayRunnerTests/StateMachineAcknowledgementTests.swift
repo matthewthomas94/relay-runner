@@ -14,6 +14,10 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.listening), "Listening")
         XCTAssertEqual(OverlayState.listening.particleTheme, .stt)
 
+        XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.sessionReady), "Session ready")
+        XCTAssertEqual(OverlayState.sessionReady.particleTheme, .stt)
+        XCTAssertEqual(OverlayState.sessionReady.pillTheme, .stt)
+
         XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.processing), "Thinking")
         XCTAssertEqual(OverlayState.processing.particleTheme, .tts)
 
@@ -36,6 +40,7 @@ final class StateMachineAcknowledgementTests: XCTestCase {
             (.cancelled(.stt), "Recording cancelled"),
             (.cancelled(.tts), "Response cancelled"),
             (.processing, "Thinking"),
+            (.sessionReady, "Session ready"),
             (.messageWaiting(preview: "Done."), "Response ready"),
             (.preparing, "Preparing speech"),
             (.speaking, "Playing"),
@@ -53,6 +58,7 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(OverlayController.compactPillTitle(for: .sent), "Sending voice")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .cancelled(.tts)), "Response cancelled")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .processing, suffix: "\u{2026}"), "Thinking\u{2026}")
+        XCTAssertEqual(OverlayController.compactPillTitle(for: .sessionReady), "Session ready")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .preparing, suffix: "..."), "Preparing speech...")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .messageWaiting(preview: nil), suffix: "..."), "Response ready...")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .speaking, suffix: "..."), "Playing...")
@@ -72,6 +78,35 @@ final class StateMachineAcknowledgementTests: XCTestCase {
             OverlayController.fullPillTitle(for: .idle, actionHint: "Ignored"),
             nil
         )
+    }
+
+    func testSessionReadyIsIdleOnlyAndDismissesToIdle() {
+        let stateMachine = StateMachine()
+
+        stateMachine.showSessionReady()
+        XCTAssertEqual(stateMachine.state, .sessionReady)
+
+        stateMachine.dismissSessionReady()
+        XCTAssertEqual(stateMachine.state, .idle)
+
+        stateMachine.updateSTT(isRecording: true, partial: "")
+        stateMachine.showSessionReady()
+        XCTAssertEqual(stateMachine.state, .recording)
+
+        stateMachine.updateSTT(isRecording: false, partial: "")
+        stateMachine.dismissSent()
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Queued response.",
+            autoDismiss: nil
+        )
+        stateMachine.showSessionReady()
+        XCTAssertEqual(stateMachine.state, .messageWaiting(preview: "Queued response."))
+
+        stateMachine.setActionGlow(awaitingConfirmation: nil)
+        stateMachine.showSessionReady()
+        XCTAssertEqual(stateMachine.state, .actionGlow(awaitingConfirmation: nil))
     }
 
     func testBridgeAcknowledgementDuringSentIsDeferredUntilAfterSentWindowPlusPause() {

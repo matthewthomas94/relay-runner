@@ -176,6 +176,7 @@ final class AppState {
             syncNotchStatusSurface()
         }
     }
+    private var sessionReadyShownForCurrentBridgeSession = false
     private var bridgeRecoveryInFlight = false {
         didSet { syncNotchStatusSurface() }
     }
@@ -579,6 +580,7 @@ final class AppState {
         bridgeAliveCache = false
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
+        sessionReadyShownForCurrentBridgeSession = false
         sessionStartTime = .distantPast
         wizardShownForCurrentBridgeSession = false
         statusText = "Ready"
@@ -598,6 +600,8 @@ final class AppState {
         menuSessionActive = false
         activeSessionLaunchConfig = nil
         bridgeRecoveryInFlight = false
+        sessionBridgeSeen = false
+        sessionReadyShownForCurrentBridgeSession = false
         stopOverlay()
         sttEngine?.stop()
         sttEngine = nil
@@ -615,6 +619,7 @@ final class AppState {
         bridgeAliveCache = false
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
+        sessionReadyShownForCurrentBridgeSession = false
         statusText = "Updating"
         sttEngine?.cancelRecording()
         processManager.stopServicesForBundleReplacement()
@@ -732,6 +737,7 @@ final class AppState {
         menuSessionActive = true
         sessionStartTime = Date()
         sessionBridgeSeen = false
+        sessionReadyShownForCurrentBridgeSession = false
         sessionPromptGate.reset()
         activeSessionLaunchConfig = launchConfig
         // Bridge is about to launch — assume alive until watchdog says otherwise
@@ -776,6 +782,7 @@ final class AppState {
             activeSessionLaunchConfig = nil
             bridgeAliveCache = false
             sessionBridgeSeen = false
+            sessionReadyShownForCurrentBridgeSession = false
             sessionStartTime = .distantPast
             statusText = "Ready"
             NSLog("[AppState] Failed to start session: \(error)")
@@ -973,6 +980,7 @@ final class AppState {
                 self.menuSessionActive = false
                 self.activeSessionLaunchConfig = nil
                 self.sessionBridgeSeen = false
+                self.sessionReadyShownForCurrentBridgeSession = false
                 self.statusText = "Ready"
                 return
             case .keepDaemon:
@@ -1007,6 +1015,7 @@ final class AppState {
                 self.menuSessionActive = false
                 self.activeSessionLaunchConfig = nil
                 self.sessionBridgeSeen = false
+                self.sessionReadyShownForCurrentBridgeSession = false
                 self.surfaceBridgeRecoveryFailure(reason: reason)
                 return
             case .markDead:
@@ -1043,6 +1052,7 @@ final class AppState {
             }
 
             if self.menuSessionActive && alive {
+                self.surfaceSessionReadyIfNeeded(daemonAlive: daemonAlive, consumerAlive: consumerAlive)
                 self.sessionBridgeSeen = true
             }
 
@@ -1053,6 +1063,38 @@ final class AppState {
                 self.statusText = "Ready"
             }
         }
+    }
+
+    private func surfaceSessionReadyIfNeeded(daemonAlive: Bool, consumerAlive: Bool) {
+        guard Self.shouldSurfaceSessionReady(
+            menuSessionActive: menuSessionActive,
+            sessionBridgeSeen: sessionBridgeSeen,
+            sessionReadyShownForCurrentBridgeSession: sessionReadyShownForCurrentBridgeSession,
+            bridgeRecoveryInFlight: bridgeRecoveryInFlight,
+            daemonAlive: daemonAlive,
+            consumerAlive: consumerAlive
+        ) else {
+            return
+        }
+        sessionReadyShownForCurrentBridgeSession = true
+        stateMachine.showSessionReady()
+        syncNotchActivitySurface()
+    }
+
+    static func shouldSurfaceSessionReady(
+        menuSessionActive: Bool,
+        sessionBridgeSeen: Bool,
+        sessionReadyShownForCurrentBridgeSession: Bool,
+        bridgeRecoveryInFlight: Bool,
+        daemonAlive: Bool,
+        consumerAlive: Bool
+    ) -> Bool {
+        menuSessionActive
+            && !sessionBridgeSeen
+            && !sessionReadyShownForCurrentBridgeSession
+            && !bridgeRecoveryInFlight
+            && daemonAlive
+            && consumerAlive
     }
 
     enum BridgeWatchdogAction: Equatable {
@@ -1163,6 +1205,7 @@ final class AppState {
                     self.menuSessionActive = false
                     self.activeSessionLaunchConfig = nil
                     self.sessionBridgeSeen = false
+                    self.sessionReadyShownForCurrentBridgeSession = false
                     self.statusText = "Ready"
                     NSLog("[AppState] Voice bridge recovery ignored because session stop was requested")
                     return
@@ -1171,6 +1214,7 @@ final class AppState {
                     self.bridgeAliveCache = true
                     self.sessionStartTime = Date()
                     self.sessionBridgeSeen = false
+                    self.sessionReadyShownForCurrentBridgeSession = false
                     self.statusText = "Session"
                     NSLog("[AppState] Voice bridge daemon recovery succeeded")
                 } else {
@@ -1178,6 +1222,7 @@ final class AppState {
                     self.menuSessionActive = false
                     self.activeSessionLaunchConfig = nil
                     self.sessionBridgeSeen = false
+                    self.sessionReadyShownForCurrentBridgeSession = false
                     self.surfaceBridgeRecoveryFailure(reason: reason)
                     NSLog("[AppState] Voice bridge daemon recovery failed")
                 }
