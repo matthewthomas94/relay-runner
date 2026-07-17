@@ -254,6 +254,7 @@ private struct ProgramDragPreviewLayer: View {
                 lane: drag.sourceLane,
                 isSelected: false,
                 showsProjectContext: true,
+                isDraggingSource: false,
                 onSelect: {},
                 onEdit: {}
             )
@@ -273,16 +274,35 @@ private struct ProgramDragPreviewLayer: View {
 private struct ProgramGrabCursor: ViewModifier {
     let dragging: Bool
     let enabled: Bool
+    @State private var isPushed = false
 
     func body(content: Content) -> some View {
-        content.onHover { hovering in
-            guard enabled else { return }
-            if hovering {
-                (dragging ? NSCursor.closedHand : NSCursor.openHand).push()
-            } else {
-                NSCursor.pop()
+        content
+            .onHover { hovering in
+                if hovering, enabled {
+                    guard !isPushed else { return }
+                    (dragging ? NSCursor.closedHand : NSCursor.openHand).push()
+                    isPushed = true
+                } else if isPushed {
+                    NSCursor.pop()
+                    isPushed = false
+                }
             }
-        }
+            .onChange(of: enabled) { _, isEnabled in
+                guard !isEnabled, isPushed else { return }
+                NSCursor.pop()
+                isPushed = false
+            }
+            .onChange(of: dragging) { _, _ in
+                guard enabled, isPushed else { return }
+                NSCursor.pop()
+                (dragging ? NSCursor.closedHand : NSCursor.openHand).push()
+            }
+            .onDisappear {
+                guard isPushed else { return }
+                NSCursor.pop()
+                isPushed = false
+            }
     }
 }
 
@@ -294,13 +314,18 @@ private struct ProgramButtonCursor: ViewModifier {
         content
             .onHover { hovering in
                 if hovering {
-                    guard !isPushed else { return }
+                    guard enabled, !isPushed else { return }
                     (enabled ? NSCursor.pointingHand : NSCursor.arrow).push()
                     isPushed = true
                 } else if isPushed {
                     NSCursor.pop()
                     isPushed = false
                 }
+            }
+            .onChange(of: enabled) { _, isEnabled in
+                guard !isEnabled, isPushed else { return }
+                NSCursor.pop()
+                isPushed = false
             }
             .onDisappear {
                 guard isPushed else { return }
@@ -317,6 +342,107 @@ private extension View {
 
     func programButtonCursor(enabled: Bool = true) -> some View {
         modifier(ProgramButtonCursor(enabled: enabled))
+    }
+}
+
+private enum ProgramBoardControlShape {
+    case capsule
+    case circle
+    case rounded(CGFloat)
+}
+
+private struct ProgramBoardInteractiveBackground: View {
+    let shape: ProgramBoardControlShape
+    let presentation: ProgramBoardInteractionPresentation
+    let disabled: Bool
+
+    var body: some View {
+        switch shape {
+        case .capsule:
+            Capsule()
+                .fill(BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1))
+                .overlay(Capsule().fill(Color.white.opacity(presentation.fillOverlayOpacity)))
+                .overlay(Capsule().stroke(strokeColor, lineWidth: 1))
+        case .circle:
+            Circle()
+                .fill(BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1))
+                .overlay(Circle().fill(Color.white.opacity(presentation.fillOverlayOpacity)))
+                .overlay(Circle().stroke(strokeColor, lineWidth: 1))
+        case .rounded(let radius):
+            RoundedRectangle(cornerRadius: radius)
+                .fill(BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: radius)
+                        .fill(Color.white.opacity(presentation.fillOverlayOpacity))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: radius)
+                        .stroke(strokeColor, lineWidth: 1)
+                )
+        }
+    }
+
+    private var strokeColor: Color {
+        if disabled {
+            return BoardDarkSurfaceStyle.border.opacity(0.55)
+        }
+        guard presentation.strokeOpacity > 0 else {
+            return BoardDarkSurfaceStyle.border
+        }
+        return Color.white.opacity(presentation.strokeOpacity)
+    }
+}
+
+private struct ProgramBoardControlChrome: ViewModifier {
+    let disabled: Bool
+    let selected: Bool
+    let shape: ProgramBoardControlShape
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var isFocused: Bool
+    @State private var isHovered = false
+
+    private var presentation: ProgramBoardInteractionPresentation {
+        ProgramBoardInteractionPresentation.resolve(
+            surface: .control,
+            isEnabled: !disabled,
+            isSelected: selected,
+            isHovered: isHovered,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                ProgramBoardInteractiveBackground(
+                    shape: shape,
+                    presentation: presentation,
+                    disabled: disabled
+                )
+            )
+            .contentShape(Rectangle())
+            .scaleEffect(presentation.scale)
+            .animation(
+                presentation.animationDuration == 0
+                    ? nil
+                    : .easeOut(duration: presentation.animationDuration),
+                value: presentation
+            )
+            .focusable(!disabled)
+            .focusEffectDisabled(true)
+            .focused($isFocused)
+            .onHover { isHovered = !disabled && $0 }
+    }
+}
+
+private extension View {
+    func programControlChrome(
+        disabled: Bool = false,
+        selected: Bool = false,
+        shape: ProgramBoardControlShape = .capsule
+    ) -> some View {
+        modifier(ProgramBoardControlChrome(disabled: disabled, selected: selected, shape: shape))
     }
 }
 
@@ -524,14 +650,9 @@ private struct ProgramProjectsHeader: View {
                         width: ProgramBoardLayout.selectAllButtonWidth,
                         height: ProgramBoardLayout.selectAllButtonHeight
                     )
-                    .background(
-                        BoardDarkCapsuleBackground(
-                            fill: BoardDarkSurfaceStyle.contentFill,
-                            stroke: BoardDarkSurfaceStyle.border
-                        )
-                    )
             }
             .buttonStyle(.plain)
+            .programControlChrome(selected: presentation.selectAllUsesActiveText)
             .programButtonCursor()
             .help("Show tickets from all projects")
         }
@@ -544,6 +665,24 @@ private struct ProgramProjectCard: View {
     let item: ProgramStatusItem
     let isSelected: Bool
     let onSelect: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var isFocused: Bool
+    @State private var isHovered = false
+
+    private var isEnabled: Bool {
+        item.project?.path != nil
+    }
+
+    private var presentation: ProgramBoardInteractionPresentation {
+        ProgramBoardInteractionPresentation.resolve(
+            surface: .projectCard,
+            isEnabled: isEnabled,
+            isSelected: isSelected,
+            isHovered: isHovered,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
+        )
+    }
 
     var body: some View {
         Button(action: onSelect) {
@@ -586,15 +725,29 @@ private struct ProgramProjectCard: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectCardHeight, alignment: .leading)
-            .background(ProgramCardBackground(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius)
-                    .stroke(isSelected ? ProgramBoardStyle.secondaryText : BoardDarkSurfaceStyle.border, lineWidth: 1)
+            .background(
+                ProgramBoardInteractiveBackground(
+                    shape: .rounded(BoardDarkSurfaceStyle.nestedCardCornerRadius),
+                    presentation: presentation,
+                    disabled: !isEnabled
+                )
             )
         }
         .buttonStyle(.plain)
-        .disabled(item.project?.path == nil)
-        .opacity(item.project?.path == nil ? 0.55 : 1)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.55)
+        .scaleEffect(presentation.scale)
+        .animation(
+            presentation.animationDuration == 0
+                ? nil
+                : .easeOut(duration: presentation.animationDuration),
+            value: presentation
+        )
+        .focusable(isEnabled)
+        .focusEffectDisabled(true)
+        .focused($isFocused)
+        .onHover { isHovered = isEnabled && $0 }
+        .programButtonCursor(enabled: isEnabled)
         .help("Show tickets for \(item.project?.name ?? "this project")")
     }
 }
@@ -779,6 +932,7 @@ private struct DraggableProgramWorkCard: View {
             lane: lane,
             isSelected: isSelected,
             showsProjectContext: showsProjectContext,
+            isDraggingSource: isBeingDragged,
             onSelect: onSelect,
             onEdit: onEdit
         )
@@ -846,8 +1000,21 @@ private struct ProgramWorkCard: View {
     let lane: ProgramBoardLane
     let isSelected: Bool
     let showsProjectContext: Bool
+    let isDraggingSource: Bool
     let onSelect: () -> Void
     let onEdit: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    private var presentation: ProgramBoardInteractionPresentation {
+        ProgramBoardInteractionPresentation.resolve(
+            surface: .ticketCard,
+            isSelected: isSelected,
+            isHovered: isHovered,
+            isDraggingSource: isDraggingSource,
+            reduceMotion: reduceMotion
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -919,13 +1086,23 @@ private struct ProgramWorkCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ProgramCardBackground(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius))
-        .overlay(
-            RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius)
-                .stroke(Color.white.opacity(isSelected ? 0.28 : 0), lineWidth: 0.75)
+        .background(
+            ProgramBoardInteractiveBackground(
+                shape: .rounded(BoardDarkSurfaceStyle.nestedCardCornerRadius),
+                presentation: presentation,
+                disabled: false
+            )
+        )
+        .scaleEffect(presentation.scale)
+        .animation(
+            presentation.animationDuration == 0
+                ? nil
+                : .easeOut(duration: presentation.animationDuration),
+            value: presentation
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+        .onHover { isHovered = !isDraggingSource && $0 }
         .help(cardHelp)
     }
 
@@ -1308,15 +1485,10 @@ private struct ProgramDetailActionButton: View {
             .foregroundStyle(foregroundStyle)
             .padding(.horizontal, 9)
             .frame(height: 26)
-            .background(
-                BoardDarkCapsuleBackground(
-                    fill: BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1),
-                    stroke: BoardDarkSurfaceStyle.border.opacity(disabled ? 0.55 : 1)
-                )
-            )
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+        .programControlChrome(disabled: disabled)
         .programButtonCursor(enabled: !disabled)
         .help(help)
     }
@@ -1465,8 +1637,7 @@ private struct ProgramTicketEditModal: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
-                        .background(BoardDarkCapsuleBackground())
-                        .contentShape(Capsule())
+                        .programControlChrome()
                         .programButtonCursor()
                     Button("Save") {
                         if let request = currentRequest {
@@ -1479,12 +1650,7 @@ private struct ProgramTicketEditModal: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .foregroundStyle(Color.white.opacity(currentRequest == nil ? 0.45 : 1.0))
-                    .background(
-                        BoardDarkCapsuleBackground(
-                            fill: BoardDarkSurfaceStyle.panelFill.opacity(currentRequest == nil ? 0.55 : 1)
-                        )
-                    )
-                    .contentShape(Capsule())
+                    .programControlChrome(disabled: currentRequest == nil)
                     .programButtonCursor(enabled: currentRequest != nil)
                 }
             }
@@ -1649,8 +1815,7 @@ private struct ProgramTicketCreateModal: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
-                        .background(BoardDarkCapsuleBackground())
-                        .contentShape(Capsule())
+                        .programControlChrome()
                         .programButtonCursor()
                     Button("Save") {
                         if let request = makeRequest(selectedProjectPath, title, description) {
@@ -1663,12 +1828,7 @@ private struct ProgramTicketCreateModal: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .foregroundStyle(Color.white.opacity(canSave ? 1.0 : 0.45))
-                    .background(
-                        BoardDarkCapsuleBackground(
-                            fill: BoardDarkSurfaceStyle.panelFill.opacity(canSave ? 1 : 0.55)
-                        )
-                    )
-                    .contentShape(Capsule())
+                    .programControlChrome(disabled: !canSave)
                     .programButtonCursor(enabled: canSave)
                 }
             }
@@ -1748,15 +1908,10 @@ private struct ProgramStatePanel: View {
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .padding(.horizontal, 12)
                         .frame(height: ProgramBoardLayout.selectAllButtonHeight)
-                        .background(
-                            BoardDarkCapsuleBackground(
-                                fill: BoardDarkSurfaceStyle.contentFill,
-                                stroke: BoardDarkSurfaceStyle.border
-                            )
-                        )
                 }
                 .buttonStyle(.plain)
                 .disabled(reloadState.isLoading)
+                .programControlChrome(disabled: reloadState.isLoading)
                 .programButtonCursor(enabled: !reloadState.isLoading)
                 .help("Try loading workspace work again")
             }
@@ -1869,15 +2024,10 @@ private struct ProgramEditCapsuleButton: View {
             }
             .foregroundStyle(ProgramBoardStyle.primaryText.opacity(disabled ? 0.45 : 0.95))
             .frame(width: 70, height: 24)
-            .background(
-                BoardDarkCapsuleBackground(
-                    fill: BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1),
-                    stroke: BoardDarkSurfaceStyle.border.opacity(disabled ? 0.55 : 1)
-                )
-            )
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+        .programControlChrome(disabled: disabled)
         .programButtonCursor(enabled: !disabled)
         .help(help)
     }
@@ -1910,10 +2060,9 @@ private struct ProgramIconButton: View {
                 .font(AppTypography.symbolFont(size: 12, weight: .semibold))
                 .foregroundStyle(iconColor)
                 .frame(width: size, height: size)
-                .background(BoardDarkCircleBackground())
-                .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .programControlChrome(shape: .circle)
         .programButtonCursor()
         .help(help)
     }
