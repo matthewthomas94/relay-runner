@@ -64,3 +64,118 @@ struct BoardDarkCircleBackground: View {
             .overlay(Circle().stroke(stroke, lineWidth: 1))
     }
 }
+
+enum ProgramBoardInteractiveSurface {
+    case projectCard
+    case ticketCard
+    case control
+}
+
+enum ProgramBoardInteractionAccent: Equatable {
+    case neutral
+    case selected
+}
+
+struct ProgramBoardInteractionPresentation: Equatable {
+    let fillOverlayOpacity: Double
+    let strokeOpacity: Double
+    let foregroundOpacity: Double
+    let scale: CGFloat
+    let animationDuration: Double
+    let accent: ProgramBoardInteractionAccent
+
+    static let motionDuration: Double = 0.15
+
+    static func resolve(
+        surface: ProgramBoardInteractiveSurface,
+        isEnabled: Bool = true,
+        isSelected: Bool = false,
+        isHovered: Bool = false,
+        isFocused: Bool = false,
+        isDraggingSource: Bool = false,
+        reduceMotion: Bool = false
+    ) -> ProgramBoardInteractionPresentation {
+        guard isEnabled else {
+            return ProgramBoardInteractionPresentation(
+                fillOverlayOpacity: 0,
+                strokeOpacity: 0,
+                foregroundOpacity: 0.45,
+                scale: 1,
+                animationDuration: reduceMotion ? 0 : motionDuration,
+                accent: .neutral
+            )
+        }
+
+        let interactive = !isDraggingSource && (isHovered || isFocused)
+        let scale = reduceMotion ? 1 : scaleValue(surface: surface, interactive: interactive)
+        let duration = reduceMotion ? 0 : motionDuration
+
+        if isSelected {
+            return ProgramBoardInteractionPresentation(
+                fillOverlayOpacity: surface == .control ? 0.08 : 0.075,
+                strokeOpacity: surface == .projectCard ? 0.48 : 0.30,
+                foregroundOpacity: 0.98,
+                scale: scale,
+                animationDuration: duration,
+                accent: .selected
+            )
+        }
+
+        if isDraggingSource {
+            return ProgramBoardInteractionPresentation(
+                fillOverlayOpacity: 0,
+                strokeOpacity: 0,
+                foregroundOpacity: 0.82,
+                scale: 1,
+                animationDuration: duration,
+                accent: .neutral
+            )
+        }
+
+        if isFocused {
+            return ProgramBoardInteractionPresentation(
+                fillOverlayOpacity: 0.065,
+                strokeOpacity: 0.24,
+                foregroundOpacity: 0.96,
+                scale: scale,
+                animationDuration: duration,
+                accent: .selected
+            )
+        }
+
+        if isHovered {
+            return ProgramBoardInteractionPresentation(
+                fillOverlayOpacity: surface == .control ? 0.055 : 0.045,
+                strokeOpacity: surface == .control ? 0.16 : 0.14,
+                foregroundOpacity: 0.95,
+                scale: scale,
+                animationDuration: duration,
+                accent: .neutral
+            )
+        }
+
+        return ProgramBoardInteractionPresentation(
+            fillOverlayOpacity: 0,
+            strokeOpacity: 0,
+            foregroundOpacity: surface == .control ? 0.85 : 0.82,
+            scale: 1,
+            animationDuration: duration,
+            accent: .neutral
+        )
+    }
+
+    private static func scaleValue(
+        surface: ProgramBoardInteractiveSurface,
+        interactive: Bool
+    ) -> CGFloat {
+        guard interactive else { return 1 }
+        switch surface {
+        case .projectCard:
+            return 1.006
+        case .ticketCard:
+            return 1.004
+        case .control:
+            return 1
+        }
+    }
+}

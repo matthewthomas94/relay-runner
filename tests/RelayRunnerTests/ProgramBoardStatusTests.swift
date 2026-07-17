@@ -145,6 +145,89 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(activeText?.blueComponent ?? 0, 252 / 255, accuracy: 0.001)
     }
 
+    func testProgramBoardProjectHoverPresentationKeepsSelectedAndDisabledPrecedence() {
+        let hover = ProgramBoardInteractionPresentation.resolve(
+            surface: .projectCard,
+            isHovered: true
+        )
+        let selectedHover = ProgramBoardInteractionPresentation.resolve(
+            surface: .projectCard,
+            isSelected: true,
+            isHovered: true
+        )
+        let disabledHover = ProgramBoardInteractionPresentation.resolve(
+            surface: .projectCard,
+            isEnabled: false,
+            isHovered: true
+        )
+
+        XCTAssertEqual(hover.accent, .neutral)
+        XCTAssertEqual(selectedHover.accent, .selected)
+        XCTAssertGreaterThan(selectedHover.strokeOpacity, hover.strokeOpacity)
+        XCTAssertGreaterThan(selectedHover.fillOverlayOpacity, hover.fillOverlayOpacity)
+        XCTAssertEqual(disabledHover.fillOverlayOpacity, 0)
+        XCTAssertEqual(disabledHover.strokeOpacity, 0)
+        XCTAssertEqual(disabledHover.scale, 1)
+    }
+
+    func testProgramBoardTicketHoverPresentationSuppressesDraggingAndReducedMotion() {
+        let hover = ProgramBoardInteractionPresentation.resolve(
+            surface: .ticketCard,
+            isHovered: true
+        )
+        let draggingHover = ProgramBoardInteractionPresentation.resolve(
+            surface: .ticketCard,
+            isHovered: true,
+            isDraggingSource: true
+        )
+        let selectedHover = ProgramBoardInteractionPresentation.resolve(
+            surface: .ticketCard,
+            isSelected: true,
+            isHovered: true
+        )
+        let reducedMotionHover = ProgramBoardInteractionPresentation.resolve(
+            surface: .ticketCard,
+            isHovered: true,
+            reduceMotion: true
+        )
+
+        XCTAssertEqual(hover.accent, .neutral)
+        XCTAssertGreaterThan(hover.fillOverlayOpacity, 0)
+        XCTAssertEqual(draggingHover.fillOverlayOpacity, 0)
+        XCTAssertEqual(draggingHover.strokeOpacity, 0)
+        XCTAssertEqual(draggingHover.scale, 1)
+        XCTAssertEqual(selectedHover.accent, .selected)
+        XCTAssertGreaterThan(selectedHover.strokeOpacity, hover.strokeOpacity)
+        XCTAssertEqual(reducedMotionHover.scale, 1)
+        XCTAssertEqual(reducedMotionHover.animationDuration, 0)
+    }
+
+    func testProgramBoardControlHoverPresentationUsesNeutralGenericHover() {
+        let hover = ProgramBoardInteractionPresentation.resolve(
+            surface: .control,
+            isHovered: true
+        )
+        let focused = ProgramBoardInteractionPresentation.resolve(
+            surface: .control,
+            isFocused: true
+        )
+        let disabled = ProgramBoardInteractionPresentation.resolve(
+            surface: .control,
+            isEnabled: false,
+            isHovered: true,
+            isFocused: true
+        )
+
+        XCTAssertEqual(hover.accent, .neutral)
+        XCTAssertGreaterThan(hover.fillOverlayOpacity, 0)
+        XCTAssertGreaterThan(hover.strokeOpacity, 0)
+        XCTAssertEqual(hover.scale, 1)
+        XCTAssertEqual(focused.accent, .selected)
+        XCTAssertGreaterThan(focused.strokeOpacity, hover.strokeOpacity)
+        XCTAssertEqual(disabled.fillOverlayOpacity, 0)
+        XCTAssertEqual(disabled.foregroundOpacity, 0.45)
+    }
+
     func testBoardUpdateCheckUsesUserFacingNotchStatus() {
         XCTAssertEqual(BoardUpdateStatus.workingLabel, "Checking for updates")
     }
