@@ -72,7 +72,7 @@ enum OrchestratorClient {
     }
 
     /// Ask the daemon to scan every registered project and dispatch eligible
-    /// queued tickets without opening each project board.
+    /// queued tickets without opening each repo individually.
     static func sweepProgramReadyTickets(trigger: String) {
         guard let req = programReadySweepRequest(trigger: trigger, port: readPort()) else {
             NSLog("[orchestrator-client] could not build program ready-sweep request")

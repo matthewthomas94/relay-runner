@@ -369,7 +369,7 @@ def format_command_for_agent(action: CommandAction) -> str:
     elif action.kind == "inspect_ticket":
         lines.append("- Inspect/report ticket or run state; do not implement the ticket yourself.")
     elif action.kind == "needs_project":
-        lines.append("- No ticket was created because no active project board was found; ask the user which repo/project should own the work.")
+        lines.append("- No ticket was created because no active Workspace project was found; ask the user which repo/project should own the work.")
 
     lines.extend(["", "Source command:", action.source_text])
     return "\n".join(lines)

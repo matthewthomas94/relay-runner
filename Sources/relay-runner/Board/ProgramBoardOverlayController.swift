@@ -1,13 +1,31 @@
 import AppKit
 import SwiftUI
 
-/// Program Board overlay. Unlike `BoardOverlayController`, this surface is
-/// not scoped to `ProjectResolver.resolve()`; any ticket mutation resolves
-/// through the owning child repo advertised by Program Manager status.
+/// Unified Workspace overlay for single-repo and multi-repo work surfaces.
+/// Ticket mutations resolve through the repo advertised by Program Manager
+/// status, while project scope decides whether the Work tab shows one repo or
+/// all discovered workspace repos.
 final class ProgramBoardOverlayController {
     enum SessionControlAction: Equatable {
         case start(String?)
         case end
+    }
+
+    enum UtilityRouteUpgrade: Equatable {
+        case none
+        case workspace
+    }
+
+    struct WorkspaceOpening: Equatable {
+        let showsWorkTab: Bool
+        let showsTerminalTab: Bool
+        let showsSettingsTab: Bool
+        let initialTab: WorkspaceTab
+        let projectScope: [String]
+        let selectedProjectPath: String?
+        let startsLoading: Bool
+        let contentLoadBlocked: Bool
+        let reloadsWork: Bool
     }
 
     private var panel: BoardOverlayPanel?
@@ -15,13 +33,15 @@ final class ProgramBoardOverlayController {
     private(set) var isSuspendedForExternalWindow = false
     private var lastSelectedTab: WorkspaceTab = .work
     private weak var revealContainer: BoardRevealContainerView?
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
     private var updateCheckTask: Task<Void, Never>?
     private var contentLoadBlocked = false
     private let model = ProgramBoardViewModel()
     private let workspace = WorkspaceViewModel()
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
-    private var openProjectHandler: ((String) -> Void)?
     private var projectScopeProvider: () -> [String] = { [] }
+    private var noSessionHandler: (() -> Void)?
     private var loadingStateHandler: ((Bool) -> Void)?
     private var startSessionHandler: ((String?) -> Void)?
     private var endSessionHandler: (() -> Void)?
@@ -29,20 +49,26 @@ final class ProgramBoardOverlayController {
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
     private var settingsContentProvider: (() -> AnyView?)?
     private var terminalContentProvider: ((String?) -> AnyView?)?
+    private var terminalHasFocusProvider: () -> Bool = { false }
     private var terminalFocusHandler: (() -> Void)?
     private var themePollTimer: Timer?
     private var statusPollTimer: Timer?
+    private let boardRouteResolver: () -> ProjectResolver.BoardRoute
+
+    init(boardRouteResolver: @escaping () -> ProjectResolver.BoardRoute = ProjectResolver.resolveBoardRoute) {
+        self.boardRouteResolver = boardRouteResolver
+    }
 
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
         self.themeResolver = resolver
     }
 
-    func setOpenProjectHandler(_ handler: @escaping (String) -> Void) {
-        self.openProjectHandler = handler
-    }
-
     func setProjectScopeProvider(_ provider: @escaping () -> [String]) {
         projectScopeProvider = provider
+    }
+
+    func setNoSessionHandler(_ handler: @escaping () -> Void) {
+        self.noSessionHandler = handler
     }
 
     func setLoadingStateHandler(_ handler: @escaping (Bool) -> Void) {
@@ -73,8 +99,12 @@ final class ProgramBoardOverlayController {
         terminalContentProvider = provider
     }
 
-    func setTerminalFocusHandler(_ handler: @escaping () -> Void) {
-        terminalFocusHandler = handler
+    func setTerminalFocusProvider(
+        hasFocus: @escaping () -> Bool,
+        focus: @escaping () -> Void
+    ) {
+        terminalHasFocusProvider = hasFocus
+        terminalFocusHandler = focus
     }
 
     static func sessionControlAction(
@@ -84,7 +114,115 @@ final class ProgramBoardOverlayController {
         hasActiveSession ? .end : .start(selectedProjectPath)
     }
 
+    static func workspaceOpening(
+        route: ProjectResolver.BoardRoute,
+        initialTab: WorkspaceTab,
+        hasTerminalTab: Bool,
+        hasSettingsTab: Bool,
+        hasCachedSnapshot: Bool,
+        activityProjectPaths: [String]
+    ) -> WorkspaceOpening? {
+        let showsWorkTab: Bool
+        let projectScope: [String]
+        let selectedProjectPath: String?
+        let requestedTab: WorkspaceTab
+
+        switch route {
+        case .project(let project):
+            let path = project.repoPath.path
+            showsWorkTab = true
+            projectScope = [path]
+            selectedProjectPath = path
+            requestedTab = initialTab
+        case .programBoard:
+            showsWorkTab = true
+            projectScope = activityProjectPaths
+            selectedProjectPath = nil
+            requestedTab = initialTab
+        case .unavailable:
+            guard hasTerminalTab || hasSettingsTab else { return nil }
+            showsWorkTab = false
+            projectScope = []
+            selectedProjectPath = nil
+            requestedTab = initialTab == .work ? .terminal : initialTab
+        }
+
+        let normalizedTab = WorkspaceViewModel.normalized(
+            requestedTab,
+            showsWorkTab: showsWorkTab,
+            showsTerminalTab: hasTerminalTab,
+            showsSettingsTab: hasSettingsTab
+        )
+        let blocksContent = showsWorkTab && !hasCachedSnapshot
+        return WorkspaceOpening(
+            showsWorkTab: showsWorkTab,
+            showsTerminalTab: hasTerminalTab,
+            showsSettingsTab: hasSettingsTab,
+            initialTab: normalizedTab,
+            projectScope: projectScope,
+            selectedProjectPath: selectedProjectPath,
+            startsLoading: blocksContent,
+            contentLoadBlocked: blocksContent,
+            reloadsWork: showsWorkTab
+        )
+    }
+
+    static func utilityRouteUpgrade(
+        isVisible: Bool,
+        showsWorkTab: Bool,
+        route: ProjectResolver.BoardRoute
+    ) -> UtilityRouteUpgrade {
+        guard isVisible, !showsWorkTab else { return .none }
+        switch route {
+        case .project, .programBoard:
+            return .workspace
+        case .unavailable:
+            return .none
+        }
+    }
+
+    func installGlobalDismissHotkey() {
+        let mask: NSEvent.EventTypeMask = [.keyDown]
+        if globalMonitor == nil {
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+                self?.handle(event)
+            }
+        }
+        if localMonitor == nil {
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+                self?.handle(event)
+                return event
+            }
+        }
+    }
+
+    private func handle(_ event: NSEvent) {
+        switch event.type {
+        case .keyDown:
+            if event.keyCode == 53,
+               isVisible,
+               workspace.selectedTab.allowsEscapeDismissal(
+                   terminalHasFocus: terminalHasFocusProvider()
+               ) {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if self.model.editing != nil {
+                        self.cancelEdit()
+                    } else if self.model.creating != nil {
+                        self.cancelCreate()
+                    } else {
+                        self.hide()
+                    }
+                }
+            }
+        default:
+            break
+        }
+    }
+
     deinit {
+        if let m = globalMonitor { NSEvent.removeMonitor(m) }
+        if let m = localMonitor { NSEvent.removeMonitor(m) }
         updateCheckTask?.cancel()
         themePollTimer?.invalidate()
         statusPollTimer?.invalidate()
@@ -102,11 +240,62 @@ final class ProgramBoardOverlayController {
         if resumeAfterExternalWindow(initialTab: initialTab) { return }
         guard !isVisible else { return }
         let settingsContent = settingsContentProvider?()
+        let route = boardRouteResolver()
+        let activityProjectPaths = projectScopeProvider()
+        let terminalAvailable = terminalContentProvider != nil
+        let hasCachedSnapshot = model.snapshot != nil && model.projectPaths == Self.projectScope(
+            for: route,
+            activityProjectPaths: activityProjectPaths
+        )
+        guard let opening = Self.workspaceOpening(
+            route: route,
+            initialTab: initialTab,
+            hasTerminalTab: terminalAvailable,
+            hasSettingsTab: settingsContent != nil,
+            hasCachedSnapshot: hasCachedSnapshot,
+            activityProjectPaths: activityProjectPaths
+        ) else {
+            noSessionHandler?()
+            return
+        }
+        present(opening: opening, settingsContent: settingsContent)
+    }
+
+    private static func projectScope(
+        for route: ProjectResolver.BoardRoute,
+        activityProjectPaths: [String]
+    ) -> [String] {
+        switch route {
+        case .project(let project):
+            return [project.repoPath.path]
+        case .programBoard:
+            return activityProjectPaths
+        case .unavailable:
+            return []
+        }
+    }
+
+    func refreshRouteIfNeeded() {
+        guard isVisible, !workspace.showsWorkTab else { return }
+        let route = boardRouteResolver()
+        guard Self.utilityRouteUpgrade(
+            isVisible: isVisible,
+            showsWorkTab: workspace.showsWorkTab,
+            route: route
+        ) == .workspace else {
+            return
+        }
+        let initialTab = workspace.selectedTab
+        hide()
+        show(initialTab: initialTab)
+    }
+
+    private func present(opening: WorkspaceOpening, settingsContent: AnyView?) {
         workspace.configure(
-            showsWorkTab: true,
-            showsTerminalTab: terminalContentProvider != nil,
-            showsSettingsTab: settingsContent != nil,
-            initialTab: initialTab
+            showsWorkTab: opening.showsWorkTab,
+            showsTerminalTab: opening.showsTerminalTab,
+            showsSettingsTab: opening.showsSettingsTab,
+            initialTab: opening.initialTab
         )
         lastSelectedTab = workspace.selectedTab
 
@@ -116,9 +305,8 @@ final class ProgramBoardOverlayController {
             p.reframe(to: screen)
         }
 
-        model.setProjectScope(projectScopeProvider())
-        let hasCachedSnapshot = model.snapshot != nil
-        contentLoadBlocked = !hasCachedSnapshot
+        model.setProjectScope(opening.projectScope, selectedProjectPath: opening.selectedProjectPath)
+        contentLoadBlocked = opening.contentLoadBlocked
         model.prepareForOpening()
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
@@ -136,7 +324,7 @@ final class ProgramBoardOverlayController {
             onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
             onStartSession: { [weak self] in self?.startSession() },
             onEndSession: { [weak self] in self?.endSession() },
-            onOpenProject: { [weak self] repoPath in self?.openProjectHandler?(repoPath) },
+            onOpenProject: { [weak self] repoPath in self?.selectProject(repoPath) },
             onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
             onCreateCommit: { [weak self] request in self?.commitCreate(request) },
             onCreateCancel: { [weak self] in self?.cancelCreate() },
@@ -157,7 +345,7 @@ final class ProgramBoardOverlayController {
             contentView: hosting,
             displayGeometry: screen.map(NotchStatusDisplayGeometry.init(screen:))
                 ?? NotchStatusDisplayGeometry(screenFrame: p.frame),
-            startsLoading: !hasCachedSnapshot
+            startsLoading: opening.startsLoading
         )
         container.autoresizingMask = [.width, .height]
 
@@ -173,7 +361,11 @@ final class ProgramBoardOverlayController {
 
         startThemePoll()
         startStatusPoll()
-        checkForUpdates(inBackground: hasCachedSnapshot)
+        if opening.reloadsWork {
+            checkForUpdates(inBackground: !opening.startsLoading)
+        } else {
+            loadingStateHandler?(false)
+        }
     }
 
     func showSettings() {
@@ -218,13 +410,17 @@ final class ProgramBoardOverlayController {
         lastSelectedTab = workspace.selectedTab
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
-        contentLoadBlocked = model.snapshot == nil
+        contentLoadBlocked = workspace.showsWorkTab && model.snapshot == nil
         isVisible = true
         panel.orderFrontRegardless()
         updatePanelKeyEligibility()
         startThemePoll()
         startStatusPoll()
-        checkForUpdates(inBackground: model.snapshot != nil)
+        if workspace.showsWorkTab {
+            checkForUpdates(inBackground: model.snapshot != nil)
+        } else {
+            loadingStateHandler?(false)
+        }
         return true
     }
 
@@ -305,8 +501,26 @@ final class ProgramBoardOverlayController {
     }
 
     private func checkForUpdates(inBackground: Bool) {
+        guard workspace.showsWorkTab else {
+            contentLoadBlocked = false
+            revealContainer?.setLoading(false)
+            revealContainer?.setUpdateCheckActive(false)
+            loadingStateHandler?(false)
+            return
+        }
         updateCheckTask?.cancel()
-        model.setProjectScope(projectScopeProvider())
+        let route = boardRouteResolver()
+        let nextScope = Self.projectScope(for: route, activityProjectPaths: projectScopeProvider())
+        let selectedProjectPath: String?
+        switch route {
+        case .project(let project):
+            selectedProjectPath = project.repoPath.path
+        case .programBoard:
+            selectedProjectPath = model.selectedProjectPath
+        case .unavailable:
+            selectedProjectPath = nil
+        }
+        model.setProjectScope(nextScope, selectedProjectPath: selectedProjectPath)
         if contentLoadBlocked {
             revealContainer?.setLoading(true)
         } else {
@@ -330,6 +544,11 @@ final class ProgramBoardOverlayController {
             }
             self.loadingStateHandler?(false)
         }
+    }
+
+    private func selectProject(_ repoPath: String) {
+        model.selectProject(path: repoPath)
+        selectWorkspaceTab(.work)
     }
 
     private func startSession() {

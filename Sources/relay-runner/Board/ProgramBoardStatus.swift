@@ -1098,13 +1098,14 @@ final class ProgramBoardViewModel {
         endDrag()
     }
 
-    func setProjectScope(_ paths: [String]) {
+    func setProjectScope(_ paths: [String], selectedProjectPath: String? = nil) {
         var seen = Set<String>()
         let paths = paths.filter { seen.insert($0).inserted }
-        guard paths != projectPaths else { return }
+        let selectedProjectPath = selectedProjectPath.flatMap { paths.contains($0) ? $0 : nil }
+        guard paths != projectPaths || selectedProjectPath != self.selectedProjectPath else { return }
         projectPaths = paths
         snapshot = nil
-        selectedProjectPath = nil
+        self.selectedProjectPath = selectedProjectPath
         selectedTicketDetail = nil
     }
 

@@ -3076,7 +3076,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
     ) -> dict:
         """Reconcile queued tickets across the requested registered projects.
 
-        Program Board refresh uses this instead of requiring each project board
+        Program Workspace refresh uses this instead of requiring each repo
         to be opened. Each ticket still dispatches through `dispatch()`, so
         Codex/Claude launch behavior and active-run idempotency stay shared.
         """

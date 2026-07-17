@@ -227,7 +227,7 @@ final class ProjectRegistryTests: XCTestCase {
         ))
     }
 
-    func testBoardRouteOpensProjectBoardForSingleProjectBridgeSession() throws {
+    func testBoardRouteScopesWorkspaceToSingleProjectBridgeSession() throws {
         let repo = try makeTempRepo(named: "mouse-assist")
         let root = repo.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -245,7 +245,7 @@ final class ProjectRegistryTests: XCTestCase {
         )
 
         guard case .project(let project) = route else {
-            return XCTFail("Expected project board route.")
+            return XCTFail("Expected single-project Workspace route.")
         }
         XCTAssertEqual(resolvedPath(project.repoPath), resolvedPath(repo))
         XCTAssertTrue(FileManager.default.fileExists(
@@ -279,7 +279,7 @@ final class ProjectRegistryTests: XCTestCase {
                 registry: registry
             )
             guard case .programBoard = route else {
-                return XCTFail("Expected Program Board route for \(provider).")
+                return XCTFail("Expected multi-project Workspace route for \(provider).")
             }
         }
 
@@ -366,7 +366,7 @@ final class ProjectRegistryTests: XCTestCase {
                 registry: registry
             )
             guard case .programBoard = route else {
-                return XCTFail("Expected configured workspace to keep Program Board route for \(provider).")
+                return XCTFail("Expected configured workspace to keep multi-project Workspace route for \(provider).")
             }
         }
 
@@ -404,7 +404,7 @@ final class ProjectRegistryTests: XCTestCase {
         )
 
         guard case .programBoard = route else {
-            return XCTFail("Expected ambiguous parent repo to route to Program Board.")
+            return XCTFail("Expected ambiguous parent repo to route to multi-project Workspace.")
         }
         let document = try registry.load()
         XCTAssertEqual(document.activeWorkspaceRootID, resolvedPath(parentRepo))
@@ -414,7 +414,7 @@ final class ProjectRegistryTests: XCTestCase {
         ))
     }
 
-    func testExplicitParentProjectActivationCanOpenProjectBoard() throws {
+    func testExplicitParentProjectActivationCanScopeWorkspaceToProject() throws {
         let parentRepo = try makeTempRepo(named: "platform")
         let root = parentRepo.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -442,7 +442,7 @@ final class ProjectRegistryTests: XCTestCase {
         )
 
         guard case .project(let project) = route else {
-            return XCTFail("Expected explicit parent project activation to route to project board.")
+            return XCTFail("Expected explicit parent project activation to scope Workspace to that project.")
         }
         XCTAssertEqual(resolvedPath(project.repoPath), resolvedPath(parentRepo))
         let document = try registry.load()
