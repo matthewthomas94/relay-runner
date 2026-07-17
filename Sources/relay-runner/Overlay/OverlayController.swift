@@ -204,8 +204,13 @@ final class OverlayController {
     }
 
     static func compactPillTitle(for state: OverlayState, suffix: String = "") -> String? {
-        if case .sessionReady = state {
+        switch state {
+        case .listening, .recording:
+            return "Start speaking"
+        case .sessionReady:
             return "Tap caps lock to record a message"
+        default:
+            break
         }
         guard let title = pillStatusTitle(for: state) else { return nil }
         return title + suffix
