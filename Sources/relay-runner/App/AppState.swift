@@ -1104,13 +1104,17 @@ final class AppState {
             }
             return .waitForLaunch
         }
+        if hasSessionContext {
+            return .recoverDaemon
+        }
         return .markDead
     }
 
     enum RecordingStartBridgeAction: Equatable {
         case allowRecording
         case waitForBridgeRecovery
-        case recoverBridgeOrPrompt
+        case recoverBridge
+        case promptForSession
         case waitForPendingCommand
         case waitForConsumer
     }
@@ -1126,13 +1130,13 @@ final class AppState {
             return .waitForBridgeRecovery
         }
         if !daemonAlive {
-            return .recoverBridgeOrPrompt
+            return hasSessionContext ? .recoverBridge : .promptForSession
         }
         if pendingDeliveryState == .waiting || pendingDeliveryState == .timedOut {
             return .waitForPendingCommand
         }
         if !consumerAlive {
-            return hasSessionContext ? .waitForConsumer : .recoverBridgeOrPrompt
+            return hasSessionContext ? .waitForConsumer : .promptForSession
         }
         return .allowRecording
     }
@@ -1453,14 +1457,20 @@ final class AppState {
                     self.wasRecording = false
                     self.surfaceVoiceListenerIdle()
                     return
-                case .recoverBridgeOrPrompt:
+                case .recoverBridge:
                     self.bridgeAliveCache = false
-                    let recovering = self.menuSessionActive
-                        && self.startBridgeRecovery(reason: "recording-start")
+                    let recovering = self.startBridgeRecovery(reason: "recording-start")
                     if !recovering {
                         self.menuSessionActive = false
                         self.showSessionPromptIfAllowed()
                     }
+                    engine.cancelRecording()
+                    self.wasRecording = false
+                    return
+                case .promptForSession:
+                    self.bridgeAliveCache = false
+                    self.menuSessionActive = false
+                    self.showSessionPromptIfAllowed()
                     engine.cancelRecording()
                     self.wasRecording = false
                     return

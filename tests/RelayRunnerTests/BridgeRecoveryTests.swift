@@ -88,6 +88,21 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
+    func testWatchdogRecoversContextBackedBridgeAfterForegroundTurnCompletes() {
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: false,
+                daemonAlive: false,
+                consumerAlive: false,
+                hasSessionContext: true,
+                wasAlive: true,
+                sessionBridgeSeen: false,
+                elapsedSinceSessionStart: 0
+            ),
+            .recoverDaemon
+        )
+    }
+
     func testWatchdogWaitsForConsumerWhenLiveDaemonHasTimedOutPendingVoiceCommand() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(
@@ -125,6 +140,32 @@ final class BridgeRecoveryTests: XCTestCase {
                 pendingDeliveryState: .timedOut
             ),
             .waitForPendingCommand
+        )
+    }
+
+    func testRecordingStartRecoversMissingContextBackedBridge() {
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: false,
+                consumerAlive: false,
+                hasSessionContext: true,
+                pendingDeliveryState: .none
+            ),
+            .recoverBridge
+        )
+    }
+
+    func testRecordingStartPromptsWithoutSessionContext() {
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: false,
+                consumerAlive: false,
+                hasSessionContext: false,
+                pendingDeliveryState: .none
+            ),
+            .promptForSession
         )
     }
 

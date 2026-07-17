@@ -102,6 +102,8 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(claudeScript.contains("--append-system-prompt '"))
         for phrase in [
             "app-owned foreground Relay orchestrator/PM",
+            "Dispatching a worker or sending a final response ends only the current provider turn",
+            "never invoke relay-stop or end the session unless the user explicitly asks",
             "only when its prompt text exactly matches source_text",
             "normal typed turn and do not use claimed metadata",
             "Raw Relay command captures are private metadata",
