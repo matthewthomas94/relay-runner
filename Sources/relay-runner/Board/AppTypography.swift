@@ -159,7 +159,7 @@ enum AppTypography {
         case .pillBody:
             return Definition(face: .ppTelegrafRegular, size: 14, fallbackWeight: .regular)
         case .notchStatus:
-            return Definition(face: .ppTelegrafRegular, size: 12, fallbackWeight: .regular)
+            return Definition(face: .ppMoriSemibold, size: 12, fallbackWeight: .semibold)
         case .body:
             return Definition(face: .ppTelegrafRegular, size: 12, fallbackWeight: .regular)
         case .label:

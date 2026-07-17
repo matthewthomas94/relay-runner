@@ -95,7 +95,7 @@ final class AppTypographyTests: XCTestCase {
         )
         XCTAssertEqual(
             AppTypography.resolved(.notchStatus, availablePostScriptNames: available),
-            .init(postScriptName: "PPTelegraf-Regular", size: 12, fallbackWeight: .regular)
+            .init(postScriptName: "PPMori-SemiBold", size: 12, fallbackWeight: .semibold)
         )
     }
 

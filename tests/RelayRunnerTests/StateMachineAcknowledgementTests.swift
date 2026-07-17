@@ -58,7 +58,10 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(OverlayController.compactPillTitle(for: .sent), "Sending voice")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .cancelled(.tts)), "Response cancelled")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .processing, suffix: "\u{2026}"), "Thinking\u{2026}")
-        XCTAssertEqual(OverlayController.compactPillTitle(for: .sessionReady), "Session ready")
+        XCTAssertEqual(
+            OverlayController.compactPillTitle(for: .sessionReady),
+            "Tap caps lock to record a message"
+        )
         XCTAssertEqual(OverlayController.compactPillTitle(for: .preparing, suffix: "..."), "Preparing speech...")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .messageWaiting(preview: nil), suffix: "..."), "Response ready...")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .speaking, suffix: "..."), "Playing...")
