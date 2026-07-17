@@ -1,10 +1,11 @@
+import AppKit
 import SwiftUI
 
 struct SettingsStack<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: SettingsLayout.sectionSpacing) {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -21,7 +22,7 @@ struct SettingsSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: SettingsLayout.sectionTitleSpacing) {
             if let title {
                 Text(title)
                     .font(AppTypography.font(.sectionHeading))
@@ -31,12 +32,6 @@ struct SettingsSection<Content: View>: View {
             VStack(spacing: 0) {
                 content
             }
-            .background(SettingsSurfaceColor.rowFill)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(SettingsSurfaceColor.rowBorder, lineWidth: 1)
-            )
         }
     }
 }
@@ -50,9 +45,86 @@ struct SettingsRow<Content: View>: View {
         }
         .font(AppTypography.font(.body))
         .foregroundStyle(SettingsSurfaceColor.primaryText)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, SettingsLayout.rowVerticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct SettingsControlRow<Control: View>: View {
+    let title: String
+    let description: String?
+    @ViewBuilder let control: Control
+
+    init(
+        _ title: String,
+        description: String? = nil,
+        @ViewBuilder control: () -> Control
+    ) {
+        self.title = title
+        self.description = description
+        self.control = control()
+    }
+
+    var body: some View {
+        SettingsRow {
+            SettingsRowLabel(title, description: description)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: SettingsLayout.labelControlSpacing)
+            control
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(maxWidth: SettingsLayout.controlMaxWidth, alignment: .trailing)
+        }
+    }
+}
+
+struct SettingsStackedControlRow<Control: View>: View {
+    let title: String
+    let description: String?
+    @ViewBuilder let control: Control
+
+    init(
+        _ title: String,
+        description: String? = nil,
+        @ViewBuilder control: () -> Control
+    ) {
+        self.title = title
+        self.description = description
+        self.control = control()
+    }
+
+    var body: some View {
+        SettingsRow {
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsRowLabel(title, description: description)
+                control
+                    .controlSize(.small)
+            }
+        }
+    }
+}
+
+struct SettingsRowLabel: View {
+    let title: String
+    let description: String?
+
+    init(_ title: String, description: String? = nil) {
+        self.title = title
+        self.description = description
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(AppTypography.font(.body))
+                .foregroundStyle(SettingsSurfaceColor.primaryText)
+            if let description {
+                Text(description)
+                    .font(AppTypography.font(.settingsDescription))
+                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 
@@ -64,14 +136,37 @@ struct SettingsDivider: View {
     }
 }
 
+enum SettingsLayout {
+    static let sectionSpacing: CGFloat = 24
+    static let sectionTitleSpacing: CGFloat = 10
+    static let rowVerticalPadding: CGFloat = 11
+    static let labelControlSpacing: CGFloat = 20
+    static let controlMaxWidth: CGFloat = 280
+    static let detailMaxWidth: CGFloat = 680
+    static let sidebarRowHeight: CGFloat = 32
+    static let sidebarCornerRadius: CGFloat = 6
+    static let systemFocusEffectDisabled = true
+}
+
 enum SettingsSurfaceColor {
-    static let primaryText = Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 0.98)
-    static let secondaryText = Color(.sRGB, red: 148 / 255, green: 163 / 255, blue: 184 / 255, opacity: 0.95)
-    static let mutedText = Color(.sRGB, red: 148 / 255, green: 163 / 255, blue: 184 / 255, opacity: 0.72)
+    static let relayAccentNSColor = NSColor(srgbRed: 139 / 255, green: 92 / 255, blue: 246 / 255, alpha: 1)
+    static let primaryTextNSColor = NSColor(srgbRed: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 0.98)
+    static let secondaryTextNSColor = NSColor(srgbRed: 148 / 255, green: 163 / 255, blue: 184 / 255, alpha: 0.95)
+    static let mutedTextNSColor = NSColor(srgbRed: 148 / 255, green: 163 / 255, blue: 184 / 255, alpha: 0.72)
+    static let errorNSColor = NSColor(srgbRed: 248 / 255, green: 113 / 255, blue: 113 / 255, alpha: 1)
+    static let successNSColor = NSColor(srgbRed: 74 / 255, green: 222 / 255, blue: 128 / 255, alpha: 1)
+
+    static let primaryText = Color(nsColor: primaryTextNSColor)
+    static let secondaryText = Color(nsColor: secondaryTextNSColor)
+    static let mutedText = Color(nsColor: mutedTextNSColor)
+    static let relayAccent = Color(nsColor: relayAccentNSColor)
+    static let dirtyAccent = relayAccent
+    static let success = Color(nsColor: successNSColor)
+    static let error = Color(nsColor: errorNSColor)
     static let rowFill = Color.white.opacity(0.035)
     static let rowFillHovered = Color.white.opacity(0.055)
-    static let rowFillSelected = Color.white.opacity(0.09)
-    static let rowBorder = Color.white.opacity(0.075)
+    static let rowFillSelected = relayAccent.opacity(0.14)
+    static let rowFillFocused = relayAccent.opacity(0.18)
     static let divider = Color.white.opacity(0.075)
-    static let focusRing = Color(.sRGB, red: 125 / 255, green: 211 / 255, blue: 252 / 255, opacity: 0.72)
+    static let focusRing = relayAccent.opacity(0.78)
 }

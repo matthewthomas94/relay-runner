@@ -70,14 +70,14 @@ struct StatusSettingsTab: View {
             .joined(separator: ", ")
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "arrow.counterclockwise.circle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(SettingsSurfaceColor.relayAccent)
                 .font(AppTypography.symbolFont(size: 17, weight: .semibold))
             VStack(alignment: .leading, spacing: 4) {
                 Text("Permissions were reset")
                     .font(AppTypography.font(.cardHeading))
                 Text("\(names) showed as granted on a previous run but appear denied now. macOS sometimes resets permissions after an OS update or app reinstall — re-grant below to continue using the affected features.")
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(.secondary)
+                    .font(AppTypography.font(.settingsDescription))
+                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
@@ -107,7 +107,7 @@ struct StatusSettingsTab: View {
     private var pythonEnvRow: some View {
         statusRow(
             label: "Python environment",
-            state: venvPresent ? .ok : .warning,
+            state: venvPresent ? .ok : .idle,
             detail: venvPresent
                 ? "Installed in Application Support"
                 : "Not yet installed — will be created on first session",
@@ -155,7 +155,7 @@ struct StatusSettingsTab: View {
     // MARK: - Row builder
 
     private enum RowState {
-        case ok, warning, error, loading, idle, locked
+        case ok, error, loading, idle, locked
     }
 
     private struct RowAction {
@@ -173,7 +173,7 @@ struct StatusSettingsTab: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                 Text(detail)
-                    .font(AppTypography.font(.caption))
+                    .font(AppTypography.font(.settingsDescription))
                     .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -188,17 +188,15 @@ struct StatusSettingsTab: View {
     private func stateIcon(_ state: RowState) -> some View {
         switch state {
         case .ok:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .warning:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(SettingsSurfaceColor.success)
         case .error:
-            Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+            Image(systemName: "xmark.octagon.fill").foregroundStyle(SettingsSurfaceColor.error)
         case .loading:
             ProgressView().controlSize(.small)
         case .idle:
-            Image(systemName: "circle").foregroundStyle(.secondary)
+            Image(systemName: "circle").foregroundStyle(SettingsSurfaceColor.mutedText)
         case .locked:
-            Image(systemName: "lock.fill").foregroundStyle(.orange)
+            Image(systemName: "lock.fill").foregroundStyle(SettingsSurfaceColor.error)
         }
     }
 
@@ -208,7 +206,7 @@ struct StatusSettingsTab: View {
         if restricted { return .locked }
         switch status {
         case .granted:       return .ok
-        case .denied:        return .warning
+        case .denied:        return .error
         case .restricted:    return .locked
         case .notDetermined: return .idle
         }

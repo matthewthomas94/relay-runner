@@ -19,7 +19,7 @@ struct GeneralSettingsTab: View {
     var body: some View {
         SettingsStack {
             SettingsSection("Agent") {
-                SettingsRow {
+                SettingsControlRow("LLM Provider") {
                     Picker("LLM Provider", selection: providerSelection) {
                         ForEach(GeneralConfig.AgentProvider.allCases) { provider in
                             Text(provider.displayName).tag(provider)
@@ -29,28 +29,24 @@ struct GeneralSettingsTab: View {
 
                 SettingsDivider()
 
-                SettingsRow {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Picker(Self.orchestratorModelLabel, selection: modelSelection) {
-                            ForEach(GeneralConfig.modelOptions(for: config.provider)) { option in
-                                Text(option.label).tag(option.value)
-                            }
-                        }
-                        if let note = GeneralConfig.accessNote(
-                            for: config.model,
-                            effort: config.orchestrator_effort,
-                            provider: config.provider
-                        ) {
-                            Text(note)
-                                .font(AppTypography.font(.caption))
-                                .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                SettingsControlRow(
+                    Self.orchestratorModelLabel,
+                    description: GeneralConfig.accessNote(
+                        for: config.model,
+                        effort: config.orchestrator_effort,
+                        provider: config.provider
+                    )
+                ) {
+                    Picker(Self.orchestratorModelLabel, selection: modelSelection) {
+                        ForEach(GeneralConfig.modelOptions(for: config.provider)) { option in
+                            Text(option.label).tag(option.value)
                         }
                     }
                 }
 
                 SettingsDivider()
 
-                SettingsRow {
+                SettingsControlRow(Self.orchestratorEffortLabel) {
                     Picker(Self.orchestratorEffortLabel, selection: orchestratorEffortSelection) {
                         ForEach(GeneralConfig.reasoningEffortOptions(for: config.provider, model: config.model)) { option in
                             Text(option.label).tag(option.value)
@@ -60,7 +56,7 @@ struct GeneralSettingsTab: View {
             }
 
             SettingsSection("Sub-agents") {
-                SettingsRow {
+                SettingsControlRow(Self.subagentSizingLabel) {
                     Picker(Self.subagentSizingLabel, selection: $config.subagent_sizing_policy) {
                         ForEach(GeneralConfig.SubagentSizingPolicy.allCases) { policy in
                             Text(policy.displayName).tag(policy)
@@ -71,7 +67,7 @@ struct GeneralSettingsTab: View {
                 if config.subagent_sizing_policy == .userDefault {
                     SettingsDivider()
 
-                    SettingsRow {
+                    SettingsControlRow(Self.subagentModelLabel) {
                         Picker(Self.subagentModelLabel, selection: subagentModelSelection) {
                             ForEach(GeneralConfig.subagentModelOptions) { option in
                                 Text(option.label).tag(option.value)
@@ -81,7 +77,7 @@ struct GeneralSettingsTab: View {
 
                     SettingsDivider()
 
-                    SettingsRow {
+                    SettingsControlRow(Self.subagentEffortLabel) {
                         Picker(Self.subagentEffortLabel, selection: subagentEffortSelection) {
                             ForEach(GeneralConfig.subagentEffortOptions) { option in
                                 Text(option.label).tag(option.value)
@@ -92,51 +88,42 @@ struct GeneralSettingsTab: View {
             }
 
             SettingsSection("Workspace") {
-                SettingsRow {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(Self.workspaceFolderLabel)
-                        HStack {
-                            TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text("~ (home)"))
-                            Button("Browse\u{2026}") { pickDirectory() }
-                        }
-                        Text(Self.workspaceFolderHelpText)
-                            .font(AppTypography.font(.caption))
-                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                SettingsStackedControlRow(
+                    Self.workspaceFolderLabel,
+                    description: Self.workspaceFolderHelpText
+                ) {
+                    HStack(spacing: 8) {
+                        TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text("~ (home)"))
+                        Button("Browse\u{2026}") { pickDirectory() }
                     }
                 }
             }
 
             SettingsSection("Startup") {
-                SettingsRow {
+                SettingsControlRow("Auto-start services on app launch") {
                     Toggle("Auto-start services on app launch", isOn: $config.auto_start)
                 }
 
                 SettingsDivider()
 
-                SettingsRow {
-                    Toggle(isOn: $config.bypass_permissions) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Bypass agent permission prompts")
-                            Text("When on, sessions launched from Relay Runner skip per-tool approval. Voice flow is much smoother, but anything the agent proposes runs without confirmation.")
-                                .font(AppTypography.font(.caption))
-                                .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                        }
-                    }
+                SettingsControlRow(
+                    "Bypass agent permission prompts",
+                    description: "When on, sessions launched from Relay Runner skip per-tool approval. Voice flow is much smoother, but anything the agent proposes runs without confirmation."
+                ) {
+                    Toggle("Bypass agent permission prompts", isOn: $config.bypass_permissions)
                 }
             }
 
             SettingsSection("Relay Skills") {
                 SettingsRow {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Relay Skills")
-                        Text("Adds relay-bridge and relay-stop support to Codex and Claude Code")
-                            .font(AppTypography.font(.caption))
-                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                    }
+                    SettingsRowLabel(
+                        "Relay Skills",
+                        description: "Adds relay-bridge and relay-stop support to Codex and Claude Code"
+                    )
                     Spacer()
                     if showSkillSuccess {
                         Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
+                            .foregroundStyle(SettingsSurfaceColor.success)
                     }
                     Button(skillInstalled ? "Reinstall" : "Install") {
                         if skillInstalled {

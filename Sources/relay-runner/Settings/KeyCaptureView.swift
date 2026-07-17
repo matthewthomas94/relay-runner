@@ -3,14 +3,17 @@ import AppKit
 
 struct KeyCaptureView: View {
     let label: String
+    var showsLabel = true
     @Binding var value: String
 
     @State private var isCapturing = false
 
     var body: some View {
         HStack {
-            Text(label)
-            Spacer()
+            if showsLabel {
+                Text(label)
+                Spacer()
+            }
             KeyCaptureField(value: $value, isCapturing: $isCapturing)
                 .frame(width: 150, height: 24)
             if value.lowercased() != "caps lock" && !value.isEmpty {
@@ -138,13 +141,16 @@ private final class KeyInputView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let bg: NSColor = isHighlighted
-            ? .controlAccentColor.withAlphaComponent(0.15)
+            ? SettingsSurfaceColor.relayAccentNSColor.withAlphaComponent(0.15)
             : .controlBackgroundColor
         bg.setFill()
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
         path.fill()
 
-        NSColor.separatorColor.setStroke()
+        let stroke = isHighlighted
+            ? SettingsSurfaceColor.relayAccentNSColor.withAlphaComponent(0.65)
+            : NSColor.separatorColor
+        stroke.setStroke()
         path.lineWidth = 0.5
         path.stroke()
 

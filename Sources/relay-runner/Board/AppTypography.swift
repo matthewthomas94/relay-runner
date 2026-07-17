@@ -64,6 +64,7 @@ enum AppTypography {
         case field
         case metadata
         case supporting
+        case settingsDescription
         case action
         case programAction
         case programEmptyState
@@ -160,6 +161,8 @@ enum AppTypography {
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
         case .supporting:
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
+        case .settingsDescription:
+            return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
         case .action:
             return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
         case .programAction:
