@@ -27,8 +27,6 @@ struct WorkspaceSettingsPanel: View {
             onOpenExternalWindow: onOpenExternalWindow
         )
             .frame(maxWidth: WorkspaceSurfaceSizing.settingsMaxWidth, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight)
-            .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
-            .shadow(color: Color.black.opacity(0.18), radius: 18, x: 0, y: 10)
             .environment(\.colorScheme, .dark)
     }
 }
@@ -60,9 +58,20 @@ enum SettingsContentStyle {
 
     var fixedFrame: (width: CGFloat, height: CGFloat)? {
         switch self {
-        case .window: return (720, 560)
+        case .window: return (860, 640)
         case .workspace: return nil
         }
+    }
+
+    var detailMaxWidth: CGFloat {
+        switch self {
+        case .window: return 620
+        case .workspace: return SettingsLayout.detailMaxWidth
+        }
+    }
+
+    var usesStandaloneChrome: Bool {
+        self == .window
     }
 }
 
@@ -94,6 +103,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .awareness: return "Overlay visibility"
         }
     }
+
+    var navigationLabel: String { title }
 
     var systemImage: String {
         switch self {
@@ -147,6 +158,7 @@ private struct SettingsContent: View {
                     ScrollView(.vertical, showsIndicators: false) {
                         selectedDetail
                             .padding(style.detailPadding)
+                            .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -160,6 +172,7 @@ private struct SettingsContent: View {
         .tint(SettingsSurfaceColor.focusRing)
         .environment(\.colorScheme, .dark)
         .frame(width: style.fixedFrame?.width, height: style.fixedFrame?.height)
+        .clipShape(RoundedRectangle(cornerRadius: style.usesStandaloneChrome ? 0 : BoardDarkSurfaceStyle.columnCornerRadius, style: .continuous))
         .onChange(of: appState.config) { _, newValue in
             draft = newValue
         }
@@ -185,14 +198,15 @@ private struct SettingsContent: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 12) {
-            Image(systemName: hasChanges ? "circle.fill" : "checkmark.circle.fill")
+        let presentation = SettingsFooterPresentation(hasChanges: hasChanges)
+        return HStack(spacing: 12) {
+            Image(systemName: presentation.iconName)
                 .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                .foregroundStyle(hasChanges ? Color.orange : Color.green)
+                .foregroundStyle(presentation.iconColor)
                 .accessibilityHidden(true)
 
-            Text(hasChanges ? "Unsaved changes" : "Settings are up to date")
-                .font(AppTypography.font(.caption))
+            Text(presentation.statusText)
+                .font(AppTypography.font(.settingsDescription))
                 .foregroundStyle(SettingsSurfaceColor.secondaryText)
 
             Spacer(minLength: 0)
@@ -204,8 +218,48 @@ private struct SettingsContent: View {
             }
             .keyboardShortcut(.defaultAction)
             .disabled(!hasChanges || saving)
+            .buttonStyle(.borderedProminent)
+            .tint(presentation.actionTint)
         }
         .padding(style.footerPadding)
+    }
+}
+
+enum SettingsSemanticColor: Equatable {
+    case relayAccent
+    case success
+    case error
+    case idle
+
+    var color: Color {
+        switch self {
+        case .relayAccent: return SettingsSurfaceColor.relayAccent
+        case .success: return SettingsSurfaceColor.success
+        case .error: return SettingsSurfaceColor.error
+        case .idle: return SettingsSurfaceColor.mutedText
+        }
+    }
+}
+
+struct SettingsFooterPresentation: Equatable {
+    let hasChanges: Bool
+
+    var iconName: String {
+        hasChanges ? "circle.fill" : "checkmark.circle.fill"
+    }
+
+    var statusText: String {
+        hasChanges ? "Unsaved changes" : "Settings are up to date"
+    }
+
+    var iconSemanticColor: SettingsSemanticColor {
+        hasChanges ? .relayAccent : .success
+    }
+
+    var iconColor: Color { iconSemanticColor.color }
+
+    var actionTint: Color {
+        hasChanges ? SettingsSurfaceColor.dirtyAccent : SettingsSurfaceColor.mutedText
     }
 }
 
@@ -218,7 +272,7 @@ private struct SettingsDetailHeader: View {
                 .font(AppTypography.font(.screenTitle))
                 .foregroundStyle(SettingsSurfaceColor.primaryText)
             Text(category.subtitle)
-                .font(AppTypography.font(.caption))
+                .font(AppTypography.font(.settingsDescription))
                 .foregroundStyle(SettingsSurfaceColor.secondaryText)
         }
         .padding(.horizontal, 22)
@@ -274,37 +328,25 @@ private struct SettingsCategoryButton: View {
                     .frame(width: 18)
                     .foregroundStyle(selected ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.secondaryText)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(category.title)
-                        .font(AppTypography.font(.button))
-                        .foregroundStyle(SettingsSurfaceColor.primaryText)
-                    Text(category.subtitle)
-                        .font(AppTypography.font(.smallCaption))
-                        .foregroundStyle(SettingsSurfaceColor.mutedText)
-                        .lineLimit(1)
-                }
+                Text(category.navigationLabel)
+                    .font(AppTypography.font(.button))
+                    .foregroundStyle(SettingsSurfaceColor.primaryText)
+                    .lineLimit(1)
 
                 Spacer(minLength: 0)
-
-                if selected {
-                    Image(systemName: "chevron.right")
-                        .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                        .accessibilityHidden(true)
-                }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: SettingsLayout.sidebarRowHeight, alignment: .leading)
             .background(buttonFill)
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
                     .stroke(isFocused ? SettingsSurfaceColor.focusRing : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
         .focusable()
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .accessibilityLabel("\(category.title), \(selected ? "selected" : "not selected")")
@@ -313,7 +355,8 @@ private struct SettingsCategoryButton: View {
 
     private var buttonFill: Color {
         if selected { return SettingsSurfaceColor.rowFillSelected }
-        if isFocused || isHovered { return SettingsSurfaceColor.rowFillHovered }
+        if isFocused { return SettingsSurfaceColor.rowFillFocused }
+        if isHovered { return SettingsSurfaceColor.rowFillHovered }
         return Color.clear
     }
 }

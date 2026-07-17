@@ -21,38 +21,40 @@ struct TTSSettingsTab: View {
     var body: some View {
         SettingsStack {
             SettingsSection("Voice") {
-                SettingsRow {
-                    Picker("Voice", selection: $config.voice) {
-                        ForEach(voices, id: \.self) { voice in
-                            Text(formatVoiceName(voice)).tag(voice)
+                SettingsControlRow("Voice") {
+                    HStack(spacing: 8) {
+                        Picker("Voice", selection: $config.voice) {
+                            ForEach(voices, id: \.self) { voice in
+                                Text(formatVoiceName(voice)).tag(voice)
+                            }
                         }
-                    }
-                    Button(action: previewSelectedVoice) {
-                        if isPreviewing {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "play.circle.fill")
-                                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                        Button(action: previewSelectedVoice) {
+                            if isPreviewing {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "play.circle.fill")
+                                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                            }
                         }
+                        .buttonStyle(.borderless)
+                        .disabled(isPreviewing)
+                        .help("Preview this voice")
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(isPreviewing)
-                    .help("Preview this voice")
                 }
 
                 if let previewError {
                     SettingsDivider()
                     SettingsRow {
                         Text(previewError)
-                            .font(AppTypography.font(.caption))
-                            .foregroundStyle(.orange)
+                            .font(AppTypography.font(.settingsDescription))
+                            .foregroundStyle(SettingsSurfaceColor.error)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
 
             SettingsSection("Playback") {
-                SettingsRow {
+                SettingsControlRow("Playback Mode") {
                     Picker("Playback Mode", selection: $config.auto_play) {
                         Text("Auto-play").tag(true)
                         Text("Queue").tag(false)
@@ -62,14 +64,19 @@ struct TTSSettingsTab: View {
 
                 SettingsDivider()
 
-                SettingsRow {
-                    Text("Speech Speed: \(String(format: "%.1f", config.rate))x")
-                    Slider(value: $config.rate, in: 0.5...2.0, step: 0.1)
+                SettingsControlRow("Speech Speed") {
+                    HStack(spacing: 8) {
+                        Slider(value: $config.rate, in: 0.5...2.0, step: 0.1)
+                        Text("\(String(format: "%.1f", config.rate))x")
+                            .font(AppTypography.monospacedFont(size: 11))
+                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                            .frame(width: 42, alignment: .trailing)
+                    }
                 }
             }
 
             SettingsSection("Notifications") {
-                SettingsRow {
+                SettingsControlRow("Notification Chime") {
                     Picker("Notification Chime", selection: $config.chime) {
                         ForEach(chimes, id: \.self) { chime in
                             Text(chime).tag(chime)
@@ -79,7 +86,7 @@ struct TTSSettingsTab: View {
 
                 SettingsDivider()
 
-                SettingsRow {
+                SettingsControlRow("Show macOS notification on new message") {
                     Toggle("Show macOS notification on new message", isOn: $config.show_notification)
                 }
             }
