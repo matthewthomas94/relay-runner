@@ -250,34 +250,23 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertFalse(try TicketParser.parse(contents: contents).draft)
     }
 
-    func testProjectBoardCreatedDraftCanBeSavedAndDeleted() throws {
+    func testWorkspaceCreatedDraftCanBeSavedAndDeleted() throws {
         let repo = try makeTempRepo(named: "mouse-assist")
         defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
 
         let project = ProjectResolver.LinkedProject(repoPath: repo)
         let draft = try TicketWriter.mintDraft(in: project, status: .backlog, existingTickets: [])
-        let editorDraft = TicketDraft(
-            editorId: draft.id,
-            original: draft,
-            isNew: true,
-            title: draft.title,
-            status: draft.status,
-            priority: draft.priority,
-            description: TicketParser.extractFullDescription(draft.body) ?? "",
-            acceptanceCriteria: TicketParser.extractAcceptanceCriteria(draft.body) ?? ""
-        )
 
-        XCTAssertTrue(editorDraft.isNew)
-        XCTAssertEqual(editorDraft.editorId, "MA-1")
-        XCTAssertTrue(editorDraft.original.draft)
+        XCTAssertEqual(draft.id, "MA-1")
+        XCTAssertTrue(draft.draft)
 
         let withDescription = TicketWriter.ticket(
-            editorDraft.original,
-            withDescription: "Write the project-board ticket."
+            draft,
+            withDescription: "Write the Workspace ticket."
         )
         let saved = Ticket(
             id: withDescription.id,
-            title: "Project-board ticket",
+            title: "Workspace ticket",
             status: withDescription.status,
             priority: withDescription.priority,
             dependsOn: withDescription.dependsOn,
@@ -296,8 +285,8 @@ final class BoardProjectConfigTests: XCTestCase {
             encoding: .utf8
         )
         let parsedSaved = try TicketParser.parse(contents: savedContents)
-        XCTAssertEqual(parsedSaved.title, "Project-board ticket")
-        XCTAssertEqual(parsedSaved.description, "Write the project-board ticket.")
+        XCTAssertEqual(parsedSaved.title, "Workspace ticket")
+        XCTAssertEqual(parsedSaved.description, "Write the Workspace ticket.")
         XCTAssertFalse(parsedSaved.draft)
 
         let deleteDraft = try TicketWriter.mintDraft(
@@ -534,7 +523,7 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertEqual(tickets.sorted(by: Ticket.newestFirst).map(\.id), ["RR-30", "RR-2", "RR-1"])
     }
 
-    func testProjectBoardLaneSortsByBoardOrderBeforeModifiedAt() throws {
+    func testWorkspaceLaneSortsByBoardOrderBeforeModifiedAt() throws {
         let repo = try makeTempRepo(named: "mouse-assist")
         defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
 
@@ -546,10 +535,11 @@ final class BoardProjectConfigTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: recentDate], ofItemAtPath: highOrderTicket.path)
 
         let project = ProjectResolver.LinkedProject(repoPath: repo)
-        let model = BoardViewModel()
-        model.tickets = ProjectResolver.scanTickets(in: project)
+        let tickets = ProjectResolver.scanTickets(in: project)
+            .filter { $0.status == .backlog }
+            .sorted(by: Ticket.boardOrder)
 
-        XCTAssertEqual(model.tickets(in: .backlog).map(\.id), ["MA-1", "MA-90"])
+        XCTAssertEqual(tickets.map(\.id), ["MA-1", "MA-90"])
     }
 
     func testTicketNewestFirstFallsBackToNumericIdWhenModifiedAtTies() {

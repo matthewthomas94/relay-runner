@@ -1,6 +1,6 @@
 import Foundation
 
-/// Resolves or activates the currently-active board project.
+/// Resolves or activates the currently-active Workspace scope.
 ///
 /// A `/relay-bridge` session remains the default activation path. The bridge
 /// writes its launching cwd to `/tmp/voice_bridge.cwd` at startup and clears
@@ -63,7 +63,7 @@ enum ProjectResolver {
             do {
                 return try registry.activateBridgeCwd(at: cwdURL, provider: provider)
             } catch {
-                NSLog("[relay-runner] failed to activate board project at \(cwdURL.path): \(error)")
+                NSLog("[relay-runner] failed to activate Workspace scope at \(cwdURL.path): \(error)")
                 return nil
             }
         }
@@ -177,7 +177,7 @@ enum ProjectResolver {
             }
             return .unavailable
         } catch {
-            NSLog("[relay-runner] failed to resolve board route: \(error)")
+            NSLog("[relay-runner] failed to resolve Workspace route: \(error)")
             return .unavailable
         }
     }

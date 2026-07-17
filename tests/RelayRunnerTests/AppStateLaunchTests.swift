@@ -2,23 +2,6 @@ import XCTest
 @testable import relay_runner
 
 final class AppStateLaunchTests: XCTestCase {
-    func testWorkspaceToggleResumesSuspendedProgramBoardDirectly() {
-        XCTAssertEqual(
-            AppState.workspaceToggleTarget(
-                programBoardVisible: false,
-                programBoardSuspended: true
-            ),
-            .programBoard
-        )
-        XCTAssertEqual(
-            AppState.workspaceToggleTarget(
-                programBoardVisible: false,
-                programBoardSuspended: false
-            ),
-            .projectBoard
-        )
-    }
-
     func testLaunchPlanStartsOverlayWithoutMicrophonePermission() {
         let plan = AppState.launchPlan(for: .denied)
 

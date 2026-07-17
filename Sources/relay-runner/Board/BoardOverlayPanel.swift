@@ -1,6 +1,6 @@
 import AppKit
 
-/// Fullscreen transparent panel hosting the kanban-board overlay.
+/// Fullscreen transparent panel hosting the Workspace overlay.
 ///
 /// Unlike the main `OverlayPanel` (pill / particle field), this panel
 /// **accepts mouse events** so the user can click outside the columns to
@@ -31,14 +31,14 @@ final class BoardOverlayPanel: NSPanel {
         }
     }
 
-    /// Toggled by `BoardOverlayController` while the editor modal is open —
+    /// Toggled by `ProgramBoardOverlayController` while the editor modal is open —
     /// the panel needs key focus for TextField input but going key while the
     /// pill is playing back causes the pill to snap to compact mode. So we
     /// only opt in for the brief window the modal is on screen.
     var keyEligible: Bool = false
 
     // Esc dismissal is handled by the global+local NSEvent monitors in
-    // BoardOverlayController; the panel doesn't need to be key unless the
+    // ProgramBoardOverlayController; the panel doesn't need to be key unless the
     // editor modal is up.
     override var canBecomeKey: Bool { keyEligible }
     override var canBecomeMain: Bool { false }

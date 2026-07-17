@@ -139,7 +139,6 @@ final class AppState {
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
     private var overlayController: OverlayController?
-    @ObservationIgnored private let boardOverlay = BoardOverlayController()
     @ObservationIgnored private let programBoardOverlay = ProgramBoardOverlayController()
     @ObservationIgnored private let notchStatusController = NotchStatusController()
     private var perimeterOverlay: PerimeterOverlayManager?
@@ -180,7 +179,6 @@ final class AppState {
     private var bridgeRecoveryInFlight = false {
         didSet { syncNotchStatusSurface() }
     }
-    private var projectBoardLoading = false
     private var programBoardLoading = false
     private var lastBridgeRecoveryAt: Date = .distantPast
     private static let bridgeRecoveryCooldown: TimeInterval = 15
@@ -264,7 +262,7 @@ final class AppState {
     }
 
     private func syncNotchActivitySurface() {
-        let boardIsLoading = projectBoardLoading || programBoardLoading
+        let boardIsLoading = programBoardLoading
         guard hasActiveSession || boardIsLoading else {
             notchStatusController.setPresentation(
                 status: .notWorking,
@@ -354,13 +352,6 @@ final class AppState {
             bundleURL: bundleURL
         )
         self.config = ConfigManager.shared.load()
-        boardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
-            guard let self else { return nil }
-            return TicketWriter.WorkerSizingDefaults.from(self.config.general)
-        }
-        boardOverlay.setSessionActiveProvider { [weak self] in
-            self?.hasActiveSession ?? false
-        }
         programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
             guard let self else { return nil }
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
@@ -413,7 +404,7 @@ final class AppState {
                         self.restartSTTForRecovery()
                     }
                 } else if kind == .inputMonitoring {
-                    self.boardOverlay.installGlobalDismissHotkey()
+                    self.programBoardOverlay.installGlobalDismissHotkey()
                     self.restartSTTForRecovery()
                 }
             }
@@ -423,7 +414,7 @@ final class AppState {
             guard let self else { return }
             let launchPlan = Self.launchPlan(for: self.permissions.microphone)
             if launchPlan.startsOverlay {
-                // Keep board routing and the no-session/program-board surfaces
+                // Keep Workspace routing and the no-session/Work surfaces
                 // available even before STT starts.
                 self.startOverlay()
             }
@@ -798,11 +789,8 @@ final class AppState {
             if programBoardOverlay.isVisible {
                 programBoardOverlay.hide()
             }
-            if boardOverlay.isVisible {
-                boardOverlay.hide()
-            }
         } else {
-            boardOverlay.showTerminal()
+            programBoardOverlay.showTerminal()
         }
     }
 
@@ -869,30 +857,10 @@ final class AppState {
         sttEngine?.toggleRecording()
     }
 
-    /// Show or hide the routed Workspace overlay. Single-project sessions read
-    /// tickets from that repo's `.orchestrator/`; workspace sessions open the
-    /// read-only Program work view.
+    /// Show or hide the unified Workspace overlay. Single-repo sessions scope
+    /// Work to that repo; workspace sessions aggregate discovered child repos.
     func toggleBoard() {
-        if Self.workspaceToggleTarget(
-            programBoardVisible: programBoardOverlay.isVisible,
-            programBoardSuspended: programBoardOverlay.isSuspendedForExternalWindow
-        ) == .programBoard {
-            programBoardOverlay.toggle()
-        } else {
-            boardOverlay.toggle()
-        }
-    }
-
-    enum WorkspaceToggleTarget: Equatable {
-        case projectBoard
-        case programBoard
-    }
-
-    static func workspaceToggleTarget(
-        programBoardVisible: Bool,
-        programBoardSuspended: Bool
-    ) -> WorkspaceToggleTarget {
-        programBoardVisible || programBoardSuspended ? .programBoard : .projectBoard
+        programBoardOverlay.toggle()
     }
 
     func toggleWorkspace() {
@@ -901,11 +869,7 @@ final class AppState {
 
     func showWorkspaceSettings() {
         if overlayController == nil { startOverlay() }
-        if programBoardOverlay.isVisible || programBoardOverlay.isSuspendedForExternalWindow {
-            programBoardOverlay.showSettings()
-        } else {
-            boardOverlay.showSettings()
-        }
+        programBoardOverlay.showSettings()
     }
 
     func activateProject(pathOrAlias: String, provider: String?) -> ProjectActivationReply {
@@ -969,7 +933,7 @@ final class AppState {
             )
 
             if daemonAlive {
-                self.boardOverlay.refreshRouteIfNeeded()
+                self.programBoardOverlay.refreshRouteIfNeeded()
             }
 
             switch action {
@@ -1369,68 +1333,20 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Board overlay — install Esc dismissal only once macOS has already
+        // Workspace overlay — install Esc dismissal only once macOS has already
         // granted Input Monitoring. The double-tap Shift board trigger is
         // emitted by the STT gesture monitor so it shares the same recovery
         // path as Option/Control activation gestures.
         if permissions.inputMonitoring == .granted {
-            boardOverlay.installGlobalDismissHotkey()
+            programBoardOverlay.installGlobalDismissHotkey()
         }
-        boardOverlay.setThemeResolver { [weak self] in
-            guard let state = self?.stateMachine.state else { return nil }
-            // ActionGlow intentionally returns nil from `particleTheme` so
-            // the bottom particle field stays hidden — but the board has its
-            // own glow that should reflect "agent is reading the screen".
-            // Map it to .stt so the board glow matches the perimeter dots.
-            if case .actionGlow = state { return .stt }
-            return state.particleTheme
-        }
-        // Reuse the existing "no session" pill when the user tries to open
-        // the board before any bridge or explicit project activation can
-        // resolve a project.
-        boardOverlay.setNoSessionHandler { [weak self] in
-            self?.showSessionPromptIfAllowed()
-        }
-        boardOverlay.setProgramBoardHandler { [weak self] initialTab in
-            guard let self else { return }
-            switch initialTab {
-            case .terminal:
-                self.programBoardOverlay.showTerminal()
-            case .systemSettings:
-                self.programBoardOverlay.showSettings()
-            case .work:
-                self.programBoardOverlay.toggle()
-            }
-        }
-        boardOverlay.setLoadingStateHandler { [weak self] isLoading in
-            self?.setProjectBoardLoading(isLoading)
-        }
-        boardOverlay.setSettingsContentProvider { [weak self] in
-            guard let self else { return nil }
-            return AnyView(WorkspaceSettingsPanel(
-                appState: self,
-                onOpenExternalWindow: { [weak self] in
-                    self?.suspendWorkspaceForExternalWindow()
-                }
-            ))
-        }
-        boardOverlay.setTerminalContentProvider { [weak self] workingDirectory in
-            guard let self else { return nil }
-            return AnyView(
-                WorkspaceTerminalPanel(
-                    appState: self,
-                    workingDirectory: workingDirectory
-                )
-            )
-        }
-        boardOverlay.setTerminalFocusProvider(
-            hasFocus: { [weak self] in self?.embeddedTerminal.hasTerminalFocus ?? false },
-            focus: { [weak self] in self?.embeddedTerminal.focus() }
-        )
         programBoardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
             if case .actionGlow = state { return .stt }
             return state.particleTheme
+        }
+        programBoardOverlay.setNoSessionHandler { [weak self] in
+            self?.showSessionPromptIfAllowed()
         }
         programBoardOverlay.setLoadingStateHandler { [weak self] isLoading in
             self?.setProgramBoardLoading(isLoading)
@@ -1453,19 +1369,10 @@ final class AppState {
                 )
             )
         }
-        programBoardOverlay.setTerminalFocusHandler { [weak self] in
-            self?.embeddedTerminal.focus()
-        }
-        programBoardOverlay.setOpenProjectHandler { [weak self] repoPath in
-            guard let self else { return }
-            let project = ProjectResolver.LinkedProject(
-                repoPath: URL(fileURLWithPath: repoPath)
-                    .standardizedFileURL
-                    .resolvingSymlinksInPath()
-            )
-            self.programBoardOverlay.hide()
-            self.boardOverlay.show(project: project)
-        }
+        programBoardOverlay.setTerminalFocusProvider(
+            hasFocus: { [weak self] in self?.embeddedTerminal.hasTerminalFocus ?? false },
+            focus: { [weak self] in self?.embeddedTerminal.focus() }
+        )
         // Perimeter overlay (purple band on every screen while
         // .actionGlow is active; pulses while a confirmation is pending).
         let perimeter = PerimeterOverlayManager()
@@ -1574,12 +1481,6 @@ final class AppState {
         }
     }
 
-    private func setProjectBoardLoading(_ isLoading: Bool) {
-        guard projectBoardLoading != isLoading else { return }
-        projectBoardLoading = isLoading
-        syncNotchActivitySurface()
-    }
-
     private func setProgramBoardLoading(_ isLoading: Bool) {
         guard programBoardLoading != isLoading else { return }
         programBoardLoading = isLoading
@@ -1587,7 +1488,6 @@ final class AppState {
     }
 
     private func suspendWorkspaceForExternalWindow() {
-        boardOverlay.suspendForExternalWindow()
         programBoardOverlay.suspendForExternalWindow()
     }
 
