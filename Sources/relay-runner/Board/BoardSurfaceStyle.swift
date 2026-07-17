@@ -14,10 +14,12 @@ enum BoardSurfaceLayout {
 enum BoardDarkSurfaceStyle {
     static let panelFillNSColor = NSColor(srgbRed: 9 / 255, green: 11 / 255, blue: 15 / 255, alpha: 1)
     static let contentFillNSColor = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+    static let hoverFillNSColor = NSColor(srgbRed: 18 / 255, green: 22 / 255, blue: 30 / 255, alpha: 1)
     static let borderNSColor = NSColor(srgbRed: 17 / 255, green: 22 / 255, blue: 29 / 255, alpha: 1)
 
     static let panelFill = Color(nsColor: panelFillNSColor)
     static let contentFill = Color(nsColor: contentFillNSColor)
+    static let hoverFill = Color(nsColor: hoverFillNSColor)
     static let border = Color(nsColor: borderNSColor)
 
     static let workspaceCornerRadius: CGFloat = 24
@@ -77,10 +79,10 @@ enum ProgramBoardInteractionAccent: Equatable {
 }
 
 struct ProgramBoardInteractionPresentation: Equatable {
+    let usesHoverFill: Bool
     let fillOverlayOpacity: Double
     let strokeOpacity: Double
     let foregroundOpacity: Double
-    let scale: CGFloat
     let animationDuration: Double
     let accent: ProgramBoardInteractionAccent
 
@@ -97,25 +99,24 @@ struct ProgramBoardInteractionPresentation: Equatable {
     ) -> ProgramBoardInteractionPresentation {
         guard isEnabled else {
             return ProgramBoardInteractionPresentation(
+                usesHoverFill: false,
                 fillOverlayOpacity: 0,
                 strokeOpacity: 0,
                 foregroundOpacity: 0.45,
-                scale: 1,
                 animationDuration: reduceMotion ? 0 : motionDuration,
                 accent: .neutral
             )
         }
 
-        let interactive = !isDraggingSource && (isHovered || isFocused)
-        let scale = reduceMotion ? 1 : scaleValue(surface: surface, interactive: interactive)
+        let usesHoverFill = !isDraggingSource && isHovered
         let duration = reduceMotion ? 0 : motionDuration
 
         if isSelected {
             return ProgramBoardInteractionPresentation(
-                fillOverlayOpacity: surface == .control ? 0.08 : 0.075,
+                usesHoverFill: usesHoverFill,
+                fillOverlayOpacity: usesHoverFill ? 0 : (surface == .control ? 0.08 : 0.075),
                 strokeOpacity: surface == .projectCard ? 0.48 : 0.30,
                 foregroundOpacity: 0.98,
-                scale: scale,
                 animationDuration: duration,
                 accent: .selected
             )
@@ -123,10 +124,10 @@ struct ProgramBoardInteractionPresentation: Equatable {
 
         if isDraggingSource {
             return ProgramBoardInteractionPresentation(
+                usesHoverFill: false,
                 fillOverlayOpacity: 0,
                 strokeOpacity: 0,
                 foregroundOpacity: 0.82,
-                scale: 1,
                 animationDuration: duration,
                 accent: .neutral
             )
@@ -134,10 +135,10 @@ struct ProgramBoardInteractionPresentation: Equatable {
 
         if isFocused {
             return ProgramBoardInteractionPresentation(
-                fillOverlayOpacity: 0.065,
+                usesHoverFill: usesHoverFill,
+                fillOverlayOpacity: usesHoverFill ? 0 : 0.065,
                 strokeOpacity: 0.24,
                 foregroundOpacity: 0.96,
-                scale: scale,
                 animationDuration: duration,
                 accent: .selected
             )
@@ -145,37 +146,22 @@ struct ProgramBoardInteractionPresentation: Equatable {
 
         if isHovered {
             return ProgramBoardInteractionPresentation(
-                fillOverlayOpacity: surface == .control ? 0.055 : 0.045,
+                usesHoverFill: true,
+                fillOverlayOpacity: 0,
                 strokeOpacity: surface == .control ? 0.16 : 0.14,
                 foregroundOpacity: 0.95,
-                scale: scale,
                 animationDuration: duration,
                 accent: .neutral
             )
         }
 
         return ProgramBoardInteractionPresentation(
+            usesHoverFill: false,
             fillOverlayOpacity: 0,
             strokeOpacity: 0,
             foregroundOpacity: surface == .control ? 0.85 : 0.82,
-            scale: 1,
             animationDuration: duration,
             accent: .neutral
         )
-    }
-
-    private static func scaleValue(
-        surface: ProgramBoardInteractiveSurface,
-        interactive: Bool
-    ) -> CGFloat {
-        guard interactive else { return 1 }
-        switch surface {
-        case .projectCard:
-            return 1.006
-        case .ticketCard:
-            return 1.004
-        case .control:
-            return 1
-        }
     }
 }

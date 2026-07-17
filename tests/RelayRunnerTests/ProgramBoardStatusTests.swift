@@ -146,6 +146,7 @@ final class ProgramBoardStatusTests: XCTestCase {
     }
 
     func testProgramBoardProjectHoverPresentationKeepsSelectedAndDisabledPrecedence() {
+        let hoverFill = BoardDarkSurfaceStyle.hoverFillNSColor.usingColorSpace(.sRGB)
         let hover = ProgramBoardInteractionPresentation.resolve(
             surface: .projectCard,
             isHovered: true
@@ -162,12 +163,18 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
 
         XCTAssertEqual(hover.accent, .neutral)
+        XCTAssertTrue(hover.usesHoverFill)
+        XCTAssertEqual(hover.fillOverlayOpacity, 0)
+        XCTAssertEqual(hoverFill?.redComponent ?? 0, 18 / 255, accuracy: 0.001)
+        XCTAssertEqual(hoverFill?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
+        XCTAssertEqual(hoverFill?.blueComponent ?? 0, 30 / 255, accuracy: 0.001)
         XCTAssertEqual(selectedHover.accent, .selected)
+        XCTAssertTrue(selectedHover.usesHoverFill)
         XCTAssertGreaterThan(selectedHover.strokeOpacity, hover.strokeOpacity)
-        XCTAssertGreaterThan(selectedHover.fillOverlayOpacity, hover.fillOverlayOpacity)
+        XCTAssertEqual(selectedHover.fillOverlayOpacity, 0)
+        XCTAssertFalse(disabledHover.usesHoverFill)
         XCTAssertEqual(disabledHover.fillOverlayOpacity, 0)
         XCTAssertEqual(disabledHover.strokeOpacity, 0)
-        XCTAssertEqual(disabledHover.scale, 1)
     }
 
     func testProgramBoardTicketHoverPresentationSuppressesDraggingAndReducedMotion() {
@@ -192,13 +199,15 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
 
         XCTAssertEqual(hover.accent, .neutral)
-        XCTAssertGreaterThan(hover.fillOverlayOpacity, 0)
+        XCTAssertTrue(hover.usesHoverFill)
+        XCTAssertEqual(hover.fillOverlayOpacity, 0)
+        XCTAssertFalse(draggingHover.usesHoverFill)
         XCTAssertEqual(draggingHover.fillOverlayOpacity, 0)
         XCTAssertEqual(draggingHover.strokeOpacity, 0)
-        XCTAssertEqual(draggingHover.scale, 1)
         XCTAssertEqual(selectedHover.accent, .selected)
+        XCTAssertTrue(selectedHover.usesHoverFill)
         XCTAssertGreaterThan(selectedHover.strokeOpacity, hover.strokeOpacity)
-        XCTAssertEqual(reducedMotionHover.scale, 1)
+        XCTAssertTrue(reducedMotionHover.usesHoverFill)
         XCTAssertEqual(reducedMotionHover.animationDuration, 0)
     }
 
@@ -219,11 +228,13 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
 
         XCTAssertEqual(hover.accent, .neutral)
-        XCTAssertGreaterThan(hover.fillOverlayOpacity, 0)
+        XCTAssertTrue(hover.usesHoverFill)
+        XCTAssertEqual(hover.fillOverlayOpacity, 0)
         XCTAssertGreaterThan(hover.strokeOpacity, 0)
-        XCTAssertEqual(hover.scale, 1)
         XCTAssertEqual(focused.accent, .selected)
+        XCTAssertFalse(focused.usesHoverFill)
         XCTAssertGreaterThan(focused.strokeOpacity, hover.strokeOpacity)
+        XCTAssertFalse(disabled.usesHoverFill)
         XCTAssertEqual(disabled.fillOverlayOpacity, 0)
         XCTAssertEqual(disabled.foregroundOpacity, 0.45)
     }

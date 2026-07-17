@@ -360,26 +360,35 @@ private struct ProgramBoardInteractiveBackground: View {
         switch shape {
         case .capsule:
             Capsule()
-                .fill(BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1))
+                .fill(backgroundColor)
                 .overlay(Capsule().fill(Color.white.opacity(presentation.fillOverlayOpacity)))
-                .overlay(Capsule().stroke(strokeColor, lineWidth: 1))
+                .overlay(Capsule().strokeBorder(strokeColor, lineWidth: 1))
         case .circle:
             Circle()
-                .fill(BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1))
+                .fill(backgroundColor)
                 .overlay(Circle().fill(Color.white.opacity(presentation.fillOverlayOpacity)))
-                .overlay(Circle().stroke(strokeColor, lineWidth: 1))
+                .overlay(Circle().strokeBorder(strokeColor, lineWidth: 1))
         case .rounded(let radius):
             RoundedRectangle(cornerRadius: radius)
-                .fill(BoardDarkSurfaceStyle.contentFill.opacity(disabled ? 0.55 : 1))
+                .fill(backgroundColor)
                 .overlay(
                     RoundedRectangle(cornerRadius: radius)
                         .fill(Color.white.opacity(presentation.fillOverlayOpacity))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: radius)
-                        .stroke(strokeColor, lineWidth: 1)
+                        .strokeBorder(strokeColor, lineWidth: 1)
                 )
         }
+    }
+
+    private var backgroundColor: Color {
+        if disabled {
+            return BoardDarkSurfaceStyle.contentFill.opacity(0.55)
+        }
+        return presentation.usesHoverFill
+            ? BoardDarkSurfaceStyle.hoverFill
+            : BoardDarkSurfaceStyle.contentFill
     }
 
     private var strokeColor: Color {
@@ -422,11 +431,10 @@ private struct ProgramBoardControlChrome: ViewModifier {
                 )
             )
             .contentShape(Rectangle())
-            .scaleEffect(presentation.scale)
             .animation(
                 presentation.animationDuration == 0
                     ? nil
-                    : .easeOut(duration: presentation.animationDuration),
+                    : .timingCurve(0.165, 0.84, 0.44, 1, duration: presentation.animationDuration),
                 value: presentation
             )
             .focusable(!disabled)
@@ -736,11 +744,10 @@ private struct ProgramProjectCard: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.55)
-        .scaleEffect(presentation.scale)
         .animation(
             presentation.animationDuration == 0
                 ? nil
-                : .easeOut(duration: presentation.animationDuration),
+                : .timingCurve(0.165, 0.84, 0.44, 1, duration: presentation.animationDuration),
             value: presentation
         )
         .focusable(isEnabled)
@@ -1093,11 +1100,10 @@ private struct ProgramWorkCard: View {
                 disabled: false
             )
         )
-        .scaleEffect(presentation.scale)
         .animation(
             presentation.animationDuration == 0
                 ? nil
-                : .easeOut(duration: presentation.animationDuration),
+                : .timingCurve(0.165, 0.84, 0.44, 1, duration: presentation.animationDuration),
             value: presentation
         )
         .contentShape(Rectangle())
