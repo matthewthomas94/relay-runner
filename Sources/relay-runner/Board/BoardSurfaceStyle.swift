@@ -113,8 +113,8 @@ struct ProgramBoardInteractionPresentation: Equatable {
 
         if isSelected {
             return ProgramBoardInteractionPresentation(
-                usesHoverFill: usesHoverFill,
-                fillOverlayOpacity: usesHoverFill ? 0 : (surface == .control ? 0.08 : 0.075),
+                usesHoverFill: true,
+                fillOverlayOpacity: 0,
                 strokeOpacity: surface == .projectCard ? 0.48 : 0.30,
                 foregroundOpacity: 0.98,
                 animationDuration: duration,

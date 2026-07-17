@@ -151,6 +151,10 @@ final class ProgramBoardStatusTests: XCTestCase {
             surface: .projectCard,
             isHovered: true
         )
+        let selected = ProgramBoardInteractionPresentation.resolve(
+            surface: .projectCard,
+            isSelected: true
+        )
         let selectedHover = ProgramBoardInteractionPresentation.resolve(
             surface: .projectCard,
             isSelected: true,
@@ -168,6 +172,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(hoverFill?.redComponent ?? 0, 18 / 255, accuracy: 0.001)
         XCTAssertEqual(hoverFill?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
         XCTAssertEqual(hoverFill?.blueComponent ?? 0, 30 / 255, accuracy: 0.001)
+        XCTAssertEqual(selected.accent, .selected)
+        XCTAssertTrue(selected.usesHoverFill)
+        XCTAssertEqual(selected.fillOverlayOpacity, 0)
         XCTAssertEqual(selectedHover.accent, .selected)
         XCTAssertTrue(selectedHover.usesHoverFill)
         XCTAssertGreaterThan(selectedHover.strokeOpacity, hover.strokeOpacity)
