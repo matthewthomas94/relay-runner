@@ -279,7 +279,7 @@ final class NotchStatusPlacementTests: XCTestCase {
 
     private func expectedActivityLabelWidth(for label: String) -> CGFloat {
         let textWidth = (label as NSString).size(withAttributes: [
-            .font: AppTypography.appKitFont(.status),
+            .font: AppTypography.appKitFont(.notchStatus),
         ]).width
         return ceil(textWidth)
             + NotchActivityLabelRenderPolicy.textLeadingInset

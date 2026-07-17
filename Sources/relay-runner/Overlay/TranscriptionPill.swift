@@ -123,7 +123,7 @@ final class TranscriptionPill: NSView {
         surfaceContainerView.layer?.addSublayer(borderLayer)
 
         // Title label
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.font = AppTypography.appKitFont(.pillTitle)
         titleLabel.textColor = textColor
         titleLabel.maximumNumberOfLines = 1
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -140,7 +140,7 @@ final class TranscriptionPill: NSView {
 
         // Body label — sized to full content height even when overflowing
         // bodyContainer; the container does the clipping.
-        bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
+        bodyLabel.font = AppTypography.appKitFont(.pillBody)
         bodyLabel.textColor = textColor
         bodyLabel.maximumNumberOfLines = 0
         bodyLabel.lineBreakMode = .byWordWrapping
@@ -372,9 +372,9 @@ final class TranscriptionPill: NSView {
     }
 
     private func applyTypography() {
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.font = AppTypography.appKitFont(.pillTitle)
         titleLabel.textColor = textColor
-        bodyLabel.font = .systemFont(ofSize: 14, weight: .regular)
+        bodyLabel.font = AppTypography.appKitFont(.pillBody)
         bodyLabel.textColor = textColor
     }
 

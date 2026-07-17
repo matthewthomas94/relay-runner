@@ -21,6 +21,9 @@ final class AppTypographyTests: XCTestCase {
         )
         XCTAssertEqual(AppTypography.definition(for: .projectTitle).size, 13)
         XCTAssertEqual(AppTypography.definition(for: .ticketTitle).size, 13)
+        XCTAssertEqual(AppTypography.definition(for: .pillTitle).size, 13)
+        XCTAssertEqual(AppTypography.definition(for: .pillBody).size, 14)
+        XCTAssertEqual(AppTypography.definition(for: .notchStatus).size, 12)
         XCTAssertEqual(AppTypography.definition(for: .field).size, 13)
         XCTAssertEqual(AppTypography.definition(for: .metadata).size, 10)
         XCTAssertEqual(AppTypography.definition(for: .supporting).size, 10)
@@ -81,6 +84,18 @@ final class AppTypographyTests: XCTestCase {
         XCTAssertEqual(
             AppTypography.resolved(.menuTab, availablePostScriptNames: available),
             .init(postScriptName: "PPMori-SemiBold", size: 13, fallbackWeight: .semibold)
+        )
+        XCTAssertEqual(
+            AppTypography.resolved(.pillTitle, availablePostScriptNames: available),
+            .init(postScriptName: "PPMori-SemiBold", size: 13, fallbackWeight: .semibold)
+        )
+        XCTAssertEqual(
+            AppTypography.resolved(.pillBody, availablePostScriptNames: available),
+            .init(postScriptName: "PPTelegraf-Regular", size: 14, fallbackWeight: .regular)
+        )
+        XCTAssertEqual(
+            AppTypography.resolved(.notchStatus, availablePostScriptNames: available),
+            .init(postScriptName: "PPTelegraf-Regular", size: 12, fallbackWeight: .regular)
         )
     }
 

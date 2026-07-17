@@ -59,6 +59,9 @@ enum AppTypography {
         case controlHeading
         case projectTitle
         case ticketTitle
+        case pillTitle
+        case pillBody
+        case notchStatus
         case body
         case label
         case field
@@ -151,6 +154,12 @@ enum AppTypography {
             return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
         case .ticketTitle:
             return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+        case .pillTitle:
+            return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+        case .pillBody:
+            return Definition(face: .ppTelegrafRegular, size: 14, fallbackWeight: .regular)
+        case .notchStatus:
+            return Definition(face: .ppTelegrafRegular, size: 12, fallbackWeight: .regular)
         case .body:
             return Definition(face: .ppTelegrafRegular, size: 12, fallbackWeight: .regular)
         case .label:
