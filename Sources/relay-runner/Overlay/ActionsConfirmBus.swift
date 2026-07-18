@@ -51,6 +51,7 @@ actor ActionsConfirmBus {
     private let onParentPermissionRevoked: ((String, String) async -> Void)?
     private let onToggleBoard: (() async -> Void)?
     private let onActivateProject: ((String, String?) async -> ProjectActivationReply)?
+    private let onHostedToolPermissionMissing: ((PermissionKind, String) async -> Void)?
 
     /// Outstanding `propose_action` requests, keyed by request id. Value is
     /// the connection fd holding open the reply. When the user double-taps
@@ -77,11 +78,13 @@ actor ActionsConfirmBus {
     init(stateMachine: StateMachine,
          onParentPermissionRevoked: ((String, String) async -> Void)? = nil,
          onToggleBoard: (() async -> Void)? = nil,
-         onActivateProject: ((String, String?) async -> ProjectActivationReply)? = nil) {
+         onActivateProject: ((String, String?) async -> ProjectActivationReply)? = nil,
+         onHostedToolPermissionMissing: ((PermissionKind, String) async -> Void)? = nil) {
         self.stateMachine = stateMachine
         self.onParentPermissionRevoked = onParentPermissionRevoked
         self.onToggleBoard = onToggleBoard
         self.onActivateProject = onActivateProject
+        self.onHostedToolPermissionMissing = onHostedToolPermissionMissing
     }
 
     func start() {
@@ -263,6 +266,10 @@ actor ActionsConfirmBus {
             case .success(let content):
                 writePayload(fd: fd, payload: ["result": "ok", "content": content])
             case .failure(let message):
+                if let permission = RelayHostedTool.requiredPermission(for: tool),
+                   RelayHostedTool.isMissingPermissionFailure(message, for: permission) {
+                    await onHostedToolPermissionMissing?(permission, arguments["purpose"] as? String ?? "")
+                }
                 writePayload(fd: fd, payload: ["result": "error", "message": message])
             }
             close(fd)

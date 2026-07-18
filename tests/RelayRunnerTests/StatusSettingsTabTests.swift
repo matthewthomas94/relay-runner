@@ -45,8 +45,19 @@ final class StatusSettingsTabTests: XCTestCase {
         )
         XCTAssertEqual(
             StatusSettingsTab.permissionActionIntent(kind: .screenRecording, status: .denied),
-            .openSettings(.screenRecording)
+            .requestSetup(.screenRecording)
         )
         XCTAssertNil(StatusSettingsTab.permissionActionIntent(kind: .screenRecording, status: .granted))
+    }
+
+    func testListPermissionsUseSharedSetupIntent() {
+        XCTAssertEqual(
+            StatusSettingsTab.permissionActionIntent(kind: .accessibility, status: .denied),
+            .requestSetup(.accessibility)
+        )
+        XCTAssertEqual(
+            StatusSettingsTab.permissionActionIntent(kind: .inputMonitoring, status: .notDetermined),
+            .requestSetup(.inputMonitoring)
+        )
     }
 }

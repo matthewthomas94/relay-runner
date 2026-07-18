@@ -30,12 +30,7 @@ struct ParentOnboardingView: View {
                 buttonTitle: "Open Screen Recording Settings",
                 action: openScreenRecording
             )
-            PermissionAppDragGuide(
-                title: "Drag Relay Runner if it is missing",
-                settingsPane: "Accessibility or Screen Recording",
-                targets: [PermissionAppTarget(displayName: "Relay Runner.app", bundleURL: Bundle.main.bundleURL)],
-                highlightTargets: true
-            )
+            relayRunnerFallbackGuide
             relaunchHint
             Spacer(minLength: 0)
             footer
@@ -112,6 +107,34 @@ struct ParentOnboardingView: View {
 
     private var targetList: String {
         ParentPermissionGuidance.targetList(detectedParent: parent)
+    }
+
+    private var relayRunnerFallbackGuide: some View {
+        let plan = PermissionCompanionFallbackPlan.make(
+            permission: .accessibility,
+            purpose: "Relay Actions and Relay Vision use Relay Runner's app-hosted permissions.",
+            bundleURL: Bundle.main.bundleURL
+        )
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "folder.badge.plus")
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("If Relay Runner is missing")
+                    .font(AppTypography.font(.cardHeading))
+                Text("Reveal Relay Runner in Finder, then use System Settings' + button in Accessibility or Screen Recording to add Relay Runner.app manually.")
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Reveal Relay Runner in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([plan.revealURL])
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+        .accessibilityLabel(plan.accessibilityLabel)
+        .accessibilityHint(plan.instructions)
     }
 
     private var footer: some View {

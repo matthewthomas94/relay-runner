@@ -37,6 +37,9 @@ struct OnboardingView: View {
     /// Used by the Start Session CTA on the Ready step so the user can
     /// kick off a session without going back to the menu bar.
     let onStartSession: () -> Void
+    let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
+    let cancelPermissionSetup: (PermissionSetupSource?) -> Void
+    let shouldDeferPermissionAdvance: (PermissionKind) -> Bool
     let onFinish: () -> Void
 
     @State private var step: Step
@@ -69,6 +72,7 @@ struct OnboardingView: View {
     /// back to System Settings every time polling updates.
     @State private var autoOpenedPermissionKinds: Set<PermissionKind> = []
     @State private var autoOpenedParentPermissionSteps: Set<OnboardingStepID> = []
+    @State private var autoAdvancedPermissionKinds: Set<PermissionKind> = []
 
     init(permissions: PermissionsManager,
          simplified: Bool,
@@ -86,6 +90,9 @@ struct OnboardingView: View {
          onSetCodexReasoningEffort: @escaping (String) -> Void = { _ in },
          onSetWorkingDirectory: @escaping (String) -> Void = { _ in },
          onStartSession: @escaping () -> Void = {},
+         requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
+         cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
+         shouldDeferPermissionAdvance: @escaping (PermissionKind) -> Bool = { _ in false },
          onFinish: @escaping () -> Void) {
         self.permissions = permissions
         self.simplified = simplified
@@ -101,6 +108,9 @@ struct OnboardingView: View {
         self.onSetCodexReasoningEffort = onSetCodexReasoningEffort
         self.onSetWorkingDirectory = onSetWorkingDirectory
         self.onStartSession = onStartSession
+        self.requestPermissionSetup = requestPermissionSetup
+        self.cancelPermissionSetup = cancelPermissionSetup
+        self.shouldDeferPermissionAdvance = shouldDeferPermissionAdvance
         self.onFinish = onFinish
         let startingProvider = resumeState?.provider ?? initialAgentProvider
         let startingSelection = Self.normalizedInitialSelection(
@@ -135,8 +145,8 @@ struct OnboardingView: View {
         case welcome
         case agentChoice
         case microphone
-        case inputMonitoring
         case parentAccessibility
+        case inputMonitoring
         case parentScreenRecording
         case pythonSetup
         case agentLogin
@@ -145,7 +155,9 @@ struct OnboardingView: View {
         var kind: PermissionKind? {
             switch self {
             case .microphone:      return .microphone
+            case .parentAccessibility: return .accessibility
             case .inputMonitoring: return .inputMonitoring
+            case .parentScreenRecording: return .screenRecording
             default:               return nil
             }
         }
@@ -174,8 +186,10 @@ struct OnboardingView: View {
             case .agentChoice:       self = .agentChoice
             case .microphone:        self = .microphone
             case .inputMonitoring:   self = .inputMonitoring
-            case .parentAccessibility, .parentScreenRecording, .parentPermissions:
-                self = .pythonSetup
+            case .parentAccessibility, .parentPermissions:
+                self = .parentAccessibility
+            case .parentScreenRecording:
+                self = .parentScreenRecording
             case .pythonSetup:       self = .pythonSetup
             case .agentLogin:        self = .agentLogin
             case .ready:             self = .ready
@@ -211,6 +225,8 @@ struct OnboardingView: View {
             openPermissionPaneAutomaticallyIfNeeded()
         }
         .onChange(of: step) { _, new in
+            cancelPermissionSetup(.onboarding)
+            autoAdvancedPermissionKinds.removeAll()
             persistResume()
             if new == .pythonSetup {
                 venvInstaller.install()
@@ -235,8 +251,21 @@ struct OnboardingView: View {
         .onChange(of: permissions.microphone) { _, new in
             autoAdvance(for: .microphone, status: new)
         }
+        .onChange(of: permissions.accessibility) { _, new in
+            autoAdvance(for: .accessibility, status: new)
+        }
         .onChange(of: permissions.inputMonitoring) { _, new in
             autoAdvance(for: .inputMonitoring, status: new)
+        }
+        .onChange(of: permissions.screenRecording) { _, new in
+            autoAdvance(for: .screenRecording, status: new)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .relayPermissionSetupGrantReady)) { notification in
+            guard let raw = notification.object as? String,
+                  let kind = PermissionKind(rawValue: raw) else {
+                return
+            }
+            autoAdvance(for: kind, status: .granted)
         }
         .onChange(of: venvInstaller.status) { _, new in
             // Auto-advance off pythonSetup as soon as the bootstrap
@@ -257,6 +286,9 @@ struct OnboardingView: View {
             if now {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
             }
+        }
+        .onDisappear {
+            cancelPermissionSetup(.onboarding)
         }
     }
 
@@ -285,8 +317,8 @@ struct OnboardingView: View {
         case .agentChoice:      agentChoiceView
         case .microphone:       permissionView(for: .microphone)
         case .inputMonitoring:  permissionView(for: .inputMonitoring)
-        case .parentAccessibility: parentPermissionStepView(for: .accessibility)
-        case .parentScreenRecording: parentPermissionStepView(for: .screenRecording)
+        case .parentAccessibility: permissionView(for: .accessibility)
+        case .parentScreenRecording: permissionView(for: .screenRecording)
         case .pythonSetup:      pythonSetupView
         case .agentLogin:       agentLoginView
         case .ready:            readyView
@@ -296,7 +328,10 @@ struct OnboardingView: View {
     private var footer: some View {
         HStack {
             if step != .welcome && step != .ready && step != .agentChoice {
-                Button("Skip") { advance() }
+                Button("Skip") {
+                    cancelPermissionSetup(.onboarding)
+                    advance()
+                }
                     .buttonStyle(.link)
             }
             Spacer()
@@ -528,18 +563,49 @@ struct OnboardingView: View {
                             .stroke(Color.secondary.opacity(0.25))
                     )
             }
-            if kind == .inputMonitoring {
-                PermissionAppDragGuide(
-                    title: "Drag Relay Runner into the list",
-                    settingsPane: "Input Monitoring",
-                    targets: [Self.relayRunnerAppTarget]
-                )
+            if kind != .microphone {
+                permissionAlternativeBox(for: kind)
             }
             if restricted {
                 mdmRestrictionBox(for: kind)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func permissionAlternativeBox(for kind: PermissionKind) -> some View {
+        let plan = PermissionCompanionFallbackPlan.make(
+            permission: kind,
+            purpose: permissionExplanation(for: kind),
+            bundleURL: Bundle.main.bundleURL
+        )
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "folder.badge.plus")
+                .foregroundStyle(.secondary)
+                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Keyboard alternative")
+                    .font(AppTypography.font(.cardHeading))
+                Text(plan.instructions)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Reveal Relay Runner in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([plan.revealURL])
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.25))
+        )
+        .accessibilityLabel(plan.accessibilityLabel)
+        .accessibilityHint(plan.instructions)
     }
 
     /// Yellow warning box shown when the MDM-restriction heuristic fires —
@@ -598,15 +664,10 @@ struct OnboardingView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Button(actionTitle) {
-                openParentPermissionSettings(for: kind)
+                requestPermissionSetup(kind, .onboarding, parentPermissionStepExplanation(for: kind))
             }
 
-            PermissionAppDragGuide(
-                title: "Drag Relay Runner into \(title)",
-                settingsPane: title,
-                targets: [PermissionAppTarget(displayName: "Relay Runner.app", bundleURL: Bundle.main.bundleURL)],
-                highlightTargets: true
-            )
+            permissionAlternativeBox(for: kind)
 
             parentPermissionVerificationNote(for: kind)
         }
@@ -1040,16 +1101,16 @@ struct OnboardingView: View {
                 // First-ever ask: AVCaptureDevice.requestAccess shows the
                 // standard system prompt.
                 Button("Grant Microphone Access") {
-                    permissions.requestMicrophonePrompt { _ in }
+                    requestPermissionSetup(.microphone, .onboarding, permissionExplanation(for: .microphone))
                 }.keyboardShortcut(.defaultAction)
             case .denied:
                 Button("Ask Again") {
-                    permissions.requestMicrophonePrompt { _ in }
+                    requestPermissionSetup(.microphone, .onboarding, permissionExplanation(for: .microphone))
                 }.keyboardShortcut(.defaultAction)
             case .restricted:
                 Button("Open System Settings") {
                     persistResume()
-                    permissions.openSettings(for: .microphone)
+                    requestPermissionSetup(.microphone, .onboarding, permissionExplanation(for: .microphone))
                 }.keyboardShortcut(.defaultAction)
             }
         case .inputMonitoring:
@@ -1058,30 +1119,18 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             case .notDetermined, .denied:
                 Button("Open Input Monitoring Settings") {
-                    requestInputMonitoringPermission()
+                    requestPermissionSetup(.inputMonitoring, .onboarding, permissionExplanation(for: .inputMonitoring))
                 }.keyboardShortcut(.defaultAction)
             case .restricted:
                 Button("Open System Settings") {
                     persistResume()
-                    permissions.openSettings(for: .inputMonitoring)
+                    requestPermissionSetup(.inputMonitoring, .onboarding, permissionExplanation(for: .inputMonitoring))
                 }.keyboardShortcut(.defaultAction)
             }
         case .parentAccessibility:
-            Button("Continue to Screen Recording") {
-                advance()
-            }
-            .keyboardShortcut(.defaultAction)
+            permissionRequestButton(for: .accessibility)
         case .parentScreenRecording:
-            Button("Continue") {
-                parentPermissionsReviewed = true
-                OnboardingResumeState.save(
-                    step: step.resumeID,
-                    provider: selectedAgentProvider,
-                    parentPermissionsReviewed: true
-                )
-                advance()
-            }
-            .keyboardShortcut(.defaultAction)
+            permissionRequestButton(for: .screenRecording)
         case .pythonSetup:
             switch venvInstaller.status {
             case .succeeded:
@@ -1147,6 +1196,25 @@ struct OnboardingView: View {
         }
     }
 
+    @ViewBuilder
+    private func permissionRequestButton(for kind: PermissionKind) -> some View {
+        switch permissions.status(for: kind) {
+        case .granted:
+            Button("Continue") { advance() }
+                .keyboardShortcut(.defaultAction)
+        case .notDetermined, .denied:
+            Button("Open \(kind.displayName) Settings") {
+                requestPermissionSetup(kind, .onboarding, permissionExplanation(for: kind))
+            }
+            .keyboardShortcut(.defaultAction)
+        case .restricted:
+            Button("Open System Settings") {
+                requestPermissionSetup(kind, .onboarding, permissionExplanation(for: kind))
+            }
+            .keyboardShortcut(.defaultAction)
+        }
+    }
+
     // MARK: - Advance
 
     private func advance() {
@@ -1184,9 +1252,16 @@ struct OnboardingView: View {
     }
 
     private func autoAdvance(for kind: PermissionKind, status: PermissionStatus) {
-        guard status == .granted, step.kind == kind else { return }
+        guard status == .granted,
+              step.kind == kind,
+              !autoAdvancedPermissionKinds.contains(kind),
+              !shouldDeferPermissionAdvance(kind) else { return }
+        autoAdvancedPermissionKinds.insert(kind)
         // Small delay so the user sees the green check before the view flips
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard step.kind == kind else { return }
+            advance()
+        }
     }
 
     static func normalizedInitialSelection(
@@ -1341,7 +1416,15 @@ struct OnboardingView: View {
                                       agentSignedIn: Bool,
                                       parentPermissionsReviewed: Bool) -> [Step] {
         if !simplified {
-            return [.agentChoice, .microphone, .inputMonitoring, .pythonSetup, .agentLogin]
+            return [
+                .agentChoice,
+                .microphone,
+                .parentAccessibility,
+                .inputMonitoring,
+                .parentScreenRecording,
+                .pythonSetup,
+                .agentLogin,
+            ]
         }
         var steps: [Step] = []
         for s in Step.allCases {
@@ -1398,11 +1481,11 @@ struct OnboardingView: View {
             }
             return "This Mac is blocking microphone access. Open System Settings to inspect Relay Runner under Microphone."
         case .accessibility:
-            return "Click the button below. In System Settings, find Relay Runner in the list and switch it on. This window will update automatically when you're done."
+            return "Relay Runner opens Accessibility automatically and shows a small draggable companion beside System Settings. Drag Relay Runner.app into the list if it is missing, then turn on its switch."
         case .inputMonitoring:
-            return "Relay Runner opens Input Monitoring automatically. Drag the app icon below into the applications list if it is missing, then turn on the switch. If macOS asks to quit and reopen, approve it — Relay Runner resumes here."
+            return "Relay Runner opens Input Monitoring automatically and shows a small draggable companion beside System Settings. Drag Relay Runner.app into the list if it is missing, then turn on its switch. If macOS asks to quit and reopen, approve it — Relay Runner resumes here."
         case .screenRecording:
-            return "Click the button below. In System Settings, find Relay Runner under Screen Recording and switch it on."
+            return "Relay Runner opens Screen Recording automatically and shows a small draggable companion beside System Settings. Drag Relay Runner.app into the list if it is missing, then turn on its switch. If macOS asks to quit and reopen, Relay Runner resumes here."
         }
     }
 
@@ -1489,16 +1572,16 @@ struct OnboardingView: View {
 
     private func requestInputMonitoringPermission() {
         persistResume()
-        permissions.registerForInputMonitoringList()
-        permissions.promptInputMonitoring()
-        permissions.openSettings(for: .inputMonitoring)
+        requestPermissionSetup(.inputMonitoring, .onboarding, permissionExplanation(for: .inputMonitoring))
     }
 
     private var currentReadiness: GuidedSetupReadiness {
         GuidedSetupReadiness(
             provider: selectedAgentProvider,
             microphone: permissions.microphone,
+            accessibility: permissions.accessibility,
             inputMonitoring: permissions.inputMonitoring,
+            screenRecording: permissions.screenRecording,
             pythonInstalled: venvReady,
             agentSignedIn: agentSignedIn,
             parentPermissionsReviewed: parentPermissionsReviewed
@@ -1570,32 +1653,19 @@ struct OnboardingView: View {
     }
 
     private func openPermissionPaneAutomaticallyIfNeeded() {
-        if step == .inputMonitoring {
-            guard permissions.inputMonitoring != .granted,
-                  !autoOpenedPermissionKinds.contains(.inputMonitoring) else {
+        if let kind = step.kind, kind != .microphone {
+            guard permissions.status(for: kind) != .granted,
+                  !autoOpenedPermissionKinds.contains(kind) else {
                 return
             }
-            autoOpenedPermissionKinds.insert(.inputMonitoring)
+            autoOpenedPermissionKinds.insert(kind)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                guard step == .inputMonitoring,
-                      permissions.inputMonitoring != .granted else {
+                guard step.kind == kind,
+                      permissions.status(for: kind) != .granted else {
                     return
                 }
-                requestInputMonitoringPermission()
+                requestPermissionSetup(kind, .onboarding, permissionExplanation(for: kind))
             }
-            return
-        }
-
-        guard let parentKind = parentPermissionKind(for: step),
-              !autoOpenedParentPermissionSteps.contains(step.resumeID) else {
-            return
-        }
-        autoOpenedParentPermissionSteps.insert(step.resumeID)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            guard parentPermissionKind(for: step) == parentKind else {
-                return
-            }
-            openParentPermissionSettings(for: parentKind)
         }
     }
 

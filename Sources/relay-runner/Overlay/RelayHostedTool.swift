@@ -14,6 +14,28 @@ enum RelayHostedToolResult {
 }
 
 enum RelayHostedTool {
+    static func requiredPermission(for tool: String) -> PermissionKind? {
+        switch tool {
+        case "click", "type", "key", "scroll":
+            return .accessibility
+        case "screenshot":
+            return .screenRecording
+        default:
+            return nil
+        }
+    }
+
+    static func isMissingPermissionFailure(_ message: String, for permission: PermissionKind) -> Bool {
+        switch permission {
+        case .accessibility:
+            return message.contains("Accessibility permission is not granted to Relay Runner")
+        case .screenRecording:
+            return message.contains("Screen Recording permission is not granted to Relay Runner")
+        case .microphone, .inputMonitoring:
+            return false
+        }
+    }
+
     static func perform(tool: String, arguments: [String: Any]) async -> RelayHostedToolResult {
         do {
             switch tool {

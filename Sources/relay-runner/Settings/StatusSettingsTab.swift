@@ -2,8 +2,7 @@ import SwiftUI
 
 enum PermissionActionIntent: Equatable {
     case requestMicrophonePrompt
-    case restoreInputMonitoring
-    case openSettings(PermissionKind)
+    case requestSetup(PermissionKind)
 }
 
 /// Flat list of every component the app depends on, with a live status
@@ -272,19 +271,19 @@ struct StatusSettingsTab: View {
         }
         if kind == .inputMonitoring {
             return RowAction(title: title, systemImage: "keyboard") {
-                appState.permissions.registerForInputMonitoringList()
-                appState.permissions.promptInputMonitoring()
-                appState.permissions.openSettings(for: kind)
+                appState.requestPermissionSetup(
+                    kind,
+                    source: .settingsStatus,
+                    purpose: Self.permissionDetailText(kind: kind, status: status, restricted: false)
+                )
             }
         }
         return RowAction(title: title, systemImage: "gearshape") {
-            switch kind {
-            case .accessibility:   appState.permissions.promptAccessibility()
-            case .inputMonitoring: appState.permissions.promptInputMonitoring()
-            case .screenRecording: appState.permissions.promptScreenRecording()
-            case .microphone:      break
-            }
-            appState.permissions.openSettings(for: kind)
+            appState.requestPermissionSetup(
+                kind,
+                source: .settingsStatus,
+                purpose: Self.permissionDetailText(kind: kind, status: status, restricted: false)
+            )
         }
     }
 
@@ -306,12 +305,8 @@ struct StatusSettingsTab: View {
         switch kind {
         case .microphone:
             return .requestMicrophonePrompt
-        case .accessibility:
-            return .openSettings(kind)
-        case .inputMonitoring:
-            return .restoreInputMonitoring
-        case .screenRecording:
-            return .openSettings(kind)
+        case .accessibility, .inputMonitoring, .screenRecording:
+            return .requestSetup(kind)
         }
     }
 

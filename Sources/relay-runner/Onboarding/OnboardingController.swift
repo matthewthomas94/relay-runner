@@ -72,6 +72,9 @@ final class OnboardingController {
     /// the menu bar.
     private let startSession: () -> Void
     private let setOnboardingNotchOverrideActive: (Bool) -> Void
+    private let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
+    private let cancelPermissionSetup: (PermissionSetupSource?) -> Void
+    private let shouldDeferPermissionAdvance: (PermissionKind) -> Bool
     private let makeIntroController: () -> any OnboardingIntroPresenting
     private let reduceMotion: () -> Bool
 
@@ -88,6 +91,9 @@ final class OnboardingController {
          setWorkingDirectory: @escaping (String) -> Void = { _ in },
          startSession: @escaping () -> Void = {},
          setOnboardingNotchOverrideActive: @escaping (Bool) -> Void = { _ in },
+         requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
+         cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
+         shouldDeferPermissionAdvance: @escaping (PermissionKind) -> Bool = { _ in false },
          makeIntroController: @escaping () -> any OnboardingIntroPresenting = { OnboardingIntroController() },
          reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
         self.flagURLs = flagURLs
@@ -103,6 +109,9 @@ final class OnboardingController {
         self.setWorkingDirectory = setWorkingDirectory
         self.startSession = startSession
         self.setOnboardingNotchOverrideActive = setOnboardingNotchOverrideActive
+        self.requestPermissionSetup = requestPermissionSetup
+        self.cancelPermissionSetup = cancelPermissionSetup
+        self.shouldDeferPermissionAdvance = shouldDeferPermissionAdvance
         self.makeIntroController = makeIntroController
         self.reduceMotion = reduceMotion
     }
@@ -159,7 +168,7 @@ final class OnboardingController {
     ///     focused flow that lands on Ready immediately when setup is complete.
     func showIfNeeded() {
         if hasOnboarded {
-            if !hasChosenAgent || !permissions.allGranted || !hasRunSession {
+            if !hasChosenAgent || !permissions.guidedSetupGranted || !hasRunSession {
                 show(simplified: true)
             }
         } else if wasInterrupted {
@@ -251,6 +260,15 @@ final class OnboardingController {
             },
             onSetWorkingDirectory: { [weak self] path in self?.setWorkingDirectory(path) },
             onStartSession: { [weak self] in self?.startSession() },
+            requestPermissionSetup: { [weak self] kind, source, purpose in
+                self?.requestPermissionSetup(kind, source, purpose)
+            },
+            cancelPermissionSetup: { [weak self] source in
+                self?.cancelPermissionSetup(source)
+            },
+            shouldDeferPermissionAdvance: { [weak self] kind in
+                self?.shouldDeferPermissionAdvance(kind) ?? false
+            },
             onFinish: { [weak self] in self?.finish() }
         )
 
@@ -264,6 +282,7 @@ final class OnboardingController {
         window.center()
         window.isReleasedWhenClosed = false
         let delegate = OnboardingWindowDelegate { [weak self] in
+            self?.cancelPermissionSetup(.onboarding)
             self?.windowController = nil
             self?.windowDelegate = nil
             NSApp.setActivationPolicy(.accessory)
@@ -285,6 +304,7 @@ final class OnboardingController {
     /// Mark the flag file and close the window. Called when the user
     /// completes or skips past the final step.
     private func finish() {
+        cancelPermissionSetup(.onboarding)
         try? Data().write(to: flagURLs.onboarded)
         OnboardingResumeState.clear()
         // Started flag is no longer meaningful once onboarding has completed.
