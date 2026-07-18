@@ -28,27 +28,29 @@ struct TTSSettingsTab: View {
                                 Text(formatVoiceName(voice)).tag(voice)
                             }
                         }
-                        Button(action: previewSelectedVoice) {
-                            if isPreviewing {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Image(systemName: "play.circle.fill")
-                                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-                            }
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(isPreviewing)
-                        .accessibilityLabel(isPreviewing ? "Previewing voice" : "Preview voice")
-                        .help("Preview this voice")
+                        SettingsActionButton(
+                            title: "Preview",
+                            systemImage: isPreviewing ? "hourglass" : "play.fill",
+                            prominence: .icon,
+                            isEnabled: !isPreviewing,
+                            accessibilityLabel: isPreviewing ? "Previewing voice" : "Preview voice",
+                            helpText: "Preview this voice",
+                            action: previewSelectedVoice
+                        )
                     }
                 }
 
-                if let previewError {
+                if isPreviewing || previewError != nil {
                     SettingsDivider()
                     SettingsRow {
-                        Text(previewError)
+                        SettingsInlineStatus(
+                            text: previewStatusText,
+                            semanticColor: previewError == nil ? .relayAccent : .error,
+                            reservedWidth: 170
+                        )
+                        Text(previewError ?? "Generating preview audio\u{2026}")
                             .font(AppTypography.font(.settingsDescription))
-                            .foregroundStyle(SettingsSurfaceColor.error)
+                            .foregroundStyle(previewError == nil ? SettingsSurfaceColor.secondaryText : SettingsSurfaceColor.error)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -68,6 +70,8 @@ struct TTSSettingsTab: View {
                 SettingsControlRow("Speech Speed") {
                     HStack(spacing: 8) {
                         Slider(value: $config.rate, in: 0.5...2.0, step: 0.1)
+                            .accessibilityLabel("Speech speed")
+                            .accessibilityValue(Self.speechSpeedAccessibilityValue(config.rate))
                         Text("\(String(format: "%.1f", config.rate))x")
                             .font(AppTypography.monospacedFont(size: 11))
                             .foregroundStyle(SettingsSurfaceColor.secondaryText)
@@ -115,6 +119,17 @@ struct TTSSettingsTab: View {
         let gender = prefix.last == "f" ? "Female" : "Male"
         let name = parts[1].prefix(1).uppercased() + parts[1].dropFirst()
         return "\(name) (\(accent) \(gender))"
+    }
+
+    private var previewStatusText: String {
+        if previewError != nil {
+            return "Preview failed"
+        }
+        return "Previewing"
+    }
+
+    static func speechSpeedAccessibilityValue(_ rate: Double) -> String {
+        "\(String(format: "%.1f", rate)) times"
     }
 
     private func previewSelectedVoice() {

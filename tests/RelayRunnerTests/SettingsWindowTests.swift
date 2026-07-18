@@ -19,6 +19,13 @@ final class SettingsWindowTests: XCTestCase {
         }
     }
 
+    func testSettingsCategoryKeyboardMovementClampsAtEnds() {
+        XCTAssertEqual(SettingsCategory.category(after: .status), .speechToText)
+        XCTAssertEqual(SettingsCategory.category(before: .speechToText), .status)
+        XCTAssertEqual(SettingsCategory.category(before: .status), .status)
+        XCTAssertEqual(SettingsCategory.category(after: .awareness), .awareness)
+    }
+
     func testWorkspaceSurfacesUseExplicitFillWidthSizing() {
         XCTAssertEqual(WorkspaceSurfaceSizing.terminalMaxWidth, .infinity)
         XCTAssertEqual(WorkspaceSurfaceSizing.settingsMaxWidth, .infinity)
@@ -41,6 +48,9 @@ final class SettingsWindowTests: XCTestCase {
     func testWorkspaceSettingsDoesNotAddStandaloneChrome() {
         XCTAssertTrue(SettingsContentStyle.window.usesStandaloneChrome)
         XCTAssertFalse(SettingsContentStyle.workspace.usesStandaloneChrome)
+        XCTAssertFalse(SettingsContentStyle.window.showsEmbeddedHairline)
+        XCTAssertTrue(SettingsContentStyle.workspace.showsEmbeddedHairline)
+        XCTAssertEqual(SettingsContentStyle.workspace.embeddedCornerRadius, 16)
     }
 
     func testSettingsDescriptionTypographyIsReadable() {
@@ -51,7 +61,7 @@ final class SettingsWindowTests: XCTestCase {
 
     func testSettingsSemanticColorsUsePurpleForDirtyAndFocusStates() {
         XCTAssertEqual(SettingsFooterPresentation(hasChanges: true).iconSemanticColor, .relayAccent)
-        XCTAssertEqual(SettingsFooterPresentation(hasChanges: false).iconSemanticColor, .success)
+        XCTAssertEqual(SettingsFooterPresentation(hasChanges: false).iconSemanticColor, .idle)
 
         let accent = SettingsSurfaceColor.relayAccentNSColor
             .usingColorSpace(.sRGB)!
@@ -129,6 +139,8 @@ final class SettingsWindowTests: XCTestCase {
         )
         XCTAssertGreaterThan(dirty.foregroundOpacity, clean.foregroundOpacity)
         XCTAssertGreaterThan(dirty.accentOpacity, clean.accentOpacity)
+        XCTAssertGreaterThan(dirty.neutralFillOpacity, clean.neutralFillOpacity)
+        XCTAssertGreaterThan(dirty.neutralStrokeOpacity, clean.neutralStrokeOpacity)
         XCTAssertEqual(dirty.animationDuration, ProgramBoardInteractionPresentation.motionDuration)
 
         let focusedReduceMotion = SettingsActionPresentation.resolve(
@@ -141,7 +153,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(focusedReduceMotion.animationDuration, 0)
     }
 
-    func testSettingsDetailContentKeepsNativeVerticalScrollIndicator() throws {
+    func testSettingsDetailContentUsesQuietWorkspaceScrollTreatment() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -149,8 +161,62 @@ final class SettingsWindowTests: XCTestCase {
         let source = root.appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        XCTAssertTrue(contents.contains("ScrollView(.vertical, showsIndicators: true)"))
-        XCTAssertFalse(contents.contains("ScrollView(.vertical, showsIndicators: false)"))
+        XCTAssertTrue(contents.contains("ScrollView(.vertical, showsIndicators: false)"))
+        XCTAssertTrue(contents.contains("ScrollViewReader"))
+        XCTAssertTrue(contents.contains("proxy.scrollTo(target, anchor: .top)"))
+        XCTAssertFalse(contents.contains("ScrollView(.vertical, showsIndicators: true)"))
+    }
+
+    func testSettingsFooterLivesInsideDetailPlaneWithRevertAction() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("SettingsDetailHeader(category: selectedCategory, style: style)"))
+        XCTAssertTrue(contents.contains("SettingsActionButton(\n                title: \"Revert\""))
+        XCTAssertTrue(contents.contains("draft = appState.config"))
+        XCTAssertFalse(contents.contains("not selected"))
+    }
+
+    func testSettingsSlidersExposeProgrammaticValues() {
+        XCTAssertEqual(TTSSettingsTab.speechSpeedAccessibilityValue(1.3), "1.3 times")
+        XCTAssertEqual(AwarenessSettingsTab.particleIntensityAccessibilityValue(0.73), "73 percent")
+    }
+
+    func testSTTInputDeviceIsReadOnlyPresentation() throws {
+        XCTAssertEqual(STTSettingsTab.inputDeviceDisplayName("default"), "System Default")
+        XCTAssertEqual(STTSettingsTab.inputDeviceDisplayName("  Studio Mic  "), "Studio Mic")
+        XCTAssertEqual(STTSettingsTab.inputDeviceAccessibilityValue("default"), "System Default, read-only")
+
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Settings/STTSettingsTab.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertFalse(contents.contains("Picker(\"Input Device\""))
+        XCTAssertFalse(contents.contains("Picker(\"Input Mode\""))
+        XCTAssertTrue(contents.contains("config.input_mode == \"push_to_talk\""))
+    }
+
+    func testKeyCaptureExposesAccessibleResetAndCancelRecovery() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Settings/KeyCaptureView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("accessibilityLabel(\"Reset \\(label) to Caps Lock\")"))
+        XCTAssertTrue(contents.contains("override func accessibilityRole() -> NSAccessibility.Role?"))
+        XCTAssertTrue(contents.contains("override func accessibilityPerformPress() -> Bool"))
+        XCTAssertTrue(contents.contains("override func keyDown(with event: NSEvent)"))
+        XCTAssertTrue(contents.contains("restoreCommittedDisplay()"))
+        XCTAssertFalse(contents.contains("xmark.circle.fill"))
     }
 
     func testSettingsSourceDoesNotUseOrangeStyling() throws {

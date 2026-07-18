@@ -1,10 +1,23 @@
 import SwiftUI
 
+enum PermissionActionIntent: Equatable {
+    case requestMicrophonePrompt
+    case restoreInputMonitoring
+    case openSettings(PermissionKind)
+}
+
 /// Flat list of every component the app depends on, with a live status
 /// indicator and an action button where one makes sense. Designed to be the
 /// single place a user (or support request) can look to answer "what's
 /// wrong with my install?" without digging through logs.
 struct StatusSettingsTab: View {
+    static let privacyPermissionOrder: [PermissionKind] = [
+        .microphone,
+        .accessibility,
+        .inputMonitoring,
+        .screenRecording,
+    ]
+
     @Bindable var appState: AppState
 
     @State private var venvPresent: Bool = false
@@ -28,11 +41,12 @@ struct StatusSettingsTab: View {
             }
 
             SettingsSection("Privacy Permissions") {
-                permissionRow(.microphone)
-                SettingsDivider()
-                permissionRow(.accessibility)
-                SettingsDivider()
-                permissionRow(.inputMonitoring)
+                ForEach(Array(Self.privacyPermissionOrder.enumerated()), id: \.element) { index, kind in
+                    if index > 0 {
+                        SettingsDivider()
+                    }
+                    permissionRow(kind)
+                }
             }
 
             SettingsSection("Runtime") {
@@ -47,7 +61,10 @@ struct StatusSettingsTab: View {
                 SettingsRow {
                     Text("Setup walkthrough")
                     Spacer(minLength: 0)
-                    Button("Re-run Setup Walkthrough\u{2026}") {
+                    SettingsActionButton(
+                        title: "Re-run Setup Walkthrough\u{2026}",
+                        systemImage: "arrow.clockwise"
+                    ) {
                         appState.onboarding.showAlways()
                     }
                 }
@@ -81,12 +98,15 @@ struct StatusSettingsTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Button("Dismiss") {
+            SettingsActionButton(
+                title: "Dismiss",
+                systemImage: "xmark",
+                prominence: .secondary
+            ) {
                 for kind in appState.permissions.resetSinceLastRun {
                     appState.permissions.acknowledgeReset(kind)
                 }
             }
-            .buttonStyle(.borderless)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -137,7 +157,7 @@ struct StatusSettingsTab: View {
             state: state,
             detail: detail,
             action: appState.sttEngineError == nil ? nil :
-                RowAction(title: "Retry Setup") { appState.retrySTTSetup() }
+                RowAction(title: "Retry Setup", systemImage: "arrow.clockwise") { appState.retrySTTSetup() }
         )
     }
 
@@ -160,6 +180,7 @@ struct StatusSettingsTab: View {
 
     private struct RowAction {
         let title: String
+        let systemImage: String?
         let perform: () -> Void
     }
 
@@ -179,7 +200,12 @@ struct StatusSettingsTab: View {
             }
             Spacer()
             if let action {
-                Button(action.title) { action.perform() }
+                SettingsActionButton(
+                    title: action.title,
+                    systemImage: action.systemImage,
+                    prominence: .secondary,
+                    action: action.perform
+                )
             }
         }
     }
@@ -224,9 +250,13 @@ struct StatusSettingsTab: View {
             return "Denied — click Ask Again to show Apple's microphone prompt."
         case .denied where kind == .inputMonitoring:
             return "Denied — global activation keys and the double-tap Shift Workspace hotkey are disabled until restored."
+        case .denied where kind == .screenRecording:
+            return "Denied — Relay Vision screenshots are disabled until restored in System Settings."
         case .denied:        return "Denied — open System Settings to allow."
         case .notDetermined where kind == .inputMonitoring:
             return "Not set up — grant to enable global activation keys and the double-tap Shift Workspace hotkey."
+        case .notDetermined where kind == .screenRecording:
+            return "Not set up — grant to enable Relay Vision screenshots."
         case .notDetermined: return "Not yet requested."
         case .restricted:    return "Restricted by system policy."
         }
@@ -234,20 +264,20 @@ struct StatusSettingsTab: View {
 
     private func permissionAction(kind: PermissionKind,
                                   status: PermissionStatus) -> RowAction? {
-        guard status != .granted else { return nil }
+        guard let title = Self.permissionActionTitle(kind: kind, status: status) else { return nil }
         if kind == .microphone {
-            return RowAction(title: status == .denied ? "Ask Again" : "Request") {
+            return RowAction(title: title, systemImage: "mic.badge.plus") {
                 appState.permissions.requestMicrophonePrompt { _ in }
             }
         }
         if kind == .inputMonitoring {
-            return RowAction(title: "Restore Hotkeys") {
+            return RowAction(title: title, systemImage: "keyboard") {
                 appState.permissions.registerForInputMonitoringList()
                 appState.permissions.promptInputMonitoring()
                 appState.permissions.openSettings(for: kind)
             }
         }
-        return RowAction(title: "Open Settings") {
+        return RowAction(title: title, systemImage: "gearshape") {
             switch kind {
             case .accessibility:   appState.permissions.promptAccessibility()
             case .inputMonitoring: appState.permissions.promptInputMonitoring()
@@ -255,6 +285,33 @@ struct StatusSettingsTab: View {
             case .microphone:      break
             }
             appState.permissions.openSettings(for: kind)
+        }
+    }
+
+    static func permissionActionTitle(kind: PermissionKind,
+                                      status: PermissionStatus) -> String? {
+        guard status != .granted else { return nil }
+        if kind == .microphone {
+            return status == .denied ? "Ask Again" : "Request"
+        }
+        if kind == .inputMonitoring {
+            return "Restore Hotkeys"
+        }
+        return "Open Settings"
+    }
+
+    static func permissionActionIntent(kind: PermissionKind,
+                                       status: PermissionStatus) -> PermissionActionIntent? {
+        guard status != .granted else { return nil }
+        switch kind {
+        case .microphone:
+            return .requestMicrophonePrompt
+        case .accessibility:
+            return .openSettings(kind)
+        case .inputMonitoring:
+            return .restoreInputMonitoring
+        case .screenRecording:
+            return .openSettings(kind)
         }
     }
 
