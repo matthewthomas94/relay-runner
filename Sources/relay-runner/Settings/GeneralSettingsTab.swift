@@ -124,6 +124,7 @@ struct GeneralSettingsTab: View {
                     if showSkillSuccess {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(SettingsSurfaceColor.success)
+                            .accessibilityLabel("Relay Skills installed")
                     }
                     Button(skillInstalled ? "Reinstall" : "Install") {
                         if skillInstalled {
