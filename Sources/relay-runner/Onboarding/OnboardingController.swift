@@ -2,6 +2,27 @@ import AppKit
 import Foundation
 import SwiftUI
 
+struct OnboardingFlagURLs {
+    let onboarded: URL
+    let started: URL
+    let sessionRun: URL
+    let agentChoice: URL
+
+    static var live: OnboardingFlagURLs {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory,
+                                               in: .userDomainMask).first!
+            .appendingPathComponent("relay-runner", isDirectory: true)
+        try? FileManager.default.createDirectory(at: support,
+                                                 withIntermediateDirectories: true)
+        return OnboardingFlagURLs(
+            onboarded: support.appendingPathComponent(".onboarded"),
+            started: support.appendingPathComponent(".onboarding-started"),
+            sessionRun: support.appendingPathComponent(".session-run"),
+            agentChoice: support.appendingPathComponent(".agent-choice-v1")
+        )
+    }
+}
+
 /// Owns the onboarding NSWindow and the first-launch flag file.
 ///
 /// Lifecycle:
@@ -21,7 +42,8 @@ final class OnboardingController {
 
     private var windowController: NSWindowController?
     private var windowDelegate: OnboardingWindowDelegate?
-    private var introController: OnboardingIntroController?
+    private var introController: (any OnboardingIntroPresenting)?
+    private let flagURLs: OnboardingFlagURLs
     private let permissions: PermissionsManager
     /// Closure the Ready step calls to render live setup progress
     /// (e.g. "Loading speech model…") — nil means "finished".
@@ -50,62 +72,11 @@ final class OnboardingController {
     /// the menu bar.
     private let startSession: () -> Void
     private let setOnboardingNotchOverrideActive: (Bool) -> Void
-
-    /// Persists across launches — a zero-byte sentinel next to the config file.
-    private static let flagURL: URL = {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first!
-            .appendingPathComponent("relay-runner", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support,
-                                                 withIntermediateDirectories: true)
-        return support.appendingPathComponent(".onboarded")
-    }()
-
-    /// Set the moment the onboarding window first opens; cleared by `finish()`.
-    /// The point is to detect a kill-mid-flow on relaunch.
-    ///
-    /// If the process exits before `finish()` runs, `.onboarded` never gets
-    /// written and the next launch would otherwise repeat the whole welcome
-    /// flow. Looking at this flag lets `showIfNeeded()` resume into the
-    /// simplified flow, which lands directly on Ready ("All Set") when setup
-    /// is complete.
-    private static let startedFlagURL: URL = {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first!
-            .appendingPathComponent("relay-runner", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support,
-                                                 withIntermediateDirectories: true)
-        return support.appendingPathComponent(".onboarding-started")
-    }()
-
-    /// Written the first time the user actually runs a voice session
-    /// (either via the menu's Start Session, or by `/relay-bridge` from
-    /// a Claude Code session). Until this exists, every launch re-shows
-    /// the simplified onboarding so the user lands on the All Set screen
-    /// and explicitly picks a workspace folder before kicking off.
-    private static let sessionRunFlagURL: URL = {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first!
-            .appendingPathComponent("relay-runner", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support,
-                                                 withIntermediateDirectories: true)
-        return support.appendingPathComponent(".session-run")
-    }()
-
-    /// Written once the user explicitly confirms Codex or Claude as the
-    /// primary agent. This is separate from `.onboarded` so users who completed
-    /// the older permission-only flow still see the new provider-choice step
-    /// exactly once after upgrading.
-    private static let agentChoiceFlagURL: URL = {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first!
-            .appendingPathComponent("relay-runner", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support,
-                                                 withIntermediateDirectories: true)
-        return support.appendingPathComponent(".agent-choice-v1")
-    }()
+    private let makeIntroController: () -> any OnboardingIntroPresenting
+    private let reduceMotion: () -> Bool
 
     init(permissions: PermissionsManager,
+         flagURLs: OnboardingFlagURLs = .live,
          setupStatus: @escaping () -> String? = { nil },
          getWorkingDirectory: @escaping () -> String = { "" },
          getAgentProvider: @escaping () -> GeneralConfig.AgentProvider = { .codex },
@@ -116,7 +87,10 @@ final class OnboardingController {
          setCodexReasoningEffort: @escaping (String) -> Void = { _ in },
          setWorkingDirectory: @escaping (String) -> Void = { _ in },
          startSession: @escaping () -> Void = {},
-         setOnboardingNotchOverrideActive: @escaping (Bool) -> Void = { _ in }) {
+         setOnboardingNotchOverrideActive: @escaping (Bool) -> Void = { _ in },
+         makeIntroController: @escaping () -> any OnboardingIntroPresenting = { OnboardingIntroController() },
+         reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
+        self.flagURLs = flagURLs
         self.permissions = permissions
         self.setupStatus = setupStatus
         self.getWorkingDirectory = getWorkingDirectory
@@ -129,41 +103,43 @@ final class OnboardingController {
         self.setWorkingDirectory = setWorkingDirectory
         self.startSession = startSession
         self.setOnboardingNotchOverrideActive = setOnboardingNotchOverrideActive
+        self.makeIntroController = makeIntroController
+        self.reduceMotion = reduceMotion
     }
 
     /// True iff the user has completed (or skipped past) onboarding before.
     var hasOnboarded: Bool {
-        FileManager.default.fileExists(atPath: Self.flagURL.path)
+        FileManager.default.fileExists(atPath: flagURLs.onboarded.path)
     }
 
     /// True iff the user has started at least one voice session (direct
     /// or via `/relay-bridge`). Drives the "always re-show All Set until
     /// they've started" rule — see `showIfNeeded`.
     var hasRunSession: Bool {
-        FileManager.default.fileExists(atPath: Self.sessionRunFlagURL.path)
+        FileManager.default.fileExists(atPath: flagURLs.sessionRun.path)
     }
 
     /// True iff the user has explicitly confirmed the primary coding agent in
     /// the versioned onboarding flow.
     var hasChosenAgent: Bool {
-        FileManager.default.fileExists(atPath: Self.agentChoiceFlagURL.path)
+        FileManager.default.fileExists(atPath: flagURLs.agentChoice.path)
     }
 
     /// Mark a session as having been run. Idempotent — safe to call from
     /// both `AppState.newSession()` and the bridge watchdog when an
     /// externally-started relay-bridge is detected.
     func markSessionRun() {
-        try? Data().write(to: Self.sessionRunFlagURL)
+        try? Data().write(to: flagURLs.sessionRun)
     }
 
     private func markAgentChoiceComplete() {
-        try? Data().write(to: Self.agentChoiceFlagURL)
+        try? Data().write(to: flagURLs.agentChoice)
     }
 
     /// True iff onboarding was opened previously but never reached `finish()`.
     /// Indicates a kill-mid-flow before the user reached the final step.
     private var wasInterrupted: Bool {
-        !hasOnboarded && FileManager.default.fileExists(atPath: Self.startedFlagURL.path)
+        !hasOnboarded && FileManager.default.fileExists(atPath: flagURLs.started.path)
     }
 
     /// Show the onboarding window if it's needed — first launch, kill-
@@ -206,20 +182,21 @@ final class OnboardingController {
             return
         }
 
+        let wasInterruptedBeforeStart = wasInterrupted
         // Mark before the cinematic begins so a termination during the
         // transient overlay resumes through the focused recovery flow.
-        try? Data().write(to: Self.startedFlagURL)
+        try? Data().write(to: flagURLs.started)
 
         guard OnboardingIntroPolicy.shouldPlayAutomaticIntro(
             hasOnboarded: hasOnboarded,
-            wasInterrupted: wasInterrupted,
-            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            wasInterrupted: wasInterruptedBeforeStart,
+            reduceMotion: reduceMotion()
         ) else {
             show(simplified: false, initialStepOverride: .agentChoice, markStarted: false)
             return
         }
 
-        let intro = OnboardingIntroController()
+        let intro = makeIntroController()
         introController = intro
         setOnboardingNotchOverrideActive(true)
         intro.present { [weak self, weak intro] in
@@ -249,7 +226,7 @@ final class OnboardingController {
         // mid-flow exit leaves enough state for the next launch to resume
         // into the simplified flow rather than the full walkthrough.
         if markStarted {
-            try? Data().write(to: Self.startedFlagURL)
+            try? Data().write(to: flagURLs.started)
         }
 
         let view = OnboardingView(
@@ -308,12 +285,12 @@ final class OnboardingController {
     /// Mark the flag file and close the window. Called when the user
     /// completes or skips past the final step.
     private func finish() {
-        try? Data().write(to: Self.flagURL)
+        try? Data().write(to: flagURLs.onboarded)
         OnboardingResumeState.clear()
         // Started flag is no longer meaningful once onboarding has completed.
         // Clear it so a future focused setup prompt doesn't get treated as a
         // resumed mid-flow exit.
-        try? FileManager.default.removeItem(at: Self.startedFlagURL)
+        try? FileManager.default.removeItem(at: flagURLs.started)
         windowController?.window?.delegate = nil
         windowController?.close()
         windowController = nil
