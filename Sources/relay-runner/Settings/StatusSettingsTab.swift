@@ -1,7 +1,6 @@
 import SwiftUI
 
 enum PermissionActionIntent: Equatable {
-    case requestMicrophonePrompt
     case requestSetup(PermissionKind)
 }
 
@@ -247,11 +246,15 @@ struct StatusSettingsTab: View {
         case .granted:       return "Granted"
         case .denied where kind == .microphone:
             return "Denied — click Ask Again to show Apple's microphone prompt."
+        case .denied where kind == .accessibility:
+            return "Denied — Relay Actions click, type, key, scroll, and UI automation are disabled until restored."
         case .denied where kind == .inputMonitoring:
             return "Denied — global activation keys and the double-tap Shift Workspace hotkey are disabled until restored."
         case .denied where kind == .screenRecording:
             return "Denied — Relay Vision screenshots are disabled until restored in System Settings."
         case .denied:        return "Denied — open System Settings to allow."
+        case .notDetermined where kind == .accessibility:
+            return "Not set up — grant to enable Relay Actions click, type, key, scroll, and UI automation."
         case .notDetermined where kind == .inputMonitoring:
             return "Not set up — grant to enable global activation keys and the double-tap Shift Workspace hotkey."
         case .notDetermined where kind == .screenRecording:
@@ -266,7 +269,11 @@ struct StatusSettingsTab: View {
         guard let title = Self.permissionActionTitle(kind: kind, status: status) else { return nil }
         if kind == .microphone {
             return RowAction(title: title, systemImage: "mic.badge.plus") {
-                appState.permissions.requestMicrophonePrompt { _ in }
+                appState.requestPermissionSetup(
+                    kind,
+                    source: .settingsStatus,
+                    purpose: Self.permissionDetailText(kind: kind, status: status, restricted: false)
+                )
             }
         }
         if kind == .inputMonitoring {
@@ -302,12 +309,7 @@ struct StatusSettingsTab: View {
     static func permissionActionIntent(kind: PermissionKind,
                                        status: PermissionStatus) -> PermissionActionIntent? {
         guard status != .granted else { return nil }
-        switch kind {
-        case .microphone:
-            return .requestMicrophonePrompt
-        case .accessibility, .inputMonitoring, .screenRecording:
-            return .requestSetup(kind)
-        }
+        return .requestSetup(kind)
     }
 
     // MARK: - Refresh

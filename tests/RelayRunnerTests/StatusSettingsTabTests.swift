@@ -25,6 +25,18 @@ final class StatusSettingsTabTests: XCTestCase {
         XCTAssertTrue(detail.contains("double-tap Shift Workspace hotkey"))
     }
 
+    func testAccessibilityDetailNamesRelayActionsRatherThanHotkeys() {
+        let detail = StatusSettingsTab.permissionDetailText(
+            kind: .accessibility,
+            status: .notDetermined,
+            restricted: false
+        )
+
+        XCTAssertTrue(detail.contains("Relay Actions"))
+        XCTAssertTrue(detail.contains("UI automation"))
+        XCTAssertFalse(detail.contains("hotkey"))
+    }
+
     func testScreenRecordingDetailAndActionIntentNameRelayVisionRecovery() {
         let denied = StatusSettingsTab.permissionDetailText(
             kind: .screenRecording,
@@ -51,6 +63,10 @@ final class StatusSettingsTabTests: XCTestCase {
     }
 
     func testListPermissionsUseSharedSetupIntent() {
+        XCTAssertEqual(
+            StatusSettingsTab.permissionActionIntent(kind: .microphone, status: .notDetermined),
+            .requestSetup(.microphone)
+        )
         XCTAssertEqual(
             StatusSettingsTab.permissionActionIntent(kind: .accessibility, status: .denied),
             .requestSetup(.accessibility)

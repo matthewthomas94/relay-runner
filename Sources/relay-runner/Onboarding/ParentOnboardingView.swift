@@ -19,14 +19,14 @@ struct ParentOnboardingView: View {
             stepRow(
                 number: 1,
                 title: "Grant Relay Runner Accessibility",
-                detail: "Toggle on Relay Runner so Relay Actions can click, type, and scroll for Codex and Claude.",
+                detail: "Toggle on Relay Runner so Relay Actions can click, type, press keys, scroll, and automate UI for Codex and Claude.",
                 buttonTitle: "Open Accessibility Settings",
                 action: openAccessibility
             )
             stepRow(
                 number: 2,
                 title: "Grant Relay Runner Screen Recording",
-                detail: "Toggle on Relay Runner so Relay Vision can see the screen and ground clicks.",
+                detail: "Toggle on Relay Runner so Relay Vision can capture screenshots for visual grounding.",
                 buttonTitle: "Open Screen Recording Settings",
                 action: openScreenRecording
             )

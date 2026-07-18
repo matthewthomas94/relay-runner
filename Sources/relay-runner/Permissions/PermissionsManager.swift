@@ -23,9 +23,8 @@ enum PermissionStatus: Equatable {
 /// Privacy permissions Relay Runner can use. All are optional — the app
 /// degrades gracefully when any of them is denied:
 /// - Microphone: required to capture speech.
-/// - Accessibility: enables media-pause when recording starts; required by
-///   Relay Runner's app-hosted Relay Actions tool host to post CGEvents
-///   (clicks, keystrokes).
+/// - Accessibility: required by Relay Runner's app-hosted Relay Actions tool
+///   host to click, type, press keys, scroll, and automate UI.
 /// - Input Monitoring: required to capture non-Caps-Lock global activation
 ///   keys and the double-tap Shift Workspace hotkey.
 /// - Screen Recording: required by Relay Runner's app-hosted Relay Vision

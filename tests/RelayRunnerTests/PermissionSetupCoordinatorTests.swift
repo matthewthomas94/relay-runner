@@ -64,17 +64,24 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
     }
 
     func testReduceMotionUsesStaticHint() {
+        let icon = CGPoint(x: 3, y: 4)
+        let target = CGPoint(x: 50, y: 60)
         let state = PermissionCompanionAnimationPlanner.state(
             elapsed: 1.0,
             idlePoint: CGPoint(x: 1, y: 2),
-            iconCenter: CGPoint(x: 3, y: 4),
-            targetCenter: CGPoint(x: 5, y: 6),
+            iconCenter: icon,
+            targetCenter: target,
             reduceMotion: true
         )
 
         XCTAssertEqual(state.phase, .staticHint)
         XCTAssertNil(state.ghostCenter)
         XCTAssertGreaterThan(state.dropCueOpacity, 0)
+        XCTAssertEqual(state.directionalHint?.start, icon)
+        XCTAssertEqual(state.directionalHint?.end, target)
+        XCTAssertFalse(PermissionCompanionDemoTimerPolicy.shouldRunTimer(reduceMotion: true, isPaused: false))
+        XCTAssertFalse(PermissionCompanionDemoTimerPolicy.shouldRunTimer(reduceMotion: false, isPaused: true))
+        XCTAssertTrue(PermissionCompanionDemoTimerPolicy.shouldRunTimer(reduceMotion: false, isPaused: false))
     }
 
     func testPlacementPrefersReachableBelowListCandidateBeforeOutsideFallbacks() {
@@ -91,6 +98,31 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertEqual(plan.anchor, .belowList)
         XCTAssertEqual(plan.frame.maxY, target.minY - PermissionCompanionPlacementPlanner.preferredGap)
         XCTAssertFalse(plan.frame.intersects(target))
+    }
+
+    func testSettingsFinderTargetRectAllowsBelowListPlacementOnOrdinaryWindow() {
+        let settings = CGRect(x: 120, y: 120, width: 760, height: 620)
+        let visible = CGRect(x: 0, y: 0, width: 1200, height: 900)
+        let target = PermissionSettingsWindowFinder.targetRect(in: settings)
+
+        let plan = PermissionCompanionPlacementPlanner.plan(
+            settingsFrame: settings,
+            targetRect: target,
+            visibleFrame: visible
+        )
+
+        XCTAssertEqual(plan.anchor, .belowList)
+        XCTAssertTrue(settings.contains(plan.frame))
+        XCTAssertEqual(plan.frame.maxY, target.minY - PermissionCompanionPlacementPlanner.preferredGap)
+        XCTAssertFalse(plan.frame.intersects(target))
+    }
+
+    func testPendingDiscoveryFallbackIsBottomCenter() {
+        let visible = CGRect(x: -300, y: 40, width: 900, height: 700)
+        let frame = PermissionCompanionPlacementPlanner.pendingDiscoveryFallbackFrame(visibleFrame: visible)
+
+        XCTAssertEqual(frame.midX, visible.midX)
+        XCTAssertEqual(frame.minY, visible.minY + PermissionCompanionPlacementPlanner.preferredGap)
     }
 
     func testPlacementDoesNotClampInvalidBelowListCandidateBackOverSettings() {
@@ -162,6 +194,21 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertTrue(installed.instructions.contains("+ button"))
     }
 
+    func testFallbackPlanDefaultsAccessibilityPurposeToRelayActions() {
+        let plan = PermissionCompanionFallbackPlan.make(
+            permission: .accessibility,
+            purpose: "",
+            bundleURL: URL(fileURLWithPath: "/Applications/Relay Runner.app"),
+            fileExists: { _ in true }
+        )
+
+        XCTAssertTrue(plan.instructions.contains("Relay Actions"))
+        XCTAssertTrue(plan.instructions.contains("clicking"))
+        XCTAssertTrue(plan.instructions.contains("pressing keys"))
+        XCTAssertFalse(plan.instructions.contains("trigger keys"))
+        XCTAssertTrue(plan.accessibilityLabel.contains("UI automation"))
+    }
+
     func testHostedToolPermissionClassification() {
         XCTAssertEqual(RelayHostedTool.requiredPermission(for: "click"), .accessibility)
         XCTAssertEqual(RelayHostedTool.requiredPermission(for: "screenshot"), .screenRecording)
@@ -182,12 +229,19 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertEqual(PermissionSetupNotchState(permission: .accessibility).label, "Accessibility")
         XCTAssertEqual(PermissionSetupNotchState(permission: .inputMonitoring).label, "Input monitoring")
         XCTAssertEqual(PermissionSetupNotchState(permission: .screenRecording).label, "Screen recording")
+        XCTAssertEqual(PermissionSetupNotchState.granted(.accessibility).label, "Accessibility granted")
 
         let presentation = AppState.setupNotchPresentation(
             onboardingActive: false,
             permissionState: .screenRecording
         )
         XCTAssertEqual(presentation?.activityLabels, ["Screen recording"])
+        let grantedPresentation = AppState.setupNotchPresentation(
+            onboardingActive: false,
+            permissionState: .granted(.accessibility)
+        )
+        XCTAssertEqual(grantedPresentation?.status, .working)
+        XCTAssertEqual(grantedPresentation?.activityLabels, ["Accessibility granted"])
         XCTAssertNil(AppState.setupNotchPresentation(onboardingActive: false, permissionState: nil))
     }
 
@@ -197,5 +251,111 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(item.types.contains(.fileURL))
         XCTAssertEqual(item.string(forType: .fileURL), url.absoluteString)
+    }
+
+    func testGrantDuringDragClearsDeferralBeforePostingGrantReady() {
+        let permissions = FakePermissionSetupPermissions()
+        let companion = FakePermissionSetupCompanion()
+        var notchStates: [PermissionSetupNotchState?] = []
+        var posts: [(PermissionKind, PermissionSetupSource)] = []
+        var coordinator: PermissionSetupCoordinator!
+        coordinator = PermissionSetupCoordinator(
+            permissions: permissions,
+            setSetupNotchState: { notchStates.append($0) },
+            postGrantReady: { kind, source in
+                XCTAssertFalse(coordinator.shouldDeferAutoAdvance(for: kind))
+                posts.append((kind, source))
+            },
+            companion: companion,
+            successAcknowledgementDelay: 0
+        )
+
+        permissions.statuses[.accessibility] = .denied
+        coordinator.request(.accessibility, source: .onboarding, purpose: "Relay Actions")
+        companion.setRealDragActive(true)
+        permissions.statuses[.accessibility] = .granted
+        coordinator.permissionStatusChanged(.accessibility, status: .granted)
+
+        XCTAssertTrue(coordinator.isGrantDeferredByDrag)
+
+        companion.setRealDragActive(false)
+
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertEqual(posts.first?.0, .accessibility)
+        XCTAssertEqual(posts.first?.1, .onboarding)
+        XCTAssertEqual(companion.successRequests.count, 1)
+        XCTAssertTrue(notchStates.contains(.granted(.accessibility)))
+        XCTAssertNil(notchStates.last!)
+        XCTAssertNil(coordinator.activePermission)
+
+        coordinator.permissionStatusChanged(.accessibility, status: .granted)
+        XCTAssertEqual(posts.count, 1)
+    }
+}
+
+private final class FakePermissionSetupPermissions: PermissionSetupPermissionManaging {
+    var statuses: [PermissionKind: PermissionStatus] = [:]
+    var microphoneCompletion: ((Bool) -> Void)?
+    private(set) var promptedAccessibility = false
+    private(set) var promptedInputMonitoring = false
+    private(set) var promptedScreenRecording = false
+    private(set) var registeredInputMonitoring = false
+    private(set) var openedSettings: [PermissionKind] = []
+
+    func status(for kind: PermissionKind) -> PermissionStatus {
+        statuses[kind] ?? .denied
+    }
+
+    func requestMicrophonePrompt(completion: @escaping (Bool) -> Void) {
+        microphoneCompletion = completion
+    }
+
+    func promptAccessibility() {
+        promptedAccessibility = true
+    }
+
+    func registerForInputMonitoringList() {
+        registeredInputMonitoring = true
+    }
+
+    func promptInputMonitoring() {
+        promptedInputMonitoring = true
+    }
+
+    func promptScreenRecording() {
+        promptedScreenRecording = true
+    }
+
+    func openSettings(for kind: PermissionKind) {
+        openedSettings.append(kind)
+    }
+}
+
+private final class FakePermissionSetupCompanion: PermissionSetupCompanionControlling {
+    var isRealDragActive = false
+    private(set) var shownRequests: [PermissionSetupRequest] = []
+    private(set) var successRequests: [PermissionSetupRequest] = []
+    private(set) var cancelCount = 0
+    private var onDragStateChanged: ((Bool) -> Void)?
+
+    func show(request: PermissionSetupRequest,
+              onDragStateChanged: @escaping (Bool) -> Void,
+              onLifecycleEnded: @escaping () -> Void) {
+        shownRequests.append(request)
+        self.onDragStateChanged = onDragStateChanged
+    }
+
+    func showSuccess(for request: PermissionSetupRequest) {
+        successRequests.append(request)
+    }
+
+    func cancel() {
+        cancelCount += 1
+        isRealDragActive = false
+    }
+
+    func setRealDragActive(_ active: Bool) {
+        isRealDragActive = active
+        onDragStateChanged?(active)
     }
 }

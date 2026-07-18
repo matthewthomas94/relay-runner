@@ -26,6 +26,7 @@ enum PermissionSetupNotchState: Equatable {
     case accessibility
     case inputMonitoring
     case screenRecording
+    case granted(PermissionKind)
 
     init(permission: PermissionKind) {
         switch permission {
@@ -43,6 +44,8 @@ enum PermissionSetupNotchState: Equatable {
         case .accessibility:   return "Accessibility"
         case .inputMonitoring: return "Input monitoring"
         case .screenRecording: return "Screen recording"
+        case .granted(let permission):
+            return "\(PermissionSetupNotchState(permission: permission).label) granted"
         }
     }
 }
@@ -68,20 +71,46 @@ extension Notification.Name {
     static let relayPermissionSetupGrantReady = Notification.Name("relayPermissionSetupGrantReady")
 }
 
+protocol PermissionSetupPermissionManaging: AnyObject {
+    func status(for kind: PermissionKind) -> PermissionStatus
+    func requestMicrophonePrompt(completion: @escaping (Bool) -> Void)
+    func promptAccessibility()
+    func registerForInputMonitoringList()
+    func promptInputMonitoring()
+    func promptScreenRecording()
+    func openSettings(for kind: PermissionKind)
+}
+
+extension PermissionsManager: PermissionSetupPermissionManaging {}
+
+protocol PermissionSetupCompanionControlling: AnyObject {
+    var isRealDragActive: Bool { get }
+
+    func show(request: PermissionSetupRequest,
+              onDragStateChanged: @escaping (Bool) -> Void,
+              onLifecycleEnded: @escaping () -> Void)
+    func showSuccess(for request: PermissionSetupRequest)
+    func cancel()
+}
+
 final class PermissionSetupCoordinator {
+    static let successAcknowledgementDelay: TimeInterval = 0.65
+
     private struct ActiveSetup {
         let request: PermissionSetupRequest
         var grantPendingUntilDragEnds = false
         var completionPosted = false
     }
 
-    private let permissions: PermissionsManager
+    private let permissions: PermissionSetupPermissionManaging
     private let setSetupNotchState: (PermissionSetupNotchState?) -> Void
     private let postGrantReady: (PermissionKind, PermissionSetupSource) -> Void
-    private let companion: PermissionSetupCompanionController
+    private let companion: PermissionSetupCompanionControlling
+    private let successAcknowledgementDelay: TimeInterval
     private var active: ActiveSetup?
+    private var grantReadyTimer: Timer?
 
-    init(permissions: PermissionsManager,
+    init(permissions: PermissionSetupPermissionManaging,
          setSetupNotchState: @escaping (PermissionSetupNotchState?) -> Void,
          postGrantReady: @escaping (PermissionKind, PermissionSetupSource) -> Void = { kind, _ in
              NotificationCenter.default.post(
@@ -89,11 +118,17 @@ final class PermissionSetupCoordinator {
                 object: kind.rawValue
              )
          },
-         companion: PermissionSetupCompanionController = PermissionSetupCompanionController()) {
+         companion: PermissionSetupCompanionControlling = PermissionSetupCompanionController(),
+         successAcknowledgementDelay: TimeInterval = PermissionSetupCoordinator.successAcknowledgementDelay) {
         self.permissions = permissions
         self.setSetupNotchState = setSetupNotchState
         self.postGrantReady = postGrantReady
         self.companion = companion
+        self.successAcknowledgementDelay = successAcknowledgementDelay
+    }
+
+    deinit {
+        cancel()
     }
 
     var activePermission: PermissionKind? {
@@ -147,6 +182,8 @@ final class PermissionSetupCoordinator {
         if let source, active?.request.source != source {
             return
         }
+        grantReadyTimer?.invalidate()
+        grantReadyTimer = nil
         companion.cancel()
         active = nil
         if restoreNotch {
@@ -200,13 +237,55 @@ final class PermissionSetupCoordinator {
     private func finishGranted(_ active: ActiveSetup) {
         guard !active.completionPosted else { return }
         var completed = active
+        completed.grantPendingUntilDragEnds = false
         completed.completionPosted = true
         self.active = completed
-        companion.cancel()
-        setSetupNotchState(nil)
-        postGrantReady(active.request.permission, active.request.source)
-        self.active = nil
+        companion.showSuccess(for: active.request)
+        setSetupNotchState(.granted(active.request.permission))
+        scheduleGrantReady(for: active.request)
     }
+
+    private func scheduleGrantReady(for request: PermissionSetupRequest) {
+        grantReadyTimer?.invalidate()
+
+        let complete = { [weak self] in
+            guard let self,
+                  let active = self.active,
+                  active.request == request,
+                  active.completionPosted else {
+                return
+            }
+            self.grantReadyTimer?.invalidate()
+            self.grantReadyTimer = nil
+            self.companion.cancel()
+            self.active = nil
+            self.setSetupNotchState(nil)
+            self.postGrantReady(request.permission, request.source)
+        }
+
+        guard successAcknowledgementDelay > 0 else {
+            complete()
+            return
+        }
+
+        let timer = Timer(timeInterval: successAcknowledgementDelay, repeats: false) { _ in
+            complete()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        grantReadyTimer = timer
+    }
+}
+
+struct PermissionCompanionDemoTimerPolicy {
+    static func shouldRunTimer(reduceMotion: Bool, isPaused: Bool) -> Bool {
+        !reduceMotion && !isPaused
+    }
+}
+
+struct PermissionCompanionDirectionalHint: Equatable {
+    let start: CGPoint
+    let end: CGPoint
+    let opacity: CGFloat
 }
 
 struct PermissionCompanionInteractionModel: Equatable {
@@ -259,6 +338,7 @@ struct PermissionCompanionAnimationPlanner {
         let ghostCenter: CGPoint?
         let ghostOpacity: CGFloat
         let dropCueOpacity: CGFloat
+        let directionalHint: PermissionCompanionDirectionalHint?
     }
 
     static let loopDuration: TimeInterval = 3.3
@@ -274,7 +354,12 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: idlePoint,
                 ghostCenter: nil,
                 ghostOpacity: 0,
-                dropCueOpacity: 0.8
+                dropCueOpacity: 0.8,
+                directionalHint: PermissionCompanionDirectionalHint(
+                    start: iconCenter,
+                    end: targetCenter,
+                    opacity: 0.9
+                )
             )
         }
 
@@ -285,7 +370,8 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: lerp(idlePoint, iconCenter, CGFloat(t / 0.65)),
                 ghostCenter: nil,
                 ghostOpacity: 0,
-                dropCueOpacity: 0
+                dropCueOpacity: 0,
+                directionalHint: nil
             )
         }
         if t < 0.82 {
@@ -294,7 +380,8 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: iconCenter,
                 ghostCenter: nil,
                 ghostOpacity: 0,
-                dropCueOpacity: 0
+                dropCueOpacity: 0,
+                directionalHint: nil
             )
         }
         if t < 1.95 {
@@ -305,7 +392,8 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: point,
                 ghostCenter: point,
                 ghostOpacity: 0.88,
-                dropCueOpacity: 0
+                dropCueOpacity: 0,
+                directionalHint: nil
             )
         }
         if t < 2.25 {
@@ -314,7 +402,8 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: targetCenter,
                 ghostCenter: targetCenter,
                 ghostOpacity: 0.82,
-                dropCueOpacity: 1
+                dropCueOpacity: 1,
+                directionalHint: nil
             )
         }
         if t < 2.85 {
@@ -324,7 +413,8 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: targetCenter,
                 ghostCenter: targetCenter,
                 ghostOpacity: max(0, opacity * 0.6),
-                dropCueOpacity: max(0, opacity)
+                dropCueOpacity: max(0, opacity),
+                directionalHint: nil
             )
         }
         return State(
@@ -332,7 +422,8 @@ struct PermissionCompanionAnimationPlanner {
             cursor: lerp(targetCenter, idlePoint, CGFloat((t - 2.85) / 0.45)),
             ghostCenter: nil,
             ghostOpacity: 0,
-            dropCueOpacity: 0
+            dropCueOpacity: 0,
+            directionalHint: nil
         )
     }
 
@@ -461,6 +552,16 @@ struct PermissionCompanionPlacementPlanner {
         return Plan(frame: clamp(fallbackCandidates.last!, to: visibleFrame), anchor: .fallback)
     }
 
+    static func pendingDiscoveryFallbackFrame(visibleFrame: CGRect,
+                                              companionSize: CGSize = companionSize) -> CGRect {
+        CGRect(
+            x: visibleFrame.midX - companionSize.width / 2,
+            y: visibleFrame.minY + preferredGap,
+            width: companionSize.width,
+            height: companionSize.height
+        )
+    }
+
     static func clamp(_ frame: CGRect, to visibleFrame: CGRect) -> CGRect {
         CGRect(
             x: min(max(frame.minX, visibleFrame.minX), visibleFrame.maxX - frame.width),
@@ -549,11 +650,22 @@ enum PermissionSettingsWindowFinder {
     }
 
     static func targetRect(in settingsFrame: CGRect) -> CGRect {
-        CGRect(
+        let topInset = max(82, settingsFrame.height * 0.13)
+        let preferredBottomInset = max(
+            settingsFrame.height * 0.36,
+            PermissionCompanionPlacementPlanner.companionSize.height
+            + PermissionCompanionPlacementPlanner.preferredGap
+            + 12
+        )
+        let maxBottomInset = max(88, settingsFrame.height - topInset - 72)
+        let bottomInset = min(preferredBottomInset, maxBottomInset)
+        let minY = settingsFrame.minY + bottomInset
+        let maxY = settingsFrame.maxY - topInset
+        return CGRect(
             x: settingsFrame.minX + settingsFrame.width * 0.42,
-            y: settingsFrame.minY + max(88, settingsFrame.height * 0.16),
+            y: minY,
             width: settingsFrame.width * 0.50,
-            height: min(settingsFrame.height * 0.62, settingsFrame.height - 150)
+            height: max(72, maxY - minY)
         )
     }
 
@@ -610,15 +722,33 @@ struct PermissionCompanionFallbackPlan: Equatable {
 
     var instructions: String {
         let pane = permission.displayName
+        let action: String
         if payloadEnabled {
-            return "If Relay Runner is missing, reveal it in Finder, use System Settings' + button in \(pane), choose Relay Runner.app, then turn on its switch."
+            action = "If Relay Runner is missing, reveal it in Finder, use System Settings' + button in \(pane), choose Relay Runner.app, then turn on its switch."
+        } else {
+            action = "Relay Runner is not running from a reachable .app bundle. Reveal it in Finder, then use System Settings' + button in \(pane) to add Relay Runner.app manually."
         }
-        return "Relay Runner is not running from a reachable .app bundle. Reveal it in Finder, then use System Settings' + button in \(pane) to add Relay Runner.app manually."
+        return "\(purposeSentence) \(action)"
     }
 
     var accessibilityLabel: String {
-        let purposeCopy = purpose.isEmpty ? "" : "\(purpose) "
-        return "\(permission.displayName) permission. \(purposeCopy)Drag Relay Runner.app, or reveal it in Finder and use System Settings' plus button."
+        "\(permission.displayName) permission. \(purposeSentence) Drag Relay Runner.app, or reveal it in Finder and use System Settings' plus button."
+    }
+
+    private var purposeSentence: String {
+        if !purpose.isEmpty {
+            return purpose
+        }
+        switch permission {
+        case .microphone:
+            return "Microphone lets Relay Runner capture your speech for local transcription."
+        case .accessibility:
+            return "Accessibility lets Relay Runner host Relay Actions for clicking, typing, pressing keys, scrolling, and UI automation."
+        case .inputMonitoring:
+            return "Input Monitoring lets Relay Runner detect global trigger keys and the double-tap Shift Workspace hotkey."
+        case .screenRecording:
+            return "Screen Recording lets Relay Vision capture screenshots for visual grounding."
+        }
     }
 
     static func make(permission: PermissionKind,
@@ -644,7 +774,7 @@ struct PermissionCompanionFallbackPlan: Equatable {
     }
 }
 
-final class PermissionSetupCompanionController {
+final class PermissionSetupCompanionController: PermissionSetupCompanionControlling {
     private var interactivePanel: NSPanel?
     private var demoPanel: NSPanel?
     private var demoView: PermissionCompanionDemoView?
@@ -658,6 +788,10 @@ final class PermissionSetupCompanionController {
     private var onLifecycleEnded: (() -> Void)?
 
     private(set) var isRealDragActive = false
+
+    deinit {
+        cancel()
+    }
 
     func show(request: PermissionSetupRequest,
               onDragStateChanged: @escaping (Bool) -> Void,
@@ -688,6 +822,37 @@ final class PermissionSetupCompanionController {
         interactionModel = PermissionCompanionInteractionModel()
         onDragStateChanged = nil
         onLifecycleEnded = nil
+    }
+
+    func showSuccess(for request: PermissionSetupRequest) {
+        pollTimer?.invalidate()
+        pollTimer = nil
+        idleTimer?.invalidate()
+        idleTimer = nil
+        demoPanel?.close()
+        demoPanel = nil
+        demoView = nil
+        isRealDragActive = false
+        interactionModel = PermissionCompanionInteractionModel()
+
+        guard let panel = interactivePanel else { return }
+        let fallback = PermissionCompanionFallbackPlan.make(
+            permission: request.permission,
+            purpose: request.purpose,
+            bundleURL: request.bundleURL
+        )
+        let root = PermissionCompanionCard(
+            fallback: fallback,
+            isGranted: true,
+            onUserInteraction: {},
+            onDragStateChanged: { _ in },
+            onReveal: {},
+            onOpenSettings: {}
+        )
+        panel.contentView = NSHostingView(rootView: root)
+        if !panel.isVisible {
+            panel.orderFrontRegardless()
+        }
     }
 
     private func startPolling() {
@@ -733,11 +898,12 @@ final class PermissionSetupCompanionController {
     private func showFallbackPosition(for request: PermissionSetupRequest) {
         guard let screen = NSScreen.main else { return }
         let size = PermissionCompanionPlacementPlanner.companionSize
-        let frame = CGRect(
-            x: screen.visibleFrame.midX - size.width / 2,
-            y: screen.visibleFrame.midY - size.height / 2,
-            width: size.width,
-            height: size.height
+        let frame = PermissionCompanionPlacementPlanner.clamp(
+            PermissionCompanionPlacementPlanner.pendingDiscoveryFallbackFrame(
+                visibleFrame: screen.visibleFrame,
+                companionSize: size
+            ),
+            to: screen.visibleFrame
         )
         let target = CGRect(
             x: frame.maxX + 140,
@@ -762,9 +928,11 @@ final class PermissionSetupCompanionController {
             purpose: request.purpose,
             bundleURL: request.bundleURL
         )
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let panel = interactivePanel ?? makeInteractivePanel()
         let root = PermissionCompanionCard(
             fallback: fallback,
+            isGranted: false,
             onUserInteraction: { [weak self] in self?.recordUserActivity() },
             onDragStateChanged: { [weak self] dragging in self?.setRealDragActive(dragging) },
             onReveal: {
@@ -785,7 +953,10 @@ final class PermissionSetupCompanionController {
 
         let demo = demoPanel ?? makeDemoPanel(frame: visibleFrame)
         demo.setFrame(visibleFrame, display: true)
-        let view = demoView ?? PermissionCompanionDemoView(frame: CGRect(origin: .zero, size: visibleFrame.size))
+        let view = demoView ?? PermissionCompanionDemoView(
+            frame: CGRect(origin: .zero, size: visibleFrame.size),
+            reduceMotion: reduceMotion
+        )
         view.frame = CGRect(origin: .zero, size: visibleFrame.size)
         view.icon = fallback.payloadURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
             ?? NSImage(named: NSImage.applicationIconName)
@@ -801,7 +972,7 @@ final class PermissionSetupCompanionController {
             x: max(18, view.iconCenter.x - 42),
             y: min(view.bounds.maxY - 18, view.iconCenter.y + 42)
         )
-        view.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        view.reduceMotion = reduceMotion
         view.isPaused = interactionModel.isPaused
         if demo.contentView !== view {
             demo.contentView = view
@@ -876,38 +1047,14 @@ final class PermissionSetupCompanionController {
 
 private struct PermissionCompanionCard: View {
     let fallback: PermissionCompanionFallbackPlan
+    let isGranted: Bool
     let onUserInteraction: () -> Void
     let onDragStateChanged: (Bool) -> Void
     let onReveal: () -> Void
     let onOpenSettings: () -> Void
 
     var body: some View {
-        VStack(spacing: 8) {
-            DraggableAppIconView(
-                bundleURL: fallback.payloadURL,
-                size: 90,
-                isEnabled: fallback.payloadEnabled,
-                onUserInteraction: onUserInteraction,
-                onDragStateChanged: onDragStateChanged
-            )
-            .frame(width: 92, height: 92)
-            Text(fallback.payloadEnabled ? "Drag me" : "Reveal")
-                .font(AppTypography.font(.caption))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-            HStack(spacing: 6) {
-                Button(action: onReveal) {
-                    Image(systemName: "folder")
-                }
-                .help("Reveal Relay Runner in Finder")
-                Button(action: onOpenSettings) {
-                    Image(systemName: "gearshape")
-                }
-                .help("Open \(fallback.permission.displayName) Settings")
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.white)
-        }
+        content
         .padding(.top, 11)
         .padding(.bottom, 9)
         .frame(width: 140, height: 142)
@@ -920,9 +1067,62 @@ private struct PermissionCompanionCard: View {
                 .stroke(Color.white.opacity(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.55 : 0), lineWidth: 1)
         )
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(fallback.accessibilityLabel)
-        .accessibilityHint(fallback.instructions)
-        .onHover { _ in onUserInteraction() }
+        .accessibilityLabel(isGranted ? grantedAccessibilityLabel : fallback.accessibilityLabel)
+        .accessibilityHint(isGranted ? "Relay Runner is ready for \(fallback.permission.displayName)." : fallback.instructions)
+        .onHover { _ in
+            if !isGranted {
+                onUserInteraction()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if isGranted {
+            VStack(spacing: 7) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(AppTypography.symbolFont(size: 46, weight: .semibold))
+                    .foregroundStyle(.green)
+                Text("Granted")
+                    .font(AppTypography.font(.cardHeading))
+                    .foregroundStyle(.white)
+                Text(fallback.permission.displayName)
+                    .font(AppTypography.font(.caption))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(1)
+            }
+        } else {
+            VStack(spacing: 8) {
+                DraggableAppIconView(
+                    bundleURL: fallback.payloadURL,
+                    size: 90,
+                    isEnabled: fallback.payloadEnabled,
+                    onUserInteraction: onUserInteraction,
+                    onDragStateChanged: onDragStateChanged
+                )
+                .frame(width: 92, height: 92)
+                Text(fallback.payloadEnabled ? "Drag me" : "Reveal")
+                    .font(AppTypography.font(.caption))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Button(action: onReveal) {
+                        Image(systemName: "folder")
+                    }
+                    .help("Reveal Relay Runner in Finder")
+                    Button(action: onOpenSettings) {
+                        Image(systemName: "gearshape")
+                    }
+                    .help("Open \(fallback.permission.displayName) Settings")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.white)
+            }
+        }
+    }
+
+    private var grantedAccessibilityLabel: String {
+        "\(fallback.permission.displayName) granted for Relay Runner."
     }
 }
 
@@ -931,18 +1131,26 @@ private final class PermissionCompanionDemoView: NSView {
     var iconCenter: CGPoint = .zero
     var targetCenter: CGPoint = .zero
     var idlePoint: CGPoint = .zero
-    var reduceMotion = false
+    var reduceMotion = false {
+        didSet {
+            guard oldValue != reduceMotion else { return }
+            updateTimer()
+            needsDisplay = true
+        }
+    }
     var isPaused = false {
-        didSet { displayLinkActive = !isPaused }
+        didSet {
+            guard oldValue != isPaused else { return }
+            updateTimer()
+            needsDisplay = true
+        }
     }
 
     private var startedAt = Date()
     private var animationTimer: Timer?
-    private var displayLinkActive = true {
-        didSet { updateTimer() }
-    }
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, reduceMotion: Bool = false) {
+        self.reduceMotion = reduceMotion
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
@@ -972,6 +1180,9 @@ private final class PermissionCompanionDemoView: NSView {
             reduceMotion: reduceMotion
         )
         drawDropCue(opacity: state.dropCueOpacity)
+        if let hint = state.directionalHint {
+            drawDirectionalHint(hint)
+        }
         if let ghostCenter = state.ghostCenter, let icon {
             icon.draw(
                 in: CGRect(
@@ -991,10 +1202,55 @@ private final class PermissionCompanionDemoView: NSView {
     private func updateTimer() {
         animationTimer?.invalidate()
         animationTimer = nil
-        guard displayLinkActive else { return }
+        guard PermissionCompanionDemoTimerPolicy.shouldRunTimer(
+            reduceMotion: reduceMotion,
+            isPaused: isPaused
+        ) else { return }
         animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             self?.needsDisplay = true
         }
+    }
+
+    private func drawDirectionalHint(_ hint: PermissionCompanionDirectionalHint) {
+        let start = pointAlongLine(from: hint.start, to: hint.end, inset: 42)
+        let end = pointAlongLine(from: hint.end, to: hint.start, inset: 30)
+        guard hypot(start.x - end.x, start.y - end.y) > 12 else { return }
+
+        NSColor.white.withAlphaComponent(hint.opacity).setStroke()
+        let path = NSBezierPath()
+        path.move(to: start)
+        path.line(to: end)
+        path.lineWidth = 3
+        path.lineCapStyle = .round
+        path.stroke()
+
+        let angle = atan2(end.y - start.y, end.x - start.x)
+        let arrowLength: CGFloat = 13
+        let arrowSpread = CGFloat.pi / 7
+        let arrow = NSBezierPath()
+        arrow.move(to: end)
+        arrow.line(to: CGPoint(
+            x: end.x - arrowLength * cos(angle - arrowSpread),
+            y: end.y - arrowLength * sin(angle - arrowSpread)
+        ))
+        arrow.move(to: end)
+        arrow.line(to: CGPoint(
+            x: end.x - arrowLength * cos(angle + arrowSpread),
+            y: end.y - arrowLength * sin(angle + arrowSpread)
+        ))
+        arrow.lineWidth = 3
+        arrow.lineCapStyle = .round
+        arrow.stroke()
+    }
+
+    private func pointAlongLine(from start: CGPoint, to end: CGPoint, inset: CGFloat) -> CGPoint {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let distance = max(1, hypot(dx, dy))
+        return CGPoint(
+            x: start.x + dx / distance * inset,
+            y: start.y + dy / distance * inset
+        )
     }
 
     private func drawDropCue(opacity: CGFloat) {

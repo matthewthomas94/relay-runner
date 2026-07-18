@@ -639,11 +639,11 @@ struct OnboardingView: View {
         case .microphone:
             return "Your organisation's security policy appears to be blocking microphone access. You'll need your IT team to allow Relay Runner — voice input isn't available until they do."
         case .accessibility:
-            return "Your organisation's security policy appears to be blocking Accessibility access. You'll need your IT team to allow Relay Runner. Voice input still works via the menu-bar Record button — only auto-pause of media during recording is affected."
+            return "Your organisation's security policy appears to be blocking Accessibility access. You'll need your IT team to allow Relay Runner. Voice input still works via the menu-bar Record button — only Relay Actions click, type, key, scroll, and UI automation are affected."
         case .inputMonitoring:
             return "Your organisation's security policy appears to be blocking keyboard capture. You'll need your IT team to allow Relay Runner. Voice still works via the menu-bar Record button or always-on mode in Settings — only the global trigger key is affected."
         case .screenRecording:
-            return "Your organisation's security policy appears to be blocking Screen Recording. You'll need your IT team to allow Relay Runner. Only the optional Relay Actions voice tools (UAT, dashboard automation) are affected — voice transcription and speech still work."
+            return "Your organisation's security policy appears to be blocking Screen Recording. You'll need your IT team to allow Relay Runner. Only Relay Vision screenshots are affected — voice transcription and speech still work."
         }
     }
 
@@ -710,7 +710,7 @@ struct OnboardingView: View {
     private func parentPermissionStepExplanation(for kind: PermissionKind) -> String {
         switch kind {
         case .accessibility:
-            return "For clicks, typing, and scrolling, macOS grants control to Relay Runner's app-hosted tool process. Turn on Relay Runner in Accessibility."
+            return "For Relay Actions click, type, key, scroll, and UI automation, macOS grants control to Relay Runner's app-hosted tool process. Turn on Relay Runner in Accessibility."
         case .screenRecording:
             return "For screenshots and visual grounding, macOS grants screen access to Relay Runner's app-hosted tool process. Turn on Relay Runner in Screen Recording."
         default:
@@ -725,7 +725,7 @@ struct OnboardingView: View {
     private func parentPermissionVerificationDetail(for kind: PermissionKind) -> String {
         switch kind {
         case .accessibility:
-            return "Relay Runner verifies Accessibility in the app before it clicks, types, or scrolls for Codex or Claude."
+            return "Relay Runner verifies Accessibility in the app before it clicks, types, presses keys, scrolls, or automates UI for Codex or Claude."
         case .screenRecording:
             return "macOS may require Relay Runner to relaunch after Screen Recording is granted. Relay Vision verifies capture in the app before returning screenshots."
         default:
@@ -1450,7 +1450,7 @@ struct OnboardingView: View {
         case .accessibility:   return "Allow Accessibility access"
         case .inputMonitoring: return "Allow Input Monitoring"
         // Screen Recording is intentionally not part of onboarding — it's
-        // only needed by the optional Relay Actions voice tools and is
+        // only needed by Relay Vision screenshots and is
         // requested on first use (see PermissionsManager.promptScreenRecording).
         // Strings provided so the switch is exhaustive and the case is ready
         // to wire up if a future step adds it to onboarding.
@@ -1463,11 +1463,11 @@ struct OnboardingView: View {
         case .microphone:
             return "Relay Runner needs to hear you so it can transcribe your speech. Audio stays completely local — nothing is sent off your Mac."
         case .accessibility:
-            return "So Relay Runner can detect your Caps Lock (or configured trigger key) no matter which app you're using, it needs Accessibility access. This is also how it pauses media when you start talking."
+            return "Accessibility lets Relay Runner host Relay Actions for clicking, typing, pressing keys, scrolling, and UI automation. Trigger keys and hotkeys use Input Monitoring instead."
         case .inputMonitoring:
             return "Input Monitoring lets Relay Runner capture global keyboard events. It enables non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey; voice still works with microphone permission alone if you skip it."
         case .screenRecording:
-            return "Optional. Required only when you ask the agent to take a screenshot or walk through an app for UAT. Voice transcription and speech don't need it."
+            return "Screen Recording lets Relay Vision capture screenshots for visual grounding. Voice transcription and speech don't need it."
         }
     }
 

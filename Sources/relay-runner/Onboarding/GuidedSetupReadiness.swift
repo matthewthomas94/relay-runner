@@ -135,7 +135,7 @@ struct GuidedSetupReadiness: Equatable {
             items.append("Input Monitoring is deferred, so non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey stay disabled.")
         }
         if accessibility != .granted {
-            items.append("Accessibility is deferred, so Relay Actions clicks, typing, and scrolling stay disabled.")
+            items.append("Accessibility is deferred, so Relay Actions click, type, key, scroll, and UI automation stay disabled.")
         }
         if screenRecording != .granted {
             items.append("Screen Recording is deferred, so Relay Vision screenshots stay disabled.")

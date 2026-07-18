@@ -380,8 +380,14 @@ final class AppState {
             label = nil
         }
         guard let label else { return nil }
+        let status: NotchSessionStatus
+        if let permissionState, case .granted = permissionState {
+            status = .working
+        } else {
+            status = .notWorking
+        }
         return NotchPresentation(
-            status: .notWorking,
+            status: status,
             activityLabels: [label],
             workingProgressLabel: nil
         )
@@ -1591,6 +1597,8 @@ final class AppState {
     }
 
     private func stopOverlay() {
+        cancelPermissionSetup()
+
         programStatusTask?.cancel()
         programStatusTask = nil
 
