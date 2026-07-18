@@ -23,9 +23,8 @@ enum PermissionStatus: Equatable {
 /// Privacy permissions Relay Runner can use. All are optional — the app
 /// degrades gracefully when any of them is denied:
 /// - Microphone: required to capture speech.
-/// - Accessibility: enables media-pause when recording starts; required by
-///   Relay Runner's app-hosted Relay Actions tool host to post CGEvents
-///   (clicks, keystrokes).
+/// - Accessibility: required by Relay Runner's app-hosted Relay Actions tool
+///   host to click, type, press keys, scroll, and automate UI.
 /// - Input Monitoring: required to capture non-Caps-Lock global activation
 ///   keys and the double-tap Shift Workspace hotkey.
 /// - Screen Recording: required by Relay Runner's app-hosted Relay Vision
@@ -48,6 +47,13 @@ enum PermissionKind: String, CaseIterable, Identifiable {
         case .screenRecording: return "Screen Recording"
         }
     }
+
+    static let guidedSetupOrder: [PermissionKind] = [
+        .microphone,
+        .accessibility,
+        .inputMonitoring,
+        .screenRecording,
+    ]
 }
 
 /// Observable source of truth for the app's privacy permission state.
@@ -149,6 +155,10 @@ final class PermissionsManager {
     /// denied; those are surfaced contextually when a feature needs them.
     var allGranted: Bool {
         microphone == .granted
+    }
+
+    var guidedSetupGranted: Bool {
+        PermissionKind.guidedSetupOrder.allSatisfy { status(for: $0) == .granted }
     }
 
     /// The missing permissions that block the default voice path.
@@ -436,7 +446,7 @@ private extension PermissionStatus {
     }
 }
 
-private extension PermissionKind {
+extension PermissionKind {
     /// Deep-link URL for the Privacy & Security subpane.
     /// Stable across macOS 13 (Ventura) / 14 (Sonoma) / 15 (Sequoia).
     var settingsURL: String {

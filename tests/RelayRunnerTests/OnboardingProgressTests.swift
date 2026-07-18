@@ -28,7 +28,7 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(label, "2 of 5")
+        XCTAssertEqual(label, "2 of 7")
     }
 
     func testFullFlowIncludesInputMonitoringBeforeRuntimeSetup() {
@@ -41,7 +41,7 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(label, "3 of 5")
+        XCTAssertEqual(label, "4 of 7")
     }
 
     func testSimplifiedInputMonitoringMissingShowsSingleRecoveryStep() {
@@ -137,8 +137,10 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(next, .pythonSetup)
     }
 
-    func testLegacyParentPermissionsResumeSkipsToRuntimeSetup() {
-        XCTAssertEqual(OnboardingView.Step(resumeID: .parentPermissions), .pythonSetup)
+    func testLegacyParentPermissionsResumeReturnsToAccessibilityRecovery() {
+        XCTAssertEqual(OnboardingView.Step(resumeID: .parentPermissions), .parentAccessibility)
+        XCTAssertEqual(OnboardingView.Step(resumeID: .parentAccessibility), .parentAccessibility)
+        XCTAssertEqual(OnboardingView.Step(resumeID: .parentScreenRecording), .parentScreenRecording)
     }
 
     func testParentAccessibilityContinuesToRuntimeSetup() {
@@ -153,6 +155,32 @@ final class OnboardingProgressTests: XCTestCase {
         )
 
         XCTAssertEqual(next, .pythonSetup)
+    }
+
+    func testSimplifiedAccessibilityAndScreenRecordingParticipateInProgress() {
+        let accessibility = OnboardingView.progressLabel(
+            for: .parentAccessibility,
+            simplified: true,
+            requiresAgentChoice: false,
+            permissionStatus: { kind in
+                kind == .accessibility || kind == .screenRecording ? .denied : .granted
+            },
+            venvInstalled: true,
+            agentSignedIn: true
+        )
+        let screenRecording = OnboardingView.progressLabel(
+            for: .parentScreenRecording,
+            simplified: true,
+            requiresAgentChoice: false,
+            permissionStatus: { kind in
+                kind == .accessibility || kind == .screenRecording ? .denied : .granted
+            },
+            venvInstalled: true,
+            agentSignedIn: true
+        )
+
+        XCTAssertEqual(accessibility, "1 of 2")
+        XCTAssertEqual(screenRecording, "2 of 2")
     }
 
     func testReadySummaryNamesDeferredInputMonitoringFeatures() {

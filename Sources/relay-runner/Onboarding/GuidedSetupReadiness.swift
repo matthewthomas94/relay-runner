@@ -70,7 +70,9 @@ struct GuidedSetupReadiness: Equatable {
 
     let provider: GeneralConfig.AgentProvider
     let microphone: PermissionStatus
+    let accessibility: PermissionStatus
     let inputMonitoring: PermissionStatus
+    let screenRecording: PermissionStatus
     let pythonInstalled: Bool
     let agentSignedIn: Bool
     let parentPermissionsReviewed: Bool
@@ -80,7 +82,9 @@ struct GuidedSetupReadiness: Equatable {
     }
 
     var screenControlAndBoardReady: Bool {
-        inputMonitoring == .granted
+        accessibility == .granted
+        && inputMonitoring == .granted
+        && screenRecording == .granted
     }
 
     var mode: Mode {
@@ -129,6 +133,12 @@ struct GuidedSetupReadiness: Equatable {
         var items: [String] = []
         if inputMonitoring != .granted {
             items.append("Input Monitoring is deferred, so non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey stay disabled.")
+        }
+        if accessibility != .granted {
+            items.append("Accessibility is deferred, so Relay Actions click, type, key, scroll, and UI automation stay disabled.")
+        }
+        if screenRecording != .granted {
+            items.append("Screen Recording is deferred, so Relay Vision screenshots stay disabled.")
         }
         return items
     }

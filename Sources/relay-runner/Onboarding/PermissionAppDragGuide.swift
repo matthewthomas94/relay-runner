@@ -328,9 +328,12 @@ private final class PermissionTargetParticleGlowView: NSView {
     }
 }
 
-private struct DraggableAppIconView: NSViewRepresentable {
+struct DraggableAppIconView: NSViewRepresentable {
     let bundleURL: URL?
     let size: CGFloat
+    var isEnabled: Bool = true
+    var onUserInteraction: () -> Void = {}
+    var onDragStateChanged: (Bool) -> Void = { _ in }
 
     func makeNSView(context: Context) -> AppFileDragView {
         AppFileDragView()
@@ -340,6 +343,9 @@ private struct DraggableAppIconView: NSViewRepresentable {
         view.bundleURL = bundleURL
         view.image = Self.icon(for: bundleURL)
         view.frame.size = NSSize(width: size, height: size)
+        view.draggingEnabled = isEnabled
+        view.onUserInteraction = onUserInteraction
+        view.onDragStateChanged = onDragStateChanged
     }
 
     private static func icon(for url: URL?) -> NSImage {
@@ -350,9 +356,33 @@ private struct DraggableAppIconView: NSViewRepresentable {
     }
 }
 
-private final class AppFileDragView: NSImageView, NSDraggingSource {
+struct AppFileDragPayload {
+    let item: NSDraggingItem
+
+    static func make(url: URL, image: NSImage, frame: CGRect) -> AppFileDragPayload {
+        let pasteboardItem = pasteboardItem(url: url)
+        let item = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        item.setDraggingFrame(frame, contents: image)
+        return AppFileDragPayload(item: item)
+    }
+
+    static func pasteboardItem(url: URL) -> NSPasteboardItem {
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(url.absoluteString, forType: .fileURL)
+        return pasteboardItem
+    }
+}
+
+final class AppFileDragView: NSImageView, NSDraggingSource {
+    static let dragThreshold: CGFloat = 4
+
     var bundleURL: URL?
-    private var mouseDownEvent: NSEvent?
+    var draggingEnabled = true
+    var onUserInteraction: () -> Void = {}
+    var onDragStateChanged: (Bool) -> Void = { _ in }
+    private var mouseDownPoint: NSPoint?
+    private var dragSessionActive = false
+    private var trackingArea: NSTrackingArea?
 
     init() {
         super.init(frame: .zero)
@@ -368,22 +398,65 @@ private final class AppFileDragView: NSImageView, NSDraggingSource {
         unregisterDraggedTypes()
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onUserInteraction()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        onUserInteraction()
+    }
+
     override func mouseDown(with event: NSEvent) {
-        mouseDownEvent = event
+        onUserInteraction()
+        mouseDownPoint = convert(event.locationInWindow, from: nil)
+        dragSessionActive = false
     }
 
     override func mouseDragged(with event: NSEvent) {
+        onUserInteraction()
         guard let bundleURL,
               let image,
-              let mouseDownEvent else {
+              let mouseDownPoint,
+              draggingEnabled,
+              !dragSessionActive else {
             return
         }
 
-        let item = NSDraggingItem(pasteboardWriter: bundleURL as NSURL)
-        item.setDraggingFrame(bounds, contents: image)
+        let currentPoint = convert(event.locationInWindow, from: nil)
+        guard currentPoint.distance(to: mouseDownPoint) >= Self.dragThreshold else {
+            return
+        }
 
-        beginDraggingSession(with: [item], event: mouseDownEvent, source: self)
-        self.mouseDownEvent = nil
+        let payload = AppFileDragPayload.make(url: bundleURL, image: image, frame: bounds)
+        dragSessionActive = true
+        onDragStateChanged(true)
+
+        beginDraggingSession(with: [payload.item], event: event, source: self)
+        self.mouseDownPoint = nil
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onUserInteraction()
+        mouseDownPoint = nil
     }
 
     func draggingSession(_ session: NSDraggingSession,
@@ -393,5 +466,18 @@ private final class AppFileDragView: NSImageView, NSDraggingSource {
 
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool {
         true
+    }
+
+    func draggingSession(_ session: NSDraggingSession,
+                         endedAt screenPoint: NSPoint,
+                         operation: NSDragOperation) {
+        dragSessionActive = false
+        onDragStateChanged(false)
+    }
+}
+
+private extension NSPoint {
+    func distance(to other: NSPoint) -> CGFloat {
+        hypot(x - other.x, y - other.y)
     }
 }

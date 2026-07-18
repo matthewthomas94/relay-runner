@@ -133,10 +133,25 @@ final class AppState {
             startSession: { [weak self] in self?.newSession() },
             setOnboardingNotchOverrideActive: { [weak self] active in
                 self?.setOnboardingNotchOverrideActive(active)
+            },
+            requestPermissionSetup: { [weak self] kind, source, purpose in
+                self?.requestPermissionSetup(kind, source: source, purpose: purpose)
+            },
+            cancelPermissionSetup: { [weak self] source in
+                self?.cancelPermissionSetup(source: source)
+            },
+            shouldDeferPermissionAdvance: { [weak self] kind in
+                self?.permissionSetupCoordinator.shouldDeferAutoAdvance(for: kind) ?? false
             }
         )
     }()
     @ObservationIgnored private let permissionNotifier = PermissionNotifier()
+    @ObservationIgnored private lazy var permissionSetupCoordinator = PermissionSetupCoordinator(
+        permissions: permissions,
+        setSetupNotchState: { [weak self] state in
+            self?.setPermissionSetupNotchState(state)
+        }
+    )
 
     /// One-shot wizard that fires when MCP detects a not-yet-onboarded
     /// parent terminal/IDE. AppState owns the controller; the bus calls into
@@ -160,6 +175,7 @@ final class AppState {
     private var notchActivityTicketsByRunKey: [String: Ticket] = [:]
     private var notchActivityTask: Task<Void, Never>?
     private var onboardingNotchOverrideActive = false
+    private var permissionSetupNotchState: PermissionSetupNotchState?
     private var bridgeWatchdog: Timer?
     private var programStatusTask: Task<Void, Never>?
     /// True while a menu-started terminal session owns the bridge.
@@ -224,6 +240,22 @@ final class AppState {
         syncNotchStatusSurface()
     }
 
+    func requestPermissionSetup(_ kind: PermissionKind,
+                                source: PermissionSetupSource,
+                                purpose: String = "") {
+        permissionSetupCoordinator.request(kind, source: source, purpose: purpose)
+    }
+
+    func cancelPermissionSetup(source: PermissionSetupSource? = nil) {
+        permissionSetupCoordinator.cancel(source: source)
+    }
+
+    private func setPermissionSetupNotchState(_ state: PermissionSetupNotchState?) {
+        guard permissionSetupNotchState != state else { return }
+        permissionSetupNotchState = state
+        syncNotchStatusSurface()
+    }
+
     private func startNotchActivityPolling() {
         stopNotchActivityPolling()
         syncNotchActivityProjectState()
@@ -278,7 +310,10 @@ final class AppState {
     }
 
     private func syncNotchActivitySurface() {
-        if let presentation = Self.onboardingNotchPresentation(active: onboardingNotchOverrideActive) {
+        if let presentation = Self.setupNotchPresentation(
+            onboardingActive: onboardingNotchOverrideActive,
+            permissionState: permissionSetupNotchState
+        ) {
             notchStatusController.setPresentation(
                 status: presentation.status,
                 activityLabels: presentation.activityLabels,
@@ -334,13 +369,32 @@ final class AppState {
         )
     }
 
-    static func onboardingNotchPresentation(active: Bool) -> NotchPresentation? {
-        guard active else { return nil }
+    static func setupNotchPresentation(onboardingActive: Bool,
+                                       permissionState: PermissionSetupNotchState?) -> NotchPresentation? {
+        let label: String?
+        if let permissionState {
+            label = permissionState.label
+        } else if onboardingActive {
+            label = PermissionSetupNotchState.gettingStarted.label
+        } else {
+            label = nil
+        }
+        guard let label else { return nil }
+        let status: NotchSessionStatus
+        if let permissionState, case .granted = permissionState {
+            status = .working
+        } else {
+            status = .notWorking
+        }
         return NotchPresentation(
-            status: .notWorking,
-            activityLabels: [OnboardingIntroPolicy.notchLabel],
+            status: status,
+            activityLabels: [label],
             workingProgressLabel: nil
         )
+    }
+
+    static func onboardingNotchPresentation(active: Bool) -> NotchPresentation? {
+        setupNotchPresentation(onboardingActive: active, permissionState: nil)
     }
 
     private static func notchActivityRunKey(repoPath: String, ticketId: String) -> String {
@@ -430,6 +484,7 @@ final class AppState {
         permissions.onChange = { [weak self] kind, old, new in
             guard let self else { return }
             self.permissionNotifier.recordChange(kind, from: old, to: new)
+            self.permissionSetupCoordinator.permissionStatusChanged(kind, status: new)
             if new == .granted && old != .granted {
                 if kind == .microphone {
                     if self.sttEngine == nil {
@@ -1356,6 +1411,12 @@ final class AppState {
                 return await MainActor.run {
                     self.activateProject(pathOrAlias: pathOrAlias, provider: provider)
                 }
+            },
+            onHostedToolPermissionMissing: { [weak self] kind, purpose in
+                guard let appState = self else { return }
+                await MainActor.run {
+                    appState.requestPermissionSetup(kind, source: .hostedTool, purpose: purpose)
+                }
             }
         )
         actionsBus = actions
@@ -1536,6 +1597,8 @@ final class AppState {
     }
 
     private func stopOverlay() {
+        cancelPermissionSetup()
+
         programStatusTask?.cancel()
         programStatusTask = nil
 

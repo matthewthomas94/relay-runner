@@ -24,7 +24,9 @@ final class GuidedSetupReadinessTests: XCTestCase {
         let readiness = GuidedSetupReadiness(
             provider: .codex,
             microphone: .denied,
+            accessibility: .granted,
             inputMonitoring: .granted,
+            screenRecording: .granted,
             pythonInstalled: false,
             agentSignedIn: false,
             parentPermissionsReviewed: true
@@ -41,7 +43,9 @@ final class GuidedSetupReadinessTests: XCTestCase {
         let readiness = GuidedSetupReadiness(
             provider: .claude,
             microphone: .granted,
+            accessibility: .denied,
             inputMonitoring: .denied,
+            screenRecording: .denied,
             pythonInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: false
@@ -52,6 +56,8 @@ final class GuidedSetupReadinessTests: XCTestCase {
         XCTAssertFalse(readiness.screenControlAndBoardReady)
         XCTAssertTrue(readiness.detail.contains("Start Session can launch Claude"))
         XCTAssertTrue(readiness.detail.contains("double-tap Shift Workspace hotkey"))
+        XCTAssertTrue(readiness.detail.contains("Relay Actions"))
+        XCTAssertTrue(readiness.detail.contains("Relay Vision"))
         XCTAssertFalse(readiness.detail.contains("Parent-app Accessibility"))
     }
 
@@ -59,7 +65,9 @@ final class GuidedSetupReadinessTests: XCTestCase {
         let readiness = GuidedSetupReadiness(
             provider: .claude,
             microphone: .granted,
+            accessibility: .granted,
             inputMonitoring: .granted,
+            screenRecording: .granted,
             pythonInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: false
@@ -74,7 +82,9 @@ final class GuidedSetupReadinessTests: XCTestCase {
         let before = GuidedSetupReadiness(
             provider: .codex,
             microphone: .granted,
+            accessibility: .granted,
             inputMonitoring: .denied,
+            screenRecording: .granted,
             pythonInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: true
@@ -82,7 +92,9 @@ final class GuidedSetupReadinessTests: XCTestCase {
         let after = GuidedSetupReadiness(
             provider: .codex,
             microphone: .granted,
+            accessibility: .granted,
             inputMonitoring: .granted,
+            screenRecording: .granted,
             pythonInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: true

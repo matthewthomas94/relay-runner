@@ -55,11 +55,11 @@ final class PermissionNotifier {
         case .microphone:
             return "Relay Runner can't hear you — microphone access was removed. Open the menu and choose Fix Permissions to restore it."
         case .accessibility:
-            return "Relay Runner can't pause media during recording — Accessibility access was removed. Open the menu and choose Fix Permissions."
+            return "Relay Runner can't run Relay Actions click, type, key, scroll, or UI automation — Accessibility access was removed. Open the menu and choose Fix Permissions."
         case .inputMonitoring:
             return "Relay Runner can't detect your trigger key — Input Monitoring access was removed. Open the menu and choose Fix Permissions."
         case .screenRecording:
-            return "Relay Runner can't take screenshots for the Relay Actions voice tools — Screen Recording access was removed. Voice transcription and speech still work."
+            return "Relay Runner can't take Relay Vision screenshots — Screen Recording access was removed. Voice transcription and speech still work."
         }
     }
 }
