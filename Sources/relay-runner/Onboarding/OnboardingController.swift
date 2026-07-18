@@ -20,6 +20,8 @@ import SwiftUI
 final class OnboardingController {
 
     private var windowController: NSWindowController?
+    private var windowDelegate: OnboardingWindowDelegate?
+    private var introController: OnboardingIntroController?
     private let permissions: PermissionsManager
     /// Closure the Ready step calls to render live setup progress
     /// (e.g. "Loading speech model…") — nil means "finished".
@@ -47,6 +49,7 @@ final class OnboardingController {
     /// user can launch their first session without a detour back to
     /// the menu bar.
     private let startSession: () -> Void
+    private let setOnboardingNotchOverrideActive: (Bool) -> Void
 
     /// Persists across launches — a zero-byte sentinel next to the config file.
     private static let flagURL: URL = {
@@ -112,7 +115,8 @@ final class OnboardingController {
          setModel: @escaping (String) -> Void = { _ in },
          setCodexReasoningEffort: @escaping (String) -> Void = { _ in },
          setWorkingDirectory: @escaping (String) -> Void = { _ in },
-         startSession: @escaping () -> Void = {}) {
+         startSession: @escaping () -> Void = {},
+         setOnboardingNotchOverrideActive: @escaping (Bool) -> Void = { _ in }) {
         self.permissions = permissions
         self.setupStatus = setupStatus
         self.getWorkingDirectory = getWorkingDirectory
@@ -124,6 +128,7 @@ final class OnboardingController {
         self.setCodexReasoningEffort = setCodexReasoningEffort
         self.setWorkingDirectory = setWorkingDirectory
         self.startSession = startSession
+        self.setOnboardingNotchOverrideActive = setOnboardingNotchOverrideActive
     }
 
     /// True iff the user has completed (or skipped past) onboarding before.
@@ -184,7 +189,7 @@ final class OnboardingController {
         } else if wasInterrupted {
             show(simplified: true)
         } else {
-            show(simplified: false)
+            showFreshAutomatic()
         }
     }
 
@@ -194,7 +199,44 @@ final class OnboardingController {
         show(simplified: false)
     }
 
-    private func show(simplified: Bool) {
+    private func showFreshAutomatic() {
+        guard windowController == nil, introController == nil else {
+            windowController?.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        // Mark before the cinematic begins so a termination during the
+        // transient overlay resumes through the focused recovery flow.
+        try? Data().write(to: Self.startedFlagURL)
+
+        guard OnboardingIntroPolicy.shouldPlayAutomaticIntro(
+            hasOnboarded: hasOnboarded,
+            wasInterrupted: wasInterrupted,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        ) else {
+            show(simplified: false, initialStepOverride: .agentChoice, markStarted: false)
+            return
+        }
+
+        let intro = OnboardingIntroController()
+        introController = intro
+        setOnboardingNotchOverrideActive(true)
+        intro.present { [weak self, weak intro] in
+            guard let self else { return }
+            self.setOnboardingNotchOverrideActive(false)
+            if self.introController === intro {
+                self.introController = nil
+            }
+            self.show(simplified: false, initialStepOverride: .agentChoice, markStarted: false)
+        }
+    }
+
+    private func show(
+        simplified: Bool,
+        initialStepOverride: OnboardingView.Step? = nil,
+        markStarted: Bool = true
+    ) {
         if let wc = windowController, let window = wc.window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -206,7 +248,9 @@ final class OnboardingController {
         // Mark "started" before the window is even constructed, so any
         // mid-flow exit leaves enough state for the next launch to resume
         // into the simplified flow rather than the full walkthrough.
-        try? Data().write(to: Self.startedFlagURL)
+        if markStarted {
+            try? Data().write(to: Self.startedFlagURL)
+        }
 
         let view = OnboardingView(
             permissions: permissions,
@@ -218,6 +262,7 @@ final class OnboardingController {
             initialCodexReasoningEffort: getCodexReasoningEffort(),
             requiresAgentChoice: !hasChosenAgent,
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
+            initialStepOverride: initialStepOverride,
             resumeState: resumeState,
             onSetAgentProvider: { [weak self] provider in
                 self?.setAgentProvider(provider)
@@ -241,6 +286,13 @@ final class OnboardingController {
         window.setContentSize(NSSize(width: 560, height: 680))
         window.center()
         window.isReleasedWhenClosed = false
+        let delegate = OnboardingWindowDelegate { [weak self] in
+            self?.windowController = nil
+            self?.windowDelegate = nil
+            NSApp.setActivationPolicy(.accessory)
+        }
+        window.delegate = delegate
+        windowDelegate = delegate
 
         // Menu-bar apps default to .accessory. Temporarily elevate so the
         // onboarding window takes focus and can be reached via Cmd-Tab; drop
@@ -262,8 +314,22 @@ final class OnboardingController {
         // Clear it so a future focused setup prompt doesn't get treated as a
         // resumed mid-flow exit.
         try? FileManager.default.removeItem(at: Self.startedFlagURL)
+        windowController?.window?.delegate = nil
         windowController?.close()
         windowController = nil
+        windowDelegate = nil
         NSApp.setActivationPolicy(.accessory)
+    }
+}
+
+private final class OnboardingWindowDelegate: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose()
     }
 }

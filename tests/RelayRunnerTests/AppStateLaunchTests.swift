@@ -55,4 +55,13 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertEqual(external.config.general.working_directory, "/Users/example/dev")
         XCTAssertEqual(config.general.working_directory, "/Users/example/dev")
     }
+
+    func testOnboardingNotchOverrideUsesNotWorkingPresentation() {
+        let presentation = AppState.onboardingNotchPresentation(active: true)
+
+        XCTAssertEqual(presentation?.status, .notWorking)
+        XCTAssertEqual(presentation?.activityLabels, ["Getting started"])
+        XCTAssertNil(presentation?.workingProgressLabel)
+        XCTAssertNil(AppState.onboardingNotchPresentation(active: false))
+    }
 }

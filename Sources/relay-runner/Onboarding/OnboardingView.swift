@@ -79,6 +79,7 @@ struct OnboardingView: View {
          initialCodexReasoningEffort: String = GeneralConfig.defaultCodexReasoningEffort,
          requiresAgentChoice: Bool = false,
          requiresParentPermissionGuidance: Bool = false,
+         initialStepOverride: Step? = nil,
          resumeState: OnboardingResumeState.Snapshot? = nil,
          onSetAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
          onSetModel: @escaping (String) -> Void = { _ in },
@@ -118,7 +119,8 @@ struct OnboardingView: View {
             parentPermissionsReviewed: startingParentReviewed,
             permissionStatus: { permissions.status(for: $0) },
             venvInstalled: VenvInstaller.alreadyInstalled,
-            agentSignedIn: AgentAuth.isAuthenticated(for: startingProvider)
+            agentSignedIn: AgentAuth.isAuthenticated(for: startingProvider),
+            fullFlowInitialStep: initialStepOverride ?? .welcome
         )
         _step = State(initialValue: initial)
         _workingDirectory = State(initialValue: initialWorkingDirectory)
@@ -1431,12 +1433,13 @@ struct OnboardingView: View {
                             parentPermissionsReviewed: Bool,
                             permissionStatus: (PermissionKind) -> PermissionStatus,
                             venvInstalled: Bool,
-                            agentSignedIn: Bool) -> Step {
+                            agentSignedIn: Bool,
+                            fullFlowInitialStep: Step = .welcome) -> Step {
         if let resumeStep, let step = Step(resumeID: resumeStep) {
             return step
         }
         guard simplified else {
-            return .welcome
+            return fullFlowInitialStep
         }
         return firstMissing(
             requiresAgentChoice: requiresAgentChoice,

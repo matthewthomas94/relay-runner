@@ -25,6 +25,12 @@ final class AppState {
         let statusText: String?
     }
 
+    struct NotchPresentation: Equatable {
+        let status: NotchSessionStatus
+        let activityLabels: [String]
+        let workingProgressLabel: String?
+    }
+
     struct BridgeRecoveryFailurePresentation: Equatable {
         let statusText: String
         let title: String
@@ -124,7 +130,10 @@ final class AppState {
                 newConfig.general.working_directory = path
                 self.saveConfig(newConfig, forceWorkspaceDiscovery: true)
             },
-            startSession: { [weak self] in self?.newSession() }
+            startSession: { [weak self] in self?.newSession() },
+            setOnboardingNotchOverrideActive: { [weak self] active in
+                self?.setOnboardingNotchOverrideActive(active)
+            }
         )
     }()
     @ObservationIgnored private let permissionNotifier = PermissionNotifier()
@@ -150,6 +159,7 @@ final class AppState {
     private var notchActivityTickets: [Ticket] = []
     private var notchActivityTicketsByRunKey: [String: Ticket] = [:]
     private var notchActivityTask: Task<Void, Never>?
+    private var onboardingNotchOverrideActive = false
     private var bridgeWatchdog: Timer?
     private var programStatusTask: Task<Void, Never>?
     /// True while a menu-started terminal session owns the bridge.
@@ -208,6 +218,12 @@ final class AppState {
         syncNotchActivitySurface()
     }
 
+    private func setOnboardingNotchOverrideActive(_ active: Bool) {
+        guard onboardingNotchOverrideActive != active else { return }
+        onboardingNotchOverrideActive = active
+        syncNotchStatusSurface()
+    }
+
     private func startNotchActivityPolling() {
         stopNotchActivityPolling()
         syncNotchActivityProjectState()
@@ -262,6 +278,15 @@ final class AppState {
     }
 
     private func syncNotchActivitySurface() {
+        if let presentation = Self.onboardingNotchPresentation(active: onboardingNotchOverrideActive) {
+            notchStatusController.setPresentation(
+                status: presentation.status,
+                activityLabels: presentation.activityLabels,
+                workingProgressLabel: presentation.workingProgressLabel
+            )
+            return
+        }
+
         let boardIsLoading = programBoardLoading
         guard hasActiveSession || boardIsLoading else {
             notchStatusController.setPresentation(
@@ -306,6 +331,15 @@ final class AppState {
             ),
             activityLabels: labels,
             workingProgressLabel: workingProgressLabel
+        )
+    }
+
+    static func onboardingNotchPresentation(active: Bool) -> NotchPresentation? {
+        guard active else { return nil }
+        return NotchPresentation(
+            status: .notWorking,
+            activityLabels: [OnboardingIntroPolicy.notchLabel],
+            workingProgressLabel: nil
         )
     }
 

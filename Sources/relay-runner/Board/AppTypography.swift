@@ -51,6 +51,7 @@ enum AppTypography {
     enum Role: CaseIterable {
         case menuTab
         case appTitle
+        case onboardingHero
         case screenTitle
         case workspaceHeading
         case programProjectsHeading
@@ -138,6 +139,8 @@ enum AppTypography {
             return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
         case .appTitle:
             return Definition(face: .ppMoriSemibold, size: 22, fallbackWeight: .semibold)
+        case .onboardingHero:
+            return Definition(face: .ppTelegrafRegular, size: 64, fallbackWeight: .regular)
         case .screenTitle:
             return Definition(face: .ppMoriSemibold, size: 17, fallbackWeight: .semibold)
         case .workspaceHeading:
