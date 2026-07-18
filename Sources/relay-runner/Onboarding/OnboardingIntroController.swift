@@ -46,6 +46,10 @@ enum OnboardingIntroPolicy {
     }
 }
 
+protocol OnboardingIntroPresenting: AnyObject {
+    func present(completion: @escaping () -> Void)
+}
+
 enum OnboardingIntroTimeline {
     static let phrases = [
         "First thing’s first",
@@ -87,7 +91,11 @@ enum OnboardingIntroTimeline {
             if cursor < eraseDuration {
                 let erasedCount = min(graphemes.count, Int(cursor / eraseInterval) + 1)
                 let remainingCount = max(0, graphemes.count - erasedCount)
-                return frame(phrase: phrase, visible: Array(graphemes.prefix(remainingCount)))
+                return frame(
+                    phrase: phrase,
+                    visible: Array(graphemes.prefix(remainingCount)),
+                    compactCursor: phrase == phrases.last && remainingCount == 1
+                )
             }
             cursor -= eraseDuration
         }
@@ -95,9 +103,19 @@ enum OnboardingIntroTimeline {
         return OnboardingIntroFrame(activePhrase: phrases.last ?? "", text: "/", isComplete: true)
     }
 
-    private static func frame(phrase: String, visible: [Character]) -> OnboardingIntroFrame {
+    private static func frame(
+        phrase: String,
+        visible: [Character],
+        compactCursor: Bool = false
+    ) -> OnboardingIntroFrame {
         let prefix = String(visible)
-        let text = prefix.isEmpty ? "/" : "\(prefix) /"
+        let text = if prefix.isEmpty {
+            "/"
+        } else if compactCursor {
+            "\(prefix)/"
+        } else {
+            "\(prefix) /"
+        }
         return OnboardingIntroFrame(activePhrase: phrase, text: text, isComplete: false)
     }
 
@@ -106,7 +124,24 @@ enum OnboardingIntroTimeline {
     }
 }
 
-final class OnboardingIntroController {
+enum OnboardingIntroTextLayout {
+    static let lineHeight: CGFloat = 72
+
+    static func drawRect(
+        in layoutFrame: CGRect,
+        reserveWidth: CGFloat,
+        visibleWidth: CGFloat
+    ) -> CGRect {
+        CGRect(
+            x: layoutFrame.midX - reserveWidth / 2,
+            y: layoutFrame.midY - lineHeight / 2,
+            width: max(reserveWidth, visibleWidth),
+            height: lineHeight
+        )
+    }
+}
+
+final class OnboardingIntroController: OnboardingIntroPresenting {
     private var panel: BoardOverlayPanel?
     private weak var revealContainer: BoardRevealContainerView?
     private weak var textView: OnboardingIntroTextView?
@@ -144,15 +179,18 @@ final class OnboardingIntroController {
             p.reframe(to: screen)
         }
         let contentFrame = NSRect(origin: .zero, size: p.frame.size)
+        let displayGeometry = screen.map(NotchStatusDisplayGeometry.init(screen:))
+            ?? NotchStatusDisplayGeometry(screenFrame: p.frame)
+        let revealPlan = BoardRevealTransitionPlanner.plan(for: displayGeometry)
         let textView = OnboardingIntroTextView(frame: contentFrame)
         textView.autoresizingMask = [.width, .height]
+        textView.layoutFrame = revealPlan.expandedFrame
         textView.timelineFrame = OnboardingIntroTimeline.frame(at: 0)
 
         let container = BoardRevealContainerView(
             frame: contentFrame,
             contentView: textView,
-            displayGeometry: screen.map(NotchStatusDisplayGeometry.init(screen:))
-                ?? NotchStatusDisplayGeometry(screenFrame: p.frame),
+            displayGeometry: displayGeometry,
             startsLoading: false
         )
         container.autoresizingMask = [.width, .height]
@@ -273,6 +311,10 @@ final class OnboardingIntroController {
 }
 
 private final class OnboardingIntroTextView: NSView {
+    var layoutFrame: NSRect = .zero {
+        didSet { needsDisplay = true }
+    }
+
     var timelineFrame = OnboardingIntroTimeline.frame(at: 0) {
         didSet { needsDisplay = true }
     }
@@ -281,6 +323,7 @@ private final class OnboardingIntroTextView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        layoutFrame = frameRect
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         setAccessibilityElement(true)
@@ -307,12 +350,10 @@ private final class OnboardingIntroTextView: NSView {
         let reserveText = "\(timelineFrame.activePhrase) /" as NSString
         let visibleText = timelineFrame.text as NSString
         let reserveSize = reserveText.size(withAttributes: attributes)
-        let lineHeight: CGFloat = 72
-        let drawRect = NSRect(
-            x: bounds.midX - reserveSize.width / 2,
-            y: bounds.midY - lineHeight / 2,
-            width: max(reserveSize.width, visibleText.size(withAttributes: attributes).width),
-            height: lineHeight
+        let drawRect = OnboardingIntroTextLayout.drawRect(
+            in: layoutFrame,
+            reserveWidth: reserveSize.width,
+            visibleWidth: visibleText.size(withAttributes: attributes).width
         )
         visibleText.draw(in: drawRect, withAttributes: attributes)
     }
