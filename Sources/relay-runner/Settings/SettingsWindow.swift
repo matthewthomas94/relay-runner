@@ -73,6 +73,14 @@ enum SettingsContentStyle {
     var usesStandaloneChrome: Bool {
         self == .window
     }
+
+    var embeddedCornerRadius: CGFloat {
+        usesStandaloneChrome ? 0 : BoardDarkSurfaceStyle.columnCornerRadius
+    }
+
+    var showsEmbeddedHairline: Bool {
+        !usesStandaloneChrome
+    }
 }
 
 enum SettingsCategory: String, CaseIterable, Identifiable {
@@ -115,6 +123,22 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .awareness: return "eye"
         }
     }
+
+    static func category(after category: SettingsCategory) -> SettingsCategory {
+        let all = Self.allCases
+        guard let index = all.firstIndex(of: category), index < all.index(before: all.endIndex) else {
+            return category
+        }
+        return all[all.index(after: index)]
+    }
+
+    static func category(before category: SettingsCategory) -> SettingsCategory {
+        let all = Self.allCases
+        guard let index = all.firstIndex(of: category), index > all.startIndex else {
+            return category
+        }
+        return all[all.index(before: index)]
+    }
 }
 
 private struct SettingsContent: View {
@@ -125,6 +149,7 @@ private struct SettingsContent: View {
     @State private var draft: AppConfig
     @State private var saving = false
     @State private var selectedCategory: SettingsCategory = .status
+    @State private var scrollTarget: SettingsCategory = .status
 
     init(
         appState: AppState,
@@ -140,41 +165,59 @@ private struct SettingsContent: View {
     private var hasChanges: Bool { draft != appState.config }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                SettingsCategorySidebar(
-                    selection: $selectedCategory,
-                    style: style
-                )
-                .frame(width: style.sidebarWidth)
+        HStack(spacing: 0) {
+            SettingsCategorySidebar(
+                selection: $selectedCategory,
+                style: style
+            )
+            .frame(width: style.sidebarWidth)
 
-                Rectangle()
-                    .fill(SettingsSurfaceColor.divider)
-                    .frame(width: 1)
+            Rectangle()
+                .fill(SettingsSurfaceColor.divider)
+                .frame(width: 1)
 
-                VStack(spacing: 0) {
-                    SettingsDetailHeader(category: selectedCategory)
-                    SettingsDivider()
-                    ScrollView(.vertical, showsIndicators: true) {
-                        selectedDetail
-                            .padding(style.detailPadding)
-                            .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
+            VStack(spacing: 0) {
+                SettingsDetailHeader(category: selectedCategory, style: style)
+                SettingsDivider()
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: 0) {
+                            Color.clear
+                                .frame(height: 0)
+                                .id(selectedCategory)
+                            selectedDetail
+                                .padding(style.detailPadding)
+                                .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                                .padding(.bottom, 4)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .onChange(of: scrollTarget) { _, target in
+                        proxy.scrollTo(target, anchor: .top)
+                    }
                 }
+                SettingsDivider()
+                footer
             }
-
-            SettingsDivider()
-            footer
         }
         .background(BoardDarkSurfaceStyle.panelFill)
         .foregroundStyle(SettingsSurfaceColor.primaryText)
         .tint(SettingsSurfaceColor.focusRing)
         .environment(\.colorScheme, .dark)
         .frame(width: style.fixedFrame?.width, height: style.fixedFrame?.height)
-        .clipShape(RoundedRectangle(cornerRadius: style.usesStandaloneChrome ? 0 : BoardDarkSurfaceStyle.columnCornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous))
+        .overlay {
+            if style.showsEmbeddedHairline {
+                RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous)
+                    .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
+            }
+        }
         .onChange(of: appState.config) { _, newValue in
             draft = newValue
+        }
+        .onChange(of: selectedCategory) { _, newValue in
+            scrollTarget = newValue
         }
     }
 
@@ -207,9 +250,20 @@ private struct SettingsContent: View {
 
             Text(presentation.statusText)
                 .font(AppTypography.font(.settingsDescription))
-                .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                .foregroundStyle(presentation.textColor)
 
             Spacer(minLength: 0)
+
+            SettingsActionButton(
+                title: "Revert",
+                systemImage: "arrow.uturn.backward",
+                prominence: .secondary,
+                isEnabled: hasChanges && !saving,
+                accessibilityLabel: "Revert settings",
+                helpText: hasChanges ? "Discard unsaved settings changes" : "No settings changes to revert"
+            ) {
+                draft = appState.config
+            }
 
             SettingsFooterSaveButton(isEnabled: hasChanges && !saving) {
                 saving = true
@@ -218,6 +272,8 @@ private struct SettingsContent: View {
             }
         }
         .padding(style.footerPadding)
+        .frame(maxWidth: style.detailMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -225,49 +281,17 @@ private struct SettingsFooterSaveButton: View {
     let isEnabled: Bool
     let action: () -> Void
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
-    @FocusState private var isFocused: Bool
-
     var body: some View {
-        let presentation = SettingsActionPresentation.resolve(
+        SettingsActionButton(
+            title: "Save",
+            systemImage: "checkmark",
+            prominence: .primary,
             isEnabled: isEnabled,
-            isHovered: isHovered,
-            isFocused: isFocused,
-            reduceMotion: reduceMotion
+            accessibilityLabel: "Save settings",
+            helpText: isEnabled ? "Save settings" : "No settings changes to save",
+            action: action
         )
-
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark")
-                    .font(AppTypography.symbolFont(size: 10, weight: .bold))
-                    .accessibilityHidden(true)
-                Text("Save")
-                    .font(AppTypography.font(.button))
-            }
-            .foregroundStyle(SettingsSurfaceColor.primaryText.opacity(presentation.foregroundOpacity))
-            .padding(.horizontal, 11)
-            .frame(height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .fill(SettingsSurfaceColor.relayAccent.opacity(presentation.fillOpacity))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .stroke(SettingsSurfaceColor.relayAccent.opacity(presentation.strokeOpacity), lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
-        }
-        .buttonStyle(.plain)
         .keyboardShortcut(.defaultAction)
-        .disabled(!isEnabled)
-        .focusable(isEnabled)
-        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
-        .focused($isFocused)
-        .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
-        .accessibilityLabel("Save settings")
-        .help(isEnabled ? "Save settings" : "No settings changes to save")
     }
 }
 
@@ -299,16 +323,21 @@ struct SettingsFooterPresentation: Equatable {
     }
 
     var iconSemanticColor: SettingsSemanticColor {
-        hasChanges ? .relayAccent : .success
+        hasChanges ? .relayAccent : .idle
     }
 
     var iconColor: Color { iconSemanticColor.color }
+
+    var textColor: Color {
+        hasChanges ? SettingsSurfaceColor.relayAccent : SettingsSurfaceColor.secondaryText
+    }
 
     var actionTint: Color { hasChanges ? SettingsSurfaceColor.dirtyAccent : SettingsSurfaceColor.mutedText }
 }
 
 private struct SettingsDetailHeader: View {
     let category: SettingsCategory
+    let style: SettingsContentStyle
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -322,6 +351,7 @@ private struct SettingsDetailHeader: View {
         .padding(.horizontal, 22)
         .padding(.top, 18)
         .padding(.bottom, 14)
+        .frame(maxWidth: style.detailMaxWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -353,6 +383,16 @@ private struct SettingsCategorySidebar: View {
         }
         .padding(.bottom, 12)
         .background(BoardDarkSurfaceStyle.contentFill.opacity(0.48))
+        .onMoveCommand { direction in
+            switch direction {
+            case .up:
+                selection = SettingsCategory.category(before: selection)
+            case .down:
+                selection = SettingsCategory.category(after: selection)
+            default:
+                break
+            }
+        }
     }
 }
 
@@ -406,7 +446,8 @@ private struct SettingsCategoryButton: View {
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
-        .accessibilityLabel("\(category.title), \(selected ? "selected" : "not selected")")
+        .accessibilityLabel(category.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .help(category.title)
     }
 }

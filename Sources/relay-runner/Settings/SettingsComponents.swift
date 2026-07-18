@@ -148,6 +148,136 @@ enum SettingsLayout {
     static let systemFocusEffectDisabled = true
 }
 
+struct SettingsActionButton: View {
+    enum Prominence {
+        case primary
+        case secondary
+        case icon
+    }
+
+    let title: String
+    let systemImage: String?
+    var prominence: Prominence = .secondary
+    var isEnabled = true
+    var accessibilityLabel: String?
+    var helpText: String?
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        let presentation = SettingsActionPresentation.resolve(
+            isEnabled: isEnabled,
+            isHovered: isHovered,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
+        )
+        let shape = RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+
+        Button(action: action) {
+            HStack(spacing: systemImage == nil || prominence == .icon ? 0 : 6) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(AppTypography.symbolFont(size: prominence == .icon ? 12 : 10, weight: .bold))
+                        .accessibilityHidden(true)
+                }
+                if prominence != .icon {
+                    Text(title)
+                        .font(AppTypography.font(.button))
+                }
+            }
+            .foregroundStyle(foregroundColor.opacity(presentation.foregroundOpacity))
+            .padding(.horizontal, prominence == .icon ? 0 : 11)
+            .frame(
+                width: prominence == .icon ? 28 : nil,
+                height: 28
+            )
+            .background(
+                shape.fill(fillColor.opacity(fillOpacity(from: presentation)))
+            )
+            .overlay(
+                shape.stroke(strokeColor.opacity(strokeOpacity(from: presentation)), lineWidth: 1)
+            )
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .focusable(isEnabled)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .focused($isFocused)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
+        .accessibilityLabel(accessibilityLabel ?? title)
+        .help(helpText ?? title)
+    }
+
+    private var fillColor: Color {
+        prominence == .primary ? SettingsSurfaceColor.relayAccent : Color.white
+    }
+
+    private var strokeColor: Color {
+        prominence == .primary ? SettingsSurfaceColor.relayAccent : SettingsSurfaceColor.focusRing
+    }
+
+    private var foregroundColor: Color {
+        prominence == .primary ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.primaryText
+    }
+
+    private func fillOpacity(from presentation: SettingsActionPresentation) -> Double {
+        switch prominence {
+        case .primary:
+            return presentation.fillOpacity
+        case .secondary, .icon:
+            return presentation.neutralFillOpacity
+        }
+    }
+
+    private func strokeOpacity(from presentation: SettingsActionPresentation) -> Double {
+        switch prominence {
+        case .primary:
+            return presentation.strokeOpacity
+        case .secondary, .icon:
+            return presentation.neutralStrokeOpacity
+        }
+    }
+}
+
+struct SettingsInlineStatus: View {
+    let text: String?
+    let semanticColor: SettingsSemanticColor
+    var reservedWidth: CGFloat = 150
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let text {
+                Image(systemName: iconName)
+                    .font(AppTypography.symbolFont(size: 10, weight: .semibold))
+                    .foregroundStyle(semanticColor.color)
+                    .accessibilityHidden(true)
+                Text(text)
+                    .font(AppTypography.font(.settingsDescription))
+                    .foregroundStyle(semanticColor.color)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: reservedWidth, alignment: .trailing)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(text ?? "")
+        .accessibilityHidden(text == nil)
+    }
+
+    private var iconName: String {
+        switch semanticColor {
+        case .relayAccent: return "circle.fill"
+        case .success: return "checkmark.circle.fill"
+        case .error: return "xmark.octagon.fill"
+        case .idle: return "circle"
+        }
+    }
+}
+
 struct SettingsNavigationPresentation: Equatable {
     let fillOpacity: Double
     let strokeOpacity: Double
@@ -201,6 +331,8 @@ struct SettingsNavigationPresentation: Equatable {
 struct SettingsActionPresentation: Equatable {
     let fillOpacity: Double
     let strokeOpacity: Double
+    let neutralFillOpacity: Double
+    let neutralStrokeOpacity: Double
     let foregroundOpacity: Double
     let accentOpacity: Double
     let animationDuration: Double
@@ -224,6 +356,8 @@ struct SettingsActionPresentation: Equatable {
             return SettingsActionPresentation(
                 fillOpacity: 0.02,
                 strokeOpacity: 0.10,
+                neutralFillOpacity: 0.02,
+                neutralStrokeOpacity: 0.10,
                 foregroundOpacity: boardPresentation.foregroundOpacity,
                 accentOpacity: 0,
                 animationDuration: boardPresentation.animationDuration
@@ -233,6 +367,8 @@ struct SettingsActionPresentation: Equatable {
         return SettingsActionPresentation(
             fillOpacity: isHovered ? 0.10 : 0.07,
             strokeOpacity: isFocused ? 0.34 : 0.22,
+            neutralFillOpacity: isFocused ? 0.08 : (isHovered ? 0.06 : 0.035),
+            neutralStrokeOpacity: isFocused ? 0.30 : (isHovered ? 0.18 : 0.12),
             foregroundOpacity: boardPresentation.foregroundOpacity,
             accentOpacity: isFocused ? 0.34 : 0.22,
             animationDuration: boardPresentation.animationDuration

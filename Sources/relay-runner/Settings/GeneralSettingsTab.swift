@@ -13,7 +13,8 @@ struct GeneralSettingsTab: View {
     @Binding var config: GeneralConfig
     var onOpenExternalWindow: () -> Void = {}
     @State private var skillInstalled = ProcessManager().isSkillInstalled
-    @State private var showSkillSuccess = false
+    @State private var skillStatusText: String?
+    @State private var skillStatusColor: SettingsSemanticColor = .idle
     @State private var showOverwriteAlert = false
 
     var body: some View {
@@ -94,7 +95,12 @@ struct GeneralSettingsTab: View {
                 ) {
                     HStack(spacing: 8) {
                         TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text("~ (home)"))
-                        Button("Browse\u{2026}") { pickDirectory() }
+                        SettingsActionButton(
+                            title: "Browse\u{2026}",
+                            systemImage: "folder"
+                        ) {
+                            pickDirectory()
+                        }
                     }
                 }
             }
@@ -121,12 +127,15 @@ struct GeneralSettingsTab: View {
                         description: "Adds relay-bridge and relay-stop support to Codex and Claude Code"
                     )
                     Spacer()
-                    if showSkillSuccess {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(SettingsSurfaceColor.success)
-                            .accessibilityLabel("Relay Skills installed")
-                    }
-                    Button(skillInstalled ? "Reinstall" : "Install") {
+                    SettingsInlineStatus(
+                        text: skillStatusText,
+                        semanticColor: skillStatusColor,
+                        reservedWidth: 150
+                    )
+                    SettingsActionButton(
+                        title: skillInstalled ? "Reinstall" : "Install",
+                        systemImage: skillInstalled ? "arrow.clockwise" : "square.and.arrow.down"
+                    ) {
                         if skillInstalled {
                             showOverwriteAlert = true
                         } else {
@@ -204,10 +213,14 @@ struct GeneralSettingsTab: View {
         let pm = ProcessManager()
         if pm.installSkill() {
             skillInstalled = true
-            showSkillSuccess = true
+            skillStatusText = "Installed"
+            skillStatusColor = .success
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                showSkillSuccess = false
+                skillStatusText = nil
             }
+        } else {
+            skillStatusText = "Install failed"
+            skillStatusColor = .error
         }
     }
 

@@ -15,10 +15,21 @@ struct STTSettingsTab: View {
 
                 SettingsDivider()
 
-                SettingsControlRow("Input Device") {
-                    Picker("Input Device", selection: $config.input_device) {
-                        Text("System Default").tag("default")
+                SettingsControlRow(
+                    "Input Device",
+                    description: "Uses the current macOS input device until real device selection is available."
+                ) {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(Self.inputDeviceDisplayName(config.input_device))
+                            .font(AppTypography.font(.body))
+                            .foregroundStyle(SettingsSurfaceColor.primaryText)
+                        Text("Read-only")
+                            .font(AppTypography.font(.settingsDescription))
+                            .foregroundStyle(SettingsSurfaceColor.mutedText)
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Input Device")
+                    .accessibilityValue(Self.inputDeviceAccessibilityValue(config.input_device))
                 }
             }
 
@@ -48,5 +59,14 @@ struct STTSettingsTab: View {
                 }
             }
         }
+    }
+
+    static func inputDeviceDisplayName(_ device: String) -> String {
+        let trimmed = device.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "default" ? "System Default" : trimmed
+    }
+
+    static func inputDeviceAccessibilityValue(_ device: String) -> String {
+        "\(inputDeviceDisplayName(device)), read-only"
     }
 }

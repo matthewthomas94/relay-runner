@@ -14,16 +14,18 @@ struct KeyCaptureView: View {
                 Text(label)
                 Spacer()
             }
-            KeyCaptureField(value: $value, isCapturing: $isCapturing)
+            KeyCaptureField(label: label, value: $value, isCapturing: $isCapturing)
                 .frame(width: 150, height: 24)
             if value.lowercased() != "caps lock" && !value.isEmpty {
                 Button {
                     value = "Caps Lock"
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "arrow.counterclockwise.circle.fill")
+                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Reset \(label) to Caps Lock")
+                .help("Reset \(label) to Caps Lock")
             }
         }
     }
@@ -32,6 +34,7 @@ struct KeyCaptureView: View {
 // MARK: - NSViewRepresentable
 
 private struct KeyCaptureField: NSViewRepresentable {
+    let label: String
     @Binding var value: String
     @Binding var isCapturing: Bool
 
@@ -44,18 +47,20 @@ private struct KeyCaptureField: NSViewRepresentable {
         view.onCancel = {
             isCapturing = false
         }
+        view.accessibilityLabelText = label
         view.displayText = value.isEmpty ? "Caps Lock" : value
+        view.committedDisplayText = view.displayText
         return view
     }
 
     func updateNSView(_ nsView: KeyInputView, context: Context) {
+        nsView.accessibilityLabelText = label
+        nsView.committedDisplayText = value.isEmpty ? "Caps Lock" : value
         if isCapturing && !nsView.isCaptureActive {
             nsView.startCapture()
         } else if !isCapturing {
             nsView.stopCapture()
-            nsView.displayText = value.isEmpty ? "Caps Lock" : value
-            nsView.isHighlighted = false
-            nsView.needsDisplay = true
+            nsView.restoreCommittedDisplay()
         }
     }
 }
@@ -65,14 +70,33 @@ private struct KeyCaptureField: NSViewRepresentable {
 private final class KeyInputView: NSView {
     var onKeyCapture: ((String) -> Void)?
     var onCancel: (() -> Void)?
+    var accessibilityLabelText = "Activation Key"
     var displayText = ""
+    var committedDisplayText = ""
     var isHighlighted = false
     private(set) var isCaptureActive = false
 
     private var localMonitor: Any?
     private var globalMonitor: Any?
 
+    override var acceptsFirstResponder: Bool { true }
+
     override func mouseDown(with event: NSEvent) {
+        activateCapture()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if isCaptureActive {
+            if handleCapturedEvent(event) { return }
+        } else if event.keyCode == 36 || event.keyCode == 49 {
+            activateCapture()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    private func activateCapture() {
+        window?.makeFirstResponder(self)
         if !isCaptureActive {
             startCapture()
         }
@@ -112,11 +136,18 @@ private final class KeyInputView: NSView {
         if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
     }
 
+    func restoreCommittedDisplay() {
+        displayText = committedDisplayText
+        isHighlighted = false
+        needsDisplay = true
+    }
+
     @discardableResult
     private func handleCapturedEvent(_ event: NSEvent) -> Bool {
         // Escape cancels
         if event.keyCode == 53 {
             stopCapture()
+            restoreCommittedDisplay()
             onCancel?()
             return true
         }
@@ -124,6 +155,8 @@ private final class KeyInputView: NSView {
         // Backspace resets to Caps Lock
         if event.keyCode == 51 {
             stopCapture()
+            committedDisplayText = "Caps Lock"
+            restoreCommittedDisplay()
             onKeyCapture?("Caps Lock")
             return true
         }
@@ -133,7 +166,30 @@ private final class KeyInputView: NSView {
 
         NSLog("[KeyCapture] Captured: \(key)")
         stopCapture()
+        committedDisplayText = key
+        restoreCommittedDisplay()
         onKeyCapture?(key)
+        return true
+    }
+
+    override func isAccessibilityElement() -> Bool {
+        true
+    }
+
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        .button
+    }
+
+    override func accessibilityLabel() -> String? {
+        accessibilityLabelText
+    }
+
+    override func accessibilityValue() -> Any? {
+        isCaptureActive ? "Press a key" : committedDisplayText
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        activateCapture()
         return true
     }
 
