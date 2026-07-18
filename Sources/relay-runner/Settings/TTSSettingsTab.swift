@@ -38,6 +38,7 @@ struct TTSSettingsTab: View {
                         }
                         .buttonStyle(.borderless)
                         .disabled(isPreviewing)
+                        .accessibilityLabel(isPreviewing ? "Previewing voice" : "Preview voice")
                         .help("Preview this voice")
                     }
                 }

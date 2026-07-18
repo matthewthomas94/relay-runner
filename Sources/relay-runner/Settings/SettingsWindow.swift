@@ -155,7 +155,7 @@ private struct SettingsContent: View {
                 VStack(spacing: 0) {
                     SettingsDetailHeader(category: selectedCategory)
                     SettingsDivider()
-                    ScrollView(.vertical, showsIndicators: false) {
+                    ScrollView(.vertical, showsIndicators: true) {
                         selectedDetail
                             .padding(style.detailPadding)
                             .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
@@ -211,17 +211,63 @@ private struct SettingsContent: View {
 
             Spacer(minLength: 0)
 
-            Button("Save") {
+            SettingsFooterSaveButton(isEnabled: hasChanges && !saving) {
                 saving = true
                 appState.saveConfig(draft)
                 saving = false
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(!hasChanges || saving)
-            .buttonStyle(.borderedProminent)
-            .tint(presentation.actionTint)
         }
         .padding(style.footerPadding)
+    }
+}
+
+private struct SettingsFooterSaveButton: View {
+    let isEnabled: Bool
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        let presentation = SettingsActionPresentation.resolve(
+            isEnabled: isEnabled,
+            isHovered: isHovered,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
+        )
+
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark")
+                    .font(AppTypography.symbolFont(size: 10, weight: .bold))
+                    .accessibilityHidden(true)
+                Text("Save")
+                    .font(AppTypography.font(.button))
+            }
+            .foregroundStyle(SettingsSurfaceColor.primaryText.opacity(presentation.foregroundOpacity))
+            .padding(.horizontal, 11)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                    .fill(SettingsSurfaceColor.relayAccent.opacity(presentation.fillOpacity))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                    .stroke(SettingsSurfaceColor.relayAccent.opacity(presentation.strokeOpacity), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(.defaultAction)
+        .disabled(!isEnabled)
+        .focusable(isEnabled)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .focused($isFocused)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
+        .accessibilityLabel("Save settings")
+        .help(isEnabled ? "Save settings" : "No settings changes to save")
     }
 }
 
@@ -258,9 +304,7 @@ struct SettingsFooterPresentation: Equatable {
 
     var iconColor: Color { iconSemanticColor.color }
 
-    var actionTint: Color {
-        hasChanges ? SettingsSurfaceColor.dirtyAccent : SettingsSurfaceColor.mutedText
-    }
+    var actionTint: Color { hasChanges ? SettingsSurfaceColor.dirtyAccent : SettingsSurfaceColor.mutedText }
 }
 
 private struct SettingsDetailHeader: View {
@@ -319,44 +363,50 @@ private struct SettingsCategoryButton: View {
 
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let presentation = SettingsNavigationPresentation.resolve(
+            selected: selected,
+            isHovered: isHovered,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
+        )
+
         Button(action: action) {
             HStack(alignment: .center, spacing: 10) {
                 Image(systemName: category.systemImage)
                     .font(AppTypography.symbolFont(size: 13, weight: .semibold))
                     .frame(width: 18)
-                    .foregroundStyle(selected ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.secondaryText)
+                    .foregroundStyle(SettingsSurfaceColor.primaryText.opacity(presentation.foregroundOpacity))
 
                 Text(category.navigationLabel)
                     .font(AppTypography.font(.button))
-                    .foregroundStyle(SettingsSurfaceColor.primaryText)
+                    .foregroundStyle(SettingsSurfaceColor.primaryText.opacity(presentation.foregroundOpacity))
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: SettingsLayout.sidebarRowHeight, alignment: .leading)
-            .background(buttonFill)
+            .background(
+                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(presentation.fillOpacity))
+            )
             .clipShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .stroke(isFocused ? SettingsSurfaceColor.focusRing : Color.clear, lineWidth: 1)
+                    .stroke(SettingsSurfaceColor.focusRing.opacity(presentation.strokeOpacity), lineWidth: 1)
             )
+            .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .focusable()
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .focused($isFocused)
         .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
         .accessibilityLabel("\(category.title), \(selected ? "selected" : "not selected")")
         .help(category.title)
-    }
-
-    private var buttonFill: Color {
-        if selected { return SettingsSurfaceColor.rowFillSelected }
-        if isFocused { return SettingsSurfaceColor.rowFillFocused }
-        if isHovered { return SettingsSurfaceColor.rowFillHovered }
-        return Color.clear
     }
 }
