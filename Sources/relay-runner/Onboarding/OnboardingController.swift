@@ -44,9 +44,9 @@ final class OnboardingController {
     let presentation: OnboardingPresentationState
     private let flagURLs: OnboardingFlagURLs
     private let permissions: PermissionsManager
-    /// Closure the Ready step calls to render live setup progress
-    /// (e.g. "Loading speech model…") — nil means "finished".
-    private let setupStatus: () -> String?
+    /// Closure the Ready step calls to render finite live setup status.
+    /// `.ready` means the shared runtime is finished and listening.
+    private let setupStatus: () -> SetupRuntimeReadiness
     /// Closure that returns the current configured workspace folder
     /// (empty string = "use the user's home folder"). Read at the moment
     /// the window opens so the Ready-step picker can preload the
@@ -70,6 +70,7 @@ final class OnboardingController {
     /// user can launch their first session without a detour back to
     /// the menu bar.
     private let startSession: () -> Void
+    private let retrySetup: () -> Void
     private let setOnboardingNotchOverrideActive: (Bool) -> Void
     private let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
     private let cancelPermissionSetup: (PermissionSetupSource?) -> Void
@@ -81,7 +82,7 @@ final class OnboardingController {
     init(permissions: PermissionsManager,
          flagURLs: OnboardingFlagURLs = .live,
          presentation: OnboardingPresentationState = OnboardingPresentationState(),
-         setupStatus: @escaping () -> String? = { nil },
+         setupStatus: @escaping () -> SetupRuntimeReadiness = { .ready },
          getWorkingDirectory: @escaping () -> String = { "" },
          getAgentProvider: @escaping () -> GeneralConfig.AgentProvider = { .codex },
          getModel: @escaping () -> String = { GeneralConfig.defaultModel },
@@ -91,6 +92,7 @@ final class OnboardingController {
          setCodexReasoningEffort: @escaping (String) -> Void = { _ in },
          setWorkingDirectory: @escaping (String) -> Void = { _ in },
          startSession: @escaping () -> Void = {},
+         retrySetup: @escaping () -> Void = {},
          setOnboardingNotchOverrideActive: @escaping (Bool) -> Void = { _ in },
          requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
          cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
@@ -111,6 +113,7 @@ final class OnboardingController {
         self.setCodexReasoningEffort = setCodexReasoningEffort
         self.setWorkingDirectory = setWorkingDirectory
         self.startSession = startSession
+        self.retrySetup = retrySetup
         self.setOnboardingNotchOverrideActive = setOnboardingNotchOverrideActive
         self.requestPermissionSetup = requestPermissionSetup
         self.cancelPermissionSetup = cancelPermissionSetup
@@ -279,6 +282,7 @@ final class OnboardingController {
             },
             onSetWorkingDirectory: { [weak self] path in self?.setWorkingDirectory(path) },
             onStartSession: { [weak self] in self?.startSession() },
+            onRetrySetup: { [weak self] in self?.retrySetup() },
             requestPermissionSetup: { [weak self] kind, source, purpose in
                 self?.requestPermissionSetup(kind, source, purpose)
             },

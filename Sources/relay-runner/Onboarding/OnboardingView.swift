@@ -10,10 +10,9 @@ struct OnboardingView: View {
 
     @Bindable var permissions: PermissionsManager
     let simplified: Bool
-    /// Optional setup-progress string (e.g. "Loading speech model…"). When
-    /// non-nil on the Ready step, shown in place of "all set" so the user
-    /// knows the app isn't fully ready yet.
-    let setupStatus: () -> String?
+    /// Shared runtime readiness. `.ready` means the speech-to-text model has
+    /// loaded and is listening; preparing and failed states block Done.
+    let setupStatus: () -> SetupRuntimeReadiness
     /// Currently-configured workspace folder at the moment the window
     /// opens. Used to preload the Ready-step path picker so a returning
     /// user sees their last choice.
@@ -37,6 +36,7 @@ struct OnboardingView: View {
     /// Used by the Start Session CTA on the Ready step so the user can
     /// kick off a session without going back to the menu bar.
     let onStartSession: () -> Void
+    let onRetrySetup: () -> Void
     let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
     let cancelPermissionSetup: (PermissionSetupSource?) -> Void
     let shouldDeferPermissionAdvance: (PermissionKind) -> Bool
@@ -77,10 +77,11 @@ struct OnboardingView: View {
     @State private var autoOpenedParentPermissionSteps: Set<OnboardingStepID> = []
     @State private var autoAdvancedPermissionKinds: Set<PermissionKind> = []
     @State private var activePermissionSetupKind: PermissionKind?
+    @State private var setupReadinessRefresh = Date.distantPast
 
     init(permissions: PermissionsManager,
          simplified: Bool,
-         setupStatus: @escaping () -> String? = { nil },
+         setupStatus: @escaping () -> SetupRuntimeReadiness = { .ready },
          initialWorkingDirectory: String = "",
          initialAgentProvider: GeneralConfig.AgentProvider = .codex,
          initialModel: String = GeneralConfig.defaultModel,
@@ -94,6 +95,7 @@ struct OnboardingView: View {
          onSetCodexReasoningEffort: @escaping (String) -> Void = { _ in },
          onSetWorkingDirectory: @escaping (String) -> Void = { _ in },
          onStartSession: @escaping () -> Void = {},
+         onRetrySetup: @escaping () -> Void = {},
          requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
          cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
          shouldDeferPermissionAdvance: @escaping (PermissionKind) -> Bool = { _ in false },
@@ -115,6 +117,7 @@ struct OnboardingView: View {
         self.onSetCodexReasoningEffort = onSetCodexReasoningEffort
         self.onSetWorkingDirectory = onSetWorkingDirectory
         self.onStartSession = onStartSession
+        self.onRetrySetup = onRetrySetup
         self.requestPermissionSetup = requestPermissionSetup
         self.cancelPermissionSetup = cancelPermissionSetup
         self.shouldDeferPermissionAdvance = shouldDeferPermissionAdvance
@@ -306,6 +309,10 @@ struct OnboardingView: View {
         .onChange(of: hasConfirmedWorkingDirectory) { _, _ in publishPresentation() }
         .onChange(of: agentSignedIn) { _, _ in publishPresentation() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            if step == .ready {
+                setupReadinessRefresh = Date()
+                publishPresentation()
+            }
             // Poll only while we're on the agentLogin step — the
             // local auth check is cheap, but there's no reason to
             // run it forever. When the marker appears, mirror the
@@ -883,26 +890,32 @@ struct OnboardingView: View {
     }
 
     private var readyView: some View {
-        let status = setupStatus()
-        let isLoading = status != nil
+        _ = setupReadinessRefresh
+        let runtimeReadiness = setupStatus()
         let readiness = currentReadiness
         let voiceReady = readiness.voiceReady
         let inputMonitoringSummary = Self.inputMonitoringSummary(status: permissions.inputMonitoring)
         return VStack(spacing: 16) {
             Spacer(minLength: 4)
-            if isLoading {
+            if runtimeReadiness.isPreparing {
                 ProgressView()
                     .controlSize(.large)
+            } else if runtimeReadiness.needsSetupAction {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(AppTypography.symbolFont(size: 44))
+                    .foregroundStyle(.orange)
             } else {
                 Image(systemName: readinessIcon(for: readiness.mode))
                     .font(AppTypography.symbolFont(size: 44))
                     .foregroundStyle(readinessColor(for: readiness.mode))
             }
-            Text(isLoading ? "Almost ready\u{2026}" : readiness.title)
+            Text(readyTitle(runtimeReadiness: runtimeReadiness, readiness: readiness))
                 .font(AppTypography.font(.appTitle))
-            if isLoading, let status {
-                Text(status)
+            if !runtimeReadiness.isReady {
+                Text(runtimeReadiness.statusDetail)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if !voiceReady {
                 Text(readiness.detail)
                     .foregroundStyle(.secondary)
@@ -945,6 +958,18 @@ struct OnboardingView: View {
             Spacer(minLength: 4)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func readyTitle(runtimeReadiness: SetupRuntimeReadiness,
+                            readiness: GuidedSetupReadiness) -> String {
+        switch runtimeReadiness {
+        case .preparing:
+            return "Almost ready\u{2026}"
+        case .notStarted, .failed:
+            return "Setup needs attention."
+        case .ready:
+            return readiness.title
+        }
     }
 
     private func inputMonitoringDeferredNotice(detail: String) -> some View {
@@ -1100,6 +1125,35 @@ struct OnboardingView: View {
 
     // MARK: - Settings presentation
 
+    enum ReadyPrimaryActionKind: Equatable {
+        case startSession(isEnabled: Bool)
+        case retrySetup
+        case waiting
+        case done
+    }
+
+    static func readyPrimaryActionKind(
+        setupStatus: SetupRuntimeReadiness,
+        voiceReady: Bool,
+        hasConfirmedWorkingDirectory: Bool
+    ) -> ReadyPrimaryActionKind {
+        switch setupStatus {
+        case .ready:
+            return voiceReady ? .startSession(isEnabled: hasConfirmedWorkingDirectory) : .done
+        case .preparing:
+            return .waiting
+        case .notStarted, .failed:
+            return .retrySetup
+        }
+    }
+
+    static func showsReadyDismissAction(
+        setupStatus: SetupRuntimeReadiness,
+        voiceReady: Bool
+    ) -> Bool {
+        setupStatus.isReady && voiceReady
+    }
+
     private func publishPresentation() {
         presentation?.update(detail: OnboardingDetailPresentation(
             title: Self.headerTitle(for: step, provider: selectedAgentProvider),
@@ -1142,31 +1196,54 @@ struct OnboardingView: View {
         case .agentLogin:
             return agentLoginPrimaryAction
         case .ready:
-            let pickerVisible = setupStatus() == nil && currentReadiness.voiceReady
-            if pickerVisible {
+            switch Self.readyPrimaryActionKind(
+                setupStatus: setupStatus(),
+                voiceReady: currentReadiness.voiceReady,
+                hasConfirmedWorkingDirectory: hasConfirmedWorkingDirectory
+            ) {
+            case .startSession(let isEnabled):
                 return footerAction(
                     title: "Start Session",
                     systemImage: "play.fill",
                     prominence: .primary,
-                    isEnabled: hasConfirmedWorkingDirectory,
+                    isEnabled: isEnabled,
                     shortcut: .default
                 ) {
                     onSetWorkingDirectory(workingDirectory)
                     onStartSession()
                     onFinish()
                 }
+            case .retrySetup:
+                return footerAction(
+                    title: "Retry Setup",
+                    systemImage: "arrow.clockwise",
+                    prominence: .primary,
+                    shortcut: .default
+                ) { onRetrySetup() }
+            case .waiting:
+                return footerAction(
+                    title: "Waiting",
+                    systemImage: "clock",
+                    prominence: .primary,
+                    isEnabled: false,
+                    shortcut: .default
+                ) {}
+            case .done:
+                return footerAction(
+                    title: "Done",
+                    systemImage: "checkmark",
+                    prominence: .primary,
+                    shortcut: .default
+                ) { onFinish() }
             }
-            return footerAction(
-                title: "Done",
-                systemImage: "checkmark",
-                prominence: .primary,
-                shortcut: .default
-            ) { onFinish() }
         }
     }
 
     private var secondaryFooterAction: OnboardingFooterAction? {
-        if step == .ready && setupStatus() == nil && currentReadiness.voiceReady {
+        if step == .ready && Self.showsReadyDismissAction(
+            setupStatus: setupStatus(),
+            voiceReady: currentReadiness.voiceReady
+        ) {
             return footerAction(
                 title: "Dismiss",
                 systemImage: "xmark",
