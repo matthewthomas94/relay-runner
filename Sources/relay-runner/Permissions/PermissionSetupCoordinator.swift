@@ -69,6 +69,12 @@ struct PermissionSetupRequest: Equatable {
 
 extension Notification.Name {
     static let relayPermissionSetupGrantReady = Notification.Name("relayPermissionSetupGrantReady")
+    static let relayPermissionSetupEndedWithoutGrant = Notification.Name("relayPermissionSetupEndedWithoutGrant")
+}
+
+struct PermissionSetupLifecycleEvent: Equatable {
+    let permission: PermissionKind
+    let source: PermissionSetupSource
 }
 
 protocol PermissionSetupPermissionManaging: AnyObject {
@@ -105,6 +111,7 @@ final class PermissionSetupCoordinator {
     private let permissions: PermissionSetupPermissionManaging
     private let setSetupNotchState: (PermissionSetupNotchState?) -> Void
     private let postGrantReady: (PermissionKind, PermissionSetupSource) -> Void
+    private let postEndedWithoutGrant: (PermissionKind, PermissionSetupSource) -> Void
     private let companion: PermissionSetupCompanionControlling
     private let successAcknowledgementDelay: TimeInterval
     private var active: ActiveSetup?
@@ -118,11 +125,18 @@ final class PermissionSetupCoordinator {
                 object: kind.rawValue
              )
          },
+         postEndedWithoutGrant: @escaping (PermissionKind, PermissionSetupSource) -> Void = { kind, source in
+             NotificationCenter.default.post(
+                name: .relayPermissionSetupEndedWithoutGrant,
+                object: PermissionSetupLifecycleEvent(permission: kind, source: source)
+             )
+         },
          companion: PermissionSetupCompanionControlling = PermissionSetupCompanionController(),
          successAcknowledgementDelay: TimeInterval = PermissionSetupCoordinator.successAcknowledgementDelay) {
         self.permissions = permissions
         self.setSetupNotchState = setSetupNotchState
         self.postGrantReady = postGrantReady
+        self.postEndedWithoutGrant = postEndedWithoutGrant
         self.companion = companion
         self.successAcknowledgementDelay = successAcknowledgementDelay
     }
@@ -159,7 +173,7 @@ final class PermissionSetupCoordinator {
                 if granted {
                     self.markGranted(permission)
                 } else {
-                    self.cancel()
+                    self.endWithoutGrant(request)
                 }
             }
         case .accessibility:
@@ -207,9 +221,19 @@ final class PermissionSetupCoordinator {
                 self?.realDragStateChanged(dragging)
             },
             onLifecycleEnded: { [weak self] in
-                self?.cancel()
+                self?.endWithoutGrant(request)
             }
         )
+    }
+
+    private func endWithoutGrant(_ request: PermissionSetupRequest) {
+        guard let active,
+              active.request == request,
+              !active.completionPosted else {
+            return
+        }
+        cancel()
+        postEndedWithoutGrant(request.permission, request.source)
     }
 
     private func markGranted(_ permission: PermissionKind) {
@@ -755,22 +779,34 @@ struct PermissionCompanionFallbackPlan: Equatable {
                      purpose: String,
                      bundleURL: URL?,
                      fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> PermissionCompanionFallbackPlan {
-        let validPayload = bundleURL.map {
-            $0.pathExtension == "app" && fileExists($0.path)
-        } ?? false
+        let payloadURL = validApplicationBundleURL(bundleURL, fileExists: fileExists)
         let revealURL: URL
-        if let bundleURL, fileExists(bundleURL.path) {
-            revealURL = bundleURL
+        if let payloadURL {
+            revealURL = payloadURL
+        } else if let bundleURL, fileExists(bundleURL.path) {
+            revealURL = bundleURL.standardizedFileURL.resolvingSymlinksInPath()
         } else {
             revealURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
         }
         return PermissionCompanionFallbackPlan(
             permission: permission,
             purpose: purpose,
-            payloadURL: validPayload ? bundleURL : nil,
+            payloadURL: payloadURL,
             revealURL: revealURL,
-            payloadEnabled: validPayload
+            payloadEnabled: payloadURL != nil
         )
+    }
+
+    private static func validApplicationBundleURL(_ bundleURL: URL?,
+                                                  fileExists: (String) -> Bool) -> URL? {
+        guard let bundleURL else { return nil }
+        let resolved = bundleURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard resolved.isFileURL,
+              resolved.pathExtension == "app",
+              fileExists(resolved.path) else {
+            return nil
+        }
+        return resolved
     }
 }
 
@@ -995,6 +1031,7 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.acceptsMouseMovedEvents = true
         return panel
@@ -1012,6 +1049,7 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.ignoresMouseEvents = true
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         return panel
     }
@@ -1045,6 +1083,16 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
     }
 }
 
+enum PermissionCompanionTileStyle {
+    static let size = CGSize(width: 140, height: 142)
+    static let cornerRadius: CGFloat = 16
+    static let iconSize: CGFloat = 90
+    static let iconFrameSize: CGFloat = 92
+    static let verticalSpacing: CGFloat = 8
+    static let normalBorderOpacity: Double = 0
+    static let increasedContrastBorderOpacity: Double = 0.55
+}
+
 private struct PermissionCompanionCard: View {
     let fallback: PermissionCompanionFallbackPlan
     let isGranted: Bool
@@ -1057,15 +1105,31 @@ private struct PermissionCompanionCard: View {
         content
         .padding(.top, 11)
         .padding(.bottom, 9)
-        .frame(width: 140, height: 142)
+        .frame(
+            width: PermissionCompanionTileStyle.size.width,
+            height: PermissionCompanionTileStyle.size.height
+        )
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.black.opacity(0.92))
+            RoundedRectangle(cornerRadius: PermissionCompanionTileStyle.cornerRadius, style: .continuous)
+                .fill(Color.black)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.55 : 0), lineWidth: 1)
+            RoundedRectangle(cornerRadius: PermissionCompanionTileStyle.cornerRadius, style: .continuous)
+                .stroke(
+                    Color.white.opacity(
+                        NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+                            ? PermissionCompanionTileStyle.increasedContrastBorderOpacity
+                            : PermissionCompanionTileStyle.normalBorderOpacity
+                    ),
+                    lineWidth: 1
+                )
         )
+        .contextMenu {
+            Button("Reveal Relay Runner in Finder", action: onReveal)
+            Button("Open \(fallback.permission.displayName) Settings", action: onOpenSettings)
+        }
+        .accessibilityAction(named: "Reveal Relay Runner in Finder", onReveal)
+        .accessibilityAction(named: "Open \(fallback.permission.displayName) Settings", onOpenSettings)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isGranted ? grantedAccessibilityLabel : fallback.accessibilityLabel)
         .accessibilityHint(isGranted ? "Relay Runner is ready for \(fallback.permission.displayName)." : fallback.instructions)
@@ -1092,37 +1156,62 @@ private struct PermissionCompanionCard: View {
                     .lineLimit(1)
             }
         } else {
-            VStack(spacing: 8) {
+            VStack(spacing: PermissionCompanionTileStyle.verticalSpacing) {
                 DraggableAppIconView(
                     bundleURL: fallback.payloadURL,
-                    size: 90,
+                    size: PermissionCompanionTileStyle.iconSize,
                     isEnabled: fallback.payloadEnabled,
                     onUserInteraction: onUserInteraction,
                     onDragStateChanged: onDragStateChanged
                 )
-                .frame(width: 92, height: 92)
-                Text(fallback.payloadEnabled ? "Drag me" : "Reveal")
+                .frame(
+                    width: PermissionCompanionTileStyle.iconFrameSize,
+                    height: PermissionCompanionTileStyle.iconFrameSize
+                )
+                Text("Drag me")
                     .font(AppTypography.font(.caption))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                HStack(spacing: 6) {
-                    Button(action: onReveal) {
-                        Image(systemName: "folder")
-                    }
-                    .help("Reveal Relay Runner in Finder")
-                    Button(action: onOpenSettings) {
-                        Image(systemName: "gearshape")
-                    }
-                    .help("Open \(fallback.permission.displayName) Settings")
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.white)
             }
         }
     }
 
     private var grantedAccessibilityLabel: String {
         "\(fallback.permission.displayName) granted for Relay Runner."
+    }
+}
+
+enum PermissionCompanionCursorArtwork: Equatable {
+    case openHand
+    case closedHand
+
+    static func artwork(for phase: PermissionCompanionAnimationPlanner.Phase) -> PermissionCompanionCursorArtwork {
+        switch phase {
+        case .press, .drag:
+            return .closedHand
+        case .staticHint, .approach, .release, .hold, .reset:
+            return .openHand
+        }
+    }
+
+    var cursor: NSCursor {
+        switch self {
+        case .openHand:
+            return .openHand
+        case .closedHand:
+            return .closedHand
+        }
+    }
+
+    static func drawFrame(for point: CGPoint,
+                          imageSize: CGSize,
+                          hotSpot: CGPoint) -> CGRect {
+        CGRect(
+            x: point.x - hotSpot.x,
+            y: point.y - hotSpot.y,
+            width: imageSize.width,
+            height: imageSize.height
+        )
     }
 }
 
@@ -1196,7 +1285,7 @@ private final class PermissionCompanionDemoView: NSView {
                 fraction: state.ghostOpacity
             )
         }
-        drawCursor(at: state.cursor, pressed: state.phase == .press || state.phase == .drag)
+        drawCursor(at: state.cursor, artwork: PermissionCompanionCursorArtwork.artwork(for: state.phase))
     }
 
     private func updateTimer() {
@@ -1269,20 +1358,18 @@ private final class PermissionCompanionDemoView: NSView {
         plus.stroke()
     }
 
-    private func drawCursor(at point: CGPoint, pressed: Bool) {
-        let path = NSBezierPath()
-        path.move(to: point)
-        path.line(to: CGPoint(x: point.x + 2, y: point.y - 24))
-        path.line(to: CGPoint(x: point.x + 8, y: point.y - 17))
-        path.line(to: CGPoint(x: point.x + 13, y: point.y - 30))
-        path.line(to: CGPoint(x: point.x + 18, y: point.y - 28))
-        path.line(to: CGPoint(x: point.x + 13, y: point.y - 15))
-        path.line(to: CGPoint(x: point.x + 23, y: point.y - 15))
-        path.close()
-        NSColor.white.withAlphaComponent(pressed ? 0.95 : 0.86).setFill()
-        path.fill()
-        NSColor.black.withAlphaComponent(0.55).setStroke()
-        path.lineWidth = 1
-        path.stroke()
+    private func drawCursor(at point: CGPoint, artwork: PermissionCompanionCursorArtwork) {
+        let cursor = artwork.cursor
+        let image = cursor.image
+        image.draw(
+            in: PermissionCompanionCursorArtwork.drawFrame(
+                for: point,
+                imageSize: image.size,
+                hotSpot: cursor.hotSpot
+            ),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 0.94
+        )
     }
 }

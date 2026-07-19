@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import QuartzCore
 import SwiftUI
 
 struct OnboardingFlagURLs {
@@ -23,7 +24,7 @@ struct OnboardingFlagURLs {
     }
 }
 
-/// Owns the onboarding NSWindow and the first-launch flag file.
+/// Owns the notch-hosted onboarding surface and the first-launch flag file.
 ///
 /// Lifecycle:
 ///  * First launch ever → full walkthrough (welcome → agent choice → setup → ready).
@@ -40,8 +41,7 @@ struct OnboardingFlagURLs {
 /// APIs (NSWindow, NSWorkspace, NSApp) that require main-thread access.
 final class OnboardingController {
 
-    private var windowController: NSWindowController?
-    private var windowDelegate: OnboardingWindowDelegate?
+    private var surfaceController: OnboardingSurfaceControlling?
     private var introController: (any OnboardingIntroPresenting)?
     private let flagURLs: OnboardingFlagURLs
     private let permissions: PermissionsManager
@@ -76,6 +76,7 @@ final class OnboardingController {
     private let cancelPermissionSetup: (PermissionSetupSource?) -> Void
     private let shouldDeferPermissionAdvance: (PermissionKind) -> Bool
     private let makeIntroController: () -> any OnboardingIntroPresenting
+    private let makeSurfaceController: () -> OnboardingSurfaceControlling
     private let reduceMotion: () -> Bool
 
     init(permissions: PermissionsManager,
@@ -95,6 +96,7 @@ final class OnboardingController {
          cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
          shouldDeferPermissionAdvance: @escaping (PermissionKind) -> Bool = { _ in false },
          makeIntroController: @escaping () -> any OnboardingIntroPresenting = { OnboardingIntroController() },
+         makeSurfaceController: @escaping () -> OnboardingSurfaceControlling = { OnboardingNotchSurfaceController() },
          reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
         self.flagURLs = flagURLs
         self.permissions = permissions
@@ -113,6 +115,7 @@ final class OnboardingController {
         self.cancelPermissionSetup = cancelPermissionSetup
         self.shouldDeferPermissionAdvance = shouldDeferPermissionAdvance
         self.makeIntroController = makeIntroController
+        self.makeSurfaceController = makeSurfaceController
         self.reduceMotion = reduceMotion
     }
 
@@ -151,7 +154,7 @@ final class OnboardingController {
         !hasOnboarded && FileManager.default.fileExists(atPath: flagURLs.started.path)
     }
 
-    /// Show the onboarding window if it's needed — first launch, kill-
+    /// Show onboarding if it's needed — first launch, kill-
     /// mid-flow recovery, required setup missing on a later launch, no
     /// recorded agent choice after upgrade, or
     /// a returning user who hasn't started their first session yet.
@@ -178,16 +181,16 @@ final class OnboardingController {
         }
     }
 
-    /// Force-show the onboarding window (e.g. from a menu item). Always
+    /// Force-show onboarding (e.g. from a menu item). Always
     /// shows the full flow so the user can re-read the explanations.
     func showAlways() {
         show(simplified: false)
     }
 
     private func showFreshAutomatic() {
-        guard windowController == nil, introController == nil else {
-            windowController?.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+        guard surfaceController == nil, introController == nil else {
+            surfaceController?.bringForward()
+            Self.activateApp()
             return
         }
 
@@ -223,15 +226,32 @@ final class OnboardingController {
         initialStepOverride: OnboardingView.Step? = nil,
         markStarted: Bool = true
     ) {
-        if let wc = windowController, let window = wc.window {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+        if let surfaceController {
+            surfaceController.bringForward()
+            Self.activateApp()
             return
         }
         let resumeState = simplified ? OnboardingResumeState.load() : nil
         let requiresParentPermissionGuidance = resumeState?.parentPermissionsReviewed == false
+        let initialWorkingDirectory = getWorkingDirectory()
+        let initialAgentProvider = getAgentProvider()
+        let initialModel = getModel()
+        let initialCodexReasoningEffort = getCodexReasoningEffort()
+        let startingProvider = resumeState?.provider ?? initialAgentProvider
+        let startingParentReviewed = resumeState?.parentPermissionsReviewed ?? false
+        let initialStep = OnboardingView.initialStep(
+            simplified: simplified,
+            resumeStep: resumeState?.step,
+            requiresAgentChoice: !hasChosenAgent,
+            requiresParentPermissionGuidance: requiresParentPermissionGuidance,
+            parentPermissionsReviewed: startingParentReviewed,
+            permissionStatus: { permissions.status(for: $0) },
+            venvInstalled: VenvInstaller.alreadyInstalled,
+            agentSignedIn: AgentAuth.isAuthenticated(for: startingProvider),
+            fullFlowInitialStep: initialStepOverride ?? .welcome
+        )
 
-        // Mark "started" before the window is even constructed, so any
+        // Mark "started" before the surface is even constructed, so any
         // mid-flow exit leaves enough state for the next launch to resume
         // into the simplified flow rather than the full walkthrough.
         if markStarted {
@@ -242,10 +262,10 @@ final class OnboardingController {
             permissions: permissions,
             simplified: simplified,
             setupStatus: setupStatus,
-            initialWorkingDirectory: getWorkingDirectory(),
-            initialAgentProvider: getAgentProvider(),
-            initialModel: getModel(),
-            initialCodexReasoningEffort: getCodexReasoningEffort(),
+            initialWorkingDirectory: initialWorkingDirectory,
+            initialAgentProvider: initialAgentProvider,
+            initialModel: initialModel,
+            initialCodexReasoningEffort: initialCodexReasoningEffort,
             requiresAgentChoice: !hasChosenAgent,
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             initialStepOverride: initialStepOverride,
@@ -269,39 +289,35 @@ final class OnboardingController {
             shouldDeferPermissionAdvance: { [weak self] kind in
                 self?.shouldDeferPermissionAdvance(kind) ?? false
             },
+            onSurfaceVisibilityChanged: { [weak self] visible in
+                self?.surfaceController?.setContentVisible(visible)
+            },
             onFinish: { [weak self] in self?.finish() }
         )
 
-        let hosting = NSHostingController(rootView: view)
-        let window = NSWindow(contentViewController: hosting)
-        window.title = "Welcome to Relay Runner"
-        window.styleMask = [.titled, .closable]
-        // Tall enough to fit the Ready step's full content with
-        // comfortable header and footer margins.
-        window.setContentSize(NSSize(width: 560, height: 680))
-        window.center()
-        window.isReleasedWhenClosed = false
-        let delegate = OnboardingWindowDelegate { [weak self] in
+        setOnboardingNotchOverrideActive(true)
+
+        let surface = makeSurfaceController()
+        surfaceController = surface
+        surface.show(
+            rootView: AnyView(view),
+            initiallyVisible: OnboardingView.initialSurfaceVisible(for: initialStep)
+        ) { [weak self] in
             self?.cancelPermissionSetup(.onboarding)
-            self?.windowController = nil
-            self?.windowDelegate = nil
-            NSApp.setActivationPolicy(.accessory)
+            self?.surfaceController = nil
+            self?.setOnboardingNotchOverrideActive(false)
+            Self.setActivationPolicy(.accessory)
         }
-        window.delegate = delegate
-        windowDelegate = delegate
 
         // Menu-bar apps default to .accessory. Temporarily elevate so the
-        // onboarding window takes focus and can be reached via Cmd-Tab; drop
-        // back to .accessory when the user dismisses the window.
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-
-        let wc = NSWindowController(window: window)
-        windowController = wc
-        wc.showWindow(nil)
+        // onboarding surface takes focus and can be reached via Cmd-Tab; drop
+        // back to .accessory when the user dismisses the surface.
+        Self.setActivationPolicy(.regular)
+        Self.activateApp()
+        surface.bringForward()
     }
 
-    /// Mark the flag file and close the window. Called when the user
+    /// Mark the flag file and close the surface. Called when the user
     /// completes or skips past the final step.
     private func finish() {
         cancelPermissionSetup(.onboarding)
@@ -311,22 +327,221 @@ final class OnboardingController {
         // Clear it so a future focused setup prompt doesn't get treated as a
         // resumed mid-flow exit.
         try? FileManager.default.removeItem(at: flagURLs.started)
-        windowController?.window?.delegate = nil
-        windowController?.close()
-        windowController = nil
-        windowDelegate = nil
-        NSApp.setActivationPolicy(.accessory)
+        surfaceController?.close()
+        surfaceController = nil
+        setOnboardingNotchOverrideActive(false)
+        Self.setActivationPolicy(.accessory)
+    }
+
+    private static func setActivationPolicy(_ policy: NSApplication.ActivationPolicy) {
+        NSApplication.shared.setActivationPolicy(policy)
+    }
+
+    private static func activateApp() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 }
 
-private final class OnboardingWindowDelegate: NSObject, NSWindowDelegate {
-    private let onClose: () -> Void
+protocol OnboardingSurfaceControlling: AnyObject {
+    func show(rootView: AnyView, initiallyVisible: Bool, onClose: @escaping () -> Void)
+    func setContentVisible(_ visible: Bool)
+    func bringForward()
+    func close()
+}
 
-    init(onClose: @escaping () -> Void) {
+enum OnboardingNotchSurfaceMetrics {
+    static let contentSize = CGSize(width: 520, height: 620)
+    static let cornerRadius: CGFloat = 22
+    static let topInset: CGFloat = 0
+    static let screenEdgeGap: CGFloat = 14
+    static let retractedVisibleSliver: CGFloat = 2
+    static let styleMask: NSWindow.StyleMask = [.borderless]
+}
+
+struct OnboardingNotchSurfacePlacement: Equatable {
+    let visibleFrame: CGRect
+    let retractedFrame: CGRect
+}
+
+enum OnboardingNotchSurfacePlacementPlanner {
+    static func placement(
+        for geometry: NotchStatusDisplayGeometry,
+        contentSize: CGSize = OnboardingNotchSurfaceMetrics.contentSize
+    ) -> OnboardingNotchSurfacePlacement {
+        let statusPlacement = NotchStatusPlacementPlanner.placement(for: geometry)
+        let anchorX = statusPlacement?.visibleFrame.midX ?? geometry.frame.midX
+        let minX = geometry.visibleFrame.minX + OnboardingNotchSurfaceMetrics.screenEdgeGap
+        let maxX = geometry.visibleFrame.maxX - contentSize.width - OnboardingNotchSurfaceMetrics.screenEdgeGap
+        let proposedX = anchorX - contentSize.width / 2
+        let x = maxX >= minX
+            ? min(max(proposedX, minX), maxX)
+            : geometry.visibleFrame.midX - contentSize.width / 2
+        let y = max(
+            geometry.visibleFrame.minY + OnboardingNotchSurfaceMetrics.screenEdgeGap,
+            geometry.frame.maxY - OnboardingNotchSurfaceMetrics.topInset - contentSize.height
+        )
+        let visibleFrame = CGRect(origin: CGPoint(x: x, y: y), size: contentSize)
+        let retractedFrame = CGRect(
+            x: x,
+            y: geometry.frame.maxY - OnboardingNotchSurfaceMetrics.retractedVisibleSliver,
+            width: contentSize.width,
+            height: contentSize.height
+        )
+        return OnboardingNotchSurfacePlacement(
+            visibleFrame: visibleFrame,
+            retractedFrame: retractedFrame
+        )
+    }
+}
+
+private final class OnboardingNotchSurfaceController: NSObject, OnboardingSurfaceControlling, NSWindowDelegate {
+    private var panel: OnboardingNotchPanel?
+    private var screenParametersObserver: NSObjectProtocol?
+    private var onClose: (() -> Void)?
+    private var contentVisible = true
+
+    deinit {
+        removeScreenParametersObserver()
+    }
+
+    func show(rootView: AnyView, initiallyVisible: Bool, onClose: @escaping () -> Void) {
         self.onClose = onClose
+        installScreenParametersObserver()
+
+        let hosting = NSHostingController(rootView: rootView)
+        let panel = panel ?? OnboardingNotchPanel()
+        self.panel = panel
+        panel.contentViewController = hosting
+        panel.delegate = self
+        let placement = currentPlacement()
+        panel.setFrame(placement.retractedFrame, display: false)
+        panel.alphaValue = 0
+        panel.ignoresMouseEvents = true
+        contentVisible = false
+        panel.orderFrontRegardless()
+        if initiallyVisible {
+            setContentVisible(true)
+        }
+    }
+
+    func setContentVisible(_ visible: Bool) {
+        guard contentVisible != visible || panel?.isVisible != true else { return }
+        contentVisible = visible
+        guard let panel else { return }
+
+        let placement = currentPlacement()
+        let targetFrame = visible ? placement.visibleFrame : placement.retractedFrame
+        if visible {
+            panel.ignoresMouseEvents = false
+            panel.orderFrontRegardless()
+            panel.makeKey()
+        } else {
+            panel.ignoresMouseEvents = true
+        }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = animationDuration(visible ? 0.34 : 0.22)
+            context.timingFunction = visible
+                ? CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.28, 1.0)
+                : CAMediaTimingFunction(controlPoints: 0.42, 0.0, 1.0, 1.0)
+            panel.animator().setFrame(targetFrame, display: true)
+            panel.animator().alphaValue = visible ? 1 : 0
+        }
+    }
+
+    func bringForward() {
+        guard let panel else { return }
+        if contentVisible {
+            panel.orderFrontRegardless()
+            panel.makeKey()
+        }
+    }
+
+    func close() {
+        removeScreenParametersObserver()
+        panel?.delegate = nil
+        panel?.close()
+        panel = nil
+        onClose = nil
     }
 
     func windowWillClose(_ notification: Notification) {
-        onClose()
+        removeScreenParametersObserver()
+        panel = nil
+        let handler = onClose
+        onClose = nil
+        handler?()
     }
+
+    private func currentPlacement() -> OnboardingNotchSurfacePlacement {
+        let screen = NSScreen.screens.first(where: {
+            NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
+        }) ?? NSScreen.main ?? NSScreen.screens.first
+        if let screen {
+            return OnboardingNotchSurfacePlacementPlanner.placement(
+                for: NotchStatusDisplayGeometry(screen: screen)
+            )
+        }
+        return OnboardingNotchSurfacePlacement(
+            visibleFrame: CGRect(origin: .zero, size: OnboardingNotchSurfaceMetrics.contentSize),
+            retractedFrame: CGRect(
+                x: 0,
+                y: OnboardingNotchSurfaceMetrics.contentSize.height - OnboardingNotchSurfaceMetrics.retractedVisibleSliver,
+                width: OnboardingNotchSurfaceMetrics.contentSize.width,
+                height: OnboardingNotchSurfaceMetrics.contentSize.height
+            )
+        )
+    }
+
+    private func installScreenParametersObserver() {
+        guard screenParametersObserver == nil else { return }
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let panel = self.panel else { return }
+            let placement = self.currentPlacement()
+            panel.setFrame(self.contentVisible ? placement.visibleFrame : placement.retractedFrame, display: true)
+        }
+    }
+
+    private func removeScreenParametersObserver() {
+        guard let screenParametersObserver else { return }
+        NotificationCenter.default.removeObserver(screenParametersObserver)
+        self.screenParametersObserver = nil
+    }
+
+    private func animationDuration(_ defaultDuration: TimeInterval) -> TimeInterval {
+        NotchStatusAnimationPolicy.duration(
+            defaultDuration,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+    }
+}
+
+private final class OnboardingNotchPanel: NSPanel {
+    init() {
+        super.init(
+            contentRect: CGRect(origin: .zero, size: OnboardingNotchSurfaceMetrics.contentSize),
+            styleMask: OnboardingNotchSurfaceMetrics.styleMask,
+            backing: .buffered,
+            defer: false
+        )
+
+        level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        isReleasedWhenClosed = false
+        isOpaque = false
+        backgroundColor = .clear
+        ignoresMouseEvents = false
+        acceptsMouseMovedEvents = true
+        hasShadow = true
+        isMovableByWindowBackground = false
+        hidesOnDeactivate = false
+        animationBehavior = .none
+    }
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
 }
