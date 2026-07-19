@@ -52,15 +52,19 @@ final class AppState {
     /// failure in the menu bar with a Retry Setup action. Nil when STT is
     /// healthy or still loading.
     private(set) var sttEngineError: String?
+    private var sttSetupStartedAt: Date?
+    private var sttSetupSucceeded = false
 
-    /// Non-nil while STT is still preparing (loading model, compiling, etc.).
-    /// The onboarding Ready step and menu bar both show this in place of
-    /// "Ready" so the user knows the app isn't actually idle.
-    var setupStatusMessage: String? {
-        guard let engine = sttEngine else { return nil }
-        let msg = engine.statusMessage
-        if msg.isEmpty || msg == "Listening" { return nil }
-        return msg
+    /// Shared finite STT setup state for Settings and onboarding. Preparing
+    /// status is allowed to be temporary only; success becomes Loaded and
+    /// listening, while errors and timeouts become retryable failures.
+    var setupRuntimeReadiness: SetupRuntimeReadiness {
+        Self.setupRuntimeReadiness(
+            engineStatusMessage: sttEngine?.statusMessage,
+            engineError: sttEngineError,
+            setupSucceeded: sttSetupSucceeded,
+            startedAt: sttSetupStartedAt
+        )
     }
 
     /// Translated version of `sttEngineError`, suitable for direct display.
@@ -79,7 +83,7 @@ final class AppState {
     @ObservationIgnored lazy var onboarding: OnboardingController = {
         OnboardingController(
             permissions: permissions,
-            setupStatus: { [weak self] in self?.setupStatusMessage },
+            setupStatus: { [weak self] in self?.setupRuntimeReadiness ?? .ready },
             getWorkingDirectory: { [weak self] in self?.config.general.working_directory ?? "" },
             getAgentProvider: { [weak self] in self?.config.general.provider ?? .codex },
             getModel: { [weak self] in self?.config.general.model ?? GeneralConfig.defaultModel },
@@ -131,6 +135,7 @@ final class AppState {
                 self.saveConfig(newConfig, forceWorkspaceDiscovery: true)
             },
             startSession: { [weak self] in self?.newSession() },
+            retrySetup: { [weak self] in self?.retrySTTSetup() },
             setOnboardingNotchOverrideActive: { [weak self] active in
                 self?.setOnboardingNotchOverrideActive(active)
             },
@@ -142,6 +147,9 @@ final class AppState {
             },
             shouldDeferPermissionAdvance: { [weak self] kind in
                 self?.permissionSetupCoordinator.shouldDeferAutoAdvance(for: kind) ?? false
+            },
+            openSettingsHost: { [weak self] in
+                self?.showWorkspaceSettings()
             }
         )
     }()
@@ -583,6 +591,24 @@ final class AppState {
         }
     }
 
+    static func setupRuntimeReadiness(
+        engineStatusMessage: String?,
+        engineError: String?,
+        setupSucceeded: Bool = false,
+        startedAt: Date?,
+        now: Date = Date(),
+        timeout: TimeInterval = SetupRuntimeReadiness.defaultTimeout
+    ) -> SetupRuntimeReadiness {
+        SetupRuntimeReadiness.resolve(
+            engineStatusMessage: engineStatusMessage,
+            engineError: engineError,
+            setupSucceeded: setupSucceeded,
+            startedAt: startedAt,
+            now: now,
+            timeout: timeout
+        )
+    }
+
     /// Recreate the STT engine so it re-binds to the microphone and reinstalls
     /// global key monitors. Called from `permissions.onChange` when a
     /// previously-denied permission gets granted.
@@ -602,19 +628,43 @@ final class AppState {
 
     private func restartSTT(reason: String) {
         sttEngine?.stop()
+        startConfiguredSTT(reason: reason, failureLogPrefix: "STT restart (\(reason)) failed")
+    }
+
+    private func startConfiguredSTT(reason: String, failureLogPrefix: String) {
         let engine = STTEngine(config: config.stt)
         sttEngine = engine
-        Task { [weak self] in
+        sttSetupStartedAt = Date()
+        sttSetupSucceeded = false
+        sttEngineError = nil
+        Task { [weak self, engine] in
             do {
                 try await engine.start()
-                await MainActor.run { [weak self] in self?.sttEngineError = nil }
-            } catch {
-                await MainActor.run { [weak self] in
-                    self?.sttEngineError = "\(error)"
+                await MainActor.run { [weak self, engine] in
+                    self?.completeSTTSetupIfCurrent(engine)
                 }
-                NSLog("[AppState] STT restart (\(reason)) failed: \(error)")
+            } catch {
+                await MainActor.run { [weak self, engine] in
+                    self?.failSTTSetupIfCurrent(engine, error: error)
+                }
+                NSLog("[AppState] \(failureLogPrefix): \(error)")
             }
         }
+        NSLog("[AppState] STT setup started: \(reason)")
+    }
+
+    private func completeSTTSetupIfCurrent(_ engine: STTEngine) {
+        guard sttEngine === engine else { return }
+        sttEngineError = nil
+        sttSetupStartedAt = nil
+        sttSetupSucceeded = true
+    }
+
+    private func failSTTSetupIfCurrent(_ engine: STTEngine, error: Error) {
+        guard sttEngine === engine else { return }
+        sttEngineError = "\(error)"
+        sttSetupStartedAt = nil
+        sttSetupSucceeded = false
     }
 
     /// Start STT + overlay for gesture detection. No bridge — user must
@@ -622,19 +672,7 @@ final class AppState {
     private func startAwareness() {
         guard sttEngine == nil else { return }
 
-        let engine = STTEngine(config: config.stt)
-        sttEngine = engine
-        Task { [weak self] in
-            do {
-                try await engine.start()
-                await MainActor.run { [weak self] in self?.sttEngineError = nil }
-            } catch {
-                await MainActor.run { [weak self] in
-                    self?.sttEngineError = "\(error)"
-                }
-                NSLog("[AppState] STT engine failed to start: \(error)")
-            }
-        }
+        startConfiguredSTT(reason: "awareness-start", failureLogPrefix: "STT engine failed to start")
         isRunning = true
         statusText = "Ready"
 
@@ -685,6 +723,9 @@ final class AppState {
         stopOverlay()
         sttEngine?.stop()
         sttEngine = nil
+        sttSetupStartedAt = nil
+        sttSetupSucceeded = false
+        sttEngineError = nil
         processManager.stopServices()
         isRunning = false
         statusText = "Idle"
@@ -702,6 +743,8 @@ final class AppState {
         sessionReadyShownForCurrentBridgeSession = false
         statusText = "Updating"
         sttEngine?.cancelRecording()
+        sttSetupStartedAt = nil
+        sttSetupSucceeded = false
         processManager.stopServicesForBundleReplacement()
     }
 
@@ -735,15 +778,7 @@ final class AppState {
         // Restart STT if settings changed
         if oldConfig.stt != newConfig.stt {
             sttEngine?.stop()
-            let engine = STTEngine(config: newConfig.stt)
-            sttEngine = engine
-            Task {
-                do {
-                    try await engine.start()
-                } catch {
-                    NSLog("[AppState] STT engine restart failed: \(error)")
-                }
-            }
+            startConfiguredSTT(reason: "settings-change", failureLogPrefix: "STT engine restart failed")
         }
     }
 
@@ -825,11 +860,7 @@ final class AppState {
 
         // Start STT if not already running
         if sttEngine == nil {
-            let engine = STTEngine(config: config.stt)
-            sttEngine = engine
-            Task {
-                try? await engine.start()
-            }
+            startConfiguredSTT(reason: "session-start", failureLogPrefix: "STT engine session start failed")
         }
 
         let sessionDirectory = WorkspaceFolder.url(from: launchConfig.general.working_directory).path

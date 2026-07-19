@@ -2,14 +2,25 @@ import SwiftUI
 
 struct SettingsWindow: View {
     @Bindable var appState: AppState
+    @Bindable var onboardingPresentation: OnboardingPresentationState
+
+    init(appState: AppState) {
+        self.appState = appState
+        self.onboardingPresentation = appState.onboarding.presentation
+    }
 
     var body: some View {
-        SettingsContent(appState: appState, style: .window)
+        SettingsContent(
+            appState: appState,
+            onboardingPresentation: onboardingPresentation,
+            style: .window
+        )
     }
 }
 
 struct WorkspaceSettingsPanel: View {
     @Bindable var appState: AppState
+    @Bindable var onboardingPresentation: OnboardingPresentationState
     let onOpenExternalWindow: () -> Void
 
     init(
@@ -17,12 +28,14 @@ struct WorkspaceSettingsPanel: View {
         onOpenExternalWindow: @escaping () -> Void = {}
     ) {
         self.appState = appState
+        self.onboardingPresentation = appState.onboarding.presentation
         self.onOpenExternalWindow = onOpenExternalWindow
     }
 
     var body: some View {
         SettingsContent(
             appState: appState,
+            onboardingPresentation: onboardingPresentation,
             style: .workspace,
             onOpenExternalWindow: onOpenExternalWindow
         )
@@ -139,10 +152,18 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         }
         return all[all.index(before: index)]
     }
+
+    static func visibleSelection(
+        current: SettingsCategory,
+        onboardingActive: Bool
+    ) -> SettingsCategory {
+        onboardingActive ? .status : current
+    }
 }
 
 private struct SettingsContent: View {
     @Bindable var appState: AppState
+    @Bindable var onboardingPresentation: OnboardingPresentationState
     let style: SettingsContentStyle
     let onOpenExternalWindow: () -> Void
 
@@ -153,21 +174,40 @@ private struct SettingsContent: View {
 
     init(
         appState: AppState,
+        onboardingPresentation: OnboardingPresentationState,
         style: SettingsContentStyle,
         onOpenExternalWindow: @escaping () -> Void = {}
     ) {
         self.appState = appState
+        self.onboardingPresentation = onboardingPresentation
         self.style = style
         self.onOpenExternalWindow = onOpenExternalWindow
         self._draft = State(initialValue: appState.config)
     }
 
     private var hasChanges: Bool { draft != appState.config }
+    private var onboardingActive: Bool { onboardingPresentation.isPresented }
+    private var visibleCategory: SettingsCategory {
+        SettingsCategory.visibleSelection(
+            current: selectedCategory,
+            onboardingActive: onboardingActive
+        )
+    }
+
+    private var sidebarSelection: Binding<SettingsCategory> {
+        Binding(
+            get: { visibleCategory },
+            set: { newValue in
+                guard !onboardingActive else { return }
+                selectedCategory = newValue
+            }
+        )
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             SettingsCategorySidebar(
-                selection: $selectedCategory,
+                selection: sidebarSelection,
                 style: style
             )
             .frame(width: style.sidebarWidth)
@@ -177,14 +217,19 @@ private struct SettingsContent: View {
                 .frame(width: 1)
 
             VStack(spacing: 0) {
-                SettingsDetailHeader(category: selectedCategory, style: style)
+                SettingsDetailHeader(
+                    presentation: onboardingActive
+                        ? SettingsDetailHeaderPresentation(onboarding: onboardingPresentation.detail)
+                        : SettingsDetailHeaderPresentation(category: visibleCategory),
+                    style: style
+                )
                 SettingsDivider()
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 0) {
                             Color.clear
                                 .frame(height: 0)
-                                .id(selectedCategory)
+                                .id(visibleCategory)
                             selectedDetail
                                 .padding(style.detailPadding)
                                 .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
@@ -219,11 +264,30 @@ private struct SettingsContent: View {
         .onChange(of: selectedCategory) { _, newValue in
             scrollTarget = newValue
         }
+        .onChange(of: onboardingActive) { _, isActive in
+            guard isActive else { return }
+            selectedCategory = .status
+            scrollTarget = .status
+        }
     }
 
     @ViewBuilder
     private var selectedDetail: some View {
-        switch selectedCategory {
+        if onboardingActive, let rootView = onboardingPresentation.rootView {
+            if style == .workspace {
+                ZStack(alignment: .topLeading) {
+                    rootView
+                        .opacity(onboardingPresentation.contentVisible ? 1 : 0)
+                        .accessibilityHidden(!onboardingPresentation.contentVisible)
+                    if !onboardingPresentation.contentVisible {
+                        OnboardingPermissionWaitView()
+                    }
+                }
+            } else {
+                OnboardingRoutedToWorkspaceView(openWorkspace: appState.showWorkspaceSettings)
+            }
+        } else {
+            switch visibleCategory {
         case .status:
             StatusSettingsTab(appState: appState)
         case .speechToText:
@@ -237,10 +301,21 @@ private struct SettingsContent: View {
             )
         case .awareness:
             AwarenessSettingsTab(config: $draft.awareness)
+            }
         }
     }
 
     private var footer: some View {
+        if onboardingActive {
+            if style == .workspace {
+                return AnyView(onboardingFooter)
+            }
+            return AnyView(onboardingRouteFooter)
+        }
+        return AnyView(settingsFooter)
+    }
+
+    private var settingsFooter: some View {
         let presentation = SettingsFooterPresentation(hasChanges: hasChanges)
         return HStack(spacing: 12) {
             Image(systemName: presentation.iconName)
@@ -274,6 +349,82 @@ private struct SettingsContent: View {
         .padding(style.footerPadding)
         .frame(maxWidth: style.detailMaxWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var onboardingRouteFooter: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(AppTypography.symbolFont(size: 10, weight: .semibold))
+                .foregroundStyle(SettingsSurfaceColor.relayAccent)
+                .accessibilityHidden(true)
+
+            Text("Setup walkthrough")
+                .font(AppTypography.font(.settingsDescription))
+                .foregroundStyle(SettingsSurfaceColor.secondaryText)
+
+            Spacer(minLength: 0)
+
+            SettingsActionButton(
+                title: "Open Workspace Settings",
+                systemImage: "rectangle.connected.to.line.below",
+                prominence: .primary,
+                action: appState.showWorkspaceSettings
+            )
+        }
+        .padding(style.footerPadding)
+        .frame(maxWidth: style.detailMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var onboardingFooter: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(AppTypography.symbolFont(size: 10, weight: .semibold))
+                .foregroundStyle(SettingsSurfaceColor.relayAccent)
+                .accessibilityHidden(true)
+
+            Text(onboardingPresentation.detail.progress ?? "Setup walkthrough")
+                .font(AppTypography.font(.settingsDescription))
+                .foregroundStyle(SettingsSurfaceColor.secondaryText)
+
+            Spacer(minLength: 0)
+
+            if let secondary = onboardingPresentation.secondaryAction {
+                onboardingActionButton(secondary)
+            }
+            if let primary = onboardingPresentation.primaryAction {
+                onboardingActionButton(primary)
+            }
+        }
+        .padding(style.footerPadding)
+        .frame(maxWidth: style.detailMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func onboardingActionButton(_ action: OnboardingFooterAction) -> some View {
+        switch action.shortcut {
+        case .default:
+            onboardingActionButtonContent(action)
+                .keyboardShortcut(.defaultAction)
+        case .cancel:
+            onboardingActionButtonContent(action)
+                .keyboardShortcut(.cancelAction)
+        case nil:
+            onboardingActionButtonContent(action)
+        }
+    }
+
+    private func onboardingActionButtonContent(_ action: OnboardingFooterAction) -> SettingsActionButton {
+        SettingsActionButton(
+            title: action.title,
+            systemImage: action.systemImage,
+            prominence: action.prominence,
+            isEnabled: action.isEnabled,
+            accessibilityLabel: action.accessibilityLabel,
+            helpText: action.helpText,
+            action: action.perform
+        )
     }
 }
 
@@ -335,24 +486,97 @@ struct SettingsFooterPresentation: Equatable {
     var actionTint: Color { hasChanges ? SettingsSurfaceColor.dirtyAccent : SettingsSurfaceColor.mutedText }
 }
 
+struct SettingsDetailHeaderPresentation: Equatable {
+    let title: String
+    let subtitle: String
+    let trailingText: String?
+
+    init(category: SettingsCategory) {
+        self.title = category.title
+        self.subtitle = category.subtitle
+        self.trailingText = nil
+    }
+
+    init(onboarding: OnboardingDetailPresentation) {
+        self.title = onboarding.title
+        self.subtitle = onboarding.subtitle
+        self.trailingText = onboarding.progress
+    }
+}
+
 private struct SettingsDetailHeader: View {
-    let category: SettingsCategory
+    let presentation: SettingsDetailHeaderPresentation
     let style: SettingsContentStyle
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(category.title)
-                .font(AppTypography.font(.screenTitle))
-                .foregroundStyle(SettingsSurfaceColor.primaryText)
-            Text(category.subtitle)
-                .font(AppTypography.font(.settingsDescription))
-                .foregroundStyle(SettingsSurfaceColor.secondaryText)
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(presentation.title)
+                    .font(AppTypography.font(.screenTitle))
+                    .foregroundStyle(SettingsSurfaceColor.primaryText)
+                Text(presentation.subtitle)
+                    .font(AppTypography.font(.settingsDescription))
+                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
+            }
+            Spacer(minLength: 0)
+            if let trailingText = presentation.trailingText {
+                Text(trailingText)
+                    .font(AppTypography.font(.label))
+                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                    .padding(.top, 2)
+            }
         }
         .padding(.horizontal, 22)
         .padding(.top, 18)
         .padding(.bottom, 14)
         .frame(maxWidth: style.detailMaxWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct OnboardingPermissionWaitView: View {
+    var body: some View {
+        SettingsStack {
+            SettingsSection("Permission Setup") {
+                SettingsRow {
+                    ProgressView()
+                        .controlSize(.small)
+                    SettingsRowLabel(
+                        "Waiting for macOS",
+                        description: "Continue in the system prompt or Privacy & Security. Relay Runner resumes this walkthrough here when the permission step finishes."
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct OnboardingRoutedToWorkspaceView: View {
+    let openWorkspace: () -> Void
+
+    var body: some View {
+        SettingsStack {
+            SettingsSection("Setup Walkthrough") {
+                SettingsRow {
+                    Image(systemName: "rectangle.connected.to.line.below")
+                        .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                        .foregroundStyle(SettingsSurfaceColor.relayAccent)
+                        .frame(width: 24)
+                        .accessibilityHidden(true)
+                    SettingsRowLabel(
+                        "Open in Workspace Settings",
+                        description: "The walkthrough is hosted in the Workspace Settings detail plane so the Workspace navigation and Settings sidebar stay visible."
+                    )
+                    Spacer(minLength: 0)
+                    SettingsActionButton(
+                        title: "Open",
+                        systemImage: "arrow.right",
+                        prominence: .secondary,
+                        action: openWorkspace
+                    )
+                }
+            }
+        }
     }
 }
 

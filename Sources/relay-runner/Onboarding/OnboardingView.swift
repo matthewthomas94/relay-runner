@@ -10,10 +10,9 @@ struct OnboardingView: View {
 
     @Bindable var permissions: PermissionsManager
     let simplified: Bool
-    /// Optional setup-progress string (e.g. "Loading speech model…"). When
-    /// non-nil on the Ready step, shown in place of "all set" so the user
-    /// knows the app isn't fully ready yet.
-    let setupStatus: () -> String?
+    /// Shared runtime readiness. `.ready` means the speech-to-text model has
+    /// loaded and is listening; preparing and failed states block Done.
+    let setupStatus: () -> SetupRuntimeReadiness
     /// Currently-configured workspace folder at the moment the window
     /// opens. Used to preload the Ready-step path picker so a returning
     /// user sees their last choice.
@@ -37,11 +36,14 @@ struct OnboardingView: View {
     /// Used by the Start Session CTA on the Ready step so the user can
     /// kick off a session without going back to the menu bar.
     let onStartSession: () -> Void
+    let onRetrySetup: () -> Void
     let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
     let cancelPermissionSetup: (PermissionSetupSource?) -> Void
     let shouldDeferPermissionAdvance: (PermissionKind) -> Bool
+    let presentation: OnboardingPresentationState?
     let onSurfaceVisibilityChanged: (Bool) -> Void
     let onFinish: () -> Void
+    let onHostDismissed: () -> Void
 
     @State private var step: Step
     /// Drives the Python venv bootstrap. Held at view scope so the
@@ -75,10 +77,11 @@ struct OnboardingView: View {
     @State private var autoOpenedParentPermissionSteps: Set<OnboardingStepID> = []
     @State private var autoAdvancedPermissionKinds: Set<PermissionKind> = []
     @State private var activePermissionSetupKind: PermissionKind?
+    @State private var setupReadinessRefresh = Date.distantPast
 
     init(permissions: PermissionsManager,
          simplified: Bool,
-         setupStatus: @escaping () -> String? = { nil },
+         setupStatus: @escaping () -> SetupRuntimeReadiness = { .ready },
          initialWorkingDirectory: String = "",
          initialAgentProvider: GeneralConfig.AgentProvider = .codex,
          initialModel: String = GeneralConfig.defaultModel,
@@ -92,11 +95,14 @@ struct OnboardingView: View {
          onSetCodexReasoningEffort: @escaping (String) -> Void = { _ in },
          onSetWorkingDirectory: @escaping (String) -> Void = { _ in },
          onStartSession: @escaping () -> Void = {},
+         onRetrySetup: @escaping () -> Void = {},
          requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
          cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
          shouldDeferPermissionAdvance: @escaping (PermissionKind) -> Bool = { _ in false },
+         presentation: OnboardingPresentationState? = nil,
          onSurfaceVisibilityChanged: @escaping (Bool) -> Void = { _ in },
-         onFinish: @escaping () -> Void) {
+         onFinish: @escaping () -> Void,
+         onHostDismissed: @escaping () -> Void = {}) {
         self.permissions = permissions
         self.simplified = simplified
         self.setupStatus = setupStatus
@@ -111,11 +117,14 @@ struct OnboardingView: View {
         self.onSetCodexReasoningEffort = onSetCodexReasoningEffort
         self.onSetWorkingDirectory = onSetWorkingDirectory
         self.onStartSession = onStartSession
+        self.onRetrySetup = onRetrySetup
         self.requestPermissionSetup = requestPermissionSetup
         self.cancelPermissionSetup = cancelPermissionSetup
         self.shouldDeferPermissionAdvance = shouldDeferPermissionAdvance
+        self.presentation = presentation
         self.onSurfaceVisibilityChanged = onSurfaceVisibilityChanged
         self.onFinish = onFinish
+        self.onHostDismissed = onHostDismissed
         let startingProvider = resumeState?.provider ?? initialAgentProvider
         let startingSelection = Self.normalizedInitialSelection(
             provider: startingProvider,
@@ -202,36 +211,13 @@ struct OnboardingView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            ScrollView {
+        SettingsStack {
+            SettingsSection {
                 content
-                    .padding(.horizontal, 32)
-                    .padding(.vertical, 24)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            footer
         }
-        .frame(
-            width: OnboardingNotchSurfaceMetrics.contentSize.width,
-            height: OnboardingNotchSurfaceMetrics.contentSize.height
-        )
-        .background(Color(nsColor: .windowBackgroundColor))
-        .clipShape(RoundedRectangle(
-            cornerRadius: OnboardingNotchSurfaceMetrics.cornerRadius,
-            style: .continuous
-        ))
-        .overlay(
-            RoundedRectangle(
-                cornerRadius: OnboardingNotchSurfaceMetrics.cornerRadius,
-                style: .continuous
-            )
-            .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
-        )
         .onAppear {
+            publishPresentation()
             persistResume()
             // Full first-run onboarding starts setup from the provider-choice
             // CTA. Focused re-prompt flows may open directly on a later step,
@@ -255,36 +241,45 @@ struct OnboardingView: View {
             advancePastGrantedPermissionIfNeeded()
             openPermissionPaneAutomaticallyIfNeeded()
             syncSurfaceVisibility()
+            publishPresentation()
         }
         .onChange(of: selectedAgentProvider) { _, _ in
             persistResume()
+            publishPresentation()
         }
         .onChange(of: selectedModel) { _, new in
             onSetModel(new)
             normalizeSelectedEffortForCurrentChoice()
             persistResume()
+            publishPresentation()
         }
         .onChange(of: selectedCodexReasoningEffort) { _, new in
             onSetCodexReasoningEffort(new)
+            publishPresentation()
         }
         .onChange(of: parentPermissionsReviewed) { _, _ in
             persistResume()
+            publishPresentation()
         }
         .onChange(of: permissions.microphone) { _, new in
             syncSurfaceVisibility()
             autoAdvance(for: .microphone, status: new)
+            publishPresentation()
         }
         .onChange(of: permissions.accessibility) { _, new in
             syncSurfaceVisibility()
             autoAdvance(for: .accessibility, status: new)
+            publishPresentation()
         }
         .onChange(of: permissions.inputMonitoring) { _, new in
             syncSurfaceVisibility()
             autoAdvance(for: .inputMonitoring, status: new)
+            publishPresentation()
         }
         .onChange(of: permissions.screenRecording) { _, new in
             syncSurfaceVisibility()
             autoAdvance(for: .screenRecording, status: new)
+            publishPresentation()
         }
         .onReceive(NotificationCenter.default.publisher(for: .relayPermissionSetupGrantReady)) { notification in
             guard let raw = notification.object as? String,
@@ -301,6 +296,7 @@ struct OnboardingView: View {
             }
             activePermissionSetupKind = nil
             syncSurfaceVisibility()
+            publishPresentation()
         }
         .onChange(of: venvInstaller.status) { _, new in
             // Auto-advance off pythonSetup as soon as the bootstrap
@@ -308,8 +304,15 @@ struct OnboardingView: View {
             if step == .pythonSetup, case .succeeded = new {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
             }
+            publishPresentation()
         }
+        .onChange(of: hasConfirmedWorkingDirectory) { _, _ in publishPresentation() }
+        .onChange(of: agentSignedIn) { _, _ in publishPresentation() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            if step == .ready {
+                setupReadinessRefresh = Date()
+                publishPresentation()
+            }
             // Poll only while we're on the agentLogin step — the
             // local auth check is cheap, but there's no reason to
             // run it forever. When the marker appears, mirror the
@@ -325,26 +328,12 @@ struct OnboardingView: View {
         .onDisappear {
             activePermissionSetupKind = nil
             cancelPermissionSetup(.onboarding)
+            presentation?.updateActions(primary: nil, secondary: nil)
+            onHostDismissed()
         }
     }
 
     // MARK: - Sections
-
-    private var header: some View {
-        HStack {
-            Text(headerTitle)
-                .font(AppTypography.font(.appTitle))
-            Spacer()
-            if let progress = progressLabel {
-                Text(progress)
-                    .foregroundStyle(.secondary)
-                    .font(AppTypography.font(.label))
-            }
-        }
-        .padding(.top, 28)
-        .padding(.bottom, 16)
-        .padding(.horizontal, 24)
-    }
 
     @ViewBuilder
     private var content: some View {
@@ -359,23 +348,6 @@ struct OnboardingView: View {
         case .agentLogin:       agentLoginView
         case .ready:            readyView
         }
-    }
-
-    private var footer: some View {
-        HStack {
-            if step != .welcome && step != .ready && step != .agentChoice {
-                Button("Skip") {
-                    cancelPermissionSetup(.onboarding)
-                    advance()
-                }
-                    .buttonStyle(.link)
-            }
-            Spacer()
-            primaryButton
-        }
-        .padding(.top, 16)
-        .padding(.bottom, 32)
-        .padding(.horizontal, 28)
     }
 
     // MARK: - Step bodies
@@ -627,7 +599,11 @@ struct OnboardingView: View {
                     .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Reveal Relay Runner in Finder") {
+                SettingsActionButton(
+                    title: "Reveal in Finder",
+                    systemImage: "folder",
+                    prominence: .secondary
+                ) {
                     NSWorkspace.shared.activateFileViewerSelecting([plan.revealURL])
                 }
             }
@@ -699,7 +675,11 @@ struct OnboardingView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button(actionTitle) {
+            SettingsActionButton(
+                title: actionTitle,
+                systemImage: "gearshape",
+                prominence: .secondary
+            ) {
                 startPermissionSetup(kind, purpose: parentPermissionStepExplanation(for: kind))
             }
 
@@ -910,26 +890,32 @@ struct OnboardingView: View {
     }
 
     private var readyView: some View {
-        let status = setupStatus()
-        let isLoading = status != nil
+        _ = setupReadinessRefresh
+        let runtimeReadiness = setupStatus()
         let readiness = currentReadiness
         let voiceReady = readiness.voiceReady
         let inputMonitoringSummary = Self.inputMonitoringSummary(status: permissions.inputMonitoring)
         return VStack(spacing: 16) {
             Spacer(minLength: 4)
-            if isLoading {
+            if runtimeReadiness.isPreparing {
                 ProgressView()
                     .controlSize(.large)
+            } else if runtimeReadiness.needsSetupAction {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(AppTypography.symbolFont(size: 44))
+                    .foregroundStyle(.orange)
             } else {
                 Image(systemName: readinessIcon(for: readiness.mode))
                     .font(AppTypography.symbolFont(size: 44))
                     .foregroundStyle(readinessColor(for: readiness.mode))
             }
-            Text(isLoading ? "Almost ready\u{2026}" : readiness.title)
+            Text(readyTitle(runtimeReadiness: runtimeReadiness, readiness: readiness))
                 .font(AppTypography.font(.appTitle))
-            if isLoading, let status {
-                Text(status)
+            if !runtimeReadiness.isReady {
+                Text(runtimeReadiness.statusDetail)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if !voiceReady {
                 Text(readiness.detail)
                     .foregroundStyle(.secondary)
@@ -974,6 +960,18 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private func readyTitle(runtimeReadiness: SetupRuntimeReadiness,
+                            readiness: GuidedSetupReadiness) -> String {
+        switch runtimeReadiness {
+        case .preparing:
+            return "Almost ready\u{2026}"
+        case .notStarted, .failed:
+            return "Setup needs attention."
+        case .ready:
+            return readiness.title
+        }
+    }
+
     private func inputMonitoringDeferredNotice(detail: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "keyboard.badge.eye")
@@ -989,7 +987,11 @@ struct OnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-            Button("Open Settings") {
+            SettingsActionButton(
+                title: "Open Settings",
+                systemImage: "gearshape",
+                prominence: .secondary
+            ) {
                 requestInputMonitoringPermission()
             }
         }
@@ -1044,8 +1046,14 @@ struct OnboardingView: View {
                             : Color.orange.opacity(0.45))
             )
             HStack(spacing: 8) {
-                Button("Choose Workspace\u{2026}") { pickWorkingDirectory() }
-                Button("Use Home Folder") { useHomeWorkingDirectory() }
+                SettingsActionButton(
+                    title: "Choose Workspace\u{2026}",
+                    systemImage: "folder"
+                ) { pickWorkingDirectory() }
+                SettingsActionButton(
+                    title: "Use Home Folder",
+                    systemImage: "house"
+                ) { useHomeWorkingDirectory() }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1115,140 +1123,326 @@ struct OnboardingView: View {
         )
     }
 
-    // MARK: - Button
+    // MARK: - Settings presentation
 
-    @ViewBuilder
-    private var primaryButton: some View {
+    enum ReadyPrimaryActionKind: Equatable {
+        case startSession(isEnabled: Bool)
+        case retrySetup
+        case waiting
+        case done
+    }
+
+    static func readyPrimaryActionKind(
+        setupStatus: SetupRuntimeReadiness,
+        voiceReady: Bool,
+        hasConfirmedWorkingDirectory: Bool
+    ) -> ReadyPrimaryActionKind {
+        switch setupStatus {
+        case .ready:
+            return voiceReady ? .startSession(isEnabled: hasConfirmedWorkingDirectory) : .done
+        case .preparing:
+            return .waiting
+        case .notStarted, .failed:
+            return .retrySetup
+        }
+    }
+
+    static func showsReadyDismissAction(
+        setupStatus: SetupRuntimeReadiness,
+        voiceReady: Bool
+    ) -> Bool {
+        setupStatus.isReady && voiceReady
+    }
+
+    private func publishPresentation() {
+        presentation?.update(detail: OnboardingDetailPresentation(
+            title: Self.headerTitle(for: step, provider: selectedAgentProvider),
+            subtitle: Self.headerSubtitle(for: step),
+            progress: progressLabel
+        ))
+        presentation?.updateActions(
+            primary: primaryFooterAction,
+            secondary: secondaryFooterAction
+        )
+    }
+
+    private var primaryFooterAction: OnboardingFooterAction? {
         switch step {
         case .welcome:
-            Button("Get Started") { advance() }
-                .keyboardShortcut(.defaultAction)
+            return footerAction(
+                title: "Get Started",
+                systemImage: "arrow.right",
+                prominence: .primary,
+                shortcut: .default
+            ) { advance() }
         case .agentChoice:
-            Button(GuidedSetupPlan(provider: selectedAgentProvider).primaryActionTitle) {
-                beginGuidedSetup()
-            }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!hasConfirmedWorkingDirectory)
+            return footerAction(
+                title: GuidedSetupPlan(provider: selectedAgentProvider).primaryActionTitle,
+                systemImage: "checkmark",
+                prominence: .primary,
+                isEnabled: hasConfirmedWorkingDirectory,
+                shortcut: .default
+            ) { beginGuidedSetup() }
         case .microphone:
-            switch permissions.microphone {
-            case .granted:
-                Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
-            case .notDetermined:
-                // First-ever ask: AVCaptureDevice.requestAccess shows the
-                // standard system prompt.
-                Button("Grant Microphone Access") {
-                    startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
-                }.keyboardShortcut(.defaultAction)
-            case .denied:
-                Button("Ask Again") {
-                    startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
-                }.keyboardShortcut(.defaultAction)
-            case .restricted:
-                Button("Open System Settings") {
-                    persistResume()
-                    startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
-                }.keyboardShortcut(.defaultAction)
-            }
+            return microphonePrimaryAction
         case .inputMonitoring:
-            switch permissions.inputMonitoring {
-            case .granted:
-                Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
-            case .notDetermined, .denied:
-                Button("Open Input Monitoring Settings") {
-                    startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
-                }.keyboardShortcut(.defaultAction)
-            case .restricted:
-                Button("Open System Settings") {
-                    persistResume()
-                    startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
-                }.keyboardShortcut(.defaultAction)
-            }
+            return inputMonitoringPrimaryAction
         case .parentAccessibility:
-            permissionRequestButton(for: .accessibility)
+            return permissionPrimaryAction(for: .accessibility)
         case .parentScreenRecording:
-            permissionRequestButton(for: .screenRecording)
+            return permissionPrimaryAction(for: .screenRecording)
         case .pythonSetup:
-            switch venvInstaller.status {
-            case .succeeded:
-                Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
-            case .failed:
-                Button("Retry") { venvInstaller.install() }.keyboardShortcut(.defaultAction)
-            case .idle, .running:
-                // Disabled while the install is in flight — auto-advance
-                // fires on success. Footer Skip remains available.
-                Button("Continue") { advance() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(true)
-            }
+            return pythonPrimaryAction
         case .agentLogin:
-            if agentSignedIn {
-                Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
-            } else {
-                Button("Sign in") {
-                    persistResume()
-                    AgentAuth.openLoginInTerminal(for: selectedAgentProvider)
-                }.keyboardShortcut(.defaultAction)
-            }
+            return agentLoginPrimaryAction
         case .ready:
-            // The picker is only shown when setup is finished and every
-            // permission is granted. In that branch we offer two CTAs —
-            // Dismiss (closes the window without launching anything) and
-            // Start Session (saves the path and kicks off the voice
-            // session immediately). The "Almost ready…" loading state
-            // and the "permissions missing" warning state fall back to
-            // a single Done button.
-            //
-            // The two CTAs are wrapped in an explicit HStack rather than
-            // emitted as siblings into the @ViewBuilder. Multi-view
-            // conditional branches inside @ViewBuilder occasionally
-            // misrender on macOS — being explicit about the container
-            // sidesteps that.
-            let pickerVisible = setupStatus() == nil && currentReadiness.voiceReady
-            if pickerVisible {
-                HStack {
-                    // Dismiss is always enabled — the user can defer
-                    // their first session indefinitely. If they picked
-                    // a path before dismissing, persist it so the
-                    // choice doesn't go to waste.
-                    Button("Dismiss") {
-                        if hasConfirmedWorkingDirectory {
-                            onSetWorkingDirectory(workingDirectory)
-                        }
-                        onFinish()
-                    }
-                    .keyboardShortcut(.cancelAction)
-                    Button("Start Session") {
-                        onSetWorkingDirectory(workingDirectory)
-                        onStartSession()
-                        onFinish()
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!hasConfirmedWorkingDirectory)
+            switch Self.readyPrimaryActionKind(
+                setupStatus: setupStatus(),
+                voiceReady: currentReadiness.voiceReady,
+                hasConfirmedWorkingDirectory: hasConfirmedWorkingDirectory
+            ) {
+            case .startSession(let isEnabled):
+                return footerAction(
+                    title: "Start Session",
+                    systemImage: "play.fill",
+                    prominence: .primary,
+                    isEnabled: isEnabled,
+                    shortcut: .default
+                ) {
+                    onSetWorkingDirectory(workingDirectory)
+                    onStartSession()
+                    onFinish()
                 }
-            } else {
-                Button("Done") { onFinish() }
-                    .keyboardShortcut(.defaultAction)
+            case .retrySetup:
+                return footerAction(
+                    title: "Retry Setup",
+                    systemImage: "arrow.clockwise",
+                    prominence: .primary,
+                    shortcut: .default
+                ) { onRetrySetup() }
+            case .waiting:
+                return footerAction(
+                    title: "Waiting",
+                    systemImage: "clock",
+                    prominence: .primary,
+                    isEnabled: false,
+                    shortcut: .default
+                ) {}
+            case .done:
+                return footerAction(
+                    title: "Done",
+                    systemImage: "checkmark",
+                    prominence: .primary,
+                    shortcut: .default
+                ) { onFinish() }
             }
         }
     }
 
-    @ViewBuilder
-    private func permissionRequestButton(for kind: PermissionKind) -> some View {
+    private var secondaryFooterAction: OnboardingFooterAction? {
+        if step == .ready && Self.showsReadyDismissAction(
+            setupStatus: setupStatus(),
+            voiceReady: currentReadiness.voiceReady
+        ) {
+            return footerAction(
+                title: "Dismiss",
+                systemImage: "xmark",
+                prominence: .secondary,
+                shortcut: .cancel
+            ) {
+                if hasConfirmedWorkingDirectory {
+                    onSetWorkingDirectory(workingDirectory)
+                }
+                onFinish()
+            }
+        }
+        if step == .welcome || step == .agentChoice {
+            return footerAction(
+                title: "Cancel",
+                systemImage: "xmark",
+                prominence: .secondary,
+                shortcut: .cancel
+            ) { onHostDismissed() }
+        }
+        if step != .ready {
+            return footerAction(
+                title: "Skip",
+                systemImage: "forward",
+                prominence: .secondary
+            ) {
+                cancelPermissionSetup(.onboarding)
+                advance()
+            }
+        }
+        return nil
+    }
+
+    private var microphonePrimaryAction: OnboardingFooterAction {
+        switch permissions.microphone {
+        case .granted:
+            return footerAction(
+                title: "Continue",
+                systemImage: "arrow.right",
+                prominence: .primary,
+                shortcut: .default
+            ) { advance() }
+        case .notDetermined:
+            return footerAction(
+                title: "Grant Microphone Access",
+                systemImage: "mic.badge.plus",
+                prominence: .primary,
+                shortcut: .default
+            ) {
+                startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
+            }
+        case .denied:
+            return footerAction(
+                title: "Ask Again",
+                systemImage: "mic.badge.plus",
+                prominence: .primary,
+                shortcut: .default
+            ) {
+                startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
+            }
+        case .restricted:
+            return footerAction(
+                title: "Open System Settings",
+                systemImage: "gearshape",
+                prominence: .primary,
+                shortcut: .default
+            ) {
+                persistResume()
+                startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
+            }
+        }
+    }
+
+    private var inputMonitoringPrimaryAction: OnboardingFooterAction {
+        switch permissions.inputMonitoring {
+        case .granted:
+            return footerAction(
+                title: "Continue",
+                systemImage: "arrow.right",
+                prominence: .primary,
+                shortcut: .default
+            ) { advance() }
+        case .notDetermined, .denied:
+            return footerAction(
+                title: "Open Input Monitoring Settings",
+                systemImage: "keyboard",
+                prominence: .primary,
+                shortcut: .default
+            ) {
+                startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
+            }
+        case .restricted:
+            return footerAction(
+                title: "Open System Settings",
+                systemImage: "gearshape",
+                prominence: .primary,
+                shortcut: .default
+            ) {
+                persistResume()
+                startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
+            }
+        }
+    }
+
+    private var pythonPrimaryAction: OnboardingFooterAction {
+        switch venvInstaller.status {
+        case .succeeded:
+            return footerAction(
+                title: "Continue",
+                systemImage: "arrow.right",
+                prominence: .primary,
+                shortcut: .default
+            ) { advance() }
+        case .failed:
+            return footerAction(
+                title: "Retry",
+                systemImage: "arrow.clockwise",
+                prominence: .primary,
+                shortcut: .default
+            ) { venvInstaller.install() }
+        case .idle, .running:
+            return footerAction(
+                title: "Continue",
+                systemImage: "arrow.right",
+                prominence: .primary,
+                isEnabled: false,
+                shortcut: .default
+            ) { advance() }
+        }
+    }
+
+    private var agentLoginPrimaryAction: OnboardingFooterAction {
+        if agentSignedIn {
+            return footerAction(
+                title: "Continue",
+                systemImage: "arrow.right",
+                prominence: .primary,
+                shortcut: .default
+            ) { advance() }
+        }
+        return footerAction(
+            title: "Sign in",
+            systemImage: "terminal",
+            prominence: .primary,
+            shortcut: .default
+        ) {
+            persistResume()
+            AgentAuth.openLoginInTerminal(for: selectedAgentProvider)
+        }
+    }
+
+    private func permissionPrimaryAction(for kind: PermissionKind) -> OnboardingFooterAction {
         switch permissions.status(for: kind) {
         case .granted:
-            Button("Continue") { advance() }
-                .keyboardShortcut(.defaultAction)
+            return footerAction(
+                title: "Continue",
+                systemImage: "arrow.right",
+                prominence: .primary,
+                shortcut: .default
+            ) { advance() }
         case .notDetermined, .denied:
-            Button("Open \(kind.displayName) Settings") {
+            return footerAction(
+                title: "Open \(kind.displayName) Settings",
+                systemImage: "gearshape",
+                prominence: .primary,
+                shortcut: .default
+            ) {
                 startPermissionSetup(kind, purpose: permissionExplanation(for: kind))
             }
-            .keyboardShortcut(.defaultAction)
         case .restricted:
-            Button("Open System Settings") {
+            return footerAction(
+                title: "Open System Settings",
+                systemImage: "gearshape",
+                prominence: .primary,
+                shortcut: .default
+            ) {
                 startPermissionSetup(kind, purpose: permissionExplanation(for: kind))
             }
-            .keyboardShortcut(.defaultAction)
         }
+    }
+
+    private func footerAction(
+        title: String,
+        systemImage: String?,
+        prominence: SettingsActionButton.Prominence,
+        isEnabled: Bool = true,
+        shortcut: OnboardingFooterAction.Shortcut? = nil,
+        perform: @escaping () -> Void
+    ) -> OnboardingFooterAction {
+        OnboardingFooterAction(
+            title: title,
+            systemImage: systemImage,
+            prominence: prominence,
+            isEnabled: isEnabled,
+            accessibilityLabel: title,
+            helpText: title,
+            shortcut: shortcut,
+            perform: perform
+        )
     }
 
     // MARK: - Advance
@@ -1388,7 +1582,7 @@ struct OnboardingView: View {
 
     // MARK: - Text
 
-    private var headerTitle: String {
+    static func headerTitle(for step: Step, provider: GeneralConfig.AgentProvider) -> String {
         switch step {
         case .welcome:          return "Welcome to Relay Runner"
         case .agentChoice:      return "Coding Agent"
@@ -1397,8 +1591,25 @@ struct OnboardingView: View {
         case .parentAccessibility: return "Accessibility"
         case .parentScreenRecording: return "Screen Recording"
         case .pythonSetup:      return "Python Environment"
-        case .agentLogin:       return "\(selectedAgentProvider.displayName) Account"
+        case .agentLogin:       return "\(provider.displayName) Account"
         case .ready:            return "Setup Complete"
+        }
+    }
+
+    static func headerSubtitle(for step: Step) -> String {
+        switch step {
+        case .welcome:
+            return "Guided setup walkthrough"
+        case .agentChoice:
+            return "Provider, model, effort, and workspace"
+        case .microphone, .inputMonitoring, .parentAccessibility, .parentScreenRecording:
+            return "Privacy permission setup"
+        case .pythonSetup:
+            return "Local runtime preparation"
+        case .agentLogin:
+            return "Agent authentication"
+        case .ready:
+            return "Final session readiness"
         }
     }
 

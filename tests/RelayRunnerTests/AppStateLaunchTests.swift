@@ -64,4 +64,16 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertNil(presentation?.workingProgressLabel)
         XCTAssertNil(AppState.onboardingNotchPresentation(active: false))
     }
+
+    func testCompletedSetupOverridesStaleCompilingStatus() {
+        let readiness = AppState.setupRuntimeReadiness(
+            engineStatusMessage: "Compiling parakeet-tdt-v2...",
+            engineError: nil,
+            setupSucceeded: true,
+            startedAt: nil
+        )
+
+        XCTAssertEqual(readiness, .ready)
+        XCTAssertEqual(readiness.statusDetail, "Loaded and listening")
+    }
 }

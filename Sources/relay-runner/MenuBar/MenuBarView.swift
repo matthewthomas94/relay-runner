@@ -17,7 +17,8 @@ struct MenuBarView: View {
         // Setup progress / error — shown while STT is still warming up, or
         // when it failed to start. Presented as plain items (not buttons) so
         // the user can see the raw status without it feeling nag-like.
-        if let status = appState.setupStatusMessage {
+        let setupReadiness = appState.setupRuntimeReadiness
+        if case .preparing(let status) = setupReadiness {
             Divider()
             Text("Setup: \(status)")
         }
@@ -28,10 +29,10 @@ struct MenuBarView: View {
             }
             .help(serviceStatus.detail)
         }
-        if let translation = appState.sttEngineErrorTranslation {
+        if case .failed(let message) = setupReadiness {
             Divider()
-            Text("\u{26A0} \(translation.headline)")
-            if let action = translation.action {
+            Text("\u{26A0} \(message)")
+            if let action = appState.sttEngineErrorTranslation?.action {
                 Text(action)
             }
             Button("Retry Setup") { appState.retrySTTSetup() }

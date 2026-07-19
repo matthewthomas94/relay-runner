@@ -54,47 +54,91 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
     }
 
-    func testReduceMotionFreshAutomaticUsesBorderlessNotchSurface() throws {
+    func testReduceMotionFreshAutomaticUsesEmbeddedSettingsPresentation() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
-        let surface = CapturingOnboardingSurfaceController()
+        let presentation = OnboardingPresentationState()
         var notchOverrideStates: [Bool] = []
+        var settingsOpenCount = 0
         let controller = OnboardingController(
             permissions: PermissionsManager(),
             flagURLs: flagURLs,
+            presentation: presentation,
             setOnboardingNotchOverrideActive: { notchOverrideStates.append($0) },
-            makeSurfaceController: { surface },
+            openSettingsHost: { settingsOpenCount += 1 },
             reduceMotion: { true }
         )
 
         controller.showIfNeeded()
 
-        XCTAssertEqual(surface.showCallCount, 1)
-        XCTAssertEqual(surface.bringForwardCallCount, 1)
-        XCTAssertEqual(surface.visibilityStates, [true])
+        XCTAssertTrue(presentation.isPresented)
+        XCTAssertNotNil(presentation.rootView)
+        XCTAssertEqual(presentation.presentationSerial, 1)
+        XCTAssertEqual(presentation.detail.title, "Coding Agent")
+        XCTAssertEqual(presentation.detail.subtitle, "Provider, model, effort, and workspace")
+        XCTAssertEqual(settingsOpenCount, 1)
         XCTAssertEqual(notchOverrideStates, [true])
-        XCTAssertFalse(OnboardingNotchSurfaceMetrics.styleMask.contains(.titled))
-        XCTAssertFalse(OnboardingNotchSurfaceMetrics.styleMask.contains(.closable))
-        XCTAssertEqual(OnboardingNotchSurfaceMetrics.contentSize, CGSize(width: 520, height: 620))
     }
 
-    func testOnboardingNotchSurfaceRetractsIntoTopEdge() {
-        let placement = OnboardingNotchSurfacePlacementPlanner.placement(
-            for: NotchStatusDisplayGeometry(
-                frame: CGRect(x: 0, y: 0, width: 1200, height: 900),
-                visibleFrame: CGRect(x: 0, y: 40, width: 1200, height: 860)
-            )
+    func testRepeatedManualShowReopensSettingsWithoutReplacingActivePresentation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let presentation = OnboardingPresentationState()
+        var settingsOpenCount = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            presentation: presentation,
+            openSettingsHost: { settingsOpenCount += 1 },
+            reduceMotion: { true }
         )
 
-        XCTAssertEqual(placement.visibleFrame.maxY, 900)
-        XCTAssertEqual(
-            placement.retractedFrame.minY,
-            900 - OnboardingNotchSurfaceMetrics.retractedVisibleSliver
-        )
+        controller.showAlways()
+        let firstSerial = presentation.presentationSerial
+        controller.showAlways()
+
+        XCTAssertEqual(firstSerial, 1)
+        XCTAssertEqual(presentation.presentationSerial, firstSerial)
+        XCTAssertTrue(presentation.isPresented)
+        XCTAssertEqual(settingsOpenCount, 2)
+    }
+
+    func testOnboardingControllerDoesNotDefineDedicatedWindowSurface() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Onboarding/OnboardingController.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertFalse(contents.contains("OnboardingSurfaceControlling"))
+        XCTAssertFalse(contents.contains("OnboardingNotchSurfaceController"))
+        XCTAssertFalse(contents.contains("OnboardingNotchPanel"))
+        XCTAssertFalse(contents.contains("NSPanel"))
+        XCTAssertFalse(contents.contains("setActivationPolicy"))
+    }
+
+    func testOnboardingViewUsesSettingsHostChromeInsteadOfFixedPanelChrome() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Onboarding/OnboardingView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("SettingsStack"))
+        XCTAssertTrue(contents.contains("SettingsActionButton"))
+        XCTAssertFalse(contents.contains("OnboardingNotchSurfaceMetrics"))
+        XCTAssertFalse(contents.contains(".frame(\n            width:"))
+        XCTAssertFalse(contents.contains("Color(nsColor: .windowBackgroundColor)"))
     }
 
     func testRevealCompletionStartsTimelineOnlyWhenSurfaceIsStillActive() {
@@ -286,30 +330,6 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
 
     func present(completion: @escaping () -> Void) {
         presentCallCount += 1
-    }
-}
-
-private final class CapturingOnboardingSurfaceController: OnboardingSurfaceControlling {
-    private(set) var showCallCount = 0
-    private(set) var bringForwardCallCount = 0
-    private(set) var closeCallCount = 0
-    private(set) var visibilityStates: [Bool] = []
-
-    func show(rootView: AnyView, initiallyVisible: Bool, onClose: @escaping () -> Void) {
-        showCallCount += 1
-        visibilityStates.append(initiallyVisible)
-    }
-
-    func setContentVisible(_ visible: Bool) {
-        visibilityStates.append(visible)
-    }
-
-    func bringForward() {
-        bringForwardCallCount += 1
-    }
-
-    func close() {
-        closeCallCount += 1
     }
 }
 

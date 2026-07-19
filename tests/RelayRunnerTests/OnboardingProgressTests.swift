@@ -195,4 +195,49 @@ final class OnboardingProgressTests: XCTestCase {
     func testReadySummaryClearsWhenInputMonitoringGranted() {
         XCTAssertNil(OnboardingView.inputMonitoringSummary(status: .granted))
     }
+
+    func testReadyFooterWaitsWithoutDoneWhileSetupIsPreparing() {
+        XCTAssertEqual(
+            OnboardingView.readyPrimaryActionKind(
+                setupStatus: .preparing("Compiling parakeet-tdt-v2..."),
+                voiceReady: true,
+                hasConfirmedWorkingDirectory: true
+            ),
+            .waiting
+        )
+        XCTAssertFalse(OnboardingView.showsReadyDismissAction(
+            setupStatus: .preparing("Compiling parakeet-tdt-v2..."),
+            voiceReady: true
+        ))
+    }
+
+    func testReadyFooterOffersRetryOnSetupFailure() {
+        XCTAssertEqual(
+            OnboardingView.readyPrimaryActionKind(
+                setupStatus: .failed("Speech-to-Text setup timed out."),
+                voiceReady: true,
+                hasConfirmedWorkingDirectory: true
+            ),
+            .retrySetup
+        )
+        XCTAssertFalse(OnboardingView.showsReadyDismissAction(
+            setupStatus: .failed("Speech-to-Text setup timed out."),
+            voiceReady: true
+        ))
+    }
+
+    func testReadyFooterConvergesToStartSessionWhenSetupIsReady() {
+        XCTAssertEqual(
+            OnboardingView.readyPrimaryActionKind(
+                setupStatus: .ready,
+                voiceReady: true,
+                hasConfirmedWorkingDirectory: false
+            ),
+            .startSession(isEnabled: false)
+        )
+        XCTAssertTrue(OnboardingView.showsReadyDismissAction(
+            setupStatus: .ready,
+            voiceReady: true
+        ))
+    }
 }

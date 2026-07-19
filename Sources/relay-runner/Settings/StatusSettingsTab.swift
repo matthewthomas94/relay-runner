@@ -134,29 +134,28 @@ struct StatusSettingsTab: View {
     }
 
     private var sttModelRow: some View {
-        let msg = appState.sttEngine?.statusMessage ?? ""
-        let state: RowState
-        let detail: String
-        if let translation = appState.sttEngineErrorTranslation {
-            state = .error
-            detail = translation.headline
-        } else if msg.isEmpty {
-            state = .idle
-            detail = "Not started"
-        } else if msg == "Listening" {
-            state = .ok
-            detail = "Loaded and listening"
-        } else {
-            state = .loading
-            detail = msg
-        }
+        let readiness = appState.setupRuntimeReadiness
         return statusRow(
             label: "Speech-to-Text model",
-            state: state,
-            detail: detail,
-            action: appState.sttEngineError == nil ? nil :
+            state: Self.sttRowState(for: readiness),
+            detail: readiness.statusDetail,
+            action: readiness.canRetry ?
                 RowAction(title: "Retry Setup", systemImage: "arrow.clockwise") { appState.retrySTTSetup() }
+                : nil
         )
+    }
+
+    private static func sttRowState(for readiness: SetupRuntimeReadiness) -> RowState {
+        switch readiness {
+        case .notStarted:
+            return .idle
+        case .preparing:
+            return .loading
+        case .ready:
+            return .ok
+        case .failed:
+            return .error
+        }
     }
 
     private var voiceBridgeRow: some View {
