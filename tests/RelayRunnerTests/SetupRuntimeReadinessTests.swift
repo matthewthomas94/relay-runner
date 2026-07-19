@@ -38,6 +38,19 @@ final class SetupRuntimeReadinessTests: XCTestCase {
         XCTAssertFalse(readiness.canRetry)
     }
 
+    func testExplicitEngineErrorOverridesListeningStatus() {
+        let readiness = SetupRuntimeReadiness.resolve(
+            engineStatusMessage: "Listening",
+            engineError: "AVAudioEngine failed to start",
+            startedAt: Date(timeIntervalSince1970: 100),
+            now: Date(timeIntervalSince1970: 101),
+            timeout: 60
+        )
+
+        XCTAssertEqual(readiness, .failed("AVAudioEngine failed to start"))
+        XCTAssertTrue(readiness.canRetry)
+    }
+
     func testStartupErrorBecomesExplicitRetryableFailure() {
         let readiness = SetupRuntimeReadiness.resolve(
             engineStatusMessage: "Loading STT model...",

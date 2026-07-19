@@ -52,20 +52,21 @@ enum SetupRuntimeReadiness: Equatable {
     static func resolve(
         engineStatusMessage: String?,
         engineError: String?,
+        setupSucceeded: Bool = false,
         startedAt: Date?,
         now: Date = Date(),
         timeout: TimeInterval = Self.defaultTimeout
     ) -> SetupRuntimeReadiness {
         let message = engineStatusMessage?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if message == "Listening" {
-            return .ready
-        }
-
         let rawError = engineError?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !rawError.isEmpty {
             return .failed(ErrorTranslator.translate(rawError).headline)
+        }
+
+        if setupSucceeded || message == "Listening" {
+            return .ready
         }
 
         if let startedAt, now.timeIntervalSince(startedAt) >= timeout {

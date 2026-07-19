@@ -53,6 +53,7 @@ final class AppState {
     /// healthy or still loading.
     private(set) var sttEngineError: String?
     private var sttSetupStartedAt: Date?
+    private var sttSetupSucceeded = false
 
     /// Shared finite STT setup state for Settings and onboarding. Preparing
     /// status is allowed to be temporary only; success becomes Loaded and
@@ -61,6 +62,7 @@ final class AppState {
         Self.setupRuntimeReadiness(
             engineStatusMessage: sttEngine?.statusMessage,
             engineError: sttEngineError,
+            setupSucceeded: sttSetupSucceeded,
             startedAt: sttSetupStartedAt
         )
     }
@@ -592,6 +594,7 @@ final class AppState {
     static func setupRuntimeReadiness(
         engineStatusMessage: String?,
         engineError: String?,
+        setupSucceeded: Bool = false,
         startedAt: Date?,
         now: Date = Date(),
         timeout: TimeInterval = SetupRuntimeReadiness.defaultTimeout
@@ -599,6 +602,7 @@ final class AppState {
         SetupRuntimeReadiness.resolve(
             engineStatusMessage: engineStatusMessage,
             engineError: engineError,
+            setupSucceeded: setupSucceeded,
             startedAt: startedAt,
             now: now,
             timeout: timeout
@@ -631,6 +635,7 @@ final class AppState {
         let engine = STTEngine(config: config.stt)
         sttEngine = engine
         sttSetupStartedAt = Date()
+        sttSetupSucceeded = false
         sttEngineError = nil
         Task { [weak self, engine] in
             do {
@@ -652,12 +657,14 @@ final class AppState {
         guard sttEngine === engine else { return }
         sttEngineError = nil
         sttSetupStartedAt = nil
+        sttSetupSucceeded = true
     }
 
     private func failSTTSetupIfCurrent(_ engine: STTEngine, error: Error) {
         guard sttEngine === engine else { return }
         sttEngineError = "\(error)"
         sttSetupStartedAt = nil
+        sttSetupSucceeded = false
     }
 
     /// Start STT + overlay for gesture detection. No bridge — user must
@@ -717,6 +724,7 @@ final class AppState {
         sttEngine?.stop()
         sttEngine = nil
         sttSetupStartedAt = nil
+        sttSetupSucceeded = false
         sttEngineError = nil
         processManager.stopServices()
         isRunning = false
@@ -736,6 +744,7 @@ final class AppState {
         statusText = "Updating"
         sttEngine?.cancelRecording()
         sttSetupStartedAt = nil
+        sttSetupSucceeded = false
         processManager.stopServicesForBundleReplacement()
     }
 
