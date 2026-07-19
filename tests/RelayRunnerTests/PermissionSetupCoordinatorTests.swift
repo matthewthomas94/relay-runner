@@ -245,12 +245,57 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertNil(AppState.setupNotchPresentation(onboardingActive: false, permissionState: nil))
     }
 
-    func testDragPayloadUsesFileURLPasteboardType() {
-        let url = URL(fileURLWithPath: "/Applications/Relay Runner.app")
-        let item = AppFileDragPayload.pasteboardItem(url: url)
+    func testCompanionTileStyleMatchesReferenceConstants() {
+        XCTAssertEqual(PermissionCompanionPlacementPlanner.companionSize, CGSize(width: 140, height: 142))
+        XCTAssertEqual(PermissionCompanionTileStyle.size, CGSize(width: 140, height: 142))
+        XCTAssertEqual(PermissionCompanionTileStyle.cornerRadius, 16)
+        XCTAssertEqual(PermissionCompanionTileStyle.iconSize, 90)
+        XCTAssertEqual(PermissionCompanionTileStyle.normalBorderOpacity, 0)
+    }
 
-        XCTAssertTrue(item.types.contains(.fileURL))
-        XCTAssertEqual(item.string(forType: .fileURL), url.absoluteString)
+    func testNativeHandCursorArtworkFollowsDragPhase() {
+        XCTAssertEqual(PermissionCompanionCursorArtwork.artwork(for: .staticHint), .openHand)
+        XCTAssertEqual(PermissionCompanionCursorArtwork.artwork(for: .approach), .openHand)
+        XCTAssertEqual(PermissionCompanionCursorArtwork.artwork(for: .press), .closedHand)
+        XCTAssertEqual(PermissionCompanionCursorArtwork.artwork(for: .drag), .closedHand)
+        XCTAssertEqual(PermissionCompanionCursorArtwork.artwork(for: .release), .openHand)
+        XCTAssertEqual(PermissionCompanionCursorArtwork.artwork(for: .hold), .openHand)
+        XCTAssertEqual(PermissionCompanionCursorArtwork.artwork(for: .reset), .openHand)
+
+        let frame = PermissionCompanionCursorArtwork.drawFrame(
+            for: CGPoint(x: 80, y: 90),
+            imageSize: CGSize(width: 32, height: 32),
+            hotSpot: CGPoint(x: 7, y: 9)
+        )
+        XCTAssertEqual(frame.origin, CGPoint(x: 73, y: 81))
+        XCTAssertEqual(frame.size, CGSize(width: 32, height: 32))
+    }
+
+    func testDragPayloadUsesNativeURLAndFinderFileRepresentations() {
+        let url = URL(fileURLWithPath: "/Applications/Relay Runner.app")
+        let writer = AppFileDragPasteboardWriter(url: url)
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("RR-177-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let types = writer.writableTypes(for: pasteboard)
+
+        XCTAssertTrue(types.contains(.fileURL))
+        XCTAssertTrue(types.contains(AppFileDragPayload.finderFileListType))
+        XCTAssertNotNil(writer.pasteboardPropertyList(forType: .fileURL))
+        XCTAssertEqual(
+            writer.pasteboardPropertyList(forType: AppFileDragPayload.finderFileListType) as? [String],
+            [url.path]
+        )
+    }
+
+    func testDragImageFrameStaysUnderCursor() {
+        let frame = AppFileDragPayload.draggingFrame(
+            cursorPoint: CGPoint(x: 120, y: 80),
+            imageSize: CGSize(width: 72, height: 72)
+        )
+
+        XCTAssertEqual(frame.midX, 120)
+        XCTAssertEqual(frame.midY, 80)
+        XCTAssertEqual(frame.size, CGSize(width: 72, height: 72))
     }
 
     func testGrantDuringDragClearsDeferralBeforePostingGrantReady() {
@@ -290,6 +335,65 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
 
         coordinator.permissionStatusChanged(.accessibility, status: .granted)
         XCTAssertEqual(posts.count, 1)
+    }
+
+    func testMicrophoneDenialPostsEndedWithoutGrantAfterClearingNotch() {
+        let permissions = FakePermissionSetupPermissions()
+        let companion = FakePermissionSetupCompanion()
+        var notchStates: [PermissionSetupNotchState?] = []
+        var ended: [(PermissionKind, PermissionSetupSource)] = []
+        var coordinator: PermissionSetupCoordinator!
+        coordinator = PermissionSetupCoordinator(
+            permissions: permissions,
+            setSetupNotchState: { notchStates.append($0) },
+            postEndedWithoutGrant: { kind, source in
+                XCTAssertNil(coordinator.activePermission)
+                XCTAssertNil(notchStates.last!)
+                ended.append((kind, source))
+            },
+            companion: companion,
+            successAcknowledgementDelay: 0
+        )
+
+        coordinator.request(.microphone, source: .onboarding, purpose: "Voice")
+        let cancelCountAfterStart = companion.cancelCount
+        permissions.microphoneCompletion?(false)
+
+        XCTAssertEqual(ended.count, 1)
+        XCTAssertEqual(ended.first?.0, .microphone)
+        XCTAssertEqual(ended.first?.1, .onboarding)
+        XCTAssertEqual(notchStates, [.microphone, nil])
+        XCTAssertEqual(companion.cancelCount, cancelCountAfterStart + 1)
+    }
+
+    func testSettingsLifecycleEndPostsEndedWithoutGrantAfterClearingNotch() {
+        let permissions = FakePermissionSetupPermissions()
+        let companion = FakePermissionSetupCompanion()
+        var notchStates: [PermissionSetupNotchState?] = []
+        var ended: [(PermissionKind, PermissionSetupSource)] = []
+        var coordinator: PermissionSetupCoordinator!
+        coordinator = PermissionSetupCoordinator(
+            permissions: permissions,
+            setSetupNotchState: { notchStates.append($0) },
+            postEndedWithoutGrant: { kind, source in
+                XCTAssertNil(coordinator.activePermission)
+                XCTAssertNil(notchStates.last!)
+                ended.append((kind, source))
+            },
+            companion: companion,
+            successAcknowledgementDelay: 0
+        )
+
+        permissions.statuses[.inputMonitoring] = .denied
+        coordinator.request(.inputMonitoring, source: .onboarding, purpose: "Hotkeys")
+        let cancelCountAfterStart = companion.cancelCount
+        companion.endLifecycle()
+
+        XCTAssertEqual(ended.count, 1)
+        XCTAssertEqual(ended.first?.0, .inputMonitoring)
+        XCTAssertEqual(ended.first?.1, .onboarding)
+        XCTAssertEqual(notchStates, [.inputMonitoring, nil])
+        XCTAssertEqual(companion.cancelCount, cancelCountAfterStart + 1)
     }
 }
 
@@ -337,12 +441,14 @@ private final class FakePermissionSetupCompanion: PermissionSetupCompanionContro
     private(set) var successRequests: [PermissionSetupRequest] = []
     private(set) var cancelCount = 0
     private var onDragStateChanged: ((Bool) -> Void)?
+    private var onLifecycleEnded: (() -> Void)?
 
     func show(request: PermissionSetupRequest,
               onDragStateChanged: @escaping (Bool) -> Void,
               onLifecycleEnded: @escaping () -> Void) {
         shownRequests.append(request)
         self.onDragStateChanged = onDragStateChanged
+        self.onLifecycleEnded = onLifecycleEnded
     }
 
     func showSuccess(for request: PermissionSetupRequest) {
@@ -357,5 +463,9 @@ private final class FakePermissionSetupCompanion: PermissionSetupCompanionContro
     func setRealDragActive(_ active: Bool) {
         isRealDragActive = active
         onDragStateChanged?(active)
+    }
+
+    func endLifecycle() {
+        onLifecycleEnded?()
     }
 }

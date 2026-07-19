@@ -40,6 +40,7 @@ struct OnboardingView: View {
     let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
     let cancelPermissionSetup: (PermissionSetupSource?) -> Void
     let shouldDeferPermissionAdvance: (PermissionKind) -> Bool
+    let onSurfaceVisibilityChanged: (Bool) -> Void
     let onFinish: () -> Void
 
     @State private var step: Step
@@ -73,6 +74,7 @@ struct OnboardingView: View {
     @State private var autoOpenedPermissionKinds: Set<PermissionKind> = []
     @State private var autoOpenedParentPermissionSteps: Set<OnboardingStepID> = []
     @State private var autoAdvancedPermissionKinds: Set<PermissionKind> = []
+    @State private var activePermissionSetupKind: PermissionKind?
 
     init(permissions: PermissionsManager,
          simplified: Bool,
@@ -93,6 +95,7 @@ struct OnboardingView: View {
          requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
          cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
          shouldDeferPermissionAdvance: @escaping (PermissionKind) -> Bool = { _ in false },
+         onSurfaceVisibilityChanged: @escaping (Bool) -> Void = { _ in },
          onFinish: @escaping () -> Void) {
         self.permissions = permissions
         self.simplified = simplified
@@ -111,6 +114,7 @@ struct OnboardingView: View {
         self.requestPermissionSetup = requestPermissionSetup
         self.cancelPermissionSetup = cancelPermissionSetup
         self.shouldDeferPermissionAdvance = shouldDeferPermissionAdvance
+        self.onSurfaceVisibilityChanged = onSurfaceVisibilityChanged
         self.onFinish = onFinish
         let startingProvider = resumeState?.provider ?? initialAgentProvider
         let startingSelection = Self.normalizedInitialSelection(
@@ -211,7 +215,22 @@ struct OnboardingView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 560, minHeight: 680)
+        .frame(
+            width: OnboardingNotchSurfaceMetrics.contentSize.width,
+            height: OnboardingNotchSurfaceMetrics.contentSize.height
+        )
+        .background(Color(nsColor: .windowBackgroundColor))
+        .clipShape(RoundedRectangle(
+            cornerRadius: OnboardingNotchSurfaceMetrics.cornerRadius,
+            style: .continuous
+        ))
+        .overlay(
+            RoundedRectangle(
+                cornerRadius: OnboardingNotchSurfaceMetrics.cornerRadius,
+                style: .continuous
+            )
+            .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
+        )
         .onAppear {
             persistResume()
             // Full first-run onboarding starts setup from the provider-choice
@@ -223,8 +242,10 @@ struct OnboardingView: View {
             }
             advancePastGrantedPermissionIfNeeded()
             openPermissionPaneAutomaticallyIfNeeded()
+            syncSurfaceVisibility()
         }
         .onChange(of: step) { _, new in
+            activePermissionSetupKind = nil
             cancelPermissionSetup(.onboarding)
             autoAdvancedPermissionKinds.removeAll()
             persistResume()
@@ -233,6 +254,7 @@ struct OnboardingView: View {
             }
             advancePastGrantedPermissionIfNeeded()
             openPermissionPaneAutomaticallyIfNeeded()
+            syncSurfaceVisibility()
         }
         .onChange(of: selectedAgentProvider) { _, _ in
             persistResume()
@@ -249,15 +271,19 @@ struct OnboardingView: View {
             persistResume()
         }
         .onChange(of: permissions.microphone) { _, new in
+            syncSurfaceVisibility()
             autoAdvance(for: .microphone, status: new)
         }
         .onChange(of: permissions.accessibility) { _, new in
+            syncSurfaceVisibility()
             autoAdvance(for: .accessibility, status: new)
         }
         .onChange(of: permissions.inputMonitoring) { _, new in
+            syncSurfaceVisibility()
             autoAdvance(for: .inputMonitoring, status: new)
         }
         .onChange(of: permissions.screenRecording) { _, new in
+            syncSurfaceVisibility()
             autoAdvance(for: .screenRecording, status: new)
         }
         .onReceive(NotificationCenter.default.publisher(for: .relayPermissionSetupGrantReady)) { notification in
@@ -266,6 +292,15 @@ struct OnboardingView: View {
                 return
             }
             autoAdvance(for: kind, status: .granted)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .relayPermissionSetupEndedWithoutGrant)) { notification in
+            guard let event = notification.object as? PermissionSetupLifecycleEvent,
+                  event.source == .onboarding,
+                  activePermissionSetupKind == event.permission else {
+                return
+            }
+            activePermissionSetupKind = nil
+            syncSurfaceVisibility()
         }
         .onChange(of: venvInstaller.status) { _, new in
             // Auto-advance off pythonSetup as soon as the bootstrap
@@ -288,6 +323,7 @@ struct OnboardingView: View {
             }
         }
         .onDisappear {
+            activePermissionSetupKind = nil
             cancelPermissionSetup(.onboarding)
         }
     }
@@ -664,7 +700,7 @@ struct OnboardingView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Button(actionTitle) {
-                requestPermissionSetup(kind, .onboarding, parentPermissionStepExplanation(for: kind))
+                startPermissionSetup(kind, purpose: parentPermissionStepExplanation(for: kind))
             }
 
             permissionAlternativeBox(for: kind)
@@ -1101,16 +1137,16 @@ struct OnboardingView: View {
                 // First-ever ask: AVCaptureDevice.requestAccess shows the
                 // standard system prompt.
                 Button("Grant Microphone Access") {
-                    requestPermissionSetup(.microphone, .onboarding, permissionExplanation(for: .microphone))
+                    startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
                 }.keyboardShortcut(.defaultAction)
             case .denied:
                 Button("Ask Again") {
-                    requestPermissionSetup(.microphone, .onboarding, permissionExplanation(for: .microphone))
+                    startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
                 }.keyboardShortcut(.defaultAction)
             case .restricted:
                 Button("Open System Settings") {
                     persistResume()
-                    requestPermissionSetup(.microphone, .onboarding, permissionExplanation(for: .microphone))
+                    startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
                 }.keyboardShortcut(.defaultAction)
             }
         case .inputMonitoring:
@@ -1119,12 +1155,12 @@ struct OnboardingView: View {
                 Button("Continue") { advance() }.keyboardShortcut(.defaultAction)
             case .notDetermined, .denied:
                 Button("Open Input Monitoring Settings") {
-                    requestPermissionSetup(.inputMonitoring, .onboarding, permissionExplanation(for: .inputMonitoring))
+                    startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
                 }.keyboardShortcut(.defaultAction)
             case .restricted:
                 Button("Open System Settings") {
                     persistResume()
-                    requestPermissionSetup(.inputMonitoring, .onboarding, permissionExplanation(for: .inputMonitoring))
+                    startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
                 }.keyboardShortcut(.defaultAction)
             }
         case .parentAccessibility:
@@ -1204,12 +1240,12 @@ struct OnboardingView: View {
                 .keyboardShortcut(.defaultAction)
         case .notDetermined, .denied:
             Button("Open \(kind.displayName) Settings") {
-                requestPermissionSetup(kind, .onboarding, permissionExplanation(for: kind))
+                startPermissionSetup(kind, purpose: permissionExplanation(for: kind))
             }
             .keyboardShortcut(.defaultAction)
         case .restricted:
             Button("Open System Settings") {
-                requestPermissionSetup(kind, .onboarding, permissionExplanation(for: kind))
+                startPermissionSetup(kind, purpose: permissionExplanation(for: kind))
             }
             .keyboardShortcut(.defaultAction)
         }
@@ -1570,9 +1606,19 @@ struct OnboardingView: View {
         }
     }
 
+    static func initialSurfaceVisible(for step: Step) -> Bool {
+        step.kind == nil
+    }
+
+    static func surfaceVisible(for step: Step,
+                               activePermissionSetupKind: PermissionKind?) -> Bool {
+        guard let kind = step.kind else { return true }
+        return activePermissionSetupKind != kind
+    }
+
     private func requestInputMonitoringPermission() {
         persistResume()
-        requestPermissionSetup(.inputMonitoring, .onboarding, permissionExplanation(for: .inputMonitoring))
+        startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
     }
 
     private var currentReadiness: GuidedSetupReadiness {
@@ -1653,20 +1699,26 @@ struct OnboardingView: View {
     }
 
     private func openPermissionPaneAutomaticallyIfNeeded() {
-        if let kind = step.kind, kind != .microphone {
-            guard permissions.status(for: kind) != .granted,
-                  !autoOpenedPermissionKinds.contains(kind) else {
-                return
-            }
-            autoOpenedPermissionKinds.insert(kind)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                guard step.kind == kind,
-                      permissions.status(for: kind) != .granted else {
-                    return
-                }
-                requestPermissionSetup(kind, .onboarding, permissionExplanation(for: kind))
-            }
+        guard let kind = step.kind,
+              permissions.status(for: kind) != .granted,
+              !autoOpenedPermissionKinds.contains(kind) else {
+            return
         }
+        autoOpenedPermissionKinds.insert(kind)
+        startPermissionSetup(kind, purpose: permissionExplanation(for: kind))
+    }
+
+    private func syncSurfaceVisibility() {
+        onSurfaceVisibilityChanged(Self.surfaceVisible(
+            for: step,
+            activePermissionSetupKind: activePermissionSetupKind
+        ))
+    }
+
+    private func startPermissionSetup(_ kind: PermissionKind, purpose: String) {
+        activePermissionSetupKind = kind
+        syncSurfaceVisibility()
+        requestPermissionSetup(kind, .onboarding, purpose)
     }
 
     private func parentPermissionKind(for step: Step) -> PermissionKind? {

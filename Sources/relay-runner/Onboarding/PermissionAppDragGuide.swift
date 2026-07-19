@@ -357,19 +357,64 @@ struct DraggableAppIconView: NSViewRepresentable {
 }
 
 struct AppFileDragPayload {
+    static let finderFileListType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+    static let dragImageSize = CGSize(width: 72, height: 72)
+
     let item: NSDraggingItem
 
-    static func make(url: URL, image: NSImage, frame: CGRect) -> AppFileDragPayload {
-        let pasteboardItem = pasteboardItem(url: url)
-        let item = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        item.setDraggingFrame(frame, contents: image)
+    static func make(url: URL, image: NSImage, cursorPoint: CGPoint) -> AppFileDragPayload {
+        let item = NSDraggingItem(pasteboardWriter: AppFileDragPasteboardWriter(url: url))
+        let dragImage = image.copy() as? NSImage ?? image
+        dragImage.size = dragImageSize
+        item.setDraggingFrame(draggingFrame(cursorPoint: cursorPoint), contents: dragImage)
         return AppFileDragPayload(item: item)
     }
 
-    static func pasteboardItem(url: URL) -> NSPasteboardItem {
-        let pasteboardItem = NSPasteboardItem()
-        pasteboardItem.setString(url.absoluteString, forType: .fileURL)
-        return pasteboardItem
+    static func draggingFrame(cursorPoint: CGPoint,
+                              imageSize: CGSize = dragImageSize) -> CGRect {
+        CGRect(
+            x: cursorPoint.x - imageSize.width / 2,
+            y: cursorPoint.y - imageSize.height / 2,
+            width: imageSize.width,
+            height: imageSize.height
+        )
+    }
+}
+
+final class AppFileDragPasteboardWriter: NSObject, NSPasteboardWriting {
+    let url: URL
+    private let nativeWriter: NSURL
+
+    init(url: URL) {
+        let standardized = url.standardizedFileURL.resolvingSymlinksInPath()
+        self.url = standardized
+        self.nativeWriter = standardized as NSURL
+        super.init()
+    }
+
+    func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        var types = nativeWriter.writableTypes(for: pasteboard)
+        if !types.contains(AppFileDragPayload.finderFileListType) {
+            types.append(AppFileDragPayload.finderFileListType)
+        }
+        return types
+    }
+
+    func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        if type == AppFileDragPayload.finderFileListType {
+            return [url.path]
+        }
+        // Keep standard URL/file-url payloads native; System Settings is picky
+        // about hand-built file-url strings.
+        return nativeWriter.pasteboardPropertyList(forType: type)
+    }
+
+    func writingOptions(forType type: NSPasteboard.PasteboardType,
+                        pasteboard: NSPasteboard) -> NSPasteboard.WritingOptions {
+        if type == AppFileDragPayload.finderFileListType {
+            return []
+        }
+        return nativeWriter.writingOptions(forType: type, pasteboard: pasteboard)
     }
 }
 
@@ -446,7 +491,7 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
             return
         }
 
-        let payload = AppFileDragPayload.make(url: bundleURL, image: image, frame: bounds)
+        let payload = AppFileDragPayload.make(url: bundleURL, image: image, cursorPoint: currentPoint)
         dragSessionActive = true
         onDragStateChanged(true)
 
