@@ -142,6 +142,9 @@ final class AppState {
             },
             shouldDeferPermissionAdvance: { [weak self] kind in
                 self?.permissionSetupCoordinator.shouldDeferAutoAdvance(for: kind) ?? false
+            },
+            openSettingsHost: { [weak self] in
+                self?.showWorkspaceSettings()
             }
         )
     }()

@@ -26,6 +26,33 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(SettingsCategory.category(after: .awareness), .awareness)
     }
 
+    func testOnboardingModeKeepsStatusSelectedInSettingsSidebar() {
+        XCTAssertEqual(
+            SettingsCategory.visibleSelection(current: .general, onboardingActive: true),
+            .status
+        )
+        XCTAssertEqual(
+            SettingsCategory.visibleSelection(current: .general, onboardingActive: false),
+            .general
+        )
+    }
+
+    func testSettingsHeaderPresentationAdaptsOnboardingProgress() {
+        let category = SettingsDetailHeaderPresentation(category: .status)
+        XCTAssertEqual(category.title, "Status")
+        XCTAssertEqual(category.subtitle, "Permissions and runtime")
+        XCTAssertNil(category.trailingText)
+
+        let onboarding = SettingsDetailHeaderPresentation(onboarding: OnboardingDetailPresentation(
+            title: "Coding Agent",
+            subtitle: "Provider, model, effort, and workspace",
+            progress: "1 of 7"
+        ))
+        XCTAssertEqual(onboarding.title, "Coding Agent")
+        XCTAssertEqual(onboarding.subtitle, "Provider, model, effort, and workspace")
+        XCTAssertEqual(onboarding.trailingText, "1 of 7")
+    }
+
     func testWorkspaceSurfacesUseExplicitFillWidthSizing() {
         XCTAssertEqual(WorkspaceSurfaceSizing.terminalMaxWidth, .infinity)
         XCTAssertEqual(WorkspaceSurfaceSizing.settingsMaxWidth, .infinity)
@@ -175,10 +202,25 @@ final class SettingsWindowTests: XCTestCase {
         let source = root.appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        XCTAssertTrue(contents.contains("SettingsDetailHeader(category: selectedCategory, style: style)"))
+        XCTAssertTrue(contents.contains("SettingsDetailHeader("))
+        XCTAssertTrue(contents.contains("SettingsDetailHeaderPresentation(onboarding: onboardingPresentation.detail)"))
         XCTAssertTrue(contents.contains("SettingsActionButton(\n                title: \"Revert\""))
         XCTAssertTrue(contents.contains("draft = appState.config"))
         XCTAssertFalse(contents.contains("not selected"))
+    }
+
+    func testWorkspaceSettingsHostsOnboardingWhileStandaloneRoutesToWorkspace() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("if style == .workspace"))
+        XCTAssertTrue(contents.contains("rootView"))
+        XCTAssertTrue(contents.contains("OnboardingRoutedToWorkspaceView"))
+        XCTAssertTrue(contents.contains("onboardingRouteFooter"))
     }
 
     func testSettingsSlidersExposeProgrammaticValues() {
