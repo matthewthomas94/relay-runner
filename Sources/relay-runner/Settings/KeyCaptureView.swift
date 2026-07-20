@@ -197,14 +197,14 @@ private final class KeyInputView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let bg: NSColor = isHighlighted
-            ? SettingsSurfaceColor.relayAccentNSColor.withAlphaComponent(0.15)
+            ? SettingsSurfaceColor.neutralAccentNSColor.withAlphaComponent(0.15)
             : .controlBackgroundColor
         bg.setFill()
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
         path.fill()
 
         let stroke = isHighlighted
-            ? SettingsSurfaceColor.relayAccentNSColor.withAlphaComponent(0.65)
+            ? SettingsSurfaceColor.neutralAccentNSColor.withAlphaComponent(0.65)
             : NSColor.separatorColor
         stroke.setStroke()
         path.lineWidth = 0.5

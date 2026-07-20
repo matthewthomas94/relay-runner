@@ -85,7 +85,7 @@ struct StatusSettingsTab: View {
             .joined(separator: ", ")
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "arrow.counterclockwise.circle.fill")
-                .foregroundStyle(SettingsSurfaceColor.relayAccent)
+                .foregroundStyle(SettingsSurfaceColor.neutralAccent)
                 .font(AppTypography.symbolFont(size: 17, weight: .semibold))
             VStack(alignment: .leading, spacing: 4) {
                 Text("Permissions were reset")

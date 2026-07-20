@@ -86,14 +86,15 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(AppTypography.definition(for: .caption).size, 9)
     }
 
-    func testSettingsSemanticColorsUsePurpleForDirtyAndFocusStates() {
-        XCTAssertEqual(SettingsFooterPresentation(hasChanges: true).iconSemanticColor, .relayAccent)
+    func testSettingsSemanticColorsUseWorkspaceNeutralForDirtyAndFocusStates() {
+        XCTAssertEqual(SettingsFooterPresentation(hasChanges: true).iconSemanticColor, .neutralAccent)
         XCTAssertEqual(SettingsFooterPresentation(hasChanges: false).iconSemanticColor, .idle)
 
-        let accent = SettingsSurfaceColor.relayAccentNSColor
-            .usingColorSpace(.sRGB)!
-        XCTAssertGreaterThan(accent.blueComponent, accent.redComponent)
-        XCTAssertGreaterThan(accent.redComponent, accent.greenComponent)
+        let accent = SettingsSurfaceColor.neutralAccentNSColor.usingColorSpace(.sRGB)!
+        let workspaceText = SettingsSurfaceColor.primaryTextNSColor.usingColorSpace(.sRGB)!
+        XCTAssertEqual(accent.redComponent, workspaceText.redComponent, accuracy: 0.001)
+        XCTAssertEqual(accent.greenComponent, workspaceText.greenComponent, accuracy: 0.001)
+        XCTAssertEqual(accent.blueComponent, workspaceText.blueComponent, accuracy: 0.001)
     }
 
     func testSettingsTextHierarchyHasDistinctMutedAndDisabledLevels() {
@@ -261,7 +262,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertFalse(contents.contains("xmark.circle.fill"))
     }
 
-    func testSettingsSourceDoesNotUseOrangeStyling() throws {
+    func testSettingsSourceDoesNotUseOrangeOrPurpleStyling() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -274,6 +275,8 @@ final class SettingsWindowTests: XCTestCase {
             let contents = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
             XCTAssertFalse(contents.contains(".orange"), "\(path) should not use orange styling in Settings")
             XCTAssertFalse(contents.contains("Color.orange"), "\(path) should not use orange styling in Settings")
+            XCTAssertFalse(contents.contains(".purple"), "\(path) should not use purple styling in Settings")
+            XCTAssertFalse(contents.contains("Color.purple"), "\(path) should not use purple styling in Settings")
         }
     }
 }

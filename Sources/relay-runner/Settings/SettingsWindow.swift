@@ -355,7 +355,7 @@ private struct SettingsContent: View {
         HStack(spacing: 12) {
             Image(systemName: "sparkles")
                 .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                .foregroundStyle(SettingsSurfaceColor.relayAccent)
+                .foregroundStyle(SettingsSurfaceColor.neutralAccent)
                 .accessibilityHidden(true)
 
             Text("Setup walkthrough")
@@ -380,7 +380,7 @@ private struct SettingsContent: View {
         HStack(spacing: 12) {
             Image(systemName: "sparkles")
                 .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                .foregroundStyle(SettingsSurfaceColor.relayAccent)
+                .foregroundStyle(SettingsSurfaceColor.neutralAccent)
                 .accessibilityHidden(true)
 
             Text(onboardingPresentation.detail.progress ?? "Setup walkthrough")
@@ -447,14 +447,14 @@ private struct SettingsFooterSaveButton: View {
 }
 
 enum SettingsSemanticColor: Equatable {
-    case relayAccent
+    case neutralAccent
     case success
     case error
     case idle
 
     var color: Color {
         switch self {
-        case .relayAccent: return SettingsSurfaceColor.relayAccent
+        case .neutralAccent: return SettingsSurfaceColor.neutralAccent
         case .success: return SettingsSurfaceColor.success
         case .error: return SettingsSurfaceColor.error
         case .idle: return SettingsSurfaceColor.mutedText
@@ -474,13 +474,13 @@ struct SettingsFooterPresentation: Equatable {
     }
 
     var iconSemanticColor: SettingsSemanticColor {
-        hasChanges ? .relayAccent : .idle
+        hasChanges ? .neutralAccent : .idle
     }
 
     var iconColor: Color { iconSemanticColor.color }
 
     var textColor: Color {
-        hasChanges ? SettingsSurfaceColor.relayAccent : SettingsSurfaceColor.secondaryText
+        hasChanges ? SettingsSurfaceColor.neutralAccent : SettingsSurfaceColor.secondaryText
     }
 
     var actionTint: Color { hasChanges ? SettingsSurfaceColor.dirtyAccent : SettingsSurfaceColor.mutedText }
@@ -560,7 +560,7 @@ private struct OnboardingRoutedToWorkspaceView: View {
                 SettingsRow {
                     Image(systemName: "rectangle.connected.to.line.below")
                         .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-                        .foregroundStyle(SettingsSurfaceColor.relayAccent)
+                        .foregroundStyle(SettingsSurfaceColor.neutralAccent)
                         .frame(width: 24)
                         .accessibilityHidden(true)
                     SettingsRowLabel(

@@ -214,11 +214,11 @@ struct SettingsActionButton: View {
     }
 
     private var fillColor: Color {
-        prominence == .primary ? SettingsSurfaceColor.relayAccent : Color.white
+        prominence == .primary ? SettingsSurfaceColor.neutralAccent : Color.white
     }
 
     private var strokeColor: Color {
-        prominence == .primary ? SettingsSurfaceColor.relayAccent : SettingsSurfaceColor.focusRing
+        prominence == .primary ? SettingsSurfaceColor.neutralAccent : SettingsSurfaceColor.focusRing
     }
 
     private var foregroundColor: Color {
@@ -270,7 +270,7 @@ struct SettingsInlineStatus: View {
 
     private var iconName: String {
         switch semanticColor {
-        case .relayAccent: return "circle.fill"
+        case .neutralAccent: return "circle.fill"
         case .success: return "checkmark.circle.fill"
         case .error: return "xmark.octagon.fill"
         case .idle: return "circle"
@@ -377,8 +377,8 @@ struct SettingsActionPresentation: Equatable {
 }
 
 enum SettingsSurfaceColor {
-    static let relayAccentNSColor = NSColor(srgbRed: 139 / 255, green: 92 / 255, blue: 246 / 255, alpha: 1)
     static let primaryTextNSColor = NSColor(srgbRed: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 0.98)
+    static let neutralAccentNSColor = primaryTextNSColor.withAlphaComponent(1)
     static let secondaryTextNSColor = NSColor(srgbRed: 203 / 255, green: 213 / 255, blue: 225 / 255, alpha: 0.82)
     static let mutedTextNSColor = NSColor(srgbRed: 148 / 255, green: 163 / 255, blue: 184 / 255, alpha: 0.68)
     static let disabledTextNSColor = NSColor(srgbRed: 148 / 255, green: 163 / 255, blue: 184 / 255, alpha: 0.45)
@@ -389,8 +389,8 @@ enum SettingsSurfaceColor {
     static let secondaryText = Color(nsColor: secondaryTextNSColor)
     static let mutedText = Color(nsColor: mutedTextNSColor)
     static let disabledText = Color(nsColor: disabledTextNSColor)
-    static let relayAccent = Color(nsColor: relayAccentNSColor)
-    static let dirtyAccent = relayAccent
+    static let neutralAccent = Color(nsColor: neutralAccentNSColor)
+    static let dirtyAccent = neutralAccent
     static let success = Color(nsColor: successNSColor)
     static let error = Color(nsColor: errorNSColor)
     static let rowFill = Color.white.opacity(0.035)
@@ -398,5 +398,5 @@ enum SettingsSurfaceColor {
     static let rowFillSelected = Color.white.opacity(WorkspaceNavigationStyle.selectedFillOpacity)
     static let rowFillFocused = Color.white.opacity(WorkspaceNavigationStyle.focusedFillOpacity)
     static let divider = Color.white.opacity(0.075)
-    static let focusRing = relayAccent.opacity(0.78)
+    static let focusRing = neutralAccent.opacity(0.78)
 }

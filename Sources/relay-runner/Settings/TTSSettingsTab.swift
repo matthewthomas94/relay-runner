@@ -45,7 +45,7 @@ struct TTSSettingsTab: View {
                     SettingsRow {
                         SettingsInlineStatus(
                             text: previewStatusText,
-                            semanticColor: previewError == nil ? .relayAccent : .error,
+                            semanticColor: previewError == nil ? .neutralAccent : .error,
                             reservedWidth: 170
                         )
                         Text(previewError ?? "Generating preview audio\u{2026}")
