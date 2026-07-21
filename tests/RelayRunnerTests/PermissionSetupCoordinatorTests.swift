@@ -167,6 +167,136 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertFalse(PermissionCompanionDemoDisplayPolicy.shouldRunDisplayLink(reduceMotion: true, isPaused: false))
         XCTAssertFalse(PermissionCompanionDemoDisplayPolicy.shouldRunDisplayLink(reduceMotion: false, isPaused: true))
         XCTAssertTrue(PermissionCompanionDemoDisplayPolicy.shouldRunDisplayLink(reduceMotion: false, isPaused: false))
+        XCTAssertFalse(PermissionCompanionDemoDisplayPolicy.shouldRunDisplayLink(
+            reduceMotion: false,
+            isPaused: false,
+            isAttachedToWindow: false
+        ))
+    }
+
+    func testDemoViewStartsDisplayLinkAfterWindowAttachAndAdvancesInitialLoop() {
+        let factory = PermissionCompanionDisplayLinkFactorySpy()
+        let view = PermissionCompanionDemoView(
+            frame: CGRect(x: 0, y: 0, width: 240, height: 180),
+            displayLinkFactory: factory.makeDisplayLink
+        )
+        let panel = NSPanel(
+            contentRect: view.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        defer { panel.close() }
+
+        XCTAssertFalse(view.hasActiveDisplayLinkForTesting)
+        XCTAssertTrue(factory.links.isEmpty)
+
+        panel.contentView = view
+        view.viewDidMoveToWindow()
+
+        XCTAssertTrue(view.hasActiveDisplayLinkForTesting)
+        XCTAssertEqual(factory.links.count, 1)
+        XCTAssertEqual(factory.links.first?.addCount, 1)
+
+        view.simulateDisplayLinkTickForTesting(timestamp: 10.0)
+        view.simulateDisplayLinkTickForTesting(timestamp: 10.0167)
+
+        XCTAssertEqual(view.animationElapsedForTesting, 0.0167, accuracy: 0.0001)
+    }
+
+    func testDemoViewHoverFreezeAndResumeContinueFromFrozenTimeline() {
+        let factory = PermissionCompanionDisplayLinkFactorySpy()
+        let view = PermissionCompanionDemoView(
+            frame: CGRect(x: 0, y: 0, width: 240, height: 180),
+            displayLinkFactory: factory.makeDisplayLink
+        )
+        let panel = NSPanel(
+            contentRect: view.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        defer { panel.close() }
+        panel.contentView = view
+        view.viewDidMoveToWindow()
+
+        view.simulateDisplayLinkTickForTesting(timestamp: 1.0)
+        view.simulateDisplayLinkTickForTesting(timestamp: 1.25)
+        XCTAssertEqual(view.animationElapsedForTesting, 0.25, accuracy: 0.0001)
+
+        view.isPaused = true
+
+        XCTAssertFalse(view.hasActiveDisplayLinkForTesting)
+        XCTAssertEqual(factory.links.count, 1)
+        XCTAssertEqual(factory.links[0].invalidateCount, 1)
+
+        view.simulateDisplayLinkTickForTesting(timestamp: 4.0)
+        XCTAssertEqual(view.animationElapsedForTesting, 0.25, accuracy: 0.0001)
+
+        view.isPaused = false
+
+        XCTAssertTrue(view.hasActiveDisplayLinkForTesting)
+        XCTAssertEqual(factory.links.count, 2)
+
+        view.simulateDisplayLinkTickForTesting(timestamp: 9.0)
+        XCTAssertEqual(view.animationElapsedForTesting, 0.25, accuracy: 0.0001)
+        view.simulateDisplayLinkTickForTesting(timestamp: 9.1)
+        XCTAssertEqual(view.animationElapsedForTesting, 0.35, accuracy: 0.0001)
+    }
+
+    func testDemoViewWindowLifecycleDoesNotDuplicateDisplayLinksDuringPollingRefreshes() {
+        let factory = PermissionCompanionDisplayLinkFactorySpy()
+        let view = PermissionCompanionDemoView(
+            frame: CGRect(x: 0, y: 0, width: 240, height: 180),
+            displayLinkFactory: factory.makeDisplayLink
+        )
+        let panel = NSPanel(
+            contentRect: view.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        defer { panel.close() }
+        panel.contentView = view
+        view.viewDidMoveToWindow()
+
+        view.reduceMotion = false
+        view.isPaused = false
+        view.viewDidMoveToWindow()
+        view.viewDidMoveToWindow()
+
+        XCTAssertEqual(factory.links.count, 1)
+        XCTAssertEqual(factory.links.first?.invalidateCount, 0)
+    }
+
+    func testPanelOrderingKeepsDemoAboveInteractiveCardAndMouseTransparent() {
+        let interactive = PermissionCompanionPanelOrderingSpy(windowNumber: 41)
+        let demo = PermissionCompanionPanelOrderingSpy(windowNumber: 42)
+
+        PermissionCompanionPanelOrdering.apply(
+            interactivePanel: interactive,
+            demoPanel: demo,
+            isRealDragActive: false
+        )
+
+        XCTAssertTrue(interactive.isVisible)
+        XCTAssertTrue(demo.isVisible)
+        XCTAssertTrue(demo.ignoresMouseEvents)
+        XCTAssertEqual(interactive.operations, ["front"])
+        XCTAssertEqual(demo.operations, ["front", "above:41"])
+
+        interactive.operations.removeAll()
+        demo.operations.removeAll()
+
+        PermissionCompanionPanelOrdering.apply(
+            interactivePanel: interactive,
+            demoPanel: demo,
+            isRealDragActive: false
+        )
+
+        XCTAssertTrue(demo.ignoresMouseEvents)
+        XCTAssertTrue(interactive.operations.isEmpty)
+        XCTAssertEqual(demo.operations, ["above:41"])
     }
 
     func testReleasePhaseKeepsGhostAtDestinationWithoutExtraCueState() {
@@ -1012,6 +1142,61 @@ private final class PermissionCompanionInteractionHarness {
             } else if let timerID = model.endRealDrag() {
                 resumeTimers.append(timerID)
             }
+        }
+    }
+}
+
+private final class PermissionCompanionDisplayLinkFactorySpy {
+    private(set) var links: [FakePermissionCompanionDisplayLink] = []
+
+    func makeDisplayLink(_ view: PermissionCompanionDemoView,
+                         _ target: Any,
+                         _ selector: Selector) -> PermissionCompanionDemoDisplayLinking {
+        let link = FakePermissionCompanionDisplayLink()
+        links.append(link)
+        return link
+    }
+}
+
+private final class FakePermissionCompanionDisplayLink: PermissionCompanionDemoDisplayLinking {
+    private(set) var addCount = 0
+    private(set) var invalidateCount = 0
+
+    func add(to runloop: RunLoop, forMode mode: RunLoop.Mode) {
+        addCount += 1
+    }
+
+    func invalidate() {
+        invalidateCount += 1
+    }
+}
+
+private final class PermissionCompanionPanelOrderingSpy: PermissionCompanionOverlayPanel {
+    var operations: [String] = []
+    private(set) var isVisible = false
+    let windowNumber: Int
+    var ignoresMouseEvents = false
+
+    init(windowNumber: Int) {
+        self.windowNumber = windowNumber
+    }
+
+    func orderFrontRegardless() {
+        isVisible = true
+        operations.append("front")
+    }
+
+    func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        switch place {
+        case .above:
+            operations.append("above:\(otherWin)")
+        case .below:
+            operations.append("below:\(otherWin)")
+        case .out:
+            isVisible = false
+            operations.append("out:\(otherWin)")
+        @unknown default:
+            operations.append("unknown:\(otherWin)")
         }
     }
 }
