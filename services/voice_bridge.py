@@ -49,6 +49,11 @@ ORCHESTRATOR_HEARTBEAT_SECONDS = float(os.environ.get("ORCHESTRATOR_HEARTBEAT_SE
 PM_UPDATE_POLL_SECONDS = float(os.environ.get("PM_UPDATE_POLL_SECONDS", "2"))
 PM_UPDATE_CADENCE_SECONDS = float(os.environ.get("PM_UPDATE_CADENCE_SECONDS", "8"))
 PM_UPDATE_STARTUP_GRACE_SECONDS = float(os.environ.get("PM_UPDATE_STARTUP_GRACE_SECONDS", "6"))
+MESSENGER_OUTCOME_POLL_SECONDS = float(os.environ.get("MESSENGER_OUTCOME_POLL_SECONDS", "2"))
+FOREGROUND_REPLY_FALLBACK_SECONDS = float(os.environ.get("FOREGROUND_REPLY_FALLBACK_SECONDS", "120"))
+
+_FOREGROUND_REPLY_LOCK = threading.Lock()
+_FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
 
 
 def _notify_state(state: str, **kwargs):
@@ -657,6 +662,91 @@ def _start_pm_update_mode(
     return thread
 
 
+def _pending_messenger_outcome_params(orchestrator_session: dict | None) -> dict[str, object]:
+    repo_path = str((orchestrator_session or {}).get("repo_path") or Path.cwd())
+    provider = str((orchestrator_session or {}).get("provider") or "").strip() or None
+    return {
+        "repo_path": repo_path,
+        "provider": provider,
+        "limit": 10,
+    }
+
+
+def _deliver_pending_messenger_outcomes_once(
+    *,
+    orchestrator_session: dict | None,
+    messenger: MessengerRuntime | None,
+    request_get_json=_get_orchestrator_json,
+    request_json=_post_orchestrator_json,
+) -> int:
+    if messenger is None:
+        return 0
+    try:
+        response = request_get_json(
+            "/v1/messenger/outcomes",
+            _pending_messenger_outcome_params(orchestrator_session),
+        )
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+        print(f"[voice_bridge] pending messenger outcome fetch failed: {e}", file=sys.stderr)
+        return 0
+    outcomes = response.get("outcomes") if isinstance(response, dict) else None
+    if not isinstance(outcomes, list):
+        return 0
+
+    delivered = 0
+    for outcome in outcomes:
+        if not isinstance(outcome, dict):
+            continue
+        outcome_id = outcome.get("id")
+        payload = outcome.get("payload")
+        trace = payload.get("trace_event") if isinstance(payload, dict) else None
+        if not isinstance(trace, dict):
+            continue
+        if messenger.submit_trace(trace):
+            try:
+                request_json(f"/v1/messenger/outcomes/{int(outcome_id)}/delivered", {})
+                delivered += 1
+            except (TypeError, ValueError, OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+                print(f"[voice_bridge] pending messenger outcome ack failed: {e}", file=sys.stderr)
+        else:
+            try:
+                request_json(f"/v1/messenger/outcomes/{int(outcome_id)}/attempt", {})
+            except (TypeError, ValueError, OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+                pass
+    return delivered
+
+
+def _start_messenger_outcome_polling(
+    *,
+    orchestrator_session: dict | None,
+    messenger: MessengerRuntime | None,
+    shutdown_event: threading.Event,
+    request_get_json=_get_orchestrator_json,
+    request_json=_post_orchestrator_json,
+) -> threading.Thread | None:
+    if messenger is None or orchestrator_session is None:
+        return None
+
+    def _run() -> None:
+        poll_seconds = max(0.25, MESSENGER_OUTCOME_POLL_SECONDS)
+        while not shutdown_event.is_set():
+            _deliver_pending_messenger_outcomes_once(
+                orchestrator_session=orchestrator_session,
+                messenger=messenger,
+                request_get_json=request_get_json,
+                request_json=request_json,
+            )
+            shutdown_event.wait(poll_seconds)
+
+    thread = threading.Thread(
+        target=_run,
+        name="messenger-outcome-poll",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def _acknowledgement_variant(seed: str, options: tuple[str, ...]) -> str:
     if not options:
         return VOICE_ACKNOWLEDGEMENT
@@ -1123,6 +1213,43 @@ def _relay_command_current(
     )
 
 
+def _relay_command_key(command: dict | None) -> tuple[int, str] | None:
+    if not isinstance(command, dict):
+        return None
+    command_id = str(command.get("relay_command_id") or "").strip()
+    if not command_id:
+        return None
+    try:
+        command_seq = int(command.get("relay_command_seq"))
+    except (TypeError, ValueError):
+        return None
+    return command_seq, command_id
+
+
+def _foreground_reply_delivered(command: dict | None) -> bool:
+    key = _relay_command_key(command)
+    if key is None:
+        return False
+    with _FOREGROUND_REPLY_LOCK:
+        return key in _FOREGROUND_REPLIED_COMMANDS
+
+
+def _mark_foreground_reply_delivered(command: dict | None) -> None:
+    key = _relay_command_key(command)
+    if key is None:
+        return
+    with _FOREGROUND_REPLY_LOCK:
+        _FOREGROUND_REPLIED_COMMANDS.add(key)
+        if len(_FOREGROUND_REPLIED_COMMANDS) > 100:
+            for old in list(_FOREGROUND_REPLIED_COMMANDS)[:50]:
+                _FOREGROUND_REPLIED_COMMANDS.discard(old)
+
+
+def _reset_foreground_reply_delivery_for_tests() -> None:
+    with _FOREGROUND_REPLY_LOCK:
+        _FOREGROUND_REPLIED_COMMANDS.clear()
+
+
 def _parse_args() -> dict:
     """Parse CLI args: --config <path>, --session <id>, --relay."""
     args = sys.argv[1:]
@@ -1356,6 +1483,68 @@ def _handle_relay_control_message(
     return False
 
 
+def _missing_foreground_reply_text(action) -> str:
+    if getattr(action, "kind", "") in {"create_ticket", "update_ticket", "dispatch_ticket"}:
+        return (
+            "I handled that Relay voice turn, but the provider did not send a spoken final reply. "
+            "Check the terminal for the current details; worker updates will still be announced."
+        )
+    return (
+        "I handled that Relay voice turn, but the provider did not send a spoken final reply. "
+        "Check the terminal for the full result."
+    )
+
+
+def _schedule_foreground_reply_fallback(
+    *,
+    relay_command: dict,
+    action,
+    tts_worker: TTSWorker,
+    messenger: MessengerRuntime | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    delay_seconds: float | None = None,
+) -> threading.Thread | None:
+    key = _relay_command_key(relay_command)
+    if key is None:
+        return None
+    delay = FOREGROUND_REPLY_FALLBACK_SECONDS if delay_seconds is None else delay_seconds
+    if delay < 0:
+        return None
+
+    def _run() -> None:
+        if delay > 0:
+            time.sleep(delay)
+        if _foreground_reply_delivered(relay_command):
+            return
+        if not _relay_command_current(key[0], key[1], state_path=state_path):
+            return
+        payload = {
+            "text": _missing_foreground_reply_text(action),
+            "relay_command_seq": key[0],
+            "relay_command_id": key[1],
+        }
+        delivered = False
+        if messenger is not None:
+            delivered = messenger.submit_final(payload)
+        if not delivered:
+            delivered = _queue_tts_text(
+                json.dumps(payload),
+                tts_worker.input_queue,
+                state_path=state_path,
+                allow_pending_command=True,
+            )
+        if delivered:
+            _mark_foreground_reply_delivered(relay_command)
+
+    thread = threading.Thread(
+        target=_run,
+        name="foreground-reply-fallback",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def _handle_orchestrator_reply_control(
     raw: str,
     *,
@@ -1381,21 +1570,27 @@ def _handle_orchestrator_reply_control(
     command = nested if isinstance(nested, dict) else data
     if not command.get("relay_command_id"):
         command = _read_json_file(VOICE_COMMAND_CLAIM_FILE)
+    if _foreground_reply_delivered(command):
+        return True
     payload = {"text": reply}
     for key in ("relay_command_seq", "relay_command_id"):
         if key in command:
             payload[key] = command[key]
 
     if messenger is not None and messenger.submit_final(payload):
+        _mark_foreground_reply_delivered(command)
         return True
 
     # A missing or out-of-sync messenger must not swallow a current outcome.
     # _queue_tts_text still rejects stale command metadata.
-    return _queue_tts_text(
+    delivered = _queue_tts_text(
         json.dumps(payload),
         tts_worker.input_queue,
         state_path=state_path,
     )
+    if delivered:
+        _mark_foreground_reply_delivered(command)
+    return delivered
 
 
 def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
@@ -1533,6 +1728,12 @@ def _run_relay(
                     format_command_for_agent(action),
                     _metadata_for_action(action, relay_command),
                 )
+                _schedule_foreground_reply_fallback(
+                    relay_command=relay_command,
+                    action=action,
+                    tts_worker=tts_worker,
+                    messenger=messenger,
+                )
                 print(
                     f"[voice_bridge] Voice command ready: {action.outcome}",
                     file=sys.stderr,
@@ -1611,6 +1812,11 @@ def main():
         )
         if messenger is not None:
             messenger.start()
+        _start_messenger_outcome_polling(
+            orchestrator_session=orchestrator_session,
+            messenger=messenger,
+            shutdown_event=shutdown_event,
+        )
         try:
             _run_relay(
                 tts_worker,

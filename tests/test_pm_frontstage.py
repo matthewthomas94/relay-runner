@@ -128,6 +128,19 @@ class PMFrontstageTests(unittest.TestCase):
         self.assertEqual(event.source, "review-worker")
         self.assertEqual(event.message, "Reviewing RR-9 run 12")
 
+    def test_canceled_run_trace_is_public_outcome(self):
+        command = RelayCommandMetadata.from_dict(relay_command(12, "cmd-12"))
+        event = OrchestrationTraceEvent(
+            kind="run-canceled",
+            source="worker",
+            command=command,
+            ticket_id="RR-9",
+            run_id=12,
+        )
+
+        self.assertEqual(event.message, "RR-9 run 12 canceled")
+        self.assertEqual(event.to_status_event_dict()["phase"], "outcome")
+
     def test_orchestration_trace_rejects_commands_and_private_details(self):
         command = RelayCommandMetadata.from_dict(relay_command(10, "cmd-10"))
 

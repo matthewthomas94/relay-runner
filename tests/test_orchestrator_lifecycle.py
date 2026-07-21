@@ -24,7 +24,7 @@ sys.modules.setdefault(
 
 import orchestrator  # noqa: E402
 import voice_bridge  # noqa: E402
-from orchestrator import Daemon, OrchestratorCommandStore, OrchestratorSessionStore  # noqa: E402
+from orchestrator import Daemon, MessengerOutcomeStore, OrchestratorCommandStore, OrchestratorSessionStore  # noqa: E402
 from tickets import read as read_ticket  # noqa: E402
 
 
@@ -97,6 +97,112 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             states_by_id = {session["id"]: session["state"] for session in sessions}
             self.assertEqual(states_by_id[first["id"]], "stopped")
             self.assertEqual(states_by_id[second["id"]], "stale")
+
+    def test_messenger_outcome_store_dedupes_and_marks_delivery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessengerOutcomeStore(Path(tmp) / "outcomes.db")
+            payload = {
+                "text": "RR-7 run 12 awaiting review",
+                "trace_event": {
+                    "kind": "run-review-needed",
+                    "message": "RR-7 run 12 awaiting review",
+                    "source": "worker",
+                    "ticket_id": "RR-7",
+                    "run_id": 12,
+                },
+            }
+
+            first = store.record(repo_path=tmp, provider_key="codex", payload=payload)
+            second = store.record(repo_path=tmp, provider_key="codex", payload=payload)
+            pending = store.pending(repo_path=tmp, provider_key="codex")
+
+            self.assertEqual(first["id"], second["id"])
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["payload"]["trace_event"]["kind"], "run-review-needed")
+
+            delivered = store.mark_delivered(first["id"])
+
+            self.assertIsNotNone(delivered["delivered_at"])
+            self.assertEqual(store.pending(repo_path=tmp, provider_key="codex"), [])
+
+    def test_messenger_outcome_store_keeps_latest_bounded_pending_outcomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessengerOutcomeStore(Path(tmp) / "outcomes.db", max_pending_per_repo=2)
+            for run_id in (1, 2, 3):
+                store.record(
+                    repo_path=tmp,
+                    provider_key="claude",
+                    payload={
+                        "text": f"RR-{run_id} run {run_id} failed",
+                        "trace_event": {
+                            "kind": "run-failed",
+                            "message": f"RR-{run_id} run {run_id} failed",
+                            "source": "worker",
+                            "ticket_id": f"RR-{run_id}",
+                            "run_id": run_id,
+                        },
+                    },
+                )
+
+            pending = store.pending(repo_path=tmp, provider_key="claude")
+
+            self.assertEqual([row["run_id"] for row in pending], [2, 3])
+
+    def test_messenger_outcome_pending_delivery_is_project_scoped_across_providers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessengerOutcomeStore(Path(tmp) / "outcomes.db")
+            store.record(
+                repo_path=tmp,
+                provider_key="codex",
+                payload={
+                    "text": "RR-7 run 12 merged",
+                    "trace_event": {
+                        "kind": "run-merged",
+                        "message": "RR-7 run 12 merged",
+                        "source": "orchestrator",
+                        "ticket_id": "RR-7",
+                        "run_id": 12,
+                    },
+                },
+            )
+
+            pending = store.pending(repo_path=tmp, provider_key="claude")
+
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["kind"], "run-merged")
+
+    def test_daemon_lifecycle_emit_updates_state_and_queues_messenger_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            daemon = self.make_daemon(root, provider="codex")
+            notifications: list[tuple[str, dict]] = []
+
+            with patch("orchestrator._notify_state", lambda state, **payload: notifications.append((state, payload))):
+                daemon._emit_lifecycle(
+                    "run-review-needed",
+                    ticket_id="RR-7",
+                    run_id=12,
+                    source="worker",
+                    repo_path=str(repo),
+                    provider_key="codex",
+                )
+                daemon._emit_lifecycle(
+                    "run-review-needed",
+                    ticket_id="RR-7",
+                    run_id=12,
+                    source="worker",
+                    repo_path=str(repo),
+                    provider_key="codex",
+                )
+
+            pending = daemon.pending_messenger_outcomes(repo_path=str(repo), provider="codex")
+
+            self.assertEqual(notifications[0][0], "working")
+            self.assertEqual(notifications[0][1]["trace_event"]["kind"], "run-review-needed")
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["message"], "RR-7 run 12 awaiting review")
 
     def test_voice_bridge_registers_heartbeats_and_stops_lifecycle(self):
         requests: list[tuple[str, dict]] = []
@@ -504,6 +610,7 @@ class OrchestratorLifecycleTests(unittest.TestCase):
         daemon.runs = orchestrator.RunsStore(root / "runs.db")
         daemon.orchestrator_sessions = OrchestratorSessionStore(root / "sessions.db")
         daemon.orchestrator_commands = OrchestratorCommandStore(root / "commands.db")
+        daemon.messenger_outcomes = MessengerOutcomeStore(root / "messenger_outcomes.db")
         daemon._dispatch_lock = threading.Lock()
         daemon._ticket_authoring_lock = threading.Lock()
         daemon._orchestrator_action_request_ids = set()
