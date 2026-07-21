@@ -50,6 +50,13 @@ _CODEX_MODELS = frozenset({
 })
 _CLAUDE_MODELS = frozenset({"best", "fable", "opus", "sonnet", "haiku"})
 _BASE_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
+_UNSCOPED_LIFECYCLE_KINDS = frozenset({
+    "run-review-needed",
+    "run-failed",
+    "run-canceled",
+    "run-merged",
+    "run-succeeded",
+})
 
 
 MESSENGER_SYSTEM_PROMPT = """You are Relay Runner's persistent voice messenger.
@@ -738,8 +745,8 @@ class ClaudeMessengerBackend:
 class _MessengerEvent:
     kind: str
     text: str
-    command_seq: int
-    command_id: str
+    command_seq: int | None
+    command_id: str | None
     generation: int
     detail: str = ""
 
@@ -751,7 +758,7 @@ class MessengerRuntime:
         self,
         backend: MessengerBackend,
         *,
-        speak: Callable[[str, int, str], object],
+        speak: Callable[[str, int | None, str | None], object],
         is_current: Callable[[int, str], bool],
         context_limit: int = 16,
         response_timeout: float = 60.0,
@@ -766,6 +773,7 @@ class MessengerRuntime:
         self._generation = 0
         self._current_command: tuple[int, str] | None = None
         self._has_trace_for_current_command = False
+        self._final_commands: set[tuple[int, str]] = set()
         self._started = False
         self._shutdown = threading.Event()
         self._worker_thread: threading.Thread | None = None
@@ -826,18 +834,22 @@ class MessengerRuntime:
         if not message:
             return False
         with self._lock:
-            command_key = command_key or self._current_command
-            if command_key is None or command_key != self._current_command:
-                return False
-            self._has_trace_for_current_command = True
-            generation = self._generation
-            self._context.append(f"ORCHESTRATOR UPDATE ({kind}): {message}")
+            if command_key is None and kind in _UNSCOPED_LIFECYCLE_KINDS:
+                generation = self._generation
+                self._context.append(f"WORKER LIFECYCLE ({kind}): {message}")
+            else:
+                command_key = command_key or self._current_command
+                if command_key is None or command_key != self._current_command:
+                    return False
+                self._has_trace_for_current_command = True
+                generation = self._generation
+                self._context.append(f"ORCHESTRATOR UPDATE ({kind}): {message}")
         self._events.put(_MessengerEvent(
             kind="orchestrator_trace",
             text=message,
             detail=kind,
-            command_seq=command_key[0],
-            command_id=command_key[1],
+            command_seq=command_key[0] if command_key is not None else None,
+            command_id=command_key[1] if command_key is not None else None,
             generation=generation,
         ))
         return True
@@ -854,6 +866,12 @@ class MessengerRuntime:
             command_key = command_key or self._current_command
             if command_key is None or command_key != self._current_command:
                 return False
+            if command_key in self._final_commands:
+                return True
+            self._final_commands.add(command_key)
+            if len(self._final_commands) > 100:
+                for old in list(self._final_commands)[:50]:
+                    self._final_commands.discard(old)
             generation = self._generation
             self._context.append(f"AUTHORITATIVE ORCHESTRATOR FINAL: {text}")
         self._events.put(_MessengerEvent(
@@ -906,13 +924,16 @@ class MessengerRuntime:
                 response = self.backend.ask(prompt, timeout=self._response_timeout).strip()
             except Exception as exc:
                 print(f"[messenger] response failed: {exc}", file=sys.stderr)
-                if event.kind == "orchestrator_final" and self._event_is_current(event):
+                if (
+                    (event.kind == "orchestrator_final" or self._event_is_unscoped_lifecycle(event))
+                    and self._event_is_current(event)
+                ):
                     self._speak_safely(event.text, event.command_seq, event.command_id)
                 continue
             if not self._event_is_current(event):
                 continue
             if not response or response == SILENT_RESPONSE:
-                if event.kind == "orchestrator_final":
+                if event.kind == "orchestrator_final" or self._event_is_unscoped_lifecycle(event):
                     self._speak_safely(event.text, event.command_seq, event.command_id)
                 continue
             with self._lock:
@@ -920,12 +941,22 @@ class MessengerRuntime:
             self._speak_safely(response, event.command_seq, event.command_id)
 
     def _event_is_current(self, event: _MessengerEvent) -> bool:
+        if event.command_seq is None or event.command_id is None:
+            return True
         with self._lock:
             current = (
                 event.generation == self._generation
                 and self._current_command == (event.command_seq, event.command_id)
             )
         return current and self._is_current(event.command_seq, event.command_id)
+
+    @staticmethod
+    def _event_is_unscoped_lifecycle(event: _MessengerEvent) -> bool:
+        return (
+            event.kind == "orchestrator_trace"
+            and event.detail in _UNSCOPED_LIFECYCLE_KINDS
+            and (event.command_seq is None or event.command_id is None)
+        )
 
     def _prompt_for(self, event: _MessengerEvent) -> str:
         with self._lock:
@@ -944,8 +975,10 @@ class MessengerRuntime:
                 "claim that a ticket, worker, or implementation already exists."
             ),
             "orchestrator_trace": (
-                "This is a provider-visible public progress summary from the orchestrator. Use it "
-                "with the user turn to decide whether a brief spoken update is useful."
+                "This is a provider-visible public progress summary or worker lifecycle event. "
+                "Use it with the session context to decide whether a brief spoken update is useful. "
+                "Preserve the event's state semantics: awaiting review is not done, failure needs "
+                "attention, and merged is complete."
             ),
             "orchestrator_final": (
                 "This is the authoritative orchestrator reply. Convey its outcome naturally and "
@@ -966,16 +999,24 @@ class MessengerRuntime:
         )
 
     def _discard_pending_events_locked(self) -> None:
+        preserved: list[_MessengerEvent] = []
+        saw_shutdown = False
         while True:
             try:
                 queued = self._events.get_nowait()
             except queue.Empty:
-                return
+                break
             if queued is None:
-                self._events.put(None)
-                return
+                saw_shutdown = True
+                break
+            if queued.command_seq is None or queued.command_id is None:
+                preserved.append(queued)
+        for event in preserved:
+            self._events.put(event)
+        if saw_shutdown:
+            self._events.put(None)
 
-    def _speak_safely(self, text: str, command_seq: int, command_id: str) -> None:
+    def _speak_safely(self, text: str, command_seq: int | None, command_id: str | None) -> None:
         try:
             self._speak(text, command_seq, command_id)
         except Exception as exc:
@@ -996,7 +1037,7 @@ def _command_key(command: dict | None) -> tuple[int, str] | None:
 def create_messenger_runtime(
     app_config: dict,
     *,
-    speak: Callable[[str, int, str], object],
+    speak: Callable[[str, int | None, str | None], object],
     is_current: Callable[[int, str], bool],
     cwd: str | os.PathLike[str] | None = None,
 ) -> MessengerRuntime | None:

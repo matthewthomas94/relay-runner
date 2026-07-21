@@ -327,6 +327,108 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_unscoped_worker_lifecycle_trace_speaks_without_command_metadata(self):
+        backend = FakeBackend(["RR-7 is awaiting review; it is not merged yet."])
+        spoken: list[tuple[str, int | None, str | None]] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append((text, seq, command_id)),
+            is_current=lambda seq, command_id: False,
+        )
+        runtime.start()
+        try:
+            accepted = runtime.submit_trace({
+                "kind": "run-review-needed",
+                "message": "RR-7 run 12 awaiting review",
+                "source": "worker",
+                "ticket_id": "RR-7",
+                "run_id": 12,
+            })
+
+            self.assertTrue(accepted)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            self.assertEqual(spoken[0], ("RR-7 is awaiting review; it is not merged yet.", None, None))
+            self.assertIn("WORKER LIFECYCLE (run-review-needed)", backend.prompts[0])
+            self.assertIn("awaiting review is not done", backend.prompts[0])
+        finally:
+            runtime.shutdown()
+
+    def test_silent_unscoped_worker_lifecycle_falls_back_to_event_text(self):
+        backend = FakeBackend(["__SILENT__"])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: False,
+        )
+        runtime.start()
+        try:
+            runtime.submit_trace({
+                "kind": "run-merged",
+                "message": "RR-7 run 12 merged",
+                "source": "orchestrator",
+                "ticket_id": "RR-7",
+                "run_id": 12,
+            })
+
+            self.assertTrue(wait_until(lambda: spoken == ["RR-7 run 12 merged"]))
+        finally:
+            runtime.shutdown()
+
+    def test_unscoped_worker_lifecycle_trace_survives_new_user_turn_queue_cleanup(self):
+        backend = FakeBackend([
+            "RR-8 failed and needs attention.",
+            "I picked up the next request.",
+        ])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        try:
+            self.assertTrue(runtime.submit_trace({
+                "kind": "run-failed",
+                "message": "RR-8 run 13 failed",
+                "source": "worker",
+                "ticket_id": "RR-8",
+                "run_id": 13,
+            }))
+            self.assertTrue(runtime.submit_user(
+                "What happened next?",
+                {"relay_command_seq": 9, "relay_command_id": "cmd-9"},
+            ))
+            runtime.start()
+
+            self.assertTrue(wait_until(lambda: spoken == [
+                "RR-8 failed and needs attention.",
+                "I picked up the next request.",
+            ]))
+        finally:
+            runtime.shutdown()
+
+    def test_duplicate_final_for_same_command_speaks_once(self):
+        backend = FakeBackend(["__SILENT__", "The work is done."])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 15, "relay_command_id": "cmd-15"}
+            runtime.submit_user("Finish the task", command)
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+
+            self.assertTrue(runtime.submit_final({"text": "Finished.", **command}))
+            self.assertTrue(runtime.submit_final({"text": "Finished again.", **command}))
+
+            self.assertTrue(wait_until(lambda: spoken == ["The work is done."]))
+            self.assertEqual(len(backend.prompts), 2)
+        finally:
+            runtime.shutdown()
+
     def test_silent_final_falls_back_to_authoritative_text(self):
         backend = FakeBackend(["__SILENT__", "__SILENT__"])
         spoken: list[str] = []

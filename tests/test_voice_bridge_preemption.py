@@ -79,6 +79,12 @@ class RejectingMessenger(FakeMessenger):
         return False
 
 
+class RejectingTraceMessenger(FakeMessenger):
+    def submit_trace(self, trace: dict) -> bool:
+        self.traces.append(trace)
+        return False
+
+
 class VoiceBridgePreemptionTests(unittest.TestCase):
     def test_newer_command_suppresses_stale_tts_after_first_claimed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -607,6 +613,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
     def test_orchestrator_reply_control_is_routed_to_messenger(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
             state_path = os.path.join(temp_dir, "voice_command_state.json")
             command = voice_bridge._begin_relay_command(
                 "what changed",
@@ -635,6 +642,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
     def test_current_orchestrator_reply_falls_back_when_messenger_rejects_it(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
             state_path = os.path.join(temp_dir, "voice_command_state.json")
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
             command = voice_bridge._begin_relay_command(
@@ -656,6 +664,162 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertTrue(handled)
             self.assertEqual(worker.input_queue.get_nowait(), "The authoritative result.")
             self.assertFalse(os.path.exists(command_path))
+
+    def test_duplicate_orchestrator_reply_control_is_spoken_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "what changed",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+            payload = json.dumps({"text": "The authoritative result.", **command})
+
+            first = voice_bridge._handle_orchestrator_reply_control(
+                payload,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+            )
+            second = voice_bridge._handle_orchestrator_reply_control(
+                payload,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+            )
+
+            self.assertTrue(first)
+            self.assertTrue(second)
+            self.assertEqual(len(messenger.finals), 1)
+            self.assertTrue(worker.input_queue.empty())
+
+    def test_missing_foreground_reply_fallback_reports_current_claim_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            action = voice_bridge.resolve_command_action(
+                "dispatch RR-7",
+                repo_path=temp_dir,
+                relay_command=command,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            thread = voice_bridge._schedule_foreground_reply_fallback(
+                relay_command=command,
+                action=action,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+                delay_seconds=0,
+            )
+            thread.join(timeout=1)
+
+            self.assertEqual(len(messenger.finals), 1)
+            self.assertIn("did not send a spoken final reply", messenger.finals[0]["text"])
+            self.assertEqual(messenger.finals[0]["relay_command_id"], command["relay_command_id"])
+            self.assertTrue(worker.input_queue.empty())
+
+    def test_missing_foreground_reply_fallback_skips_after_explicit_reply(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "what changed",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            action = voice_bridge.resolve_command_action(
+                "what changed",
+                repo_path=temp_dir,
+                relay_command=command,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+            payload = json.dumps({"text": "The authoritative result.", **command})
+
+            voice_bridge._handle_orchestrator_reply_control(
+                payload,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+            )
+            thread = voice_bridge._schedule_foreground_reply_fallback(
+                relay_command=command,
+                action=action,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+                delay_seconds=0,
+            )
+            thread.join(timeout=1)
+
+            self.assertEqual(messenger.finals, [{
+                "text": "The authoritative result.",
+                "relay_command_seq": command["relay_command_seq"],
+                "relay_command_id": command["relay_command_id"],
+            }])
+
+    def test_pending_messenger_outcome_poll_delivers_and_acks_trace(self):
+        messenger = FakeMessenger()
+        requests: list[tuple[str, dict]] = []
+        outcome = {
+            "id": 4,
+            "payload": {
+                "trace_event": {
+                    "kind": "run-review-needed",
+                    "message": "RR-7 run 12 awaiting review",
+                    "source": "worker",
+                    "ticket_id": "RR-7",
+                    "run_id": 12,
+                }
+            },
+        }
+
+        delivered = voice_bridge._deliver_pending_messenger_outcomes_once(
+            orchestrator_session={"repo_path": "/tmp/repo", "provider": "codex"},
+            messenger=messenger,
+            request_get_json=lambda path, params: {"outcomes": [outcome]},
+            request_json=lambda path, payload: requests.append((path, payload)) or {},
+        )
+
+        self.assertEqual(delivered, 1)
+        self.assertEqual(messenger.traces, [outcome["payload"]["trace_event"]])
+        self.assertEqual(requests, [("/v1/messenger/outcomes/4/delivered", {})])
+
+    def test_pending_messenger_outcome_rejection_is_not_marked_delivered(self):
+        messenger = RejectingTraceMessenger()
+        requests: list[tuple[str, dict]] = []
+        outcome = {
+            "id": 5,
+            "payload": {
+                "trace_event": {
+                    "kind": "run-failed",
+                    "message": "RR-8 run 13 failed",
+                    "source": "worker",
+                    "ticket_id": "RR-8",
+                    "run_id": 13,
+                }
+            },
+        }
+
+        delivered = voice_bridge._deliver_pending_messenger_outcomes_once(
+            orchestrator_session={"repo_path": "/tmp/repo", "provider": "claude"},
+            messenger=messenger,
+            request_get_json=lambda path, params: {"outcomes": [outcome]},
+            request_json=lambda path, payload: requests.append((path, payload)) or {},
+        )
+
+        self.assertEqual(delivered, 0)
+        self.assertEqual(requests, [("/v1/messenger/outcomes/5/attempt", {})])
 
     def test_orchestration_trace_drops_after_command_superseded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
