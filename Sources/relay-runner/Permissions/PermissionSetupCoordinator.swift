@@ -375,12 +375,12 @@ struct PermissionCompanionInteractionModel: Equatable {
 
     mutating func beginRealDrag() {
         dragActive = true
-        hoverActive = false
         isPaused = true
         pendingTimerID = nil
     }
 
     mutating func endRealDrag() -> Int? {
+        guard dragActive else { return nil }
         dragActive = false
         guard !hoverActive else { return nil }
         isPaused = true
@@ -827,12 +827,19 @@ struct PermissionCompanionFallbackPlan: Equatable {
                      bundleURL: URL?,
                      expectedBundleIdentifier: String = PermissionCompanionAppBundleIdentity.relayRunnerBundleIdentifier,
                      bundleIdentity: (URL) -> PermissionCompanionAppBundleIdentity? = PermissionCompanionAppBundleIdentity.read,
-                     fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> PermissionCompanionFallbackPlan {
+                     fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+                     isExecutableFile: (String) -> Bool = { path in
+                         var isDirectory: ObjCBool = false
+                         return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                             && !isDirectory.boolValue
+                             && FileManager.default.isExecutableFile(atPath: path)
+                     }) -> PermissionCompanionFallbackPlan {
         let payloadURL = validApplicationBundleURL(
             bundleURL,
             expectedBundleIdentifier: expectedBundleIdentifier,
             bundleIdentity: bundleIdentity,
-            fileExists: fileExists
+            fileExists: fileExists,
+            isExecutableFile: isExecutableFile
         )
         let revealURL: URL
         if let payloadURL {
@@ -854,7 +861,8 @@ struct PermissionCompanionFallbackPlan: Equatable {
     private static func validApplicationBundleURL(_ bundleURL: URL?,
                                                   expectedBundleIdentifier: String,
                                                   bundleIdentity: (URL) -> PermissionCompanionAppBundleIdentity?,
-                                                  fileExists: (String) -> Bool) -> URL? {
+                                                  fileExists: (String) -> Bool,
+                                                  isExecutableFile: (String) -> Bool) -> URL? {
         guard let bundleURL else { return nil }
         let resolved = bundleURL.standardizedFileURL.resolvingSymlinksInPath()
         guard resolved.isFileURL,
@@ -869,7 +877,7 @@ struct PermissionCompanionFallbackPlan: Equatable {
               let executableURL = identity.executableURL?.standardizedFileURL.resolvingSymlinksInPath(),
               executableURL.lastPathComponent == PermissionCompanionAppBundleIdentity.relayRunnerExecutableName,
               executableURL.path.hasPrefix(resolved.appendingPathComponent("Contents/MacOS", isDirectory: true).path + "/"),
-              fileExists(executableURL.path) else {
+              isExecutableFile(executableURL.path) else {
             return nil
         }
         return resolved

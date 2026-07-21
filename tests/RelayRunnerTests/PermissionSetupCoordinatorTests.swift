@@ -49,6 +49,51 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertFalse(model.hoverActive)
     }
 
+    func testInteractionDragEndingWhileStillHoveringWaitsForExitBeforeResume() {
+        var model = PermissionCompanionInteractionModel()
+
+        XCTAssertTrue(model.beginHover())
+        model.beginRealDrag()
+
+        XCTAssertTrue(model.isPaused)
+        XCTAssertTrue(model.hoverActive)
+        XCTAssertNil(model.pendingTimerID)
+        XCTAssertNil(model.endRealDrag())
+        XCTAssertTrue(model.isPaused)
+        XCTAssertTrue(model.hoverActive)
+        XCTAssertNil(model.pendingTimerID)
+
+        let resume = model.endHover()
+
+        XCTAssertNotNil(resume)
+        XCTAssertEqual(model.pendingTimerID, resume)
+        XCTAssertNil(model.endHover())
+        model.fireIdleTimer(resume!)
+        XCTAssertFalse(model.isPaused)
+        XCTAssertFalse(model.hoverActive)
+    }
+
+    func testInteractionDragEndingAfterHoverExitSchedulesOneResume() {
+        var model = PermissionCompanionInteractionModel()
+
+        XCTAssertTrue(model.beginHover())
+        model.beginRealDrag()
+
+        XCTAssertNil(model.endHover())
+        XCTAssertTrue(model.isPaused)
+        XCTAssertFalse(model.hoverActive)
+        XCTAssertNil(model.pendingTimerID)
+
+        let resume = model.endRealDrag()
+
+        XCTAssertNotNil(resume)
+        XCTAssertEqual(model.pendingTimerID, resume)
+        XCTAssertNil(model.endRealDrag())
+        XCTAssertEqual(model.pendingTimerID, resume)
+        model.fireIdleTimer(resume!)
+        XCTAssertFalse(model.isPaused)
+    }
+
     func testDemoClockAccumulatesDisplayLinkElapsedAndFreezesWhilePaused() {
         var clock = PermissionCompanionDemoClock()
 
@@ -237,7 +282,8 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
             purpose: "screenshot",
             bundleURL: URL(fileURLWithPath: "/Applications/Relay Runner.app"),
             bundleIdentity: { Self.relayIdentity(for: $0) },
-            fileExists: Self.relayBundleFileExists
+            fileExists: Self.relayBundleFileExists,
+            isExecutableFile: Self.relayBundleIsExecutable
         )
 
         XCTAssertFalse(missing.payloadEnabled)
@@ -255,7 +301,8 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
             purpose: "Hotkeys",
             bundleURL: customInstall,
             bundleIdentity: { Self.relayIdentity(for: $0) },
-            fileExists: Self.relayBundleFileExists
+            fileExists: Self.relayBundleFileExists,
+            isExecutableFile: Self.relayBundleIsExecutable
         )
 
         XCTAssertTrue(plan.payloadEnabled)
@@ -266,7 +313,10 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
     func testFallbackPlanRejectsInvalidRelayRunnerBundlePayloads() {
         let developmentCopy = URL(fileURLWithPath: "/Users/example/Downloads/Relay Runner.app", isDirectory: true)
         let otherApp = URL(fileURLWithPath: "/Applications/Other.app", isDirectory: true)
-        let wrongExecutable = URL(fileURLWithPath: "/Users/example/Applications/Relay Runner.app", isDirectory: true)
+        let wrongBundleIdentifier = URL(fileURLWithPath: "/Users/example/WrongIdentifier/Relay Runner.app", isDirectory: true)
+        let wrongExecutableName = URL(fileURLWithPath: "/Users/example/WrongExecutable/Relay Runner.app", isDirectory: true)
+        let executableOutsideBundle = URL(fileURLWithPath: "/Users/example/OutsideExecutable/Relay Runner.app", isDirectory: true)
+        let nonExecutable = URL(fileURLWithPath: "/Users/example/NonExecutable/Relay Runner.app", isDirectory: true)
 
         let missingIdentity = PermissionCompanionFallbackPlan.make(
             permission: .inputMonitoring,
@@ -280,10 +330,24 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
             bundleURL: otherApp,
             fileExists: { _ in true }
         )
+        let wrongBundleIdentifierPlan = PermissionCompanionFallbackPlan.make(
+            permission: .inputMonitoring,
+            purpose: "Hotkeys",
+            bundleURL: wrongBundleIdentifier,
+            bundleIdentity: {
+                PermissionCompanionAppBundleIdentity(
+                    bundleIdentifier: "com.example.Other",
+                    executableName: PermissionCompanionAppBundleIdentity.relayRunnerExecutableName,
+                    executableURL: $0.appendingPathComponent("Contents/MacOS/relay-runner")
+                )
+            },
+            fileExists: Self.relayBundleFileExists,
+            isExecutableFile: Self.relayBundleIsExecutable
+        )
         let wrongExecutablePlan = PermissionCompanionFallbackPlan.make(
             permission: .inputMonitoring,
             purpose: "Hotkeys",
-            bundleURL: wrongExecutable,
+            bundleURL: wrongExecutableName,
             bundleIdentity: {
                 PermissionCompanionAppBundleIdentity(
                     bundleIdentifier: PermissionCompanionAppBundleIdentity.relayRunnerBundleIdentifier,
@@ -293,14 +357,44 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
             },
             fileExists: { _ in true }
         )
+        let outsideExecutablePlan = PermissionCompanionFallbackPlan.make(
+            permission: .inputMonitoring,
+            purpose: "Hotkeys",
+            bundleURL: executableOutsideBundle,
+            bundleIdentity: { _ in
+                PermissionCompanionAppBundleIdentity(
+                    bundleIdentifier: PermissionCompanionAppBundleIdentity.relayRunnerBundleIdentifier,
+                    executableName: PermissionCompanionAppBundleIdentity.relayRunnerExecutableName,
+                    executableURL: URL(fileURLWithPath: "/tmp/relay-runner")
+                )
+            },
+            fileExists: { path in
+                path == executableOutsideBundle.path || path == "/tmp/relay-runner"
+            },
+            isExecutableFile: { $0 == "/tmp/relay-runner" }
+        )
+        let nonExecutablePlan = PermissionCompanionFallbackPlan.make(
+            permission: .inputMonitoring,
+            purpose: "Hotkeys",
+            bundleURL: nonExecutable,
+            bundleIdentity: { Self.relayIdentity(for: $0) },
+            fileExists: Self.relayBundleFileExists,
+            isExecutableFile: { _ in false }
+        )
 
         XCTAssertFalse(missingIdentity.payloadEnabled)
         XCTAssertNil(missingIdentity.payloadURL)
         XCTAssertEqual(missingIdentity.revealURL.path, developmentCopy.path)
         XCTAssertFalse(wrongBundle.payloadEnabled)
         XCTAssertNil(wrongBundle.payloadURL)
+        XCTAssertFalse(wrongBundleIdentifierPlan.payloadEnabled)
+        XCTAssertNil(wrongBundleIdentifierPlan.payloadURL)
         XCTAssertFalse(wrongExecutablePlan.payloadEnabled)
         XCTAssertNil(wrongExecutablePlan.payloadURL)
+        XCTAssertFalse(outsideExecutablePlan.payloadEnabled)
+        XCTAssertNil(outsideExecutablePlan.payloadURL)
+        XCTAssertFalse(nonExecutablePlan.payloadEnabled)
+        XCTAssertNil(nonExecutablePlan.payloadURL)
     }
 
     func testFallbackPlanDefaultsAccessibilityPurposeToRelayActions() {
@@ -507,6 +601,57 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(hoverStates, [true, false])
         XCTAssertEqual(interactionCount, 0)
+    }
+
+    func testAppFileDragCallbacksKeepDemoPausedWhenDragEndsOverHoveringIcon() {
+        let (view, panel) = Self.appDragViewInPanel()
+        defer { panel.close() }
+
+        let harness = PermissionCompanionInteractionHarness()
+        harness.bind(to: view)
+
+        Self.startDrag(from: view, in: panel, firstEventNumber: 23)
+        view.onDragStateChanged(false)
+
+        XCTAssertTrue(harness.model.isPaused)
+        XCTAssertTrue(harness.model.hoverActive)
+        XCTAssertTrue(harness.resumeTimers.isEmpty)
+
+        view.mouseExited(with: Self.mouseEvent(
+            .mouseMoved,
+            location: CGPoint(x: 120, y: 120),
+            windowNumber: panel.windowNumber,
+            eventNumber: 26
+        ))
+
+        XCTAssertEqual(harness.resumeTimers.count, 1)
+        XCTAssertEqual(harness.model.pendingTimerID, harness.resumeTimers.first)
+    }
+
+    func testAppFileDragCallbacksScheduleOneResumeWhenPointerExitsDuringDrag() {
+        let (view, panel) = Self.appDragViewInPanel()
+        defer { panel.close() }
+
+        let harness = PermissionCompanionInteractionHarness()
+        harness.bind(to: view)
+
+        Self.startDrag(from: view, in: panel, firstEventNumber: 27)
+        view.mouseExited(with: Self.mouseEvent(
+            .mouseMoved,
+            location: CGPoint(x: 120, y: 120),
+            windowNumber: panel.windowNumber,
+            eventNumber: 30
+        ))
+
+        XCTAssertTrue(harness.model.isPaused)
+        XCTAssertFalse(harness.model.hoverActive)
+        XCTAssertTrue(harness.resumeTimers.isEmpty)
+
+        view.onDragStateChanged(false)
+        view.onDragStateChanged(false)
+
+        XCTAssertEqual(harness.resumeTimers.count, 1)
+        XCTAssertEqual(harness.model.pendingTimerID, harness.resumeTimers.first)
     }
 
     func testAppFileDragSurvivesViewUpdateBetweenMouseDownAndThreshold() {
@@ -764,6 +909,50 @@ private extension PermissionSetupCoordinatorTests {
         path.hasSuffix("Relay Runner.app") || path.hasSuffix("Relay Runner.app/Contents/MacOS/relay-runner")
     }
 
+    static func relayBundleIsExecutable(_ path: String) -> Bool {
+        path.hasSuffix("Relay Runner.app/Contents/MacOS/relay-runner")
+    }
+
+    static func appDragViewInPanel() -> (view: AppFileDragView, panel: NSPanel) {
+        let view = AppFileDragView()
+        view.frame = CGRect(x: 0, y: 0, width: 90, height: 90)
+        view.bundleURL = URL(fileURLWithPath: "/Applications/Relay Runner.app", isDirectory: true)
+        view.image = NSImage(size: CGSize(width: 90, height: 90))
+        view.draggingEnabled = true
+        view.preventWindowOrderingHandler = {}
+        view.beginDraggingSessionHandler = { _, _ in }
+
+        let panel = NSPanel(
+            contentRect: view.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentView = view
+        return (view, panel)
+    }
+
+    static func startDrag(from view: AppFileDragView, in panel: NSPanel, firstEventNumber: Int) {
+        view.mouseEntered(with: mouseEvent(
+            .mouseMoved,
+            location: CGPoint(x: 12, y: 12),
+            windowNumber: panel.windowNumber,
+            eventNumber: firstEventNumber
+        ))
+        view.mouseDown(with: mouseEvent(
+            .leftMouseDown,
+            location: CGPoint(x: 12, y: 12),
+            windowNumber: panel.windowNumber,
+            eventNumber: firstEventNumber + 1
+        ))
+        view.mouseDragged(with: mouseEvent(
+            .leftMouseDragged,
+            location: CGPoint(x: 28, y: 27),
+            windowNumber: panel.windowNumber,
+            eventNumber: firstEventNumber + 2
+        ))
+    }
+
     static func hostedDragIcon(bundleURL: URL) -> AnyView {
         AnyView(
             DraggableAppIconView(
@@ -802,6 +991,28 @@ private extension PermissionSetupCoordinatorTests {
             clickCount: 1,
             pressure: type == .leftMouseDragged ? 0.5 : 1
         )!
+    }
+}
+
+private final class PermissionCompanionInteractionHarness {
+    private(set) var model = PermissionCompanionInteractionModel()
+    private(set) var resumeTimers: [Int] = []
+
+    func bind(to view: AppFileDragView) {
+        view.onHoverChanged = { [self] hovering in
+            if hovering {
+                _ = model.beginHover()
+            } else if let timerID = model.endHover() {
+                resumeTimers.append(timerID)
+            }
+        }
+        view.onDragStateChanged = { [self] active in
+            if active {
+                model.beginRealDrag()
+            } else if let timerID = model.endRealDrag() {
+                resumeTimers.append(timerID)
+            }
+        }
     }
 }
 
