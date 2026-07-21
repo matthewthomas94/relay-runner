@@ -302,8 +302,8 @@ final class PermissionSetupCoordinator {
 }
 
 struct PermissionCompanionDemoDisplayPolicy {
-    static func shouldRunDisplayLink(reduceMotion: Bool, isPaused: Bool) -> Bool {
-        !reduceMotion && !isPaused
+    static func shouldRunDisplayLink(reduceMotion: Bool, isPaused: Bool, isAttachedToWindow: Bool = true) -> Bool {
+        isAttachedToWindow && !reduceMotion && !isPaused
     }
 }
 
@@ -391,6 +391,41 @@ struct PermissionCompanionInteractionModel: Equatable {
         guard pendingTimerID == id, !dragActive else { return }
         pendingTimerID = nil
         isPaused = false
+    }
+}
+
+protocol PermissionCompanionDemoDisplayLinking: AnyObject {
+    func add(to runloop: RunLoop, forMode mode: RunLoop.Mode)
+    func invalidate()
+}
+
+extension CADisplayLink: PermissionCompanionDemoDisplayLinking {}
+
+protocol PermissionCompanionOverlayPanel: AnyObject {
+    var isVisible: Bool { get }
+    var windowNumber: Int { get }
+    var ignoresMouseEvents: Bool { get set }
+
+    func orderFrontRegardless()
+    func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int)
+}
+
+extension NSPanel: PermissionCompanionOverlayPanel {}
+
+struct PermissionCompanionPanelOrdering {
+    static func apply(interactivePanel: PermissionCompanionOverlayPanel,
+                      demoPanel: PermissionCompanionOverlayPanel,
+                      isRealDragActive: Bool) {
+        demoPanel.ignoresMouseEvents = true
+
+        if !interactivePanel.isVisible {
+            interactivePanel.orderFrontRegardless()
+        }
+        guard !isRealDragActive else { return }
+        if !demoPanel.isVisible {
+            demoPanel.orderFrontRegardless()
+        }
+        demoPanel.order(.above, relativeTo: interactivePanel.windowNumber)
     }
 }
 
@@ -1112,14 +1147,11 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         if demo.contentView !== view {
             demo.contentView = view
         }
-        if !demo.isVisible && !isRealDragActive {
-            demo.orderFrontRegardless()
-        }
-        if !panel.isVisible {
-            panel.orderFrontRegardless()
-        } else if demo.isVisible {
-            panel.order(.above, relativeTo: demo.windowNumber)
-        }
+        PermissionCompanionPanelOrdering.apply(
+            interactivePanel: panel,
+            demoPanel: demo,
+            isRealDragActive: isRealDragActive
+        )
         demoView = view
         demoPanel = demo
     }
@@ -1344,7 +1376,7 @@ enum PermissionCompanionCursorArtwork: Equatable {
     }
 }
 
-private final class PermissionCompanionDemoView: NSView {
+final class PermissionCompanionDemoView: NSView {
     var icon: NSImage?
     var iconCenter: CGPoint = .zero
     var targetCenter: CGPoint = .zero
@@ -1366,10 +1398,16 @@ private final class PermissionCompanionDemoView: NSView {
 
     private var clock = PermissionCompanionDemoClock()
     private let displayLinkTarget = PermissionCompanionDemoDisplayLinkTarget()
-    private var displayLink: CADisplayLink?
+    private var displayLink: PermissionCompanionDemoDisplayLinking?
+    private let displayLinkFactory: (PermissionCompanionDemoView, Any, Selector) -> PermissionCompanionDemoDisplayLinking
 
-    init(frame frameRect: NSRect, reduceMotion: Bool = false) {
+    init(frame frameRect: NSRect,
+         reduceMotion: Bool = false,
+         displayLinkFactory: ((PermissionCompanionDemoView, Any, Selector) -> PermissionCompanionDemoDisplayLinking)? = nil) {
         self.reduceMotion = reduceMotion
+        self.displayLinkFactory = displayLinkFactory ?? { view, target, selector in
+            view.displayLink(target: target, selector: selector)
+        }
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
@@ -1379,6 +1417,9 @@ private final class PermissionCompanionDemoView: NSView {
     }
 
     required init?(coder: NSCoder) {
+        self.displayLinkFactory = { view, target, selector in
+            view.displayLink(target: target, selector: selector)
+        }
         super.init(coder: coder)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
@@ -1397,7 +1438,23 @@ private final class PermissionCompanionDemoView: NSView {
     }
 
     fileprivate func displayLinkDidFire(_ link: CADisplayLink) {
-        clock.tick(timestamp: link.timestamp, isPaused: reduceMotion || isPaused)
+        displayLinkDidFire(timestamp: link.timestamp)
+    }
+
+    func simulateDisplayLinkTickForTesting(timestamp: TimeInterval) {
+        displayLinkDidFire(timestamp: timestamp)
+    }
+
+    var animationElapsedForTesting: TimeInterval {
+        clock.elapsed
+    }
+
+    var hasActiveDisplayLinkForTesting: Bool {
+        displayLink != nil
+    }
+
+    private func displayLinkDidFire(timestamp: TimeInterval) {
+        clock.tick(timestamp: timestamp, isPaused: reduceMotion || isPaused)
         needsDisplay = true
     }
 
@@ -1430,16 +1487,24 @@ private final class PermissionCompanionDemoView: NSView {
     }
 
     private func updateDisplayLink() {
-        displayLink?.invalidate()
-        displayLink = nil
-        guard PermissionCompanionDemoDisplayPolicy.shouldRunDisplayLink(
+        let shouldRun = PermissionCompanionDemoDisplayPolicy.shouldRunDisplayLink(
             reduceMotion: reduceMotion,
-            isPaused: isPaused
-        ) else {
+            isPaused: isPaused,
+            isAttachedToWindow: window != nil
+        )
+        guard shouldRun else {
+            displayLink?.invalidate()
+            displayLink = nil
             clock.freeze()
             return
         }
-        let link = displayLink(target: displayLinkTarget, selector: #selector(PermissionCompanionDemoDisplayLinkTarget.tick(_:)))
+
+        guard displayLink == nil else { return }
+        let link = displayLinkFactory(
+            self,
+            displayLinkTarget,
+            #selector(PermissionCompanionDemoDisplayLinkTarget.tick(_:))
+        )
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
