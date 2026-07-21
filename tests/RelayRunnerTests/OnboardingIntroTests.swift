@@ -42,6 +42,7 @@ final class OnboardingIntroTests: XCTestCase {
             permissions: PermissionsManager(),
             flagURLs: flagURLs,
             setOnboardingNotchOverrideActive: { notchOverrideStates.append($0) },
+            permissionStatus: { _ in .denied },
             makeIntroController: { intro },
             reduceMotion: { false }
         )
@@ -54,34 +55,195 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
     }
 
-    func testReduceMotionFreshAutomaticUsesEmbeddedSettingsPresentation() throws {
+    func testCinematicCompletionShowsFirstPermissionBeforeSettingsHandoff() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
-        let presentation = OnboardingPresentationState()
+        let intro = CapturingIntroPresenter()
         var notchOverrideStates: [Bool] = []
         var settingsOpenCount = 0
         let controller = OnboardingController(
             permissions: PermissionsManager(),
             flagURLs: flagURLs,
-            presentation: presentation,
             setOnboardingNotchOverrideActive: { notchOverrideStates.append($0) },
+            permissionStatus: { _ in .denied },
+            makeIntroController: { intro },
+            openSettingsHost: { settingsOpenCount += 1 },
+            reduceMotion: { false }
+        )
+
+        controller.showIfNeeded()
+        intro.completeCinematic()
+
+        XCTAssertEqual(intro.presentCallCount, 1)
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone])
+        XCTAssertEqual(settingsOpenCount, 0)
+        XCTAssertEqual(notchOverrideStates, [true])
+    }
+
+    func testReduceMotionFreshAutomaticUsesStaticIntroPermissionPresentation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let presentation = OnboardingPresentationState()
+        var settingsOpenCount = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            presentation: presentation,
+            permissionStatus: { _ in .denied },
+            makeIntroController: { intro },
             openSettingsHost: { settingsOpenCount += 1 },
             reduceMotion: { true }
         )
 
         controller.showIfNeeded()
 
+        XCTAssertEqual(intro.presentCallCount, 0)
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone])
+        XCTAssertFalse(presentation.isPresented)
+        XCTAssertEqual(settingsOpenCount, 0)
+    }
+
+    func testFreshPermissionSequenceRequestsThroughCoordinatorAndHandsOffAfterAllGrants() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let presentation = OnboardingPresentationState()
+        var statuses = Dictionary(
+            uniqueKeysWithValues: PermissionKind.guidedSetupOrder.map { ($0, PermissionStatus.denied) }
+        )
+        var events: [String] = []
+        intro.onDismiss = { events.append("dismiss") }
+        var settingsOpenCount = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            presentation: presentation,
+            requestPermissionSetup: { kind, source, _ in
+                events.append("request:\(kind.rawValue):\(source)")
+            },
+            permissionStatus: { statuses[$0] ?? .denied },
+            makeIntroController: { intro },
+            openSettingsHost: { settingsOpenCount += 1 },
+            reduceMotion: { false }
+        )
+
+        controller.showIfNeeded()
+        intro.completeCinematic()
+
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone])
+        intro.performPermissionAction()
+        XCTAssertEqual(events, ["request:microphone:onboarding"])
+
+        statuses[.microphone] = .granted
+        postGrant(.microphone)
+        drainMainQueue()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone, .accessibility])
+
+        intro.performPermissionAction()
+        XCTAssertEqual(Array(events.suffix(2)), ["dismiss", "request:accessibility:onboarding"])
+        statuses[.accessibility] = .granted
+        postGrant(.accessibility)
+        drainMainQueue()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone, .accessibility, .inputMonitoring])
+
+        intro.performPermissionAction()
+        statuses[.inputMonitoring] = .granted
+        postGrant(.inputMonitoring)
+        drainMainQueue()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [
+            .microphone,
+            .accessibility,
+            .inputMonitoring,
+            .screenRecording,
+        ])
+
+        intro.performPermissionAction()
+        statuses[.screenRecording] = .granted
+        postGrant(.screenRecording)
+        drainMainQueue()
+
         XCTAssertTrue(presentation.isPresented)
-        XCTAssertNotNil(presentation.rootView)
-        XCTAssertEqual(presentation.presentationSerial, 1)
         XCTAssertEqual(presentation.detail.title, "Coding Agent")
-        XCTAssertEqual(presentation.detail.subtitle, "Provider, model, effort, and workspace")
         XCTAssertEqual(settingsOpenCount, 1)
-        XCTAssertEqual(notchOverrideStates, [true])
+    }
+
+    func testFreshPermissionDenialReturnsToSameIntroPrompt() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var statuses = Dictionary(
+            uniqueKeysWithValues: PermissionKind.guidedSetupOrder.map { ($0, PermissionStatus.granted) }
+        )
+        statuses[.accessibility] = .denied
+        var settingsOpenCount = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            requestPermissionSetup: { _, _, _ in },
+            permissionStatus: { statuses[$0] ?? .granted },
+            makeIntroController: { intro },
+            openSettingsHost: { settingsOpenCount += 1 },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performPermissionAction()
+        NotificationCenter.default.post(
+            name: .relayPermissionSetupEndedWithoutGrant,
+            object: PermissionSetupLifecycleEvent(permission: .accessibility, source: .onboarding)
+        )
+        drainMainQueue()
+
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.accessibility, .accessibility])
+        XCTAssertEqual(settingsOpenCount, 0)
+    }
+
+    func testPostOnboardingPermissionLossDoesNotOpenOnboarding() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        try Data().write(to: flagURLs.onboarded)
+        try Data().write(to: flagURLs.agentChoice)
+        try Data().write(to: flagURLs.sessionRun)
+        let intro = CapturingIntroPresenter()
+        let presentation = OnboardingPresentationState()
+        var settingsOpenCount = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            presentation: presentation,
+            permissionStatus: { _ in .denied },
+            makeIntroController: { intro },
+            openSettingsHost: { settingsOpenCount += 1 },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+
+        XCTAssertEqual(intro.presentCallCount, 0)
+        XCTAssertTrue(intro.permissionPrompts.isEmpty)
+        XCTAssertFalse(presentation.isPresented)
+        XCTAssertEqual(settingsOpenCount, 0)
     }
 
     func testRepeatedManualShowReopensSettingsWithoutReplacingActivePresentation() throws {
@@ -163,7 +325,7 @@ final class OnboardingIntroTests: XCTestCase {
         ).startsTimeline)
     }
 
-    func testSkipAndTimelineCompletionUseSameCleanupAndHandoffPlan() {
+    func testSkipAndTimelineCompletionUseSameHandoffPlanWithoutCleanup() {
         let skip = OnboardingIntroPolicy.completionPlan(
             revealCompleted: false,
             skipRequested: true,
@@ -177,7 +339,7 @@ final class OnboardingIntroTests: XCTestCase {
             isCompleting: false
         )
 
-        XCTAssertEqual(skip.cleansUpSurface, true)
+        XCTAssertEqual(skip.cleansUpSurface, false)
         XCTAssertEqual(skip.performsHandoff, true)
         XCTAssertEqual(complete, skip)
     }
@@ -267,6 +429,18 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(complete.isComplete)
     }
 
+    func testTimelineUsesReadablePacingTargets() {
+        XCTAssertEqual(OnboardingIntroTimeline.typingInterval, 0.065, accuracy: 0.001)
+        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, 0.045, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.initialBrandHold, 0.65)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.phraseHold, 1.0)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.finalPhraseHold, 1.4)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.dotFieldTravel, 1.8)
+        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.dotFieldTravel, 2.2)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 9.5)
+        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 11.5)
+    }
+
     func testFreshInteractiveHandoffCanStartAtAgentChoice() {
         let step = OnboardingView.initialStep(
             simplified: false,
@@ -329,25 +503,18 @@ final class OnboardingIntroTests: XCTestCase {
         )
     }
 
-    func testHalftoneFieldUsesFigmaReferencePositions() {
-        let workspace = CGRect(x: 0, y: 0, width: 1688, height: 736)
-        let start = OnboardingHalftoneFieldLayout.plan(in: workspace, progress: 0)
-        let raised = OnboardingHalftoneFieldLayout.plan(in: workspace, progress: 1)
+    func testIntroUsesSharedParticleRendererInsteadOfOnboardingHalftone() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Onboarding/OnboardingIntroController.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
 
-        XCTAssertEqual(start.frame, CGRect(x: -114, y: 374, width: 1917, height: 840))
-        XCTAssertEqual(raised.frame.origin.y, 94, accuracy: 0.001)
-        XCTAssertEqual(raised.frame.origin.x, -114, accuracy: 0.001)
-        XCTAssertEqual(start.clipFrame, workspace)
-    }
-
-    func testHalftoneFieldScalesWithWorkspaceWidth() {
-        let workspace = CGRect(x: 0, y: 0, width: 844, height: 368)
-        let plan = OnboardingHalftoneFieldLayout.plan(in: workspace, progress: 0.5)
-
-        XCTAssertEqual(plan.scale, 0.5, accuracy: 0.001)
-        XCTAssertEqual(plan.frame.origin.x, -57, accuracy: 0.001)
-        XCTAssertEqual(plan.frame.origin.y, 117, accuracy: 0.001)
-        XCTAssertEqual(plan.frame.size, CGSize(width: 958.5, height: 420))
+        XCTAssertTrue(contents.contains("ParticleFieldRenderer()"))
+        XCTAssertTrue(contents.contains("renderer.transition(to: .tts)"))
+        XCTAssertFalse(contents.contains("OnboardingHalftone"))
+        XCTAssertFalse(contents.contains("drawHalftone"))
     }
 
     private func assertHeroTextLayoutMatchesReferenceFrame(
@@ -378,10 +545,50 @@ final class OnboardingIntroTests: XCTestCase {
 
 private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private(set) var presentCallCount = 0
+    private(set) var permissionPrompts: [OnboardingPermissionPromptPresentation] = []
+    private var cinematicCompletion: (() -> Void)?
+    private var permissionAction: (() -> Void)?
+    var onDismiss: (() -> Void)?
 
     func present(completion: @escaping () -> Void) {
         presentCallCount += 1
+        cinematicCompletion = completion
     }
+
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void) {
+        permissionPrompts.append(presentation)
+        permissionAction = action
+    }
+
+    func dismiss(completion: @escaping () -> Void) {
+        onDismiss?()
+        completion()
+    }
+
+    func completeCinematic() {
+        cinematicCompletion?()
+        cinematicCompletion = nil
+    }
+
+    func performPermissionAction() {
+        permissionAction?()
+    }
+}
+
+private func postGrant(_ permission: PermissionKind) {
+    NotificationCenter.default.post(
+        name: .relayPermissionSetupGrantReady,
+        object: permission.rawValue
+    )
+}
+
+private func drainMainQueue(file: StaticString = #filePath, line: UInt = #line) {
+    let expectation = XCTestExpectation(description: "Drain main queue")
+    DispatchQueue.main.async {
+        expectation.fulfill()
+    }
+    XCTWaiter().wait(for: [expectation], timeout: 1)
 }
 
 private extension OnboardingFlagURLs {

@@ -75,9 +75,19 @@ final class OnboardingController {
     private let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
     private let cancelPermissionSetup: (PermissionSetupSource?) -> Void
     private let shouldDeferPermissionAdvance: (PermissionKind) -> Bool
+    private let permissionStatus: (PermissionKind) -> PermissionStatus
+    private let permissionLikelyRestricted: (PermissionKind) -> Bool
     private let makeIntroController: () -> any OnboardingIntroPresenting
     private let openSettingsHost: () -> Void
     private let reduceMotion: () -> Bool
+    private var freshPermissionState: FreshPermissionState?
+    private var permissionGrantObserver: NSObjectProtocol?
+    private var permissionEndedObserver: NSObjectProtocol?
+
+    private struct FreshPermissionState {
+        var activePermission: PermissionKind?
+        var requestInFlight = false
+    }
 
     init(permissions: PermissionsManager,
          flagURLs: OnboardingFlagURLs = .live,
@@ -97,6 +107,8 @@ final class OnboardingController {
          requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
          cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
          shouldDeferPermissionAdvance: @escaping (PermissionKind) -> Bool = { _ in false },
+         permissionStatus: ((PermissionKind) -> PermissionStatus)? = nil,
+         permissionLikelyRestricted: ((PermissionKind) -> Bool)? = nil,
          makeIntroController: @escaping () -> any OnboardingIntroPresenting = { OnboardingIntroController() },
          openSettingsHost: @escaping () -> Void = { SettingsPresenter.open() },
          reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
@@ -118,9 +130,15 @@ final class OnboardingController {
         self.requestPermissionSetup = requestPermissionSetup
         self.cancelPermissionSetup = cancelPermissionSetup
         self.shouldDeferPermissionAdvance = shouldDeferPermissionAdvance
+        self.permissionStatus = permissionStatus ?? { permissions.status(for: $0) }
+        self.permissionLikelyRestricted = permissionLikelyRestricted ?? { permissions.likelyRestricted.contains($0) }
         self.makeIntroController = makeIntroController
         self.openSettingsHost = openSettingsHost
         self.reduceMotion = reduceMotion
+    }
+
+    deinit {
+        removeFreshPermissionObservers()
     }
 
     /// True iff the user has completed (or skipped past) onboarding before.
@@ -159,14 +177,12 @@ final class OnboardingController {
     }
 
     /// Show onboarding if it's needed — first launch, kill-
-    /// mid-flow recovery, required setup missing on a later launch, no
-    /// recorded agent choice after upgrade, or
+    /// mid-flow recovery, no recorded agent choice after upgrade, or
     /// a returning user who hasn't started their first session yet.
     ///
     /// The simplified flow is used in three cases:
-    ///   * `hasOnboarded` and required setup is missing or the agent-choice
-    ///     flag is absent — focused setup prompt, no need to show
-    ///     welcome/explanations again.
+    ///   * `hasOnboarded` and the agent-choice flag is absent — focused setup
+    ///     prompt, no need to show welcome/explanations again.
     ///   * `hasOnboarded` and `!hasRunSession` — the user got through
     ///     setup but never ran a session, so we land them on Ready
     ///     so they pick a working directory before their first run.
@@ -175,11 +191,9 @@ final class OnboardingController {
     ///     focused flow that lands on Ready immediately when setup is complete.
     func showIfNeeded() {
         if hasOnboarded {
-            if !hasChosenAgent || !permissions.guidedSetupGranted || !hasRunSession {
+            if !hasChosenAgent || !hasRunSession {
                 show(simplified: true)
             }
-        } else if wasInterrupted {
-            show(simplified: true)
         } else {
             showFreshAutomatic()
         }
@@ -207,7 +221,13 @@ final class OnboardingController {
             wasInterrupted: wasInterruptedBeforeStart,
             reduceMotion: reduceMotion()
         ) else {
-            show(simplified: false, initialStepOverride: .agentChoice, markStarted: false)
+            if firstMissingFreshPermission() != nil {
+                beginFreshPermissionSequence(intro: makeIntroController())
+            } else if wasInterruptedBeforeStart {
+                show(simplified: true, markStarted: false)
+            } else {
+                show(simplified: false, initialStepOverride: .agentChoice, markStarted: false)
+            }
             return
         }
 
@@ -216,11 +236,123 @@ final class OnboardingController {
         setOnboardingNotchOverrideActive(true)
         intro.present { [weak self, weak intro] in
             guard let self else { return }
+            guard let intro, self.introController === intro else { return }
+            self.beginFreshPermissionSequence(intro: intro)
+        }
+    }
+
+    private func beginFreshPermissionSequence(intro: any OnboardingIntroPresenting) {
+        let isContinuingExistingIntro = introController === intro
+        introController = intro
+        freshPermissionState = FreshPermissionState()
+        if !isContinuingExistingIntro {
+            setOnboardingNotchOverrideActive(true)
+        }
+        installFreshPermissionObservers()
+        showNextFreshPermission()
+    }
+
+    private func showNextFreshPermission() {
+        guard let intro = introController else { return }
+        guard let permission = firstMissingFreshPermission() else {
+            completeFreshPermissionSequence()
+            return
+        }
+        freshPermissionState = FreshPermissionState(activePermission: permission)
+        let prompt = OnboardingPermissionTreatment.presentation(
+            permission: permission,
+            status: permissionStatus(permission),
+            explanation: OnboardingPermissionTreatment.explanation(for: permission),
+            likelyRestricted: permissionLikelyRestricted(permission)
+        )
+        intro.presentPermissionPrompt(prompt) { [weak self] in
+            self?.startFreshPermissionSetup(permission)
+        }
+    }
+
+    private func startFreshPermissionSetup(_ permission: PermissionKind) {
+        guard freshPermissionState?.activePermission == permission,
+              freshPermissionState?.requestInFlight != true else { return }
+        freshPermissionState?.requestInFlight = true
+        let purpose = OnboardingPermissionTreatment.explanation(for: permission)
+        let request: () -> Void = { [weak self] in
+            self?.requestPermissionSetup(permission, .onboarding, purpose)
+        }
+        guard permission != .microphone else {
+            request()
+            return
+        }
+        introController?.dismiss(completion: request)
+    }
+
+    private func firstMissingFreshPermission() -> PermissionKind? {
+        PermissionKind.guidedSetupOrder.first { permissionStatus($0) != .granted }
+    }
+
+    private func freshPermissionGranted(_ permission: PermissionKind) {
+        guard freshPermissionState?.activePermission == permission else { return }
+        freshPermissionState?.requestInFlight = false
+        freshPermissionState?.activePermission = nil
+        showNextFreshPermission()
+    }
+
+    private func freshPermissionEndedWithoutGrant(_ event: PermissionSetupLifecycleEvent) {
+        guard event.source == .onboarding,
+              freshPermissionState?.activePermission == event.permission else { return }
+        freshPermissionState?.requestInFlight = false
+        showNextFreshPermission()
+    }
+
+    private func completeFreshPermissionSequence() {
+        removeFreshPermissionObservers()
+        freshPermissionState = nil
+        let intro = introController
+        introController = nil
+        let handoff = { [weak self] in
+            guard let self else { return }
             self.setOnboardingNotchOverrideActive(false)
-            if self.introController === intro {
-                self.introController = nil
-            }
             self.show(simplified: false, initialStepOverride: .agentChoice, markStarted: false)
+        }
+        if let intro {
+            intro.dismiss(completion: handoff)
+        } else {
+            handoff()
+        }
+    }
+
+    private func installFreshPermissionObservers() {
+        guard permissionGrantObserver == nil, permissionEndedObserver == nil else { return }
+        permissionGrantObserver = NotificationCenter.default.addObserver(
+            forName: .relayPermissionSetupGrantReady,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let raw = notification.object as? String,
+                  let permission = PermissionKind(rawValue: raw) else { return }
+            DispatchQueue.main.async {
+                self?.freshPermissionGranted(permission)
+            }
+        }
+        permissionEndedObserver = NotificationCenter.default.addObserver(
+            forName: .relayPermissionSetupEndedWithoutGrant,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let event = notification.object as? PermissionSetupLifecycleEvent else { return }
+            DispatchQueue.main.async {
+                self?.freshPermissionEndedWithoutGrant(event)
+            }
+        }
+    }
+
+    private func removeFreshPermissionObservers() {
+        if let permissionGrantObserver {
+            NotificationCenter.default.removeObserver(permissionGrantObserver)
+            self.permissionGrantObserver = nil
+        }
+        if let permissionEndedObserver {
+            NotificationCenter.default.removeObserver(permissionEndedObserver)
+            self.permissionEndedObserver = nil
         }
     }
 

@@ -34,6 +34,19 @@ enum OnboardingPermissionTreatment {
         }
     }
 
+    static func explanation(for kind: PermissionKind) -> String {
+        switch kind {
+        case .microphone:
+            return "Relay Runner needs to hear you so it can transcribe your speech. Audio stays completely local — nothing is sent off your Mac."
+        case .accessibility:
+            return "Accessibility lets Relay Runner host Relay Actions for clicking, typing, pressing keys, scrolling, and UI automation. Trigger keys and hotkeys use Input Monitoring instead."
+        case .inputMonitoring:
+            return "Input Monitoring lets Relay Runner capture global keyboard events. It enables non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey; voice still works with microphone permission alone if you skip it."
+        case .screenRecording:
+            return "Screen Recording lets Relay Vision capture screenshots for visual grounding. Voice transcription and speech don't need it."
+        }
+    }
+
     static func presentation(permission: PermissionKind,
                              status: PermissionStatus,
                              explanation: String,
@@ -54,9 +67,9 @@ enum OnboardingPermissionTreatment {
     }
 }
 
-/// First-launch onboarding flow. Walks through agent choice, workspace folder,
-/// microphone access, optional Input Monitoring, local Python setup, and agent
-/// sign-in.
+/// Settings-hosted onboarding flow. First-run privacy prompts are owned by the
+/// intro Workspace surface; this view handles provider, workspace, runtime, auth,
+/// ready, and legacy resumed permission steps.
 struct OnboardingView: View {
     static let workspaceFolderTitle = "Workspace folder"
     static let workspaceFolderHelpText = "New voice sessions start in this folder. Program Manager discovers child git repositories when this is a workspace."
@@ -1495,7 +1508,7 @@ struct OnboardingView: View {
             return
         }
 
-        if let next = Step(rawValue: step.rawValue + 1) {
+        if let next = Self.nextFullFlowStep(after: step) {
             step = next
         } else {
             onFinish()
@@ -1564,10 +1577,9 @@ struct OnboardingView: View {
         onSetEffort(selection.effort)
     }
 
-    /// The next step (after `from`) that still needs the user's attention —
-    /// microphone/Input Monitoring if not granted, pythonSetup if the venv
-    /// hasn't been bootstrapped, or agentLogin if the configured agent isn't
-    /// signed in.
+    /// The next Settings-hosted step (after `from`) that still needs the
+    /// user's attention — provider choice, pythonSetup if the venv hasn't been
+    /// bootstrapped, or agentLogin if the configured agent isn't signed in.
     /// Used by the simplified re-prompt flow to skip already-done items.
     private func nextMissingStep(after from: Step) -> Step? {
         Self.nextStepAfter(
@@ -1595,8 +1607,8 @@ struct OnboardingView: View {
             if candidate == .agentChoice, requiresAgentChoice {
                 return candidate
             }
-            if let kind = candidate.kind, permissionStatus(kind) != .granted {
-                return candidate
+            if candidate.kind != nil {
+                continue
             }
             if candidate == .pythonSetup, !venvInstalled {
                 return candidate
@@ -1614,6 +1626,24 @@ struct OnboardingView: View {
             return .ready
         }
         return nil
+    }
+
+    private static func nextFullFlowStep(after step: Step) -> Step? {
+        let steps: [Step] = [.welcome, .agentChoice, .pythonSetup, .agentLogin, .ready]
+        guard let index = steps.firstIndex(of: step) else {
+            return nextStepAfter(
+                step,
+                requiresAgentChoice: true,
+                requiresParentPermissionGuidance: false,
+                parentPermissionsReviewed: true,
+                permissionStatus: { _ in .granted },
+                venvInstalled: false,
+                agentSignedIn: false
+            )
+        }
+        let nextIndex = index + 1
+        guard steps.indices.contains(nextIndex) else { return nil }
+        return steps[nextIndex]
     }
 
     // MARK: - Text
@@ -1650,11 +1680,9 @@ struct OnboardingView: View {
     }
 
     private var progressLabel: String? {
-        // Full flow always visits agent choice + microphone + optional
-        // Input Monitoring + pythonSetup + agentLogin
-        // (the last two briefly auto-advance when their state is already
-        // ready, but they still get slots in the count). Simplified flow
-        // only counts steps that actually need attention.
+        // Full Settings flow visits provider choice, python setup, and agent
+        // login. Privacy permissions are handled by the intro surface or
+        // Status settings, not this progress count.
         Self.progressLabel(
             for: step,
             simplified: simplified,
@@ -1701,10 +1729,6 @@ struct OnboardingView: View {
         if !simplified {
             return [
                 .agentChoice,
-                .microphone,
-                .parentAccessibility,
-                .inputMonitoring,
-                .parentScreenRecording,
                 .pythonSetup,
                 .agentLogin,
             ]
@@ -1714,8 +1738,8 @@ struct OnboardingView: View {
             if s == .agentChoice, requiresAgentChoice {
                 steps.append(s)
             }
-            if let kind = s.kind, permissionStatus(kind) != .granted {
-                steps.append(s)
+            if s.kind != nil {
+                continue
             }
             if s == .pythonSetup, !venvInstalled {
                 steps.append(s)
@@ -1732,26 +1756,14 @@ struct OnboardingView: View {
         case .microphone:      return "Allow microphone access"
         case .accessibility:   return "Allow Accessibility access"
         case .inputMonitoring: return "Allow Input Monitoring"
-        // Screen Recording is intentionally not part of onboarding — it's
-        // only needed by Relay Vision screenshots and is
-        // requested on first use (see PermissionsManager.promptScreenRecording).
-        // Strings provided so the switch is exhaustive and the case is ready
-        // to wire up if a future step adds it to onboarding.
+        // Screen Recording is not part of Settings-hosted onboarding; first-run
+        // permission setup is owned by the intro surface.
         case .screenRecording: return "Allow Screen Recording"
         }
     }
 
     private func permissionExplanation(for kind: PermissionKind) -> String {
-        switch kind {
-        case .microphone:
-            return "Relay Runner needs to hear you so it can transcribe your speech. Audio stays completely local — nothing is sent off your Mac."
-        case .accessibility:
-            return "Accessibility lets Relay Runner host Relay Actions for clicking, typing, pressing keys, scrolling, and UI automation. Trigger keys and hotkeys use Input Monitoring instead."
-        case .inputMonitoring:
-            return "Input Monitoring lets Relay Runner capture global keyboard events. It enables non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey; voice still works with microphone permission alone if you skip it."
-        case .screenRecording:
-            return "Screen Recording lets Relay Vision capture screenshots for visual grounding. Voice transcription and speech don't need it."
-        }
+        OnboardingPermissionTreatment.explanation(for: kind)
     }
 
     private func permissionInstruction(for kind: PermissionKind, status: PermissionStatus) -> String {
@@ -1801,7 +1813,7 @@ struct OnboardingView: View {
                             venvInstalled: Bool,
                             agentSignedIn: Bool,
                             fullFlowInitialStep: Step = .welcome) -> Step {
-        if let resumeStep, let step = Step(resumeID: resumeStep) {
+        if let resumeStep, let step = Step(resumeID: resumeStep), step.kind == nil {
             return step
         }
         guard simplified else {
@@ -1827,8 +1839,8 @@ struct OnboardingView: View {
             if s == .agentChoice, requiresAgentChoice {
                 return s
             }
-            if let kind = s.kind, permissionStatus(kind) != .granted {
-                return s
+            if s.kind != nil {
+                continue
             }
             if s == .pythonSetup, !venvInstalled {
                 return s

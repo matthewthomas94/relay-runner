@@ -99,15 +99,16 @@ final class ParticleFieldRenderer {
         layoutInBounds(hostView.bounds)
     }
 
-    func layoutInBounds(_ bounds: CGRect) {
+    func layoutInBounds(_ bounds: CGRect, backingScale: CGFloat? = nil) {
         let fieldH = bounds.height * 0.44
         gradientLayer.frame = bounds
         particleLayer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: fieldH)
 
-        if bounds.size != screenSize {
+        let resolvedScale = backingScale ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        if bounds.size != screenSize || resolvedScale != screenScale {
             screenSize = bounds.size
             fieldSize = CGSize(width: bounds.width, height: fieldH)
-            screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
+            screenScale = resolvedScale
             rebuildContext()
             dots.removeAll()
         }
