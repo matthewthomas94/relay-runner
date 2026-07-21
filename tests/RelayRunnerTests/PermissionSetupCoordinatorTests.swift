@@ -298,6 +298,67 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertEqual(frame.size, CGSize(width: 72, height: 72))
     }
 
+    func testHostedAppFileDragStartsOneSessionFromMouseDownEventAfterThreshold() {
+        let view = AppFileDragView()
+        view.frame = CGRect(x: 0, y: 0, width: 90, height: 90)
+        view.bundleURL = URL(fileURLWithPath: "/Applications/Relay Runner.app", isDirectory: true)
+        view.image = NSImage(size: CGSize(width: 90, height: 90))
+        view.draggingEnabled = true
+
+        let panel = NSPanel(
+            contentRect: view.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentView = view
+        defer { panel.close() }
+
+        var startedSessions: [(itemCount: Int, event: NSEvent)] = []
+        var dragStates: [Bool] = []
+        view.beginDraggingSessionHandler = { items, event in
+            startedSessions.append((items.count, event))
+        }
+        view.onDragStateChanged = { dragStates.append($0) }
+
+        let down = Self.mouseEvent(
+            .leftMouseDown,
+            location: CGPoint(x: 12, y: 12),
+            windowNumber: panel.windowNumber,
+            eventNumber: 1
+        )
+        let underThreshold = Self.mouseEvent(
+            .leftMouseDragged,
+            location: CGPoint(x: 14, y: 14),
+            windowNumber: panel.windowNumber,
+            eventNumber: 2
+        )
+        let overThreshold = Self.mouseEvent(
+            .leftMouseDragged,
+            location: CGPoint(x: 28, y: 27),
+            windowNumber: panel.windowNumber,
+            eventNumber: 3
+        )
+        let duplicateDrag = Self.mouseEvent(
+            .leftMouseDragged,
+            location: CGPoint(x: 44, y: 42),
+            windowNumber: panel.windowNumber,
+            eventNumber: 4
+        )
+
+        view.mouseDown(with: down)
+        view.mouseDragged(with: underThreshold)
+        XCTAssertTrue(startedSessions.isEmpty)
+
+        view.mouseDragged(with: overThreshold)
+        view.mouseDragged(with: duplicateDrag)
+
+        XCTAssertEqual(startedSessions.count, 1)
+        XCTAssertEqual(startedSessions.first?.itemCount, 1)
+        XCTAssertTrue(startedSessions.first?.event === down)
+        XCTAssertEqual(dragStates, [true])
+    }
+
     func testGrantDuringDragClearsDeferralBeforePostingGrantReady() {
         let permissions = FakePermissionSetupPermissions()
         let companion = FakePermissionSetupCompanion()
@@ -432,6 +493,25 @@ private final class FakePermissionSetupPermissions: PermissionSetupPermissionMan
 
     func openSettings(for kind: PermissionKind) {
         openedSettings.append(kind)
+    }
+}
+
+private extension PermissionSetupCoordinatorTests {
+    static func mouseEvent(_ type: NSEvent.EventType,
+                           location: CGPoint,
+                           windowNumber: Int,
+                           eventNumber: Int) -> NSEvent {
+        NSEvent.mouseEvent(
+            with: type,
+            location: location,
+            modifierFlags: [],
+            timestamp: TimeInterval(eventNumber),
+            windowNumber: windowNumber,
+            context: nil,
+            eventNumber: eventNumber,
+            clickCount: 1,
+            pressure: type == .leftMouseDragged ? 0.5 : 1
+        )!
     }
 }
 

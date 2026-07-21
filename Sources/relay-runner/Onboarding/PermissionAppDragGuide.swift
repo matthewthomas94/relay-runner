@@ -425,7 +425,9 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
     var draggingEnabled = true
     var onUserInteraction: () -> Void = {}
     var onDragStateChanged: (Bool) -> Void = { _ in }
+    var beginDraggingSessionHandler: (([NSDraggingItem], NSEvent) -> Void)?
     private var mouseDownPoint: NSPoint?
+    private var mouseDownEvent: NSEvent?
     private var dragSessionActive = false
     private var trackingArea: NSTrackingArea?
 
@@ -473,6 +475,7 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         onUserInteraction()
         mouseDownPoint = convert(event.locationInWindow, from: nil)
+        mouseDownEvent = event
         dragSessionActive = false
     }
 
@@ -481,6 +484,7 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
         guard let bundleURL,
               let image,
               let mouseDownPoint,
+              let mouseDownEvent,
               draggingEnabled,
               !dragSessionActive else {
             return
@@ -495,13 +499,15 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
         dragSessionActive = true
         onDragStateChanged(true)
 
-        beginDraggingSession(with: [payload.item], event: event, source: self)
+        startDraggingSession(with: [payload.item], event: mouseDownEvent)
         self.mouseDownPoint = nil
+        self.mouseDownEvent = nil
     }
 
     override func mouseUp(with event: NSEvent) {
         onUserInteraction()
         mouseDownPoint = nil
+        mouseDownEvent = nil
     }
 
     func draggingSession(_ session: NSDraggingSession,
@@ -518,6 +524,14 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
                          operation: NSDragOperation) {
         dragSessionActive = false
         onDragStateChanged(false)
+    }
+
+    private func startDraggingSession(with items: [NSDraggingItem], event: NSEvent) {
+        if let beginDraggingSessionHandler {
+            beginDraggingSessionHandler(items, event)
+            return
+        }
+        beginDraggingSession(with: items, event: event, source: self)
     }
 }
 
