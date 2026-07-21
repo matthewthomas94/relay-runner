@@ -61,6 +61,7 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertEqual(drag.ghostCenter, drag.cursor)
         XCTAssertGreaterThan(drag.cursor.x, icon.x)
         XCTAssertLessThan(drag.cursor.x, target.x)
+        XCTAssertEqual(drag.dropCueOpacity, 0)
     }
 
     func testReduceMotionUsesStaticHint() {
@@ -76,12 +77,27 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(state.phase, .staticHint)
         XCTAssertNil(state.ghostCenter)
-        XCTAssertGreaterThan(state.dropCueOpacity, 0)
+        XCTAssertEqual(state.dropCueOpacity, 0)
         XCTAssertEqual(state.directionalHint?.start, icon)
         XCTAssertEqual(state.directionalHint?.end, target)
+        XCTAssertEqual(PermissionCompanionDemoTimerPolicy.frameInterval, 1.0 / 60.0, accuracy: 0.0001)
         XCTAssertFalse(PermissionCompanionDemoTimerPolicy.shouldRunTimer(reduceMotion: true, isPaused: false))
         XCTAssertFalse(PermissionCompanionDemoTimerPolicy.shouldRunTimer(reduceMotion: false, isPaused: true))
         XCTAssertTrue(PermissionCompanionDemoTimerPolicy.shouldRunTimer(reduceMotion: false, isPaused: false))
+    }
+
+    func testReleasePhaseDoesNotDrawDropCue() {
+        let state = PermissionCompanionAnimationPlanner.state(
+            elapsed: 2.0,
+            idlePoint: CGPoint(x: 1, y: 2),
+            iconCenter: CGPoint(x: 20, y: 30),
+            targetCenter: CGPoint(x: 90, y: 110),
+            reduceMotion: false
+        )
+
+        XCTAssertEqual(state.phase, .release)
+        XCTAssertEqual(state.dropCueOpacity, 0)
+        XCTAssertNotNil(state.ghostCenter)
     }
 
     func testPlacementPrefersReachableBelowListCandidateBeforeOutsideFallbacks() {
@@ -192,6 +208,33 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertTrue(installed.payloadEnabled)
         XCTAssertEqual(installed.payloadURL?.path, "/Applications/Relay Runner.app")
         XCTAssertTrue(installed.instructions.contains("+ button"))
+    }
+
+    func testFallbackPlanOnlyEnablesInstalledRelayRunnerBundlePayload() {
+        let applications = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        let downloads = URL(fileURLWithPath: "/Users/example/Downloads/Relay Runner.app", isDirectory: true)
+        let otherApp = URL(fileURLWithPath: "/Applications/Other.app", isDirectory: true)
+
+        let developmentCopy = PermissionCompanionFallbackPlan.make(
+            permission: .inputMonitoring,
+            purpose: "Hotkeys",
+            bundleURL: downloads,
+            applicationsURL: applications,
+            fileExists: { _ in true }
+        )
+        let wrongBundle = PermissionCompanionFallbackPlan.make(
+            permission: .inputMonitoring,
+            purpose: "Hotkeys",
+            bundleURL: otherApp,
+            applicationsURL: applications,
+            fileExists: { _ in true }
+        )
+
+        XCTAssertFalse(developmentCopy.payloadEnabled)
+        XCTAssertNil(developmentCopy.payloadURL)
+        XCTAssertEqual(developmentCopy.revealURL.path, downloads.path)
+        XCTAssertFalse(wrongBundle.payloadEnabled)
+        XCTAssertNil(wrongBundle.payloadURL)
     }
 
     func testFallbackPlanDefaultsAccessibilityPurposeToRelayActions() {
@@ -357,6 +400,53 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         XCTAssertEqual(startedSessions.first?.itemCount, 1)
         XCTAssertTrue(startedSessions.first?.event === down)
         XCTAssertEqual(dragStates, [true])
+    }
+
+    func testAppFileDragSurvivesViewUpdateBetweenMouseDownAndThreshold() {
+        let view = AppFileDragView()
+        view.frame = CGRect(x: 0, y: 0, width: 90, height: 90)
+        view.bundleURL = URL(fileURLWithPath: "/Applications/Relay Runner.app", isDirectory: true)
+        view.image = NSImage(size: CGSize(width: 90, height: 90))
+        view.draggingEnabled = true
+
+        let panel = NSPanel(
+            contentRect: view.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentView = view
+        defer { panel.close() }
+
+        var startedSessions: [(itemCount: Int, event: NSEvent)] = []
+        view.beginDraggingSessionHandler = { items, event in
+            startedSessions.append((items.count, event))
+        }
+
+        let down = Self.mouseEvent(
+            .leftMouseDown,
+            location: CGPoint(x: 18, y: 18),
+            windowNumber: panel.windowNumber,
+            eventNumber: 10
+        )
+        view.mouseDown(with: down)
+
+        view.bundleURL = URL(fileURLWithPath: "/Applications/Relay Runner.app", isDirectory: true)
+        view.image = NSImage(size: CGSize(width: 90, height: 90))
+        view.frame.size = CGSize(width: 90, height: 90)
+        view.draggingEnabled = true
+
+        let overThreshold = Self.mouseEvent(
+            .leftMouseDragged,
+            location: CGPoint(x: 32, y: 31),
+            windowNumber: panel.windowNumber,
+            eventNumber: 11
+        )
+        view.mouseDragged(with: overThreshold)
+
+        XCTAssertEqual(startedSessions.count, 1)
+        XCTAssertEqual(startedSessions.first?.itemCount, 1)
+        XCTAssertTrue(startedSessions.first?.event === down)
     }
 
     func testGrantDuringDragClearsDeferralBeforePostingGrantReady() {

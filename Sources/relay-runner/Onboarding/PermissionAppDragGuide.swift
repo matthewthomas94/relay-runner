@@ -340,9 +340,12 @@ struct DraggableAppIconView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: AppFileDragView, context: Context) {
+        let desiredSize = NSSize(width: size, height: size)
         view.bundleURL = bundleURL
         view.image = Self.icon(for: bundleURL)
-        view.frame.size = NSSize(width: size, height: size)
+        if view.frame.size != desiredSize {
+            view.frame.size = desiredSize
+        }
         view.draggingEnabled = isEnabled
         view.onUserInteraction = onUserInteraction
         view.onDragStateChanged = onDragStateChanged
