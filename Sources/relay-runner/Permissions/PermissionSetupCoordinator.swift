@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import QuartzCore
 import SwiftUI
 
 enum PermissionSetupSource: Equatable {
@@ -300,9 +301,29 @@ final class PermissionSetupCoordinator {
     }
 }
 
-struct PermissionCompanionDemoTimerPolicy {
-    static func shouldRunTimer(reduceMotion: Bool, isPaused: Bool) -> Bool {
+struct PermissionCompanionDemoDisplayPolicy {
+    static func shouldRunDisplayLink(reduceMotion: Bool, isPaused: Bool) -> Bool {
         !reduceMotion && !isPaused
+    }
+}
+
+struct PermissionCompanionDemoClock: Equatable {
+    private(set) var elapsed: TimeInterval = 0
+    private var previousTimestamp: TimeInterval?
+
+    mutating func tick(timestamp: TimeInterval, isPaused: Bool) {
+        guard !isPaused else {
+            freeze()
+            return
+        }
+
+        defer { previousTimestamp = timestamp }
+        guard let previousTimestamp else { return }
+        elapsed += max(0, timestamp - previousTimestamp)
+    }
+
+    mutating func freeze() {
+        previousTimestamp = nil
     }
 }
 
@@ -317,11 +338,36 @@ struct PermissionCompanionInteractionModel: Equatable {
 
     private(set) var isPaused = false
     private(set) var dragActive = false
+    private(set) var hoverActive = false
     private(set) var pendingTimerID: Int?
     private var nextTimerID = 0
 
-    mutating func recordUserActivity(now: TimeInterval = 0) -> Int {
+    mutating func recordUserActivity(now: TimeInterval = 0) -> Int? {
         isPaused = true
+        guard !dragActive, !hoverActive else {
+            pendingTimerID = nil
+            return nil
+        }
+        return scheduleResume()
+    }
+
+    mutating func beginHover() -> Bool {
+        guard !hoverActive else { return false }
+        hoverActive = true
+        isPaused = true
+        pendingTimerID = nil
+        return true
+    }
+
+    mutating func endHover() -> Int? {
+        guard hoverActive else { return nil }
+        hoverActive = false
+        guard !dragActive else { return nil }
+        isPaused = true
+        return scheduleResume()
+    }
+
+    private mutating func scheduleResume() -> Int {
         nextTimerID += 1
         pendingTimerID = nextTimerID
         return nextTimerID
@@ -329,13 +375,16 @@ struct PermissionCompanionInteractionModel: Equatable {
 
     mutating func beginRealDrag() {
         dragActive = true
+        hoverActive = false
         isPaused = true
         pendingTimerID = nil
     }
 
-    mutating func endRealDrag() -> Int {
+    mutating func endRealDrag() -> Int? {
         dragActive = false
-        return recordUserActivity()
+        guard !hoverActive else { return nil }
+        isPaused = true
+        return scheduleResume()
     }
 
     mutating func fireIdleTimer(_ id: Int) {
@@ -361,7 +410,6 @@ struct PermissionCompanionAnimationPlanner {
         let cursor: CGPoint
         let ghostCenter: CGPoint?
         let ghostOpacity: CGFloat
-        let dropCueOpacity: CGFloat
         let directionalHint: PermissionCompanionDirectionalHint?
     }
 
@@ -378,7 +426,6 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: idlePoint,
                 ghostCenter: nil,
                 ghostOpacity: 0,
-                dropCueOpacity: 0.8,
                 directionalHint: PermissionCompanionDirectionalHint(
                     start: iconCenter,
                     end: targetCenter,
@@ -391,10 +438,9 @@ struct PermissionCompanionAnimationPlanner {
         if t < 0.65 {
             return State(
                 phase: .approach,
-                cursor: lerp(idlePoint, iconCenter, CGFloat(t / 0.65)),
+                cursor: lerp(idlePoint, iconCenter, easedProgress(t / 0.65)),
                 ghostCenter: nil,
                 ghostOpacity: 0,
-                dropCueOpacity: 0,
                 directionalHint: nil
             )
         }
@@ -404,19 +450,17 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: iconCenter,
                 ghostCenter: nil,
                 ghostOpacity: 0,
-                dropCueOpacity: 0,
                 directionalHint: nil
             )
         }
         if t < 1.95 {
-            let progress = CGFloat((t - 0.82) / 1.13)
+            let progress = easedProgress((t - 0.82) / 1.13)
             let point = lerp(iconCenter, targetCenter, progress)
             return State(
                 phase: .drag,
                 cursor: point,
                 ghostCenter: point,
                 ghostOpacity: 0.88,
-                dropCueOpacity: 0,
                 directionalHint: nil
             )
         }
@@ -426,7 +470,6 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: targetCenter,
                 ghostCenter: targetCenter,
                 ghostOpacity: 0.82,
-                dropCueOpacity: 1,
                 directionalHint: nil
             )
         }
@@ -437,24 +480,28 @@ struct PermissionCompanionAnimationPlanner {
                 cursor: targetCenter,
                 ghostCenter: targetCenter,
                 ghostOpacity: max(0, opacity * 0.6),
-                dropCueOpacity: max(0, opacity),
                 directionalHint: nil
             )
         }
         return State(
             phase: .reset,
-            cursor: lerp(targetCenter, idlePoint, CGFloat((t - 2.85) / 0.45)),
+            cursor: lerp(targetCenter, idlePoint, easedProgress((t - 2.85) / 0.45)),
             ghostCenter: nil,
             ghostOpacity: 0,
-            dropCueOpacity: 0,
             directionalHint: nil
         )
     }
 
+    private static func easedProgress(_ t: TimeInterval) -> CGFloat {
+        let clamped = min(max(CGFloat(t), 0), 1)
+        return clamped * clamped * (3 - 2 * clamped)
+    }
+
     private static func lerp(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
-        CGPoint(
-            x: a.x + (b.x - a.x) * min(max(t, 0), 1),
-            y: a.y + (b.y - a.y) * min(max(t, 0), 1)
+        let clamped = min(max(t, 0), 1)
+        return CGPoint(
+            x: a.x + (b.x - a.x) * clamped,
+            y: a.y + (b.y - a.y) * clamped
         )
     }
 }
@@ -778,8 +825,15 @@ struct PermissionCompanionFallbackPlan: Equatable {
     static func make(permission: PermissionKind,
                      purpose: String,
                      bundleURL: URL?,
+                     expectedBundleIdentifier: String = PermissionCompanionAppBundleIdentity.relayRunnerBundleIdentifier,
+                     bundleIdentity: (URL) -> PermissionCompanionAppBundleIdentity? = PermissionCompanionAppBundleIdentity.read,
                      fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> PermissionCompanionFallbackPlan {
-        let payloadURL = validApplicationBundleURL(bundleURL, fileExists: fileExists)
+        let payloadURL = validApplicationBundleURL(
+            bundleURL,
+            expectedBundleIdentifier: expectedBundleIdentifier,
+            bundleIdentity: bundleIdentity,
+            fileExists: fileExists
+        )
         let revealURL: URL
         if let payloadURL {
             revealURL = payloadURL
@@ -798,20 +852,51 @@ struct PermissionCompanionFallbackPlan: Equatable {
     }
 
     private static func validApplicationBundleURL(_ bundleURL: URL?,
+                                                  expectedBundleIdentifier: String,
+                                                  bundleIdentity: (URL) -> PermissionCompanionAppBundleIdentity?,
                                                   fileExists: (String) -> Bool) -> URL? {
         guard let bundleURL else { return nil }
         let resolved = bundleURL.standardizedFileURL.resolvingSymlinksInPath()
         guard resolved.isFileURL,
               resolved.pathExtension == "app",
+              resolved.lastPathComponent == RelayInstallerContext.bundleName,
               fileExists(resolved.path) else {
+            return nil
+        }
+        guard let identity = bundleIdentity(resolved),
+              identity.bundleIdentifier == expectedBundleIdentifier,
+              identity.executableName == PermissionCompanionAppBundleIdentity.relayRunnerExecutableName,
+              let executableURL = identity.executableURL?.standardizedFileURL.resolvingSymlinksInPath(),
+              executableURL.lastPathComponent == PermissionCompanionAppBundleIdentity.relayRunnerExecutableName,
+              executableURL.path.hasPrefix(resolved.appendingPathComponent("Contents/MacOS", isDirectory: true).path + "/"),
+              fileExists(executableURL.path) else {
             return nil
         }
         return resolved
     }
 }
 
+struct PermissionCompanionAppBundleIdentity: Equatable {
+    static let relayRunnerBundleIdentifier = "com.relayrunner.app"
+    static let relayRunnerExecutableName = "relay-runner"
+
+    let bundleIdentifier: String?
+    let executableName: String?
+    let executableURL: URL?
+
+    static func read(from url: URL) -> PermissionCompanionAppBundleIdentity? {
+        guard let bundle = Bundle(url: url) else { return nil }
+        return PermissionCompanionAppBundleIdentity(
+            bundleIdentifier: bundle.bundleIdentifier,
+            executableName: bundle.object(forInfoDictionaryKey: "CFBundleExecutable") as? String,
+            executableURL: bundle.executableURL
+        )
+    }
+}
+
 final class PermissionSetupCompanionController: PermissionSetupCompanionControlling {
     private var interactivePanel: NSPanel?
+    private var interactiveHostingView: NSHostingView<PermissionCompanionCard>?
     private var demoPanel: NSPanel?
     private var demoView: PermissionCompanionDemoView?
     private var pollTimer: Timer?
@@ -849,6 +934,7 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         interactivePanel?.close()
         demoPanel?.close()
         interactivePanel = nil
+        interactiveHostingView = nil
         demoPanel = nil
         demoView = nil
         activeRequest = nil
@@ -881,11 +967,14 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
             fallback: fallback,
             isGranted: true,
             onUserInteraction: {},
+            onHoverChanged: { _ in },
             onDragStateChanged: { _ in },
             onReveal: {},
             onOpenSettings: {}
         )
-        panel.contentView = NSHostingView(rootView: root)
+        let hostingView = NSHostingView(rootView: root)
+        panel.contentView = hostingView
+        interactiveHostingView = hostingView
         if !panel.isVisible {
             panel.orderFrontRegardless()
         }
@@ -966,25 +1055,27 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         )
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let panel = interactivePanel ?? makeInteractivePanel()
-        let root = PermissionCompanionCard(
-            fallback: fallback,
-            isGranted: false,
-            onUserInteraction: { [weak self] in self?.recordUserActivity() },
-            onDragStateChanged: { [weak self] dragging in self?.setRealDragActive(dragging) },
-            onReveal: {
-                NSWorkspace.shared.activateFileViewerSelecting([fallback.revealURL])
-            },
-            onOpenSettings: { [weak self] in
-                guard let request = self?.activeRequest else { return }
-                self?.recordUserActivity()
-                NSWorkspace.shared.open(URL(string: request.permission.settingsURL)!)
-            }
-        )
-        panel.contentView = NSHostingView(rootView: root)
-        panel.setFrame(frame, display: true)
-        if !panel.isVisible {
-            panel.orderFrontRegardless()
+        if interactiveHostingView == nil || panel.contentView == nil {
+            let root = PermissionCompanionCard(
+                fallback: fallback,
+                isGranted: false,
+                onUserInteraction: { [weak self] in self?.recordUserActivity() },
+                onHoverChanged: { [weak self] hovering in self?.setIconHovering(hovering) },
+                onDragStateChanged: { [weak self] dragging in self?.setRealDragActive(dragging) },
+                onReveal: {
+                    NSWorkspace.shared.activateFileViewerSelecting([fallback.revealURL])
+                },
+                onOpenSettings: { [weak self] in
+                    guard let request = self?.activeRequest else { return }
+                    self?.recordUserActivity()
+                    NSWorkspace.shared.open(URL(string: request.permission.settingsURL)!)
+                }
+            )
+            let hostingView = NSHostingView(rootView: root)
+            panel.contentView = hostingView
+            interactiveHostingView = hostingView
         }
+        panel.setFrame(frame, display: true)
         interactivePanel = panel
 
         let demo = demoPanel ?? makeDemoPanel(frame: visibleFrame)
@@ -1013,8 +1104,13 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         if demo.contentView !== view {
             demo.contentView = view
         }
-        if !demo.isVisible {
+        if !demo.isVisible && !isRealDragActive {
             demo.orderFrontRegardless()
+        }
+        if !panel.isVisible {
+            panel.orderFrontRegardless()
+        } else if demo.isVisible {
+            panel.order(.above, relativeTo: demo.windowNumber)
         }
         demoView = view
         demoPanel = demo
@@ -1032,6 +1128,8 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
+        panel.isMovable = false
+        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.acceptsMouseMovedEvents = true
         return panel
@@ -1050,13 +1148,36 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         panel.backgroundColor = .clear
         panel.ignoresMouseEvents = true
         panel.hasShadow = false
+        panel.isMovable = false
+        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         return panel
     }
 
     private func recordUserActivity() {
+        idleTimer?.invalidate()
+        idleTimer = nil
         let timerID = interactionModel.recordUserActivity()
         demoView?.isPaused = true
+        scheduleIdleTimer(timerID)
+    }
+
+    private func setIconHovering(_ hovering: Bool) {
+        idleTimer?.invalidate()
+        idleTimer = nil
+        let timerID: Int?
+        if hovering {
+            _ = interactionModel.beginHover()
+            timerID = nil
+        } else {
+            timerID = interactionModel.endHover()
+        }
+        demoView?.isPaused = interactionModel.isPaused
+        scheduleIdleTimer(timerID)
+    }
+
+    private func scheduleIdleTimer(_ timerID: Int?) {
+        guard let timerID else { return }
         idleTimer?.invalidate()
         idleTimer = Timer.scheduledTimer(withTimeInterval: PermissionCompanionInteractionModel.idleDelay, repeats: false) { [weak self] _ in
             guard let self else { return }
@@ -1068,17 +1189,20 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
     private func setRealDragActive(_ active: Bool) {
         guard isRealDragActive != active else { return }
         isRealDragActive = active
+        let timerID: Int?
         if active {
             idleTimer?.invalidate()
             idleTimer = nil
             interactionModel.beginRealDrag()
+            demoPanel?.orderOut(nil)
+            timerID = nil
         } else {
-            _ = interactionModel.endRealDrag()
+            timerID = interactionModel.endRealDrag()
         }
         demoView?.isPaused = interactionModel.isPaused
         onDragStateChanged?(active)
         if !active {
-            recordUserActivity()
+            scheduleIdleTimer(timerID)
         }
     }
 }
@@ -1097,6 +1221,7 @@ private struct PermissionCompanionCard: View {
     let fallback: PermissionCompanionFallbackPlan
     let isGranted: Bool
     let onUserInteraction: () -> Void
+    let onHoverChanged: (Bool) -> Void
     let onDragStateChanged: (Bool) -> Void
     let onReveal: () -> Void
     let onOpenSettings: () -> Void
@@ -1133,11 +1258,6 @@ private struct PermissionCompanionCard: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isGranted ? grantedAccessibilityLabel : fallback.accessibilityLabel)
         .accessibilityHint(isGranted ? "Relay Runner is ready for \(fallback.permission.displayName)." : fallback.instructions)
-        .onHover { _ in
-            if !isGranted {
-                onUserInteraction()
-            }
-        }
     }
 
     @ViewBuilder
@@ -1162,6 +1282,7 @@ private struct PermissionCompanionCard: View {
                     size: PermissionCompanionTileStyle.iconSize,
                     isEnabled: fallback.payloadEnabled,
                     onUserInteraction: onUserInteraction,
+                    onHoverChanged: onHoverChanged,
                     onDragStateChanged: onDragStateChanged
                 )
                 .frame(
@@ -1223,20 +1344,21 @@ private final class PermissionCompanionDemoView: NSView {
     var reduceMotion = false {
         didSet {
             guard oldValue != reduceMotion else { return }
-            updateTimer()
+            updateDisplayLink()
             needsDisplay = true
         }
     }
     var isPaused = false {
         didSet {
             guard oldValue != isPaused else { return }
-            updateTimer()
+            updateDisplayLink()
             needsDisplay = true
         }
     }
 
-    private var startedAt = Date()
-    private var animationTimer: Timer?
+    private var clock = PermissionCompanionDemoClock()
+    private let displayLinkTarget = PermissionCompanionDemoDisplayLinkTarget()
+    private var displayLink: CADisplayLink?
 
     init(frame frameRect: NSRect, reduceMotion: Bool = false) {
         self.reduceMotion = reduceMotion
@@ -1244,7 +1366,8 @@ private final class PermissionCompanionDemoView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         setAccessibilityElement(false)
-        updateTimer()
+        displayLinkTarget.view = self
+        updateDisplayLink()
     }
 
     required init?(coder: NSCoder) {
@@ -1252,23 +1375,33 @@ private final class PermissionCompanionDemoView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         setAccessibilityElement(false)
-        updateTimer()
+        displayLinkTarget.view = self
+        updateDisplayLink()
     }
 
     deinit {
-        animationTimer?.invalidate()
+        displayLink?.invalidate()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateDisplayLink()
+    }
+
+    fileprivate func displayLinkDidFire(_ link: CADisplayLink) {
+        clock.tick(timestamp: link.timestamp, isPaused: reduceMotion || isPaused)
+        needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let state = PermissionCompanionAnimationPlanner.state(
-            elapsed: Date().timeIntervalSince(startedAt),
+            elapsed: clock.elapsed,
             idlePoint: idlePoint,
             iconCenter: iconCenter,
             targetCenter: targetCenter,
             reduceMotion: reduceMotion
         )
-        drawDropCue(opacity: state.dropCueOpacity)
         if let hint = state.directionalHint {
             drawDirectionalHint(hint)
         }
@@ -1288,16 +1421,19 @@ private final class PermissionCompanionDemoView: NSView {
         drawCursor(at: state.cursor, artwork: PermissionCompanionCursorArtwork.artwork(for: state.phase))
     }
 
-    private func updateTimer() {
-        animationTimer?.invalidate()
-        animationTimer = nil
-        guard PermissionCompanionDemoTimerPolicy.shouldRunTimer(
+    private func updateDisplayLink() {
+        displayLink?.invalidate()
+        displayLink = nil
+        guard PermissionCompanionDemoDisplayPolicy.shouldRunDisplayLink(
             reduceMotion: reduceMotion,
             isPaused: isPaused
-        ) else { return }
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            self?.needsDisplay = true
+        ) else {
+            clock.freeze()
+            return
         }
+        let link = displayLink(target: displayLinkTarget, selector: #selector(PermissionCompanionDemoDisplayLinkTarget.tick(_:)))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
     }
 
     private func drawDirectionalHint(_ hint: PermissionCompanionDirectionalHint) {
@@ -1342,22 +1478,6 @@ private final class PermissionCompanionDemoView: NSView {
         )
     }
 
-    private func drawDropCue(opacity: CGFloat) {
-        guard opacity > 0 else { return }
-        NSColor.systemGreen.withAlphaComponent(opacity).setStroke()
-        let rect = CGRect(x: targetCenter.x - 18, y: targetCenter.y - 18, width: 36, height: 36)
-        let path = NSBezierPath(ovalIn: rect)
-        path.lineWidth = 3
-        path.stroke()
-        let plus = NSBezierPath()
-        plus.move(to: CGPoint(x: targetCenter.x - 8, y: targetCenter.y))
-        plus.line(to: CGPoint(x: targetCenter.x + 8, y: targetCenter.y))
-        plus.move(to: CGPoint(x: targetCenter.x, y: targetCenter.y - 8))
-        plus.line(to: CGPoint(x: targetCenter.x, y: targetCenter.y + 8))
-        plus.lineWidth = 2
-        plus.stroke()
-    }
-
     private func drawCursor(at point: CGPoint, artwork: PermissionCompanionCursorArtwork) {
         let cursor = artwork.cursor
         let image = cursor.image
@@ -1371,5 +1491,13 @@ private final class PermissionCompanionDemoView: NSView {
             operation: .sourceOver,
             fraction: 0.94
         )
+    }
+}
+
+private final class PermissionCompanionDemoDisplayLinkTarget: NSObject {
+    weak var view: PermissionCompanionDemoView?
+
+    @objc func tick(_ link: CADisplayLink) {
+        view?.displayLinkDidFire(link)
     }
 }

@@ -333,6 +333,7 @@ struct DraggableAppIconView: NSViewRepresentable {
     let size: CGFloat
     var isEnabled: Bool = true
     var onUserInteraction: () -> Void = {}
+    var onHoverChanged: (Bool) -> Void = { _ in }
     var onDragStateChanged: (Bool) -> Void = { _ in }
 
     func makeNSView(context: Context) -> AppFileDragView {
@@ -340,11 +341,15 @@ struct DraggableAppIconView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: AppFileDragView, context: Context) {
+        let desiredSize = NSSize(width: size, height: size)
         view.bundleURL = bundleURL
         view.image = Self.icon(for: bundleURL)
-        view.frame.size = NSSize(width: size, height: size)
+        if view.frame.size != desiredSize {
+            view.frame.size = desiredSize
+        }
         view.draggingEnabled = isEnabled
         view.onUserInteraction = onUserInteraction
+        view.onHoverChanged = onHoverChanged
         view.onDragStateChanged = onDragStateChanged
     }
 
@@ -424,11 +429,14 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
     var bundleURL: URL?
     var draggingEnabled = true
     var onUserInteraction: () -> Void = {}
+    var onHoverChanged: (Bool) -> Void = { _ in }
     var onDragStateChanged: (Bool) -> Void = { _ in }
     var beginDraggingSessionHandler: (([NSDraggingItem], NSEvent) -> Void)?
+    var preventWindowOrderingHandler: (() -> Void)?
     private var mouseDownPoint: NSPoint?
     private var mouseDownEvent: NSEvent?
     private var dragSessionActive = false
+    private var isHovering = false
     private var trackingArea: NSTrackingArea?
 
     init() {
@@ -456,7 +464,7 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect],
+            options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
             owner: self,
             userInfo: nil
         )
@@ -465,22 +473,25 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        onUserInteraction()
+        setHovering(true)
     }
 
-    override func mouseMoved(with event: NSEvent) {
-        onUserInteraction()
+    override func mouseExited(with event: NSEvent) {
+        setHovering(false)
+    }
+
+    override func shouldDelayWindowOrdering(for event: NSEvent) -> Bool {
+        true
     }
 
     override func mouseDown(with event: NSEvent) {
-        onUserInteraction()
+        setHovering(true)
         mouseDownPoint = convert(event.locationInWindow, from: nil)
         mouseDownEvent = event
         dragSessionActive = false
     }
 
     override func mouseDragged(with event: NSEvent) {
-        onUserInteraction()
         guard let bundleURL,
               let image,
               let mouseDownPoint,
@@ -499,13 +510,13 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
         dragSessionActive = true
         onDragStateChanged(true)
 
+        preventWindowOrdering()
         startDraggingSession(with: [payload.item], event: mouseDownEvent)
         self.mouseDownPoint = nil
         self.mouseDownEvent = nil
     }
 
     override func mouseUp(with event: NSEvent) {
-        onUserInteraction()
         mouseDownPoint = nil
         mouseDownEvent = nil
     }
@@ -532,6 +543,20 @@ final class AppFileDragView: NSImageView, NSDraggingSource {
             return
         }
         beginDraggingSession(with: items, event: event, source: self)
+    }
+
+    private func preventWindowOrdering() {
+        if let preventWindowOrderingHandler {
+            preventWindowOrderingHandler()
+        } else {
+            NSApp.preventWindowOrdering()
+        }
+    }
+
+    private func setHovering(_ hovering: Bool) {
+        guard isHovering != hovering else { return }
+        isHovering = hovering
+        onHoverChanged(hovering)
     }
 }
 
