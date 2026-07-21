@@ -4,7 +4,7 @@ import XCTest
 
 final class OnboardingProgressTests: XCTestCase {
 
-    func testSimplifiedMicrophoneOnlyProgressStartsAtOneOfOne() {
+    func testSimplifiedMicrophoneOnlyProgressIsNotSettingsHosted() {
         let label = OnboardingView.progressLabel(
             for: .microphone,
             simplified: true,
@@ -16,12 +16,28 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(label, "1 of 1")
+        XCTAssertNil(label)
     }
 
-    func testFullFlowMicrophoneKeepsFullSequenceCount() {
-        let label = OnboardingView.progressLabel(
-            for: .microphone,
+    func testFullFlowUsesNonPermissionSetupProgress() {
+        let agentChoice = OnboardingView.progressLabel(
+            for: .agentChoice,
+            simplified: false,
+            requiresAgentChoice: false,
+            permissionStatus: { _ in .granted },
+            venvInstalled: true,
+            agentSignedIn: true
+        )
+        let python = OnboardingView.progressLabel(
+            for: .pythonSetup,
+            simplified: false,
+            requiresAgentChoice: false,
+            permissionStatus: { _ in .granted },
+            venvInstalled: true,
+            agentSignedIn: true
+        )
+        let login = OnboardingView.progressLabel(
+            for: .agentLogin,
             simplified: false,
             requiresAgentChoice: false,
             permissionStatus: { _ in .granted },
@@ -29,10 +45,12 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(label, "2 of 7")
+        XCTAssertEqual(agentChoice, "1 of 3")
+        XCTAssertEqual(python, "2 of 3")
+        XCTAssertEqual(login, "3 of 3")
     }
 
-    func testFullFlowIncludesInputMonitoringBeforeRuntimeSetup() {
+    func testFullFlowDoesNotIncludeInputMonitoringProgress() {
         let label = OnboardingView.progressLabel(
             for: .inputMonitoring,
             simplified: false,
@@ -42,10 +60,10 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(label, "4 of 7")
+        XCTAssertNil(label)
     }
 
-    func testSimplifiedInputMonitoringMissingShowsSingleRecoveryStep() {
+    func testSimplifiedInputMonitoringMissingDoesNotCreateSettingsRecoveryStep() {
         let label = OnboardingView.progressLabel(
             for: .inputMonitoring,
             simplified: true,
@@ -57,7 +75,7 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(label, "1 of 1")
+        XCTAssertNil(label)
     }
 
     func testSimplifiedProviderChoiceDoesNotIncludeParentPermissionGuidance() {
@@ -109,7 +127,7 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertNil(accessibility)
     }
 
-    func testResumeRestoresInterruptedInputMonitoringStep() {
+    func testPermissionResumeMarkerSkipsToReadyWhenNonPermissionSetupIsComplete() {
         let step = OnboardingView.initialStep(
             simplified: true,
             resumeStep: .inputMonitoring,
@@ -121,7 +139,7 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(step, .inputMonitoring)
+        XCTAssertEqual(step, .ready)
     }
 
     func testGrantedInputMonitoringResumeContinuesToRuntimeSetup() {
@@ -158,7 +176,7 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(next, .pythonSetup)
     }
 
-    func testSimplifiedAccessibilityAndScreenRecordingParticipateInProgress() {
+    func testSimplifiedAccessibilityAndScreenRecordingDoNotParticipateInSettingsProgress() {
         let accessibility = OnboardingView.progressLabel(
             for: .parentAccessibility,
             simplified: true,
@@ -180,8 +198,8 @@ final class OnboardingProgressTests: XCTestCase {
             agentSignedIn: true
         )
 
-        XCTAssertEqual(accessibility, "1 of 2")
-        XCTAssertEqual(screenRecording, "2 of 2")
+        XCTAssertNil(accessibility)
+        XCTAssertNil(screenRecording)
     }
 
     func testReadySummaryNamesDeferredInputMonitoringFeatures() {

@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import SwiftUI
 
 struct OnboardingIntroFrame: Equatable {
     let activePhrase: String
@@ -52,7 +53,7 @@ enum OnboardingIntroPolicy {
         let shouldComplete = skipRequested || timelineComplete
         return OnboardingIntroCompletionPlan(
             startsTimeline: revealCompleted && !shouldComplete,
-            cleansUpSurface: shouldComplete,
+            cleansUpSurface: false,
             performsHandoff: shouldComplete
         )
     }
@@ -60,6 +61,9 @@ enum OnboardingIntroPolicy {
 
 protocol OnboardingIntroPresenting: AnyObject {
     func present(completion: @escaping () -> Void)
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void)
+    func dismiss(completion: @escaping () -> Void)
 }
 
 enum OnboardingIntroTimeline {
@@ -68,12 +72,12 @@ enum OnboardingIntroTimeline {
         "First thing’s first",
         "I need a few permissions",
     ]
-    static let initialBrandHold: TimeInterval = 0.35
-    static let typingInterval: TimeInterval = 0.035
-    static let eraseInterval: TimeInterval = 0.020
-    static let phraseHold: TimeInterval = 0.55
-    static let dotFieldTravel: TimeInterval = 1.15
-    static let finalPhraseHold: TimeInterval = 0.85
+    static let initialBrandHold: TimeInterval = 0.70
+    static let typingInterval: TimeInterval = 0.065
+    static let eraseInterval: TimeInterval = 0.045
+    static let phraseHold: TimeInterval = 1.05
+    static let dotFieldTravel: TimeInterval = 2.00
+    static let finalPhraseHold: TimeInterval = 1.50
     static let cursorBlinkPeriod: TimeInterval = 0.8
 
     static var duration: TimeInterval {
@@ -239,61 +243,6 @@ enum OnboardingIntroTimeline {
     }
 }
 
-struct OnboardingHalftoneFieldFrame: Equatable {
-    let frame: CGRect
-    let clipFrame: CGRect
-    let scale: CGFloat
-}
-
-enum OnboardingHalftoneFieldLayout {
-    static let referenceWorkspaceSize = CGSize(width: 1688, height: 736)
-    static let referenceFieldSize = CGSize(width: 1917, height: 840)
-    static let referenceStartOrigin = CGPoint(x: -114, y: 374)
-    static let referenceRaisedY: CGFloat = 94
-    static let dotSpacing: CGFloat = 16.95
-
-    static func plan(in workspaceFrame: CGRect, progress: CGFloat) -> OnboardingHalftoneFieldFrame {
-        let scale = workspaceFrame.width / referenceWorkspaceSize.width
-        let clamped = min(max(progress, 0), 1)
-        let y = referenceStartOrigin.y
-            + (referenceRaisedY - referenceStartOrigin.y) * clamped
-        let frame = CGRect(
-            x: workspaceFrame.minX + referenceStartOrigin.x * scale,
-            y: workspaceFrame.minY + y * scale,
-            width: referenceFieldSize.width * scale,
-            height: referenceFieldSize.height * scale
-        )
-        return OnboardingHalftoneFieldFrame(
-            frame: frame,
-            clipFrame: workspaceFrame,
-            scale: scale
-        )
-    }
-
-    static func dotDiameter(localX: CGFloat, localY: CGFloat, scale: CGFloat) -> CGFloat {
-        let vertical = smoothStep(edge0: 120 * scale, edge1: 830 * scale, value: localY)
-        let wave = 0.5 + 0.5 * sin((localX / max(scale, 0.001)) * 0.034 + (localY / max(scale, 0.001)) * 0.022)
-        return (1.05 + 9.95 * vertical + 1.1 * wave * vertical) * scale
-    }
-
-    static func dotAlpha(localX: CGFloat,
-                         localY: CGFloat,
-                         fieldSize: CGSize,
-                         diameter: CGFloat) -> CGFloat {
-        let vertical = smoothStep(edge0: fieldSize.height * 0.16, edge1: fieldSize.height * 0.72, value: localY)
-        let leftFade = smoothStep(edge0: 0, edge1: fieldSize.width * 0.12, value: localX)
-        let rightFade = smoothStep(edge0: 0, edge1: fieldSize.width * 0.12, value: fieldSize.width - localX)
-        let sizeBoost = min(max((diameter - 1) / 11, 0), 1)
-        return min(max((0.22 + 0.78 * vertical) * leftFade * rightFade * (0.78 + 0.22 * sizeBoost), 0), 1)
-    }
-
-    private static func smoothStep(edge0: CGFloat, edge1: CGFloat, value: CGFloat) -> CGFloat {
-        guard edge0 != edge1 else { return value < edge0 ? 0 : 1 }
-        let t = min(max((value - edge0) / (edge1 - edge0), 0), 1)
-        return t * t * (3 - 2 * t)
-    }
-}
-
 enum OnboardingIntroTextLayout {
     static let lineHeight: CGFloat = 66
     static let referenceWorkspaceHeight: CGFloat = 736
@@ -317,13 +266,13 @@ enum OnboardingIntroTextLayout {
 final class OnboardingIntroController: OnboardingIntroPresenting {
     private var panel: BoardOverlayPanel?
     private weak var revealContainer: BoardRevealContainerView?
-    private weak var textView: OnboardingIntroTextView?
+    private weak var rootView: OnboardingIntroRootView?
     private var timelineTimer: Timer?
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var startedAt: CFTimeInterval?
-    private var completion: (() -> Void)?
-    private var isCompleting = false
+    private var cinematicCompletion: (() -> Void)?
+    private var cinematicHandoffInProgress = false
 
     deinit {
         timelineTimer?.invalidate()
@@ -333,6 +282,7 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         if let localMonitor {
             NSEvent.removeMonitor(localMonitor)
         }
+        rootView?.stopAnimations()
         panel?.orderOut(nil)
         panel?.contentView = nil
     }
@@ -343,8 +293,78 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
             return
         }
 
-        self.completion = completion
-        isCompleting = false
+        cinematicCompletion = completion
+        cinematicHandoffInProgress = false
+
+        let surface = ensureSurface()
+        surface.rootView.showCinematic()
+        surface.rootView.timelineFrame = OnboardingIntroTimeline.frame(at: 0)
+        installSkipMonitors()
+
+        let startTimeline = { [weak self] in
+            guard let self,
+                  OnboardingIntroPolicy.completionPlan(
+                    revealCompleted: true,
+                    skipRequested: false,
+                    timelineComplete: false,
+                    isCompleting: self.cinematicHandoffInProgress
+                  ).startsTimeline else { return }
+            self.startTimeline()
+        }
+
+        if surface.didCreate {
+            DispatchQueue.main.async { [weak container = surface.container] in
+                container?.animateReveal(completion: startTimeline)
+            }
+        } else {
+            startTimeline()
+        }
+    }
+
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void) {
+        timelineTimer?.invalidate()
+        timelineTimer = nil
+        removeSkipMonitors()
+
+        let surface = ensureSurface()
+        surface.rootView.showPermissionPrompt(presentation, action: action)
+
+        guard surface.didCreate else { return }
+        DispatchQueue.main.async { [weak container = surface.container] in
+            container?.animateReveal {}
+        }
+    }
+
+    func dismiss(completion: @escaping () -> Void) {
+        timelineTimer?.invalidate()
+        timelineTimer = nil
+        removeSkipMonitors()
+
+        let panel = panel
+        let container = revealContainer
+
+        let complete: () -> Void = { [weak self, weak panel] in
+            self?.rootView?.stopAnimations()
+            panel?.orderOut(nil)
+            panel?.contentView = nil
+            self?.panel = nil
+            self?.revealContainer = nil
+            self?.rootView = nil
+            completion()
+        }
+
+        if let container {
+            container.animateDismiss(completion: complete)
+        } else {
+            complete()
+        }
+    }
+
+    private func ensureSurface() -> (rootView: OnboardingIntroRootView, container: BoardRevealContainerView, didCreate: Bool) {
+        if let rootView, let revealContainer {
+            return (rootView, revealContainer, false)
+        }
 
         let p = BoardOverlayPanel()
         let screen = Self.currentMouseScreen() ?? NSScreen.main
@@ -355,14 +375,13 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         let displayGeometry = screen.map(NotchStatusDisplayGeometry.init(screen:))
             ?? NotchStatusDisplayGeometry(screenFrame: p.frame)
         let revealPlan = BoardRevealTransitionPlanner.plan(for: displayGeometry)
-        let textView = OnboardingIntroTextView(frame: contentFrame)
-        textView.autoresizingMask = [.width, .height]
-        textView.layoutFrame = revealPlan.expandedFrame
-        textView.timelineFrame = OnboardingIntroTimeline.frame(at: 0)
+        let rootView = OnboardingIntroRootView(frame: contentFrame)
+        rootView.autoresizingMask = [.width, .height]
+        rootView.layoutFrame = revealPlan.expandedFrame
 
         let container = BoardRevealContainerView(
             frame: contentFrame,
-            contentView: textView,
+            contentView: rootView,
             displayGeometry: displayGeometry,
             startsLoading: false
         )
@@ -372,21 +391,8 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         p.orderFrontRegardless()
         panel = p
         revealContainer = container
-        self.textView = textView
-        installSkipMonitors()
-
-        DispatchQueue.main.async { [weak self, weak container] in
-            container?.animateReveal { [weak self] in
-                guard let self,
-                      OnboardingIntroPolicy.completionPlan(
-                        revealCompleted: true,
-                        skipRequested: false,
-                        timelineComplete: false,
-                        isCompleting: self.isCompleting
-                      ).startsTimeline else { return }
-                self.startTimeline()
-            }
-        }
+        self.rootView = rootView
+        return (rootView, container, true)
     }
 
     func skip() {
@@ -394,9 +400,9 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
             revealCompleted: false,
             skipRequested: true,
             timelineComplete: false,
-            isCompleting: isCompleting
-        ).cleansUpSurface else { return }
-        finish()
+            isCompleting: cinematicHandoffInProgress
+        ).performsHandoff else { return }
+        completeCinematic()
     }
 
     private func startTimeline() {
@@ -415,43 +421,27 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
     private func tick() {
         guard let startedAt else { return }
         let frame = OnboardingIntroTimeline.frame(at: CACurrentMediaTime() - startedAt)
-        textView?.timelineFrame = frame
+        rootView?.timelineFrame = frame
         if OnboardingIntroPolicy.completionPlan(
             revealCompleted: true,
             skipRequested: false,
             timelineComplete: frame.isComplete,
-            isCompleting: isCompleting
-        ).cleansUpSurface {
-            finish()
+            isCompleting: cinematicHandoffInProgress
+        ).performsHandoff {
+            completeCinematic()
         }
     }
 
-    private func finish() {
-        guard !isCompleting else { return }
-        isCompleting = true
+    private func completeCinematic() {
+        guard !cinematicHandoffInProgress else { return }
+        cinematicHandoffInProgress = true
         timelineTimer?.invalidate()
         timelineTimer = nil
         removeSkipMonitors()
 
-        let completion = self.completion
-        self.completion = nil
-        let panel = panel
-        let container = revealContainer
-
-        let complete: () -> Void = { [weak self, weak panel] in
-            panel?.orderOut(nil)
-            panel?.contentView = nil
-            self?.panel = nil
-            self?.revealContainer = nil
-            self?.textView = nil
-            completion?()
-        }
-
-        if let container {
-            container.animateDismiss(completion: complete)
-        } else {
-            complete()
-        }
+        let completion = cinematicCompletion
+        cinematicCompletion = nil
+        completion?()
     }
 
     private func installSkipMonitors() {
@@ -480,6 +470,238 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         NSScreen.screens.first { screen in
             NSMouseInRect(NSEvent.mouseLocation, screen.frame, false)
         }
+    }
+}
+
+private final class OnboardingIntroRootView: NSView {
+    var layoutFrame: NSRect = .zero {
+        didSet {
+            applyLayout(to: currentContentView)
+            needsLayout = true
+        }
+    }
+
+    var timelineFrame = OnboardingIntroTimeline.frame(at: 0) {
+        didSet {
+            cinematicView?.timelineFrame = timelineFrame
+        }
+    }
+
+    private weak var cinematicView: OnboardingIntroCinematicView?
+    private var currentContentView: NSView?
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        setAccessibilityElement(true)
+        setAccessibilityLabel("Relay Runner setup is getting started")
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func showCinematic() {
+        let view = OnboardingIntroCinematicView(frame: bounds)
+        view.autoresizingMask = [.width, .height]
+        view.layoutFrame = layoutFrame
+        view.timelineFrame = timelineFrame
+        cinematicView = view
+        replaceContent(with: view)
+    }
+
+    func showPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                              action: @escaping () -> Void) {
+        let view = OnboardingIntroPermissionSurfaceView(
+            frame: bounds,
+            presentation: presentation,
+            action: action
+        )
+        view.autoresizingMask = [.width, .height]
+        view.layoutFrame = layoutFrame
+        cinematicView = nil
+        replaceContent(with: view)
+    }
+
+    func stopAnimations() {
+        cinematicView?.stopAnimations()
+    }
+
+    override func layout() {
+        super.layout()
+        currentContentView?.frame = bounds
+        applyLayout(to: currentContentView)
+    }
+
+    private func replaceContent(with view: NSView) {
+        currentContentView?.removeFromSuperview()
+        currentContentView = view
+        addSubview(view)
+        applyLayout(to: view)
+    }
+
+    private func applyLayout(to view: NSView?) {
+        if let view = view as? OnboardingIntroCinematicView {
+            view.layoutFrame = layoutFrame
+        } else if let view = view as? OnboardingIntroPermissionSurfaceView {
+            view.layoutFrame = layoutFrame
+        }
+    }
+}
+
+private final class OnboardingIntroCinematicView: NSView {
+    var layoutFrame: NSRect = .zero {
+        didSet { layoutSubtreeIfNeeded() }
+    }
+
+    var timelineFrame = OnboardingIntroTimeline.frame(at: 0) {
+        didSet {
+            textView.timelineFrame = timelineFrame
+            particleHost.update(progress: timelineFrame.dotFieldProgress,
+                                opacity: timelineFrame.dotFieldOpacity)
+        }
+    }
+
+    private let particleHost = OnboardingIntroParticleHostView(frame: .zero)
+    private let textView = OnboardingIntroTextView(frame: .zero)
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        particleHost.autoresizingMask = []
+        textView.frame = bounds
+        textView.autoresizingMask = [.width, .height]
+        addSubview(particleHost)
+        addSubview(textView)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func stopAnimations() {
+        particleHost.stop()
+    }
+
+    override func layout() {
+        super.layout()
+        particleHost.frame = layoutFrame
+        particleHost.layoutSubtreeIfNeeded()
+        textView.frame = bounds
+        textView.layoutFrame = layoutFrame
+    }
+}
+
+private final class OnboardingIntroParticleHostView: NSView {
+    private let renderer = ParticleFieldRenderer()
+    private var attached = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.masksToBounds = true
+        alphaValue = 0
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        layoutRenderer()
+    }
+
+    override func layout() {
+        super.layout()
+        layoutRenderer()
+    }
+
+    func update(progress: CGFloat, opacity: CGFloat) {
+        let clampedProgress = min(max(progress, 0), 1)
+        let clampedOpacity = min(max(opacity, 0), 1)
+        alphaValue = clampedOpacity
+        layer?.transform = CATransform3DMakeTranslation(
+            0,
+            (1 - clampedProgress) * bounds.height * 0.08,
+            0
+        )
+        guard clampedOpacity > 0 else {
+            renderer.setIntensity(0)
+            renderer.transition(to: nil)
+            return
+        }
+        ensureAttached()
+        renderer.setIntensity(Double(clampedOpacity))
+        renderer.transition(to: .tts)
+    }
+
+    func stop() {
+        renderer.transition(to: nil)
+    }
+
+    private func ensureAttached() {
+        guard !attached else { return }
+        renderer.attach(to: self)
+        attached = true
+    }
+
+    private func layoutRenderer() {
+        ensureAttached()
+        renderer.layoutInBounds(bounds, backingScale: window?.screen?.backingScaleFactor)
+    }
+}
+
+private final class OnboardingIntroPermissionSurfaceView: NSView {
+    var layoutFrame: NSRect = .zero {
+        didSet { needsLayout = true }
+    }
+
+    private let hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+
+    override var isFlipped: Bool { true }
+
+    init(frame frameRect: NSRect,
+         presentation: OnboardingPermissionPromptPresentation,
+         action: @escaping () -> Void) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        addSubview(hostingView)
+        update(presentation: presentation, action: action)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        hostingView.frame = layoutFrame
+    }
+
+    private func update(presentation: OnboardingPermissionPromptPresentation,
+                        action: @escaping () -> Void) {
+        hostingView.rootView = AnyView(
+            ZStack {
+                Color.clear
+                OnboardingPermissionPromptView(
+                    presentation: presentation,
+                    action: action
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        )
     }
 }
 
@@ -528,81 +750,6 @@ private final class OnboardingIntroTextView: NSView {
             reserveWidth: reserveSize.width,
             visibleWidth: visibleText.size(withAttributes: attributes).width
         )
-        drawHalftoneFieldIfNeeded()
         visibleText.draw(in: drawRect, withAttributes: attributes)
-    }
-
-    private func drawHalftoneFieldIfNeeded() {
-        guard timelineFrame.dotFieldOpacity > 0 else { return }
-        let plan = OnboardingHalftoneFieldLayout.plan(
-            in: layoutFrame,
-            progress: timelineFrame.dotFieldProgress
-        )
-        guard plan.scale > 0 else { return }
-        NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(rect: plan.clipFrame).addClip()
-
-        let fieldFrame = plan.frame
-        let spacing = OnboardingHalftoneFieldLayout.dotSpacing * plan.scale
-        guard spacing > 0 else { return }
-        let startColumn = max(0, Int(floor((plan.clipFrame.minX - fieldFrame.minX) / spacing)) - 1)
-        let endColumn = Int(ceil((plan.clipFrame.maxX - fieldFrame.minX) / spacing)) + 1
-        let startRow = max(0, Int(floor((plan.clipFrame.minY - fieldFrame.minY) / spacing)) - 1)
-        let endRow = Int(ceil((plan.clipFrame.maxY - fieldFrame.minY) / spacing)) + 1
-        let fieldSize = fieldFrame.size
-
-        for row in startRow...endRow {
-            let localY = CGFloat(row) * spacing
-            guard localY >= 0, localY <= fieldSize.height else { continue }
-            for column in startColumn...endColumn {
-                let localX = CGFloat(column) * spacing
-                guard localX >= 0, localX <= fieldSize.width else { continue }
-
-                let jitter = deterministicJitter(column: column, row: row, scale: plan.scale)
-                let center = CGPoint(
-                    x: fieldFrame.minX + localX + jitter.x,
-                    y: fieldFrame.minY + localY + jitter.y
-                )
-                guard plan.clipFrame.insetBy(dx: -14, dy: -14).contains(center) else { continue }
-
-                let diameter = OnboardingHalftoneFieldLayout.dotDiameter(
-                    localX: localX,
-                    localY: localY,
-                    scale: plan.scale
-                )
-                let alpha = OnboardingHalftoneFieldLayout.dotAlpha(
-                    localX: localX,
-                    localY: localY,
-                    fieldSize: fieldSize,
-                    diameter: diameter
-                ) * timelineFrame.dotFieldOpacity
-                guard alpha > 0.01 else { continue }
-
-                let blueMix = min(max(localY / max(fieldSize.height, 1), 0), 1)
-                let color = NSColor(
-                    srgbRed: 0.12 + 0.18 * (1 - blueMix),
-                    green: 0.22 + 0.42 * (1 - blueMix),
-                    blue: 1.0,
-                    alpha: alpha * 0.82
-                )
-                color.setFill()
-                NSBezierPath(ovalIn: CGRect(
-                    x: center.x - diameter / 2,
-                    y: center.y - diameter / 2,
-                    width: diameter,
-                    height: diameter
-                )).fill()
-            }
-        }
-
-        NSGraphicsContext.restoreGraphicsState()
-    }
-
-    private func deterministicJitter(column: Int, row: Int, scale: CGFloat) -> CGPoint {
-        let seed = Double(column * 73_856_093 ^ row * 19_349_663)
-        return CGPoint(
-            x: CGFloat(sin(seed) * 1.4) * scale,
-            y: CGFloat(cos(seed * 0.73) * 1.4) * scale
-        )
     }
 }
