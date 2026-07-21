@@ -12,7 +12,7 @@ final class AppTypographyTests: XCTestCase {
     func testAppTypographyUsesCompactCalibratedScale() {
         XCTAssertEqual(AppTypography.definition(for: .menuTab).size, 13)
         XCTAssertEqual(AppTypography.definition(for: .appTitle).size, 22)
-        XCTAssertEqual(AppTypography.definition(for: .onboardingHero).size, 64)
+        XCTAssertEqual(AppTypography.definition(for: .onboardingHero).size, 48)
         XCTAssertEqual(AppTypography.definition(for: .screenTitle).size, 17)
         XCTAssertEqual(AppTypography.definition(for: .workspaceHeading).size, 14)
         XCTAssertEqual(AppTypography.definition(for: .sectionHeading).size, 13)
@@ -34,6 +34,7 @@ final class AppTypographyTests: XCTestCase {
             AppTypography.definition(for: .programEmptyState).size,
             AppTypography.definition(for: .sectionHeading).size
         )
+        XCTAssertEqual(AppTypography.definition(for: .permissionButton).size, 16)
         XCTAssertEqual(AppTypography.definition(for: .count).size, 10)
         XCTAssertEqual(AppTypography.definition(for: .caption).size, 9)
     }
@@ -96,7 +97,11 @@ final class AppTypographyTests: XCTestCase {
         )
         XCTAssertEqual(
             AppTypography.resolved(.onboardingHero, availablePostScriptNames: available),
-            .init(postScriptName: "PPTelegraf-Regular", size: 64, fallbackWeight: .regular)
+            .init(postScriptName: "PPTelegraf-Regular", size: 48, fallbackWeight: .regular)
+        )
+        XCTAssertEqual(
+            AppTypography.resolved(.permissionButton, availablePostScriptNames: available),
+            .init(postScriptName: "PPMori-SemiBold", size: 16, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.notchStatus, availablePostScriptNames: available),

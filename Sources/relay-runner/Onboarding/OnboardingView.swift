@@ -1,6 +1,59 @@
 import AppKit
 import SwiftUI
 
+struct OnboardingPermissionPromptPresentation: Equatable {
+    let permission: PermissionKind
+    let prompt: String
+    let supportingCopy: String?
+    let buttonTitle: String
+    let isButtonEnabled: Bool
+}
+
+enum OnboardingPermissionTreatment {
+    static let buttonTitle = "Grant permission"
+    static let buttonSize = CGSize(width: 195, height: 50)
+    static let buttonCornerRadius: CGFloat = 12
+    static let buttonHorizontalPadding: CGFloat = 32
+    static let buttonVerticalPadding: CGFloat = 16
+    static let buttonLineHeight: CGFloat = 18
+    static let buttonBorderColor = NSColor(srgbRed: 17 / 255, green: 22 / 255, blue: 29 / 255, alpha: 1)
+    static let promptMaxWidth: CGFloat = 1180
+    static let supportingMaxWidth: CGFloat = 620
+    static let promptMinHeight: CGFloat = 560
+
+    static func prompt(for kind: PermissionKind) -> String {
+        switch kind {
+        case .microphone:
+            return "Let’s start with your mic /"
+        case .accessibility:
+            return "Next let’s set up Relay Actions with accessibility /"
+        case .inputMonitoring:
+            return "Next let’s set up your hotkeys with input monitoring /"
+        case .screenRecording:
+            return "Lastly we’re going to need screen recording /"
+        }
+    }
+
+    static func presentation(permission: PermissionKind,
+                             status: PermissionStatus,
+                             explanation: String,
+                             likelyRestricted: Bool) -> OnboardingPermissionPromptPresentation {
+        let supportingCopy: String?
+        if permission == .accessibility || likelyRestricted {
+            supportingCopy = explanation
+        } else {
+            supportingCopy = nil
+        }
+        return OnboardingPermissionPromptPresentation(
+            permission: permission,
+            prompt: prompt(for: permission),
+            supportingCopy: supportingCopy,
+            buttonTitle: status == .granted ? "Continue" : buttonTitle,
+            isButtonEnabled: true
+        )
+    }
+}
+
 /// First-launch onboarding flow. Walks through agent choice, workspace folder,
 /// microphone access, optional Input Monitoring, local Python setup, and agent
 /// sign-in.
@@ -70,10 +123,6 @@ struct OnboardingView: View {
     /// Kept for legacy resume-state compatibility. Current Relay Actions and
     /// Relay Vision paths use Relay Runner app permissions.
     @State private var parentPermissionsReviewed: Bool = false
-    /// Tracks permission panes opened automatically in this view lifetime,
-    /// so resuming the step can be helpful without repeatedly yanking focus
-    /// back to System Settings every time polling updates.
-    @State private var autoOpenedPermissionKinds: Set<PermissionKind> = []
     @State private var autoOpenedParentPermissionSteps: Set<OnboardingStepID> = []
     @State private var autoAdvancedPermissionKinds: Set<PermissionKind> = []
     @State private var activePermissionSetupKind: PermissionKind?
@@ -211,9 +260,15 @@ struct OnboardingView: View {
     }
 
     var body: some View {
-        SettingsStack {
-            SettingsSection {
-                content
+        Group {
+            if let kind = step.kind {
+                permissionView(for: kind)
+            } else {
+                SettingsStack {
+                    SettingsSection {
+                        content
+                    }
+                }
             }
         }
         .onAppear {
@@ -227,7 +282,6 @@ struct OnboardingView: View {
                 venvInstaller.install()
             }
             advancePastGrantedPermissionIfNeeded()
-            openPermissionPaneAutomaticallyIfNeeded()
             syncSurfaceVisibility()
         }
         .onChange(of: step) { _, new in
@@ -239,7 +293,6 @@ struct OnboardingView: View {
                 venvInstaller.install()
             }
             advancePastGrantedPermissionIfNeeded()
-            openPermissionPaneAutomaticallyIfNeeded()
             syncSurfaceVisibility()
             publishPresentation()
         }
@@ -546,39 +599,16 @@ struct OnboardingView: View {
     private func permissionView(for kind: PermissionKind) -> some View {
         let status = permissions.status(for: kind)
         let restricted = permissions.likelyRestricted.contains(kind)
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                statusBadge(for: status)
-                Text(permissionTitle(for: kind))
-                    .font(AppTypography.font(.screenTitle))
-            }
-            Text(permissionExplanation(for: kind))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            // The instruction box explains "find me in the list and toggle
-            // me on". Skip it for fresh microphone (.notDetermined) where
-            // the system prompt handles the grant directly — but show it
-            // for .denied/.restricted, where the only path is Settings.
-            if kind != .microphone || status == .denied || status == .restricted {
-                Text(permissionInstruction(for: kind, status: status))
-                    .font(AppTypography.font(.body))
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.25))
-                    )
-            }
-            if kind != .microphone {
-                permissionAlternativeBox(for: kind)
-            }
-            if restricted {
-                mdmRestrictionBox(for: kind)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        let presentation = OnboardingPermissionTreatment.presentation(
+            permission: kind,
+            status: status,
+            explanation: permissionExplanation(for: kind),
+            likelyRestricted: restricted
+        )
+        return OnboardingPermissionPromptView(
+            presentation: presentation,
+            action: { permissionPromptAction(for: kind) }
+        )
     }
 
     private func permissionAlternativeBox(for kind: PermissionKind) -> some View {
@@ -1183,14 +1213,8 @@ struct OnboardingView: View {
                 isEnabled: hasConfirmedWorkingDirectory,
                 shortcut: .default
             ) { beginGuidedSetup() }
-        case .microphone:
-            return microphonePrimaryAction
-        case .inputMonitoring:
-            return inputMonitoringPrimaryAction
-        case .parentAccessibility:
-            return permissionPrimaryAction(for: .accessibility)
-        case .parentScreenRecording:
-            return permissionPrimaryAction(for: .screenRecording)
+        case .microphone, .inputMonitoring, .parentAccessibility, .parentScreenRecording:
+            return nil
         case .pythonSetup:
             return pythonPrimaryAction
         case .agentLogin:
@@ -1263,6 +1287,9 @@ struct OnboardingView: View {
                 prominence: .secondary,
                 shortcut: .cancel
             ) { onHostDismissed() }
+        }
+        if let kind = step.kind, activePermissionSetupKind == kind {
+            return nil
         }
         if step != .ready {
             return footerAction(
@@ -1346,6 +1373,15 @@ struct OnboardingView: View {
                 startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
             }
         }
+    }
+
+    private func permissionPromptAction(for kind: PermissionKind) {
+        if permissions.status(for: kind) == .granted {
+            advance()
+            return
+        }
+        persistResume()
+        startPermissionSetup(kind, purpose: permissionExplanation(for: kind))
     }
 
     private var pythonPrimaryAction: OnboardingFooterAction {
@@ -1818,7 +1854,7 @@ struct OnboardingView: View {
     }
 
     static func initialSurfaceVisible(for step: Step) -> Bool {
-        step.kind == nil
+        true
     }
 
     static func surfaceVisible(for step: Step,
@@ -1909,16 +1945,6 @@ struct OnboardingView: View {
         }
     }
 
-    private func openPermissionPaneAutomaticallyIfNeeded() {
-        guard let kind = step.kind,
-              permissions.status(for: kind) != .granted,
-              !autoOpenedPermissionKinds.contains(kind) else {
-            return
-        }
-        autoOpenedPermissionKinds.insert(kind)
-        startPermissionSetup(kind, purpose: permissionExplanation(for: kind))
-    }
-
     private func syncSurfaceVisibility() {
         onSurfaceVisibilityChanged(Self.surfaceVisible(
             for: step,
@@ -1941,5 +1967,61 @@ struct OnboardingView: View {
         default:
             return nil
         }
+    }
+}
+
+struct OnboardingPermissionPromptView: View {
+    let presentation: OnboardingPermissionPromptPresentation
+    let action: () -> Void
+
+    var body: some View {
+        VStack(spacing: 54) {
+            Text(presentation.prompt)
+                .font(AppTypography.font(.onboardingHero))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.72)
+                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
+                .accessibilityAddTraits(.isHeader)
+
+            Button(action: action) {
+                Text(presentation.buttonTitle)
+                    .font(AppTypography.font(.permissionButton))
+                    .foregroundStyle(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .frame(
+                        width: OnboardingPermissionTreatment.buttonSize.width,
+                        height: OnboardingPermissionTreatment.buttonSize.height
+                    )
+                    .background(
+                        RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
+                            .fill(Color.white)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
+                            .stroke(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!presentation.isButtonEnabled)
+            .accessibilityLabel(presentation.buttonTitle)
+            .help(presentation.buttonTitle)
+
+            if let supportingCopy = presentation.supportingCopy {
+                Text(supportingCopy)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(presentation.prompt)
     }
 }

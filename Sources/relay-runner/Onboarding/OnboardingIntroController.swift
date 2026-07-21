@@ -4,7 +4,19 @@ import QuartzCore
 struct OnboardingIntroFrame: Equatable {
     let activePhrase: String
     let text: String
+    let cursorVisible: Bool
+    let dotFieldProgress: CGFloat
+    let dotFieldOpacity: CGFloat
     let isComplete: Bool
+
+    var renderedText: String {
+        cursorVisible ? text : Self.textWithoutCursor(text)
+    }
+
+    private static func textWithoutCursor(_ text: String) -> String {
+        guard text.hasSuffix("/") else { return text }
+        return String(text.dropLast())
+    }
 }
 
 struct OnboardingIntroCompletionPlan: Equatable {
@@ -52,61 +64,153 @@ protocol OnboardingIntroPresenting: AnyObject {
 
 enum OnboardingIntroTimeline {
     static let phrases = [
+        "Relay Runner",
         "First thing’s first",
         "I need a few permissions",
-        "Relay Runner",
     ]
+    static let initialBrandHold: TimeInterval = 0.35
     static let typingInterval: TimeInterval = 0.035
     static let eraseInterval: TimeInterval = 0.020
     static let phraseHold: TimeInterval = 0.55
+    static let dotFieldTravel: TimeInterval = 1.15
+    static let finalPhraseHold: TimeInterval = 0.85
+    static let cursorBlinkPeriod: TimeInterval = 0.8
 
     static var duration: TimeInterval {
-        phrases.reduce(0) { total, phrase in
-            let count = Double(phraseGraphemes(phrase).count)
-            return total + count * typingInterval + phraseHold + count * eraseInterval
-        }
+        let brandCount = Double(phraseGraphemes(phrases[0]).count)
+        let firstCopyCount = Double(phraseGraphemes(phrases[1]).count)
+        let finalCopyCount = Double(phraseGraphemes(phrases[2]).count)
+        return initialBrandHold
+            + max(0, brandCount - 1) * typingInterval
+            + dotFieldTravel
+            + brandCount * eraseInterval
+            + firstCopyCount * typingInterval
+            + phraseHold
+            + firstCopyCount * eraseInterval
+            + finalCopyCount * typingInterval
+            + finalPhraseHold
     }
 
     static func frame(at elapsed: TimeInterval) -> OnboardingIntroFrame {
         guard elapsed < duration else {
-            return OnboardingIntroFrame(activePhrase: phrases.last ?? "", text: "/", isComplete: true)
+            return frame(
+                phrase: phrases.last ?? "",
+                visible: phraseGraphemes(phrases.last ?? ""),
+                cursorVisible: true,
+                isComplete: true
+            )
         }
 
         var cursor = max(0, elapsed)
-        for phrase in phrases {
-            let graphemes = phraseGraphemes(phrase)
-            let typeDuration = Double(graphemes.count) * typingInterval
-            if cursor < typeDuration {
-                let visibleCount = min(graphemes.count, Int(cursor / typingInterval))
-                return frame(phrase: phrase, visible: Array(graphemes.prefix(visibleCount)))
-            }
-            cursor -= typeDuration
+        let brand = phrases[0]
+        let brandGraphemes = phraseGraphemes(brand)
 
-            if cursor < phraseHold {
-                return frame(phrase: phrase, visible: graphemes)
-            }
-            cursor -= phraseHold
-
-            let eraseDuration = Double(graphemes.count) * eraseInterval
-            if cursor < eraseDuration {
-                let erasedCount = min(graphemes.count, Int(cursor / eraseInterval) + 1)
-                let remainingCount = max(0, graphemes.count - erasedCount)
-                return frame(
-                    phrase: phrase,
-                    visible: Array(graphemes.prefix(remainingCount)),
-                    compactCursor: phrase == phrases.last && remainingCount == 1
-                )
-            }
-            cursor -= eraseDuration
+        if cursor < initialBrandHold {
+            return frame(
+                phrase: brand,
+                visible: Array(brandGraphemes.prefix(1)),
+                compactCursor: true,
+                cursorVisible: blinkingCursorVisible(at: cursor),
+                dotFieldOpacity: 0
+            )
         }
+        cursor -= initialBrandHold
 
-        return OnboardingIntroFrame(activePhrase: phrases.last ?? "", text: "/", isComplete: true)
+        let brandTypeDuration = Double(max(0, brandGraphemes.count - 1)) * typingInterval
+        if cursor < brandTypeDuration {
+            let visibleCount = min(
+                brandGraphemes.count,
+                1 + Int(cursor / typingInterval)
+            )
+            return frame(
+                phrase: brand,
+                visible: Array(brandGraphemes.prefix(visibleCount)),
+                cursorVisible: true,
+                dotFieldOpacity: 0
+            )
+        }
+        cursor -= brandTypeDuration
+
+        if cursor < dotFieldTravel {
+            return frame(
+                phrase: brand,
+                visible: brandGraphemes,
+                cursorVisible: blinkingCursorVisible(at: cursor),
+                dotFieldProgress: CGFloat(cursor / dotFieldTravel),
+                dotFieldOpacity: 1
+            )
+        }
+        cursor -= dotFieldTravel
+
+        let brandEraseDuration = Double(brandGraphemes.count) * eraseInterval
+        if cursor < brandEraseDuration {
+            let erasedCount = min(brandGraphemes.count, Int(cursor / eraseInterval) + 1)
+            let remainingCount = max(0, brandGraphemes.count - erasedCount)
+            return frame(
+                phrase: brand,
+                visible: Array(brandGraphemes.prefix(remainingCount)),
+                compactCursor: remainingCount == 1,
+                cursorVisible: true,
+                dotFieldProgress: 1,
+                dotFieldOpacity: 1
+            )
+        }
+        cursor -= brandEraseDuration
+
+        let firstCopy = phrases[1]
+        let firstCopyGraphemes = phraseGraphemes(firstCopy)
+        let firstTypeDuration = Double(firstCopyGraphemes.count) * typingInterval
+        if cursor < firstTypeDuration {
+            let visibleCount = min(firstCopyGraphemes.count, Int(cursor / typingInterval))
+            return frame(phrase: firstCopy, visible: Array(firstCopyGraphemes.prefix(visibleCount)))
+        }
+        cursor -= firstTypeDuration
+
+        if cursor < phraseHold {
+            return frame(
+                phrase: firstCopy,
+                visible: firstCopyGraphemes,
+                cursorVisible: blinkingCursorVisible(at: cursor)
+            )
+        }
+        cursor -= phraseHold
+
+        let firstEraseDuration = Double(firstCopyGraphemes.count) * eraseInterval
+        if cursor < firstEraseDuration {
+            let erasedCount = min(firstCopyGraphemes.count, Int(cursor / eraseInterval) + 1)
+            let remainingCount = max(0, firstCopyGraphemes.count - erasedCount)
+            return frame(
+                phrase: firstCopy,
+                visible: Array(firstCopyGraphemes.prefix(remainingCount)),
+                cursorVisible: true
+            )
+        }
+        cursor -= firstEraseDuration
+
+        let finalCopy = phrases[2]
+        let finalCopyGraphemes = phraseGraphemes(finalCopy)
+        let finalTypeDuration = Double(finalCopyGraphemes.count) * typingInterval
+        if cursor < finalTypeDuration {
+            let visibleCount = min(finalCopyGraphemes.count, Int(cursor / typingInterval))
+            return frame(phrase: finalCopy, visible: Array(finalCopyGraphemes.prefix(visibleCount)))
+        }
+        cursor -= finalTypeDuration
+
+        return frame(
+            phrase: finalCopy,
+            visible: finalCopyGraphemes,
+            cursorVisible: blinkingCursorVisible(at: cursor)
+        )
     }
 
     private static func frame(
         phrase: String,
         visible: [Character],
-        compactCursor: Bool = false
+        compactCursor: Bool = false,
+        cursorVisible: Bool = true,
+        dotFieldProgress: CGFloat = 0,
+        dotFieldOpacity: CGFloat = 0,
+        isComplete: Bool = false
     ) -> OnboardingIntroFrame {
         let prefix = String(visible)
         let text = if prefix.isEmpty {
@@ -116,7 +220,18 @@ enum OnboardingIntroTimeline {
         } else {
             "\(prefix) /"
         }
-        return OnboardingIntroFrame(activePhrase: phrase, text: text, isComplete: false)
+        return OnboardingIntroFrame(
+            activePhrase: phrase,
+            text: text,
+            cursorVisible: cursorVisible,
+            dotFieldProgress: min(max(dotFieldProgress, 0), 1),
+            dotFieldOpacity: min(max(dotFieldOpacity, 0), 1),
+            isComplete: isComplete
+        )
+    }
+
+    private static func blinkingCursorVisible(at elapsed: TimeInterval) -> Bool {
+        elapsed.truncatingRemainder(dividingBy: cursorBlinkPeriod) < cursorBlinkPeriod / 2
     }
 
     private static func phraseGraphemes(_ phrase: String) -> [Character] {
@@ -124,19 +239,77 @@ enum OnboardingIntroTimeline {
     }
 }
 
+struct OnboardingHalftoneFieldFrame: Equatable {
+    let frame: CGRect
+    let clipFrame: CGRect
+    let scale: CGFloat
+}
+
+enum OnboardingHalftoneFieldLayout {
+    static let referenceWorkspaceSize = CGSize(width: 1688, height: 736)
+    static let referenceFieldSize = CGSize(width: 1917, height: 840)
+    static let referenceStartOrigin = CGPoint(x: -114, y: 374)
+    static let referenceRaisedY: CGFloat = 94
+    static let dotSpacing: CGFloat = 16.95
+
+    static func plan(in workspaceFrame: CGRect, progress: CGFloat) -> OnboardingHalftoneFieldFrame {
+        let scale = workspaceFrame.width / referenceWorkspaceSize.width
+        let clamped = min(max(progress, 0), 1)
+        let y = referenceStartOrigin.y
+            + (referenceRaisedY - referenceStartOrigin.y) * clamped
+        let frame = CGRect(
+            x: workspaceFrame.minX + referenceStartOrigin.x * scale,
+            y: workspaceFrame.minY + y * scale,
+            width: referenceFieldSize.width * scale,
+            height: referenceFieldSize.height * scale
+        )
+        return OnboardingHalftoneFieldFrame(
+            frame: frame,
+            clipFrame: workspaceFrame,
+            scale: scale
+        )
+    }
+
+    static func dotDiameter(localX: CGFloat, localY: CGFloat, scale: CGFloat) -> CGFloat {
+        let vertical = smoothStep(edge0: 120 * scale, edge1: 830 * scale, value: localY)
+        let wave = 0.5 + 0.5 * sin((localX / max(scale, 0.001)) * 0.034 + (localY / max(scale, 0.001)) * 0.022)
+        return (1.05 + 9.95 * vertical + 1.1 * wave * vertical) * scale
+    }
+
+    static func dotAlpha(localX: CGFloat,
+                         localY: CGFloat,
+                         fieldSize: CGSize,
+                         diameter: CGFloat) -> CGFloat {
+        let vertical = smoothStep(edge0: fieldSize.height * 0.16, edge1: fieldSize.height * 0.72, value: localY)
+        let leftFade = smoothStep(edge0: 0, edge1: fieldSize.width * 0.12, value: localX)
+        let rightFade = smoothStep(edge0: 0, edge1: fieldSize.width * 0.12, value: fieldSize.width - localX)
+        let sizeBoost = min(max((diameter - 1) / 11, 0), 1)
+        return min(max((0.22 + 0.78 * vertical) * leftFade * rightFade * (0.78 + 0.22 * sizeBoost), 0), 1)
+    }
+
+    private static func smoothStep(edge0: CGFloat, edge1: CGFloat, value: CGFloat) -> CGFloat {
+        guard edge0 != edge1 else { return value < edge0 ? 0 : 1 }
+        let t = min(max((value - edge0) / (edge1 - edge0), 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+}
+
 enum OnboardingIntroTextLayout {
-    static let lineHeight: CGFloat = 72
+    static let lineHeight: CGFloat = 66
+    static let referenceWorkspaceHeight: CGFloat = 736
+    static let referenceTextTop: CGFloat = 325
 
     static func drawRect(
         in layoutFrame: CGRect,
         reserveWidth: CGFloat,
         visibleWidth: CGFloat
     ) -> CGRect {
-        CGRect(
+        let scale = layoutFrame.height / referenceWorkspaceHeight
+        return CGRect(
             x: layoutFrame.midX - reserveWidth / 2,
-            y: layoutFrame.midY - lineHeight / 2,
+            y: layoutFrame.minY + referenceTextTop * scale,
             width: max(reserveWidth, visibleWidth),
-            height: lineHeight
+            height: lineHeight * scale
         )
     }
 }
@@ -339,8 +512,8 @@ private final class OnboardingIntroTextView: NSView {
 
         let font = AppTypography.appKitFont(.onboardingHero)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.minimumLineHeight = 72
-        paragraph.maximumLineHeight = 72
+        paragraph.minimumLineHeight = OnboardingIntroTextLayout.lineHeight
+        paragraph.maximumLineHeight = OnboardingIntroTextLayout.lineHeight
         paragraph.alignment = .left
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
@@ -348,13 +521,88 @@ private final class OnboardingIntroTextView: NSView {
             .paragraphStyle: paragraph,
         ]
         let reserveText = "\(timelineFrame.activePhrase) /" as NSString
-        let visibleText = timelineFrame.text as NSString
+        let visibleText = timelineFrame.renderedText as NSString
         let reserveSize = reserveText.size(withAttributes: attributes)
         let drawRect = OnboardingIntroTextLayout.drawRect(
             in: layoutFrame,
             reserveWidth: reserveSize.width,
             visibleWidth: visibleText.size(withAttributes: attributes).width
         )
+        drawHalftoneFieldIfNeeded()
         visibleText.draw(in: drawRect, withAttributes: attributes)
+    }
+
+    private func drawHalftoneFieldIfNeeded() {
+        guard timelineFrame.dotFieldOpacity > 0 else { return }
+        let plan = OnboardingHalftoneFieldLayout.plan(
+            in: layoutFrame,
+            progress: timelineFrame.dotFieldProgress
+        )
+        guard plan.scale > 0 else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: plan.clipFrame).addClip()
+
+        let fieldFrame = plan.frame
+        let spacing = OnboardingHalftoneFieldLayout.dotSpacing * plan.scale
+        guard spacing > 0 else { return }
+        let startColumn = max(0, Int(floor((plan.clipFrame.minX - fieldFrame.minX) / spacing)) - 1)
+        let endColumn = Int(ceil((plan.clipFrame.maxX - fieldFrame.minX) / spacing)) + 1
+        let startRow = max(0, Int(floor((plan.clipFrame.minY - fieldFrame.minY) / spacing)) - 1)
+        let endRow = Int(ceil((plan.clipFrame.maxY - fieldFrame.minY) / spacing)) + 1
+        let fieldSize = fieldFrame.size
+
+        for row in startRow...endRow {
+            let localY = CGFloat(row) * spacing
+            guard localY >= 0, localY <= fieldSize.height else { continue }
+            for column in startColumn...endColumn {
+                let localX = CGFloat(column) * spacing
+                guard localX >= 0, localX <= fieldSize.width else { continue }
+
+                let jitter = deterministicJitter(column: column, row: row, scale: plan.scale)
+                let center = CGPoint(
+                    x: fieldFrame.minX + localX + jitter.x,
+                    y: fieldFrame.minY + localY + jitter.y
+                )
+                guard plan.clipFrame.insetBy(dx: -14, dy: -14).contains(center) else { continue }
+
+                let diameter = OnboardingHalftoneFieldLayout.dotDiameter(
+                    localX: localX,
+                    localY: localY,
+                    scale: plan.scale
+                )
+                let alpha = OnboardingHalftoneFieldLayout.dotAlpha(
+                    localX: localX,
+                    localY: localY,
+                    fieldSize: fieldSize,
+                    diameter: diameter
+                ) * timelineFrame.dotFieldOpacity
+                guard alpha > 0.01 else { continue }
+
+                let blueMix = min(max(localY / max(fieldSize.height, 1), 0), 1)
+                let color = NSColor(
+                    srgbRed: 0.12 + 0.18 * (1 - blueMix),
+                    green: 0.22 + 0.42 * (1 - blueMix),
+                    blue: 1.0,
+                    alpha: alpha * 0.82
+                )
+                color.setFill()
+                NSBezierPath(ovalIn: CGRect(
+                    x: center.x - diameter / 2,
+                    y: center.y - diameter / 2,
+                    width: diameter,
+                    height: diameter
+                )).fill()
+            }
+        }
+
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func deterministicJitter(column: Int, row: Int, scale: CGFloat) -> CGPoint {
+        let seed = Double(column * 73_856_093 ^ row * 19_349_663)
+        return CGPoint(
+            x: CGFloat(sin(seed) * 1.4) * scale,
+            y: CGFloat(cos(seed * 0.73) * 1.4) * scale
+        )
     }
 }

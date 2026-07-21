@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import relay_runner
 
@@ -194,6 +195,60 @@ final class OnboardingProgressTests: XCTestCase {
 
     func testReadySummaryClearsWhenInputMonitoringGranted() {
         XCTAssertNil(OnboardingView.inputMonitoringSummary(status: .granted))
+    }
+
+    func testPermissionTreatmentUsesFigmaPromptCopyAndButtonConstants() {
+        XCTAssertEqual(
+            OnboardingPermissionTreatment.prompt(for: .microphone),
+            "Let’s start with your mic /"
+        )
+        XCTAssertEqual(
+            OnboardingPermissionTreatment.prompt(for: .inputMonitoring),
+            "Next let’s set up your hotkeys with input monitoring /"
+        )
+        XCTAssertEqual(
+            OnboardingPermissionTreatment.prompt(for: .screenRecording),
+            "Lastly we’re going to need screen recording /"
+        )
+        XCTAssertEqual(OnboardingPermissionTreatment.buttonTitle, "Grant permission")
+        XCTAssertEqual(OnboardingPermissionTreatment.buttonSize, CGSize(width: 195, height: 50))
+        XCTAssertEqual(OnboardingPermissionTreatment.buttonCornerRadius, 12)
+        XCTAssertEqual(OnboardingPermissionTreatment.buttonHorizontalPadding, 32)
+        XCTAssertEqual(OnboardingPermissionTreatment.buttonVerticalPadding, 16)
+        XCTAssertEqual(OnboardingPermissionTreatment.buttonLineHeight, 18)
+        let border = OnboardingPermissionTreatment.buttonBorderColor.usingColorSpace(.sRGB)
+        XCTAssertEqual(border?.redComponent ?? 0, 17 / 255, accuracy: 0.001)
+        XCTAssertEqual(border?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
+        XCTAssertEqual(border?.blueComponent ?? 0, 29 / 255, accuracy: 0.001)
+    }
+
+    func testAccessibilityPermissionTreatmentRetainsProductExplanation() {
+        let presentation = OnboardingPermissionTreatment.presentation(
+            permission: .accessibility,
+            status: .denied,
+            explanation: "Accessibility lets Relay Runner host Relay Actions for clicking and typing.",
+            likelyRestricted: false
+        )
+
+        XCTAssertEqual(
+            presentation.prompt,
+            "Next let’s set up Relay Actions with accessibility /"
+        )
+        XCTAssertEqual(presentation.buttonTitle, "Grant permission")
+        XCTAssertTrue(presentation.supportingCopy?.contains("Relay Actions") ?? false)
+    }
+
+    func testPermissionStepsWaitForGrantButtonBeforeStartingOSSetup() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Onboarding/OnboardingView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertFalse(contents.contains("openPermissionPaneAutomaticallyIfNeeded"))
+        XCTAssertTrue(contents.contains("permissionPromptAction"))
+        XCTAssertTrue(contents.contains("startPermissionSetup(kind, purpose: permissionExplanation(for: kind))"))
     }
 
     func testReadyFooterWaitsWithoutDoneWhileSetupIsPreparing() {

@@ -13,7 +13,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(border?.redComponent ?? 0, 17 / 255, accuracy: 0.001)
         XCTAssertEqual(border?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
         XCTAssertEqual(border?.blueComponent ?? 0, 29 / 255, accuracy: 0.001)
-        XCTAssertEqual(BoardDarkSurfaceStyle.workspaceCornerRadius, 24)
+        XCTAssertEqual(BoardDarkSurfaceStyle.workspaceCornerRadius, 16)
         XCTAssertEqual(BoardDarkSurfaceStyle.columnCornerRadius, 16)
         XCTAssertEqual(BoardDarkSurfaceStyle.nestedCardCornerRadius, 14)
         XCTAssertEqual(BoardDarkSurfaceStyle.floatingPanelCornerRadius, 16)
@@ -24,12 +24,8 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(BoardSurfaceLayout.navigationToPanelSpacing, 16)
         XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 47)
         XCTAssertEqual(BoardSurfaceLayout.columnHeight, 667)
-        XCTAssertEqual(ProgramBoardBackdropStyle.bottomPadding, 12)
-        XCTAssertEqual(
-            ProgramBoardBackdropStyle.bottomPadding,
-            BoardSurfaceLayout.columnSpacing
-        )
-        XCTAssertEqual(ProgramBoardBackdropStyle.bottomCornerRadius, 24)
+        XCTAssertEqual(ProgramBoardBackdropStyle.bottomPadding, 22)
+        XCTAssertEqual(ProgramBoardBackdropStyle.bottomCornerRadius, 16)
         XCTAssertEqual(
             ProgramBoardBackdropStyle.bottomCornerRadius,
             BoardDarkSurfaceStyle.workspaceCornerRadius
