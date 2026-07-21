@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
-from orchestrator import Daemon, ReviewWorker, RunsStore, Worker, validate_worker_completion  # noqa: E402
+from orchestrator import Daemon, MessengerOutcomeStore, ReviewWorker, RunsStore, Worker, validate_worker_completion  # noqa: E402
 from tickets import read as read_ticket  # noqa: E402
 
 
@@ -992,6 +992,9 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertTrue(workspace.exists())
             self.assertEqual(read_ticket(repo / ".orchestrator/RR-1.md")["status"], "ready")
             self.assertEqual(self.git(repo, "status", "--porcelain").stdout.strip(), "")
+            pending = daemon.pending_messenger_outcomes(repo_path=str(repo), provider="claude")
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["message"], f"RR-1 run {run_id} merge needs attention")
 
     def test_review_retry_prunes_rejected_branch_and_dispatches_fresh_attempt(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1051,6 +1054,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
         daemon.agent_kind = provider
         daemon.agent_bin = provider
         daemon.runs = RunsStore(root / "runs.db")
+        daemon.messenger_outcomes = MessengerOutcomeStore(root / "messenger_outcomes.db")
         daemon._dispatch_lock = threading.Lock()
         daemon._workers = {}
         daemon._workers_lock = threading.Lock()

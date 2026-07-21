@@ -39,6 +39,7 @@ TRACE_KINDS = frozenset({
     "run-merged",
     "run-succeeded",
     "run-failed",
+    "run-canceled",
     "running-tests",
     "building",
     "installing",
@@ -236,6 +237,7 @@ def default_orchestration_trace_message(
         "run-merged": f"{ticket}{run_suffix} merged",
         "run-succeeded": f"{ticket}{run_suffix} succeeded",
         "run-failed": f"{ticket}{run_suffix} failed",
+        "run-canceled": f"{ticket}{run_suffix} canceled",
         "running-tests": "Running tests",
         "building": "Building project",
         "installing": "Installing dependencies",
@@ -246,7 +248,7 @@ def default_orchestration_trace_message(
 
 
 def orchestration_trace_status_phase(kind: str) -> str:
-    return "outcome" if kind in {"run-succeeded", "run-failed", "run-merged"} else "planning"
+    return "outcome" if kind in {"run-succeeded", "run-failed", "run-canceled", "run-merged"} else "planning"
 
 
 @dataclass(frozen=True)

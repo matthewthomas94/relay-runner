@@ -139,9 +139,33 @@ def _notify_orchestration_trace(
     ticket_id: str | None = None,
     run_id: int | None = None,
     source: str = "orchestrator",
+    message: str | None = None,
     relay_command_seq: int | str | None = None,
     relay_command_id: str | None = None,
 ) -> None:
+    payload = _orchestration_trace_payload(
+        kind,
+        ticket_id=ticket_id,
+        run_id=run_id,
+        source=source,
+        message=message,
+        relay_command_seq=relay_command_seq,
+        relay_command_id=relay_command_id,
+    )
+    if payload is not None:
+        _notify_state("working", **payload)
+
+
+def _orchestration_trace_payload(
+    kind: str,
+    *,
+    ticket_id: str | None = None,
+    run_id: int | None = None,
+    source: str = "orchestrator",
+    message: str | None = None,
+    relay_command_seq: int | str | None = None,
+    relay_command_id: str | None = None,
+) -> dict[str, Any] | None:
     command = None
     if relay_command_seq is not None or relay_command_id:
         try:
@@ -155,6 +179,7 @@ def _notify_orchestration_trace(
         event = OrchestrationTraceEvent(
             kind=kind,
             source=source,
+            message=message,
             command=command,
             ticket_id=ticket_id,
             run_id=run_id,
@@ -169,7 +194,7 @@ def _notify_orchestration_trace(
     status_event = event.to_status_event_dict()
     if status_event is not None:
         payload["status_event"] = status_event
-    _notify_state("working", **payload)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -1768,6 +1793,195 @@ class OrchestratorCommandStore:
             return [dict(row) for row in rows]
 
 
+class MessengerOutcomeStore:
+    """Durable, bounded queue of public worker outcomes for the voice messenger."""
+
+    SCHEMA_VERSION = 1
+    MAX_PENDING_PER_REPO = 50
+
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS messenger_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_key TEXT NOT NULL UNIQUE,
+        repo_path TEXT NOT NULL,
+        provider_key TEXT,
+        kind TEXT NOT NULL,
+        ticket_id TEXT,
+        run_id INTEGER,
+        message TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        delivered_at REAL,
+        delivery_attempts INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_messenger_outcomes_repo_pending
+        ON messenger_outcomes(repo_path, delivered_at, id);
+    """
+
+    def __init__(self, path: Path, *, max_pending_per_repo: int = MAX_PENDING_PER_REPO):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.max_pending_per_repo = max(1, int(max_pending_per_repo))
+        self._lock = threading.Lock()
+        self._init()
+
+    @contextmanager
+    def _conn(self):
+        with self._lock:
+            conn = sqlite3.connect(str(self.path), isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+            finally:
+                conn.close()
+
+    def _init(self) -> None:
+        with self._conn() as c:
+            current = int(c.execute("PRAGMA user_version").fetchone()[0])
+            if current != self.SCHEMA_VERSION:
+                c.execute("DROP TABLE IF EXISTS messenger_outcomes")
+                c.executescript(self.SCHEMA)
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+            else:
+                c.executescript(self.SCHEMA)
+
+    @staticmethod
+    def event_key(
+        *,
+        repo_path: str,
+        kind: str,
+        ticket_id: str | None,
+        run_id: int | None,
+        source: str | None,
+    ) -> str:
+        repo = str(Path(repo_path).expanduser().resolve())
+        return "|".join([
+            repo,
+            str(kind or "").strip().lower(),
+            str(ticket_id or "").strip().upper(),
+            str(run_id or ""),
+            str(source or "").strip().lower(),
+        ])
+
+    def record(
+        self,
+        *,
+        repo_path: str,
+        payload: dict[str, Any],
+        provider_key: str | None = None,
+    ) -> dict[str, Any] | None:
+        trace = payload.get("trace_event")
+        if not isinstance(trace, dict):
+            return None
+        kind = str(trace.get("kind") or "").strip().lower()
+        message = str(trace.get("message") or payload.get("text") or "").strip()
+        if not kind or not message:
+            return None
+        repo = str(Path(repo_path).expanduser().resolve())
+        ticket_id = str(trace.get("ticket_id") or "").strip().upper() or None
+        raw_run_id = trace.get("run_id")
+        try:
+            run_id = int(raw_run_id) if raw_run_id is not None else None
+        except (TypeError, ValueError):
+            run_id = None
+        source = str(trace.get("source") or "").strip().lower() or None
+        key = self.event_key(
+            repo_path=repo,
+            kind=kind,
+            ticket_id=ticket_id,
+            run_id=run_id,
+            source=source,
+        )
+        now = time.time()
+        payload_json = json.dumps(payload, sort_keys=True)
+        provider = OrchestratorSessionStore._normalize_provider(provider_key) if provider_key else None
+        with self._conn() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO messenger_outcomes("
+                "event_key, repo_path, provider_key, kind, ticket_id, run_id, message, "
+                "payload_json, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, repo, provider, kind, ticket_id, run_id, message, payload_json, now),
+            )
+            self._prune_locked(c, repo)
+            row = c.execute(
+                "SELECT * FROM messenger_outcomes WHERE event_key = ?",
+                (key,),
+            ).fetchone()
+            return self._public_row(row) if row else None
+
+    def pending(
+        self,
+        *,
+        repo_path: str | None = None,
+        provider_key: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        del provider_key
+        params: list[Any] = []
+        clauses = ["delivered_at IS NULL"]
+        if repo_path:
+            clauses.append("repo_path = ?")
+            params.append(str(Path(repo_path).expanduser().resolve()))
+        params.append(max(1, int(limit)))
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM messenger_outcomes "
+                f"WHERE {' AND '.join(clauses)} "
+                "ORDER BY id ASC LIMIT ?",
+                params,
+            ).fetchall()
+            return [self._public_row(row) for row in rows]
+
+    def mark_delivered(self, outcome_id: int) -> dict[str, Any] | None:
+        now = time.time()
+        with self._conn() as c:
+            c.execute(
+                "UPDATE messenger_outcomes SET delivered_at = ?, "
+                "delivery_attempts = delivery_attempts + 1 "
+                "WHERE id = ? AND delivered_at IS NULL",
+                (now, int(outcome_id)),
+            )
+            row = c.execute(
+                "SELECT * FROM messenger_outcomes WHERE id = ?",
+                (int(outcome_id),),
+            ).fetchone()
+            return self._public_row(row) if row else None
+
+    def record_attempt(self, outcome_id: int) -> None:
+        with self._conn() as c:
+            c.execute(
+                "UPDATE messenger_outcomes SET delivery_attempts = delivery_attempts + 1 "
+                "WHERE id = ? AND delivered_at IS NULL",
+                (int(outcome_id),),
+            )
+
+    def _prune_locked(self, conn: sqlite3.Connection, repo_path: str) -> None:
+        conn.execute(
+            "DELETE FROM messenger_outcomes "
+            "WHERE repo_path = ? AND delivered_at IS NULL AND id NOT IN ("
+            "SELECT id FROM messenger_outcomes "
+            "WHERE repo_path = ? AND delivered_at IS NULL "
+            "ORDER BY id DESC LIMIT ?"
+            ")",
+            (repo_path, repo_path, self.max_pending_per_repo),
+        )
+        conn.execute(
+            "DELETE FROM messenger_outcomes "
+            "WHERE delivered_at IS NOT NULL AND delivered_at < ?",
+            (time.time() - 86400,),
+        )
+
+    @staticmethod
+    def _public_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        data = dict(row)
+        try:
+            data["payload"] = json.loads(str(data.pop("payload_json")))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            data["payload"] = {}
+        return data
+
+
 # ---------------------------------------------------------------------------
 # Git worktree helpers
 # ---------------------------------------------------------------------------
@@ -1972,7 +2186,8 @@ class Worker:
                  agent_kind: str,
                  workflow_path: Path | None = None,
                  store: RunsStore, log_path: Path, timeout_seconds: int,
-                 on_complete: Callable[[int], None] | None = None):
+                 on_complete: Callable[[int], None] | None = None,
+                 emit_lifecycle: Callable[..., dict[str, Any] | None] | None = None):
         self.run_id = run_id
         self.run = run
         self.prompt = prompt
@@ -1983,6 +2198,7 @@ class Worker:
         self.log_path = log_path
         self.timeout_seconds = timeout_seconds
         self.on_complete = on_complete
+        self.emit_lifecycle = emit_lifecycle
         self.proc: subprocess.Popen | None = None
         self.thread: threading.Thread | None = None
         self._cancel_requested = threading.Event()
@@ -1996,18 +2212,40 @@ class Worker:
         self.thread = threading.Thread(target=self._run, name=f"worker-{self.run_id}", daemon=True)
         self.thread.start()
 
+    def _emit_lifecycle(
+        self,
+        kind: str,
+        *,
+        message: str | None = None,
+        queue_messenger: bool = True,
+    ) -> None:
+        kwargs = {
+            "ticket_id": self.run["ticket_id"],
+            "run_id": self.run_id,
+            "source": "worker",
+            "message": message,
+            "repo_path": self.run.get("repo_path"),
+            "provider_key": self.run.get("provider_key") or self.agent_kind,
+            "queue_messenger": queue_messenger,
+        }
+        if self.emit_lifecycle is not None:
+            self.emit_lifecycle(kind, **kwargs)
+            return
+        _notify_orchestration_trace(
+            kind,
+            ticket_id=kwargs["ticket_id"],
+            run_id=self.run_id,
+            source="worker",
+            message=message,
+        )
+
     def _run(self) -> None:
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             log = self.log_path.open("w")
         except OSError as e:
             self.store.update(self.run_id, state="Failed", last_error=f"Could not open log: {e}", ended=True)
-            _notify_orchestration_trace(
-                "run-failed",
-                ticket_id=self.run["ticket_id"],
-                run_id=self.run_id,
-                source="worker",
-            )
+            self._emit_lifecycle("run-failed")
             self._notify_complete()
             return
 
@@ -2045,21 +2283,11 @@ class Worker:
                                   last_error=f"{self.agent_kind} CLI not found: {e}",
                                   ended=True, exit_code=-1)
                 log.write(f"[orchestrator] {self.agent_kind} CLI not found: {e}\n")
-                _notify_orchestration_trace(
-                    "run-failed",
-                    ticket_id=self.run["ticket_id"],
-                    run_id=self.run_id,
-                    source="worker",
-                )
+                self._emit_lifecycle("run-failed")
                 return
 
             self.store.update(self.run_id, state="Running", pid=self.proc.pid)
-            _notify_orchestration_trace(
-                "run-running",
-                ticket_id=self.run["ticket_id"],
-                run_id=self.run_id,
-                source="worker",
-            )
+            self._emit_lifecycle("run-running", queue_messenger=False)
 
             # Feed the prompt and close stdin so the agent starts. The prompt is a
             # few KB — well under the pipe buffer — so this single write won't
@@ -2108,20 +2336,10 @@ class Worker:
                 self.store.update(self.run_id, state="Failed",
                                   last_error=f"Timed out after {self.timeout_seconds}s",
                                   ended=True, exit_code=-1)
-                _notify_orchestration_trace(
-                    "run-failed",
-                    ticket_id=self.run["ticket_id"],
-                    run_id=self.run_id,
-                    source="worker",
-                )
+                self._emit_lifecycle("run-failed")
             elif self._cancel_requested.is_set():
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
-                _notify_orchestration_trace(
-                    "run-failed",
-                    ticket_id=self.run["ticket_id"],
-                    run_id=self.run_id,
-                    source="worker",
-                )
+                self._emit_lifecycle("run-canceled")
             elif rc == 0:
                 ok, reason = validate_worker_completion(
                     workspace_path=self.run["workspace_path"],
@@ -2131,12 +2349,7 @@ class Worker:
                 )
                 if ok:
                     self.store.update(self.run_id, state="AwaitingReview", ended=True, exit_code=rc)
-                    _notify_orchestration_trace(
-                        "run-review-needed",
-                        ticket_id=self.run["ticket_id"],
-                        run_id=self.run_id,
-                        source="worker",
-                    )
+                    self._emit_lifecycle("run-review-needed")
                 else:
                     log.write(f"\n[orchestrator] worker exited 0 but did not complete ticket: {reason}\n")
                     self.store.update(
@@ -2146,30 +2359,15 @@ class Worker:
                         ended=True,
                         exit_code=rc,
                     )
-                    _notify_orchestration_trace(
-                        "run-failed",
-                        ticket_id=self.run["ticket_id"],
-                        run_id=self.run_id,
-                        source="worker",
-                    )
+                    self._emit_lifecycle("run-failed")
             elif rc in (-9, -15):
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
-                _notify_orchestration_trace(
-                    "run-failed",
-                    ticket_id=self.run["ticket_id"],
-                    run_id=self.run_id,
-                    source="worker",
-                )
+                self._emit_lifecycle("run-canceled")
             else:
                 self.store.update(self.run_id, state="Failed",
                                   last_error=f"exit={rc}; tail={' / '.join(tail)[:500]}",
                                   ended=True, exit_code=rc)
-                _notify_orchestration_trace(
-                    "run-failed",
-                    ticket_id=self.run["ticket_id"],
-                    run_id=self.run_id,
-                    source="worker",
-                )
+                self._emit_lifecycle("run-failed")
         finally:
             if self.proc and self.proc.stdout:
                 try:
@@ -2288,7 +2486,8 @@ class ReviewWorker:
 
     def __init__(self, *, run_id: int, run: dict, prompt: str, agent_bin: str,
                  agent_kind: str, store: RunsStore, log_path: Path,
-                 timeout_seconds: int, on_complete: Callable[[int], None] | None = None):
+                 timeout_seconds: int, on_complete: Callable[[int], None] | None = None,
+                 emit_lifecycle: Callable[..., dict[str, Any] | None] | None = None):
         self.run_id = run_id
         self.run = run
         self.prompt = prompt
@@ -2298,6 +2497,7 @@ class ReviewWorker:
         self.log_path = log_path
         self.timeout_seconds = timeout_seconds
         self.on_complete = on_complete
+        self.emit_lifecycle = emit_lifecycle
         self.proc: subprocess.Popen | None = None
         self.thread: threading.Thread | None = None
         self._timed_out = False
@@ -2310,6 +2510,33 @@ class ReviewWorker:
         )
         self.thread.start()
 
+    def _emit_lifecycle(
+        self,
+        kind: str,
+        *,
+        message: str | None = None,
+        queue_messenger: bool = True,
+    ) -> None:
+        kwargs = {
+            "ticket_id": self.run["ticket_id"],
+            "run_id": self.run_id,
+            "source": "review-worker",
+            "message": message,
+            "repo_path": self.run.get("repo_path"),
+            "provider_key": self.run.get("provider_key") or self.agent_kind,
+            "queue_messenger": queue_messenger,
+        }
+        if self.emit_lifecycle is not None:
+            self.emit_lifecycle(kind, **kwargs)
+            return
+        _notify_orchestration_trace(
+            kind,
+            ticket_id=kwargs["ticket_id"],
+            run_id=self.run_id,
+            source="review-worker",
+            message=message,
+        )
+
     def _run(self) -> None:
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2319,6 +2546,10 @@ class ReviewWorker:
                 self.run_id,
                 state="AwaitingReview",
                 last_error=f"Could not open review log: {e}",
+            )
+            self._emit_lifecycle(
+                "run-review-needed",
+                message=f"{self.run['ticket_id']} run {self.run_id} still needs review attention",
             )
             self._notify_complete()
             return
@@ -2344,15 +2575,14 @@ class ReviewWorker:
                     last_error=f"{self.agent_kind} review CLI not found: {e}",
                 )
                 log.write(f"[orchestrator] {self.agent_kind} review CLI not found: {e}\n")
+                self._emit_lifecycle(
+                    "run-review-needed",
+                    message=f"{self.run['ticket_id']} run {self.run_id} still needs review attention",
+                )
                 return
 
             self.store.update(self.run_id, state="Reviewing", pid=self.proc.pid)
-            _notify_orchestration_trace(
-                "run-reviewing",
-                ticket_id=self.run["ticket_id"],
-                run_id=self.run_id,
-                source="review-worker",
-            )
+            self._emit_lifecycle("run-reviewing", queue_messenger=False)
 
             try:
                 if self.proc.stdin:
@@ -2388,11 +2618,9 @@ class ReviewWorker:
             else:
                 reason = f"review worker failed: exit={rc}; tail={' / '.join(tail)[:500]}"
             self.store.update(self.run_id, state="AwaitingReview", last_error=reason)
-            _notify_orchestration_trace(
+            self._emit_lifecycle(
                 "run-review-needed",
-                ticket_id=self.run["ticket_id"],
-                run_id=self.run_id,
-                source="review-worker",
+                message=f"{self.run['ticket_id']} run {self.run_id} still needs review attention",
             )
         finally:
             if self.proc and self.proc.stdout:
@@ -2456,6 +2684,7 @@ class Daemon:
         self.runs = RunsStore(data / "runs.db", index_path=data / "runs.json")
         self.orchestrator_sessions = OrchestratorSessionStore(data / "orchestrator_sessions.db")
         self.orchestrator_commands = OrchestratorCommandStore(data / "orchestrator_commands.db")
+        self.messenger_outcomes = MessengerOutcomeStore(data / "messenger_outcomes.db")
         self.graphify_path = data / "graphify.db"
         self.program_registry_path = _program_registry_path()
 
@@ -2491,6 +2720,36 @@ class Daemon:
         )
 
     # -- prompt rendering -------------------------------------------------
+
+    def _emit_lifecycle(
+        self,
+        kind: str,
+        *,
+        ticket_id: str | None = None,
+        run_id: int | None = None,
+        source: str = "orchestrator",
+        message: str | None = None,
+        repo_path: str | None = None,
+        provider_key: str | None = None,
+        queue_messenger: bool = True,
+    ) -> dict[str, Any] | None:
+        payload = _orchestration_trace_payload(
+            kind,
+            ticket_id=ticket_id,
+            run_id=run_id,
+            source=source,
+            message=message,
+        )
+        if payload is None:
+            return None
+        _notify_state("working", **payload)
+        if queue_messenger and repo_path:
+            self.messenger_outcomes.record(
+                repo_path=repo_path,
+                provider_key=provider_key,
+                payload=payload,
+            )
+        return payload
 
     def _resolve_workflow_for_repo(self, repo_path: str) -> Path:
         repo_template = Path(repo_path) / ".orchestrator" / "WORKFLOW.md"
@@ -2578,11 +2837,13 @@ class Daemon:
             **metadata,
         )
         self.runs.update(run_id, last_error=reason, ended=True, exit_code=-1)
-        _notify_orchestration_trace(
+        self._emit_lifecycle(
             "run-failed",
             ticket_id=ticket_id,
             run_id=run_id,
             source="worker",
+            repo_path=repo_path,
+            provider_key=metadata.get("provider_key"),
         )
         return self.runs.get(run_id)
 
@@ -2710,11 +2971,13 @@ class Daemon:
                     **sizing,
                 )
                 self.runs.update(run_id, last_error=str(e), ended=True, exit_code=-1)
-                _notify_orchestration_trace(
+                self._emit_lifecycle(
                     "run-failed",
                     ticket_id=ticket_id,
                     run_id=run_id,
                     source="worker",
+                    repo_path=str(repo),
+                    provider_key=sizing.get("provider_key"),
                 )
                 raise
 
@@ -2757,6 +3020,7 @@ class Daemon:
                 agent_kind=self.agent_kind, workflow_path=workflow_path,
                 store=self.runs, log_path=log_path, timeout_seconds=self.worker_timeout,
                 on_complete=self._on_worker_complete,
+                emit_lifecycle=self._emit_lifecycle,
             )
             with self._workers_lock:
                 self._workers[run_id] = worker
@@ -2781,6 +3045,15 @@ class Daemon:
                 self.dispatch_review_worker(run_id, source="worker-completion")
             except Exception as e:  # noqa: BLE001 — keep the completed run reviewable
                 self.runs.update(run_id, state="AwaitingReview", last_error=f"review dispatch failed: {e}")
+                self._emit_lifecycle(
+                    "run-review-needed",
+                    ticket_id=run.get("ticket_id"),
+                    run_id=run_id,
+                    source="orchestrator",
+                    message=f"{run.get('ticket_id')} run {run_id} review dispatch needs attention",
+                    repo_path=run.get("repo_path"),
+                    provider_key=run.get("provider_key"),
+                )
                 print(f"[orchestrator] review dispatch failed for run {run_id}: {e}", file=sys.stderr)
             return
         # Dependency progression now happens only after the review worker
@@ -2901,6 +3174,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 log_path=log_path,
                 timeout_seconds=self.worker_timeout,
                 on_complete=self._on_review_worker_complete,
+                emit_lifecycle=self._emit_lifecycle,
             )
             self._review_workers[run_id] = worker
             worker.start()
@@ -3175,6 +3449,15 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         if status.returncode != 0 or status.stdout.strip():
             reason = "source repo has uncommitted changes; refusing worker merge"
             self.runs.update(run_id, state="MergeConflict", last_error=reason)
+            self._emit_lifecycle(
+                "run-failed",
+                ticket_id=ticket_id,
+                run_id=run_id,
+                source="orchestrator",
+                message=f"{ticket_id} run {run_id} merge needs attention",
+                repo_path=repo_path,
+                provider_key=run.get("provider_key"),
+            )
             return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
         merge = _git(
@@ -3190,22 +3473,42 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             _git(repo_path, "merge", "--abort", check=False)
             reason = (merge.stderr or merge.stdout or "merge failed").strip()
             self.runs.update(run_id, state="MergeConflict", last_error=reason)
+            self._emit_lifecycle(
+                "run-failed",
+                ticket_id=ticket_id,
+                run_id=run_id,
+                source="orchestrator",
+                message=f"{ticket_id} run {run_id} merge needs attention",
+                repo_path=repo_path,
+                provider_key=run.get("provider_key"),
+            )
             return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
         merged_ticket = read_ticket(Path(repo_path) / ".orchestrator" / f"{ticket_id}.md")
         if merged_ticket.get("status") != "done":
             reason = f"merged branch did not publish {ticket_id} as done"
             self.runs.update(run_id, state="MergeConflict", last_error=reason)
+            self._emit_lifecycle(
+                "run-failed",
+                ticket_id=ticket_id,
+                run_id=run_id,
+                source="orchestrator",
+                message=f"{ticket_id} run {run_id} merge needs attention",
+                repo_path=repo_path,
+                provider_key=run.get("provider_key"),
+            )
             return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
         removed, worktree_error = remove_worktree(repo_path, Path(str(run["workspace_path"])))
         delete_branch(repo_path, branch)
         self.runs.update(run_id, state="Merged")
-        _notify_orchestration_trace(
+        self._emit_lifecycle(
             "run-merged",
             ticket_id=ticket_id,
             run_id=run_id,
             source="orchestrator",
+            repo_path=repo_path,
+            provider_key=run.get("provider_key"),
         )
         try:
             self._progress_dependents(repo_path=repo_path, finished_ticket_id=ticket_id)
@@ -3241,11 +3544,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         removed, worktree_error = remove_worktree(repo_path, workspace_path)
         delete_branch(repo_path, str(run["branch"]))
         self.runs.update(run_id, state="Failed", last_error=failure_reason)
-        _notify_orchestration_trace(
+        self._emit_lifecycle(
             "run-failed",
             ticket_id=ticket_id,
             run_id=run_id,
             source="orchestrator",
+            message=f"{ticket_id} run {run_id} needs retry after review",
+            repo_path=repo_path,
+            provider_key=run.get("provider_key"),
         )
 
         result: dict[str, Any] = {
@@ -3599,6 +3905,25 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         return self.orchestrator_sessions.list(repo_path=repo_path, limit=limit)
+
+    def pending_messenger_outcomes(
+        self,
+        *,
+        repo_path: str | None = None,
+        provider: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        return self.messenger_outcomes.pending(
+            repo_path=repo_path,
+            provider_key=provider,
+            limit=limit,
+        )
+
+    def mark_messenger_outcome_delivered(self, outcome_id: int) -> dict[str, Any] | None:
+        return self.messenger_outcomes.mark_delivered(outcome_id)
+
+    def record_messenger_outcome_attempt(self, outcome_id: int) -> None:
+        self.messenger_outcomes.record_attempt(outcome_id)
 
     def _authoring_mutex(self) -> threading.Lock:
         lock = getattr(self, "_ticket_authoring_lock", None)
@@ -4014,6 +4339,30 @@ class Handler(BaseHTTPRequestHandler):
                         limit=limit,
                     )
                 }
+
+            if method == "GET" and segments == ["v1", "messenger", "outcomes"]:
+                repo_path = (query.get("repo_path") or [None])[0]
+                provider = (query.get("provider") or [None])[0]
+                limit = int((query.get("limit") or ["20"])[0])
+                return 200, {
+                    "outcomes": self.daemon.pending_messenger_outcomes(
+                        repo_path=repo_path,
+                        provider=provider,
+                        limit=limit,
+                    )
+                }
+
+            if (method == "POST" and len(segments) == 5
+                    and segments[:3] == ["v1", "messenger", "outcomes"]
+                    and segments[4] == "delivered"):
+                outcome = self.daemon.mark_messenger_outcome_delivered(int(segments[3]))
+                return (200 if outcome else 404), {"outcome": outcome}
+
+            if (method == "POST" and len(segments) == 5
+                    and segments[:3] == ["v1", "messenger", "outcomes"]
+                    and segments[4] == "attempt"):
+                self.daemon.record_messenger_outcome_attempt(int(segments[3]))
+                return 202, {"ok": True}
 
             if method == "POST" and segments == ["v1", "orchestrator-session", "ensure"]:
                 body = _read_body(self)
