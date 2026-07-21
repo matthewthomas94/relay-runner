@@ -22,7 +22,7 @@ enum BoardDarkSurfaceStyle {
     static let hoverFill = Color(nsColor: hoverFillNSColor)
     static let border = Color(nsColor: borderNSColor)
 
-    static let workspaceCornerRadius: CGFloat = 24
+    static let workspaceCornerRadius: CGFloat = 16
     static let columnCornerRadius: CGFloat = 16
     static let nestedCardCornerRadius: CGFloat = 14
     static let floatingPanelCornerRadius: CGFloat = 16

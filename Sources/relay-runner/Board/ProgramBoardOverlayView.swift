@@ -3,7 +3,7 @@ import SwiftUI
 
 enum ProgramBoardBackdropStyle {
     static let backdropOpacity: Double = 1.0
-    static let bottomPadding: CGFloat = BoardSurfaceLayout.columnSpacing
+    static let bottomPadding: CGFloat = 22
     static var bottomCornerRadius: CGFloat {
         BoardDarkSurfaceStyle.workspaceCornerRadius
     }

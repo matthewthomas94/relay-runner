@@ -185,26 +185,39 @@ final class OnboardingIntroTests: XCTestCase {
     func testTimelineTypesHoldsAndErasesFirstPhrase() {
         let first = OnboardingIntroTimeline.phrases[0]
         let firstCount = Double(Array(first).count)
+        let brandTypeDuration = (firstCount - 1) * OnboardingIntroTimeline.typingInterval
 
-        XCTAssertEqual(OnboardingIntroTimeline.frame(at: 0).text, "/")
+        XCTAssertEqual(OnboardingIntroTimeline.frame(at: 0).text, "R/")
+        XCTAssertTrue(OnboardingIntroTimeline.frame(at: 0).cursorVisible)
         XCTAssertEqual(
-            OnboardingIntroTimeline.frame(at: OnboardingIntroTimeline.typingInterval).text,
-            "F /"
+            OnboardingIntroTimeline.frame(
+                at: OnboardingIntroTimeline.initialBrandHold
+                    + OnboardingIntroTimeline.typingInterval
+                    + 0.001
+            ).text,
+            "Re /"
         )
 
-        let full = OnboardingIntroTimeline.frame(at: firstCount * OnboardingIntroTimeline.typingInterval)
+        let full = OnboardingIntroTimeline.frame(
+            at: OnboardingIntroTimeline.initialBrandHold + brandTypeDuration
+        )
         XCTAssertEqual(full.activePhrase, first)
         XCTAssertEqual(full.text, "\(first) /")
+        XCTAssertEqual(full.dotFieldProgress, 0, accuracy: 0.001)
+        XCTAssertEqual(full.dotFieldOpacity, 1, accuracy: 0.001)
 
         let holding = OnboardingIntroTimeline.frame(
-            at: firstCount * OnboardingIntroTimeline.typingInterval
-                + OnboardingIntroTimeline.phraseHold / 2
+            at: OnboardingIntroTimeline.initialBrandHold
+                + brandTypeDuration
+                + OnboardingIntroTimeline.dotFieldTravel / 2
         )
         XCTAssertEqual(holding.text, "\(first) /")
+        XCTAssertEqual(holding.dotFieldProgress, 0.5, accuracy: 0.01)
 
         let erased = OnboardingIntroTimeline.frame(
-            at: firstCount * OnboardingIntroTimeline.typingInterval
-                + OnboardingIntroTimeline.phraseHold
+            at: OnboardingIntroTimeline.initialBrandHold
+                + brandTypeDuration
+                + OnboardingIntroTimeline.dotFieldTravel
                 + firstCount * OnboardingIntroTimeline.eraseInterval
                 - 0.001
         )
@@ -212,23 +225,18 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(erased.isComplete)
     }
 
-    func testTimelineFinalEraseFramesMatchDesignWithoutSeparatorSpace() {
-        let finalPhrase = try! XCTUnwrap(OnboardingIntroTimeline.phrases.last)
-        let eraseStart = OnboardingIntroTimeline.phrases.dropLast().reduce(0) { total, phrase in
-            let count = Double(Array(phrase).count)
-            return total
-                + count * OnboardingIntroTimeline.typingInterval
-                + OnboardingIntroTimeline.phraseHold
-                + count * OnboardingIntroTimeline.eraseInterval
-        } + Double(Array(finalPhrase).count) * OnboardingIntroTimeline.typingInterval
-            + OnboardingIntroTimeline.phraseHold
-        let finalCount = Double(Array(finalPhrase).count)
+    func testBrandEraseFramesMatchDesignWithoutSeparatorSpace() {
+        let brandPhrase = OnboardingIntroTimeline.phrases[0]
+        let brandCount = Double(Array(brandPhrase).count)
+        let eraseStart = OnboardingIntroTimeline.initialBrandHold
+            + (brandCount - 1) * OnboardingIntroTimeline.typingInterval
+            + OnboardingIntroTimeline.dotFieldTravel
 
         let rOnly = OnboardingIntroTimeline.frame(
-            at: eraseStart + (finalCount - 2) * OnboardingIntroTimeline.eraseInterval + 0.001
+            at: eraseStart + (brandCount - 2) * OnboardingIntroTimeline.eraseInterval + 0.001
         )
         let slashOnly = OnboardingIntroTimeline.frame(
-            at: eraseStart + (finalCount - 1) * OnboardingIntroTimeline.eraseInterval + 0.001
+            at: eraseStart + (brandCount - 1) * OnboardingIntroTimeline.eraseInterval + 0.001
         )
 
         XCTAssertEqual(rOnly.text, "R/")
@@ -237,11 +245,25 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(slashOnly.isComplete)
     }
 
-    func testTimelineCompletesBackAtCursor() {
+    func testCursorBlinksWhileHoldingCopy() {
+        let brandCount = Double(Array(OnboardingIntroTimeline.phrases[0]).count)
+        let holdStart = OnboardingIntroTimeline.initialBrandHold
+            + (brandCount - 1) * OnboardingIntroTimeline.typingInterval
+
+        let visible = OnboardingIntroTimeline.frame(at: holdStart + 0.10)
+        let hidden = OnboardingIntroTimeline.frame(at: holdStart + 0.45)
+
+        XCTAssertTrue(visible.cursorVisible)
+        XCTAssertEqual(visible.renderedText, "Relay Runner /")
+        XCTAssertFalse(hidden.cursorVisible)
+        XCTAssertEqual(hidden.renderedText, "Relay Runner ")
+    }
+
+    func testTimelineCompletesOnFinalPermissionPhrase() {
         let complete = OnboardingIntroTimeline.frame(at: OnboardingIntroTimeline.duration)
 
-        XCTAssertEqual(complete.activePhrase, "Relay Runner")
-        XCTAssertEqual(complete.text, "/")
+        XCTAssertEqual(complete.activePhrase, "I need a few permissions")
+        XCTAssertEqual(complete.text, "I need a few permissions /")
         XCTAssertTrue(complete.isComplete)
     }
 
@@ -262,7 +284,7 @@ final class OnboardingIntroTests: XCTestCase {
     }
 
     func testPermissionSurfaceVisibilityHidesOnlyWhileMatchingSetupIsActive() {
-        XCTAssertFalse(OnboardingView.initialSurfaceVisible(for: .microphone))
+        XCTAssertTrue(OnboardingView.initialSurfaceVisible(for: .microphone))
         XCTAssertFalse(OnboardingView.surfaceVisible(
             for: .microphone,
             activePermissionSetupKind: .microphone
@@ -285,14 +307,14 @@ final class OnboardingIntroTests: XCTestCase {
         ))
     }
 
-    func testHeroTextLayoutCentersWithinReferenceRevealSurface() {
-        assertHeroTextLayoutCentersInRevealSurface(
+    func testHeroTextLayoutMatchesReferenceTopWithinRevealSurface() {
+        assertHeroTextLayoutMatchesReferenceFrame(
             screen: CGRect(x: 0, y: 0, width: 1728, height: 1117)
         )
     }
 
-    func testHeroTextLayoutCentersWithinTallerRevealSurface() {
-        assertHeroTextLayoutCentersInRevealSurface(
+    func testHeroTextLayoutKeepsReferenceTopWithinTallerRevealSurface() {
+        assertHeroTextLayoutMatchesReferenceFrame(
             screen: CGRect(x: 0, y: 0, width: 1728, height: 1600)
         )
     }
@@ -300,14 +322,35 @@ final class OnboardingIntroTests: XCTestCase {
     func testHeroTextLayoutCentersWithinShortClampedRevealSurface() {
         let screen = CGRect(x: 0, y: 0, width: 960, height: 420)
 
-        assertHeroTextLayoutCentersInRevealSurface(screen: screen)
+        assertHeroTextLayoutMatchesReferenceFrame(screen: screen)
         XCTAssertEqual(
             BoardRevealTransitionPlanner.plan(for: screen).expandedFrame.height,
             screen.height - BoardRevealTransitionPlanner.bottomScreenMargin
         )
     }
 
-    private func assertHeroTextLayoutCentersInRevealSurface(
+    func testHalftoneFieldUsesFigmaReferencePositions() {
+        let workspace = CGRect(x: 0, y: 0, width: 1688, height: 736)
+        let start = OnboardingHalftoneFieldLayout.plan(in: workspace, progress: 0)
+        let raised = OnboardingHalftoneFieldLayout.plan(in: workspace, progress: 1)
+
+        XCTAssertEqual(start.frame, CGRect(x: -114, y: 374, width: 1917, height: 840))
+        XCTAssertEqual(raised.frame.origin.y, 94, accuracy: 0.001)
+        XCTAssertEqual(raised.frame.origin.x, -114, accuracy: 0.001)
+        XCTAssertEqual(start.clipFrame, workspace)
+    }
+
+    func testHalftoneFieldScalesWithWorkspaceWidth() {
+        let workspace = CGRect(x: 0, y: 0, width: 844, height: 368)
+        let plan = OnboardingHalftoneFieldLayout.plan(in: workspace, progress: 0.5)
+
+        XCTAssertEqual(plan.scale, 0.5, accuracy: 0.001)
+        XCTAssertEqual(plan.frame.origin.x, -57, accuracy: 0.001)
+        XCTAssertEqual(plan.frame.origin.y, 117, accuracy: 0.001)
+        XCTAssertEqual(plan.frame.size, CGSize(width: 958.5, height: 420))
+    }
+
+    private func assertHeroTextLayoutMatchesReferenceFrame(
         screen: CGRect,
         file: StaticString = #filePath,
         line: UInt = #line
@@ -320,7 +363,15 @@ final class OnboardingIntroTests: XCTestCase {
         )
 
         XCTAssertEqual(rect.midX, plan.expandedFrame.midX, accuracy: 0.001, file: file, line: line)
-        XCTAssertEqual(rect.midY, plan.expandedFrame.midY, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(
+            rect.minY,
+            plan.expandedFrame.minY
+                + OnboardingIntroTextLayout.referenceTextTop
+                * (plan.expandedFrame.height / OnboardingIntroTextLayout.referenceWorkspaceHeight),
+            accuracy: 0.001,
+            file: file,
+            line: line
+        )
         XCTAssertNotEqual(rect.midY, screen.midY, accuracy: 0.001, file: file, line: line)
     }
 }
