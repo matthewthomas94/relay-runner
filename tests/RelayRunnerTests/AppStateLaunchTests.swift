@@ -65,6 +65,11 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertNil(AppState.onboardingNotchPresentation(active: false))
     }
 
+    func testFirstRunExperienceLocksOrdinaryAppShell() {
+        XCTAssertTrue(AppState.allowsAppShellAccess(firstRunExperienceActive: false))
+        XCTAssertFalse(AppState.allowsAppShellAccess(firstRunExperienceActive: true))
+    }
+
     func testCompletedSetupOverridesStaleCompilingStatus() {
         let readiness = AppState.setupRuntimeReadiness(
             engineStatusMessage: "Compiling parakeet-tdt-v2...",

@@ -40,6 +40,7 @@ final class AppState {
     var config: AppConfig
     var isRunning = false
     var statusText = "Idle"
+    private(set) var isFirstRunExperienceActive = false
 
     private(set) var sttEngine: STTEngine?
     @ObservationIgnored private let checkForUpdatesAction: @MainActor () -> Void
@@ -99,6 +100,9 @@ final class AppState {
             },
             setOnboardingNotchOverrideActive: { [weak self] active in
                 self?.setOnboardingNotchOverrideActive(active)
+            },
+            setFirstRunExperienceActive: { [weak self] active in
+                self?.setFirstRunExperienceActive(active)
             },
             requestPermissionSetup: { [weak self] kind, source, purpose in
                 self?.requestPermissionSetup(kind, source: source, purpose: purpose)
@@ -207,6 +211,22 @@ final class AppState {
         guard onboardingNotchOverrideActive != active else { return }
         onboardingNotchOverrideActive = active
         syncNotchStatusSurface()
+    }
+
+    private func setFirstRunExperienceActive(_ active: Bool) {
+        guard isFirstRunExperienceActive != active else { return }
+        isFirstRunExperienceActive = active
+        if active {
+            programBoardOverlay.hide()
+        }
+    }
+
+    static func allowsAppShellAccess(firstRunExperienceActive: Bool) -> Bool {
+        !firstRunExperienceActive
+    }
+
+    private var allowsAppShellAccess: Bool {
+        Self.allowsAppShellAccess(firstRunExperienceActive: isFirstRunExperienceActive)
     }
 
     func requestPermissionSetup(_ kind: PermissionKind,
@@ -787,6 +807,7 @@ final class AppState {
         workingDirectory: String? = nil,
         destination: SessionLaunchDestination = .embedded
     ) {
+        guard allowsAppShellAccess else { return }
         guard permissions.microphone == .granted else {
             onboarding.showAlways()
             return
@@ -941,6 +962,7 @@ final class AppState {
     /// Show or hide the unified Workspace overlay. Single-repo sessions scope
     /// Work to that repo; workspace sessions aggregate discovered child repos.
     func toggleBoard() {
+        guard allowsAppShellAccess else { return }
         programBoardOverlay.toggle()
     }
 
@@ -949,6 +971,7 @@ final class AppState {
     }
 
     func showWorkspaceSettings() {
+        guard allowsAppShellAccess else { return }
         if overlayController == nil { startOverlay() }
         programBoardOverlay.showSettings()
     }

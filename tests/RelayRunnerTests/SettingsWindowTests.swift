@@ -211,6 +211,19 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertTrue(contents.contains("switch selectedCategory"))
     }
 
+    func testStandaloneSettingsContentIsUnavailableDuringFirstRunExperience() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("AppState.allowsAppShellAccess("))
+        XCTAssertTrue(contents.contains("firstRunExperienceActive: appState.isFirstRunExperienceActive"))
+        XCTAssertTrue(contents.contains("} else {\n            EmptyView()"))
+    }
+
     func testSettingsSlidersExposeProgrammaticValues() {
         XCTAssertEqual(TTSSettingsTab.speechSpeedAccessibilityValue(1.3), "1.3 times")
         XCTAssertEqual(AwarenessSettingsTab.particleIntensityAccessibilityValue(0.73), "73 percent")

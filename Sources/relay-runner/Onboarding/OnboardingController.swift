@@ -62,6 +62,7 @@ final class OnboardingController {
     /// button so a fresh path applies to the next voice session.
     private let setWorkingDirectory: (String) -> Void
     private let setOnboardingNotchOverrideActive: (Bool) -> Void
+    private let setFirstRunExperienceActive: (Bool) -> Void
     private let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
     private let cancelPermissionSetup: (PermissionSetupSource?) -> Void
     private let shouldDeferPermissionAdvance: (PermissionKind) -> Bool
@@ -111,6 +112,7 @@ final class OnboardingController {
          setAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
          setWorkingDirectory: @escaping (String) -> Void = { _ in },
          setOnboardingNotchOverrideActive: @escaping (Bool) -> Void = { _ in },
+         setFirstRunExperienceActive: @escaping (Bool) -> Void = { _ in },
          requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
          cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
          shouldDeferPermissionAdvance: @escaping (PermissionKind) -> Bool = { _ in false },
@@ -149,6 +151,7 @@ final class OnboardingController {
         self.setAgentProvider = setAgentProvider
         self.setWorkingDirectory = setWorkingDirectory
         self.setOnboardingNotchOverrideActive = setOnboardingNotchOverrideActive
+        self.setFirstRunExperienceActive = setFirstRunExperienceActive
         self.requestPermissionSetup = requestPermissionSetup
         self.cancelPermissionSetup = cancelPermissionSetup
         self.shouldDeferPermissionAdvance = shouldDeferPermissionAdvance
@@ -231,10 +234,22 @@ final class OnboardingController {
         showIntro(forceWorkspaceSelectionAfterIntro: false)
     }
 
-    /// Manual redo should revisit the full intro flow, including workspace
-    /// selection, while still using the intro-only overlay path.
+    /// Manual redo mirrors a pristine first launch: cinematic first, then the
+    /// complete live setup sequence with workspace selection last.
     func showManualRedo() {
-        showIntro(forceWorkspaceSelectionAfterIntro: true)
+        guard introController == nil else { return }
+        forceWorkspaceSelectionAfterIntro = true
+        setFirstRunExperienceActive(true)
+        try? Data().write(to: flagURLs.started)
+
+        let intro = makeIntroController()
+        introController = intro
+        setOnboardingNotchOverrideActive(true)
+        intro.present { [weak self, weak intro] in
+            guard let self else { return }
+            guard let intro, self.introController === intro else { return }
+            self.beginFreshPermissionSequence(intro: intro)
+        }
     }
 
     private func showIntro(forceWorkspaceSelectionAfterIntro: Bool) {
@@ -249,6 +264,7 @@ final class OnboardingController {
             return
         }
 
+        setFirstRunExperienceActive(true)
         let wasInterruptedBeforeStart = wasInterrupted
         // Mark before the cinematic begins so a termination during the
         // transient overlay resumes through the focused recovery flow.
@@ -722,6 +738,7 @@ final class OnboardingController {
         introController = nil
         let complete: () -> Void = { [weak self] in
             self?.setOnboardingNotchOverrideActive(false)
+            self?.setFirstRunExperienceActive(false)
         }
         if let intro {
             intro.dismiss(completion: complete)

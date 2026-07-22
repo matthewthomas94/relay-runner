@@ -36,6 +36,7 @@ struct MenuBarView: View {
                 Text(action)
             }
             Button("Retry Setup") { appState.retrySTTSetup() }
+                .disabled(appState.isFirstRunExperienceActive)
         }
 
         // Permission warnings surface here as plain menu items with a "Fix"
@@ -51,36 +52,46 @@ struct MenuBarView: View {
                         appState.permissions.openSettings(for: kind)
                     }
                 }
+                .disabled(appState.isFirstRunExperienceActive)
             }
             Button("Re-run Setup Walkthrough\u{2026}") {
                 appState.onboarding.showManualRedo()
             }
+            .disabled(appState.isFirstRunExperienceActive)
         }
 
         Divider()
 
         if appState.hasActiveSession {
             Button("End Session") { appState.endSession() }
+                .disabled(appState.isFirstRunExperienceActive)
         } else {
             Button("Start Session\u{2026}") { appState.newSession() }
+                .disabled(appState.isFirstRunExperienceActive)
         }
 
         Divider()
 
         Button("Record") { appState.toggleRecording() }
+            .disabled(appState.isFirstRunExperienceActive)
         Button("Replay") { appState.ttsCommand("replay") }
+            .disabled(appState.isFirstRunExperienceActive)
 
         Divider()
 
         Button("Show Workspace") { appState.toggleWorkspace() }
+            .disabled(appState.isFirstRunExperienceActive)
         Button("Show Status") { appState.showProgramStatus() }
+            .disabled(appState.isFirstRunExperienceActive)
 
         Button("Workspace Settings\u{2026}") { appState.showWorkspaceSettings() }
-        .keyboardShortcut(",")
+            .keyboardShortcut(",")
+            .disabled(appState.isFirstRunExperienceActive)
 
         Button("Check for Updates\u{2026}") {
             appState.checkForUpdates()
         }
+        .disabled(appState.isFirstRunExperienceActive)
 
         Button("Quit Relay Runner") {
             appState.stopServices()

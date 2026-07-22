@@ -8,10 +8,16 @@ struct SettingsWindow: View {
     }
 
     var body: some View {
-        SettingsContent(
-            appState: appState,
-            style: .window
-        )
+        if AppState.allowsAppShellAccess(
+            firstRunExperienceActive: appState.isFirstRunExperienceActive
+        ) {
+            SettingsContent(
+                appState: appState,
+                style: .window
+            )
+        } else {
+            EmptyView()
+        }
     }
 }
 

@@ -663,6 +663,7 @@ final class OnboardingIntroTests: XCTestCase {
         let installer = FakeRuntimeInstaller(installStatus: .succeeded)
         var providerWrites: [GeneralConfig.AgentProvider] = []
         var workingDirectoryWrites: [String] = []
+        var firstRunExperienceStates: [Bool] = []
         let controller = OnboardingController(
             permissions: PermissionsManager(),
             flagURLs: flagURLs,
@@ -670,6 +671,7 @@ final class OnboardingIntroTests: XCTestCase {
             getAgentProvider: { .claude },
             setAgentProvider: { providerWrites.append($0) },
             setWorkingDirectory: { workingDirectoryWrites.append($0) },
+            setFirstRunExperienceActive: { firstRunExperienceStates.append($0) },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
             makeVenvInstaller: { installer },
@@ -677,16 +679,25 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/new-workspace") }
+            },
             reduceMotion: { true }
         )
 
         controller.showManualRedo()
 
-        XCTAssertEqual(intro.agentChoiceSelectedProviders, [.claude])
+        XCTAssertEqual(intro.presentCallCount, 1)
+        XCTAssertEqual(intro.events, ["cinematic"])
+        XCTAssertEqual(firstRunExperienceStates, [true])
+        XCTAssertTrue(intro.agentChoiceSelectedProviders.isEmpty)
         XCTAssertTrue(providerWrites.isEmpty)
         XCTAssertTrue(workingDirectoryWrites.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
+
+        intro.completeCinematic()
+        XCTAssertEqual(intro.agentChoiceSelectedProviders, [.claude])
 
         intro.performClaudeAction()
         waitForMainQueue(after: 0.05)
@@ -695,6 +706,11 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(intro.runtimePrompts.last?.provider, .claude)
         XCTAssertEqual(intro.loginPrompts.last?.provider, .claude)
         XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
+
+        intro.performWorkspaceAction()
+
+        XCTAssertEqual(workingDirectoryWrites, ["/Users/example/new-workspace"])
+        XCTAssertEqual(firstRunExperienceStates, [true, false])
     }
 
     func testRepeatedManualRedoKeepsActiveIntroWithoutSettingsPresentation() throws {
@@ -706,10 +722,12 @@ final class OnboardingIntroTests: XCTestCase {
         let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
         let intro = CapturingIntroPresenter()
         let presentation = OnboardingPresentationState()
+        var firstRunExperienceStates: [Bool] = []
         let controller = OnboardingController(
             permissions: PermissionsManager(),
             flagURLs: flagURLs,
             presentation: presentation,
+            setFirstRunExperienceActive: { firstRunExperienceStates.append($0) },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
             reduceMotion: { true }
@@ -722,6 +740,11 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(firstSerial, 0)
         XCTAssertEqual(presentation.presentationSerial, firstSerial)
         XCTAssertFalse(presentation.isPresented)
+        XCTAssertEqual(intro.presentCallCount, 1)
+        XCTAssertEqual(firstRunExperienceStates, [true])
+        XCTAssertTrue(intro.agentChoiceSelectedProviders.isEmpty)
+
+        intro.completeCinematic()
         XCTAssertEqual(intro.agentChoiceSelectedProviders, [.codex])
     }
 
