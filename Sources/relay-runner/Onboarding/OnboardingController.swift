@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import SwiftUI
 
 struct OnboardingFlagURLs {
     let onboarded: URL
@@ -23,18 +22,22 @@ struct OnboardingFlagURLs {
     }
 }
 
-/// Owns the embedded Settings onboarding presentation and the first-launch flag file.
+protocol OnboardingRuntimeInstalling: AnyObject {
+    var status: VenvInstaller.Status { get }
+    func install(for provider: GeneralConfig.AgentProvider?)
+}
+
+extension VenvInstaller: OnboardingRuntimeInstalling {}
+
+/// Owns the intro onboarding presentation and the first-launch flag file.
 ///
 /// Lifecycle:
-///  * First launch ever → full walkthrough (welcome → agent choice → setup → ready).
+///  * First launch ever → cinematic, live permissions, agent choice, setup, login, workspace.
 ///  * Subsequent launches with all required setup complete and an agent choice
-///    recorded → nothing shows…
-///    *unless* the user has never started a session yet, in which case
-///    the simplified flow lands on Ready ("All Set") so they pick a
-///    workspace folder before their first session.
-///  * Subsequent launches with missing required setup → simplified flow
-///    that starts at the first missing step.
-///  * Relaunch after the app was killed mid-flow → simplified flow.
+///    recorded → nothing shows.
+///  * Previously-onboarded upgrades without the versioned agent-choice flag
+///    receive a focused provider/runtime/login prompt.
+///  * Relaunch after the app was killed mid-flow resumes from live state.
 ///
 /// All methods must be called from the main thread — the class coordinates
 /// SwiftUI presentation and AppKit launch state that require main-thread access.
@@ -44,9 +47,6 @@ final class OnboardingController {
     let presentation: OnboardingPresentationState
     private let flagURLs: OnboardingFlagURLs
     private let permissions: PermissionsManager
-    /// Closure the Ready step calls to render finite live setup status.
-    /// `.ready` means the shared runtime is finished and listening.
-    private let setupStatus: () -> SetupRuntimeReadiness
     /// Closure that returns the current configured workspace folder
     /// (empty string = "use the user's home folder"). Read at the moment
     /// the window opens so the Ready-step picker can preload the
@@ -57,20 +57,10 @@ final class OnboardingController {
     /// Claude users get the right path.
     private let getAgentProvider: () -> GeneralConfig.AgentProvider
     private let setAgentProvider: (GeneralConfig.AgentProvider) -> Void
-    private let getModel: () -> String
-    private let setModel: (String) -> Void
-    private let getCodexReasoningEffort: () -> String
-    private let setCodexReasoningEffort: (String) -> Void
     /// Closure that persists the user's chosen workspace folder back
     /// into AppConfig + ConfigManager. Called from the Ready step's Done
     /// button so a fresh path applies to the next voice session.
     private let setWorkingDirectory: (String) -> Void
-    /// Starts a new voice session (wired to `AppState.newSession`).
-    /// The Ready step's "Start Session" CTA hands off to this so the
-    /// user can launch their first session without a detour back to
-    /// the menu bar.
-    private let startSession: () -> Void
-    private let retrySetup: () -> Void
     private let setOnboardingNotchOverrideActive: (Bool) -> Void
     private let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
     private let cancelPermissionSetup: (PermissionSetupSource?) -> Void
@@ -78,8 +68,14 @@ final class OnboardingController {
     private let permissionStatus: (PermissionKind) -> PermissionStatus
     private let permissionLikelyRestricted: (PermissionKind) -> Bool
     private let makeIntroController: () -> any OnboardingIntroPresenting
-    private let openSettingsHost: () -> Void
+    private let makeVenvInstaller: () -> any OnboardingRuntimeInstalling
+    private let runtimeAlreadyInstalled: (GeneralConfig.AgentProvider) -> Bool
+    private let isAgentAuthenticated: (GeneralConfig.AgentProvider) -> Bool
+    private let openAgentLoginInTerminal: (GeneralConfig.AgentProvider) -> Bool
     private let onOpenExternalWindow: () -> Void
+    private let runtimePollInterval: TimeInterval
+    private let authPollInterval: TimeInterval
+    private let introAdvanceDelay: TimeInterval
     private let pickWorkspaceDirectory: (
         _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
         _ completion: @escaping (String?) -> Void
@@ -89,26 +85,30 @@ final class OnboardingController {
     private var freshWorkspaceSelectionInFlight = false
     private var permissionGrantObserver: NSObjectProtocol?
     private var permissionEndedObserver: NSObjectProtocol?
+    private var agentSetupState: AgentSetupState?
+    private var venvInstaller: any OnboardingRuntimeInstalling
+    private var runtimePollTimer: Timer?
+    private var authPollTimer: Timer?
+    private var appActivationObserver: NSObjectProtocol?
 
     private struct FreshPermissionState {
         var activePermission: PermissionKind?
         var requestInFlight = false
     }
 
+    private struct AgentSetupState {
+        var provider: GeneralConfig.AgentProvider
+        var requiresWorkspaceSelection: Bool
+        var providerPersisted = false
+    }
+
     init(permissions: PermissionsManager,
          flagURLs: OnboardingFlagURLs = .live,
          presentation: OnboardingPresentationState = OnboardingPresentationState(),
-         setupStatus: @escaping () -> SetupRuntimeReadiness = { .ready },
          getWorkingDirectory: @escaping () -> String = { "" },
          getAgentProvider: @escaping () -> GeneralConfig.AgentProvider = { .codex },
-         getModel: @escaping () -> String = { GeneralConfig.defaultModel },
-         getCodexReasoningEffort: @escaping () -> String = { GeneralConfig.defaultCodexReasoningEffort },
          setAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
-         setModel: @escaping (String) -> Void = { _ in },
-         setCodexReasoningEffort: @escaping (String) -> Void = { _ in },
          setWorkingDirectory: @escaping (String) -> Void = { _ in },
-         startSession: @escaping () -> Void = {},
-         retrySetup: @escaping () -> Void = {},
          setOnboardingNotchOverrideActive: @escaping (Bool) -> Void = { _ in },
          requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
          cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
@@ -116,8 +116,14 @@ final class OnboardingController {
          permissionStatus: ((PermissionKind) -> PermissionStatus)? = nil,
          permissionLikelyRestricted: ((PermissionKind) -> Bool)? = nil,
          makeIntroController: @escaping () -> any OnboardingIntroPresenting = { OnboardingIntroController() },
-         openSettingsHost: @escaping () -> Void = { SettingsPresenter.open() },
+         makeVenvInstaller: @escaping () -> any OnboardingRuntimeInstalling = { VenvInstaller() },
+         runtimeAlreadyInstalled: @escaping (GeneralConfig.AgentProvider) -> Bool = { VenvInstaller.alreadyInstalled(for: $0) },
+         isAgentAuthenticated: @escaping (GeneralConfig.AgentProvider) -> Bool = { AgentAuth.isAuthenticated(for: $0) },
+         openAgentLoginInTerminal: @escaping (GeneralConfig.AgentProvider) -> Bool = { AgentAuth.openLoginInTerminal(for: $0) },
          onOpenExternalWindow: @escaping () -> Void = {},
+         runtimePollInterval: TimeInterval = 0.5,
+         authPollInterval: TimeInterval = 1.0,
+         introAdvanceDelay: TimeInterval = 0.4,
          pickWorkspaceDirectory: @escaping (
             _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
             _ completion: @escaping (String?) -> Void
@@ -137,17 +143,10 @@ final class OnboardingController {
         self.presentation = presentation
         self.flagURLs = flagURLs
         self.permissions = permissions
-        self.setupStatus = setupStatus
         self.getWorkingDirectory = getWorkingDirectory
         self.getAgentProvider = getAgentProvider
-        self.getModel = getModel
-        self.getCodexReasoningEffort = getCodexReasoningEffort
         self.setAgentProvider = setAgentProvider
-        self.setModel = setModel
-        self.setCodexReasoningEffort = setCodexReasoningEffort
         self.setWorkingDirectory = setWorkingDirectory
-        self.startSession = startSession
-        self.retrySetup = retrySetup
         self.setOnboardingNotchOverrideActive = setOnboardingNotchOverrideActive
         self.requestPermissionSetup = requestPermissionSetup
         self.cancelPermissionSetup = cancelPermissionSetup
@@ -155,14 +154,23 @@ final class OnboardingController {
         self.permissionStatus = permissionStatus ?? { permissions.status(for: $0) }
         self.permissionLikelyRestricted = permissionLikelyRestricted ?? { permissions.likelyRestricted.contains($0) }
         self.makeIntroController = makeIntroController
-        self.openSettingsHost = openSettingsHost
+        self.makeVenvInstaller = makeVenvInstaller
+        self.venvInstaller = makeVenvInstaller()
+        self.runtimeAlreadyInstalled = runtimeAlreadyInstalled
+        self.isAgentAuthenticated = isAgentAuthenticated
+        self.openAgentLoginInTerminal = openAgentLoginInTerminal
         self.onOpenExternalWindow = onOpenExternalWindow
+        self.runtimePollInterval = runtimePollInterval
+        self.authPollInterval = authPollInterval
+        self.introAdvanceDelay = introAdvanceDelay
         self.pickWorkspaceDirectory = pickWorkspaceDirectory
         self.reduceMotion = reduceMotion
     }
 
     deinit {
         removeFreshPermissionObservers()
+        stopRuntimePolling()
+        stopAuthPolling()
     }
 
     /// True iff the user has completed (or skipped past) onboarding before.
@@ -171,8 +179,8 @@ final class OnboardingController {
     }
 
     /// True iff the user has started at least one voice session (direct
-    /// or via `/relay-bridge`). Drives the "always re-show All Set until
-    /// they've started" rule — see `showIfNeeded`.
+    /// or via `/relay-bridge`). Kept for compatibility with existing
+    /// launch/session bookkeeping; onboarding completion no longer depends on it.
     var hasRunSession: Bool {
         FileManager.default.fileExists(atPath: flagURLs.sessionRun.path)
     }
@@ -200,38 +208,31 @@ final class OnboardingController {
         !hasOnboarded && FileManager.default.fileExists(atPath: flagURLs.started.path)
     }
 
-    /// Show onboarding if it's needed — first launch, kill-
-    /// mid-flow recovery, no recorded agent choice after upgrade, or
-    /// a returning user who hasn't started their first session yet.
-    ///
-    /// The simplified flow is used in three cases:
-    ///   * `hasOnboarded` and the agent-choice flag is absent — focused setup
-    ///     prompt, no need to show welcome/explanations again.
-    ///   * `hasOnboarded` and `!hasRunSession` — the user got through
-    ///     setup but never ran a session, so we land them on Ready
-    ///     so they pick a working directory before their first run.
-    ///   * `wasInterrupted` — the user already saw the welcome flow,
-    ///     the app exited mid-way, and on relaunch they should resume into a
-    ///     focused flow that lands on Ready immediately when setup is complete.
+    /// Show onboarding if it's needed — first launch, kill-mid-flow recovery,
+    /// or a previously-onboarded upgrade without the versioned agent flag.
     func showIfNeeded() {
         if hasOnboarded {
-            if !hasChosenAgent || !hasRunSession {
-                show(simplified: true)
+            if !hasChosenAgent {
+                beginIntroAgentSetup(
+                    requiresWorkspaceSelection: false,
+                    resumeState: OnboardingResumeState.load()
+                )
             }
         } else {
             showFreshAutomatic()
         }
     }
 
-    /// Force-show onboarding (e.g. from a menu item). Always
-    /// shows the full flow so the user can re-read the explanations.
+    /// Force-show onboarding (e.g. from a menu item). Uses the intro overlay,
+    /// with the cinematic reserved for pristine automatic launches.
     func showAlways() {
-        show(simplified: false)
+        guard introController == nil else { return }
+        try? Data().write(to: flagURLs.started)
+        beginFreshPermissionSequence(intro: makeIntroController())
     }
 
     private func showFreshAutomatic() {
         guard !presentation.isPresented, introController == nil else {
-            openSettingsHost()
             return
         }
 
@@ -324,7 +325,10 @@ final class OnboardingController {
     private func completeFreshPermissionSequence() {
         removeFreshPermissionObservers()
         freshPermissionState = nil
-        showFreshWorkspaceSelection()
+        beginIntroAgentSetup(
+            requiresWorkspaceSelection: !hasOnboarded,
+            resumeState: OnboardingResumeState.load()
+        )
     }
 
     private func showFreshWorkspaceSelection() {
@@ -374,16 +378,7 @@ final class OnboardingController {
     private func completeFreshWorkspaceSelection(_ path: String) {
         setWorkingDirectory(path)
         introController = nil
-        let handoff = { [weak self] in
-            guard let self else { return }
-            self.show(
-                simplified: false,
-                initialStepOverride: .agentChoice,
-                markStarted: false,
-                workspaceAlreadyConfirmed: true
-            )
-        }
-        handoff()
+        finish()
     }
 
     private static func workspacePromptDisplayPath(_ path: String) -> String {
@@ -426,112 +421,279 @@ final class OnboardingController {
         }
     }
 
-    private func show(
-        simplified: Bool,
-        initialStepOverride: OnboardingView.Step? = nil,
-        markStarted: Bool = true,
-        workspaceAlreadyConfirmed: Bool = false
+    private func beginIntroAgentSetup(
+        requiresWorkspaceSelection: Bool,
+        resumeState: OnboardingResumeState.Snapshot? = nil
     ) {
-        if presentation.isPresented {
-            openSettingsHost()
+        guard !presentation.isPresented else { return }
+        let provider = resumeState?.provider ?? getAgentProvider()
+        let intro = introController ?? makeIntroController()
+        let isContinuingExistingIntro = introController === intro
+        introController = intro
+        agentSetupState = AgentSetupState(
+            provider: provider,
+            requiresWorkspaceSelection: requiresWorkspaceSelection
+        )
+        if !isContinuingExistingIntro {
+            setOnboardingNotchOverrideActive(true)
+        }
+
+        switch resumeState?.step {
+        case .pythonSetup:
+            showIntroRuntimePreparation()
+        case .agentLogin:
+            if runtimeAlreadyInstalled(provider) {
+                showIntroAgentLogin(message: nil)
+            } else {
+                showIntroRuntimePreparation()
+            }
+        case .ready:
+            if requiresWorkspaceSelection {
+                showFreshWorkspaceSelection()
+            } else {
+                finish()
+            }
+        default:
+            showIntroAgentChoice()
+        }
+    }
+
+    private func showIntroAgentChoice() {
+        guard let state = agentSetupState,
+              let intro = introController else { return }
+        stopRuntimePolling()
+        stopAuthPolling()
+        OnboardingResumeState.save(
+            step: .agentChoice,
+            provider: state.provider,
+            parentPermissionsReviewed: true
+        )
+        intro.presentAgentChoicePrompt(
+            selectedProvider: state.provider,
+            codexAction: { [weak self] in self?.selectIntroAgentProvider(.codex) },
+            claudeAction: { [weak self] in self?.selectIntroAgentProvider(.claude) }
+        )
+    }
+
+    private func selectIntroAgentProvider(_ provider: GeneralConfig.AgentProvider) {
+        guard var state = agentSetupState else { return }
+        state.provider = provider
+        if !state.providerPersisted {
+            setAgentProvider(provider)
+            state.providerPersisted = true
+        }
+        agentSetupState = state
+        venvInstaller = makeVenvInstaller()
+        OnboardingResumeState.save(
+            step: .agentChoice,
+            provider: provider,
+            parentPermissionsReviewed: true
+        )
+        showIntroRuntimePreparation()
+    }
+
+    private func showIntroRuntimePreparation() {
+        guard let state = agentSetupState,
+              let intro = introController else { return }
+        stopAuthPolling()
+        OnboardingResumeState.save(
+            step: .pythonSetup,
+            provider: state.provider,
+            parentPermissionsReviewed: true
+        )
+        venvInstaller.install(for: state.provider)
+        intro.presentRuntimePrompt(
+            OnboardingRuntimePromptPresentation(
+                provider: state.provider,
+                status: venvInstaller.status
+            ),
+            retryAction: { [weak self] in self?.retryIntroRuntimePreparation() }
+        )
+        startRuntimePolling(provider: state.provider)
+    }
+
+    private func retryIntroRuntimePreparation() {
+        venvInstaller = makeVenvInstaller()
+        showIntroRuntimePreparation()
+    }
+
+    private func startRuntimePolling(provider: GeneralConfig.AgentProvider) {
+        stopRuntimePolling()
+        let timer = Timer(timeInterval: runtimePollInterval, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.runtimePollTick(provider: provider)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        runtimePollTimer = timer
+        runtimePollTick(provider: provider)
+    }
+
+    private func runtimePollTick(provider: GeneralConfig.AgentProvider) {
+        guard agentSetupState?.provider == provider,
+              let intro = introController else { return }
+        intro.presentRuntimePrompt(
+            OnboardingRuntimePromptPresentation(
+                provider: provider,
+                status: venvInstaller.status
+            ),
+            retryAction: { [weak self] in self?.retryIntroRuntimePreparation() }
+        )
+        switch venvInstaller.status {
+        case .succeeded:
+            stopRuntimePolling()
+            DispatchQueue.main.asyncAfter(deadline: .now() + introAdvanceDelay) { [weak self] in
+                guard self?.agentSetupState?.provider == provider else { return }
+                self?.showIntroAgentLogin(message: nil)
+            }
+        case .failed:
+            stopRuntimePolling()
+        case .idle, .running:
+            break
+        }
+    }
+
+    private func stopRuntimePolling() {
+        runtimePollTimer?.invalidate()
+        runtimePollTimer = nil
+    }
+
+    private func showIntroAgentLogin(message: String?) {
+        guard let state = agentSetupState,
+              let intro = introController else { return }
+        stopRuntimePolling()
+        OnboardingResumeState.save(
+            step: .agentLogin,
+            provider: state.provider,
+            parentPermissionsReviewed: true
+        )
+        let signedIn = isAgentAuthenticated(state.provider)
+        intro.presentAgentLoginPrompt(
+            OnboardingAgentLoginPromptPresentation(
+                provider: state.provider,
+                signedIn: signedIn,
+                message: message
+            ),
+            signInAction: { [weak self] in self?.startIntroAgentLogin() }
+        )
+        guard signedIn else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + introAdvanceDelay) { [weak self] in
+            guard let self,
+                  self.agentSetupState?.provider == state.provider,
+                  self.isAgentAuthenticated(state.provider) else { return }
+            self.completeAuthenticatedProvider(state.provider, introDismissed: false)
+        }
+    }
+
+    private func startIntroAgentLogin() {
+        guard let state = agentSetupState,
+              let intro = introController else { return }
+        OnboardingResumeState.save(
+            step: .agentLogin,
+            provider: state.provider,
+            parentPermissionsReviewed: true
+        )
+        intro.dismiss { [weak self] in
+            guard let self else { return }
+            self.setOnboardingNotchOverrideActive(false)
+            self.onOpenExternalWindow()
+            guard self.openAgentLoginInTerminal(state.provider) else {
+                self.restoreIntroAgentLogin(
+                    provider: state.provider,
+                    message: "Could not open Terminal for \(state.provider.displayName) sign-in."
+                )
+                return
+            }
+            self.startAuthPolling(provider: state.provider)
+        }
+    }
+
+    private func startAuthPolling(provider: GeneralConfig.AgentProvider) {
+        stopAuthPolling()
+        let timer = Timer(timeInterval: authPollInterval, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.authPollTick(provider: provider)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        authPollTimer = timer
+        appActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: NSApp,
+            queue: nil
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.restoreLoginIfAuthenticationDidNotComplete(provider: provider)
+            }
+        }
+        authPollTick(provider: provider)
+    }
+
+    private func authPollTick(provider: GeneralConfig.AgentProvider) {
+        guard agentSetupState?.provider == provider else {
+            stopAuthPolling()
             return
         }
-        let resumeState = simplified ? OnboardingResumeState.load() : nil
-        let requiresParentPermissionGuidance = resumeState?.parentPermissionsReviewed == false
-        let initialWorkingDirectory = getWorkingDirectory()
-        let initialAgentProvider = getAgentProvider()
-        let initialModel = getModel()
-        let initialCodexReasoningEffort = getCodexReasoningEffort()
-        let startingProvider = resumeState?.provider ?? initialAgentProvider
-        let startingParentReviewed = resumeState?.parentPermissionsReviewed ?? false
-        let initialStep = OnboardingView.initialStep(
-            simplified: simplified,
-            resumeStep: resumeState?.step,
-            requiresAgentChoice: !hasChosenAgent,
-            requiresParentPermissionGuidance: requiresParentPermissionGuidance,
-            parentPermissionsReviewed: startingParentReviewed,
-            permissionStatus: { permissions.status(for: $0) },
-            venvInstalled: VenvInstaller.alreadyInstalled,
-            agentSignedIn: AgentAuth.isAuthenticated(for: startingProvider),
-            fullFlowInitialStep: initialStepOverride ?? .welcome
+        guard isAgentAuthenticated(provider) else { return }
+        stopAuthPolling()
+        completeAuthenticatedProvider(provider, introDismissed: true)
+    }
+
+    private func restoreLoginIfAuthenticationDidNotComplete(provider: GeneralConfig.AgentProvider) {
+        guard agentSetupState?.provider == provider,
+              !isAgentAuthenticated(provider) else { return }
+        stopAuthPolling()
+        restoreIntroAgentLogin(
+            provider: provider,
+            message: "\(provider.displayName) sign-in did not complete. Try again when you are ready."
         )
+    }
 
-        // Mark "started" before the embedded walkthrough is even constructed, so any
-        // mid-flow exit leaves enough state for the next launch to resume
-        // into the simplified flow rather than the full walkthrough.
-        if markStarted {
-            try? Data().write(to: flagURLs.started)
-        }
-
-        let view = OnboardingView(
-            permissions: permissions,
-            simplified: simplified,
-            setupStatus: setupStatus,
-            initialWorkingDirectory: initialWorkingDirectory,
-            initialAgentProvider: initialAgentProvider,
-            initialModel: initialModel,
-            initialCodexReasoningEffort: initialCodexReasoningEffort,
-            requiresAgentChoice: !hasChosenAgent,
-            requiresParentPermissionGuidance: requiresParentPermissionGuidance,
-            showsWorkingDirectoryPicker: !workspaceAlreadyConfirmed,
-            initialWorkingDirectoryConfirmed: workspaceAlreadyConfirmed,
-            persistsWorkingDirectorySelection: !workspaceAlreadyConfirmed,
-            initialStepOverride: initialStepOverride,
-            resumeState: resumeState,
-            onSetAgentProvider: { [weak self] provider in
-                self?.setAgentProvider(provider)
-                self?.markAgentChoiceComplete()
-            },
-            onSetModel: { [weak self] model in self?.setModel(model) },
-            onSetCodexReasoningEffort: { [weak self] effort in
-                self?.setCodexReasoningEffort(effort)
-            },
-            onSetWorkingDirectory: { [weak self] path in self?.setWorkingDirectory(path) },
-            onStartSession: { [weak self] in self?.startSession() },
-            onRetrySetup: { [weak self] in self?.retrySetup() },
-            requestPermissionSetup: { [weak self] kind, source, purpose in
-                self?.requestPermissionSetup(kind, source, purpose)
-            },
-            cancelPermissionSetup: { [weak self] source in
-                self?.cancelPermissionSetup(source)
-            },
-            shouldDeferPermissionAdvance: { [weak self] kind in
-                self?.shouldDeferPermissionAdvance(kind) ?? false
-            },
-            onOpenExternalWindow: onOpenExternalWindow,
-            presentation: presentation,
-            onSurfaceVisibilityChanged: { [weak self] visible in
-                self?.presentation.setContentVisible(visible)
-            },
-            onFinish: { [weak self] in self?.finish() },
-            onHostDismissed: { [weak self] in self?.hostDismissed() }
-        )
-
+    private func restoreIntroAgentLogin(provider: GeneralConfig.AgentProvider, message: String) {
+        guard agentSetupState?.provider == provider else { return }
         setOnboardingNotchOverrideActive(true)
-        presentation.present(
-            rootView: AnyView(view),
-            initialDetail: OnboardingDetailPresentation(
-                title: OnboardingView.headerTitle(for: initialStep, provider: startingProvider),
-                subtitle: OnboardingView.headerSubtitle(for: initialStep),
-                progress: OnboardingView.progressLabel(
-                    for: initialStep,
-                    simplified: simplified,
-                    requiresAgentChoice: !hasChosenAgent,
-                    requiresParentPermissionGuidance: requiresParentPermissionGuidance,
-                    permissionStatus: { permissions.status(for: $0) },
-                    venvInstalled: VenvInstaller.alreadyInstalled,
-                    agentSignedIn: AgentAuth.isAuthenticated(for: startingProvider),
-                    parentPermissionsReviewed: startingParentReviewed
-                )
+        if introController == nil {
+            introController = makeIntroController()
+        }
+        showIntroAgentLogin(message: message)
+    }
+
+    private func stopAuthPolling() {
+        authPollTimer?.invalidate()
+        authPollTimer = nil
+        if let appActivationObserver {
+            NotificationCenter.default.removeObserver(appActivationObserver)
+            self.appActivationObserver = nil
+        }
+    }
+
+    private func completeAuthenticatedProvider(
+        _ provider: GeneralConfig.AgentProvider,
+        introDismissed: Bool
+    ) {
+        guard let state = agentSetupState,
+              state.provider == provider else { return }
+        markAgentChoiceComplete()
+        if state.requiresWorkspaceSelection {
+            OnboardingResumeState.save(
+                step: .ready,
+                provider: provider,
+                parentPermissionsReviewed: true
             )
-        )
-        presentation.setContentVisible(OnboardingView.initialSurfaceVisible(for: initialStep))
-        openSettingsHost()
+            showFreshWorkspaceSelection()
+        } else {
+            if introDismissed {
+                introController = nil
+            }
+            finish()
+        }
     }
 
     /// Mark the flag file and clear the embedded presentation. Called when the user
     /// completes or skips past the final step.
     private func finish() {
+        stopRuntimePolling()
+        stopAuthPolling()
         cancelPermissionSetup(.onboarding)
         try? Data().write(to: flagURLs.onboarded)
         OnboardingResumeState.clear()
@@ -540,7 +702,17 @@ final class OnboardingController {
         // resumed mid-flow exit.
         try? FileManager.default.removeItem(at: flagURLs.started)
         presentation.clear()
-        setOnboardingNotchOverrideActive(false)
+        agentSetupState = nil
+        let intro = introController
+        introController = nil
+        let complete: () -> Void = { [weak self] in
+            self?.setOnboardingNotchOverrideActive(false)
+        }
+        if let intro {
+            intro.dismiss(completion: complete)
+        } else {
+            complete()
+        }
     }
 
     private func hostDismissed() {

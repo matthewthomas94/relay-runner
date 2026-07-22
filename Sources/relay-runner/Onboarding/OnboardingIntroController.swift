@@ -63,9 +63,27 @@ protocol OnboardingIntroPresenting: AnyObject {
     func present(completion: @escaping () -> Void)
     func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
                                  action: @escaping () -> Void)
+    func presentAgentChoicePrompt(selectedProvider: GeneralConfig.AgentProvider,
+                                  codexAction: @escaping () -> Void,
+                                  claudeAction: @escaping () -> Void)
+    func presentRuntimePrompt(_ presentation: OnboardingRuntimePromptPresentation,
+                              retryAction: @escaping () -> Void)
+    func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 signInAction: @escaping () -> Void)
     func presentWorkspacePrompt(currentPath: String,
                                 action: @escaping () -> Void)
     func dismiss(completion: @escaping () -> Void)
+}
+
+struct OnboardingRuntimePromptPresentation: Equatable {
+    let provider: GeneralConfig.AgentProvider
+    let status: VenvInstaller.Status
+}
+
+struct OnboardingAgentLoginPromptPresentation: Equatable {
+    let provider: GeneralConfig.AgentProvider
+    let signedIn: Bool
+    let message: String?
 }
 
 enum OnboardingIntroTimeline {
@@ -338,6 +356,56 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         }
     }
 
+    func presentAgentChoicePrompt(selectedProvider: GeneralConfig.AgentProvider,
+                                  codexAction: @escaping () -> Void,
+                                  claudeAction: @escaping () -> Void) {
+        timelineTimer?.invalidate()
+        timelineTimer = nil
+        removeSkipMonitors()
+
+        let surface = ensureSurface()
+        surface.rootView.showAgentChoicePrompt(
+            selectedProvider: selectedProvider,
+            codexAction: codexAction,
+            claudeAction: claudeAction
+        )
+
+        guard surface.didCreate else { return }
+        DispatchQueue.main.async { [weak container = surface.container] in
+            container?.animateReveal {}
+        }
+    }
+
+    func presentRuntimePrompt(_ presentation: OnboardingRuntimePromptPresentation,
+                              retryAction: @escaping () -> Void) {
+        timelineTimer?.invalidate()
+        timelineTimer = nil
+        removeSkipMonitors()
+
+        let surface = ensureSurface()
+        surface.rootView.showRuntimePrompt(presentation, retryAction: retryAction)
+
+        guard surface.didCreate else { return }
+        DispatchQueue.main.async { [weak container = surface.container] in
+            container?.animateReveal {}
+        }
+    }
+
+    func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 signInAction: @escaping () -> Void) {
+        timelineTimer?.invalidate()
+        timelineTimer = nil
+        removeSkipMonitors()
+
+        let surface = ensureSurface()
+        surface.rootView.showAgentLoginPrompt(presentation, signInAction: signInAction)
+
+        guard surface.didCreate else { return }
+        DispatchQueue.main.async { [weak container = surface.container] in
+            container?.animateReveal {}
+        }
+    }
+
     func presentWorkspacePrompt(currentPath: String,
                                 action: @escaping () -> Void) {
         timelineTimer?.invalidate()
@@ -543,6 +611,59 @@ private final class OnboardingIntroRootView: NSView {
         replaceContent(with: view)
     }
 
+    func showAgentChoicePrompt(selectedProvider: GeneralConfig.AgentProvider,
+                               codexAction: @escaping () -> Void,
+                               claudeAction: @escaping () -> Void) {
+        let view = OnboardingIntroHostedSurfaceView(
+            frame: bounds,
+            rootView: AnyView(
+                OnboardingIntroAgentChoicePromptView(
+                    selectedProvider: selectedProvider,
+                    codexAction: codexAction,
+                    claudeAction: claudeAction
+                )
+            )
+        )
+        view.autoresizingMask = [.width, .height]
+        view.layoutFrame = layoutFrame
+        cinematicView = nil
+        replaceContent(with: view)
+    }
+
+    func showRuntimePrompt(_ presentation: OnboardingRuntimePromptPresentation,
+                           retryAction: @escaping () -> Void) {
+        let view = OnboardingIntroHostedSurfaceView(
+            frame: bounds,
+            rootView: AnyView(
+                OnboardingIntroRuntimePromptView(
+                    presentation: presentation,
+                    retryAction: retryAction
+                )
+            )
+        )
+        view.autoresizingMask = [.width, .height]
+        view.layoutFrame = layoutFrame
+        cinematicView = nil
+        replaceContent(with: view)
+    }
+
+    func showAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                              signInAction: @escaping () -> Void) {
+        let view = OnboardingIntroHostedSurfaceView(
+            frame: bounds,
+            rootView: AnyView(
+                OnboardingIntroAgentLoginPromptView(
+                    presentation: presentation,
+                    signInAction: signInAction
+                )
+            )
+        )
+        view.autoresizingMask = [.width, .height]
+        view.layoutFrame = layoutFrame
+        cinematicView = nil
+        replaceContent(with: view)
+    }
+
     func showWorkspacePrompt(currentPath: String,
                              action: @escaping () -> Void) {
         let view = OnboardingIntroWorkspaceSurfaceView(
@@ -577,6 +698,8 @@ private final class OnboardingIntroRootView: NSView {
         if let view = view as? OnboardingIntroCinematicView {
             view.layoutFrame = layoutFrame
         } else if let view = view as? OnboardingIntroPermissionSurfaceView {
+            view.layoutFrame = layoutFrame
+        } else if let view = view as? OnboardingIntroHostedSurfaceView {
             view.layoutFrame = layoutFrame
         } else if let view = view as? OnboardingIntroWorkspaceSurfaceView {
             view.layoutFrame = layoutFrame
@@ -737,6 +860,35 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
     }
 }
 
+private final class OnboardingIntroHostedSurfaceView: NSView {
+    var layoutFrame: NSRect = .zero {
+        didSet { needsLayout = true }
+    }
+
+    private let hostingView: NSHostingView<AnyView>
+
+    override var isFlipped: Bool { true }
+
+    init(frame frameRect: NSRect, rootView: AnyView) {
+        hostingView = NSHostingView(rootView: rootView)
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        addSubview(hostingView)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        hostingView.frame = layoutFrame
+    }
+}
+
 private final class OnboardingIntroWorkspaceSurfaceView: NSView {
     var layoutFrame: NSRect = .zero {
         didSet { needsLayout = true }
@@ -783,40 +935,203 @@ private final class OnboardingIntroWorkspaceSurfaceView: NSView {
     }
 }
 
+struct OnboardingIntroAgentChoicePromptView: View {
+    let selectedProvider: GeneralConfig.AgentProvider
+    let codexAction: () -> Void
+    let claudeAction: () -> Void
+
+    var body: some View {
+        VStack(spacing: 54) {
+            Text("Which coding agent should Relay Runner start with? /")
+                .font(AppTypography.font(.onboardingHero))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.72)
+                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
+                .accessibilityAddTraits(.isHeader)
+
+            HStack(spacing: 18) {
+                OnboardingIntroWhiteActionButton(
+                    title: "Codex",
+                    accessibilityLabel: providerAccessibilityLabel(.codex),
+                    action: codexAction
+                )
+                OnboardingIntroWhiteActionButton(
+                    title: "Claude",
+                    accessibilityLabel: providerAccessibilityLabel(.claude),
+                    action: claudeAction
+                )
+            }
+
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func providerAccessibilityLabel(_ provider: GeneralConfig.AgentProvider) -> String {
+        selectedProvider == provider
+            ? "\(provider.displayName), currently selected"
+            : provider.displayName
+    }
+}
+
+struct OnboardingIntroRuntimePromptView: View {
+    let presentation: OnboardingRuntimePromptPresentation
+    let retryAction: () -> Void
+
+    var body: some View {
+        VStack(spacing: 38) {
+            Text(title)
+                .font(AppTypography.font(.onboardingHero))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.72)
+                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
+                .accessibilityAddTraits(.isHeader)
+
+            runtimeStatus
+
+            if showsRetry {
+                OnboardingIntroWhiteActionButton(
+                    title: "Retry",
+                    accessibilityLabel: "Retry \(presentation.provider.displayName) setup",
+                    action: retryAction
+                )
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var title: String {
+        switch presentation.status {
+        case .failed:
+            return "\(presentation.provider.displayName) setup needs attention /"
+        case .succeeded:
+            return "\(presentation.provider.displayName) is ready /"
+        case .idle, .running:
+            return "Preparing \(presentation.provider.displayName) /"
+        }
+    }
+
+    @ViewBuilder
+    private var runtimeStatus: some View {
+        switch presentation.status {
+        case .idle:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Starting setup...")
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+        case .running(let message, let progress):
+            VStack(spacing: 12) {
+                if let progress {
+                    ProgressView(value: progress, total: 1.0)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 360)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(message)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+            }
+        case .succeeded:
+            Text("Runtime and \(presentation.provider.displayName) command are available.")
+                .font(AppTypography.font(.body))
+                .foregroundStyle(.white.opacity(0.72))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+        case .failed(let message):
+            Text(message)
+                .font(AppTypography.font(.body))
+                .foregroundStyle(.white.opacity(0.72))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+        }
+    }
+
+    private var showsRetry: Bool {
+        if case .failed = presentation.status { return true }
+        return false
+    }
+}
+
+struct OnboardingIntroAgentLoginPromptView: View {
+    let presentation: OnboardingAgentLoginPromptPresentation
+    let signInAction: () -> Void
+
+    var body: some View {
+        VStack(spacing: 54) {
+            Text("Sign in to \(presentation.provider.displayName) /")
+                .font(AppTypography.font(.onboardingHero))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.72)
+                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
+                .accessibilityAddTraits(.isHeader)
+
+            if presentation.signedIn {
+                Text("Signed in.")
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(.white.opacity(0.72))
+            } else {
+                OnboardingIntroWhiteActionButton(
+                    title: "Sign in",
+                    accessibilityLabel: "Sign in to \(presentation.provider.displayName)",
+                    action: signInAction
+                )
+            }
+
+            if let message = presentation.message {
+                Text(message)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
+        .accessibilityElement(children: .contain)
+    }
+}
+
 struct OnboardingIntroWorkspacePromptView: View {
     let currentPath: String
     let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 42) {
-            Text("Workspace")
-                .font(AppTypography.font(.screenTitle))
+        VStack(spacing: 28) {
+            Text("Choose your workspace /")
+                .font(AppTypography.font(.onboardingHero))
                 .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.72)
+                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
                 .accessibilityAddTraits(.isHeader)
 
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(OnboardingView.workspaceFolderTitle)
-                        .font(AppTypography.font(.cardHeading))
-                        .foregroundStyle(.white)
-                    Text(OnboardingView.workspaceFolderHelpText)
-                        .font(AppTypography.font(.body))
-                        .foregroundStyle(.white.opacity(0.72))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                HStack(spacing: 14) {
-                    HStack(spacing: 8) {
-                        Text(currentPath)
-                            .font(AppTypography.font(.body))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+            HStack(spacing: 14) {
+                Text(currentPath)
+                    .font(AppTypography.font(.body))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
+                    .frame(maxWidth: 640)
                     .frame(height: 52)
-                    .frame(maxWidth: .infinity)
                     .background(Color(nsColor: .textBackgroundColor).opacity(0.92))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
@@ -824,20 +1139,54 @@ struct OnboardingIntroWorkspacePromptView: View {
                             .stroke(Color.white.opacity(0.12))
                     )
 
-                    SettingsActionButton(
-                        title: "Browse\u{2026}",
-                        systemImage: "folder",
-                        prominence: .secondary,
-                        accessibilityLabel: "Browse for workspace folder",
-                        helpText: "Choose the workspace folder where Relay Runner should start sessions",
-                        action: action
-                    )
-                    .frame(height: 52)
-                }
+                OnboardingIntroWhiteActionButton(
+                    title: "Browse\u{2026}",
+                    accessibilityLabel: "Browse for workspace folder",
+                    height: 52,
+                    action: action
+                )
             }
+
+            Text(OnboardingView.workspaceFolderHelpText)
+                .font(AppTypography.font(.body))
+                .foregroundStyle(.white.opacity(0.68))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
         }
         .padding(.horizontal, 34)
-        .frame(maxWidth: 1280, alignment: .leading)
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
+    }
+}
+
+struct OnboardingIntroWhiteActionButton: View {
+    let title: String
+    var accessibilityLabel: String?
+    var width: CGFloat = OnboardingPermissionTreatment.buttonSize.width
+    var height: CGFloat = OnboardingPermissionTreatment.buttonSize.height
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(AppTypography.font(.permissionButton))
+                .foregroundStyle(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .frame(width: width, height: height)
+                .background(
+                    RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
+                        .fill(Color.white)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
+                        .stroke(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel ?? title)
+        .help(accessibilityLabel ?? title)
     }
 }
 
