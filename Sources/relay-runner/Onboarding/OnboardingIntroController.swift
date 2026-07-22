@@ -71,6 +71,7 @@ protocol OnboardingIntroPresenting: AnyObject {
                                  signInAction: @escaping () -> Void)
     func presentWorkspacePrompt(currentPath: String,
                                 action: @escaping () -> Void)
+    func presentCompletionPrompt()
     func dismiss(completion: @escaping () -> Void)
 }
 
@@ -92,8 +93,8 @@ enum OnboardingIntroTimeline {
         "I need a few permissions",
     ]
     static let initialBrandHold: TimeInterval = 0.70
-    static let typingInterval: TimeInterval = 0.065 / 1.5
-    static let eraseInterval: TimeInterval = 0.045 / 1.5
+    static let typingInterval: TimeInterval = 0.065 / 2.25
+    static let eraseInterval: TimeInterval = 0.045 / 2.25
     static let phraseHold: TimeInterval = 1.05
     static let dotFieldTravel: TimeInterval = 2.00
     static let finalPhraseHold: TimeInterval = 1.50
@@ -156,19 +157,21 @@ enum OnboardingIntroTimeline {
         cursor -= brandTypeDuration
 
         if cursor < dotFieldTravel {
+            let progress = CGFloat(easeInOut(cursor / dotFieldTravel))
             return frame(
                 phrase: brand,
                 visible: brandGraphemes,
                 cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
-                dotFieldProgress: CGFloat(cursor / dotFieldTravel),
-                dotFieldOpacity: 1
+                dotFieldProgress: progress,
+                dotFieldOpacity: progress
             )
         }
         cursor -= dotFieldTravel
 
         let brandEraseDuration = Double(brandGraphemes.count) * eraseInterval
         if cursor < brandEraseDuration {
-            let erasedCount = min(brandGraphemes.count, Int(cursor / eraseInterval) + 1)
+            let phase = easeInOut(cursor / brandEraseDuration)
+            let erasedCount = min(brandGraphemes.count, Int(phase * Double(brandGraphemes.count)) + 1)
             let remainingCount = max(0, brandGraphemes.count - erasedCount)
             return frame(
                 phrase: brand,
@@ -176,7 +179,7 @@ enum OnboardingIntroTimeline {
                 compactCursor: remainingCount == 1,
                 cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
                 dotFieldProgress: 1,
-                dotFieldOpacity: 1
+                dotFieldOpacity: CGFloat(1 - easeInOut(cursor / brandEraseDuration))
             )
         }
         cursor -= brandEraseDuration
@@ -185,7 +188,8 @@ enum OnboardingIntroTimeline {
         let firstCopyGraphemes = phraseGraphemes(firstCopy)
         let firstTypeDuration = Double(firstCopyGraphemes.count) * typingInterval
         if cursor < firstTypeDuration {
-            let visibleCount = min(firstCopyGraphemes.count, Int(cursor / typingInterval))
+            let phase = easeInOut(cursor / firstTypeDuration)
+            let visibleCount = min(firstCopyGraphemes.count, Int(phase * Double(firstCopyGraphemes.count)))
             return frame(
                 phrase: firstCopy,
                 visible: Array(firstCopyGraphemes.prefix(visibleCount)),
@@ -205,7 +209,8 @@ enum OnboardingIntroTimeline {
 
         let firstEraseDuration = Double(firstCopyGraphemes.count) * eraseInterval
         if cursor < firstEraseDuration {
-            let erasedCount = min(firstCopyGraphemes.count, Int(cursor / eraseInterval) + 1)
+            let phase = easeInOut(cursor / firstEraseDuration)
+            let erasedCount = min(firstCopyGraphemes.count, Int(phase * Double(firstCopyGraphemes.count)) + 1)
             let remainingCount = max(0, firstCopyGraphemes.count - erasedCount)
             return frame(
                 phrase: firstCopy,
@@ -219,7 +224,8 @@ enum OnboardingIntroTimeline {
         let finalCopyGraphemes = phraseGraphemes(finalCopy)
         let finalTypeDuration = Double(finalCopyGraphemes.count) * typingInterval
         if cursor < finalTypeDuration {
-            let visibleCount = min(finalCopyGraphemes.count, Int(cursor / typingInterval))
+            let phase = easeInOut(cursor / finalTypeDuration)
+            let visibleCount = min(finalCopyGraphemes.count, Int(phase * Double(finalCopyGraphemes.count)))
             return frame(
                 phrase: finalCopy,
                 visible: Array(finalCopyGraphemes.prefix(visibleCount)),
@@ -264,6 +270,11 @@ enum OnboardingIntroTimeline {
 
     private static func phraseGraphemes(_ phrase: String) -> [Character] {
         Array(phrase)
+    }
+
+    static func easeInOut(_ progress: Double) -> Double {
+        let clamped = min(max(progress, 0), 1)
+        return clamped * clamped * (3 - 2 * clamped)
     }
 }
 
@@ -317,7 +328,8 @@ enum OnboardingPromptTransitionTimeline {
 
         let eraseDuration = Double(sourcePhrase.count) * eraseInterval
         if cursor < eraseDuration {
-            let erasedCount = min(sourcePhrase.count, Int(cursor / eraseInterval) + 1)
+            let phase = OnboardingIntroTimeline.easeInOut(cursor / eraseDuration)
+            let erasedCount = min(sourcePhrase.count, Int(phase * Double(sourcePhrase.count)) + 1)
             return makeFrame(
                 phrase: sourcePhrase,
                 visible: Array(sourcePhrase.prefix(max(0, sourcePhrase.count - erasedCount))),
@@ -328,7 +340,8 @@ enum OnboardingPromptTransitionTimeline {
 
         let typeDuration = Double(targetPhrase.count) * typingInterval
         if cursor < typeDuration {
-            let visibleCount = min(targetPhrase.count, Int(cursor / typingInterval))
+            let phase = OnboardingIntroTimeline.easeInOut(cursor / typeDuration)
+            let visibleCount = min(targetPhrase.count, Int(phase * Double(targetPhrase.count)))
             return makeFrame(
                 phrase: targetPhrase,
                 visible: Array(targetPhrase.prefix(visibleCount)),
@@ -537,6 +550,20 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
 
         let surface = ensureSurface()
         surface.rootView.showWorkspacePrompt(currentPath: currentPath, action: action)
+
+        guard surface.didCreate else { return }
+        DispatchQueue.main.async { [weak container = surface.container] in
+            container?.animateReveal {}
+        }
+    }
+
+    func presentCompletionPrompt() {
+        timelineTimer?.invalidate()
+        timelineTimer = nil
+        removeSkipMonitors()
+
+        let surface = ensureSurface()
+        surface.rootView.showCompletionPrompt()
 
         guard surface.didCreate else { return }
         DispatchQueue.main.async { [weak container = surface.container] in
@@ -801,6 +828,17 @@ private final class OnboardingIntroRootView: NSView {
             frame: bounds,
             currentPath: currentPath,
             action: action
+        )
+        view.autoresizingMask = [.width, .height]
+        view.layoutFrame = layoutFrame
+        cinematicView = nil
+        replaceContent(with: view)
+    }
+
+    func showCompletionPrompt() {
+        let view = OnboardingIntroHostedSurfaceView(
+            frame: bounds,
+            rootView: AnyView(OnboardingIntroCompletionPromptView())
         )
         view.autoresizingMask = [.width, .height]
         view.layoutFrame = layoutFrame
@@ -1303,6 +1341,7 @@ struct OnboardingIntroAgentLoginPromptView: View {
 }
 
 struct OnboardingIntroWorkspacePromptView: View {
+    static let controlHeight: CGFloat = 52 * OnboardingPermissionTreatment.actionScale
     let currentPath: String
     let action: () -> Void
 
@@ -1319,7 +1358,7 @@ struct OnboardingIntroWorkspacePromptView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .frame(maxWidth: 640)
-                    .frame(height: 52)
+                    .frame(height: Self.controlHeight)
                     .background(Color(nsColor: .textBackgroundColor).opacity(0.92))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
@@ -1330,7 +1369,7 @@ struct OnboardingIntroWorkspacePromptView: View {
                 OnboardingIntroWhiteActionButton(
                     title: "Browse\u{2026}",
                     accessibilityLabel: "Browse for workspace folder",
-                    height: 52 * OnboardingPermissionTreatment.actionScale,
+                    height: Self.controlHeight,
                     action: action
                 )
             }
@@ -1345,6 +1384,15 @@ struct OnboardingIntroWorkspacePromptView: View {
         .padding(.horizontal, 34)
         .frame(maxWidth: .infinity)
         .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
+    }
+}
+
+struct OnboardingIntroCompletionPromptView: View {
+    var body: some View {
+        OnboardingBlinkingTitle("You’re all set /")
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
+            .accessibilityElement(children: .contain)
     }
 }
 
@@ -1425,6 +1473,9 @@ private struct OnboardingIntroPermissionControlsView: View {
 }
 
 struct OnboardingIntroWhiteActionButton: View {
+    static let hoverScale: CGFloat = 1
+    static let hoverAnimation: Animation = .easeInOut(duration: 0.16)
+
     let title: String
     var accessibilityLabel: String?
     var width: CGFloat = OnboardingPermissionTreatment.buttonSize.width
@@ -1459,9 +1510,9 @@ struct OnboardingIntroWhiteActionButton: View {
                 )
         }
         .buttonStyle(.plain)
-        .scaleEffect(showsHover ? 1.025 : 1)
+        .scaleEffect(Self.hoverScale)
         .shadow(color: .white.opacity(showsHover ? 0.16 : 0), radius: 7)
-        .animation(.easeOut(duration: 0.14), value: showsHover)
+        .animation(Self.hoverAnimation, value: showsHover)
         .onHover { isHovering = $0 }
         .accessibilityLabel(accessibilityLabel ?? title)
         .help(accessibilityLabel ?? title)

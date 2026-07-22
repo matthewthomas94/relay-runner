@@ -115,6 +115,9 @@ final class AppState {
             },
             onOpenExternalWindow: { [weak self] in
                 self?.suspendWorkspaceForExternalWindow()
+            },
+            openWorkspaceAfterCompletion: { [weak self] in
+                self?.showWorkspaceWork()
             }
         )
     }()
@@ -974,6 +977,12 @@ final class AppState {
         guard allowsAppShellAccess else { return }
         if overlayController == nil { startOverlay() }
         programBoardOverlay.showSettings()
+    }
+
+    private func showWorkspaceWork() {
+        guard allowsAppShellAccess else { return }
+        if overlayController == nil { startOverlay() }
+        programBoardOverlay.showWork()
     }
 
     func activateProject(pathOrAlias: String, provider: String?) -> ProjectActivationReply {
