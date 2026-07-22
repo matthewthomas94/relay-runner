@@ -90,6 +90,7 @@ final class OnboardingController {
     private var runtimePollTimer: Timer?
     private var authPollTimer: Timer?
     private var appActivationObserver: NSObjectProtocol?
+    private var forceWorkspaceSelectionAfterIntro = false
 
     private struct FreshPermissionState {
         var activePermission: PermissionKind?
@@ -211,6 +212,7 @@ final class OnboardingController {
     /// Show onboarding if it's needed — first launch, kill-mid-flow recovery,
     /// or a previously-onboarded upgrade without the versioned agent flag.
     func showIfNeeded() {
+        forceWorkspaceSelectionAfterIntro = false
         if hasOnboarded {
             if !hasChosenAgent {
                 beginIntroAgentSetup(
@@ -226,7 +228,18 @@ final class OnboardingController {
     /// Force-show onboarding (e.g. from a menu item). Uses the intro overlay,
     /// with the cinematic reserved for pristine automatic launches.
     func showAlways() {
+        showIntro(forceWorkspaceSelectionAfterIntro: false)
+    }
+
+    /// Manual redo should revisit the full intro flow, including workspace
+    /// selection, while still using the intro-only overlay path.
+    func showManualRedo() {
+        showIntro(forceWorkspaceSelectionAfterIntro: true)
+    }
+
+    private func showIntro(forceWorkspaceSelectionAfterIntro: Bool) {
         guard introController == nil else { return }
+        self.forceWorkspaceSelectionAfterIntro = forceWorkspaceSelectionAfterIntro
         try? Data().write(to: flagURLs.started)
         beginFreshPermissionSequence(intro: makeIntroController())
     }
@@ -325,8 +338,10 @@ final class OnboardingController {
     private func completeFreshPermissionSequence() {
         removeFreshPermissionObservers()
         freshPermissionState = nil
+        let requiresWorkspaceSelection = forceWorkspaceSelectionAfterIntro || !hasOnboarded
+        forceWorkspaceSelectionAfterIntro = false
         beginIntroAgentSetup(
-            requiresWorkspaceSelection: !hasOnboarded,
+            requiresWorkspaceSelection: requiresWorkspaceSelection,
             resumeState: OnboardingResumeState.load()
         )
     }

@@ -3,6 +3,36 @@ import XCTest
 
 final class StatusSettingsTabTests: XCTestCase {
 
+    func testOnboardingSectionCopyMatchesRedoFlow() {
+        XCTAssertEqual(StatusSettingsTab.onboardingSectionTitle, "Onboarding")
+        XCTAssertEqual(StatusSettingsTab.onboardingRowTitle, "Intro walkthrough")
+        XCTAssertEqual(
+            StatusSettingsTab.onboardingRowDescription,
+            "Run the intro again to revisit permissions, coding agent setup, sign-in, and workspace selection."
+        )
+        XCTAssertEqual(StatusSettingsTab.onboardingActionTitle, "Redo Onboarding…")
+    }
+
+    func testStatusSourcePromotesSingleOnboardingSectionAheadOfPermissionsAndRuntime() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Settings/StatusSettingsTab.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        let onboardingIndex = try XCTUnwrap(contents.range(of: "SettingsSection(Self.onboardingSectionTitle)")?.lowerBound)
+        let privacyIndex = try XCTUnwrap(contents.range(of: "SettingsSection(\"Privacy Permissions\")")?.lowerBound)
+        let runtimeIndex = try XCTUnwrap(contents.range(of: "SettingsSection(\"Runtime\")")?.lowerBound)
+
+        XCTAssertLessThan(contents.distance(from: contents.startIndex, to: onboardingIndex),
+                          contents.distance(from: contents.startIndex, to: privacyIndex))
+        XCTAssertLessThan(contents.distance(from: contents.startIndex, to: onboardingIndex),
+                          contents.distance(from: contents.startIndex, to: runtimeIndex))
+        XCTAssertEqual(contents.components(separatedBy: "showManualRedo()").count - 1, 1)
+        XCTAssertFalse(contents.contains("Re-run Setup Walkthrough"))
+    }
+
     func testPrivacyPermissionsExposeCompleteOrderedList() {
         XCTAssertEqual(
             StatusSettingsTab.privacyPermissionOrder,
