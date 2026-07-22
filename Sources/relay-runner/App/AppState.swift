@@ -83,49 +83,12 @@ final class AppState {
     @ObservationIgnored lazy var onboarding: OnboardingController = {
         OnboardingController(
             permissions: permissions,
-            setupStatus: { [weak self] in self?.setupRuntimeReadiness ?? .ready },
             getWorkingDirectory: { [weak self] in self?.config.general.working_directory ?? "" },
             getAgentProvider: { [weak self] in self?.config.general.provider ?? .codex },
-            getModel: { [weak self] in self?.config.general.model ?? GeneralConfig.defaultModel },
-            getCodexReasoningEffort: { [weak self] in
-                self?.config.general.effectiveOrchestratorEffort ?? GeneralConfig.defaultCodexReasoningEffort
-            },
             setAgentProvider: { [weak self] provider in
                 guard let self else { return }
                 var newConfig = self.config
                 newConfig.general.selectProvider(provider)
-                self.saveConfig(newConfig)
-            },
-            setModel: { [weak self] model in
-                guard let self else { return }
-                var newConfig = self.config
-                newConfig.general.model = GeneralConfig.normalizeModel(
-                    model,
-                    for: newConfig.general.provider
-                )
-                newConfig.general.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
-                    newConfig.general.orchestrator_effort,
-                    for: newConfig.general.provider,
-                    model: newConfig.general.model
-                )
-                newConfig.general.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
-                    newConfig.general.orchestrator_effort,
-                    model: newConfig.general.model
-                )
-                self.saveConfig(newConfig)
-            },
-            setCodexReasoningEffort: { [weak self] effort in
-                guard let self else { return }
-                var newConfig = self.config
-                newConfig.general.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
-                    effort,
-                    for: newConfig.general.provider,
-                    model: newConfig.general.model
-                )
-                newConfig.general.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
-                    newConfig.general.orchestrator_effort,
-                    model: newConfig.general.model
-                )
                 self.saveConfig(newConfig)
             },
             setWorkingDirectory: { [weak self] path in
@@ -134,8 +97,6 @@ final class AppState {
                 newConfig.general.working_directory = path
                 self.saveConfig(newConfig, forceWorkspaceDiscovery: true)
             },
-            startSession: { [weak self] in self?.newSession() },
-            retrySetup: { [weak self] in self?.retrySTTSetup() },
             setOnboardingNotchOverrideActive: { [weak self] active in
                 self?.setOnboardingNotchOverrideActive(active)
             },
@@ -147,9 +108,6 @@ final class AppState {
             },
             shouldDeferPermissionAdvance: { [weak self] kind in
                 self?.permissionSetupCoordinator.shouldDeferAutoAdvance(for: kind) ?? false
-            },
-            openSettingsHost: { [weak self] in
-                self?.showWorkspaceSettings()
             },
             onOpenExternalWindow: { [weak self] in
                 self?.suspendWorkspaceForExternalWindow()

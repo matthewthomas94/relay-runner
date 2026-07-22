@@ -61,16 +61,36 @@ final class VenvInstaller {
     /// installing, and the user would discover it only when starting a
     /// session (or starting relay-bridge inside an agent session).
     static var alreadyInstalled: Bool {
+        commonRuntimeInstalled && anyAgentCLIInstalled
+    }
+
+    static func alreadyInstalled(for provider: GeneralConfig.AgentProvider) -> Bool {
+        commonRuntimeInstalled && cliInstalled(for: provider)
+    }
+
+    static func cliInstalled(for provider: GeneralConfig.AgentProvider) -> Bool {
+        let fm = FileManager.default
+        switch provider {
+        case .codex:
+            return codexCLIPaths.contains { fm.isExecutableFile(atPath: $0) }
+        case .claude:
+            return fm.isExecutableFile(atPath: claudeCLIPath)
+        }
+    }
+
+    private static var commonRuntimeInstalled: Bool {
         let fm = FileManager.default
         return fm.isExecutableFile(atPath: userVenvPython)
             && fm.fileExists(atPath: kokoroModelPath)
             && fm.fileExists(atPath: kokoroVoicesPath)
-            && (codexCLIPaths.contains { fm.isExecutableFile(atPath: $0) }
-                || fm.isExecutableFile(atPath: claudeCLIPath))
             && fm.fileExists(atPath: bridgeSkillPath)
             && fm.fileExists(atPath: stopSkillPath)
             && fm.fileExists(atPath: codexBridgeSkillPath)
             && fm.fileExists(atPath: codexStopSkillPath)
+    }
+
+    private static var anyAgentCLIInstalled: Bool {
+        cliInstalled(for: .codex) || cliInstalled(for: .claude)
     }
 
     /// Match what tts_worker.py:_find_kokoro_model() looks for and what
@@ -115,9 +135,12 @@ final class VenvInstaller {
     /// Begin the bootstrap if it isn't already running. Idempotent —
     /// safe to call from `.onAppear` even if the user navigates back
     /// and forward across the step.
-    func install() {
+    func install(for provider: GeneralConfig.AgentProvider? = nil) {
         if case .running = status { return }
-        if case .succeeded = status { return }
+        if case .succeeded = status {
+            guard let provider, !Self.alreadyInstalled(for: provider) else { return }
+            status = .idle
+        }
         // Venv is already healthy — short-circuit to succeeded so the
         // onboarding step's `onChange(of: status)` handler fires the
         // auto-advance, instead of leaving the UI parked on the idle
@@ -125,7 +148,8 @@ final class VenvInstaller {
         // gated by the same alreadyInstalled check on the caller side,
         // so on a re-run with a healthy venv nothing ever advanced
         // status off .idle and the screen sat stuck).
-        if Self.alreadyInstalled {
+        let alreadyReady = provider.map { Self.alreadyInstalled(for: $0) } ?? Self.alreadyInstalled
+        if alreadyReady {
             status = .succeeded
             return
         }
@@ -173,6 +197,12 @@ final class VenvInstaller {
                 self.outputPipe = nil
                 self.process = nil
                 if proc.terminationStatus == 0 {
+                    if let provider, !Self.alreadyInstalled(for: provider) {
+                        self.status = .failed(
+                            message: "\(provider.displayName) setup finished, but the \(provider.displayName) command is still missing."
+                        )
+                        return
+                    }
                     self.status = .succeeded
                 } else {
                     self.status = .failed(

@@ -49,7 +49,8 @@ enum ClaudeAuth {
     /// the AppleScript dispatch is fired — the user completes the
     /// login flow on their own time, and the onboarding view polls
     /// `isAuthenticated` to detect completion.
-    static func openLoginInTerminal() {
+    @discardableResult
+    static func openLoginInTerminal() -> Bool {
         let claude = claudeBinaryPath
         // The trailing echo gives the user a clear "you can close this
         // window" cue after the OAuth flow finishes, instead of leaving
@@ -65,7 +66,12 @@ enum ClaudeAuth {
         proc.arguments = ["-e", script]
         proc.standardError = FileHandle.nullDevice
         proc.standardOutput = FileHandle.nullDevice
-        try? proc.run()
+        do {
+            try proc.run()
+            return true
+        } catch {
+            return false
+        }
     }
 }
 
@@ -80,7 +86,8 @@ enum CodexAuth {
         return FileManager.default.fileExists(atPath: path)
     }
 
-    static func openLoginInTerminal() {
+    @discardableResult
+    static func openLoginInTerminal() -> Bool {
         let codex = codexBinaryPath
         let script = """
         tell application "Terminal"
@@ -93,7 +100,12 @@ enum CodexAuth {
         proc.arguments = ["-e", script]
         proc.standardError = FileHandle.nullDevice
         proc.standardOutput = FileHandle.nullDevice
-        try? proc.run()
+        do {
+            try proc.run()
+            return true
+        } catch {
+            return false
+        }
     }
 }
 
@@ -105,12 +117,13 @@ enum AgentAuth {
         }
     }
 
-    static func openLoginInTerminal(for provider: GeneralConfig.AgentProvider) {
+    @discardableResult
+    static func openLoginInTerminal(for provider: GeneralConfig.AgentProvider) -> Bool {
         switch provider {
         case .codex:
-            CodexAuth.openLoginInTerminal()
+            return CodexAuth.openLoginInTerminal()
         case .claude:
-            ClaudeAuth.openLoginInTerminal()
+            return ClaudeAuth.openLoginInTerminal()
         }
     }
 }
