@@ -236,6 +236,10 @@ final class ProgramBoardOverlayController {
         show(initialTab: lastSelectedTab)
     }
 
+    func showWork() {
+        show(initialTab: .work)
+    }
+
     private func show(initialTab: WorkspaceTab) {
         if resumeAfterExternalWindow(initialTab: initialTab) { return }
         guard !isVisible else { return }

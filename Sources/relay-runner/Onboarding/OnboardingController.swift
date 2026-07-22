@@ -84,6 +84,8 @@ final class OnboardingController {
         _ completion: @escaping (String?) -> Void
     ) -> Void
     private let reduceMotion: () -> Bool
+    private let openWorkspaceAfterCompletion: () -> Void
+    private let completionHoldDuration: TimeInterval
     private var freshPermissionState: FreshPermissionState?
     private var freshWorkspaceSelectionInFlight = false
     private var permissionGrantObserver: NSObjectProtocol?
@@ -144,7 +146,9 @@ final class OnboardingController {
                 completion: completion
             )
          },
-         reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
+         reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
+         openWorkspaceAfterCompletion: @escaping () -> Void = {},
+         completionHoldDuration: TimeInterval = 0.85) {
         self.presentation = presentation
         self.flagURLs = flagURLs
         self.permissions = permissions
@@ -171,6 +175,8 @@ final class OnboardingController {
         self.introAdvanceDelay = introAdvanceDelay
         self.pickWorkspaceDirectory = pickWorkspaceDirectory
         self.reduceMotion = reduceMotion
+        self.openWorkspaceAfterCompletion = openWorkspaceAfterCompletion
+        self.completionHoldDuration = completionHoldDuration
     }
 
     deinit {
@@ -428,8 +434,7 @@ final class OnboardingController {
 
     private func completeFreshWorkspaceSelection(_ path: String) {
         setWorkingDirectory(path)
-        introController = nil
-        finish()
+        presentFreshWorkspaceCompletion()
     }
 
     private static func workspacePromptDisplayPath(_ path: String) -> String {
@@ -740,9 +745,31 @@ final class OnboardingController {
         }
     }
 
+    private func presentFreshWorkspaceCompletion() {
+        let intro = introController ?? makeIntroController()
+        introController = intro
+        setOnboardingNotchOverrideActive(true)
+        intro.presentCompletionPrompt()
+
+        let hold = reduceMotion() ? 0 : completionHoldDuration
+        let complete: () -> Void = { [weak self, weak intro] in
+            guard let self,
+                  let intro,
+                  self.introController === intro else { return }
+            self.finish {
+                self.openWorkspaceAfterCompletion()
+            }
+        }
+        if hold <= 0 {
+            complete()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: complete)
+        }
+    }
+
     /// Mark the flag file and clear the embedded presentation. Called when the user
     /// completes or skips past the final step.
-    private func finish() {
+    private func finish(completion: @escaping () -> Void = {}) {
         stopRuntimePolling()
         stopAuthPolling()
         cancelPermissionSetup(.onboarding)
@@ -760,6 +787,7 @@ final class OnboardingController {
         let complete: () -> Void = { [weak self] in
             self?.setOnboardingNotchOverrideActive(false)
             self?.setFirstRunExperienceActive(false)
+            completion()
         }
         if let intro {
             intro.dismiss(completion: complete)

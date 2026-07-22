@@ -409,6 +409,7 @@ final class OnboardingIntroTests: XCTestCase {
         var authenticated = false
         var events: [String] = []
         var workingDirectoryWrites: [String] = []
+        var workspaceOpenCount = 0
         intro.onDismiss = { events.append("dismiss") }
         let controller = OnboardingController(
             permissions: PermissionsManager(),
@@ -435,7 +436,11 @@ final class OnboardingIntroTests: XCTestCase {
                     completion("/Users/example/dev")
                 }
             },
-            reduceMotion: { true }
+            reduceMotion: { true },
+            openWorkspaceAfterCompletion: {
+                events.append("workspaceOpen")
+                workspaceOpenCount += 1
+            }
         )
 
         controller.showIfNeeded()
@@ -451,8 +456,130 @@ final class OnboardingIntroTests: XCTestCase {
         events.removeAll()
         intro.performWorkspaceAction()
 
-        XCTAssertEqual(Array(events.prefix(3)), ["dismiss", "notch:false", "picker"])
         XCTAssertEqual(workingDirectoryWrites, ["/Users/example/dev"])
+        XCTAssertEqual(events, ["dismiss", "notch:false", "picker", "notch:true", "dismiss", "notch:false", "workspaceOpen"])
+        XCTAssertEqual(workspaceOpenCount, 1)
+        XCTAssertEqual(intro.completionPromptCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.started.path))
+        XCTAssertNil(OnboardingResumeState.load())
+    }
+
+    func testWorkspaceSelectionPersistsBeforeCompletionAndOpensWorkspaceAfterUnlock() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var events: [String] = []
+        var firstRunExperienceStates: [Bool] = []
+        intro.onDismiss = { events.append("dismiss") }
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { events.append("persist:\($0)") },
+            setOnboardingNotchOverrideActive: { events.append("notch:\($0)") },
+            setFirstRunExperienceActive: {
+                firstRunExperienceStates.append($0)
+                events.append("firstRun:\($0)")
+            },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare {
+                    events.append("picker")
+                    completion("/Users/example/dev")
+                }
+            },
+            reduceMotion: { true },
+            openWorkspaceAfterCompletion: { events.append("workspaceOpen") }
+        )
+
+        controller.showIfNeeded()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+        events.removeAll()
+
+        intro.performWorkspaceAction()
+
+        XCTAssertEqual(events, [
+            "dismiss",
+            "notch:false",
+            "picker",
+            "persist:/Users/example/dev",
+            "notch:true",
+            "dismiss",
+            "notch:false",
+            "firstRun:false",
+            "workspaceOpen",
+        ])
+        XCTAssertEqual(firstRunExperienceStates, [true, false])
+        XCTAssertEqual(intro.completionPromptCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
+    func testWorkspaceCompletionHoldDelaysUnlockAndWorkspaceOpenWhenMotionAllowed() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var events: [String] = []
+        intro.onDismiss = { events.append("dismiss") }
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { events.append("persist:\($0)") },
+            setOnboardingNotchOverrideActive: { events.append("notch:\($0)") },
+            setFirstRunExperienceActive: { events.append("firstRun:\($0)") },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/dev") }
+            },
+            reduceMotion: { false },
+            openWorkspaceAfterCompletion: { events.append("workspaceOpen") },
+            completionHoldDuration: 0.05
+        )
+
+        controller.showIfNeeded()
+        intro.completeCinematic()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+        events.removeAll()
+
+        intro.performWorkspaceAction()
+
+        XCTAssertEqual(events, ["dismiss", "notch:false", "persist:/Users/example/dev", "notch:true"])
+        XCTAssertEqual(intro.completionPromptCount, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        waitForMainQueue(after: 0.08)
+
+        XCTAssertEqual(events, [
+            "dismiss",
+            "notch:false",
+            "persist:/Users/example/dev",
+            "notch:true",
+            "dismiss",
+            "notch:false",
+            "firstRun:false",
+            "workspaceOpen",
+        ])
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.started.path))
         XCTAssertNil(OnboardingResumeState.load())
@@ -904,7 +1031,8 @@ final class OnboardingIntroTests: XCTestCase {
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/workspace") }
             },
-            reduceMotion: { false }
+            reduceMotion: { false },
+            completionHoldDuration: 0
         )
 
         for (index, intro) in intros.enumerated() {
@@ -1042,7 +1170,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(full.activePhrase, first)
         XCTAssertEqual(full.text, "\(first) /")
         XCTAssertEqual(full.dotFieldProgress, 0, accuracy: 0.001)
-        XCTAssertEqual(full.dotFieldOpacity, 1, accuracy: 0.001)
+        XCTAssertEqual(full.dotFieldOpacity, 0, accuracy: 0.001)
 
         let holding = OnboardingIntroTimeline.frame(
             at: OnboardingIntroTimeline.initialBrandHold
@@ -1051,6 +1179,7 @@ final class OnboardingIntroTests: XCTestCase {
         )
         XCTAssertEqual(holding.text, "\(first) /")
         XCTAssertEqual(holding.dotFieldProgress, 0.5, accuracy: 0.01)
+        XCTAssertEqual(holding.dotFieldOpacity, 0.5, accuracy: 0.01)
 
         let erased = OnboardingIntroTimeline.frame(
             at: OnboardingIntroTimeline.initialBrandHold
@@ -1071,10 +1200,10 @@ final class OnboardingIntroTests: XCTestCase {
             + OnboardingIntroTimeline.dotFieldTravel
 
         let rOnly = OnboardingIntroTimeline.frame(
-            at: eraseStart + (brandCount - 2) * OnboardingIntroTimeline.eraseInterval + 0.001
+            at: eraseStart + brandCount * OnboardingIntroTimeline.eraseInterval * 0.75
         )
         let slashOnly = OnboardingIntroTimeline.frame(
-            at: eraseStart + (brandCount - 1) * OnboardingIntroTimeline.eraseInterval + 0.001
+            at: eraseStart + brandCount * OnboardingIntroTimeline.eraseInterval * 0.95
         )
 
         XCTAssertEqual(rOnly.text, "R/")
@@ -1179,15 +1308,18 @@ final class OnboardingIntroTests: XCTestCase {
         let typing = OnboardingPromptTransitionTimeline.frame(
             from: source,
             to: target,
-            at: typeStart + OnboardingPromptTransitionTimeline.typingInterval * 3 + 0.001
+            at: typeStart
+                + Double(OnboardingPromptTransitionTimeline.phrase(from: target).count)
+                * OnboardingPromptTransitionTimeline.typingInterval
+                * 0.60
         )
-        XCTAssertTrue(typing.text.hasPrefix("Let"))
+        XCTAssertTrue(typing.text.hasPrefix("Let’s"))
         XCTAssertFalse(typing.isComplete)
 
         let complete = OnboardingPromptTransitionTimeline.frame(
             from: source,
             to: target,
-            at: OnboardingPromptTransitionTimeline.duration(from: source, to: target)
+            at: OnboardingPromptTransitionTimeline.duration(from: source, to: target) + 0.001
         )
         XCTAssertEqual(complete.text, target)
         XCTAssertTrue(complete.isComplete)
@@ -1208,15 +1340,15 @@ final class OnboardingIntroTests: XCTestCase {
     }
 
     func testTimelineUsesReadablePacingTargets() {
-        XCTAssertEqual(OnboardingIntroTimeline.typingInterval, 0.065 / 1.5, accuracy: 0.001)
-        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, 0.045 / 1.5, accuracy: 0.001)
+        XCTAssertEqual(OnboardingIntroTimeline.typingInterval, 0.065 / 2.25, accuracy: 0.001)
+        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, 0.045 / 2.25, accuracy: 0.001)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.initialBrandHold, 0.65)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.phraseHold, 1.0)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.finalPhraseHold, 1.4)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.dotFieldTravel, 1.8)
         XCTAssertLessThanOrEqual(OnboardingIntroTimeline.dotFieldTravel, 2.2)
-        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 8.0)
-        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 9.0)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 7.2)
+        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 7.8)
     }
 
     func testFreshInteractiveHandoffCanStartAtAgentChoice() {
@@ -1297,8 +1429,55 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(contents.contains("layer?.transform = CATransform3DMakeTranslation"))
         XCTAssertTrue(contents.contains("paragraph.alignment = .center"))
         XCTAssertTrue(contents.contains(".onHover { isHovering = $0 }"))
+        XCTAssertTrue(contents.contains(".animation(Self.hoverAnimation, value: showsHover)"))
         XCTAssertFalse(contents.contains("OnboardingHalftone"))
         XCTAssertFalse(contents.contains("drawHalftone"))
+        XCTAssertFalse(contents.contains(".scaleEffect(showsHover"))
+    }
+
+    func testParticleOpacityRampsInAndOutWithMessagePlayback() {
+        let firstCount = Double(Array(OnboardingIntroTimeline.phrases[0]).count)
+        let travelStart = OnboardingIntroTimeline.initialBrandHold
+            + (firstCount - 1) * OnboardingIntroTimeline.typingInterval
+        let eraseStart = travelStart + OnboardingIntroTimeline.dotFieldTravel
+        let eraseDuration = firstCount * OnboardingIntroTimeline.eraseInterval
+
+        let hidden = OnboardingIntroTimeline.frame(at: travelStart)
+        let appearing = OnboardingIntroTimeline.frame(at: travelStart + OnboardingIntroTimeline.dotFieldTravel * 0.25)
+        let visible = OnboardingIntroTimeline.frame(at: eraseStart)
+        let disappearing = OnboardingIntroTimeline.frame(at: eraseStart + eraseDuration * 0.50)
+        let gone = OnboardingIntroTimeline.frame(at: eraseStart + eraseDuration + 0.001)
+
+        XCTAssertEqual(hidden.dotFieldOpacity, 0, accuracy: 0.001)
+        XCTAssertGreaterThan(appearing.dotFieldOpacity, 0)
+        XCTAssertLessThan(appearing.dotFieldOpacity, 0.5)
+        XCTAssertEqual(visible.dotFieldOpacity, 1, accuracy: 0.001)
+        XCTAssertGreaterThan(disappearing.dotFieldOpacity, 0)
+        XCTAssertLessThan(disappearing.dotFieldOpacity, 1)
+        XCTAssertEqual(gone.dotFieldOpacity, 0, accuracy: 0.001)
+    }
+
+    func testWorkspaceControlsShareVisibleHeightAndCompletionSlashDoesNotChangeCopyWidth() {
+        XCTAssertEqual(
+            OnboardingIntroWorkspacePromptView.controlHeight,
+            52 * OnboardingPermissionTreatment.actionScale,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            OnboardingBlinkingTitle.renderedText("You’re all set /", at: 0),
+            "You’re all set /"
+        )
+        XCTAssertEqual(
+            OnboardingBlinkingTitle.renderedText(
+                "You’re all set /",
+                at: OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
+            ),
+            "You’re all set /"
+        )
+    }
+
+    func testOnboardingActionHoverKeepsFootprintStable() {
+        XCTAssertEqual(OnboardingIntroWhiteActionButton.hoverScale, 1, accuracy: 0.001)
     }
 
     private func assertHeroTextLayoutMatchesReferenceFrame(
@@ -1335,6 +1514,7 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private(set) var runtimePrompts: [OnboardingRuntimePromptPresentation] = []
     private(set) var loginPrompts: [OnboardingAgentLoginPromptPresentation] = []
     private(set) var workspacePromptPaths: [String] = []
+    private(set) var completionPromptCount = 0
     private var cinematicCompletion: (() -> Void)?
     private var permissionAction: (() -> Void)?
     private var codexAction: (() -> Void)?
@@ -1385,6 +1565,11 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
         events.append("workspace")
         workspacePromptPaths.append(currentPath)
         workspaceAction = action
+    }
+
+    func presentCompletionPrompt() {
+        events.append("completion")
+        completionPromptCount += 1
     }
 
     func dismiss(completion: @escaping () -> Void) {
