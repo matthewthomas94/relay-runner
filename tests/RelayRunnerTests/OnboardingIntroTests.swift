@@ -974,8 +974,10 @@ final class OnboardingIntroTests: XCTestCase {
 
         XCTAssertTrue(visible.cursorVisible)
         XCTAssertEqual(visible.renderedText, "Relay Runner /")
+        XCTAssertEqual(visible.cursorOpacity, 1)
         XCTAssertFalse(hidden.cursorVisible)
-        XCTAssertEqual(hidden.renderedText, "Relay Runner ")
+        XCTAssertEqual(hidden.renderedText, "Relay Runner /")
+        XCTAssertEqual(hidden.cursorOpacity, 0.5)
     }
 
     func testCursorKeepsBlinkingWhileTypingAndBackspacing() {
@@ -1012,7 +1014,14 @@ final class OnboardingIntroTests: XCTestCase {
                 "Choose your workspace /",
                 at: OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
             ),
-            "Choose your workspace"
+            "Choose your workspace /"
+        )
+        XCTAssertEqual(OnboardingBlinkingTitle.cursorOpacity(at: 0), 1)
+        XCTAssertEqual(
+            OnboardingBlinkingTitle.cursorOpacity(
+                at: OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
+            ),
+            0.5
         )
     }
 

@@ -11,12 +11,11 @@ struct OnboardingIntroFrame: Equatable {
     let isComplete: Bool
 
     var renderedText: String {
-        cursorVisible ? text : Self.textWithoutCursor(text)
+        text
     }
 
-    private static func textWithoutCursor(_ text: String) -> String {
-        guard text.hasSuffix("/") else { return text }
-        return String(text.dropLast())
+    var cursorOpacity: CGFloat {
+        cursorVisible ? 1 : OnboardingCursorBlink.minimumOpacity
     }
 }
 
@@ -269,6 +268,8 @@ enum OnboardingIntroTimeline {
 }
 
 enum OnboardingCursorBlink {
+    static let minimumOpacity: CGFloat = 0.5
+
     static func isVisible(at elapsed: TimeInterval) -> Bool {
         max(0, elapsed).truncatingRemainder(dividingBy: OnboardingIntroTimeline.cursorBlinkPeriod)
             < OnboardingIntroTimeline.cursorBlinkPeriod / 2
@@ -1361,10 +1362,9 @@ struct OnboardingBlinkingTitle: View {
                 by: OnboardingIntroTimeline.cursorBlinkPeriod / 2
             )
         ) { context in
-            Text(Self.renderedText(text, at: context.date.timeIntervalSinceReferenceDate))
+            Self.styledText(text, at: context.date.timeIntervalSinceReferenceDate)
         }
         .font(AppTypography.font(.onboardingHero))
-        .foregroundStyle(.white)
         .multilineTextAlignment(.center)
         .lineLimit(2)
         .minimumScaleFactor(0.72)
@@ -1373,9 +1373,19 @@ struct OnboardingBlinkingTitle: View {
         .accessibilityAddTraits(.isHeader)
     }
 
-    static func renderedText(_ text: String, at elapsed: TimeInterval) -> String {
+    static func renderedText(_ text: String, at _: TimeInterval) -> String {
         let phrase = String(OnboardingPromptTransitionTimeline.phrase(from: text))
-        return OnboardingCursorBlink.isVisible(at: elapsed) ? "\(phrase) /" : phrase
+        return "\(phrase) /"
+    }
+
+    static func cursorOpacity(at elapsed: TimeInterval) -> CGFloat {
+        OnboardingCursorBlink.isVisible(at: elapsed) ? 1 : OnboardingCursorBlink.minimumOpacity
+    }
+
+    private static func styledText(_ text: String, at elapsed: TimeInterval) -> Text {
+        let phrase = String(OnboardingPromptTransitionTimeline.phrase(from: text))
+        return Text("\(phrase) ").foregroundColor(.white)
+            + Text("/").foregroundColor(.white.opacity(cursorOpacity(at: elapsed)))
     }
 }
 
@@ -1500,6 +1510,18 @@ private final class OnboardingIntroTextView: NSView {
             .paragraphStyle: paragraph,
         ]
         let visibleText = timelineFrame.renderedText as NSString
+        let attributedText = NSMutableAttributedString(
+            string: timelineFrame.renderedText,
+            attributes: attributes
+        )
+        let cursorRange = visibleText.range(of: "/", options: .backwards)
+        if cursorRange.location != NSNotFound {
+            attributedText.addAttribute(
+                .foregroundColor,
+                value: NSColor.white.withAlphaComponent(timelineFrame.cursorOpacity),
+                range: cursorRange
+            )
+        }
         let reserveCandidates = reservePhrases.isEmpty
             ? ["\(timelineFrame.activePhrase) /"]
             : reservePhrases
@@ -1511,6 +1533,6 @@ private final class OnboardingIntroTextView: NSView {
             reserveWidth: reserveWidth,
             visibleWidth: visibleText.size(withAttributes: attributes).width
         )
-        visibleText.draw(in: drawRect, withAttributes: attributes)
+        attributedText.draw(in: drawRect)
     }
 }
