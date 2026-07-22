@@ -520,8 +520,78 @@ final class OnboardingIntroTests: XCTestCase {
             "firstRun:false",
             "workspaceOpen",
         ])
+        XCTAssertEqual(intro.completionRevealCallbackCount, 1)
         XCTAssertEqual(firstRunExperienceStates, [true, false])
         XCTAssertEqual(intro.completionPromptCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
+    func testWorkspaceCompletionWaitsForRevealCompletionBeforeHoldDismissUnlockAndWorkspaceOpen() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        intro.completionRevealCompletesImmediately = false
+        var events: [String] = []
+        intro.onDismiss = { events.append("dismiss") }
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { events.append("persist:\($0)") },
+            setOnboardingNotchOverrideActive: { events.append("notch:\($0)") },
+            setFirstRunExperienceActive: { events.append("firstRun:\($0)") },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/dev") }
+            },
+            reduceMotion: { false },
+            openWorkspaceAfterCompletion: { events.append("workspaceOpen") },
+            completionHoldDuration: 0.05
+        )
+
+        controller.showIfNeeded()
+        intro.completeCinematic()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+        events.removeAll()
+
+        intro.performWorkspaceAction()
+
+        XCTAssertEqual(events, ["dismiss", "notch:false", "persist:/Users/example/dev", "notch:true"])
+        XCTAssertEqual(intro.completionPromptCount, 1)
+        XCTAssertEqual(intro.completionRevealCallbackCount, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        waitForMainQueue(after: 0.08)
+
+        XCTAssertEqual(events, ["dismiss", "notch:false", "persist:/Users/example/dev", "notch:true"])
+        XCTAssertEqual(intro.completionRevealCallbackCount, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        intro.completeCompletionReveal()
+        XCTAssertEqual(intro.completionRevealCallbackCount, 1)
+
+        waitForMainQueue(after: 0.08)
+
+        XCTAssertEqual(events, [
+            "dismiss",
+            "notch:false",
+            "persist:/Users/example/dev",
+            "notch:true",
+            "dismiss",
+            "notch:false",
+            "firstRun:false",
+            "workspaceOpen",
+        ])
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
     }
 
@@ -566,6 +636,7 @@ final class OnboardingIntroTests: XCTestCase {
 
         XCTAssertEqual(events, ["dismiss", "notch:false", "persist:/Users/example/dev", "notch:true"])
         XCTAssertEqual(intro.completionPromptCount, 1)
+        XCTAssertEqual(intro.completionRevealCallbackCount, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
 
         waitForMainQueue(after: 0.08)
@@ -580,6 +651,8 @@ final class OnboardingIntroTests: XCTestCase {
             "firstRun:false",
             "workspaceOpen",
         ])
+        intro.completeCompletionReveal()
+        XCTAssertEqual(intro.completionRevealCallbackCount, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.started.path))
         XCTAssertNil(OnboardingResumeState.load())
@@ -1515,6 +1588,7 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private(set) var loginPrompts: [OnboardingAgentLoginPromptPresentation] = []
     private(set) var workspacePromptPaths: [String] = []
     private(set) var completionPromptCount = 0
+    private(set) var completionRevealCallbackCount = 0
     private var cinematicCompletion: (() -> Void)?
     private var permissionAction: (() -> Void)?
     private var codexAction: (() -> Void)?
@@ -1522,6 +1596,8 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private var runtimeRetryAction: (() -> Void)?
     private var loginAction: (() -> Void)?
     private var workspaceAction: (() -> Void)?
+    private var completionRevealAction: (() -> Void)?
+    var completionRevealCompletesImmediately = true
     var onDismiss: (() -> Void)?
 
     func present(completion: @escaping () -> Void) {
@@ -1567,9 +1643,17 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
         workspaceAction = action
     }
 
-    func presentCompletionPrompt() {
+    func presentCompletionPrompt(revealCompletion: @escaping () -> Void) {
         events.append("completion")
         completionPromptCount += 1
+        completionRevealAction = { [weak self] in
+            guard let self else { return }
+            self.completionRevealCallbackCount += 1
+            revealCompletion()
+        }
+        if completionRevealCompletesImmediately {
+            completeCompletionReveal()
+        }
     }
 
     func dismiss(completion: @escaping () -> Void) {
@@ -1604,6 +1688,12 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
 
     func performWorkspaceAction() {
         workspaceAction?()
+    }
+
+    func completeCompletionReveal() {
+        let action = completionRevealAction
+        completionRevealAction = nil
+        action?()
     }
 }
 

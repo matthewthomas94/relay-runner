@@ -71,7 +71,7 @@ protocol OnboardingIntroPresenting: AnyObject {
                                  signInAction: @escaping () -> Void)
     func presentWorkspacePrompt(currentPath: String,
                                 action: @escaping () -> Void)
-    func presentCompletionPrompt()
+    func presentCompletionPrompt(revealCompletion: @escaping () -> Void)
     func dismiss(completion: @escaping () -> Void)
 }
 
@@ -557,7 +557,7 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         }
     }
 
-    func presentCompletionPrompt() {
+    func presentCompletionPrompt(revealCompletion: @escaping () -> Void) {
         timelineTimer?.invalidate()
         timelineTimer = nil
         removeSkipMonitors()
@@ -565,9 +565,16 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         let surface = ensureSurface()
         surface.rootView.showCompletionPrompt()
 
-        guard surface.didCreate else { return }
+        guard surface.didCreate else {
+            revealCompletion()
+            return
+        }
         DispatchQueue.main.async { [weak container = surface.container] in
-            container?.animateReveal {}
+            guard let container else {
+                revealCompletion()
+                return
+            }
+            container.animateReveal(completion: revealCompletion)
         }
     }
 

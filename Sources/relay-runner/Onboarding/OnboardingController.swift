@@ -749,21 +749,28 @@ final class OnboardingController {
         let intro = introController ?? makeIntroController()
         introController = intro
         setOnboardingNotchOverrideActive(true)
-        intro.presentCompletionPrompt()
-
-        let hold = reduceMotion() ? 0 : completionHoldDuration
-        let complete: () -> Void = { [weak self, weak intro] in
+        var revealCompletionHandled = false
+        intro.presentCompletionPrompt { [weak self, weak intro] in
             guard let self,
                   let intro,
-                  self.introController === intro else { return }
-            self.finish {
-                self.openWorkspaceAfterCompletion()
+                  self.introController === intro,
+                  !revealCompletionHandled else { return }
+            revealCompletionHandled = true
+
+            let complete: () -> Void = { [weak self, weak intro] in
+                guard let self,
+                      let intro,
+                      self.introController === intro else { return }
+                self.finish {
+                    self.openWorkspaceAfterCompletion()
+                }
             }
-        }
-        if hold <= 0 {
-            complete()
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: complete)
+            let hold = self.reduceMotion() ? 0 : self.completionHoldDuration
+            if hold <= 0 {
+                complete()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: complete)
+            }
         }
     }
 
