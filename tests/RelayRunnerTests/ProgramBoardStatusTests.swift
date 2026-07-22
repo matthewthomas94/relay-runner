@@ -285,6 +285,7 @@ final class ProgramBoardStatusTests: XCTestCase {
               "priority": "high",
               "depends_on": ["RR-0"],
               "run_id": 27,
+              "attempt": 3,
               "run_state": "active",
               "provider": "Codex/gpt-5",
               "branch": "relay/rr-42",
@@ -329,6 +330,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.inProgressWork.items.first?.dependsOn, ["RR-0"])
         XCTAssertEqual(snapshot.inProgressWork.items.first?.workerModel, "strong")
         XCTAssertEqual(snapshot.inProgressWork.items.first?.workerEffort, "high")
+        XCTAssertEqual(snapshot.inProgressWork.items.first?.attempt, "3")
         XCTAssertEqual(snapshot.inProgressWork.items.first?.workerSizingRationale, "Cross-provider dispatch enforcement.")
     }
 

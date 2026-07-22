@@ -327,6 +327,231 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertEqual(run["model_alias"], "sonnet")
             self.assertEqual(run["worker_effort"], "xhigh")
 
+    def test_dispatch_materializes_untracked_ticket_snapshot_before_worker_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / "code.txt").write_text("base\n")
+            self.git(repo, "add", "code.txt")
+            self.git(repo, "commit", "-m", "base")
+            self.git(repo, "branch", "-M", "main")
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="ready",
+                run_id=None,
+                sizing=True,
+                body="## Description\n\nUntracked dispatch snapshot.\n",
+            )
+            daemon = self.make_daemon(root, provider="codex")
+
+            with patch.object(Worker, "start") as start_worker:
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            start_worker.assert_called_once()
+            workspace_ticket = Path(result["run"]["workspace_path"]) / ".orchestrator/RR-1.md"
+            self.assertTrue(workspace_ticket.is_file())
+            self.assertEqual(workspace_ticket.read_text(), (repo / ".orchestrator/RR-1.md").read_text())
+            self.assertFalse((Path(result["run"]["workspace_path"]) / ".orchestrator/config.toml").exists())
+
+    def test_dispatch_materializes_uncommitted_ticket_edits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="ready",
+                run_id=None,
+                sizing=True,
+                body="## Description\n\nCommitted prose.\n",
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            self.git(repo, "branch", "-M", "main")
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="ready",
+                run_id=None,
+                sizing=True,
+                body="## Description\n\nEdited dispatch snapshot.\n",
+            )
+            daemon = self.make_daemon(root, provider="codex")
+
+            with patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            workspace_ticket = Path(result["run"]["workspace_path"]) / ".orchestrator/RR-1.md"
+            self.assertIn("Edited dispatch snapshot.", workspace_ticket.read_text())
+            self.assertNotIn("Committed prose.", workspace_ticket.read_text())
+
+    def test_dispatch_does_not_start_worker_when_ticket_snapshot_materialization_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch("orchestrator._materialize_ticket_snapshot", side_effect=RuntimeError("ticket snapshot materialization failed")), \
+                    patch.object(Worker, "start") as start_worker, \
+                    self.assertRaisesRegex(RuntimeError, "ticket snapshot materialization failed"):
+                daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            create_worktree.assert_called_once()
+            start_worker.assert_not_called()
+            runs = daemon.runs.list()
+            self.assertEqual(runs[0]["state"], "Failed")
+            self.assertIn("ticket snapshot materialization failed", runs[0]["last_error"])
+
+    def test_dispatch_uses_current_general_provider_after_daemon_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.cfg = {"general": {"provider": "codex"}}
+            daemon.config_loader = lambda: {"general": {"provider": "claude"}}
+
+            with patch("orchestrator._find_agent_bin", return_value="claude") as find_agent, \
+                    patch("orchestrator.create_worktree"), \
+                    patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            find_agent.assert_called_once_with("claude")
+            run = result["run"]
+            self.assertEqual(run["provider_key"], "claude")
+            self.assertEqual(run["model_alias"], "opus")
+            self.assertEqual(daemon._workers[run["id"]].agent_kind, "claude")
+
+    def test_explicit_orchestrator_agent_override_beats_general_provider_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.cfg = {
+                "general": {"provider": "claude"},
+                "orchestrator": {"agent": "codex"},
+            }
+            daemon.config_loader = lambda: {"general": {"provider": "claude"}}
+
+            with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            self.assertEqual(result["run"]["provider_key"], "codex")
+            self.assertEqual(result["run"]["model_alias"], "gpt-5.5")
+
+    def test_ready_sweeper_holds_after_deterministic_failed_attempt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            failed = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "workspaces" / "rr-1"),
+                branch="relay/rr-1",
+                state="Failed",
+                attempt=1,
+                provider_key="codex",
+                model_alias="gpt-5.5",
+            )
+            daemon.runs.update(
+                failed,
+                ended=True,
+                exit_code=1,
+                last_error="worker exited 0 but did not complete ticket: ticket status is 'ready'",
+            )
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            self.assertEqual(result["dispatched"], [])
+            self.assertEqual(result["skipped"][0]["reason"], "dispatch_failed")
+            self.assertIn("automatic retry circuit open", result["skipped"][0]["error"])
+            self.assertEqual(len(daemon.runs.list()), 1)
+
+    def test_ready_sweeper_backs_off_after_recent_transient_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            failed = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "workspaces" / "rr-1"),
+                branch="relay/rr-1",
+                state="Failed",
+                attempt=1,
+                provider_key="codex",
+                model_alias="gpt-5.5",
+            )
+            daemon.runs.update(failed, ended=True, exit_code=1, last_error="transient provider failure")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            self.assertIn("automatic retry backoff active after attempt 1", result["skipped"][0]["error"])
+            self.assertEqual(len(daemon.runs.list()), 1)
+
+    def test_ready_sweeper_caps_automatic_retry_attempts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="claude")
+            for attempt in range(1, 6):
+                run_id = daemon.runs.insert(
+                    ticket_id="RR-1",
+                    repo_path=str(repo.resolve()),
+                    workspace_path=str(root / "workspaces" / f"rr-1-{attempt}"),
+                    branch="relay/rr-1",
+                    state="Failed",
+                    attempt=attempt,
+                    provider_key="claude",
+                    model_alias="sonnet",
+                )
+                daemon.runs.update(run_id, ended=True, exit_code=1, last_error=f"transient failure {attempt}")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            self.assertIn("automatic retry exhausted after 5 attempts", result["skipped"][0]["error"])
+            self.assertEqual(len(daemon.runs.list()), 5)
+
     def test_dispatch_skips_succeeded_run_awaiting_merge(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -855,6 +1080,52 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertIn("Implementation worker branch: `relay/rr-1`", review_worker.prompt)
             self.assertIn(f"/v1/runs/{run_id}/review/decision", review_worker.prompt)
             self.assertIn("Run the focused Python tests.", review_worker.prompt)
+
+    def test_dispatch_review_worker_uses_current_general_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "rr-1"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            self.git(repo, "worktree", "add", "-b", "relay/rr-1", str(workspace), "HEAD")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.cfg = {"general": {"provider": "codex"}}
+            daemon.config_loader = lambda: {"general": {"provider": "claude"}}
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(workspace),
+                branch="relay/rr-1",
+                state="AwaitingReview",
+                log_path=str(workspace / ".relay" / "run.log"),
+                provider_key="codex",
+                model_alias="gpt-5.5",
+                worker_model="strong",
+                worker_effort="high",
+            )
+            self.write_ticket(
+                workspace,
+                "RR-1",
+                status="done",
+                run_id=run_id,
+                body=f"## Run log\n\n- **Run {run_id}** (attempt 1) - branch `relay/rr-1`\n",
+            )
+            (workspace / "code.txt").write_text("worker change\n")
+            self.git(workspace, "add", ".orchestrator/RR-1.md", "code.txt")
+            self.git(workspace, "commit", "-m", "feat: finish RR-1")
+
+            with patch("orchestrator._find_agent_bin", return_value="claude") as find_agent, \
+                    patch.object(ReviewWorker, "start"):
+                result = daemon.dispatch_review_worker(run_id, source="test")
+
+            find_agent.assert_called_once_with("claude")
+            self.assertTrue(result["review_dispatched"])
+            review_worker = daemon._review_workers[run_id]
+            self.assertEqual(review_worker.agent_kind, "claude")
+            self.assertIn("Review provider: `claude`", review_worker.prompt)
 
     def test_review_worker_failure_returns_run_to_awaiting_review(self):
         with tempfile.TemporaryDirectory() as tmp:
