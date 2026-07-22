@@ -6,6 +6,7 @@ struct OnboardingFlagURLs {
     let started: URL
     let sessionRun: URL
     let agentChoice: URL
+    let manualRedo: URL
 
     static var live: OnboardingFlagURLs {
         let support = FileManager.default.urls(for: .applicationSupportDirectory,
@@ -17,7 +18,8 @@ struct OnboardingFlagURLs {
             onboarded: support.appendingPathComponent(".onboarded"),
             started: support.appendingPathComponent(".onboarding-started"),
             sessionRun: support.appendingPathComponent(".session-run"),
-            agentChoice: support.appendingPathComponent(".agent-choice-v1")
+            agentChoice: support.appendingPathComponent(".agent-choice-v1"),
+            manualRedo: support.appendingPathComponent(".onboarding-manual-redo")
         )
     }
 }
@@ -212,10 +214,18 @@ final class OnboardingController {
         !hasOnboarded && FileManager.default.fileExists(atPath: flagURLs.started.path)
     }
 
+    private var manualRedoInProgress: Bool {
+        FileManager.default.fileExists(atPath: flagURLs.manualRedo.path)
+    }
+
     /// Show onboarding if it's needed — first launch, kill-mid-flow recovery,
     /// or a previously-onboarded upgrade without the versioned agent flag.
     func showIfNeeded() {
         forceWorkspaceSelectionAfterIntro = false
+        if manualRedoInProgress {
+            resumeManualRedo()
+            return
+        }
         if hasOnboarded {
             if !hasChosenAgent {
                 beginIntroAgentSetup(
@@ -239,9 +249,11 @@ final class OnboardingController {
     func showManualRedo() {
         guard introController == nil else { return }
         cancelPermissionSetup(.onboarding)
+        OnboardingResumeState.clear()
         forceWorkspaceSelectionAfterIntro = true
         setFirstRunExperienceActive(true)
         try? Data().write(to: flagURLs.started)
+        try? Data().write(to: flagURLs.manualRedo)
 
         let intro = makeIntroController()
         introController = intro
@@ -251,6 +263,13 @@ final class OnboardingController {
             guard let intro, self.introController === intro else { return }
             self.beginFreshPermissionSequence(intro: intro)
         }
+    }
+
+    private func resumeManualRedo() {
+        forceWorkspaceSelectionAfterIntro = true
+        setFirstRunExperienceActive(true)
+        try? Data().write(to: flagURLs.started)
+        beginFreshPermissionSequence(intro: makeIntroController())
     }
 
     private func showIntro(forceWorkspaceSelectionAfterIntro: Bool) {
@@ -729,6 +748,7 @@ final class OnboardingController {
         cancelPermissionSetup(.onboarding)
         try? Data().write(to: flagURLs.onboarded)
         OnboardingResumeState.clear()
+        try? FileManager.default.removeItem(at: flagURLs.manualRedo)
         // Started flag is no longer meaningful once onboarding has completed.
         // Clear it so a future focused setup prompt doesn't get treated as a
         // resumed mid-flow exit.

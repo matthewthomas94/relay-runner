@@ -695,6 +695,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(workingDirectoryWrites.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.manualRedo.path))
 
         intro.completeCinematic()
         XCTAssertEqual(intro.agentChoiceSelectedProviders, [.claude])
@@ -711,6 +712,128 @@ final class OnboardingIntroTests: XCTestCase {
 
         XCTAssertEqual(workingDirectoryWrites, ["/Users/example/new-workspace"])
         XCTAssertEqual(firstRunExperienceStates, [true, false])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.manualRedo.path))
+    }
+
+    func testManualRedoRelaunchDuringPermissionSetupRestoresAgentAndWorkspaceStages() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        try Data().write(to: flagURLs.onboarded)
+        try Data().write(to: flagURLs.agentChoice)
+        var statuses = Dictionary(
+            uniqueKeysWithValues: PermissionKind.guidedSetupOrder.map { ($0, PermissionStatus.granted) }
+        )
+        statuses[.screenRecording] = .denied
+        let firstIntro = CapturingIntroPresenter()
+        var permissionRequests: [PermissionKind] = []
+        let firstController = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            getAgentProvider: { .claude },
+            requestPermissionSetup: { kind, _, _ in permissionRequests.append(kind) },
+            permissionStatus: { statuses[$0] ?? .denied },
+            makeIntroController: { firstIntro },
+            reduceMotion: { false }
+        )
+
+        firstController.showManualRedo()
+        firstIntro.completeCinematic()
+        XCTAssertEqual(firstIntro.permissionPrompts.map(\.permission), [.screenRecording])
+        firstIntro.performPermissionAction()
+        XCTAssertEqual(permissionRequests, [.screenRecording])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.manualRedo.path))
+
+        statuses[.screenRecording] = .granted
+        let resumedIntro = CapturingIntroPresenter()
+        let installer = FakeRuntimeInstaller(installStatus: .succeeded)
+        var providerWrites: [GeneralConfig.AgentProvider] = []
+        var workspaceWrites: [String] = []
+        var firstRunExperienceStates: [Bool] = []
+        let resumedController = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            getWorkingDirectory: { "/Users/example/current" },
+            getAgentProvider: { .claude },
+            setAgentProvider: { providerWrites.append($0) },
+            setWorkingDirectory: { workspaceWrites.append($0) },
+            setFirstRunExperienceActive: { firstRunExperienceStates.append($0) },
+            permissionStatus: { statuses[$0] ?? .denied },
+            makeIntroController: { resumedIntro },
+            makeVenvInstaller: { installer },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/recovered-workspace") }
+            },
+            reduceMotion: { true }
+        )
+
+        resumedController.showIfNeeded()
+
+        XCTAssertEqual(firstRunExperienceStates, [true])
+        XCTAssertTrue(resumedIntro.permissionPrompts.isEmpty)
+        XCTAssertEqual(resumedIntro.agentChoiceSelectedProviders, [.claude])
+        resumedIntro.performClaudeAction()
+        waitForMainQueue(after: 0.05)
+
+        XCTAssertEqual(providerWrites, [.claude])
+        XCTAssertEqual(resumedIntro.loginPrompts.last?.provider, .claude)
+        XCTAssertEqual(resumedIntro.workspacePromptPaths, ["/Users/example/current"])
+
+        resumedIntro.performWorkspaceAction()
+
+        XCTAssertEqual(workspaceWrites, ["/Users/example/recovered-workspace"])
+        XCTAssertEqual(firstRunExperienceStates, [true, false])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.manualRedo.path))
+    }
+
+    func testManualRedoRelaunchFromReadyResumeStateStillRequiresWorkspace() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        try Data().write(to: flagURLs.onboarded)
+        try Data().write(to: flagURLs.agentChoice)
+        try Data().write(to: flagURLs.manualRedo)
+        OnboardingResumeState.save(
+            step: .ready,
+            provider: .claude,
+            parentPermissionsReviewed: true
+        )
+        let intro = CapturingIntroPresenter()
+        var workspaceWrites: [String] = []
+        var firstRunExperienceStates: [Bool] = []
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            getWorkingDirectory: { "/Users/example/current" },
+            setWorkingDirectory: { workspaceWrites.append($0) },
+            setFirstRunExperienceActive: { firstRunExperienceStates.append($0) },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/recovered-workspace") }
+            },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+
+        XCTAssertEqual(firstRunExperienceStates, [true])
+        XCTAssertTrue(intro.agentChoiceSelectedProviders.isEmpty)
+        XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
+        intro.performWorkspaceAction()
+
+        XCTAssertEqual(workspaceWrites, ["/Users/example/recovered-workspace"])
+        XCTAssertEqual(firstRunExperienceStates, [true, false])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.manualRedo.path))
     }
 
     func testRepeatedManualRedoKeepsActiveIntroWithoutSettingsPresentation() throws {
@@ -1348,7 +1471,8 @@ private extension OnboardingFlagURLs {
             onboarded: directory.appendingPathComponent(".onboarded"),
             started: directory.appendingPathComponent(".onboarding-started"),
             sessionRun: directory.appendingPathComponent(".session-run"),
-            agentChoice: directory.appendingPathComponent(".agent-choice-v1")
+            agentChoice: directory.appendingPathComponent(".agent-choice-v1"),
+            manualRedo: directory.appendingPathComponent(".onboarding-manual-redo")
         )
     }
 }
