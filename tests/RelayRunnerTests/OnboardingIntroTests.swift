@@ -125,6 +125,7 @@ final class OnboardingIntroTests: XCTestCase {
             uniqueKeysWithValues: PermissionKind.guidedSetupOrder.map { ($0, PermissionStatus.denied) }
         )
         var events: [String] = []
+        var notchOverrideStates: [Bool] = []
         intro.onDismiss = { events.append("dismiss") }
         var workingDirectoryWrites: [String] = []
         var settingsOpenCount = 0
@@ -133,12 +134,19 @@ final class OnboardingIntroTests: XCTestCase {
             flagURLs: flagURLs,
             presentation: presentation,
             setWorkingDirectory: { workingDirectoryWrites.append($0) },
+            setOnboardingNotchOverrideActive: {
+                notchOverrideStates.append($0)
+                events.append("notch:\($0)")
+            },
             requestPermissionSetup: { kind, source, _ in
                 events.append("request:\(kind.rawValue):\(source)")
             },
             permissionStatus: { statuses[$0] ?? .denied },
             makeIntroController: { intro },
-            openSettingsHost: { settingsOpenCount += 1 },
+            openSettingsHost: {
+                settingsOpenCount += 1
+                events.append("openSettings")
+            },
             pickWorkspaceDirectory: { prepare, completion in
                 prepare {
                     events.append("picker")
@@ -153,7 +161,7 @@ final class OnboardingIntroTests: XCTestCase {
 
         XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone])
         intro.performPermissionAction()
-        XCTAssertEqual(events, ["request:microphone:onboarding"])
+        XCTAssertEqual(Array(events.suffix(1)), ["request:microphone:onboarding"])
 
         statuses[.microphone] = .granted
         postGrant(.microphone)
@@ -187,13 +195,19 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(presentation.isPresented)
         XCTAssertEqual(settingsOpenCount, 0)
 
+        events.removeAll()
+        notchOverrideStates.removeAll()
         intro.performWorkspaceAction()
 
         XCTAssertTrue(presentation.isPresented)
         XCTAssertEqual(presentation.detail.title, "Coding Agent")
         XCTAssertEqual(settingsOpenCount, 1)
         XCTAssertEqual(workingDirectoryWrites, ["/Users/example/dev"])
-        XCTAssertEqual(Array(events.suffix(2)), ["dismiss", "picker"])
+        XCTAssertEqual(notchOverrideStates, [false, true])
+        XCTAssertEqual(
+            events,
+            ["dismiss", "notch:false", "picker", "notch:true", "openSettings"]
+        )
     }
 
     func testFreshWorkspaceCancelRestoresIntroPromptWithoutPersistingOrHandoff() throws {
@@ -204,17 +218,25 @@ final class OnboardingIntroTests: XCTestCase {
 
         let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
         let intro = CapturingIntroPresenter()
+        var events: [String] = []
+        var notchOverrideStates: [Bool] = []
+        intro.onDismiss = { events.append("dismiss") }
         var workingDirectoryWrites: [String] = []
         var settingsOpenCount = 0
         let controller = OnboardingController(
             permissions: PermissionsManager(),
             flagURLs: flagURLs,
             setWorkingDirectory: { workingDirectoryWrites.append($0) },
+            setOnboardingNotchOverrideActive: {
+                notchOverrideStates.append($0)
+                events.append("notch:\($0)")
+            },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
             openSettingsHost: { settingsOpenCount += 1 },
             pickWorkspaceDirectory: { prepare, completion in
                 prepare {
+                    events.append("picker")
                     completion(nil)
                 }
             },
@@ -224,11 +246,15 @@ final class OnboardingIntroTests: XCTestCase {
         controller.showIfNeeded()
         XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory()])
 
+        events.removeAll()
+        notchOverrideStates.removeAll()
         intro.performWorkspaceAction()
 
         XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory(), NSHomeDirectory()])
         XCTAssertTrue(workingDirectoryWrites.isEmpty)
         XCTAssertEqual(settingsOpenCount, 0)
+        XCTAssertEqual(notchOverrideStates, [false, true])
+        XCTAssertEqual(events, ["dismiss", "notch:false", "picker", "notch:true"])
     }
 
     func testFreshPermissionDenialReturnsToSameIntroPrompt() throws {
