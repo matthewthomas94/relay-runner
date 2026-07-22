@@ -96,7 +96,7 @@ enum OnboardingIntroTimeline {
     static let typingInterval: TimeInterval = 0.065 / 2.25
     static let eraseInterval: TimeInterval = 0.045 / 2.25
     static let phraseHold: TimeInterval = 1.05
-    static let dotFieldTravel: TimeInterval = 2.00
+    static let dotFieldTravel: TimeInterval = 4.00
     static let finalPhraseHold: TimeInterval = 1.50
     static let cursorBlinkPeriod: TimeInterval = 0.8
 

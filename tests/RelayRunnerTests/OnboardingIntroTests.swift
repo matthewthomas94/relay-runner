@@ -1485,10 +1485,9 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.initialBrandHold, 0.65)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.phraseHold, 1.0)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.finalPhraseHold, 1.4)
-        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.dotFieldTravel, 1.8)
-        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.dotFieldTravel, 2.2)
-        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 7.2)
-        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 7.8)
+        XCTAssertEqual(OnboardingIntroTimeline.dotFieldTravel, 4.0, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 9.2)
+        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 9.8)
     }
 
     func testFreshInteractiveHandoffCanStartAtAgentChoice() {
