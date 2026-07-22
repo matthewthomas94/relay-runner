@@ -46,6 +46,7 @@ extension VenvInstaller: OnboardingRuntimeInstalling {}
 final class OnboardingController {
 
     private var introController: (any OnboardingIntroPresenting)?
+    private var dismissingIntroController: (any OnboardingIntroPresenting)?
     let presentation: OnboardingPresentationState
     private let flagURLs: OnboardingFlagURLs
     private let permissions: PermissionsManager
@@ -792,11 +793,13 @@ final class OnboardingController {
         let intro = introController
         introController = nil
         let complete: () -> Void = { [weak self] in
+            self?.dismissingIntroController = nil
             self?.setOnboardingNotchOverrideActive(false)
             self?.setFirstRunExperienceActive(false)
             completion()
         }
         if let intro {
+            dismissingIntroController = intro
             intro.dismiss(completion: complete)
         } else {
             complete()

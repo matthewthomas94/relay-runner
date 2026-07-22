@@ -658,6 +658,73 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertNil(OnboardingResumeState.load())
     }
 
+    func testWorkspaceCompletionRetainsControllerOwnedPresenterUntilDismissalCompletes() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        var events: [String] = []
+        let presenterFactory = DeferredDismissIntroPresenterFactory { events.append($0) }
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { events.append("persist:\($0)") },
+            setOnboardingNotchOverrideActive: { events.append("notch:\($0)") },
+            setFirstRunExperienceActive: { events.append("firstRun:\($0)") },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { presenterFactory.makePresenter() },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/dev") }
+            },
+            reduceMotion: { true },
+            openWorkspaceAfterCompletion: { events.append("workspaceOpen") }
+        )
+
+        controller.showIfNeeded()
+        XCTAssertNotNil(presenterFactory.presenter)
+
+        presenterFactory.presenter?.performCodexAction()
+        waitForMainQueue(after: 0.05)
+        events.removeAll()
+
+        presenterFactory.presenter?.performWorkspaceAction()
+
+        XCTAssertEqual(events, [
+            "dismiss",
+            "notch:false",
+            "persist:/Users/example/dev",
+            "notch:true",
+            "dismiss",
+        ])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertNotNil(presenterFactory.presenter)
+        XCTAssertFalse(events.contains("firstRun:false"))
+        XCTAssertFalse(events.contains("workspaceOpen"))
+
+        presenterFactory.presenter?.completeDismissal()
+        drainMainQueue()
+
+        XCTAssertEqual(events, [
+            "dismiss",
+            "notch:false",
+            "persist:/Users/example/dev",
+            "notch:true",
+            "dismiss",
+            "notch:false",
+            "firstRun:false",
+            "workspaceOpen",
+            "deinit",
+        ])
+        XCTAssertNil(presenterFactory.presenter)
+    }
+
     func testWorkspaceCancelRestoresFinalIntroStepWithoutPersisting() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -1694,6 +1761,91 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
         let action = completionRevealAction
         completionRevealAction = nil
         action?()
+    }
+}
+
+private final class DeferredDismissIntroPresenterFactory {
+    weak var presenter: DeferredDismissIntroPresenter?
+
+    private let eventSink: (String) -> Void
+
+    init(eventSink: @escaping (String) -> Void) {
+        self.eventSink = eventSink
+    }
+
+    func makePresenter() -> any OnboardingIntroPresenting {
+        let presenter = DeferredDismissIntroPresenter(eventSink: eventSink)
+        self.presenter = presenter
+        return presenter
+    }
+}
+
+private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
+    private let eventSink: (String) -> Void
+    private var codexAction: (() -> Void)?
+    private var workspaceAction: (() -> Void)?
+    private var dismissCompletion: (() -> Void)?
+    private var defersDismissal = false
+
+    init(eventSink: @escaping (String) -> Void) {
+        self.eventSink = eventSink
+    }
+
+    deinit {
+        eventSink("deinit")
+    }
+
+    func present(completion: @escaping () -> Void) {
+        completion()
+    }
+
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void) {}
+
+    func presentAgentChoicePrompt(selectedProvider: GeneralConfig.AgentProvider,
+                                  codexAction: @escaping () -> Void,
+                                  claudeAction: @escaping () -> Void) {
+        self.codexAction = codexAction
+    }
+
+    func presentRuntimePrompt(_ presentation: OnboardingRuntimePromptPresentation,
+                              retryAction: @escaping () -> Void) {}
+
+    func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 signInAction: @escaping () -> Void) {}
+
+    func presentWorkspacePrompt(currentPath: String,
+                                action: @escaping () -> Void) {
+        workspaceAction = action
+    }
+
+    func presentCompletionPrompt(revealCompletion: @escaping () -> Void) {
+        defersDismissal = true
+        revealCompletion()
+    }
+
+    func dismiss(completion: @escaping () -> Void) {
+        eventSink("dismiss")
+        guard defersDismissal else {
+            completion()
+            return
+        }
+        defersDismissal = false
+        dismissCompletion = completion
+    }
+
+    func performCodexAction() {
+        codexAction?()
+    }
+
+    func performWorkspaceAction() {
+        workspaceAction?()
+    }
+
+    func completeDismissal() {
+        let completion = dismissCompletion
+        dismissCompletion = nil
+        completion?()
     }
 }
 
