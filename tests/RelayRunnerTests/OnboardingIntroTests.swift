@@ -126,17 +126,25 @@ final class OnboardingIntroTests: XCTestCase {
         )
         var events: [String] = []
         intro.onDismiss = { events.append("dismiss") }
+        var workingDirectoryWrites: [String] = []
         var settingsOpenCount = 0
         let controller = OnboardingController(
             permissions: PermissionsManager(),
             flagURLs: flagURLs,
             presentation: presentation,
+            setWorkingDirectory: { workingDirectoryWrites.append($0) },
             requestPermissionSetup: { kind, source, _ in
                 events.append("request:\(kind.rawValue):\(source)")
             },
             permissionStatus: { statuses[$0] ?? .denied },
             makeIntroController: { intro },
             openSettingsHost: { settingsOpenCount += 1 },
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare {
+                    events.append("picker")
+                    completion("/Users/example/dev")
+                }
+            },
             reduceMotion: { false }
         )
 
@@ -175,9 +183,52 @@ final class OnboardingIntroTests: XCTestCase {
         postGrant(.screenRecording)
         drainMainQueue()
 
+        XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory()])
+        XCTAssertFalse(presentation.isPresented)
+        XCTAssertEqual(settingsOpenCount, 0)
+
+        intro.performWorkspaceAction()
+
         XCTAssertTrue(presentation.isPresented)
         XCTAssertEqual(presentation.detail.title, "Coding Agent")
         XCTAssertEqual(settingsOpenCount, 1)
+        XCTAssertEqual(workingDirectoryWrites, ["/Users/example/dev"])
+        XCTAssertEqual(Array(events.suffix(2)), ["dismiss", "picker"])
+    }
+
+    func testFreshWorkspaceCancelRestoresIntroPromptWithoutPersistingOrHandoff() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var workingDirectoryWrites: [String] = []
+        var settingsOpenCount = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { workingDirectoryWrites.append($0) },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            openSettingsHost: { settingsOpenCount += 1 },
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare {
+                    completion(nil)
+                }
+            },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory()])
+
+        intro.performWorkspaceAction()
+
+        XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory(), NSHomeDirectory()])
+        XCTAssertTrue(workingDirectoryWrites.isEmpty)
+        XCTAssertEqual(settingsOpenCount, 0)
     }
 
     func testFreshPermissionDenialReturnsToSameIntroPrompt() throws {
@@ -546,8 +597,10 @@ final class OnboardingIntroTests: XCTestCase {
 private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private(set) var presentCallCount = 0
     private(set) var permissionPrompts: [OnboardingPermissionPromptPresentation] = []
+    private(set) var workspacePromptPaths: [String] = []
     private var cinematicCompletion: (() -> Void)?
     private var permissionAction: (() -> Void)?
+    private var workspaceAction: (() -> Void)?
     var onDismiss: (() -> Void)?
 
     func present(completion: @escaping () -> Void) {
@@ -559,6 +612,12 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
                                  action: @escaping () -> Void) {
         permissionPrompts.append(presentation)
         permissionAction = action
+    }
+
+    func presentWorkspacePrompt(currentPath: String,
+                                action: @escaping () -> Void) {
+        workspacePromptPaths.append(currentPath)
+        workspaceAction = action
     }
 
     func dismiss(completion: @escaping () -> Void) {
@@ -573,6 +632,10 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
 
     func performPermissionAction() {
         permissionAction?()
+    }
+
+    func performWorkspaceAction() {
+        workspaceAction?()
     }
 }
 

@@ -91,6 +91,8 @@ struct OnboardingView: View {
     /// even if no other setup is missing.
     let requiresAgentChoice: Bool
     let requiresParentPermissionGuidance: Bool
+    let showsWorkingDirectoryPicker: Bool
+    let persistsWorkingDirectorySelection: Bool
     /// Persists the selected primary coding agent back to AppConfig.
     let onSetAgentProvider: (GeneralConfig.AgentProvider) -> Void
     let onSetModel: (String) -> Void
@@ -106,6 +108,7 @@ struct OnboardingView: View {
     let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
     let cancelPermissionSetup: (PermissionSetupSource?) -> Void
     let shouldDeferPermissionAdvance: (PermissionKind) -> Bool
+    let onOpenExternalWindow: () -> Void
     let presentation: OnboardingPresentationState?
     let onSurfaceVisibilityChanged: (Bool) -> Void
     let onFinish: () -> Void
@@ -150,6 +153,9 @@ struct OnboardingView: View {
          initialCodexReasoningEffort: String = GeneralConfig.defaultCodexReasoningEffort,
          requiresAgentChoice: Bool = false,
          requiresParentPermissionGuidance: Bool = false,
+         showsWorkingDirectoryPicker: Bool = true,
+         initialWorkingDirectoryConfirmed: Bool = false,
+         persistsWorkingDirectorySelection: Bool = true,
          initialStepOverride: Step? = nil,
          resumeState: OnboardingResumeState.Snapshot? = nil,
          onSetAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
@@ -161,6 +167,7 @@ struct OnboardingView: View {
          requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
          cancelPermissionSetup: @escaping (PermissionSetupSource?) -> Void = { _ in },
          shouldDeferPermissionAdvance: @escaping (PermissionKind) -> Bool = { _ in false },
+         onOpenExternalWindow: @escaping () -> Void = {},
          presentation: OnboardingPresentationState? = nil,
          onSurfaceVisibilityChanged: @escaping (Bool) -> Void = { _ in },
          onFinish: @escaping () -> Void,
@@ -174,6 +181,8 @@ struct OnboardingView: View {
         self.initialCodexReasoningEffort = initialCodexReasoningEffort
         self.requiresAgentChoice = requiresAgentChoice
         self.requiresParentPermissionGuidance = requiresParentPermissionGuidance
+        self.showsWorkingDirectoryPicker = showsWorkingDirectoryPicker
+        self.persistsWorkingDirectorySelection = persistsWorkingDirectorySelection
         self.onSetAgentProvider = onSetAgentProvider
         self.onSetModel = onSetModel
         self.onSetCodexReasoningEffort = onSetCodexReasoningEffort
@@ -183,6 +192,7 @@ struct OnboardingView: View {
         self.requestPermissionSetup = requestPermissionSetup
         self.cancelPermissionSetup = cancelPermissionSetup
         self.shouldDeferPermissionAdvance = shouldDeferPermissionAdvance
+        self.onOpenExternalWindow = onOpenExternalWindow
         self.presentation = presentation
         self.onSurfaceVisibilityChanged = onSurfaceVisibilityChanged
         self.onFinish = onFinish
@@ -213,6 +223,7 @@ struct OnboardingView: View {
         _selectedModel = State(initialValue: startingSelection.model)
         _selectedCodexReasoningEffort = State(initialValue: startingSelection.effort)
         _agentSignedIn = State(initialValue: AgentAuth.isAuthenticated(for: startingProvider))
+        _hasConfirmedWorkingDirectory = State(initialValue: initialWorkingDirectoryConfirmed)
         _parentPermissionsReviewed = State(initialValue: startingParentReviewed)
     }
 
@@ -452,7 +463,9 @@ struct OnboardingView: View {
 
             modelPicker
             reasoningEffortPicker
-            workingDirectoryPicker
+            if showsWorkingDirectoryPicker {
+                workingDirectoryPicker
+            }
             setupPlanView
 
             Text("macOS privacy permissions cannot be granted silently. The setup run opens the right prompt or Settings pane for each manual step, polls for Relay Runner permission changes, and continues when macOS reports the grant.")
@@ -965,7 +978,9 @@ struct OnboardingView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                workingDirectoryPicker
+                if showsWorkingDirectoryPicker {
+                    workingDirectoryPicker
+                }
                 Text(readiness.detail)
                     .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
@@ -1090,7 +1105,7 @@ struct OnboardingView: View {
             )
             HStack(spacing: 8) {
                 SettingsActionButton(
-                    title: "Choose Workspace\u{2026}",
+                    title: "Browse\u{2026}",
                     systemImage: "folder"
                 ) { pickWorkingDirectory() }
                 SettingsActionButton(
@@ -1117,15 +1132,23 @@ struct OnboardingView: View {
     }
 
     private func pickWorkingDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose the workspace folder where Relay Runner should start sessions"
-        if panel.runModal() == .OK, let url = panel.url {
-            workingDirectory = url.path
-            hasConfirmedWorkingDirectory = true
-        }
+        WorkspaceDirectoryPicker.pick(
+            message: GeneralSettingsTab.workspaceFolderPanelMessage,
+            onPrepareExternalWindow: { ready in
+                onOpenExternalWindow()
+                ready()
+            },
+            chooseDirectory: {
+                WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
+                    message: GeneralSettingsTab.workspaceFolderPanelMessage
+                )
+            },
+            completion: { path in
+                guard let path else { return }
+                workingDirectory = path
+                hasConfirmedWorkingDirectory = true
+            }
+        )
     }
 
     private func useHomeWorkingDirectory() {
@@ -1223,7 +1246,7 @@ struct OnboardingView: View {
                 title: GuidedSetupPlan(provider: selectedAgentProvider).primaryActionTitle,
                 systemImage: "checkmark",
                 prominence: .primary,
-                isEnabled: hasConfirmedWorkingDirectory,
+                isEnabled: hasConfirmedWorkingDirectory || !showsWorkingDirectoryPicker,
                 shortcut: .default
             ) { beginGuidedSetup() }
         case .microphone, .inputMonitoring, .parentAccessibility, .parentScreenRecording:
@@ -1236,7 +1259,7 @@ struct OnboardingView: View {
             switch Self.readyPrimaryActionKind(
                 setupStatus: setupStatus(),
                 voiceReady: currentReadiness.voiceReady,
-                hasConfirmedWorkingDirectory: hasConfirmedWorkingDirectory
+                hasConfirmedWorkingDirectory: hasConfirmedWorkingDirectory || !showsWorkingDirectoryPicker
             ) {
             case .startSession(let isEnabled):
                 return footerAction(
@@ -1246,7 +1269,7 @@ struct OnboardingView: View {
                     isEnabled: isEnabled,
                     shortcut: .default
                 ) {
-                    onSetWorkingDirectory(workingDirectory)
+                    persistWorkingDirectoryIfNeeded()
                     onStartSession()
                     onFinish()
                 }
@@ -1287,9 +1310,7 @@ struct OnboardingView: View {
                 prominence: .secondary,
                 shortcut: .cancel
             ) {
-                if hasConfirmedWorkingDirectory {
-                    onSetWorkingDirectory(workingDirectory)
-                }
+                persistWorkingDirectoryIfNeeded()
                 onFinish()
             }
         }
@@ -1524,10 +1545,17 @@ struct OnboardingView: View {
             onSetModel: onSetModel,
             onSetEffort: onSetCodexReasoningEffort
         )
-        onSetWorkingDirectory(workingDirectory)
+        persistWorkingDirectoryIfNeeded()
         agentSignedIn = AgentAuth.isAuthenticated(for: selectedAgentProvider)
         venvInstaller.install()
         advance()
+    }
+
+    private func persistWorkingDirectoryIfNeeded() {
+        guard persistsWorkingDirectorySelection,
+              showsWorkingDirectoryPicker,
+              hasConfirmedWorkingDirectory else { return }
+        onSetWorkingDirectory(workingDirectory)
     }
 
     private func autoAdvance(for kind: PermissionKind, status: PermissionStatus) {

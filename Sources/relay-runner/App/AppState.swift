@@ -150,6 +150,9 @@ final class AppState {
             },
             openSettingsHost: { [weak self] in
                 self?.showWorkspaceSettings()
+            },
+            onOpenExternalWindow: { [weak self] in
+                self?.suspendWorkspaceForExternalWindow()
             }
         )
     }()
