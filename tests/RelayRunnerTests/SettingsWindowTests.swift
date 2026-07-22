@@ -26,31 +26,11 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(SettingsCategory.category(after: .awareness), .awareness)
     }
 
-    func testOnboardingModeKeepsStatusSelectedInSettingsSidebar() {
-        XCTAssertEqual(
-            SettingsCategory.visibleSelection(current: .general, onboardingActive: true),
-            .status
-        )
-        XCTAssertEqual(
-            SettingsCategory.visibleSelection(current: .general, onboardingActive: false),
-            .general
-        )
-    }
-
-    func testSettingsHeaderPresentationAdaptsOnboardingProgress() {
+    func testSettingsHeaderPresentationUsesSelectedCategory() {
         let category = SettingsDetailHeaderPresentation(category: .status)
         XCTAssertEqual(category.title, "Status")
         XCTAssertEqual(category.subtitle, "Permissions and runtime")
         XCTAssertNil(category.trailingText)
-
-        let onboarding = SettingsDetailHeaderPresentation(onboarding: OnboardingDetailPresentation(
-            title: "Coding Agent",
-            subtitle: "Provider, model, effort, and workspace",
-            progress: "1 of 7"
-        ))
-        XCTAssertEqual(onboarding.title, "Coding Agent")
-        XCTAssertEqual(onboarding.subtitle, "Provider, model, effort, and workspace")
-        XCTAssertEqual(onboarding.trailingText, "1 of 7")
     }
 
     func testWorkspaceSurfacesUseExplicitFillWidthSizing() {
@@ -204,13 +184,14 @@ final class SettingsWindowTests: XCTestCase {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         XCTAssertTrue(contents.contains("SettingsDetailHeader("))
-        XCTAssertTrue(contents.contains("SettingsDetailHeaderPresentation(onboarding: onboardingPresentation.detail)"))
+        XCTAssertTrue(contents.contains("SettingsDetailHeaderPresentation(category: selectedCategory)"))
         XCTAssertTrue(contents.contains("SettingsActionButton(\n                title: \"Revert\""))
         XCTAssertTrue(contents.contains("draft = appState.config"))
+        XCTAssertFalse(contents.contains("OnboardingPresentationState"))
         XCTAssertFalse(contents.contains("not selected"))
     }
 
-    func testWorkspaceSettingsHostsOnboardingWhileStandaloneRoutesToWorkspace() throws {
+    func testSettingsSourceDoesNotHostOrRouteOnboarding() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -218,10 +199,16 @@ final class SettingsWindowTests: XCTestCase {
         let source = root.appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        XCTAssertTrue(contents.contains("if style == .workspace"))
-        XCTAssertTrue(contents.contains("rootView"))
-        XCTAssertTrue(contents.contains("OnboardingRoutedToWorkspaceView"))
-        XCTAssertTrue(contents.contains("onboardingRouteFooter"))
+        XCTAssertFalse(contents.contains("OnboardingPresentationState"))
+        XCTAssertFalse(contents.contains("onboardingActive"))
+        XCTAssertFalse(contents.contains("visibleSelection("))
+        XCTAssertFalse(contents.contains("OnboardingRoutedToWorkspaceView"))
+        XCTAssertFalse(contents.contains("OnboardingPermissionWaitView"))
+        XCTAssertFalse(contents.contains("onboardingFooter"))
+        XCTAssertFalse(contents.contains("onboardingRouteFooter"))
+        XCTAssertFalse(contents.contains("rootView"))
+        XCTAssertTrue(contents.contains("selection: $selectedCategory"))
+        XCTAssertTrue(contents.contains("switch selectedCategory"))
     }
 
     func testSettingsSlidersExposeProgrammaticValues() {
