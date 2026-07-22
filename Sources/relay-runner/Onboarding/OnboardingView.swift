@@ -10,12 +10,14 @@ struct OnboardingPermissionPromptPresentation: Equatable {
 }
 
 enum OnboardingPermissionTreatment {
+    static let actionScale: CGFloat = 0.75
     static let buttonTitle = "Grant permission"
-    static let buttonSize = CGSize(width: 195, height: 50)
-    static let buttonCornerRadius: CGFloat = 12
-    static let buttonHorizontalPadding: CGFloat = 32
-    static let buttonVerticalPadding: CGFloat = 16
-    static let buttonLineHeight: CGFloat = 18
+    static let buttonSize = CGSize(width: 195 * actionScale, height: 50 * actionScale)
+    static let buttonCornerRadius: CGFloat = 12 * actionScale
+    static let buttonHorizontalPadding: CGFloat = 32 * actionScale
+    static let buttonVerticalPadding: CGFloat = 16 * actionScale
+    static let buttonLineHeight: CGFloat = 18 * actionScale
+    static let buttonLabelSize: CGFloat = 16 * actionScale
     static let buttonBorderColor = NSColor(srgbRed: 17 / 255, green: 22 / 255, blue: 29 / 255, alpha: 1)
     static let promptMaxWidth: CGFloat = 1180
     static let supportingMaxWidth: CGFloat = 620
@@ -2025,30 +2027,13 @@ struct OnboardingPermissionPromptView: View {
                 .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
                 .accessibilityAddTraits(.isHeader)
 
-            Button(action: action) {
-                Text(presentation.buttonTitle)
-                    .font(AppTypography.font(.permissionButton))
-                    .foregroundStyle(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .frame(
-                        width: OnboardingPermissionTreatment.buttonSize.width,
-                        height: OnboardingPermissionTreatment.buttonSize.height
-                    )
-                    .background(
-                        RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
-                            .fill(Color.white)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
-                            .stroke(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor), lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
+            OnboardingIntroWhiteActionButton(
+                title: presentation.buttonTitle,
+                accessibilityLabel: presentation.buttonTitle,
+                action: action
+            )
             .keyboardShortcut(.defaultAction)
             .disabled(!presentation.isButtonEnabled)
-            .accessibilityLabel(presentation.buttonTitle)
-            .help(presentation.buttonTitle)
 
             if let supportingCopy = presentation.supportingCopy {
                 Text(supportingCopy)

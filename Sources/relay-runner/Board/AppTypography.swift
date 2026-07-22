@@ -103,6 +103,18 @@ enum AppTypography {
         return .system(size: resolved.size, weight: resolved.fallbackWeight.fontWeight)
     }
 
+    static func font(
+        _ role: Role,
+        size: CGFloat,
+        availablePostScriptNames: Set<String> = installedPostScriptNames
+    ) -> Font {
+        let resolved = resolved(role, availablePostScriptNames: availablePostScriptNames)
+        if let postScriptName = resolved.postScriptName {
+            return .custom(postScriptName, size: size)
+        }
+        return .system(size: size, weight: resolved.fallbackWeight.fontWeight)
+    }
+
     static func appKitFont(
         _ role: Role,
         availablePostScriptNames: Set<String> = installedPostScriptNames

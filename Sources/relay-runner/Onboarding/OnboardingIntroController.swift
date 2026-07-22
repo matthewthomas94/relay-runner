@@ -93,8 +93,8 @@ enum OnboardingIntroTimeline {
         "I need a few permissions",
     ]
     static let initialBrandHold: TimeInterval = 0.70
-    static let typingInterval: TimeInterval = 0.065
-    static let eraseInterval: TimeInterval = 0.045
+    static let typingInterval: TimeInterval = 0.065 / 1.5
+    static let eraseInterval: TimeInterval = 0.045 / 1.5
     static let phraseHold: TimeInterval = 1.05
     static let dotFieldTravel: TimeInterval = 2.00
     static let finalPhraseHold: TimeInterval = 1.50
@@ -116,16 +116,17 @@ enum OnboardingIntroTimeline {
     }
 
     static func frame(at elapsed: TimeInterval) -> OnboardingIntroFrame {
+        let timelineElapsed = max(0, elapsed)
         guard elapsed < duration else {
             return frame(
                 phrase: phrases.last ?? "",
                 visible: phraseGraphemes(phrases.last ?? ""),
-                cursorVisible: true,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
                 isComplete: true
             )
         }
 
-        var cursor = max(0, elapsed)
+        var cursor = timelineElapsed
         let brand = phrases[0]
         let brandGraphemes = phraseGraphemes(brand)
 
@@ -134,7 +135,7 @@ enum OnboardingIntroTimeline {
                 phrase: brand,
                 visible: Array(brandGraphemes.prefix(1)),
                 compactCursor: true,
-                cursorVisible: blinkingCursorVisible(at: cursor),
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
                 dotFieldOpacity: 0
             )
         }
@@ -149,7 +150,7 @@ enum OnboardingIntroTimeline {
             return frame(
                 phrase: brand,
                 visible: Array(brandGraphemes.prefix(visibleCount)),
-                cursorVisible: true,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
                 dotFieldOpacity: 0
             )
         }
@@ -159,7 +160,7 @@ enum OnboardingIntroTimeline {
             return frame(
                 phrase: brand,
                 visible: brandGraphemes,
-                cursorVisible: blinkingCursorVisible(at: cursor),
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
                 dotFieldProgress: CGFloat(cursor / dotFieldTravel),
                 dotFieldOpacity: 1
             )
@@ -174,7 +175,7 @@ enum OnboardingIntroTimeline {
                 phrase: brand,
                 visible: Array(brandGraphemes.prefix(remainingCount)),
                 compactCursor: remainingCount == 1,
-                cursorVisible: true,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
                 dotFieldProgress: 1,
                 dotFieldOpacity: 1
             )
@@ -186,7 +187,11 @@ enum OnboardingIntroTimeline {
         let firstTypeDuration = Double(firstCopyGraphemes.count) * typingInterval
         if cursor < firstTypeDuration {
             let visibleCount = min(firstCopyGraphemes.count, Int(cursor / typingInterval))
-            return frame(phrase: firstCopy, visible: Array(firstCopyGraphemes.prefix(visibleCount)))
+            return frame(
+                phrase: firstCopy,
+                visible: Array(firstCopyGraphemes.prefix(visibleCount)),
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
+            )
         }
         cursor -= firstTypeDuration
 
@@ -194,7 +199,7 @@ enum OnboardingIntroTimeline {
             return frame(
                 phrase: firstCopy,
                 visible: firstCopyGraphemes,
-                cursorVisible: blinkingCursorVisible(at: cursor)
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
             )
         }
         cursor -= phraseHold
@@ -206,7 +211,7 @@ enum OnboardingIntroTimeline {
             return frame(
                 phrase: firstCopy,
                 visible: Array(firstCopyGraphemes.prefix(remainingCount)),
-                cursorVisible: true
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
             )
         }
         cursor -= firstEraseDuration
@@ -216,14 +221,18 @@ enum OnboardingIntroTimeline {
         let finalTypeDuration = Double(finalCopyGraphemes.count) * typingInterval
         if cursor < finalTypeDuration {
             let visibleCount = min(finalCopyGraphemes.count, Int(cursor / typingInterval))
-            return frame(phrase: finalCopy, visible: Array(finalCopyGraphemes.prefix(visibleCount)))
+            return frame(
+                phrase: finalCopy,
+                visible: Array(finalCopyGraphemes.prefix(visibleCount)),
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
+            )
         }
         cursor -= finalTypeDuration
 
         return frame(
             phrase: finalCopy,
             visible: finalCopyGraphemes,
-            cursorVisible: blinkingCursorVisible(at: cursor)
+            cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
         )
     }
 
@@ -254,12 +263,15 @@ enum OnboardingIntroTimeline {
         )
     }
 
-    private static func blinkingCursorVisible(at elapsed: TimeInterval) -> Bool {
-        elapsed.truncatingRemainder(dividingBy: cursorBlinkPeriod) < cursorBlinkPeriod / 2
-    }
-
     private static func phraseGraphemes(_ phrase: String) -> [Character] {
         Array(phrase)
+    }
+}
+
+enum OnboardingCursorBlink {
+    static func isVisible(at elapsed: TimeInterval) -> Bool {
+        max(0, elapsed).truncatingRemainder(dividingBy: OnboardingIntroTimeline.cursorBlinkPeriod)
+            < OnboardingIntroTimeline.cursorBlinkPeriod / 2
     }
 }
 
@@ -282,16 +294,22 @@ enum OnboardingPromptTransitionTimeline {
     static func frame(from source: String, to target: String, at elapsed: TimeInterval) -> OnboardingIntroFrame {
         let sourcePhrase = phrase(from: source)
         let targetPhrase = phrase(from: target)
+        let timelineElapsed = max(0, elapsed)
         guard sourcePhrase != targetPhrase else {
-            return makeFrame(phrase: targetPhrase, visible: targetPhrase, isComplete: true)
+            return makeFrame(
+                phrase: targetPhrase,
+                visible: targetPhrase,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                isComplete: true
+            )
         }
 
-        var cursor = max(0, elapsed)
+        var cursor = timelineElapsed
         if cursor < initialHold {
             return makeFrame(
                 phrase: sourcePhrase,
                 visible: sourcePhrase,
-                cursorVisible: blinkingCursorVisible(at: cursor)
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
             )
         }
         cursor -= initialHold
@@ -301,7 +319,8 @@ enum OnboardingPromptTransitionTimeline {
             let erasedCount = min(sourcePhrase.count, Int(cursor / eraseInterval) + 1)
             return makeFrame(
                 phrase: sourcePhrase,
-                visible: Array(sourcePhrase.prefix(max(0, sourcePhrase.count - erasedCount)))
+                visible: Array(sourcePhrase.prefix(max(0, sourcePhrase.count - erasedCount))),
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
             )
         }
         cursor -= eraseDuration
@@ -311,7 +330,8 @@ enum OnboardingPromptTransitionTimeline {
             let visibleCount = min(targetPhrase.count, Int(cursor / typingInterval))
             return makeFrame(
                 phrase: targetPhrase,
-                visible: Array(targetPhrase.prefix(visibleCount))
+                visible: Array(targetPhrase.prefix(visibleCount)),
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
             )
         }
         cursor -= typeDuration
@@ -319,7 +339,7 @@ enum OnboardingPromptTransitionTimeline {
         return makeFrame(
             phrase: targetPhrase,
             visible: targetPhrase,
-            cursorVisible: blinkingCursorVisible(at: cursor),
+            cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
             isComplete: cursor >= finalHold
         )
     }
@@ -350,10 +370,6 @@ enum OnboardingPromptTransitionTimeline {
         )
     }
 
-    private static func blinkingCursorVisible(at elapsed: TimeInterval) -> Bool {
-        elapsed.truncatingRemainder(dividingBy: OnboardingIntroTimeline.cursorBlinkPeriod)
-            < OnboardingIntroTimeline.cursorBlinkPeriod / 2
-    }
 }
 
 enum OnboardingIntroTextLayout {
@@ -899,15 +915,9 @@ private final class OnboardingIntroParticleHostView: NSView {
         layoutRenderer()
     }
 
-    func update(progress: CGFloat, opacity: CGFloat) {
-        let clampedProgress = min(max(progress, 0), 1)
+    func update(progress _: CGFloat, opacity: CGFloat) {
         let clampedOpacity = min(max(opacity, 0), 1)
         alphaValue = clampedOpacity
-        layer?.transform = CATransform3DMakeTranslation(
-            0,
-            (1 - clampedProgress) * bounds.height * 0.08,
-            0
-        )
         guard clampedOpacity > 0 else {
             renderer.setIntensity(0)
             renderer.transition(to: nil)
@@ -946,6 +956,7 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
     private let reduceMotion: Bool
     private var transitionTimer: Timer?
     private var transitionStartedAt: CFTimeInterval?
+    private var controlsVisible = false
 
     override var isFlipped: Bool { true }
 
@@ -1013,17 +1024,16 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
             from: transitionSource,
             to: transitionTarget
         )
-        guard !reduceMotion, duration > 0 else {
+        transitionStartedAt = CACurrentMediaTime()
+        if reduceMotion || duration <= 0 {
             textView.timelineFrame = OnboardingPromptTransitionTimeline.frame(
                 from: transitionSource,
                 to: transitionTarget,
                 at: duration
             )
             showControls()
-            return
         }
 
-        transitionStartedAt = CACurrentMediaTime()
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.tickTransition()
         }
@@ -1034,19 +1044,24 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
 
     private func tickTransition() {
         guard let transitionStartedAt else { return }
+        let elapsed = CACurrentMediaTime() - transitionStartedAt
+        let transitionDuration = OnboardingPromptTransitionTimeline.duration(
+            from: transitionSource,
+            to: transitionTarget
+        )
         let frame = OnboardingPromptTransitionTimeline.frame(
             from: transitionSource,
             to: transitionTarget,
-            at: CACurrentMediaTime() - transitionStartedAt
+            at: reduceMotion ? transitionDuration + elapsed : elapsed
         )
         textView.timelineFrame = frame
         guard frame.isComplete else { return }
-        transitionTimer?.invalidate()
-        transitionTimer = nil
         showControls()
     }
 
     private func showControls() {
+        guard !controlsVisible else { return }
+        controlsVisible = true
         hostingView.isHidden = false
         guard !reduceMotion else {
             hostingView.alphaValue = 1
@@ -1142,14 +1157,7 @@ struct OnboardingIntroAgentChoicePromptView: View {
 
     var body: some View {
         VStack(spacing: 54) {
-            Text("Which coding agent should Relay Runner start with? /")
-                .font(AppTypography.font(.onboardingHero))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.72)
-                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
-                .accessibilityAddTraits(.isHeader)
+            OnboardingBlinkingTitle("Which coding agent should Relay Runner start with? /")
 
             HStack(spacing: 18) {
                 OnboardingIntroWhiteActionButton(
@@ -1183,14 +1191,7 @@ struct OnboardingIntroRuntimePromptView: View {
 
     var body: some View {
         VStack(spacing: 38) {
-            Text(title)
-                .font(AppTypography.font(.onboardingHero))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.72)
-                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
-                .accessibilityAddTraits(.isHeader)
+            OnboardingBlinkingTitle(title)
 
             runtimeStatus
 
@@ -1271,14 +1272,7 @@ struct OnboardingIntroAgentLoginPromptView: View {
 
     var body: some View {
         VStack(spacing: 54) {
-            Text("Sign in to \(presentation.provider.displayName) /")
-                .font(AppTypography.font(.onboardingHero))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.72)
-                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
-                .accessibilityAddTraits(.isHeader)
+            OnboardingBlinkingTitle("Sign in to \(presentation.provider.displayName) /")
 
             if presentation.signedIn {
                 Text("Signed in.")
@@ -1313,14 +1307,7 @@ struct OnboardingIntroWorkspacePromptView: View {
 
     var body: some View {
         VStack(spacing: 28) {
-            Text("Choose your workspace /")
-                .font(AppTypography.font(.onboardingHero))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.72)
-                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
-                .accessibilityAddTraits(.isHeader)
+            OnboardingBlinkingTitle("Choose your workspace /")
 
             HStack(spacing: 14) {
                 Text(currentPath)
@@ -1342,7 +1329,7 @@ struct OnboardingIntroWorkspacePromptView: View {
                 OnboardingIntroWhiteActionButton(
                     title: "Browse\u{2026}",
                     accessibilityLabel: "Browse for workspace folder",
-                    height: 52,
+                    height: 52 * OnboardingPermissionTreatment.actionScale,
                     action: action
                 )
             }
@@ -1357,6 +1344,38 @@ struct OnboardingIntroWorkspacePromptView: View {
         .padding(.horizontal, 34)
         .frame(maxWidth: .infinity)
         .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
+    }
+}
+
+struct OnboardingBlinkingTitle: View {
+    private let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        TimelineView(
+            .periodic(
+                from: .now,
+                by: OnboardingIntroTimeline.cursorBlinkPeriod / 2
+            )
+        ) { context in
+            Text(Self.renderedText(text, at: context.date.timeIntervalSinceReferenceDate))
+        }
+        .font(AppTypography.font(.onboardingHero))
+        .foregroundStyle(.white)
+        .multilineTextAlignment(.center)
+        .lineLimit(2)
+        .minimumScaleFactor(0.72)
+        .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
+        .accessibilityLabel(String(OnboardingPromptTransitionTimeline.phrase(from: text)))
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    static func renderedText(_ text: String, at elapsed: TimeInterval) -> String {
+        let phrase = String(OnboardingPromptTransitionTimeline.phrase(from: text))
+        return OnboardingCursorBlink.isVisible(at: elapsed) ? "\(phrase) /" : phrase
     }
 }
 
@@ -1401,25 +1420,39 @@ struct OnboardingIntroWhiteActionButton: View {
     var width: CGFloat = OnboardingPermissionTreatment.buttonSize.width
     var height: CGFloat = OnboardingPermissionTreatment.buttonSize.height
     let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovering = false
 
     var body: some View {
+        let showsHover = isEnabled && isHovering
         Button(action: action) {
             Text(title)
-                .font(AppTypography.font(.permissionButton))
+                .font(AppTypography.font(
+                    .permissionButton,
+                    size: OnboardingPermissionTreatment.buttonLabelSize
+                ))
                 .foregroundStyle(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
                 .frame(width: width, height: height)
                 .background(
                     RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
-                        .fill(Color.white)
+                        .fill(Color.white.opacity(showsHover ? 0.86 : 1))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
-                        .stroke(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor), lineWidth: 1)
+                        .stroke(
+                            Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor)
+                                .opacity(showsHover ? 0.72 : 1),
+                            lineWidth: showsHover ? 1.5 : 1
+                        )
                 )
         }
         .buttonStyle(.plain)
+        .scaleEffect(showsHover ? 1.025 : 1)
+        .shadow(color: .white.opacity(showsHover ? 0.16 : 0), radius: 7)
+        .animation(.easeOut(duration: 0.14), value: showsHover)
+        .onHover { isHovering = $0 }
         .accessibilityLabel(accessibilityLabel ?? title)
         .help(accessibilityLabel ?? title)
     }
@@ -1460,7 +1493,7 @@ private final class OnboardingIntroTextView: NSView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.minimumLineHeight = OnboardingIntroTextLayout.lineHeight
         paragraph.maximumLineHeight = OnboardingIntroTextLayout.lineHeight
-        paragraph.alignment = .left
+        paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor.white,

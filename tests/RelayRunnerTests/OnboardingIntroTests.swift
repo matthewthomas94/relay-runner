@@ -964,14 +964,56 @@ final class OnboardingIntroTests: XCTestCase {
         let brandCount = Double(Array(OnboardingIntroTimeline.phrases[0]).count)
         let holdStart = OnboardingIntroTimeline.initialBrandHold
             + (brandCount - 1) * OnboardingIntroTimeline.typingInterval
+        let nextBlinkPeriod = ceil(holdStart / OnboardingIntroTimeline.cursorBlinkPeriod)
+            * OnboardingIntroTimeline.cursorBlinkPeriod
 
-        let visible = OnboardingIntroTimeline.frame(at: holdStart + 0.10)
-        let hidden = OnboardingIntroTimeline.frame(at: holdStart + 0.45)
+        let visible = OnboardingIntroTimeline.frame(at: nextBlinkPeriod + 0.10)
+        let hidden = OnboardingIntroTimeline.frame(
+            at: nextBlinkPeriod + OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.10
+        )
 
         XCTAssertTrue(visible.cursorVisible)
         XCTAssertEqual(visible.renderedText, "Relay Runner /")
         XCTAssertFalse(hidden.cursorVisible)
         XCTAssertEqual(hidden.renderedText, "Relay Runner ")
+    }
+
+    func testCursorKeepsBlinkingWhileTypingAndBackspacing() {
+        let typingStart = OnboardingIntroTimeline.initialBrandHold
+        let typedVisible = OnboardingIntroTimeline.frame(at: typingStart + 0.01)
+        let typedHidden = OnboardingIntroTimeline.frame(
+            at: typingStart + OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
+        )
+        XCTAssertNotEqual(typedVisible.cursorVisible, typedHidden.cursorVisible)
+
+        let source = "I need a few permissions /"
+        let target = "Let’s start with your mic /"
+        let eraseStart = OnboardingPromptTransitionTimeline.initialHold
+        let erasedVisible = OnboardingPromptTransitionTimeline.frame(
+            from: source,
+            to: target,
+            at: eraseStart + 0.01
+        )
+        let erasedHidden = OnboardingPromptTransitionTimeline.frame(
+            from: source,
+            to: target,
+            at: eraseStart + OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
+        )
+        XCTAssertNotEqual(erasedVisible.cursorVisible, erasedHidden.cursorVisible)
+    }
+
+    func testHostedOnboardingTitlesBlinkTheirSlashWithoutChangingCopy() {
+        XCTAssertEqual(
+            OnboardingBlinkingTitle.renderedText("Choose your workspace /", at: 0),
+            "Choose your workspace /"
+        )
+        XCTAssertEqual(
+            OnboardingBlinkingTitle.renderedText(
+                "Choose your workspace /",
+                at: OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
+            ),
+            "Choose your workspace"
+        )
     }
 
     func testTimelineCompletesOnFinalPermissionPhrase() {
@@ -1034,15 +1076,15 @@ final class OnboardingIntroTests: XCTestCase {
     }
 
     func testTimelineUsesReadablePacingTargets() {
-        XCTAssertEqual(OnboardingIntroTimeline.typingInterval, 0.065, accuracy: 0.001)
-        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, 0.045, accuracy: 0.001)
+        XCTAssertEqual(OnboardingIntroTimeline.typingInterval, 0.065 / 1.5, accuracy: 0.001)
+        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, 0.045 / 1.5, accuracy: 0.001)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.initialBrandHold, 0.65)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.phraseHold, 1.0)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.finalPhraseHold, 1.4)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.dotFieldTravel, 1.8)
         XCTAssertLessThanOrEqual(OnboardingIntroTimeline.dotFieldTravel, 2.2)
-        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 9.5)
-        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 11.5)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 8.0)
+        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 9.0)
     }
 
     func testFreshInteractiveHandoffCanStartAtAgentChoice() {
@@ -1120,6 +1162,9 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(contents.contains("particleClipView.layer?.masksToBounds = true"))
         XCTAssertTrue(contents.contains("particleClipView.addSubview(particleHost)"))
         XCTAssertTrue(contents.contains("particleHost.frame = particleClipView.bounds"))
+        XCTAssertFalse(contents.contains("layer?.transform = CATransform3DMakeTranslation"))
+        XCTAssertTrue(contents.contains("paragraph.alignment = .center"))
+        XCTAssertTrue(contents.contains(".onHover { isHovering = $0 }"))
         XCTAssertFalse(contents.contains("OnboardingHalftone"))
         XCTAssertFalse(contents.contains("drawHalftone"))
     }
