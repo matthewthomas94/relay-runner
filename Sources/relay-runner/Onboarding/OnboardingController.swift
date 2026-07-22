@@ -352,7 +352,10 @@ final class OnboardingController {
                     ready()
                     return
                 }
-                intro.dismiss(completion: ready)
+                intro.dismiss { [weak self] in
+                    self?.setOnboardingNotchOverrideActive(false)
+                    ready()
+                }
             },
             { [weak self, weak intro] path in
                 guard let self else { return }
@@ -373,7 +376,6 @@ final class OnboardingController {
         introController = nil
         let handoff = { [weak self] in
             guard let self else { return }
-            self.setOnboardingNotchOverrideActive(false)
             self.show(
                 simplified: false,
                 initialStepOverride: .agentChoice,
