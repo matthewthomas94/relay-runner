@@ -650,7 +650,54 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(presentation.isPresented)
     }
 
-    func testRepeatedManualShowKeepsActiveIntroWithoutSettingsPresentation() throws {
+    func testManualRedoOnCompletedInstallKeepsExistingConfigUntilUserActsAndShowsWorkspaceLast() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        try Data().write(to: flagURLs.onboarded)
+        try Data().write(to: flagURLs.agentChoice)
+        let intro = CapturingIntroPresenter()
+        let installer = FakeRuntimeInstaller(installStatus: .succeeded)
+        var providerWrites: [GeneralConfig.AgentProvider] = []
+        var workingDirectoryWrites: [String] = []
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            getWorkingDirectory: { "/Users/example/current" },
+            getAgentProvider: { .claude },
+            setAgentProvider: { providerWrites.append($0) },
+            setWorkingDirectory: { workingDirectoryWrites.append($0) },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { installer },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            reduceMotion: { true }
+        )
+
+        controller.showManualRedo()
+
+        XCTAssertEqual(intro.agentChoiceSelectedProviders, [.claude])
+        XCTAssertTrue(providerWrites.isEmpty)
+        XCTAssertTrue(workingDirectoryWrites.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
+
+        intro.performClaudeAction()
+        waitForMainQueue(after: 0.05)
+
+        XCTAssertEqual(providerWrites, [.claude])
+        XCTAssertEqual(intro.runtimePrompts.last?.provider, .claude)
+        XCTAssertEqual(intro.loginPrompts.last?.provider, .claude)
+        XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
+    }
+
+    func testRepeatedManualRedoKeepsActiveIntroWithoutSettingsPresentation() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -668,9 +715,9 @@ final class OnboardingIntroTests: XCTestCase {
             reduceMotion: { true }
         )
 
-        controller.showAlways()
+        controller.showManualRedo()
         let firstSerial = presentation.presentationSerial
-        controller.showAlways()
+        controller.showManualRedo()
 
         XCTAssertEqual(firstSerial, 0)
         XCTAssertEqual(presentation.presentationSerial, firstSerial)
