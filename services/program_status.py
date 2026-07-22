@@ -534,6 +534,7 @@ def _run_item(ctx: dict[str, Any], run: dict[str, Any], status: str) -> dict[str
         "priority": _ticket_priority(ticket) if ticket else None,
         "depends_on": _ticket_depends_on(ticket) if ticket else [],
         "run_id": body.get("run_id"),
+        "attempt": body.get("attempt"),
         "run_state": _run_state(run),
         "provider": _run_provider(run),
         "branch": body.get("branch"),
@@ -563,6 +564,7 @@ def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> di
         "priority": _ticket_priority(ticket),
         "ticket_state": _ticket_state(ticket),
         "run_id": latest_run.get("body", {}).get("run_id") if latest_run else None,
+        "attempt": latest_run.get("body", {}).get("attempt") if latest_run else None,
         "run_state": _run_state(latest_run) if latest_run else None,
         "provider": _run_provider(latest_run) if latest_run else None,
         "branch": latest_run.get("body", {}).get("branch") if latest_run else None,
@@ -676,6 +678,8 @@ def _item_line(item: dict[str, Any]) -> str:
     details = [str(item["attention"] if item.get("attention") else item.get("status"))]
     if item.get("run_id") is not None:
         details.append(f"run {item['run_id']}")
+    if item.get("attempt") is not None:
+        details.append(f"attempt {item['attempt']}")
     if item.get("provider"):
         details.append(item["provider"])
     if item.get("worker_effort"):

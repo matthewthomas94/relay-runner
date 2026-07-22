@@ -37,7 +37,7 @@ class ProgramStatusTests(unittest.TestCase):
         )
         codex_ticket = _ticket(store, project, "CD-1", "Prepare data", "in_progress")
         claude_ticket = _ticket(store, project, "CD-2", "Render dashboard", "in_progress")
-        _run(store, project, codex_ticket, 101, "active", "codex", model="gpt-5")
+        _run(store, project, codex_ticket, 101, "active", "codex", model="gpt-5", attempt=3)
         _run(store, project, claude_ticket, 102, "active", "claude", model="sonnet")
 
         result = build_program_status(store, query="active_work", now=2000.0)
@@ -47,6 +47,7 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertIn("Client Dashboard (/tmp/client-dashboard)", message)
         self.assertIn("CD-1", message)
         self.assertIn("Codex/gpt-5", message)
+        self.assertIn("attempt 3", message)
         self.assertIn("CD-2", message)
         self.assertIn("Claude/sonnet", message)
 
@@ -368,6 +369,7 @@ def _run(
     provider: str,
     *,
     model: str,
+    attempt: int = 1,
 ) -> dict:
     program_state = state
     if state in {"succeeded", "success", "done"} and ticket["body"].get("state") != "done":
@@ -379,6 +381,7 @@ def _run(
         title=f"{ticket['body']['ticket_id']} run {run_id}",
         body={
             "run_id": run_id,
+            "attempt": attempt,
             "ticket_id": ticket["body"]["ticket_id"],
             "state": state,
             "program_state": program_state,

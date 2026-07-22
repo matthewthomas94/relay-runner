@@ -1158,6 +1158,9 @@ private struct ProgramWorkCard: View {
         if let runID = cleaned(item.runID) {
             parts.append("run \(runID)")
         }
+        if let attempt = cleaned(item.attempt) {
+            parts.append("attempt \(attempt)")
+        }
         if let branch = cleaned(item.branch) {
             parts.append(branch)
         }
@@ -1354,6 +1357,7 @@ private struct ProgramTicketDetailPanel: View {
         append("Ticket state", detail.item.ticketState, to: &rows)
         append("Run state", detail.item.runState, to: &rows)
         append("Run ID", detail.item.runID.map { "run \($0)" }, to: &rows, prettify: false)
+        append("Attempt", detail.item.attempt, to: &rows, prettify: false)
         append("Branch", detail.item.branch, to: &rows, prettify: false)
         append("Provider", detail.item.provider, to: &rows, prettify: false)
         append("Worker model", detail.item.workerModel, to: &rows, prettify: false)

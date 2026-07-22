@@ -13,6 +13,7 @@ struct RunState: Equatable, Decodable {
     /// AwaitingReview | Reviewing | MergeConflict | Succeeded | Merged |
     /// Failed | Stalled | Canceled.
     let state: String
+    let attempt: Int?
     let lastError: String?
     /// ≤60-char summary of the worker's current tool call (RR-12), e.g.
     /// "Editing Server.swift". Absent for older entries / runs with no
@@ -31,6 +32,7 @@ struct RunState: Equatable, Decodable {
         case repoPath = "repo_path"
         case runId = "run_id"
         case state
+        case attempt
         case lastError = "last_error"
         case activity
         case activityAt = "activity_at"
@@ -43,6 +45,7 @@ struct RunState: Equatable, Decodable {
         repoPath: String,
         runId: Int,
         state: String,
+        attempt: Int? = nil,
         lastError: String?,
         activity: String?,
         activityAt: Double?,
@@ -53,6 +56,7 @@ struct RunState: Equatable, Decodable {
         self.repoPath = repoPath
         self.runId = runId
         self.state = state
+        self.attempt = attempt
         self.lastError = lastError
         self.activity = activity
         self.activityAt = activityAt

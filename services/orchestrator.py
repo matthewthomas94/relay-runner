@@ -107,6 +107,17 @@ WORKER_MODEL_TIERS = {
 }
 CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
+AUTO_DISPATCH_SOURCES = frozenset({"ready-sweeper", "dependency-progression"})
+MAX_AUTO_DISPATCH_ATTEMPTS = 5
+AUTO_DISPATCH_BACKOFF_SECONDS = 30.0
+DETERMINISTIC_FAILURE_PREFIXES = (
+    "missing worker sizing metadata",
+    "invalid worker_model",
+    "invalid worker_effort",
+    "worker_model",
+    "ticket snapshot materialization failed",
+    "worker exited 0 but did not complete ticket",
+)
 ORCHESTRATOR_ACTION_KINDS = frozenset({
     "create_ticket",
     "edit_ticket",
@@ -493,6 +504,41 @@ def apply_default_worker_sizing(
         ticket["_raw_fields"] = raw
     raw.update(defaults)
     return True
+
+
+def _provider_from_general(general: dict[str, Any], fallback: str) -> str:
+    return _agent_kind(str(general.get("provider") or general.get("command") or fallback or "codex"))
+
+
+def _dispatch_failure_signature(reason: str | None) -> str | None:
+    text = re.sub(r"\s+", " ", str(reason or "")).strip()
+    if not text:
+        return None
+    return text.lower()
+
+
+def _is_deterministic_dispatch_failure(reason: str | None) -> bool:
+    signature = _dispatch_failure_signature(reason)
+    if not signature:
+        return False
+    return any(signature.startswith(prefix) for prefix in DETERMINISTIC_FAILURE_PREFIXES)
+
+
+def _materialize_ticket_snapshot(
+    *,
+    ticket_file: Path,
+    workspace_path: Path,
+    ticket_id: str,
+) -> None:
+    try:
+        snapshot = ticket_file.read_bytes()
+        dest = workspace_path / ".orchestrator" / f"{ticket_id}.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".tmp")
+        tmp.write_bytes(snapshot)
+        os.replace(tmp, dest)
+    except OSError as e:
+        raise RuntimeError(f"ticket snapshot materialization failed for {ticket_id}: {e}") from e
 
 
 def _clean_required_text(value: Any, field: str) -> str:
@@ -1195,6 +1241,27 @@ class RunsStore:
                 return int(row["a"]) + 1
             return 1
 
+    def recent_for_ticket(
+        self,
+        ticket_id: str,
+        repo_path: str | None = None,
+        *,
+        limit: int = 10,
+    ) -> list[dict]:
+        params: list[Any] = [ticket_id]
+        repo_clause = ""
+        if repo_path is not None:
+            repo_clause = "AND repo_path = ? "
+            params.append(str(Path(repo_path).expanduser().resolve()))
+        params.append(max(1, int(limit)))
+        with self._conn() as c:
+            rows = c.execute(
+                f"SELECT * FROM runs WHERE ticket_id = ? {repo_clause}"
+                "ORDER BY attempt DESC, id DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     # -- runs-index file (board live-state view) --------------------------
 
     def _index_entries(self, conn) -> list[dict]:
@@ -1214,6 +1281,7 @@ class RunsStore:
                 "repo_path": r["repo_path"],
                 "run_id": r["id"],
                 "state": r["state"],
+                "attempt": r["attempt"],
                 "started_at": r["started_at"],
                 "ended_at": r["ended_at"],
                 "last_error": r["last_error"],
@@ -2713,6 +2781,7 @@ class Daemon:
             )
 
         agent_setting = orch_cfg.get("agent") or cfg.get("general", {}).get("command") or "codex"
+        self.config_loader = load_config
         self.agent_kind = _agent_kind(str(agent_setting))
         self.agent_bin = _find_agent_bin(
             self.agent_kind,
@@ -2802,6 +2871,65 @@ class Daemon:
             caller_context=context_block,
         )
 
+    def _effective_worker_agent(self) -> tuple[str, str, dict[str, Any]]:
+        orch_cfg = self.cfg.get("orchestrator", {}) if isinstance(self.cfg.get("orchestrator"), dict) else {}
+        explicit_agent = str(orch_cfg.get("agent") or "").strip()
+        general = self.cfg.get("general", {}) if isinstance(self.cfg.get("general"), dict) else {}
+        if explicit_agent:
+            kind = _agent_kind(explicit_agent)
+        else:
+            loader = getattr(self, "config_loader", None)
+            if loader is not None:
+                try:
+                    current_cfg = loader()
+                    if isinstance(current_cfg, dict) and isinstance(current_cfg.get("general"), dict):
+                        general = current_cfg["general"]
+                        self.cfg["general"] = general
+                except Exception as e:  # noqa: BLE001 - dispatch can still use startup config.
+                    print(f"[orchestrator] could not reload config for dispatch: {e}", file=sys.stderr)
+            kind = _provider_from_general(general, self.agent_kind)
+
+        if kind == self.agent_kind:
+            return kind, self.agent_bin, general
+        return kind, _find_agent_bin(kind), general
+
+    def _auto_dispatch_blocker(
+        self,
+        *,
+        ticket_id: str,
+        repo_path: str,
+        source: str,
+    ) -> str | None:
+        if source not in AUTO_DISPATCH_SOURCES:
+            return None
+        history = self.runs.recent_for_ticket(ticket_id, repo_path=repo_path, limit=MAX_AUTO_DISPATCH_ATTEMPTS)
+        attempts = [run for run in history if int(run.get("attempt") or 0) > 0]
+        if len(attempts) >= MAX_AUTO_DISPATCH_ATTEMPTS:
+            return (
+                f"automatic retry exhausted after {len(attempts)} attempts; "
+                "fix the last error and explicitly redispatch the ticket"
+            )
+
+        latest = attempts[0] if attempts else None
+        if not latest or latest.get("state") not in {"Failed", "Stalled"}:
+            return None
+        latest_error = str(latest.get("last_error") or "").strip()
+        if _is_deterministic_dispatch_failure(latest_error):
+            return (
+                "automatic retry circuit open after deterministic failure: "
+                f"{latest_error}; fix the root cause and explicitly redispatch the ticket"
+            )
+        ended_at = latest.get("ended_at")
+        if ended_at is not None:
+            try:
+                age = time.time() - float(ended_at)
+            except (TypeError, ValueError):
+                age = AUTO_DISPATCH_BACKOFF_SECONDS
+            if age < AUTO_DISPATCH_BACKOFF_SECONDS:
+                remaining = max(1, int(AUTO_DISPATCH_BACKOFF_SECONDS - age))
+                return f"automatic retry backoff active after attempt {latest.get('attempt')}; retry in {remaining}s"
+        return None
+
     # -- API -----------------------------------------------------------------
 
     def _record_dispatch_refusal(
@@ -2813,11 +2941,12 @@ class Daemon:
         branch: str,
         log_path: Path,
         reason: str,
+        provider_key: str,
         sizing: dict[str, Any] | None = None,
     ) -> dict | None:
         attempt = self.runs.next_attempt(ticket_id, repo_path=repo_path)
         metadata = {
-            "provider_key": self.agent_kind,
+            "provider_key": provider_key,
             "model_alias": None,
             "worker_model": None,
             "worker_effort": None,
@@ -2897,6 +3026,7 @@ class Daemon:
         base_branch = self._resolve_default_branch(str(repo))
 
         with self._dispatch_lock:
+            worker_provider, worker_bin, general_config = self._effective_worker_agent()
             existing = self.runs.find_active(ticket_id, repo_path=str(repo))
             if existing:
                 print(
@@ -2924,7 +3054,18 @@ class Daemon:
                     "run": awaiting_merge,
                 }
 
-            general_config = self.cfg.get("general", {})
+            auto_blocker = self._auto_dispatch_blocker(
+                ticket_id=ticket_id,
+                repo_path=str(repo),
+                source=source,
+            )
+            if auto_blocker:
+                print(
+                    f"[orchestrator] auto-dispatch held for {ticket_id} from {source}: {auto_blocker}",
+                    file=sys.stderr,
+                )
+                raise RuntimeError(auto_blocker)
+
             applied_default_sizing = apply_default_worker_sizing(ticket, general_config)
             if applied_default_sizing:
                 write_ticket(ticket_file, ticket)
@@ -2932,7 +3073,7 @@ class Daemon:
             try:
                 sizing = resolve_worker_sizing(
                     ticket,
-                    self.agent_kind,
+                    worker_provider,
                     general=general_config if applied_default_sizing else {},
                 )
             except ValueError as e:
@@ -2944,13 +3085,17 @@ class Daemon:
                     branch=branch,
                     log_path=log_path,
                     reason=reason,
-                    sizing=raw_worker_sizing_metadata(ticket, self.agent_kind),
+                    provider_key=worker_provider,
+                    sizing=raw_worker_sizing_metadata(ticket, worker_provider),
                 )
                 print(
                     f"[orchestrator] dispatch refused for {ticket_id} from {source}: {reason}",
                     file=sys.stderr,
                 )
                 raise ValueError(reason) from e
+
+            # Pre-existing attempts: bump attempt number for THIS ticket.
+            attempt = self.runs.next_attempt(ticket_id, repo_path=str(repo))
 
             try:
                 create_worktree(
@@ -2967,6 +3112,7 @@ class Daemon:
                     workspace_path=str(workspace_path),
                     branch=branch,
                     state="Failed",
+                    attempt=attempt,
                     log_path=str(log_path),
                     **sizing,
                 )
@@ -2981,8 +3127,33 @@ class Daemon:
                 )
                 raise
 
-            # Pre-existing attempts: bump attempt number for THIS ticket.
-            attempt = self.runs.next_attempt(ticket_id, repo_path=str(repo))
+            try:
+                _materialize_ticket_snapshot(
+                    ticket_file=ticket_file,
+                    workspace_path=workspace_path,
+                    ticket_id=ticket_id,
+                )
+            except RuntimeError as e:
+                run_id = self.runs.insert(
+                    ticket_id=ticket_id,
+                    repo_path=str(repo),
+                    workspace_path=str(workspace_path),
+                    branch=branch,
+                    state="Failed",
+                    attempt=attempt,
+                    log_path=str(log_path),
+                    **sizing,
+                )
+                self.runs.update(run_id, last_error=str(e), ended=True, exit_code=-1)
+                self._emit_lifecycle(
+                    "run-failed",
+                    ticket_id=ticket_id,
+                    run_id=run_id,
+                    source="worker",
+                    repo_path=str(repo),
+                    provider_key=sizing.get("provider_key"),
+                )
+                raise
 
             run_id = self.runs.insert(
                 ticket_id=ticket_id,
@@ -3016,8 +3187,8 @@ class Daemon:
 
             run = self.runs.get(run_id) or {}
             worker = Worker(
-                run_id=run_id, run=run, prompt=prompt, agent_bin=self.agent_bin,
-                agent_kind=self.agent_kind, workflow_path=workflow_path,
+                run_id=run_id, run=run, prompt=prompt, agent_bin=worker_bin,
+                agent_kind=worker_provider, workflow_path=workflow_path,
                 store=self.runs, log_path=log_path, timeout_seconds=self.worker_timeout,
                 on_complete=self._on_worker_complete,
                 emit_lifecycle=self._emit_lifecycle,
@@ -3028,7 +3199,7 @@ class Daemon:
 
             print(
                 f"[orchestrator] dispatch claimed {ticket_id} from {source}: "
-                f"run {run_id} ({self.agent_kind})",
+                f"run {run_id} ({worker_provider})",
                 file=sys.stderr,
             )
 
@@ -3063,7 +3234,14 @@ class Daemon:
         with self._review_workers_lock:
             self._review_workers.pop(run_id, None)
 
-    def _build_review_prompt(self, run: dict, *, source: str, context: str | None = None) -> str:
+    def _build_review_prompt(
+        self,
+        run: dict,
+        *,
+        source: str,
+        review_provider: str,
+        context: str | None = None,
+    ) -> str:
         repo_path = str(run["repo_path"])
         branch = str(run["branch"])
         ticket_id = str(run["ticket_id"])
@@ -3083,7 +3261,7 @@ Review implementation worker run {run_id} for ticket {ticket_id}. The foreground
 - Implementation worker branch: `{branch}`
 - Implementation worker worktree: `{run.get("workspace_path")}`
 - Implementation provider: `{run.get("provider_key") or "unknown"}`
-- Review provider: `{self.agent_kind}`
+- Review provider: `{review_provider}`
 - Worker model: `{run.get("worker_model") or "unknown"}`
 - Worker effort: `{run.get("worker_effort") or "unknown"}`
 - Provider notes: {provider_notes}
@@ -3161,15 +3339,21 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             if run_id in self._review_workers:
                 return {"review_already_active": True, "run": self.runs.get(run_id)}
 
-            prompt = self._build_review_prompt(run, source=source, context=context)
+            review_provider, review_bin, _general_config = self._effective_worker_agent()
+            prompt = self._build_review_prompt(
+                run,
+                source=source,
+                review_provider=review_provider,
+                context=context,
+            )
             raw_log_path = str(run.get("log_path") or "")
             log_path = Path(raw_log_path) if raw_log_path else Path(str(run["workspace_path"])) / ".relay" / "run.log"
             worker = ReviewWorker(
                 run_id=run_id,
                 run=run,
                 prompt=prompt,
-                agent_bin=self.agent_bin,
-                agent_kind=self.agent_kind,
+                agent_bin=review_bin,
+                agent_kind=review_provider,
                 store=self.runs,
                 log_path=log_path,
                 timeout_seconds=self.worker_timeout,
@@ -3181,7 +3365,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
 
         print(
             f"[orchestrator] review worker dispatched for {run['ticket_id']} "
-            f"run {run_id} from {source}: {self.agent_kind}",
+            f"run {run_id} from {source}: {review_provider}",
             file=sys.stderr,
         )
         return {"review_dispatched": True, "run": self.runs.get(run_id)}

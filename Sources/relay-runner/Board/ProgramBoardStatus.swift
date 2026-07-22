@@ -739,6 +739,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let priority: String?
     let ticketState: String?
     let runID: String?
+    let attempt: String?
     let runState: String?
     let provider: String?
     let branch: String?
@@ -783,6 +784,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         priority: String?,
         ticketState: String? = nil,
         runID: String? = nil,
+        attempt: String? = nil,
         runState: String? = nil,
         provider: String? = nil,
         branch: String? = nil,
@@ -814,6 +816,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         self.priority = priority
         self.ticketState = ticketState
         self.runID = runID
+        self.attempt = attempt
         self.runState = runState
         self.provider = provider
         self.branch = branch
@@ -863,6 +866,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         case priority
         case ticketState = "ticket_state"
         case runID = "run_id"
+        case attempt
         case runState = "run_state"
         case provider
         case branch
@@ -897,6 +901,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         priority = try values.decodeIfPresent(String.self, forKey: .priority)
         ticketState = try values.decodeIfPresent(String.self, forKey: .ticketState)
         runID = Self.lossyString(values, forKey: .runID)
+        attempt = Self.lossyString(values, forKey: .attempt)
         runState = try values.decodeIfPresent(String.self, forKey: .runState)
         provider = try values.decodeIfPresent(String.self, forKey: .provider)
         branch = try values.decodeIfPresent(String.self, forKey: .branch)
