@@ -263,10 +263,108 @@ enum OnboardingIntroTimeline {
     }
 }
 
+enum OnboardingPromptTransitionTimeline {
+    static let initialHold: TimeInterval = 0.30
+    static let finalHold: TimeInterval = 0.20
+    static let typingInterval = OnboardingIntroTimeline.typingInterval
+    static let eraseInterval = OnboardingIntroTimeline.eraseInterval
+
+    static func duration(from source: String, to target: String) -> TimeInterval {
+        let sourceCount = Double(phrase(from: source).count)
+        let targetCount = Double(phrase(from: target).count)
+        guard sourceCount > 0 || targetCount > 0 else { return 0 }
+        return initialHold
+            + sourceCount * eraseInterval
+            + targetCount * typingInterval
+            + finalHold
+    }
+
+    static func frame(from source: String, to target: String, at elapsed: TimeInterval) -> OnboardingIntroFrame {
+        let sourcePhrase = phrase(from: source)
+        let targetPhrase = phrase(from: target)
+        guard sourcePhrase != targetPhrase else {
+            return makeFrame(phrase: targetPhrase, visible: targetPhrase, isComplete: true)
+        }
+
+        var cursor = max(0, elapsed)
+        if cursor < initialHold {
+            return makeFrame(
+                phrase: sourcePhrase,
+                visible: sourcePhrase,
+                cursorVisible: blinkingCursorVisible(at: cursor)
+            )
+        }
+        cursor -= initialHold
+
+        let eraseDuration = Double(sourcePhrase.count) * eraseInterval
+        if cursor < eraseDuration {
+            let erasedCount = min(sourcePhrase.count, Int(cursor / eraseInterval) + 1)
+            return makeFrame(
+                phrase: sourcePhrase,
+                visible: Array(sourcePhrase.prefix(max(0, sourcePhrase.count - erasedCount)))
+            )
+        }
+        cursor -= eraseDuration
+
+        let typeDuration = Double(targetPhrase.count) * typingInterval
+        if cursor < typeDuration {
+            let visibleCount = min(targetPhrase.count, Int(cursor / typingInterval))
+            return makeFrame(
+                phrase: targetPhrase,
+                visible: Array(targetPhrase.prefix(visibleCount))
+            )
+        }
+        cursor -= typeDuration
+
+        return makeFrame(
+            phrase: targetPhrase,
+            visible: targetPhrase,
+            cursorVisible: blinkingCursorVisible(at: cursor),
+            isComplete: cursor >= finalHold
+        )
+    }
+
+    static func phrase(from text: String) -> [Character] {
+        var normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.hasSuffix("/") {
+            normalized.removeLast()
+            normalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return Array(normalized)
+    }
+
+    private static func makeFrame(
+        phrase: [Character],
+        visible: [Character],
+        cursorVisible: Bool = true,
+        isComplete: Bool = false
+    ) -> OnboardingIntroFrame {
+        let prefix = String(visible)
+        return OnboardingIntroFrame(
+            activePhrase: String(phrase),
+            text: prefix.isEmpty ? "/" : "\(prefix) /",
+            cursorVisible: cursorVisible,
+            dotFieldProgress: 0,
+            dotFieldOpacity: 0,
+            isComplete: isComplete
+        )
+    }
+
+    private static func blinkingCursorVisible(at elapsed: TimeInterval) -> Bool {
+        elapsed.truncatingRemainder(dividingBy: OnboardingIntroTimeline.cursorBlinkPeriod)
+            < OnboardingIntroTimeline.cursorBlinkPeriod / 2
+    }
+}
+
 enum OnboardingIntroTextLayout {
     static let lineHeight: CGFloat = 66
     static let referenceWorkspaceHeight: CGFloat = 736
     static let referenceTextTop: CGFloat = 325
+
+    static func permissionControlsTop(forHeight height: CGFloat) -> CGFloat {
+        let scale = height / referenceWorkspaceHeight
+        return (referenceTextTop + lineHeight + 54) * scale
+    }
 
     static func drawRect(
         in layoutFrame: CGRect,
@@ -293,6 +391,7 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
     private var startedAt: CFTimeInterval?
     private var cinematicCompletion: (() -> Void)?
     private var cinematicHandoffInProgress = false
+    private var lastPromptText = ""
 
     deinit {
         timelineTimer?.invalidate()
@@ -318,7 +417,9 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
 
         let surface = ensureSurface()
         surface.rootView.showCinematic()
-        surface.rootView.timelineFrame = OnboardingIntroTimeline.frame(at: 0)
+        let initialFrame = OnboardingIntroTimeline.frame(at: 0)
+        lastPromptText = initialFrame.text
+        surface.rootView.timelineFrame = initialFrame
         installSkipMonitors()
 
         let startTimeline = { [weak self] in
@@ -348,7 +449,12 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         removeSkipMonitors()
 
         let surface = ensureSurface()
-        surface.rootView.showPermissionPrompt(presentation, action: action)
+        surface.rootView.showPermissionPrompt(
+            presentation,
+            transitionFrom: lastPromptText,
+            action: action
+        )
+        lastPromptText = presentation.prompt
 
         guard surface.didCreate else { return }
         DispatchQueue.main.async { [weak container = surface.container] in
@@ -452,6 +558,10 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         }
 
         let p = BoardOverlayPanel()
+        // First-run setup is modal. Giving its fresh panel key eligibility on
+        // every presentation keeps SwiftUI button hit-testing reliable after
+        // earlier onboarding panels have been dismissed for System Settings.
+        p.keyEligible = true
         let screen = Self.currentMouseScreen() ?? NSScreen.main
         if let screen {
             p.reframe(to: screen)
@@ -474,6 +584,7 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
 
         p.contentView = container
         p.orderFrontRegardless()
+        p.makeKey()
         panel = p
         revealContainer = container
         self.rootView = rootView
@@ -506,6 +617,7 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
     private func tick() {
         guard let startedAt else { return }
         let frame = OnboardingIntroTimeline.frame(at: CACurrentMediaTime() - startedAt)
+        lastPromptText = frame.text
         rootView?.timelineFrame = frame
         if OnboardingIntroPolicy.completionPlan(
             revealCompleted: true,
@@ -599,10 +711,12 @@ private final class OnboardingIntroRootView: NSView {
     }
 
     func showPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                              transitionFrom: String,
                               action: @escaping () -> Void) {
         let view = OnboardingIntroPermissionSurfaceView(
             frame: bounds,
             presentation: presentation,
+            transitionFrom: transitionFrom,
             action: action
         )
         view.autoresizingMask = [.width, .height]
@@ -720,6 +834,7 @@ private final class OnboardingIntroCinematicView: NSView {
         }
     }
 
+    private let particleClipView = NSView(frame: .zero)
     private let particleHost = OnboardingIntroParticleHostView(frame: .zero)
     private let textView = OnboardingIntroTextView(frame: .zero)
 
@@ -729,10 +844,14 @@ private final class OnboardingIntroCinematicView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+        particleClipView.wantsLayer = true
+        particleClipView.layer?.backgroundColor = NSColor.clear.cgColor
+        particleClipView.layer?.masksToBounds = true
         particleHost.autoresizingMask = []
         textView.frame = bounds
         textView.autoresizingMask = [.width, .height]
-        addSubview(particleHost)
+        particleClipView.addSubview(particleHost)
+        addSubview(particleClipView)
         addSubview(textView)
     }
 
@@ -746,7 +865,8 @@ private final class OnboardingIntroCinematicView: NSView {
 
     override func layout() {
         super.layout()
-        particleHost.frame = layoutFrame
+        particleClipView.frame = layoutFrame
+        particleHost.frame = particleClipView.bounds
         particleHost.layoutSubtreeIfNeeded()
         textView.frame = bounds
         textView.layoutFrame = layoutFrame
@@ -819,18 +939,39 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
         didSet { needsLayout = true }
     }
 
+    private let textView = OnboardingIntroTextView(frame: .zero)
     private let hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+    private let transitionSource: String
+    private let transitionTarget: String
+    private let reduceMotion: Bool
+    private var transitionTimer: Timer?
+    private var transitionStartedAt: CFTimeInterval?
 
     override var isFlipped: Bool { true }
 
     init(frame frameRect: NSRect,
          presentation: OnboardingPermissionPromptPresentation,
+         transitionFrom: String,
          action: @escaping () -> Void) {
+        transitionSource = transitionFrom
+        transitionTarget = presentation.prompt
+        reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+        textView.frame = bounds
+        textView.autoresizingMask = [.width, .height]
+        textView.reservePhrases = [transitionFrom, presentation.prompt]
+        textView.timelineFrame = OnboardingPromptTransitionTimeline.frame(
+            from: transitionFrom,
+            to: presentation.prompt,
+            at: 0
+        )
+        addSubview(textView)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.alphaValue = 0
+        hostingView.isHidden = true
         addSubview(hostingView)
         update(presentation: presentation, action: action)
     }
@@ -839,24 +980,83 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
         nil
     }
 
+    deinit {
+        transitionTimer?.invalidate()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        startTransitionIfNeeded()
+    }
+
     override func layout() {
         super.layout()
+        textView.frame = bounds
+        textView.layoutFrame = layoutFrame
         hostingView.frame = layoutFrame
     }
 
     private func update(presentation: OnboardingPermissionPromptPresentation,
                         action: @escaping () -> Void) {
         hostingView.rootView = AnyView(
-            ZStack {
-                Color.clear
-                OnboardingPermissionPromptView(
-                    presentation: presentation,
-                    action: action
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            OnboardingIntroPermissionControlsView(
+                presentation: presentation,
+                action: action
+            )
         )
+    }
+
+    private func startTransitionIfNeeded() {
+        guard transitionTimer == nil, transitionStartedAt == nil else { return }
+        let duration = OnboardingPromptTransitionTimeline.duration(
+            from: transitionSource,
+            to: transitionTarget
+        )
+        guard !reduceMotion, duration > 0 else {
+            textView.timelineFrame = OnboardingPromptTransitionTimeline.frame(
+                from: transitionSource,
+                to: transitionTarget,
+                at: duration
+            )
+            showControls()
+            return
+        }
+
+        transitionStartedAt = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.tickTransition()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        transitionTimer = timer
+        tickTransition()
+    }
+
+    private func tickTransition() {
+        guard let transitionStartedAt else { return }
+        let frame = OnboardingPromptTransitionTimeline.frame(
+            from: transitionSource,
+            to: transitionTarget,
+            at: CACurrentMediaTime() - transitionStartedAt
+        )
+        textView.timelineFrame = frame
+        guard frame.isComplete else { return }
+        transitionTimer?.invalidate()
+        transitionTimer = nil
+        showControls()
+    }
+
+    private func showControls() {
+        hostingView.isHidden = false
+        guard !reduceMotion else {
+            hostingView.alphaValue = 1
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.20
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            hostingView.animator().alphaValue = 1
+        }
     }
 }
 
@@ -1160,6 +1360,41 @@ struct OnboardingIntroWorkspacePromptView: View {
     }
 }
 
+private struct OnboardingIntroPermissionControlsView: View {
+    let presentation: OnboardingPermissionPromptPresentation
+    let action: () -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            VStack(spacing: 24) {
+                OnboardingIntroWhiteActionButton(
+                    title: presentation.buttonTitle,
+                    accessibilityLabel: presentation.buttonTitle,
+                    action: action
+                )
+                .keyboardShortcut(.defaultAction)
+                .disabled(!presentation.isButtonEnabled)
+
+                if let supportingCopy = presentation.supportingCopy {
+                    Text(supportingCopy)
+                        .font(AppTypography.font(.body))
+                        .foregroundStyle(.white.opacity(0.68))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(
+                .top,
+                OnboardingIntroTextLayout.permissionControlsTop(forHeight: proxy.size.height)
+            )
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(presentation.prompt)
+    }
+}
+
 struct OnboardingIntroWhiteActionButton: View {
     let title: String
     var accessibilityLabel: String?
@@ -1199,6 +1434,10 @@ private final class OnboardingIntroTextView: NSView {
         didSet { needsDisplay = true }
     }
 
+    var reservePhrases: [String] = [] {
+        didSet { needsDisplay = true }
+    }
+
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
@@ -1227,12 +1466,16 @@ private final class OnboardingIntroTextView: NSView {
             .foregroundColor: NSColor.white,
             .paragraphStyle: paragraph,
         ]
-        let reserveText = "\(timelineFrame.activePhrase) /" as NSString
         let visibleText = timelineFrame.renderedText as NSString
-        let reserveSize = reserveText.size(withAttributes: attributes)
+        let reserveCandidates = reservePhrases.isEmpty
+            ? ["\(timelineFrame.activePhrase) /"]
+            : reservePhrases
+        let reserveWidth = reserveCandidates
+            .map { ($0 as NSString).size(withAttributes: attributes).width }
+            .max() ?? 0
         let drawRect = OnboardingIntroTextLayout.drawRect(
             in: layoutFrame,
-            reserveWidth: reserveSize.width,
+            reserveWidth: reserveWidth,
             visibleWidth: visibleText.size(withAttributes: attributes).width
         )
         visibleText.draw(in: drawRect, withAttributes: attributes)

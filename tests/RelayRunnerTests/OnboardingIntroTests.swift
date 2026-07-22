@@ -748,6 +748,71 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(intro.agentChoiceSelectedProviders, [.codex])
     }
 
+    func testGrantPermissionActionWorksAcrossThreeCompletedManualRedos() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let intros = (0..<3).map { _ in CapturingIntroPresenter() }
+        var introIndex = 0
+        var cancellationSources: [PermissionSetupSource?] = []
+        var requests: [(PermissionKind, PermissionSetupSource)] = []
+        var statuses = Dictionary(
+            uniqueKeysWithValues: PermissionKind.guidedSetupOrder.map { ($0, PermissionStatus.granted) }
+        )
+        statuses[.microphone] = .denied
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: .testURLs(in: directory),
+            getAgentProvider: { .codex },
+            setWorkingDirectory: { _ in },
+            requestPermissionSetup: { kind, source, _ in requests.append((kind, source)) },
+            cancelPermissionSetup: { cancellationSources.append($0) },
+            permissionStatus: { statuses[$0] ?? .denied },
+            makeIntroController: {
+                defer { introIndex += 1 }
+                return intros[introIndex]
+            },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/workspace") }
+            },
+            reduceMotion: { false }
+        )
+
+        for (index, intro) in intros.enumerated() {
+            controller.showManualRedo()
+            XCTAssertEqual(cancellationSources.last!, .onboarding)
+            XCTAssertEqual(intro.presentCallCount, 1)
+
+            intro.completeCinematic()
+            XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone])
+            intro.performPermissionAction()
+            XCTAssertEqual(requests.map(\.0), Array(repeating: .microphone, count: index + 1))
+            XCTAssertEqual(requests.last?.1, .onboarding)
+
+            statuses[.microphone] = .granted
+            postGrant(.microphone)
+            drainMainQueue()
+            intro.performCodexAction()
+            waitForMainQueue(after: 0.05)
+            XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory()])
+
+            intro.performWorkspaceAction()
+            XCTAssertEqual(introIndex, index + 1)
+            statuses[.microphone] = .denied
+        }
+
+        XCTAssertEqual(
+            cancellationSources.compactMap { $0 }.filter { $0 == .onboarding }.count,
+            6
+        )
+    }
+
     func testOnboardingControllerDoesNotDefineDedicatedWindowSurface() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -761,6 +826,19 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(contents.contains("OnboardingNotchPanel"))
         XCTAssertFalse(contents.contains("NSPanel"))
         XCTAssertFalse(contents.contains("setActivationPolicy"))
+    }
+
+    func testIntroRecreatesAKeyEligiblePanelForInteractivePermissionActions() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Onboarding/OnboardingIntroController.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("let p = BoardOverlayPanel()"))
+        XCTAssertTrue(contents.contains("p.keyEligible = true"))
+        XCTAssertTrue(contents.contains("p.makeKey()"))
     }
 
     func testOnboardingControllerDoesNotConstructSettingsHostedOnboarding() throws {
@@ -904,6 +982,57 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(complete.isComplete)
     }
 
+    func testPermissionPromptTransitionBackspacesThenTypesOnTheHeroBaseline() {
+        let source = "I need a few permissions /"
+        let target = "Let’s start with your mic /"
+        let sourceCount = Double(OnboardingPromptTransitionTimeline.phrase(from: source).count)
+        let eraseStart = OnboardingPromptTransitionTimeline.initialHold
+        let typeStart = eraseStart + sourceCount * OnboardingPromptTransitionTimeline.eraseInterval
+
+        XCTAssertEqual(
+            OnboardingPromptTransitionTimeline.frame(from: source, to: target, at: 0).text,
+            source
+        )
+
+        let backspacing = OnboardingPromptTransitionTimeline.frame(
+            from: source,
+            to: target,
+            at: eraseStart + OnboardingPromptTransitionTimeline.eraseInterval + 0.001
+        )
+        XCTAssertTrue(backspacing.text.hasSuffix(" /"))
+        XCTAssertLessThan(backspacing.text.count, source.count)
+
+        let typing = OnboardingPromptTransitionTimeline.frame(
+            from: source,
+            to: target,
+            at: typeStart + OnboardingPromptTransitionTimeline.typingInterval * 3 + 0.001
+        )
+        XCTAssertTrue(typing.text.hasPrefix("Let"))
+        XCTAssertFalse(typing.isComplete)
+
+        let complete = OnboardingPromptTransitionTimeline.frame(
+            from: source,
+            to: target,
+            at: OnboardingPromptTransitionTimeline.duration(from: source, to: target)
+        )
+        XCTAssertEqual(complete.text, target)
+        XCTAssertTrue(complete.isComplete)
+
+        let layoutHeight = BoardRevealTransitionPlanner.expandedSurfaceHeight
+        let textRect = OnboardingIntroTextLayout.drawRect(
+            in: CGRect(x: 0, y: 0, width: 1512, height: layoutHeight),
+            reserveWidth: 640,
+            visibleWidth: 420
+        )
+        XCTAssertEqual(
+            OnboardingIntroTextLayout.permissionControlsTop(forHeight: layoutHeight),
+            textRect.minY
+                + (OnboardingIntroTextLayout.lineHeight + 54)
+                * (layoutHeight / OnboardingIntroTextLayout.referenceWorkspaceHeight),
+            accuracy: 0.001
+        )
+    }
+
     func testTimelineUsesReadablePacingTargets() {
         XCTAssertEqual(OnboardingIntroTimeline.typingInterval, 0.065, accuracy: 0.001)
         XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, 0.045, accuracy: 0.001)
@@ -988,6 +1117,9 @@ final class OnboardingIntroTests: XCTestCase {
 
         XCTAssertTrue(contents.contains("ParticleFieldRenderer()"))
         XCTAssertTrue(contents.contains("renderer.transition(to: .tts)"))
+        XCTAssertTrue(contents.contains("particleClipView.layer?.masksToBounds = true"))
+        XCTAssertTrue(contents.contains("particleClipView.addSubview(particleHost)"))
+        XCTAssertTrue(contents.contains("particleHost.frame = particleClipView.bounds"))
         XCTAssertFalse(contents.contains("OnboardingHalftone"))
         XCTAssertFalse(contents.contains("drawHalftone"))
     }

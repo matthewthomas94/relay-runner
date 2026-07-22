@@ -238,6 +238,7 @@ final class OnboardingController {
     /// complete live setup sequence with workspace selection last.
     func showManualRedo() {
         guard introController == nil else { return }
+        cancelPermissionSetup(.onboarding)
         forceWorkspaceSelectionAfterIntro = true
         setFirstRunExperienceActive(true)
         try? Data().write(to: flagURLs.started)
