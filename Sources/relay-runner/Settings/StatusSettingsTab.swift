@@ -15,6 +15,10 @@ struct StatusSettingsTab: View {
         .inputMonitoring,
         .screenRecording,
     ]
+    static let onboardingSectionTitle = "Onboarding"
+    static let onboardingRowTitle = "Intro walkthrough"
+    static let onboardingRowDescription = "Run the intro again to revisit permissions, coding agent setup, sign-in, and workspace selection."
+    static let onboardingActionTitle = "Redo Onboarding\u{2026}"
 
     @Bindable var appState: AppState
 
@@ -30,6 +34,20 @@ struct StatusSettingsTab: View {
 
     var body: some View {
         SettingsStack {
+            SettingsSection(Self.onboardingSectionTitle) {
+                SettingsControlRow(
+                    Self.onboardingRowTitle,
+                    description: Self.onboardingRowDescription
+                ) {
+                    SettingsActionButton(
+                        title: Self.onboardingActionTitle,
+                        systemImage: "arrow.clockwise"
+                    ) {
+                        appState.onboarding.showManualRedo()
+                    }
+                }
+            }
+
             if !appState.permissions.resetSinceLastRun.isEmpty {
                 SettingsSection {
                     SettingsRow {
@@ -53,19 +71,6 @@ struct StatusSettingsTab: View {
                 sttModelRow
                 SettingsDivider()
                 voiceBridgeRow
-            }
-
-            SettingsSection {
-                SettingsRow {
-                    Text("Setup walkthrough")
-                    Spacer(minLength: 0)
-                    SettingsActionButton(
-                        title: "Re-run Setup Walkthrough\u{2026}",
-                        systemImage: "arrow.clockwise"
-                    ) {
-                        appState.onboarding.showAlways()
-                    }
-                }
             }
         }
         .onAppear { refresh() }

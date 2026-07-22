@@ -53,7 +53,7 @@ struct MenuBarView: View {
                 }
             }
             Button("Re-run Setup Walkthrough\u{2026}") {
-                appState.onboarding.showAlways()
+                appState.onboarding.showManualRedo()
             }
         }
 
