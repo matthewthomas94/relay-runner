@@ -5,16 +5,22 @@ final class GeneralConfigTests: XCTestCase {
     func testWorkspacePickerDismissesWorkspaceBeforePresentingPanel() {
         var events: [String] = []
 
-        let path = GeneralSettingsTab.pickWorkspaceDirectory(
+        GeneralSettingsTab.pickWorkspaceDirectory(
             onOpenExternalWindow: { events.append("dismiss") },
             chooseDirectory: {
                 events.append("picker")
                 return URL(fileURLWithPath: "/Users/example/demo-workspace")
+            },
+            completion: { path in
+                events.append("completion:\(path ?? "nil")")
             }
         )
 
-        XCTAssertEqual(events, ["dismiss", "picker"])
-        XCTAssertEqual(path, "/Users/example/demo-workspace")
+        XCTAssertEqual(events, [
+            "dismiss",
+            "picker",
+            "completion:/Users/example/demo-workspace",
+        ])
     }
 
 

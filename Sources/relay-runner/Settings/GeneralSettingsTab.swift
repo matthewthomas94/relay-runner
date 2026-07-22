@@ -225,26 +225,34 @@ struct GeneralSettingsTab: View {
     }
 
     private func pickDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = Self.workspaceFolderPanelMessage
-        if let path = Self.pickWorkspaceDirectory(
+        Self.pickWorkspaceDirectory(
             onOpenExternalWindow: onOpenExternalWindow,
             chooseDirectory: {
-                panel.runModal() == .OK ? panel.url : nil
+                WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
+                    message: Self.workspaceFolderPanelMessage
+                )
+            },
+            completion: { path in
+                if let path {
+                    config.working_directory = path
+                }
             }
-        ) {
-            config.working_directory = path
-        }
+        )
     }
 
     static func pickWorkspaceDirectory(
         onOpenExternalWindow: () -> Void,
-        chooseDirectory: () -> URL?
-    ) -> String? {
-        onOpenExternalWindow()
-        return chooseDirectory()?.path
+        chooseDirectory: @escaping () -> URL?,
+        completion: @escaping (String?) -> Void
+    ) {
+        WorkspaceDirectoryPicker.pick(
+            message: Self.workspaceFolderPanelMessage,
+            onPrepareExternalWindow: { ready in
+                onOpenExternalWindow()
+                ready()
+            },
+            chooseDirectory: chooseDirectory,
+            completion: completion
+        )
     }
 }

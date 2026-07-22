@@ -79,8 +79,14 @@ final class OnboardingController {
     private let permissionLikelyRestricted: (PermissionKind) -> Bool
     private let makeIntroController: () -> any OnboardingIntroPresenting
     private let openSettingsHost: () -> Void
+    private let onOpenExternalWindow: () -> Void
+    private let pickWorkspaceDirectory: (
+        _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
+        _ completion: @escaping (String?) -> Void
+    ) -> Void
     private let reduceMotion: () -> Bool
     private var freshPermissionState: FreshPermissionState?
+    private var freshWorkspaceSelectionInFlight = false
     private var permissionGrantObserver: NSObjectProtocol?
     private var permissionEndedObserver: NSObjectProtocol?
 
@@ -111,6 +117,22 @@ final class OnboardingController {
          permissionLikelyRestricted: ((PermissionKind) -> Bool)? = nil,
          makeIntroController: @escaping () -> any OnboardingIntroPresenting = { OnboardingIntroController() },
          openSettingsHost: @escaping () -> Void = { SettingsPresenter.open() },
+         onOpenExternalWindow: @escaping () -> Void = {},
+         pickWorkspaceDirectory: @escaping (
+            _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
+            _ completion: @escaping (String?) -> Void
+         ) -> Void = { onPrepareExternalWindow, completion in
+            WorkspaceDirectoryPicker.pick(
+                message: GeneralSettingsTab.workspaceFolderPanelMessage,
+                onPrepareExternalWindow: onPrepareExternalWindow,
+                chooseDirectory: {
+                    WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
+                        message: GeneralSettingsTab.workspaceFolderPanelMessage
+                    )
+                },
+                completion: completion
+            )
+         },
          reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
         self.presentation = presentation
         self.flagURLs = flagURLs
@@ -134,6 +156,8 @@ final class OnboardingController {
         self.permissionLikelyRestricted = permissionLikelyRestricted ?? { permissions.likelyRestricted.contains($0) }
         self.makeIntroController = makeIntroController
         self.openSettingsHost = openSettingsHost
+        self.onOpenExternalWindow = onOpenExternalWindow
+        self.pickWorkspaceDirectory = pickWorkspaceDirectory
         self.reduceMotion = reduceMotion
     }
 
@@ -221,13 +245,7 @@ final class OnboardingController {
             wasInterrupted: wasInterruptedBeforeStart,
             reduceMotion: reduceMotion()
         ) else {
-            if firstMissingFreshPermission() != nil {
-                beginFreshPermissionSequence(intro: makeIntroController())
-            } else if wasInterruptedBeforeStart {
-                show(simplified: true, markStarted: false)
-            } else {
-                show(simplified: false, initialStepOverride: .agentChoice, markStarted: false)
-            }
+            beginFreshPermissionSequence(intro: makeIntroController())
             return
         }
 
@@ -306,18 +324,68 @@ final class OnboardingController {
     private func completeFreshPermissionSequence() {
         removeFreshPermissionObservers()
         freshPermissionState = nil
-        let intro = introController
+        showFreshWorkspaceSelection()
+    }
+
+    private func showFreshWorkspaceSelection() {
+        let intro = introController ?? makeIntroController()
+        introController = intro
+        setOnboardingNotchOverrideActive(true)
+        intro.presentWorkspacePrompt(
+            currentPath: Self.workspacePromptDisplayPath(getWorkingDirectory()),
+            action: { [weak self, weak intro] in
+                self?.pickFreshWorkspace(intro: intro)
+            }
+        )
+    }
+
+    private func pickFreshWorkspace(intro: (any OnboardingIntroPresenting)?) {
+        guard !freshWorkspaceSelectionInFlight else { return }
+        freshWorkspaceSelectionInFlight = true
+        pickWorkspaceDirectory(
+            { [weak self, weak intro] ready in
+                guard let self else {
+                    ready()
+                    return
+                }
+                guard let intro, self.introController === intro else {
+                    ready()
+                    return
+                }
+                intro.dismiss(completion: ready)
+            },
+            { [weak self, weak intro] path in
+                guard let self else { return }
+                self.freshWorkspaceSelectionInFlight = false
+                guard let path else {
+                    if let intro, self.introController === intro {
+                        self.showFreshWorkspaceSelection()
+                    }
+                    return
+                }
+                self.completeFreshWorkspaceSelection(path)
+            }
+        )
+    }
+
+    private func completeFreshWorkspaceSelection(_ path: String) {
+        setWorkingDirectory(path)
         introController = nil
         let handoff = { [weak self] in
             guard let self else { return }
             self.setOnboardingNotchOverrideActive(false)
-            self.show(simplified: false, initialStepOverride: .agentChoice, markStarted: false)
+            self.show(
+                simplified: false,
+                initialStepOverride: .agentChoice,
+                markStarted: false,
+                workspaceAlreadyConfirmed: true
+            )
         }
-        if let intro {
-            intro.dismiss(completion: handoff)
-        } else {
-            handoff()
-        }
+        handoff()
+    }
+
+    private static func workspacePromptDisplayPath(_ path: String) -> String {
+        path.isEmpty ? NSHomeDirectory() : path
     }
 
     private func installFreshPermissionObservers() {
@@ -359,7 +427,8 @@ final class OnboardingController {
     private func show(
         simplified: Bool,
         initialStepOverride: OnboardingView.Step? = nil,
-        markStarted: Bool = true
+        markStarted: Bool = true,
+        workspaceAlreadyConfirmed: Bool = false
     ) {
         if presentation.isPresented {
             openSettingsHost()
@@ -402,6 +471,9 @@ final class OnboardingController {
             initialCodexReasoningEffort: initialCodexReasoningEffort,
             requiresAgentChoice: !hasChosenAgent,
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
+            showsWorkingDirectoryPicker: !workspaceAlreadyConfirmed,
+            initialWorkingDirectoryConfirmed: workspaceAlreadyConfirmed,
+            persistsWorkingDirectorySelection: !workspaceAlreadyConfirmed,
             initialStepOverride: initialStepOverride,
             resumeState: resumeState,
             onSetAgentProvider: { [weak self] provider in
@@ -424,6 +496,7 @@ final class OnboardingController {
             shouldDeferPermissionAdvance: { [weak self] kind in
                 self?.shouldDeferPermissionAdvance(kind) ?? false
             },
+            onOpenExternalWindow: onOpenExternalWindow,
             presentation: presentation,
             onSurfaceVisibilityChanged: { [weak self] visible in
                 self?.presentation.setContentVisible(visible)

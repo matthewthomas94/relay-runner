@@ -63,6 +63,8 @@ protocol OnboardingIntroPresenting: AnyObject {
     func present(completion: @escaping () -> Void)
     func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
                                  action: @escaping () -> Void)
+    func presentWorkspacePrompt(currentPath: String,
+                                action: @escaping () -> Void)
     func dismiss(completion: @escaping () -> Void)
 }
 
@@ -336,6 +338,21 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         }
     }
 
+    func presentWorkspacePrompt(currentPath: String,
+                                action: @escaping () -> Void) {
+        timelineTimer?.invalidate()
+        timelineTimer = nil
+        removeSkipMonitors()
+
+        let surface = ensureSurface()
+        surface.rootView.showWorkspacePrompt(currentPath: currentPath, action: action)
+
+        guard surface.didCreate else { return }
+        DispatchQueue.main.async { [weak container = surface.container] in
+            container?.animateReveal {}
+        }
+    }
+
     func dismiss(completion: @escaping () -> Void) {
         timelineTimer?.invalidate()
         timelineTimer = nil
@@ -526,6 +543,19 @@ private final class OnboardingIntroRootView: NSView {
         replaceContent(with: view)
     }
 
+    func showWorkspacePrompt(currentPath: String,
+                             action: @escaping () -> Void) {
+        let view = OnboardingIntroWorkspaceSurfaceView(
+            frame: bounds,
+            currentPath: currentPath,
+            action: action
+        )
+        view.autoresizingMask = [.width, .height]
+        view.layoutFrame = layoutFrame
+        cinematicView = nil
+        replaceContent(with: view)
+    }
+
     func stopAnimations() {
         cinematicView?.stopAnimations()
     }
@@ -547,6 +577,8 @@ private final class OnboardingIntroRootView: NSView {
         if let view = view as? OnboardingIntroCinematicView {
             view.layoutFrame = layoutFrame
         } else if let view = view as? OnboardingIntroPermissionSurfaceView {
+            view.layoutFrame = layoutFrame
+        } else if let view = view as? OnboardingIntroWorkspaceSurfaceView {
             view.layoutFrame = layoutFrame
         }
     }
@@ -702,6 +734,110 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         )
+    }
+}
+
+private final class OnboardingIntroWorkspaceSurfaceView: NSView {
+    var layoutFrame: NSRect = .zero {
+        didSet { needsLayout = true }
+    }
+
+    private let hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+
+    override var isFlipped: Bool { true }
+
+    init(frame frameRect: NSRect,
+         currentPath: String,
+         action: @escaping () -> Void) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        addSubview(hostingView)
+        update(currentPath: currentPath, action: action)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        hostingView.frame = layoutFrame
+    }
+
+    private func update(currentPath: String,
+                        action: @escaping () -> Void) {
+        hostingView.rootView = AnyView(
+            ZStack {
+                Color.clear
+                OnboardingIntroWorkspacePromptView(
+                    currentPath: currentPath,
+                    action: action
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        )
+    }
+}
+
+struct OnboardingIntroWorkspacePromptView: View {
+    let currentPath: String
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 42) {
+            Text("Workspace")
+                .font(AppTypography.font(.screenTitle))
+                .foregroundStyle(.white)
+                .accessibilityAddTraits(.isHeader)
+
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(OnboardingView.workspaceFolderTitle)
+                        .font(AppTypography.font(.cardHeading))
+                        .foregroundStyle(.white)
+                    Text(OnboardingView.workspaceFolderHelpText)
+                        .font(AppTypography.font(.body))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 14) {
+                    HStack(spacing: 8) {
+                        Text(currentPath)
+                            .font(AppTypography.font(.body))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 52)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(nsColor: .textBackgroundColor).opacity(0.92))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.white.opacity(0.12))
+                    )
+
+                    SettingsActionButton(
+                        title: "Browse\u{2026}",
+                        systemImage: "folder",
+                        prominence: .secondary,
+                        accessibilityLabel: "Browse for workspace folder",
+                        helpText: "Choose the workspace folder where Relay Runner should start sessions",
+                        action: action
+                    )
+                    .frame(height: 52)
+                }
+            }
+        }
+        .padding(.horizontal, 34)
+        .frame(maxWidth: 1280, alignment: .leading)
     }
 }
 
