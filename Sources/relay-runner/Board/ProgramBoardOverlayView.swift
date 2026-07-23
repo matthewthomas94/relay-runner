@@ -251,7 +251,6 @@ private struct ProgramDragPreviewLayer: View {
         if let drag = model.dragPreview {
             ProgramWorkCard(
                 item: drag.item,
-                lane: drag.sourceLane,
                 isSelected: false,
                 showsProjectContext: true,
                 isDraggingSource: false,
@@ -936,7 +935,6 @@ private struct DraggableProgramWorkCard: View {
     var body: some View {
         ProgramWorkCard(
             item: item,
-            lane: lane,
             isSelected: isSelected,
             showsProjectContext: showsProjectContext,
             isDraggingSource: isBeingDragged,
@@ -1004,7 +1002,6 @@ private struct DraggableProgramWorkCard: View {
 
 private struct ProgramWorkCard: View {
     let item: ProgramStatusItem
-    let lane: ProgramBoardLane
     let isSelected: Bool
     let showsProjectContext: Bool
     let isDraggingSource: Bool
@@ -1062,14 +1059,6 @@ private struct ProgramWorkCard: View {
                 Text(dependencyText)
                     .font(AppTypography.font(.supporting))
                     .foregroundStyle(item.blockedBy.isEmpty ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.red)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-            }
-
-            if let statusText {
-                Text(statusText)
-                    .font(AppTypography.font(.supporting))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
             }
@@ -1150,42 +1139,8 @@ private struct ProgramWorkCard: View {
         return parts.isEmpty ? nil : parts.joined(separator: "  ")
     }
 
-    private var statusText: String? {
-        var parts: [String] = []
-        if let state = visibleStateLabel {
-            parts.append(state)
-        }
-        if let runID = cleaned(item.runID) {
-            parts.append("run \(runID)")
-        }
-        if let attempt = cleaned(item.attempt) {
-            parts.append("attempt \(attempt)")
-        }
-        if let branch = cleaned(item.branch) {
-            parts.append(branch)
-        }
-        if let provider = cleaned(item.provider) {
-            parts.append(provider)
-        }
-        if item.programAgentActivityLine == nil, let activity = cleaned(item.activity) {
-            parts.append(activity)
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ")
-    }
-
     private var activityLine: String? {
         item.programAgentActivityLine
-    }
-
-    private var visibleStateLabel: String? {
-        for state in [item.runState, item.ticketState, item.status] {
-            guard let state = cleaned(state) else { continue }
-            let key = state.programStateKey
-            guard !lane.redundantStateKeys.contains(key) else { continue }
-            guard key != "active", key != "awaiting_merge" else { continue }
-            return state.displayLabel
-        }
-        return nil
     }
 
     private var cardHelp: String {
