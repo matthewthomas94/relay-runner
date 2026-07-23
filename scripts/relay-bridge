@@ -281,7 +281,7 @@ for i in $(seq 1 60); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && b
 
 If the bridge failed to start, tell the user to check `/tmp/voice_bridge.log` and stop here.
 
-4. Once the bridge is up, do not speak a startup acknowledgement. The Relay Runner notch owns the ready status.
+4. Once the bridge is up, do not speak a second startup acknowledgement. The bridge itself greets the user through TTS.
 
 ## Voice Interaction Loop
 
@@ -610,7 +610,7 @@ for i in $(seq 1 60); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && b
 
 If the bridge failed, tell the user to check `/tmp/voice_bridge.log` and stop.
 
-4. Once the bridge is up, do not speak a startup acknowledgement. The Relay Runner notch owns the ready status.
+4. Once the bridge is up, do not speak a second startup acknowledgement. The bridge itself greets the user through TTS.
 
 ## Voice Loop
 

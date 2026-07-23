@@ -9,6 +9,7 @@ import types
 import unittest
 import json
 from pathlib import Path
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
@@ -86,6 +87,25 @@ class RejectingTraceMessenger(FakeMessenger):
 
 
 class VoiceBridgePreemptionTests(unittest.TestCase):
+    def test_relay_startup_queues_greeting_once(self):
+        worker = FakeTTSWorker()
+        shutdown_event = threading.Event()
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=None),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text", return_value=True) as queue_tts,
+        ):
+            voice_bridge._run_relay(worker, shutdown_event)
+
+        queue_tts.assert_called_once_with(
+            voice_bridge.STARTUP_GREETING,
+            worker.input_queue,
+            allow_pending_command=True,
+        )
+
     def test_newer_command_suppresses_stale_tts_after_first_claimed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")

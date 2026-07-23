@@ -49,6 +49,7 @@ ORCHESTRATOR_HEARTBEAT_SECONDS = float(os.environ.get("ORCHESTRATOR_HEARTBEAT_SE
 PM_UPDATE_POLL_SECONDS = float(os.environ.get("PM_UPDATE_POLL_SECONDS", "2"))
 PM_UPDATE_CADENCE_SECONDS = float(os.environ.get("PM_UPDATE_CADENCE_SECONDS", "8"))
 PM_UPDATE_STARTUP_GRACE_SECONDS = float(os.environ.get("PM_UPDATE_STARTUP_GRACE_SECONDS", "6"))
+STARTUP_GREETING = "Hello, what would you like to work on?"
 MESSENGER_OUTCOME_POLL_SECONDS = float(os.environ.get("MESSENGER_OUTCOME_POLL_SECONDS", "2"))
 FOREGROUND_REPLY_FALLBACK_SECONDS = float(os.environ.get("FOREGROUND_REPLY_FALLBACK_SECONDS", "120"))
 
@@ -1627,6 +1628,12 @@ def _run_relay(
 
     if not ensure_fifo(TTS_IN_FIFO):
         return
+
+    _queue_tts_text(
+        STARTUP_GREETING,
+        tts_worker.input_queue,
+        allow_pending_command=True,
+    )
 
     # Start TTS input reader thread
     tts_reader = threading.Thread(

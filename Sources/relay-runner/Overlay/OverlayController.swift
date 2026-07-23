@@ -208,7 +208,7 @@ final class OverlayController {
         case .listening, .recording:
             return "Start speaking"
         case .sessionReady:
-            return "Tap caps lock to record a message"
+            return "Hello, what would you like to work on?"
         default:
             break
         }
