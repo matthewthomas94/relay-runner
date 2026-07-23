@@ -15,6 +15,9 @@ final class STTEngine: @unchecked Sendable {
     var boardToggleRequested = false
     var partialTranscription = ""
     var statusMessage = ""
+    var recordingStartedSerial = 0
+    var speechDetectedSerial = 0
+    var deliveredTranscriptSerial = 0
 
     // MARK: - Configuration
 
@@ -253,6 +256,7 @@ final class STTEngine: @unchecked Sendable {
                     transcript.reset()
                     mediaSettleDeadline = Date().addingTimeInterval(Double(mediaSettleMs) / 1000)
                     isRecording = true
+                    recordingStartedSerial += 1
                     partialTranscription = "Preparing\u{2026}"
                     NSLog("[STTEngine] Settling (\(mediaSettleMs)ms for media pause)")
                     FIFOWriter.write("__STATUS__:preparing...")
@@ -260,6 +264,7 @@ final class STTEngine: @unchecked Sendable {
                 case .stopRecording(_):
                     if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
                         if FIFOWriter.write(finalText) {
+                            deliveredTranscriptSerial += 1
                             NSLog("[STTEngine] >> \(finalText)")
                         }
                     }
@@ -282,6 +287,7 @@ final class STTEngine: @unchecked Sendable {
                 case .interrupt:
                     if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
                         if FIFOWriter.write(finalText) {
+                            deliveredTranscriptSerial += 1
                             NSLog("[STTEngine] >> \(finalText)")
                         }
                     } else {
@@ -350,6 +356,7 @@ final class STTEngine: @unchecked Sendable {
             guard let text = try await transcribeMeaningfulText(audio) else { continue }
 
             transcript.refine(text)
+            speechDetectedSerial += 1
             let renderedTranscript = transcript.transcript
             partialTranscription = renderedTranscript
             NSLog("[STTEngine] (refining) \(renderedTranscript)")

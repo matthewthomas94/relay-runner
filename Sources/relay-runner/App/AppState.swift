@@ -116,6 +116,9 @@ final class AppState {
             onOpenExternalWindow: { [weak self] in
                 self?.suspendWorkspaceForExternalWindow()
             },
+            startSessionForTutorial: { [weak self] in
+                self?.startOnboardingTutorialSession() ?? false
+            },
             openWorkspaceAfterCompletion: { [weak self] in
                 self?.showWorkspaceWork()
             }
@@ -164,6 +167,9 @@ final class AppState {
         didSet { syncNotchStatusSurface() }
     }
     private var wasRecording = false
+    private var observedRecordingStartedSerial = 0
+    private var observedSpeechDetectedSerial = 0
+    private var observedDeliveredTranscriptSerial = 0
     /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
     private var sessionPromptCapsState = false
     private var sessionPromptGate = SessionPromptGate()
@@ -618,6 +624,7 @@ final class AppState {
     private func startConfiguredSTT(reason: String, failureLogPrefix: String) {
         let engine = STTEngine(config: config.stt)
         sttEngine = engine
+        resetObservedTutorialSTTSerials()
         sttSetupStartedAt = Date()
         sttSetupSucceeded = false
         sttEngineError = nil
@@ -806,14 +813,17 @@ final class AppState {
         return hasExplicitWorkspace && oldGeneral.provider != newGeneral.provider
     }
 
+    @discardableResult
     func newSession(
         workingDirectory: String? = nil,
-        destination: SessionLaunchDestination = .embedded
-    ) {
-        guard allowsAppShellAccess else { return }
+        destination: SessionLaunchDestination = .embedded,
+        allowDuringFirstRun: Bool = false,
+        showsWorkspaceOnLaunch: Bool = true
+    ) -> Bool {
+        guard allowsAppShellAccess || allowDuringFirstRun else { return false }
         guard permissions.microphone == .granted else {
             onboarding.showAlways()
-            return
+            return false
         }
         let request = Self.sessionLaunchRequest(
             from: config,
@@ -882,6 +892,7 @@ final class AppState {
             sessionStartTime = .distantPast
             statusText = "Ready"
             NSLog("[AppState] Failed to start session: \(error)")
+            return false
         }
         isRunning = true
         if menuSessionActive {
@@ -890,6 +901,9 @@ final class AppState {
 
         // Ensure overlay is running
         if overlayController == nil { startOverlay() }
+        if !showsWorkspaceOnLaunch {
+            return menuSessionActive
+        }
         if request.destination == .externalTerminal && menuSessionActive {
             if programBoardOverlay.isVisible {
                 programBoardOverlay.hide()
@@ -897,6 +911,17 @@ final class AppState {
         } else {
             programBoardOverlay.showTerminal()
         }
+        return menuSessionActive
+    }
+
+    private func startOnboardingTutorialSession() -> Bool {
+        if hasActiveSession {
+            return true
+        }
+        return newSession(
+            allowDuringFirstRun: true,
+            showsWorkspaceOnLaunch: false
+        )
     }
 
     static func sessionLaunchRequest(
@@ -964,13 +989,15 @@ final class AppState {
 
     /// Show or hide the unified Workspace overlay. Single-repo sessions scope
     /// Work to that repo; workspace sessions aggregate discovered child repos.
-    func toggleBoard() {
-        guard allowsAppShellAccess else { return }
+    @discardableResult
+    func toggleBoard(allowDuringFirstRun: Bool = false) -> Bool {
+        guard allowsAppShellAccess || allowDuringFirstRun else { return false }
         programBoardOverlay.toggle()
+        return true
     }
 
     func toggleWorkspace() {
-        toggleBoard()
+        _ = toggleBoard()
     }
 
     func showWorkspaceSettings() {
@@ -1425,7 +1452,7 @@ final class AppState {
             onToggleBoard: { [weak self] in
                 guard let self else { return }
                 await MainActor.run {
-                    self.toggleBoard()
+                    _ = self.toggleBoard()
                 }
             },
             onActivateProject: { [weak self] pathOrAlias, provider in
@@ -1510,10 +1537,15 @@ final class AppState {
 
             let nowRecording = engine.isRecording
             let justStartedRecording = nowRecording && !self.wasRecording
+            self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: false)
 
             if engine.boardToggleRequested {
                 engine.boardToggleRequested = false
-                self.toggleBoard()
+                let allowDuringOnboarding = self.onboarding.isAwaitingTutorialWorkspaceToggle
+                if self.toggleBoard(allowDuringFirstRun: allowDuringOnboarding),
+                   allowDuringOnboarding {
+                    self.onboarding.noteTutorialWorkspaceToggled()
+                }
             }
 
             // Session prompt: handle responses
@@ -1521,6 +1553,7 @@ final class AppState {
                 if engine.playRequested {
                     // Double-tap Alt → start new session
                     engine.playRequested = false
+                    self.onboarding.noteTutorialPlaybackRequested()
                     self.stateMachine.dismissSessionPrompt()
                     self.newSession()
                 } else if CapsLockGesture.isCapsLockOn() != self.sessionPromptCapsState {
@@ -1555,6 +1588,7 @@ final class AppState {
                 switch bridgeAction {
                 case .allowRecording:
                     self.bridgeAliveCache = true
+                    self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: true)
                 case .waitForBridgeRecovery:
                     engine.cancelRecording()
                     self.wasRecording = false
@@ -1597,10 +1631,14 @@ final class AppState {
             }
 
             // Clear stale play requests
-            if engine.playRequested { engine.playRequested = false }
+            if engine.playRequested {
+                engine.playRequested = false
+                self.onboarding.noteTutorialPlaybackRequested()
+            }
 
             if engine.wasCancelled {
                 engine.wasCancelled = false
+                self.onboarding.noteTutorialCancelRequested()
                 self.stateMachine.setCancelled()
             } else {
                 self.stateMachine.updateSTT(isRecording: nowRecording, partial: engine.partialTranscription)
@@ -1614,6 +1652,28 @@ final class AppState {
         guard programBoardLoading != isLoading else { return }
         programBoardLoading = isLoading
         syncNotchActivitySurface()
+    }
+
+    private func resetObservedTutorialSTTSerials() {
+        observedRecordingStartedSerial = 0
+        observedSpeechDetectedSerial = 0
+        observedDeliveredTranscriptSerial = 0
+    }
+
+    private func publishOnboardingTutorialSTTEvents(from engine: STTEngine,
+                                                   includeRecordingStart: Bool) {
+        if includeRecordingStart && engine.recordingStartedSerial > observedRecordingStartedSerial {
+            observedRecordingStartedSerial = engine.recordingStartedSerial
+            onboarding.noteTutorialRecordingStarted()
+        }
+        if engine.speechDetectedSerial > observedSpeechDetectedSerial {
+            observedSpeechDetectedSerial = engine.speechDetectedSerial
+            onboarding.noteTutorialSpeechDetected()
+        }
+        if engine.deliveredTranscriptSerial > observedDeliveredTranscriptSerial {
+            observedDeliveredTranscriptSerial = engine.deliveredTranscriptSerial
+            onboarding.noteTutorialRecordingSent()
+        }
     }
 
     private func suspendWorkspaceForExternalWindow() {

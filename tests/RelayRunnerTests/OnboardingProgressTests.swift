@@ -4,6 +4,45 @@ import XCTest
 
 final class OnboardingProgressTests: XCTestCase {
 
+    func testTutorialRecordingGateRequiresStartSpeechAndSendInOrder() {
+        var gate = OnboardingSessionControlsTutorial.RecordingGate.waitingForStart
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .speechDetected)
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingSent)
+        XCTAssertEqual(gate, .waitingForStart)
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingStarted)
+        XCTAssertEqual(gate, .waitingForSpeech)
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingSent)
+        XCTAssertEqual(gate, .waitingForSpeech)
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .speechDetected)
+        XCTAssertEqual(gate, .waitingForSend)
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .playbackRequested)
+        XCTAssertEqual(gate, .waitingForSend)
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingSent)
+        XCTAssertEqual(gate, .complete)
+    }
+
+    func testTutorialPlaybackGateRequiresOptionBeforeControl() {
+        var gate = OnboardingSessionControlsTutorial.PlaybackGate.waitingForPlayback
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .cancelRequested)
+        XCTAssertEqual(gate, .waitingForPlayback)
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .playbackRequested)
+        XCTAssertEqual(gate, .waitingForCancel)
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .recordingStarted)
+        XCTAssertEqual(gate, .waitingForCancel)
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .cancelRequested)
+        XCTAssertEqual(gate, .complete)
+    }
+
     func testSimplifiedMicrophoneOnlyProgressIsNotSettingsHosted() {
         let label = OnboardingView.progressLabel(
             for: .microphone,

@@ -13,6 +13,11 @@ enum OnboardingStepID: String, CaseIterable {
     case pythonSetup
     case agentLogin
     case ready
+    case tutorialIntro
+    case tutorialRecording
+    case tutorialPlayback
+    case tutorialWorkspace
+    case tutorialSessionRetry
 }
 
 enum OnboardingResumeState {

@@ -71,7 +71,8 @@ protocol OnboardingIntroPresenting: AnyObject {
                                  signInAction: @escaping () -> Void)
     func presentWorkspacePrompt(currentPath: String,
                                 action: @escaping () -> Void)
-    func presentCompletionPrompt(revealCompletion: @escaping () -> Void)
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void)
     func dismiss(completion: @escaping () -> Void)
 }
 
@@ -557,24 +558,18 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         }
     }
 
-    func presentCompletionPrompt(revealCompletion: @escaping () -> Void) {
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void) {
         timelineTimer?.invalidate()
         timelineTimer = nil
         removeSkipMonitors()
 
         let surface = ensureSurface()
-        surface.rootView.showCompletionPrompt()
+        surface.rootView.showTutorial(presentation, retryAction: retryAction)
 
-        guard surface.didCreate else {
-            revealCompletion()
-            return
-        }
+        guard surface.didCreate else { return }
         DispatchQueue.main.async { [weak container = surface.container] in
-            guard let container else {
-                revealCompletion()
-                return
-            }
-            container.animateReveal(completion: revealCompletion)
+            container?.animateReveal {}
         }
     }
 
@@ -842,10 +837,16 @@ private final class OnboardingIntroRootView: NSView {
         replaceContent(with: view)
     }
 
-    func showCompletionPrompt() {
+    func showTutorial(_ presentation: OnboardingTutorialPresentation,
+                      retryAction: @escaping () -> Void) {
         let view = OnboardingIntroHostedSurfaceView(
             frame: bounds,
-            rootView: AnyView(OnboardingIntroCompletionPromptView())
+            rootView: AnyView(
+                OnboardingTutorialView(
+                    presentation: presentation,
+                    retryAction: retryAction
+                )
+            )
         )
         view.autoresizingMask = [.width, .height]
         view.layoutFrame = layoutFrame
@@ -1391,15 +1392,6 @@ struct OnboardingIntroWorkspacePromptView: View {
         .padding(.horizontal, 34)
         .frame(maxWidth: .infinity)
         .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
-    }
-}
-
-struct OnboardingIntroCompletionPromptView: View {
-    var body: some View {
-        OnboardingBlinkingTitle("You’re all set /")
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
-            .accessibilityElement(children: .contain)
     }
 }
 
