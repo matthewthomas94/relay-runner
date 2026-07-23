@@ -281,6 +281,12 @@ struct OnboardingView: View {
             case .pythonSetup:       self = .pythonSetup
             case .agentLogin:        self = .agentLogin
             case .ready:             self = .ready
+            case .tutorialIntro,
+                 .tutorialRecording,
+                 .tutorialPlayback,
+                 .tutorialWorkspace,
+                 .tutorialSessionRetry:
+                return nil
             }
         }
     }
