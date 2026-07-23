@@ -893,6 +893,39 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertFalse(os.path.exists(meta_path))
             self.assertEqual(json.loads(Path(state_path).read_text()), state_before_dismissal)
 
+    def test_published_command_records_exact_agent_prompt_for_voice_origin(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            source_text = "fix the login bug"
+            relay_command = voice_bridge._begin_relay_command(
+                source_text,
+                state_path=state_path,
+                event_log_path=None,
+            )
+            action = voice_bridge.resolve_command_action(
+                source_text,
+                repo_path=temp_dir,
+                relay_command=relay_command,
+            )
+            agent_prompt = voice_bridge.format_command_for_agent(action)
+
+            self.assertNotEqual(agent_prompt, source_text)
+            voice_bridge._publish_command(
+                agent_prompt,
+                voice_bridge._metadata_for_action(action, relay_command),
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+            )
+
+            claimed = json.loads(Path(meta_path).read_text())
+            current = json.loads(Path(state_path).read_text())
+            self.assertEqual(claimed["source_text"], source_text)
+            self.assertEqual(claimed["agent_prompt"], agent_prompt)
+            self.assertEqual(current["agent_prompt"], agent_prompt)
+
     def test_explicit_interrupt_still_supersedes_claimed_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")

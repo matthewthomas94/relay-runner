@@ -1189,8 +1189,10 @@ def _publish_command(
 ) -> None:
     """Publish a Relay command and sidecar metadata as the newest intent."""
     _discard_pending_command(command_path=command_path, meta_path=meta_path)
-    _atomic_write_json(meta_path, metadata)
-    _atomic_write_json(state_path, metadata)
+    published_metadata = dict(metadata)
+    published_metadata["agent_prompt"] = text
+    _atomic_write_json(meta_path, published_metadata)
+    _atomic_write_json(state_path, published_metadata)
     _write_cmd_file(text, path=command_path)
 
 
