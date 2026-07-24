@@ -19,6 +19,7 @@ enum OnboardingSessionControlsTutorial {
         case recordingStarted
         case speechDetected
         case recordingSent
+        case responseReady
         case playbackRequested
         case cancelRequested
         case workspaceToggled
@@ -28,11 +29,13 @@ enum OnboardingSessionControlsTutorial {
         case waitingForStart
         case waitingForSpeech
         case waitingForSend
+        case waitingForResponse
         case complete
     }
 
     enum PlaybackGate: Equatable {
         case waitingForPlayback
+        case waitingForReplay
         case waitingForCancel
         case complete
     }
@@ -44,17 +47,23 @@ enum OnboardingSessionControlsTutorial {
         case (.waitingForSpeech, .speechDetected):
             return .waitingForSend
         case (.waitingForSend, .recordingSent):
+            return .waitingForResponse
+        case (.waitingForResponse, .responseReady):
             return .complete
         default:
             return gate
         }
     }
 
-    static func nextPlaybackGate(_ gate: PlaybackGate, event: Event) -> PlaybackGate {
+    static func nextPlaybackGate(_ gate: PlaybackGate,
+                                 event: Event,
+                                 playbackActive: Bool = false) -> PlaybackGate {
         switch (gate, event) {
         case (.waitingForPlayback, .playbackRequested):
+            return .waitingForReplay
+        case (.waitingForReplay, .playbackRequested):
             return .waitingForCancel
-        case (.waitingForCancel, .cancelRequested):
+        case (.waitingForCancel, .cancelRequested) where playbackActive:
             return .complete
         default:
             return gate

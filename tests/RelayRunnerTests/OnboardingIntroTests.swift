@@ -470,6 +470,126 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertNil(OnboardingResumeState.load())
     }
 
+    func testTutorialRecordingWaitsForNonemptyResponseBeforePlayback() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+        beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
+
+        controller.noteTutorialResponseReady("Startup greeting")
+        controller.noteTutorialRecordingStarted()
+        controller.noteTutorialSpeechDetected()
+        controller.noteTutorialRecordingSent()
+        controller.noteTutorialResponseReady("")
+        controller.noteTutorialResponseReady("   ")
+        controller.noteTutorialPlaybackRequested()
+
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording])
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        controller.noteTutorialResponseReady("Hello, how are you?")
+
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .playback])
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
+    }
+
+    func testTutorialPlaybackRequiresPlayReplayAndActiveCancel() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+        beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
+
+        controller.noteTutorialRecordingStarted()
+        controller.noteTutorialSpeechDetected()
+        controller.noteTutorialRecordingSent()
+        controller.noteTutorialResponseReady("Hello, how are you?")
+        controller.noteTutorialCancelRequested(playbackActive: true)
+        controller.noteTutorialPlaybackRequested()
+        controller.noteTutorialCancelRequested(playbackActive: true)
+        controller.noteTutorialPlaybackRequested()
+        controller.noteTutorialCancelRequested(playbackActive: false)
+
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .playback])
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        controller.noteTutorialCancelRequested(playbackActive: true)
+
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .playback, .workspace])
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialWorkspace)
+    }
+
+    func testTutorialResumePlaybackFallsBackToRecordingWithoutStaleResponse() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        OnboardingResumeState.save(
+            step: .tutorialPlayback,
+            provider: .codex,
+            parentPermissionsReviewed: true
+        )
+        let intro = CapturingIntroPresenter()
+        let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+
+        controller.showIfNeeded()
+
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.recording])
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+
+        controller.noteTutorialPlaybackRequested()
+        controller.noteTutorialCancelRequested(playbackActive: true)
+
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.recording])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
+    func testTutorialResponseAndGestureGatesAreProviderNeutral() throws {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            let intro = CapturingIntroPresenter()
+            var workspaceOpenCount = 0
+            let controller = makeSessionControlsTutorialController(
+                flagURLs: flagURLs,
+                intro: intro,
+                workspaceOpen: { workspaceOpenCount += 1 }
+            )
+
+            beginSessionControlsTutorial(controller, intro: intro, provider: provider)
+            completeSessionControlsTutorial(controller)
+
+            XCTAssertEqual(
+                intro.tutorialPresentations.map(\.screen),
+                [.intro, .recording, .playback, .workspace],
+                "provider: \(provider.rawValue)"
+            )
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: flagURLs.onboarded.path),
+                "provider: \(provider.rawValue)"
+            )
+            XCTAssertEqual(workspaceOpenCount, 1, "provider: \(provider.rawValue)")
+        }
+    }
+
     func testTutorialSessionStartupFailureShowsRetryWithoutCompletingOnboarding() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -1790,13 +1910,55 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertNotEqual(rect.midY, screen.midY, accuracy: 0.001, file: file, line: line)
     }
 
+    private func makeSessionControlsTutorialController(
+        flagURLs: OnboardingFlagURLs,
+        intro: CapturingIntroPresenter,
+        workspaceOpen: @escaping () -> Void = {}
+    ) -> OnboardingController {
+        OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { _ in },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/dev") }
+            },
+            reduceMotion: { true },
+            openWorkspaceAfterCompletion: workspaceOpen
+        )
+    }
+
+    private func beginSessionControlsTutorial(
+        _ controller: OnboardingController,
+        intro: CapturingIntroPresenter,
+        provider: GeneralConfig.AgentProvider
+    ) {
+        controller.showIfNeeded()
+        switch provider {
+        case .codex:
+            intro.performCodexAction()
+        case .claude:
+            intro.performClaudeAction()
+        }
+        waitForMainQueue(after: 0.05)
+        intro.performWorkspaceAction()
+        drainMainQueue()
+    }
+
     private func completeSessionControlsTutorial(_ controller: OnboardingController) {
         drainMainQueue()
         controller.noteTutorialRecordingStarted()
         controller.noteTutorialSpeechDetected()
         controller.noteTutorialRecordingSent()
+        controller.noteTutorialResponseReady("Hello, how are you?")
         controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialCancelRequested()
+        controller.noteTutorialPlaybackRequested()
+        controller.noteTutorialCancelRequested(playbackActive: true)
         controller.noteTutorialWorkspaceToggled()
         drainMainQueue()
     }

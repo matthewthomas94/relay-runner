@@ -4,11 +4,12 @@ import XCTest
 
 final class OnboardingProgressTests: XCTestCase {
 
-    func testTutorialRecordingGateRequiresStartSpeechAndSendInOrder() {
+    func testTutorialRecordingGateRequiresStartSpeechSendAndResponseInOrder() {
         var gate = OnboardingSessionControlsTutorial.RecordingGate.waitingForStart
 
         gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .speechDetected)
         gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingSent)
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .responseReady)
         XCTAssertEqual(gate, .waitingForStart)
 
         gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingStarted)
@@ -24,22 +25,53 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(gate, .waitingForSend)
 
         gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingSent)
+        XCTAssertEqual(gate, .waitingForResponse)
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .playbackRequested)
+        XCTAssertEqual(gate, .waitingForResponse)
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .responseReady)
         XCTAssertEqual(gate, .complete)
     }
 
-    func testTutorialPlaybackGateRequiresOptionBeforeControl() {
+    func testTutorialPlaybackGateRequiresPlayReplayThenActiveCancel() {
         var gate = OnboardingSessionControlsTutorial.PlaybackGate.waitingForPlayback
 
-        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .cancelRequested)
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(
+            gate,
+            event: .cancelRequested,
+            playbackActive: true
+        )
         XCTAssertEqual(gate, .waitingForPlayback)
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .playbackRequested)
+        XCTAssertEqual(gate, .waitingForReplay)
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .recordingStarted)
+        XCTAssertEqual(gate, .waitingForReplay)
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(
+            gate,
+            event: .cancelRequested,
+            playbackActive: true
+        )
+        XCTAssertEqual(gate, .waitingForReplay)
 
         gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .playbackRequested)
         XCTAssertEqual(gate, .waitingForCancel)
 
-        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .recordingStarted)
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(
+            gate,
+            event: .cancelRequested,
+            playbackActive: false
+        )
         XCTAssertEqual(gate, .waitingForCancel)
 
-        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .cancelRequested)
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(
+            gate,
+            event: .cancelRequested,
+            playbackActive: true
+        )
         XCTAssertEqual(gate, .complete)
     }
 
