@@ -115,6 +115,7 @@ final class OnboardingController {
         var provider: GeneralConfig.AgentProvider
         var recordingGate: OnboardingSessionControlsTutorial.RecordingGate = .waitingForStart
         var playbackGate: OnboardingSessionControlsTutorial.PlaybackGate = .waitingForPlayback
+        var responseText: String?
     }
 
     init(permissions: PermissionsManager,
@@ -773,7 +774,7 @@ final class OnboardingController {
         setOnboardingNotchOverrideActive(true)
 
         let provider = agentSetupState?.provider ?? getAgentProvider()
-        if tutorialState?.provider != provider {
+        if tutorialState?.provider != provider || screen == .intro {
             tutorialState = TutorialState(provider: provider)
         }
 
@@ -782,8 +783,15 @@ final class OnboardingController {
             return
         }
 
-        presentTutorial(screen: screen)
-        if screen == .intro {
+        let safeScreen: OnboardingTutorialScreen = screen == .playback ? .recording : screen
+        if screen == .playback {
+            tutorialState?.recordingGate = .waitingForStart
+            tutorialState?.playbackGate = .waitingForPlayback
+            tutorialState?.responseText = nil
+        }
+
+        presentTutorial(screen: safeScreen)
+        if safeScreen == .intro {
             scheduleTutorialIntroAdvance(provider: provider)
         }
     }
@@ -841,9 +849,28 @@ final class OnboardingController {
         advanceRecordingTutorial(with: .recordingSent)
     }
 
+    func noteTutorialResponseReady(_ text: String?) {
+        guard var state = tutorialState,
+              OnboardingResumeState.load()?.step == .tutorialRecording,
+              state.recordingGate == .waitingForResponse,
+              let response = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !response.isEmpty else { return }
+        state.responseText = response
+        state.recordingGate = OnboardingSessionControlsTutorial.nextRecordingGate(
+            state.recordingGate,
+            event: .responseReady
+        )
+        tutorialState = state
+        if state.recordingGate == .complete {
+            presentTutorial(screen: .playback)
+        }
+    }
+
     func noteTutorialPlaybackRequested() {
         guard var state = tutorialState,
-              OnboardingResumeState.load()?.step == .tutorialPlayback else { return }
+              OnboardingResumeState.load()?.step == .tutorialPlayback,
+              state.responseText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        else { return }
         state.playbackGate = OnboardingSessionControlsTutorial.nextPlaybackGate(
             state.playbackGate,
             event: .playbackRequested
@@ -851,12 +878,13 @@ final class OnboardingController {
         tutorialState = state
     }
 
-    func noteTutorialCancelRequested() {
+    func noteTutorialCancelRequested(playbackActive: Bool) {
         guard var state = tutorialState,
               OnboardingResumeState.load()?.step == .tutorialPlayback else { return }
         state.playbackGate = OnboardingSessionControlsTutorial.nextPlaybackGate(
             state.playbackGate,
-            event: .cancelRequested
+            event: .cancelRequested,
+            playbackActive: playbackActive
         )
         tutorialState = state
         if state.playbackGate == .complete {

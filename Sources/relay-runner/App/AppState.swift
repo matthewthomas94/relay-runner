@@ -1434,7 +1434,12 @@ final class AppState {
         guard overlayController == nil else { return }
 
         // State event bus (listens for Python service state)
-        let bus = StateEventBus(stateMachine: stateMachine)
+        let bus = StateEventBus(
+            stateMachine: stateMachine,
+            onServiceEvent: { [weak self] source, state, text in
+                self?.handleOnboardingTutorialServiceEvent(source: source, state: state, text: text)
+            }
+        )
         eventBus = bus
         Task { await bus.start() }
 
@@ -1638,7 +1643,13 @@ final class AppState {
 
             if engine.wasCancelled {
                 engine.wasCancelled = false
-                self.onboarding.noteTutorialCancelRequested()
+                let playbackActive: Bool
+                if case .speaking = self.stateMachine.state {
+                    playbackActive = true
+                } else {
+                    playbackActive = false
+                }
+                self.onboarding.noteTutorialCancelRequested(playbackActive: playbackActive)
                 self.stateMachine.setCancelled()
             } else {
                 self.stateMachine.updateSTT(isRecording: nowRecording, partial: engine.partialTranscription)
@@ -1674,6 +1685,11 @@ final class AppState {
             observedDeliveredTranscriptSerial = engine.deliveredTranscriptSerial
             onboarding.noteTutorialRecordingSent()
         }
+    }
+
+    private func handleOnboardingTutorialServiceEvent(source: String, state: String, text: String?) {
+        guard source == "tts", state == "message_waiting" else { return }
+        onboarding.noteTutorialResponseReady(text)
     }
 
     private func suspendWorkspaceForExternalWindow() {

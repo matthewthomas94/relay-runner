@@ -9,9 +9,14 @@ actor StateEventBus {
     private var fd: Int32 = -1
     private var receiveTask: Task<Void, Never>?
     private weak var stateMachine: StateMachine?
+    private let onServiceEvent: @MainActor (_ source: String, _ state: String, _ text: String?) -> Void
 
-    init(stateMachine: StateMachine) {
+    init(
+        stateMachine: StateMachine,
+        onServiceEvent: @escaping @MainActor (_ source: String, _ state: String, _ text: String?) -> Void = { _, _, _ in }
+    ) {
         self.stateMachine = stateMachine
+        self.onServiceEvent = onServiceEvent
     }
 
     func start() {
@@ -82,6 +87,7 @@ actor StateEventBus {
                 NSLog("[StateEventBus] \(source):\(state)\(text.map { " text=\($0.prefix(40))" } ?? "")")
 
                 let sm = await self.stateMachine
+                let onServiceEvent = await self.onServiceEvent
                 await MainActor.run {
                     sm?.handleServiceEvent(
                         source: source,
@@ -89,6 +95,7 @@ actor StateEventBus {
                         text: text,
                         autoDismiss: autoDismiss
                     )
+                    onServiceEvent(source, state, text)
                 }
             }
         }
