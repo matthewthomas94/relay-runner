@@ -113,12 +113,15 @@ struct OnboardingTutorialView: View {
     private var content: some View {
         switch presentation.screen {
         case .intro:
-            OnboardingBlinkingTitle("Great, now lets learn the basics /")
+            OnboardingBlinkingTitle(
+                "Great, now lets learn the basics /",
+                reduceMotion: presentation.reduceMotion
+            )
         case .recording:
             HStack(alignment: .center, spacing: 30) {
                 tutorialText("turn")
                 OnboardingTutorialKeycap(
-                    kind: .capsLock,
+                    animation: .capsLock,
                     reduceMotion: presentation.reduceMotion
                 )
                 tutorialText("on & say hi, turn it off to send /")
@@ -127,12 +130,12 @@ struct OnboardingTutorialView: View {
             HStack(alignment: .center, spacing: 26) {
                 tutorialText("Double tap")
                 OnboardingTutorialKeycap(
-                    kind: .option,
+                    animation: .playbackOption,
                     reduceMotion: presentation.reduceMotion
                 )
                 tutorialText("to play/ replay, double tap")
                 OnboardingTutorialKeycap(
-                    kind: .control,
+                    animation: .playbackControl,
                     reduceMotion: presentation.reduceMotion
                 )
                 tutorialText("to cancel /")
@@ -141,14 +144,17 @@ struct OnboardingTutorialView: View {
             HStack(alignment: .center, spacing: 30) {
                 tutorialText("You're all set, double tap")
                 OnboardingTutorialKeycap(
-                    kind: .shift,
+                    animation: .shift,
                     reduceMotion: presentation.reduceMotion
                 )
                 tutorialText("to enter/ exit your workspace /")
             }
         case .sessionRetry:
             VStack(spacing: 32) {
-                OnboardingBlinkingTitle("Session setup needs attention /")
+                OnboardingBlinkingTitle(
+                    "Session setup needs attention /",
+                    reduceMotion: presentation.reduceMotion
+                )
                 Text(presentation.message ?? "Relay Runner could not start the configured voice session.")
                     .font(AppTypography.font(.body))
                     .foregroundStyle(.white.opacity(0.72))
@@ -165,12 +171,10 @@ struct OnboardingTutorialView: View {
     }
 
     private func tutorialText(_ text: String) -> some View {
-        Text(text)
-            .font(AppTypography.font(.onboardingHero))
-            .foregroundStyle(.white)
-            .lineLimit(1)
-            .minimumScaleFactor(0.60)
-            .fixedSize(horizontal: false, vertical: true)
+        OnboardingTutorialInstructionText(
+            text: text,
+            reduceMotion: presentation.reduceMotion
+        )
     }
 
     private var accessibilityLabel: String {
@@ -189,16 +193,16 @@ struct OnboardingTutorialView: View {
     }
 }
 
-private enum OnboardingTutorialKeycapKind {
+enum OnboardingTutorialKeycapKind {
     case capsLock
     case option
     case control
     case shift
 
-    var assetName: String {
+    func assetName(capsLightOn: Bool = true) -> String {
         switch self {
         case .capsLock:
-            return "OnboardingTutorialCapsLockKey"
+            return capsLightOn ? "OnboardingTutorialCapsLockKey" : "OnboardingTutorialCapsLockKeyOff"
         case .option:
             return "OnboardingTutorialOptionKey"
         case .control:
@@ -248,59 +252,187 @@ private enum OnboardingTutorialKeycapKind {
     }
 }
 
-private struct OnboardingTutorialKeycap: View {
-    let kind: OnboardingTutorialKeycapKind
+enum OnboardingTutorialKeycapAnimation {
+    case capsLock
+    case playbackOption
+    case playbackControl
+    case shift
+
+    var kind: OnboardingTutorialKeycapKind {
+        switch self {
+        case .capsLock:
+            return .capsLock
+        case .playbackOption:
+            return .option
+        case .playbackControl:
+            return .control
+        case .shift:
+            return .shift
+        }
+    }
+
+    var cycleDuration: TimeInterval {
+        switch self {
+        case .capsLock:
+            return 1.6
+        case .playbackOption, .playbackControl:
+            return 2.92
+        case .shift:
+            return 1.56
+        }
+    }
+}
+
+private struct OnboardingTutorialInstructionText: View {
+    let text: String
     let reduceMotion: Bool
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
-            let phase = reduceMotion
-                ? OnboardingTutorialKeycapPhase(scale: 0.97, capsLightOn: kind == .capsLock)
-                : Self.phase(for: kind, at: context.date.timeIntervalSinceReferenceDate)
-            keycap(phase: phase)
+            styledText(at: context.date.timeIntervalSinceReferenceDate)
+        }
+        .font(AppTypography.font(.onboardingHero))
+        .foregroundStyle(.white)
+        .lineLimit(1)
+        .minimumScaleFactor(0.60)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func styledText(at elapsed: TimeInterval) -> Text {
+        guard text.last == "/" else {
+            return Text(text).foregroundColor(.white)
+        }
+
+        let prefix = String(text.dropLast())
+        return Text(prefix).foregroundColor(.white)
+            + Text("/").foregroundColor(
+                .white.opacity(OnboardingCursorBlink.opacity(at: elapsed, reduceMotion: reduceMotion))
+            )
+    }
+}
+
+private struct OnboardingTutorialKeycap: View {
+    let animation: OnboardingTutorialKeycapAnimation
+    let reduceMotion: Bool
+
+    private var kind: OnboardingTutorialKeycapKind {
+        animation.kind
+    }
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: reduceMotion)) { context in
+            keycap(
+                phase: OnboardingSessionControlsTutorial.keycapPhase(
+                    for: animation,
+                    at: context.date.timeIntervalSinceReferenceDate,
+                    reduceMotion: reduceMotion
+                )
+            )
         }
         .frame(width: kind.width, height: kind.height)
         .accessibilityLabel(kind.accessibilityLabel)
     }
 
     private func keycap(phase: OnboardingTutorialKeycapPhase) -> some View {
-        ZStack(alignment: .topLeading) {
-            Image(kind.assetName, bundle: RelayRunnerResources.bundle)
+        Image(kind.assetName(capsLightOn: phase.capsLightOn), bundle: RelayRunnerResources.bundle)
                 .resizable()
                 .renderingMode(.original)
                 .frame(width: kind.width, height: kind.height)
                 .accessibilityHidden(true)
-
-            if kind == .capsLock {
-                Circle()
-                    .fill(phase.capsLightOn ? Self.capsLockGreen : Self.capsLockOff)
-                    .frame(width: 8, height: 8)
-                    .offset(x: 13, y: 13)
-            }
-        }
         .scaleEffect(phase.scale)
         .animation(nil, value: phase.scale)
     }
-
-    private static let capsLockGreen = Color(red: 0.45, green: 0.95, blue: 0.02)
-    private static let capsLockOff = Color(red: 0.07, green: 0.075, blue: 0.08)
-
-    private static func phase(for kind: OnboardingTutorialKeycapKind,
-                              at time: TimeInterval) -> OnboardingTutorialKeycapPhase {
-        if kind == .capsLock {
-            let cycle = time.truncatingRemainder(dividingBy: 1.0)
-            return OnboardingTutorialKeycapPhase(
-                scale: cycle < 0.14 ? 0.94 : 1.0,
-                capsLightOn: cycle < 0.5
-            )
-        }
-        let cycle = time.truncatingRemainder(dividingBy: 1.15)
-        let pressed = (cycle < 0.11) || (cycle >= 0.22 && cycle < 0.33)
-        return OnboardingTutorialKeycapPhase(scale: pressed ? 0.94 : 1.0, capsLightOn: false)
-    }
 }
 
-private struct OnboardingTutorialKeycapPhase: Equatable {
+struct OnboardingTutorialKeycapPhase: Equatable {
     let scale: CGFloat
     let capsLightOn: Bool
+}
+
+extension OnboardingSessionControlsTutorial {
+    static func keycapPhase(for animation: OnboardingTutorialKeycapAnimation,
+                            at time: TimeInterval,
+                            reduceMotion: Bool = false) -> OnboardingTutorialKeycapPhase {
+        if reduceMotion {
+            return OnboardingTutorialKeycapPhase(
+                scale: 0.97,
+                capsLightOn: animation.kind == .capsLock
+            )
+        }
+
+        switch animation {
+        case .capsLock:
+            return capsLockPhase(at: time, cycleDuration: animation.cycleDuration)
+        case .playbackOption:
+            return doubleTapPhase(
+                at: time,
+                cycleDuration: animation.cycleDuration,
+                tapStarts: [0.0, 0.22]
+            )
+        case .playbackControl:
+            return doubleTapPhase(
+                at: time,
+                cycleDuration: animation.cycleDuration,
+                tapStarts: [1.30, 1.52]
+            )
+        case .shift:
+            return doubleTapPhase(
+                at: time,
+                cycleDuration: animation.cycleDuration,
+                tapStarts: [0.0, 0.22]
+            )
+        }
+    }
+
+    static func tutorialCursorOpacity(at elapsed: TimeInterval,
+                                      reduceMotion: Bool = false) -> CGFloat {
+        OnboardingCursorBlink.opacity(at: elapsed, reduceMotion: reduceMotion)
+    }
+
+    private static func capsLockPhase(at time: TimeInterval,
+                                      cycleDuration: TimeInterval) -> OnboardingTutorialKeycapPhase {
+        let clampedTime = max(0, time)
+        let cycle = clampedTime.truncatingRemainder(dividingBy: cycleDuration)
+        let completedCycles = Int(floor(clampedTime / cycleDuration))
+        let lightStartsOn = !completedCycles.isMultiple(of: 2)
+        let scale = easedScale(at: cycle, tapStarts: [0.0])
+        let capsLightOn = cycle >= 0.14 ? !lightStartsOn : lightStartsOn
+        return OnboardingTutorialKeycapPhase(scale: scale, capsLightOn: capsLightOn)
+    }
+
+    private static func doubleTapPhase(at time: TimeInterval,
+                                       cycleDuration: TimeInterval,
+                                       tapStarts: [TimeInterval]) -> OnboardingTutorialKeycapPhase {
+        let cycle = max(0, time).truncatingRemainder(dividingBy: cycleDuration)
+        return OnboardingTutorialKeycapPhase(
+            scale: easedScale(at: cycle, tapStarts: tapStarts),
+            capsLightOn: false
+        )
+    }
+
+    private static func easedScale(at cycle: TimeInterval,
+                                   tapStarts: [TimeInterval]) -> CGFloat {
+        for tapStart in tapStarts {
+            let pressEnd = tapStart + 0.14
+            let releaseEnd = pressEnd + 0.18
+            guard cycle >= tapStart, cycle < releaseEnd else { continue }
+
+            if cycle < pressEnd {
+                let progress = (cycle - tapStart) / 0.14
+                return scale(from: 1.0, to: 0.94, progress: progress)
+            }
+
+            let progress = (cycle - pressEnd) / 0.18
+            return scale(from: 0.94, to: 1.0, progress: progress)
+        }
+
+        return 1.0
+    }
+
+    private static func scale(from start: CGFloat,
+                              to end: CGFloat,
+                              progress: TimeInterval) -> CGFloat {
+        let eased = CGFloat(OnboardingIntroTimeline.easeInOut(progress))
+        return start + (end - start) * eased
+    }
 }

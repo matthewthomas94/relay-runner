@@ -283,9 +283,20 @@ enum OnboardingIntroTimeline {
 enum OnboardingCursorBlink {
     static let minimumOpacity: CGFloat = 0.5
 
+    static func opacity(at elapsed: TimeInterval, reduceMotion: Bool = false) -> CGFloat {
+        if reduceMotion {
+            return 0.82
+        }
+
+        let cycle = max(0, elapsed).truncatingRemainder(dividingBy: OnboardingIntroTimeline.cursorBlinkPeriod)
+        let progress = cycle / OnboardingIntroTimeline.cursorBlinkPeriod
+        let wave = 0.5 + 0.5 * cos(progress * .pi * 2)
+        let eased = CGFloat(OnboardingIntroTimeline.easeInOut(wave))
+        return minimumOpacity + (1 - minimumOpacity) * eased
+    }
+
     static func isVisible(at elapsed: TimeInterval) -> Bool {
-        max(0, elapsed).truncatingRemainder(dividingBy: OnboardingIntroTimeline.cursorBlinkPeriod)
-            < OnboardingIntroTimeline.cursorBlinkPeriod / 2
+        opacity(at: elapsed) >= (minimumOpacity + (1 - minimumOpacity) / 2)
     }
 }
 
@@ -831,11 +842,13 @@ private final class OnboardingIntroRootView: NSView {
     }
 
     func showWorkspacePrompt(currentPath: String,
-                             action: @escaping () -> Void) {
+                             continueAction: @escaping () -> Void,
+                             browseAction: @escaping () -> Void) {
         let view = OnboardingIntroWorkspaceSurfaceView(
             frame: bounds,
             currentPath: currentPath,
-            action: action
+            continueAction: continueAction,
+            browseAction: browseAction
         )
         view.autoresizingMask = [.width, .height]
         view.layoutFrame = layoutFrame
@@ -1421,19 +1434,20 @@ struct OnboardingIntroWorkspacePromptView: View {
 
 struct OnboardingBlinkingTitle: View {
     private let text: String
+    private let reduceMotion: Bool
 
-    init(_ text: String) {
+    init(_ text: String, reduceMotion: Bool = false) {
         self.text = text
+        self.reduceMotion = reduceMotion
     }
 
     var body: some View {
-        TimelineView(
-            .periodic(
-                from: .now,
-                by: OnboardingIntroTimeline.cursorBlinkPeriod / 2
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+            Self.styledText(
+                text,
+                at: context.date.timeIntervalSinceReferenceDate,
+                reduceMotion: reduceMotion
             )
-        ) { context in
-            Self.styledText(text, at: context.date.timeIntervalSinceReferenceDate)
         }
         .font(AppTypography.font(.onboardingHero))
         .multilineTextAlignment(.center)
@@ -1449,14 +1463,18 @@ struct OnboardingBlinkingTitle: View {
         return "\(phrase) /"
     }
 
-    static func cursorOpacity(at elapsed: TimeInterval) -> CGFloat {
-        OnboardingCursorBlink.isVisible(at: elapsed) ? 1 : OnboardingCursorBlink.minimumOpacity
+    static func cursorOpacity(at elapsed: TimeInterval, reduceMotion: Bool = false) -> CGFloat {
+        OnboardingCursorBlink.opacity(at: elapsed, reduceMotion: reduceMotion)
     }
 
-    private static func styledText(_ text: String, at elapsed: TimeInterval) -> Text {
+    private static func styledText(_ text: String,
+                                   at elapsed: TimeInterval,
+                                   reduceMotion: Bool) -> Text {
         let phrase = String(OnboardingPromptTransitionTimeline.phrase(from: text))
         return Text("\(phrase) ").foregroundColor(.white)
-            + Text("/").foregroundColor(.white.opacity(cursorOpacity(at: elapsed)))
+            + Text("/").foregroundColor(
+                .white.opacity(cursorOpacity(at: elapsed, reduceMotion: reduceMotion))
+            )
     }
 }
 
