@@ -161,11 +161,13 @@ def _find_turn_record(path: str, payload: dict, *, now: float | None = None) -> 
             if str(record.get("turn_id") or "") == turn_id:
                 return record
     active = [r for r in records if str(r.get("state") or "") == "active"]
-    if active:
+    if len(active) == 1:
         return sorted(
             active,
             key=lambda r: float(r.get("updated_at") or r.get("created_at") or 0),
-        )[-1]
+        )[0]
+    if len(active) > 1:
+        return None
     return records[-1] if records else None
 
 

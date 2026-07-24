@@ -10,6 +10,7 @@ final class ProcessManager {
     private static let voiceCommandStatePath = "/tmp/voice_command_state.json"
     private static let voiceCommandClaimedPath = "/tmp/voice_cmd_claimed.json"
     private static let voiceProviderTurnsPath = "/tmp/voice_provider_turns.json"
+    private static let terminalDeliveryEventsPath = "/tmp/relay_terminal_delivery_events.jsonl"
     private static let heartbeatPath = "/tmp/voice_bridge_heartbeat"
     private static let bridgeStopRequestedPath = "/tmp/voice_bridge_stop_requested"
     private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
@@ -26,6 +27,7 @@ final class ProcessManager {
         voiceCommandStatePath,
         voiceCommandClaimedPath,
         voiceProviderTurnsPath,
+        terminalDeliveryEventsPath,
         "/tmp/tts_in.fifo",
         "/tmp/tts_control.sock",
         heartbeatPath,
@@ -470,7 +472,7 @@ final class ProcessManager {
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         pkill -f '[v]oice_bridge.py' 2>/dev/null || true
-        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"

@@ -1258,6 +1258,34 @@ def _provider_turn_active(
     return _provider_turn_state(relay_command, turns_path=turns_path) == "active"
 
 
+def _any_provider_turn_active(
+    *,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+) -> bool:
+    data = _read_json_file(turns_path)
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, list):
+        return False
+    return any(
+        isinstance(record, dict)
+        and str(record.get("state") or "").strip() == "active"
+        for record in records
+    )
+
+
+def _command_pending_delivery(
+    relay_command: dict | None,
+    *,
+    command_path: str = VOICE_CMD_FILE,
+    meta_path: str = VOICE_CMD_META_FILE,
+) -> bool:
+    key = _relay_command_key(relay_command)
+    if key is None or not os.path.exists(command_path):
+        return False
+    metadata = _read_json_file(meta_path)
+    return _relay_command_key(metadata) == key
+
+
 def _foreground_reply_delivered(command: dict | None) -> bool:
     key = _relay_command_key(command)
     if key is None:
@@ -1583,6 +1611,8 @@ def _schedule_foreground_reply_fallback(
     messenger: MessengerRuntime | None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    command_path: str = VOICE_CMD_FILE,
+    meta_path: str = VOICE_CMD_META_FILE,
     delay_seconds: float | None = None,
 ) -> threading.Thread | None:
     key = _relay_command_key(relay_command)
@@ -1601,7 +1631,15 @@ def _schedule_foreground_reply_fallback(
                 return
             if not _relay_command_current(key[0], key[1], state_path=state_path):
                 return
-            if _provider_turn_active(relay_command, turns_path=turns_path):
+            if (
+                _command_pending_delivery(
+                    relay_command,
+                    command_path=command_path,
+                    meta_path=meta_path,
+                )
+                or _provider_turn_active(relay_command, turns_path=turns_path)
+                or _any_provider_turn_active(turns_path=turns_path)
+            ):
                 sleep_for = max(0.25, PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS)
                 continue
             _deliver_missing_foreground_reply(
