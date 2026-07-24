@@ -48,6 +48,9 @@ enum ProgramBoardLayout {
     static var projectScrollContentInsets: EdgeInsets {
         EdgeInsets(top: 0, leading: 0, bottom: 28, trailing: 0)
     }
+    static var workScrollContentInsets: EdgeInsets {
+        EdgeInsets(top: workScrollTopPadding, leading: 0, bottom: 28, trailing: 0)
+    }
     static var emptyLaneBodyHeight: CGFloat {
         BoardSurfaceLayout.columnHeight
             - workCardTopOffset
@@ -71,7 +74,6 @@ struct ProgramBoardOverlayView: View {
     let onRefresh: () -> Void
     let onStartSession: () -> Void
     let onEndSession: () -> Void
-    let onOpenProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
     let onCreateCommit: (ProgramBoardCreateRequest) -> Void
     let onCreateCancel: () -> Void
@@ -144,7 +146,6 @@ struct ProgramBoardOverlayView: View {
                         model: model,
                         onRefresh: onRefresh,
                         onDismiss: onDismiss,
-                        onOpenProject: onOpenProject,
                         onCreateStart: onCreateStart,
                         onEditStart: onEditStart,
                         onDelete: onDelete,
@@ -479,7 +480,6 @@ private struct ProgramBoardContent: View {
     @Bindable var model: ProgramBoardViewModel
     let onRefresh: () -> Void
     let onDismiss: () -> Void
-    let onOpenProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
     let onEditStart: (ProgramTicketDetail) -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
@@ -526,8 +526,7 @@ private struct ProgramBoardContent: View {
                             theme: model.theme,
                             onClose: model.clearSelectedTicket,
                             onEdit: { onEditStart(detail) },
-                            onDelete: onDelete,
-                            onOpenProject: onOpenProject
+                            onDelete: onDelete
                         )
                         .padding(.top, 18)
                         .zIndex(1)
@@ -884,13 +883,12 @@ private struct ProgramWorkColumnPanel: View {
     }
 }
 
-private struct ProgramColumnTicketScrollView<Content: View>: View {
+struct ProgramColumnTicketScrollView<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        BoardOverlayScrollView(contentInsets: ProgramBoardLayout.workScrollContentInsets) {
             content
-                .padding(.top, ProgramBoardLayout.workScrollTopPadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxHeight: .infinity)
@@ -1168,13 +1166,12 @@ private struct ProgramWorkCard: View {
     }
 }
 
-private struct ProgramTicketDetailPanel: View {
+struct ProgramTicketDetailPanel: View {
     let detail: ProgramTicketDetail
     let theme: ParticleFieldRenderer.Theme?
     let onClose: () -> Void
     let onEdit: () -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
-    let onOpenProject: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1252,16 +1249,6 @@ private struct ProgramTicketDetailPanel: View {
                     help: detail.ticket == nil ? "Ticket file is unavailable" : "Reveal child ticket file"
                 ) {
                     revealTicket()
-                }
-                ProgramDetailActionButton(
-                    systemName: "rectangle.grid.2x2",
-                    title: "Open Workspace",
-                    disabled: detail.identity?.projectPath == nil,
-                    help: "Open the owning project workspace"
-                ) {
-                    if let projectPath = detail.identity?.projectPath {
-                        onOpenProject(projectPath)
-                    }
                 }
             }
 
