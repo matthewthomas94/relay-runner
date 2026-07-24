@@ -1105,8 +1105,10 @@ final class ProgramBoardStatusTests: XCTestCase {
             .appendingPathComponent(".orchestrator/attachments/TL-1", isDirectory: true)
         let portrait = attachmentDirectory.appendingPathComponent("portrait.png")
         let landscape = attachmentDirectory.appendingPathComponent("landscape.jpg")
+        let screenshot = attachmentDirectory.appendingPathComponent("workspace-screenshot.png")
         try writeTestImage(at: portrait, fileType: .png, size: NSSize(width: 80, height: 140))
         try writeTestImage(at: landscape, fileType: .jpeg, size: NSSize(width: 180, height: 90))
+        try writeTestImage(at: screenshot, fileType: .png, size: NSSize(width: 2400, height: 1600))
         try writeTicket(
             repo: repo,
             id: "TL-1",
@@ -1125,6 +1127,7 @@ final class ProgramBoardStatusTests: XCTestCase {
 
             - ![portrait.png](attachments/TL-1/portrait.png)
             - ![landscape.jpg](attachments/TL-1/landscape.jpg)
+            - ![workspace-screenshot.png](attachments/TL-1/workspace-screenshot.png)
             """
         )
         let item = try ticketItem(
@@ -1137,7 +1140,10 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         let detail = ProgramTicketDetail.load(item: item)
 
-        XCTAssertEqual(detail.imageAttachments.map(\.filename), ["portrait.png", "landscape.jpg"])
+        XCTAssertEqual(
+            detail.imageAttachments.map(\.filename),
+            ["portrait.png", "landscape.jpg", "workspace-screenshot.png"]
+        )
         XCTAssertEqual(
             detail.imageAttachments.compactMap { attachment in
                 if case .preview(let url) = attachment.state {
@@ -1145,7 +1151,7 @@ final class ProgramBoardStatusTests: XCTestCase {
                 }
                 return nil
             },
-            [portrait.path, landscape.path]
+            [portrait.path, landscape.path, screenshot.path]
         )
     }
 
