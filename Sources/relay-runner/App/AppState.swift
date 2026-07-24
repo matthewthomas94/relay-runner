@@ -992,8 +992,7 @@ final class AppState {
     @discardableResult
     func toggleBoard(allowDuringFirstRun: Bool = false) -> Bool {
         guard allowsAppShellAccess || allowDuringFirstRun else { return false }
-        programBoardOverlay.toggle()
-        return true
+        return programBoardOverlay.toggle()
     }
 
     func toggleWorkspace() {
