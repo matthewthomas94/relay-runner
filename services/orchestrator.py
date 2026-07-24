@@ -107,6 +107,20 @@ WORKER_MODEL_TIERS = {
 }
 CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
+GENERAL_MODEL_OPTIONS = {
+    "codex": {
+        "default",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
+    },
+    "claude": {"default", "best", "fable", "opus", "sonnet", "haiku"},
+}
+BASE_GENERAL_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
 AUTO_DISPATCH_SOURCES = frozenset({"ready-sweeper", "dependency-progression"})
 MAX_AUTO_DISPATCH_ATTEMPTS = 5
 AUTO_DISPATCH_BACKOFF_SECONDS = 30.0
@@ -408,6 +422,57 @@ def _configured_orchestrator_model(general: dict[str, Any] | None) -> str | None
     return model if model and model != "default" else None
 
 
+def _uses_inherited_worker_defaults(general: dict[str, Any] | None) -> bool:
+    return (
+        isinstance(general, dict)
+        and str(general.get("subagent_sizing_policy") or "").strip().lower() == "user_default"
+    )
+
+
+def _normalized_general_model(general: dict[str, Any], agent_kind: str) -> str:
+    model = str(general.get("model") or "").strip().lower()
+    return model if model in GENERAL_MODEL_OPTIONS[agent_kind] else "default"
+
+
+def _general_effort_options(agent_kind: str, model: str) -> frozenset[str]:
+    if agent_kind == "codex":
+        if model in {"gpt-5.6-sol", "gpt-5.6-terra"}:
+            return BASE_GENERAL_EFFORTS | frozenset({"max", "ultra"})
+        if model == "gpt-5.6-luna":
+            return BASE_GENERAL_EFFORTS | frozenset({"max"})
+        if model in {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"}:
+            return BASE_GENERAL_EFFORTS
+        return frozenset({"default"})
+    if model in {"best", "fable", "opus"}:
+        return BASE_GENERAL_EFFORTS | frozenset({"max"})
+    if model == "sonnet":
+        return frozenset({"default", "low", "medium", "high", "max"})
+    return frozenset({"default"})
+
+
+def _normalized_general_effort(general: dict[str, Any], agent_kind: str, model: str) -> str:
+    effort = str(
+        general.get("orchestrator_effort") or general.get("codex_reasoning_effort") or ""
+    ).strip().lower()
+    return effort if effort in _general_effort_options(agent_kind, model) else "default"
+
+
+def _inherited_worker_sizing(general: dict[str, Any], agent_kind: str) -> dict[str, str | None]:
+    model = _normalized_general_model(general, agent_kind)
+    effort = _normalized_general_effort(general, agent_kind, model)
+    return {
+        "provider_key": agent_kind,
+        "model_alias": None if model == "default" else model,
+        "worker_model": f"{agent_kind}:{model}",
+        "worker_effort": effort,
+        "worker_sizing_rationale": "Inherited provider, model, and effort from Relay Runner General Settings.",
+        "worker_provider_notes": (
+            "Use my defaults preserves provider default model semantics; Codex uses "
+            "model_reasoning_effort and Claude uses --effort."
+        ),
+    }
+
+
 def _validate_worker_effort(worker_effort: str, *, worker_model: str, agent_kind: str,
                             provider_notes: str) -> str:
     effort = worker_effort.strip().lower()
@@ -433,7 +498,10 @@ def resolve_worker_sizing(
     ticket: dict[str, Any],
     agent_kind: str,
     general: dict[str, Any] | None = None,
-) -> dict[str, str]:
+) -> dict[str, str | None]:
+    if _uses_inherited_worker_defaults(general):
+        return _inherited_worker_sizing(general or {}, agent_kind)
+
     missing = [field for field in WORKER_SIZING_FIELDS if not _required_sizing_value(ticket, field)]
     if missing:
         raise ValueError("missing worker sizing metadata: " + ", ".join(missing))
@@ -469,39 +537,31 @@ def raw_worker_sizing_metadata(ticket: dict[str, Any], agent_kind: str) -> dict[
     }
 
 
-def _normalized_default_worker_sizing(general: dict[str, Any]) -> dict[str, str] | None:
-    if str(general.get("subagent_sizing_policy") or "").strip().lower() != "user_default":
+def _normalized_default_worker_sizing(
+    general: dict[str, Any],
+    agent_kind: str | None = None,
+) -> dict[str, str] | None:
+    if not _uses_inherited_worker_defaults(general):
         return None
-    model = str(general.get("subagent_model") or "").strip().lower()
-    if model not in WORKER_MODEL_TIERS["codex"]:
-        model = "balanced"
-    effort = str(general.get("subagent_effort") or "").strip().lower()
-    if effort not in CODEX_WORKER_EFFORTS:
-        effort = "medium"
-    return {
-        "worker_model": model,
-        "worker_effort": effort,
-        "worker_sizing_rationale": "User default from Relay Runner Settings.",
-        "worker_provider_notes": (
-            "User default applies to Codex and Claude; Codex uses "
-            "model_reasoning_effort and Claude uses --effort."
-        ),
-    }
+    effective_agent_kind = agent_kind or _provider_from_general(general, "codex")
+    inherited = _inherited_worker_sizing(general, effective_agent_kind)
+    return {field: str(inherited[field] or "") for field in WORKER_SIZING_FIELDS}
 
 
 def apply_default_worker_sizing(
     ticket: dict[str, Any],
     general: dict[str, Any],
+    agent_kind: str | None = None,
 ) -> bool:
-    defaults = _normalized_default_worker_sizing(general)
+    defaults = _normalized_default_worker_sizing(general, agent_kind=agent_kind)
     if not defaults:
-        return False
-    if any(_required_sizing_value(ticket, field) for field in WORKER_SIZING_FIELDS):
         return False
     raw = ticket.setdefault("_raw_fields", {})
     if not isinstance(raw, dict):
         raw = {}
         ticket["_raw_fields"] = raw
+    if all(str(raw.get(field) or "") == defaults[field] for field in WORKER_SIZING_FIELDS):
+        return False
     raw.update(defaults)
     return True
 
@@ -3071,7 +3131,11 @@ class Daemon:
                 )
                 raise RuntimeError(auto_blocker)
 
-            applied_default_sizing = apply_default_worker_sizing(ticket, general_config)
+            applied_default_sizing = apply_default_worker_sizing(
+                ticket,
+                general_config,
+                agent_kind=worker_provider,
+            )
             if applied_default_sizing:
                 write_ticket(ticket_file, ticket)
 
@@ -3079,7 +3143,7 @@ class Daemon:
                 sizing = resolve_worker_sizing(
                     ticket,
                     worker_provider,
-                    general=general_config if applied_default_sizing else {},
+                    general=general_config if _uses_inherited_worker_defaults(general_config) else {},
                 )
             except ValueError as e:
                 reason = str(e)

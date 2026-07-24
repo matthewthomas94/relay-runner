@@ -168,6 +168,29 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertEqual(result.workerProviderNotes, "none")
     }
 
+    func testWorkerSizingDefaultsInheritGeneralAgentSettings() {
+        var config = GeneralConfig()
+        config.provider = .claude
+        config.model = "sonnet"
+        config.orchestrator_effort = "high"
+        config.subagent_sizing_policy = .userDefault
+        config.subagent_model = "strong"
+        config.subagent_effort = "xhigh"
+
+        let defaults = TicketWriter.WorkerSizingDefaults.from(config)
+
+        XCTAssertEqual(defaults?.workerModel, "claude:sonnet")
+        XCTAssertEqual(defaults?.workerEffort, "high")
+        XCTAssertEqual(
+            defaults?.workerSizingRationale,
+            "Inherited provider, model, and effort from Relay Runner General Settings."
+        )
+        XCTAssertEqual(
+            defaults?.workerProviderNotes,
+            "Use my defaults preserves provider default model semantics; Codex uses model_reasoning_effort and Claude uses --effort."
+        )
+    }
+
     func testMintDraftClaimsSelectedProjectNextIdWithoutMutatingPeerProject() throws {
         let clientRepo = try makeTempRepo(named: "client-dashboard")
         let root = clientRepo.deletingLastPathComponent()

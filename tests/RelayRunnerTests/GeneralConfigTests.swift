@@ -134,14 +134,10 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(GeneralConfig.normalizedOrchestratorEffort("max", for: .claude, model: "sonnet"), "max")
     }
 
-    func testSubagentDefaultOptionsAreProviderNeutralSharedValues() {
+    func testSubagentPolicyOptionsAreBinary() {
         XCTAssertEqual(
-            GeneralConfig.subagentModelOptions.map(\.value),
-            ["fast", "balanced", "strong"]
-        )
-        XCTAssertEqual(
-            GeneralConfig.subagentEffortOptions.map(\.value),
-            ["low", "medium", "high", "xhigh"]
+            GeneralConfig.SubagentSizingPolicy.allCases.map(\.displayName),
+            ["Orchestrator decides", "Use my defaults"]
         )
         XCTAssertEqual(GeneralConfig.normalizedSubagentModel("opus"), "balanced")
         XCTAssertEqual(GeneralConfig.normalizedSubagentEffort("max"), "medium")
@@ -226,11 +222,9 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertFalse(OnboardingView.workspaceFolderHelpText.contains("always a project"))
     }
 
-    func testGeneralSettingsExposeOrchestratorAndSubagentControlLabels() {
+    func testGeneralSettingsExposeOnlyOrchestratorAndSubagentPolicyLabels() {
         XCTAssertEqual(GeneralSettingsTab.orchestratorModelLabel, "Orchestrator Model")
         XCTAssertEqual(GeneralSettingsTab.orchestratorEffortLabel, "Orchestrator Effort")
         XCTAssertEqual(GeneralSettingsTab.subagentSizingLabel, "Sub-agent sizing")
-        XCTAssertEqual(GeneralSettingsTab.subagentModelLabel, "Sub-agent Model")
-        XCTAssertEqual(GeneralSettingsTab.subagentEffortLabel, "Sub-agent Effort")
     }
 }

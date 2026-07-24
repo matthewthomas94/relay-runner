@@ -20,11 +20,18 @@ enum TicketWriter {
 
         static func from(_ config: GeneralConfig) -> WorkerSizingDefaults? {
             guard config.subagent_sizing_policy == .userDefault else { return nil }
+            let provider = config.provider.rawValue
+            let workerModel = "\(provider):\(config.model)"
+            let workerEffort = GeneralConfig.normalizedOrchestratorEffort(
+                config.orchestrator_effort,
+                for: config.provider,
+                model: config.model
+            )
             return WorkerSizingDefaults(
-                workerModel: GeneralConfig.normalizedSubagentModel(config.subagent_model),
-                workerEffort: GeneralConfig.normalizedSubagentEffort(config.subagent_effort),
-                workerSizingRationale: "User default from Relay Runner Settings.",
-                workerProviderNotes: "User default applies to Codex and Claude; Codex uses model_reasoning_effort and Claude uses --effort."
+                workerModel: workerModel,
+                workerEffort: workerEffort,
+                workerSizingRationale: "Inherited provider, model, and effort from Relay Runner General Settings.",
+                workerProviderNotes: "Use my defaults preserves provider default model semantics; Codex uses model_reasoning_effort and Claude uses --effort."
             )
         }
     }
