@@ -161,6 +161,14 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(focusedReduceMotion.animationDuration, 0)
     }
 
+    func testSharedActionButtonMetricsMatchSettingsActionGeometry() {
+        XCTAssertEqual(SharedActionButtonMetrics.controlHeight, 28)
+        XCTAssertEqual(SharedActionButtonMetrics.cornerRadius, SettingsLayout.sidebarCornerRadius)
+        XCTAssertEqual(SharedActionButtonMetrics.cornerRadius, 6)
+        XCTAssertEqual(SharedActionButtonMetrics.horizontalPadding, 11)
+        XCTAssertEqual(SharedActionButtonMetrics.iconSpacing, 6)
+    }
+
     func testSettingsDetailContentUsesQuietWorkspaceScrollTreatment() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -189,6 +197,20 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertTrue(contents.contains("draft = appState.config"))
         XCTAssertFalse(contents.contains("OnboardingPresentationState"))
         XCTAssertFalse(contents.contains("not selected"))
+    }
+
+    func testSharedActionButtonChromeOwnsFocusAndAccessibilityHooks() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Settings/SettingsComponents.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("struct SharedActionButtonChrome"))
+        XCTAssertTrue(contents.contains(".focusable(isEnabled)"))
+        XCTAssertTrue(contents.contains(".focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)"))
+        XCTAssertTrue(contents.contains(".accessibilityLabel(accessibilityLabel)"))
     }
 
     func testSettingsSourceDoesNotHostOrRouteOnboarding() throws {

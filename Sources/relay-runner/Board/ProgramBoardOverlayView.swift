@@ -20,11 +20,9 @@ enum ProgramBoardLayout {
     static let headerHorizontalInset: CGFloat = 16
     static let headerLeadingInset: CGFloat = panelHorizontalPadding + headerHorizontalInset
     static let projectsHeaderHeight: CGFloat = 32
-    static let selectAllButtonWidth: CGFloat = 68
-    static let selectAllButtonHeight: CGFloat = 24
-    static let selectAllButtonHorizontalPadding: CGFloat = 8
-    static let selectAllButtonVerticalPadding: CGFloat = 4
-    static let newTicketButtonSize: CGFloat = selectAllButtonHeight
+    static let selectAllButtonHeight: CGFloat = SharedActionButtonMetrics.controlHeight
+    static let compactControlHeight: CGFloat = 24
+    static let newTicketButtonSize: CGFloat = compactControlHeight
     static let workHeaderHeight: CGFloat = 36
     static let overviewSectionSpacing: CGFloat = 12
     static let projectHeaderToListSpacing: CGFloat = 48
@@ -616,7 +614,25 @@ struct ProgramProjectsHeaderPresentation: Equatable {
     let selectedScopeTitle: String
 
     var selectAllTitle: String { "Select all" }
-    var selectAllUsesActiveText: Bool { isAllSelected }
+    var selectAllProminence: SharedActionButtonProminence { isAllSelected ? .primary : .secondary }
+}
+
+struct ProgramEditButtonPresentation: Equatable {
+    let isEnabled: Bool
+    let help: String
+    let accessibilityLabel: String
+
+    static func resolve(
+        isEnabled: Bool,
+        help: String,
+        accessibilityLabel: String = "Edit ticket"
+    ) -> ProgramEditButtonPresentation {
+        ProgramEditButtonPresentation(
+            isEnabled: isEnabled,
+            help: help,
+            accessibilityLabel: accessibilityLabel
+        )
+    }
 }
 
 private struct ProgramProjectsHeader: View {
@@ -644,26 +660,14 @@ private struct ProgramProjectsHeader: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            Button(action: onSelectAll) {
-                Text(presentation.selectAllTitle)
-                    .font(AppTypography.font(.programAction))
-                    .foregroundStyle(
-                        presentation.selectAllUsesActiveText
-                            ? ProgramBoardStyle.neutralText
-                            : ProgramBoardStyle.secondaryText
-                    )
-                    .lineLimit(1)
-                    .padding(.horizontal, ProgramBoardLayout.selectAllButtonHorizontalPadding)
-                    .padding(.vertical, ProgramBoardLayout.selectAllButtonVerticalPadding)
-                    .frame(
-                        width: ProgramBoardLayout.selectAllButtonWidth,
-                        height: ProgramBoardLayout.selectAllButtonHeight
-                    )
-            }
-            .buttonStyle(.plain)
-            .programControlChrome(selected: presentation.selectAllUsesActiveText)
-            .programButtonCursor()
-            .help("Show tickets from all projects")
+            ProgramWorkspaceActionButton(
+                title: presentation.selectAllTitle,
+                systemName: nil,
+                prominence: presentation.selectAllProminence,
+                accessibilityLabel: "Show tickets from all projects",
+                help: "Show tickets from all projects",
+                action: onSelectAll
+            )
         }
         .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
         .frame(height: ProgramBoardLayout.projectsHeaderHeight, alignment: .top)
@@ -1033,8 +1037,10 @@ private struct ProgramWorkCard: View {
                 Spacer(minLength: 0)
 
                 ProgramEditCapsuleButton(
-                    disabled: !canEdit,
-                    help: editHelp,
+                    presentation: ProgramEditButtonPresentation.resolve(
+                        isEnabled: canEdit,
+                        help: editHelp
+                    ),
                     action: onEdit
                 )
             }
@@ -1207,11 +1213,11 @@ struct ProgramTicketDetailPanel: View {
             }
 
             HStack(alignment: .center, spacing: 8) {
-                ProgramDetailActionButton(
-                    systemName: "square.and.pencil",
-                    title: "Edit",
-                    disabled: detail.ticket == nil,
-                    help: detail.ticket == nil ? "Ticket file is unavailable" : "Edit child ticket"
+                ProgramEditCapsuleButton(
+                    presentation: ProgramEditButtonPresentation.resolve(
+                        isEnabled: detail.ticket != nil,
+                        help: detail.ticket == nil ? "Ticket file is unavailable" : "Edit child ticket"
+                    )
                 ) {
                     onEdit()
                 }
@@ -2060,7 +2066,7 @@ private struct ProgramStatePanel: View {
                         .font(AppTypography.font(.programAction))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .padding(.horizontal, 12)
-                        .frame(height: ProgramBoardLayout.selectAllButtonHeight)
+                        .frame(height: ProgramBoardLayout.compactControlHeight)
                 }
                 .buttonStyle(.plain)
                 .disabled(reloadState.isLoading)
@@ -2162,27 +2168,64 @@ private struct ProgramSessionButton: View {
 }
 
 private struct ProgramEditCapsuleButton: View {
-    let disabled: Bool
-    let help: String
+    let presentation: ProgramEditButtonPresentation
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        ProgramWorkspaceActionButton(
+            title: "Edit",
+            systemName: "pencil",
+            isEnabled: presentation.isEnabled,
+            accessibilityLabel: presentation.accessibilityLabel,
+            help: presentation.help,
+            action: action,
+            labelFont: .action,
+            symbolSize: 10
+        )
+    }
+}
+
+private struct ProgramWorkspaceActionButton: View {
+    let title: String
+    let systemName: String?
+    var prominence: SharedActionButtonProminence = .secondary
+    var isEnabled = true
+    let accessibilityLabel: String
+    let help: String
+    let action: () -> Void
+    var labelFont: AppTypography.Role = .programAction
+    var symbolSize: CGFloat = 11
+
+    var body: some View {
+        SharedActionButtonChrome(
+            prominence: prominence,
+            isEnabled: isEnabled,
+            accessibilityLabel: accessibilityLabel,
+            helpText: help,
+            palette: palette,
+            action: action,
+            label: {
             HStack(alignment: .center, spacing: 6) {
-                Image(systemName: "pencil")
-                    .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                Text("Edit")
-                    .font(AppTypography.font(.action))
+                if let systemName {
+                    Image(systemName: systemName)
+                        .font(AppTypography.symbolFont(size: symbolSize, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+                Text(title)
+                    .font(AppTypography.font(labelFont))
                     .lineLimit(1)
             }
-            .foregroundStyle(ProgramBoardStyle.primaryText.opacity(disabled ? 0.45 : 0.95))
-            .frame(width: 70, height: 24)
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .programControlChrome(disabled: disabled)
-        .programButtonCursor(enabled: !disabled)
-        .help(help)
+            }
+        )
+        .programButtonCursor(enabled: isEnabled)
+    }
+
+    private var palette: SharedActionButtonPalette {
+        SharedActionButtonPalette(
+            foreground: prominence == .primary ? ProgramBoardStyle.neutralText : ProgramBoardStyle.primaryText,
+            fill: prominence == .primary ? ProgramBoardStyle.neutralText : Color.white,
+            stroke: ProgramBoardStyle.neutralText
+        )
     }
 }
 
