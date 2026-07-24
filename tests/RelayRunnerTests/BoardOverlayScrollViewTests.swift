@@ -185,6 +185,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             ticketPath: "/repo/relay-runner/.orchestrator/RR-214.md",
             description: "Fix scrolling",
             acceptanceCriteria: "- [ ] Reach the endpoints",
+            imageAttachments: [],
             unavailableMessage: nil
         )
 

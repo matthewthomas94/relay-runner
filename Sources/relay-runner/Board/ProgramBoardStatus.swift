@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ProgramDashboardSnapshot: Equatable {
     let summary: ProgramStatusResponse
@@ -1032,6 +1034,20 @@ struct ProgramTicketIdentity: Equatable {
     }
 }
 
+struct ProgramTicketImageAttachment: Equatable, Identifiable {
+    enum State: Equatable {
+        case preview(URL)
+        case failure(String)
+    }
+
+    let relativePath: String
+    let filename: String
+    let accessibilityLabel: String
+    let state: State
+
+    var id: String { relativePath }
+}
+
 struct ProgramTicketDetail: Equatable, Identifiable {
     let item: ProgramStatusItem
     let identity: ProgramTicketIdentity?
@@ -1039,6 +1055,7 @@ struct ProgramTicketDetail: Equatable, Identifiable {
     let ticketPath: String?
     let description: String?
     let acceptanceCriteria: String?
+    let imageAttachments: [ProgramTicketImageAttachment]
     let unavailableMessage: String?
 
     var id: String { item.id }
@@ -1067,6 +1084,7 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticketPath: nil,
                 description: nil,
                 acceptanceCriteria: nil,
+                imageAttachments: [],
                 unavailableMessage: "Ticket identity is unavailable for this Program Workspace item."
             )
         }
@@ -1080,6 +1098,7 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticketPath: ticketPath,
                 description: nil,
                 acceptanceCriteria: nil,
+                imageAttachments: [],
                 unavailableMessage: "Ticket file was not found at \(ticketPath)."
             )
         }
@@ -1094,6 +1113,11 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticketPath: ticketPath,
                 description: TicketParser.extractFullDescription(ticket.body),
                 acceptanceCriteria: TicketParser.extractAcceptanceCriteria(ticket.body),
+                imageAttachments: resolveImageAttachments(
+                    ticket: ticket,
+                    projectPath: identity.projectPath,
+                    fileManager: fileManager
+                ),
                 unavailableMessage: nil
             )
         } catch {
@@ -1104,9 +1128,97 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticketPath: ticketPath,
                 description: nil,
                 acceptanceCriteria: nil,
+                imageAttachments: [],
                 unavailableMessage: "Ticket file could not be read: \(error)."
             )
         }
+    }
+
+    private static func resolveImageAttachments(
+        ticket: Ticket,
+        projectPath: String,
+        fileManager: FileManager
+    ) -> [ProgramTicketImageAttachment] {
+        let orchestratorDirectory = URL(fileURLWithPath: projectPath, isDirectory: true)
+            .appendingPathComponent(".orchestrator", isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let allowedDirectory = orchestratorDirectory
+            .appendingPathComponent("attachments", isDirectory: true)
+            .appendingPathComponent(ticket.id, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+
+        return TicketParser.extractImageAttachmentPaths(ticket.body).map { relativePath in
+            resolveImageAttachment(
+                relativePath: relativePath,
+                ticketID: ticket.id,
+                orchestratorDirectory: orchestratorDirectory,
+                allowedDirectory: allowedDirectory,
+                fileManager: fileManager
+            )
+        }
+    }
+
+    private static func resolveImageAttachment(
+        relativePath: String,
+        ticketID: String,
+        orchestratorDirectory: URL,
+        allowedDirectory: URL,
+        fileManager: FileManager
+    ) -> ProgramTicketImageAttachment {
+        let filename = URL(fileURLWithPath: relativePath).lastPathComponent
+        let fallbackName = filename.isEmpty ? relativePath : filename
+
+        func failure(_ reason: String) -> ProgramTicketImageAttachment {
+            ProgramTicketImageAttachment(
+                relativePath: relativePath,
+                filename: fallbackName,
+                accessibilityLabel: "Ticket attachment \(fallbackName)",
+                state: .failure(reason)
+            )
+        }
+
+        guard !relativePath.isEmpty,
+              !relativePath.hasPrefix("/"),
+              !relativePath.hasPrefix("~"),
+              URL(string: relativePath)?.scheme == nil,
+              relativePath.hasPrefix("attachments/\(ticketID)/") else {
+            return failure("Image preview unavailable.")
+        }
+
+        let candidate = orchestratorDirectory
+            .appendingPathComponent(relativePath, isDirectory: false)
+            .standardizedFileURL
+        let resolved = candidate.resolvingSymlinksInPath()
+        guard isDescendantOrFile(resolved, in: allowedDirectory) else {
+            return failure("Image preview unavailable.")
+        }
+        guard fileManager.fileExists(atPath: resolved.path),
+              fileManager.isReadableFile(atPath: resolved.path),
+              (try? resolved.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            return failure("Image file is missing.")
+        }
+        guard let contentType = UTType(filenameExtension: resolved.pathExtension),
+              contentType.conforms(to: .image) else {
+            return failure("Image format is unsupported.")
+        }
+        guard NSImage(contentsOf: resolved) != nil else {
+            return failure("Image file could not be opened.")
+        }
+        return ProgramTicketImageAttachment(
+            relativePath: relativePath,
+            filename: fallbackName,
+            accessibilityLabel: "Ticket attachment \(fallbackName)",
+            state: .preview(resolved)
+        )
+    }
+
+    private static func isDescendantOrFile(_ file: URL, in directory: URL) -> Bool {
+        let filePath = file.standardizedFileURL.resolvingSymlinksInPath().path
+        let directoryPath = directory.standardizedFileURL.resolvingSymlinksInPath().path
+        let prefix = directoryPath.hasSuffix("/") ? directoryPath : directoryPath + "/"
+        return filePath.hasPrefix(prefix)
     }
 
     private static func clean(_ value: String?) -> String? {

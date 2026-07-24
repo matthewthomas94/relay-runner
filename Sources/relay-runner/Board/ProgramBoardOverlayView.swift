@@ -1267,11 +1267,8 @@ struct ProgramTicketDetailPanel: View {
                         title: "Acceptance criteria",
                         text: detail.acceptanceCriteria ?? "No acceptance criteria in the ticket file."
                     )
-                    if !detail.imageAttachmentPaths.isEmpty {
-                        ProgramDetailSection(
-                            title: "Images",
-                            text: detail.imageAttachmentPaths.joined(separator: "\n")
-                        )
+                    if !detail.imageAttachments.isEmpty {
+                        ProgramTicketImageSection(attachments: detail.imageAttachments)
                     }
                 }
             }
@@ -1352,6 +1349,78 @@ struct ProgramTicketDetailPanel: View {
     private func revealTicket() {
         guard let ticketPath = detail.ticketPath else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: ticketPath)])
+    }
+}
+
+private struct ProgramTicketImageSection: View {
+    let attachments: [ProgramTicketImageAttachment]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Images")
+                .font(AppTypography.font(.body))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+
+            ForEach(attachments) { attachment in
+                switch attachment.state {
+                case .preview(let url):
+                    ProgramTicketImagePreview(url: url, attachment: attachment)
+                case .failure(let reason):
+                    ProgramTicketImageFailure(attachment: attachment, reason: reason)
+                }
+            }
+        }
+    }
+}
+
+private struct ProgramTicketImagePreview: View {
+    let url: URL
+    let attachment: ProgramTicketImageAttachment
+
+    var body: some View {
+        if let image = NSImage(contentsOf: url) {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .accessibilityLabel(attachment.accessibilityLabel)
+        } else {
+            ProgramTicketImageFailure(
+                attachment: attachment,
+                reason: "Image file could not be opened."
+            )
+        }
+    }
+}
+
+private struct ProgramTicketImageFailure: View {
+    let attachment: ProgramTicketImageAttachment
+    let reason: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "photo")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(attachment.filename)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .lineLimit(1)
+                Text(reason)
+                    .font(AppTypography.font(.label))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(BoardDarkSurfaceStyle.contentFill)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(attachment.accessibilityLabel). \(reason)")
     }
 }
 
