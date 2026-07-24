@@ -195,43 +195,38 @@ private enum OnboardingTutorialKeycapKind {
     case control
     case shift
 
+    var assetName: String {
+        switch self {
+        case .capsLock:
+            return "OnboardingTutorialCapsLockKey"
+        case .option:
+            return "OnboardingTutorialOptionKey"
+        case .control:
+            return "OnboardingTutorialControlKey"
+        case .shift:
+            return "OnboardingTutorialShiftKey"
+        }
+    }
+
     var width: CGFloat {
         switch self {
-        case .capsLock, .option, .control:
-            return 120
-        case .shift:
+        case .control:
+            return 118
+        case .capsLock, .option, .shift:
             return 120
         }
     }
 
     var height: CGFloat {
         switch self {
-        case .shift:
-            return 52
-        default:
-            return 84
-        }
-    }
-
-    var primaryLabel: String {
-        switch self {
         case .capsLock:
-            return "caps lock"
+            return 82
         case .option:
-            return "Alt"
+            return 114
         case .control:
-            return "Control"
+            return 112
         case .shift:
-            return "shift"
-        }
-    }
-
-    var secondaryLabel: String? {
-        switch self {
-        case .option:
-            return "Option"
-        default:
-            return nil
+            return 51
         }
     }
 
@@ -270,35 +265,18 @@ private struct OnboardingTutorialKeycap: View {
 
     private func keycap(phase: OnboardingTutorialKeycapPhase) -> some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.075))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.white.opacity(0.20), lineWidth: 1)
-                )
+            Image(kind.assetName, bundle: RelayRunnerResources.bundle)
+                .resizable()
+                .renderingMode(.original)
+                .frame(width: kind.width, height: kind.height)
+                .accessibilityHidden(true)
 
             if kind == .capsLock {
                 Circle()
                     .fill(phase.capsLightOn ? Self.capsLockGreen : Self.capsLockOff)
                     .frame(width: 8, height: 8)
-                    .padding(.leading, 14)
-                    .padding(.top, 13)
+                    .offset(x: 13, y: 13)
             }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(kind.primaryLabel)
-                if let secondary = kind.secondaryLabel {
-                    Spacer(minLength: 20)
-                    Text(secondary)
-                        .font(AppTypography.font(.permissionButton, size: 21))
-                }
-            }
-            .font(AppTypography.font(.permissionButton, size: kind == .control ? 20 : 13))
-            .foregroundStyle(.white.opacity(0.86))
-            .padding(.leading, 13)
-            .padding(.top, kind == .shift ? 18 : 16)
-            .padding(.bottom, 12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .scaleEffect(phase.scale)
         .animation(nil, value: phase.scale)
