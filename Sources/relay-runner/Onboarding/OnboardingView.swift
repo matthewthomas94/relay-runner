@@ -53,16 +53,10 @@ enum OnboardingPermissionTreatment {
                              status: PermissionStatus,
                              explanation: String,
                              likelyRestricted: Bool) -> OnboardingPermissionPromptPresentation {
-        let supportingCopy: String?
-        if permission == .accessibility || likelyRestricted {
-            supportingCopy = explanation
-        } else {
-            supportingCopy = nil
-        }
         return OnboardingPermissionPromptPresentation(
             permission: permission,
             prompt: prompt(for: permission),
-            supportingCopy: supportingCopy,
+            supportingCopy: likelyRestricted ? explanation : nil,
             buttonTitle: status == .granted ? "Continue" : buttonTitle,
             isButtonEnabled: true
         )
@@ -441,9 +435,6 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Let's get Relay Runner set up.")
                 .font(AppTypography.font(.screenTitle))
-            Text("First choose the coding agent, model, and workspace folder Relay Runner should use. Then we'll handle the small amount of setup needed for voice.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -452,9 +443,6 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Which coding agent should Relay Runner start with?")
                 .font(AppTypography.font(.screenTitle))
-            Text("Start Session will open this agent and model by default. You can switch later in Settings.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             VStack(spacing: 10) {
                 agentChoiceRow(
@@ -475,11 +463,6 @@ struct OnboardingView: View {
                 workingDirectoryPicker
             }
             setupPlanView
-
-            Text("macOS privacy permissions cannot be granted silently. The setup run opens the right prompt or Settings pane for each manual step, polls for Relay Runner permission changes, and continues when macOS reports the grant.")
-                .font(AppTypography.font(.caption))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -832,9 +815,6 @@ struct OnboardingView: View {
                 Text("Python environment")
                     .font(AppTypography.font(.screenTitle))
             }
-            Text("Relay Runner uses a small Python helper for text-to-speech and the voice bridge. Setting up the environment takes about 30 seconds and only happens once per install.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             pythonStatusDetail
         }
@@ -930,9 +910,6 @@ struct OnboardingView: View {
                 Text("Sign in to your agent")
                     .font(AppTypography.font(.screenTitle))
             }
-            Text("Relay Runner will start \(selectedAgentProvider.displayName) for voice sessions. Sign in once so sessions can connect without an authentication stop.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             if agentSignedIn {
                 Text("Signed in — you're ready to go.")
                     .font(AppTypography.font(.body))

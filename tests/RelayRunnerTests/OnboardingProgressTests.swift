@@ -281,7 +281,7 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(border?.blueComponent ?? 0, 29 / 255, accuracy: 0.001)
     }
 
-    func testAccessibilityPermissionTreatmentRetainsProductExplanation() {
+    func testAccessibilityPermissionTreatmentOmitsSupportingCopyInStandardFlow() {
         let presentation = OnboardingPermissionTreatment.presentation(
             permission: .accessibility,
             status: .denied,
@@ -294,7 +294,40 @@ final class OnboardingProgressTests: XCTestCase {
             "Next let’s set up Relay Actions with accessibility /"
         )
         XCTAssertEqual(presentation.buttonTitle, "Grant permission")
+        XCTAssertNil(presentation.supportingCopy)
+    }
+
+    func testRestrictedPermissionTreatmentRetainsRecoveryExplanation() {
+        let presentation = OnboardingPermissionTreatment.presentation(
+            permission: .accessibility,
+            status: .denied,
+            explanation: "Accessibility lets Relay Runner host Relay Actions for clicking and typing.",
+            likelyRestricted: true
+        )
+
         XCTAssertTrue(presentation.supportingCopy?.contains("Relay Actions") ?? false)
+    }
+
+    func testStandardOnboardingSourceOmitsRemovedIntroductorySubcopy() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Onboarding/OnboardingView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertFalse(contents.contains(
+            "First choose the coding agent, model, and workspace folder Relay Runner should use. Then we'll handle the small amount of setup needed for voice."
+        ))
+        XCTAssertFalse(contents.contains(
+            "Start Session will open this agent and model by default. You can switch later in Settings."
+        ))
+        XCTAssertFalse(contents.contains(
+            "Relay Runner uses a small Python helper for text-to-speech and the voice bridge. Setting up the environment takes about 30 seconds and only happens once per install."
+        ))
+        XCTAssertFalse(contents.contains(
+            "Relay Runner will start \\(selectedAgentProvider.displayName) for voice sessions. Sign in once so sessions can connect without an authentication stop."
+        ))
     }
 
     func testPermissionStepsWaitForGrantButtonBeforeStartingOSSetup() throws {
