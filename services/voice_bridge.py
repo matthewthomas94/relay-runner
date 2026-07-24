@@ -52,6 +52,7 @@ PM_UPDATE_STARTUP_GRACE_SECONDS = float(os.environ.get("PM_UPDATE_STARTUP_GRACE_
 STARTUP_GREETING = "Hello, what would you like to work on?"
 MESSENGER_OUTCOME_POLL_SECONDS = float(os.environ.get("MESSENGER_OUTCOME_POLL_SECONDS", "2"))
 FOREGROUND_REPLY_FALLBACK_SECONDS = float(os.environ.get("FOREGROUND_REPLY_FALLBACK_SECONDS", "120"))
+PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS = float(os.environ.get("PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS", "5"))
 
 _FOREGROUND_REPLY_LOCK = threading.Lock()
 _FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
@@ -296,6 +297,7 @@ VOICE_CMD_FILE = "/tmp/voice_cmd_ready"
 VOICE_CMD_META_FILE = "/tmp/voice_cmd_ready.meta"
 VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
 VOICE_COMMAND_CLAIM_FILE = "/tmp/voice_cmd_claimed.json"
+VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
 VOICE_COMMAND_EVENT_LOG = os.environ.get("VOICE_COMMAND_EVENT_LOG", "/tmp/relay_command_events.jsonl")
 VOICE_COMMAND_EVENT_LIMIT = 200
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
@@ -1229,6 +1231,33 @@ def _relay_command_key(command: dict | None) -> tuple[int, str] | None:
     return command_seq, command_id
 
 
+def _provider_turn_state(
+    relay_command: dict | None,
+    *,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+) -> str | None:
+    key = _relay_command_key(relay_command)
+    if key is None:
+        return None
+    data = _read_json_file(turns_path)
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, list):
+        return None
+    for record in reversed(records):
+        if isinstance(record, dict) and _relay_command_key(record) == key:
+            state = str(record.get("state") or "").strip()
+            return state or None
+    return None
+
+
+def _provider_turn_active(
+    relay_command: dict | None,
+    *,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+) -> bool:
+    return _provider_turn_state(relay_command, turns_path=turns_path) == "active"
+
+
 def _foreground_reply_delivered(command: dict | None) -> bool:
     key = _relay_command_key(command)
     if key is None:
@@ -1480,14 +1509,23 @@ def _handle_relay_control_message(
         )
         return True
 
+    if text.startswith("__RELAY_COMPLETION__:"):
+        _handle_provider_completion_control(
+            text[len("__RELAY_COMPLETION__:"):],
+            tts_worker=tts_worker,
+            messenger=messenger,
+            state_path=state_path,
+        )
+        return True
+
     if text.startswith("__STATUS__:"):
         return True
 
     return False
 
 
-def _missing_foreground_reply_text(action) -> str:
-    if getattr(action, "kind", "") in {"create_ticket", "update_ticket", "dispatch_ticket"}:
+def _missing_foreground_reply_text_for_kind(kind: str | None) -> str:
+    if kind in {"create_ticket", "update_ticket", "dispatch_ticket"}:
         return (
             "I handled that Relay voice turn, but the provider did not send a spoken final reply. "
             "Check the terminal for the current details; worker updates will still be announced."
@@ -1498,6 +1536,45 @@ def _missing_foreground_reply_text(action) -> str:
     )
 
 
+def _missing_foreground_reply_text(action) -> str:
+    return _missing_foreground_reply_text_for_kind(getattr(action, "kind", None))
+
+
+def _deliver_missing_foreground_reply(
+    *,
+    relay_command: dict,
+    action_kind: str | None = None,
+    tts_worker: TTSWorker,
+    messenger: MessengerRuntime | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    key = _relay_command_key(relay_command)
+    if key is None:
+        return False
+    if _foreground_reply_delivered(relay_command):
+        return True
+    if not _relay_command_current(key[0], key[1], state_path=state_path):
+        return False
+    payload = {
+        "text": _missing_foreground_reply_text_for_kind(action_kind),
+        "relay_command_seq": key[0],
+        "relay_command_id": key[1],
+    }
+    delivered = False
+    if messenger is not None:
+        delivered = messenger.submit_final(payload)
+    if not delivered:
+        delivered = _queue_tts_text(
+            json.dumps(payload),
+            tts_worker.input_queue,
+            state_path=state_path,
+            allow_pending_command=True,
+        )
+    if delivered:
+        _mark_foreground_reply_delivered(relay_command)
+    return delivered
+
+
 def _schedule_foreground_reply_fallback(
     *,
     relay_command: dict,
@@ -1505,6 +1582,7 @@ def _schedule_foreground_reply_fallback(
     tts_worker: TTSWorker,
     messenger: MessengerRuntime | None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
     delay_seconds: float | None = None,
 ) -> threading.Thread | None:
     key = _relay_command_key(relay_command)
@@ -1515,29 +1593,25 @@ def _schedule_foreground_reply_fallback(
         return None
 
     def _run() -> None:
-        if delay > 0:
-            time.sleep(delay)
-        if _foreground_reply_delivered(relay_command):
-            return
-        if not _relay_command_current(key[0], key[1], state_path=state_path):
-            return
-        payload = {
-            "text": _missing_foreground_reply_text(action),
-            "relay_command_seq": key[0],
-            "relay_command_id": key[1],
-        }
-        delivered = False
-        if messenger is not None:
-            delivered = messenger.submit_final(payload)
-        if not delivered:
-            delivered = _queue_tts_text(
-                json.dumps(payload),
-                tts_worker.input_queue,
+        sleep_for = delay
+        while True:
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            if _foreground_reply_delivered(relay_command):
+                return
+            if not _relay_command_current(key[0], key[1], state_path=state_path):
+                return
+            if _provider_turn_active(relay_command, turns_path=turns_path):
+                sleep_for = max(0.25, PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS)
+                continue
+            _deliver_missing_foreground_reply(
+                relay_command=relay_command,
+                action_kind=getattr(action, "kind", None),
+                tts_worker=tts_worker,
+                messenger=messenger,
                 state_path=state_path,
-                allow_pending_command=True,
             )
-        if delivered:
-            _mark_foreground_reply_delivered(relay_command)
+            return
 
     thread = threading.Thread(
         target=_run,
@@ -1546,6 +1620,62 @@ def _schedule_foreground_reply_fallback(
     )
     thread.start()
     return thread
+
+
+def _handle_provider_completion_control(
+    raw: str,
+    *,
+    tts_worker: TTSWorker,
+    messenger: MessengerRuntime | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    """Route provider Stop hook completion through the authoritative reply path."""
+    text = raw.strip()
+    if not text:
+        return False
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    command = data.get("relay_command")
+    if not isinstance(command, dict):
+        command = data
+    key = _relay_command_key(command)
+    if key is None:
+        return False
+    if _foreground_reply_delivered(command):
+        return True
+    if not _relay_command_current(key[0], key[1], state_path=state_path):
+        print(
+            "[voice_bridge] Dropping provider completion because its Relay command was superseded.",
+            file=sys.stderr,
+        )
+        return False
+
+    reply = str(data.get("text") or data.get("last_assistant_message") or "").strip()
+    if reply:
+        payload = {
+            "text": reply,
+            "relay_command_seq": key[0],
+            "relay_command_id": key[1],
+        }
+        return _handle_orchestrator_reply_control(
+            json.dumps(payload),
+            tts_worker=tts_worker,
+            messenger=messenger,
+            state_path=state_path,
+        )
+
+    return _deliver_missing_foreground_reply(
+        relay_command=command,
+        action_kind=str(data.get("action") or ""),
+        tts_worker=tts_worker,
+        messenger=messenger,
+        state_path=state_path,
+    )
 
 
 def _handle_orchestrator_reply_control(
@@ -1575,6 +1705,13 @@ def _handle_orchestrator_reply_control(
         command = _read_json_file(VOICE_COMMAND_CLAIM_FILE)
     if _foreground_reply_delivered(command):
         return True
+    command_key = _relay_command_key(command)
+    if command_key is None or not _relay_command_current(command_key[0], command_key[1], state_path=state_path):
+        print(
+            "[voice_bridge] Dropping foreground reply because its Relay command was superseded.",
+            file=sys.stderr,
+        )
+        return False
     payload = {"text": reply}
     for key in ("relay_command_seq", "relay_command_id"):
         if key in command:
@@ -1620,7 +1757,7 @@ def _run_relay(
 ):
     """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
     # Create TTS input FIFO
-    for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE]:
+    for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE, VOICE_PROVIDER_TURNS_FILE]:
         try:
             os.unlink(path)
         except OSError:
@@ -1756,7 +1893,7 @@ def _run_relay(
                 os.close(fifo_fd)
             except OSError:
                 pass
-        for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE]:
+        for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE, VOICE_PROVIDER_TURNS_FILE]:
             try:
                 os.unlink(path)
             except OSError:

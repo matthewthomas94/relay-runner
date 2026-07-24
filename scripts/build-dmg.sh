@@ -169,7 +169,7 @@ else
 fi
 
 # Python services
-for f in voice_bridge.py messenger.py command_actions.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py \
+for f in voice_bridge.py relay_completion_hook.py messenger.py command_actions.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py \
          graphify_core.py graphify_ingest.py orchestrator.py orchestrator_workflow.md \
          program_status.py requirements.txt session_capture.py tickets.py; do
     if [ -f "$PROJECT_ROOT/services/$f" ]; then

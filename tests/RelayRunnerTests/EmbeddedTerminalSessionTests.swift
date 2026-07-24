@@ -250,16 +250,23 @@ final class RelayTerminalViewInputOriginTests: XCTestCase {
 }
 
 final class RelayVoiceCommandDeliveryTests: XCTestCase {
-    func testClaimCopiesMetadataAfterSplitPromptAndSubmitEvents() throws {
+    func testClaimCopiesMetadataBeforeSplitPromptSubmitEvent() throws {
         let fixture = try makeFixture()
         try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
         let metadata = #"{"relay_command_id":"cmd-1","relay_command_seq":1}"#
         try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
         var sent: [String] = []
+        var claimBeforeEnter: String?
         var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
         let delivery = RelayVoiceCommandDelivery(
             paths: fixture.paths,
-            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            send: { data in
+                let text = String(decoding: data, as: UTF8.self)
+                if text == "\r" {
+                    claimBeforeEnter = try? String(contentsOf: fixture.claimed)
+                }
+                sent.append(text)
+            },
             schedule: { delay, _, work in scheduled.append((delay, work)) },
             isRunning: { true }
         )
@@ -276,6 +283,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         scheduled[0].work()
 
         XCTAssertEqual(sent, ["Fix the bridge", "\r"])
+        XCTAssertEqual(claimBeforeEnter, metadata)
         XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata)
     }
 

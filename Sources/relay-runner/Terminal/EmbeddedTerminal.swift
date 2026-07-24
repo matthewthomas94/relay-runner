@@ -436,10 +436,10 @@ final class RelayVoiceCommandDelivery {
         schedule(submitDelay, queue) { [weak self] in
             guard let self, self.isRunning() else { return }
             self.touchHeartbeat()
+            self.writeClaimedMetadata(command.metadata)
             for event in remaining {
                 self.send(ArraySlice(event))
             }
-            self.writeClaimedMetadata(command.metadata)
         }
         return true
     }

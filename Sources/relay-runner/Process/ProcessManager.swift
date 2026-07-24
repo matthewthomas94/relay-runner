@@ -9,6 +9,7 @@ final class ProcessManager {
     private static let voiceCommandMetaPath = "/tmp/voice_cmd_ready.meta"
     private static let voiceCommandStatePath = "/tmp/voice_command_state.json"
     private static let voiceCommandClaimedPath = "/tmp/voice_cmd_claimed.json"
+    private static let voiceProviderTurnsPath = "/tmp/voice_provider_turns.json"
     private static let heartbeatPath = "/tmp/voice_bridge_heartbeat"
     private static let bridgeStopRequestedPath = "/tmp/voice_bridge_stop_requested"
     private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
@@ -24,6 +25,7 @@ final class ProcessManager {
         voiceCommandMetaPath,
         voiceCommandStatePath,
         voiceCommandClaimedPath,
+        voiceProviderTurnsPath,
         "/tmp/tts_in.fifo",
         "/tmp/tts_control.sock",
         heartbeatPath,
@@ -468,7 +470,7 @@ final class ProcessManager {
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         pkill -f '[v]oice_bridge.py' 2>/dev/null || true
-        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
@@ -758,6 +760,11 @@ final class ProcessManager {
                 target: target,
                 voiceDelivery: voiceDelivery
             ),
+            completionHookFlag: Self.appOwnedCompletionHookFlag(
+                relayBridge: relayBridge,
+                target: target,
+                voiceDelivery: voiceDelivery
+            ),
             voiceDelivery: voiceDelivery
         )
         return """
@@ -871,7 +878,7 @@ final class ProcessManager {
     A turn is voice-originated only when its prompt text exactly matches agent_prompt in /tmp/voice_cmd_claimed.json. For legacy metadata without agent_prompt, require an exact source_text match instead. Otherwise treat it as a normal typed turn and do not use claimed metadata or write messenger trace/reply events. For a matching voice turn, treat its relay_command_seq and relay_command_id as authority. Before follow-up actions, compare /tmp/voice_command_state.json; if a newer command is present, stop stale work and handle the newest intent.
     Resolve each command as non-work/control, direct action, ticket creation/refinement, ticket update, worker dispatch, or clarification. Raw Relay command captures are private metadata and must not appear in visible .orchestrator tickets. Do not implement substantial project work inline unless the user explicitly asks.
     Use mcp__relay-actions__* for screen manipulation and mcp__relay-vision__screenshot for screenshots; never use native computer-use fallbacks for those capabilities, and do not call propose_action.
-    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. Send the final spoken outcome as __ORCHESTRATOR_REPLY__ with the claimed seq/id. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
+    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop; an explicit current __ORCHESTRATOR_REPLY__ with the claimed seq/id remains authoritative and deduplicates the later hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
     Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible in this terminal.
     """
 
@@ -911,6 +918,75 @@ final class ProcessManager {
         return escaped
     }
 
+    private static func jsonStringLiteral(_ value: String) -> String {
+        var escaped = "\""
+        for character in value {
+            switch character {
+            case "\\":
+                escaped += "\\\\"
+            case "\"":
+                escaped += "\\\""
+            case "\n":
+                escaped += "\\n"
+            case "\r":
+                escaped += "\\r"
+            case "\t":
+                escaped += "\\t"
+            default:
+                escaped.append(character)
+            }
+        }
+        escaped += "\""
+        return escaped
+    }
+
+    private static func completionHookScriptPath(relayBridge: String) -> String {
+        URL(fileURLWithPath: relayBridge)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("services/relay_completion_hook.py")
+            .path
+    }
+
+    private static func completionHookCommand(relayBridge: String) -> String {
+        "/usr/bin/python3 \(Self.shellQuoted(Self.completionHookScriptPath(relayBridge: relayBridge)))"
+    }
+
+    private static func codexCompletionHookFlag(event: String, command: String, statusMessage: String) -> String {
+        let handler = "[{ hooks = [{ type = \"command\", command = \(Self.tomlBasicStringLiteral(command)), timeout = 2, statusMessage = \(Self.tomlBasicStringLiteral(statusMessage)) }] }]"
+        return "-c \(Self.shellQuoted("hooks.\(event)=\(handler)")) "
+    }
+
+    private static func claudeCompletionHookSettings(command: String) -> String {
+        let handler = "[{\"hooks\":[{\"type\":\"command\",\"command\":\(Self.jsonStringLiteral(command)),\"timeout\":2}]}]"
+        return "{\"hooks\":{\"UserPromptSubmit\":\(handler),\"Stop\":\(handler),\"StopFailure\":\(handler)}}"
+    }
+
+    private static func appOwnedCompletionHookFlag(
+        relayBridge: String,
+        target: AgentTarget,
+        voiceDelivery: SessionVoiceDelivery
+    ) -> String {
+        guard voiceDelivery == .appOwned else { return "" }
+        let command = Self.completionHookCommand(relayBridge: relayBridge)
+        switch target {
+        case .codex:
+            return "--enable hooks --dangerously-bypass-hook-trust "
+                + Self.codexCompletionHookFlag(
+                    event: "UserPromptSubmit",
+                    command: command,
+                    statusMessage: "Relay voice prompt binding"
+                )
+                + Self.codexCompletionHookFlag(
+                    event: "Stop",
+                    command: command,
+                    statusMessage: "Relay voice completion"
+                )
+        case .claude:
+            return "--settings \(Self.shellQuoted(Self.claudeCompletionHookSettings(command: command))) "
+        }
+    }
+
     private static func agentLaunchLine(
         binary: String,
         target: AgentTarget,
@@ -918,9 +994,10 @@ final class ProcessManager {
         reasoningEffortFlag: String,
         bypassFlag: String,
         appOwnedInstructionFlag: String,
+        completionHookFlag: String,
         voiceDelivery: SessionVoiceDelivery
     ) -> String {
-        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(appOwnedInstructionFlag)\(bypassFlag)"
+        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(appOwnedInstructionFlag)\(completionHookFlag)\(bypassFlag)"
             .trimmingCharacters(in: .whitespaces)
         guard voiceDelivery == .agentSkill else {
             return prefix
