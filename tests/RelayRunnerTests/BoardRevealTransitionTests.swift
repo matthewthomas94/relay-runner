@@ -58,4 +58,18 @@ final class BoardRevealTransitionTests: XCTestCase {
         )
         XCTAssertGreaterThan(plan.expandedFrame.height, NotchStatusPlacementPlanner.glyphSize.height)
     }
+
+    func testWorkspaceRevealTimingMeetsWarmInteractiveBudget() {
+        XCTAssertLessThanOrEqual(
+            BoardRevealTransitionTiming.warmOpenInteractiveDuration,
+            BoardRevealTransitionTiming.warmOpenInteractiveBudget
+        )
+    }
+
+    func testWorkspaceDismissTimingMeetsHiddenBudget() {
+        XCTAssertLessThanOrEqual(
+            BoardRevealTransitionTiming.closeHiddenDuration,
+            BoardRevealTransitionTiming.closeHiddenBudget
+        )
+    }
 }

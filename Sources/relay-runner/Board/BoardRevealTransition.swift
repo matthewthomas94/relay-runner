@@ -1,6 +1,23 @@
 import AppKit
 import QuartzCore
 
+enum BoardRevealTransitionTiming {
+    static let expandDuration: TimeInterval = 0.18
+    static let contentRevealDuration: TimeInterval = 0.10
+    static let contentHideDuration: TimeInterval = 0.08
+    static let compactDuration: TimeInterval = 0.14
+    static let warmOpenInteractiveBudget: TimeInterval = 0.30
+    static let closeHiddenBudget: TimeInterval = 0.25
+
+    static var warmOpenInteractiveDuration: TimeInterval {
+        expandDuration + contentRevealDuration
+    }
+
+    static var closeHiddenDuration: TimeInterval {
+        contentHideDuration + compactDuration
+    }
+}
+
 struct BoardRevealTransitionPlan: Equatable {
     let compactFrame: CGRect
     let fullWidthFrame: CGRect
@@ -97,6 +114,7 @@ extension NotchStatusDisplayGeometry {
 }
 
 final class BoardRevealContainerView: NSView {
+    private let plan: BoardRevealTransitionPlan
     private let revealView: BoardRevealSurfaceView
     private let glyphView: BoardRevealGlyphView
     private let contentContainerView = NSView()
@@ -115,6 +133,7 @@ final class BoardRevealContainerView: NSView {
         startsLoading: Bool
     ) {
         let plan = BoardRevealTransitionPlanner.plan(for: displayGeometry)
+        self.plan = plan
         self.revealView = BoardRevealSurfaceView(frame: frame, plan: plan)
         self.glyphView = BoardRevealGlyphView(frame: frame, plan: plan)
         self.hostedContentView = contentView
@@ -169,6 +188,21 @@ final class BoardRevealContainerView: NSView {
         revealContentIfReady()
     }
 
+    func canReuse(displayGeometry: NotchStatusDisplayGeometry) -> Bool {
+        BoardRevealTransitionPlanner.plan(for: displayGeometry) == plan
+    }
+
+    func prepareForOpening(startsLoading: Bool) {
+        revealView.cancelAnimation()
+        revealView.showCompact()
+        revealExpanded = false
+        contentVisible = false
+        contentContainerView.alphaValue = 0
+        contentContainerView.isHidden = true
+        setContentYOffset(Self.hiddenContentYOffset)
+        setLoading(startsLoading)
+    }
+
     func setUpdateCheckActive(_ active: Bool) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
@@ -188,13 +222,10 @@ final class BoardRevealContainerView: NSView {
             return
         }
 
-        revealView.animateToFullWidth { [weak self] in
+        revealView.animateToExpanded { [weak self] in
             guard let self else { return }
-            self.revealView.animateToExpanded { [weak self] in
-                guard let self else { return }
-                self.revealExpanded = true
-                self.revealContentIfReady(completion: completion)
-            }
+            self.revealExpanded = true
+            self.revealContentIfReady(completion: completion)
         }
     }
 
@@ -209,11 +240,8 @@ final class BoardRevealContainerView: NSView {
         hideContentIfNeeded { [weak self] in
             guard let self else { return }
             self.revealView.setLoading(false)
-            self.revealView.animateToFullWidth { [weak self] in
-                guard let self else { return }
-                self.revealView.animateToCompact {
-                    completion()
-                }
+            self.revealView.animateToCompact {
+                completion()
             }
         }
     }
@@ -236,9 +264,13 @@ final class BoardRevealContainerView: NSView {
         contentContainerView.isHidden = false
         contentContainerView.alphaValue = 0
         setContentYOffset(Self.hiddenContentYOffset)
-        animateContentYOffset(from: Self.hiddenContentYOffset, to: 0, duration: 0.38)
+        animateContentYOffset(
+            from: Self.hiddenContentYOffset,
+            to: 0,
+            duration: BoardRevealTransitionTiming.contentRevealDuration
+        )
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.38
+            context.duration = BoardRevealTransitionTiming.contentRevealDuration
             context.timingFunction = Self.revealTiming
             contentContainerView.animator().alphaValue = 1
         } completionHandler: {
@@ -253,9 +285,13 @@ final class BoardRevealContainerView: NSView {
         }
 
         contentVisible = false
-        animateContentYOffset(from: 0, to: Self.hiddenContentYOffset, duration: 0.22)
+        animateContentYOffset(
+            from: 0,
+            to: Self.hiddenContentYOffset,
+            duration: BoardRevealTransitionTiming.contentHideDuration
+        )
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.22
+            context.duration = BoardRevealTransitionTiming.contentHideDuration
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.5, 0, 0.75, 0)
             contentContainerView.animator().alphaValue = 0
         } completionHandler: { [weak self] in
@@ -315,6 +351,12 @@ private final class BoardRevealSurfaceView: NSView {
         needsDisplay = true
     }
 
+    func showCompact() {
+        cancelAnimation()
+        surfaceFrame = plan.compactFrame
+        needsDisplay = true
+    }
+
     func setLoading(_ loading: Bool) {
         guard self.loading != loading else { return }
         self.loading = loading
@@ -326,11 +368,19 @@ private final class BoardRevealSurfaceView: NSView {
     }
 
     func animateToExpanded(completion: @escaping () -> Void) {
-        animate(to: plan.expandedFrame, duration: 0.34, completion: completion)
+        animate(
+            to: plan.expandedFrame,
+            duration: BoardRevealTransitionTiming.expandDuration,
+            completion: completion
+        )
     }
 
     func animateToCompact(completion: @escaping () -> Void) {
-        animate(to: plan.compactFrame, duration: 0.22, completion: completion)
+        animate(
+            to: plan.compactFrame,
+            duration: BoardRevealTransitionTiming.compactDuration,
+            completion: completion
+        )
     }
 
     func cancelAnimation() {

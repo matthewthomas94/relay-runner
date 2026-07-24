@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 import SwiftUI
 
 private struct NotchActivitySnapshot {
@@ -990,9 +991,12 @@ final class AppState {
     /// Show or hide the unified Workspace overlay. Single-repo sessions scope
     /// Work to that repo; workspace sessions aggregate discovered child repos.
     @discardableResult
-    func toggleBoard(allowDuringFirstRun: Bool = false) -> Bool {
+    func toggleBoard(
+        allowDuringFirstRun: Bool = false,
+        recognizedAt: CFTimeInterval? = nil
+    ) -> Bool {
         guard allowsAppShellAccess || allowDuringFirstRun else { return false }
-        return programBoardOverlay.toggle()
+        return programBoardOverlay.toggle(recognizedAt: recognizedAt)
     }
 
     func toggleWorkspace() {
@@ -1456,7 +1460,7 @@ final class AppState {
             onToggleBoard: { [weak self] in
                 guard let self else { return }
                 await MainActor.run {
-                    _ = self.toggleBoard()
+                    _ = self.toggleBoard(recognizedAt: CACurrentMediaTime())
                 }
             },
             onActivateProject: { [weak self] pathOrAlias, provider in
@@ -1544,9 +1548,14 @@ final class AppState {
             self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: false)
 
             if engine.boardToggleRequested {
+                let recognizedAt = engine.boardToggleRequestedAt ?? CACurrentMediaTime()
                 engine.boardToggleRequested = false
+                engine.boardToggleRequestedAt = nil
                 let allowDuringOnboarding = self.onboarding.isAwaitingTutorialWorkspaceToggle
-                if self.toggleBoard(allowDuringFirstRun: allowDuringOnboarding),
+                if self.toggleBoard(
+                    allowDuringFirstRun: allowDuringOnboarding,
+                    recognizedAt: recognizedAt
+                ),
                    allowDuringOnboarding {
                     self.onboarding.noteTutorialWorkspaceToggled()
                 }

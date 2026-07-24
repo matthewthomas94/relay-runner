@@ -1,5 +1,35 @@
 import AppKit
+import QuartzCore
 import SwiftUI
+
+struct WorkspaceLatencyMetric: Equatable {
+    let name: String
+    let milliseconds: Int
+
+    static func measure(
+        _ name: String,
+        from start: CFTimeInterval,
+        to end: CFTimeInterval
+    ) -> WorkspaceLatencyMetric {
+        WorkspaceLatencyMetric(
+            name: name,
+            milliseconds: Int(((end - start) * 1000).rounded())
+        )
+    }
+}
+
+private struct WorkspaceLatencyProbe {
+    let recognizedAt: CFTimeInterval
+
+    init(recognizedAt: CFTimeInterval?) {
+        self.recognizedAt = recognizedAt ?? CACurrentMediaTime()
+    }
+
+    func log(_ name: String, at time: CFTimeInterval = CACurrentMediaTime()) {
+        let metric = WorkspaceLatencyMetric.measure(name, from: recognizedAt, to: time)
+        NSLog("[relay-runner] Workspace latency \(metric.name)=\(metric.milliseconds)ms")
+    }
+}
 
 /// Unified Workspace overlay for single-repo and multi-repo work surfaces.
 /// Ticket mutations resolve through the repo advertised by Program Manager
@@ -31,6 +61,7 @@ final class ProgramBoardOverlayController {
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
     private(set) var isSuspendedForExternalWindow = false
+    private var dismissInFlight = false
     private var lastSelectedTab: WorkspaceTab = .work
     private weak var revealContainer: BoardRevealContainerView?
     private var globalMonitor: Any?
@@ -153,7 +184,7 @@ final class ProgramBoardOverlayController {
             showsTerminalTab: hasTerminalTab,
             showsSettingsTab: hasSettingsTab
         )
-        let blocksContent = showsWorkTab && !hasCachedSnapshot
+        let blocksContent = false
         return WorkspaceOpening(
             showsWorkTab: showsWorkTab,
             showsTerminalTab: hasTerminalTab,
@@ -229,17 +260,17 @@ final class ProgramBoardOverlayController {
     }
 
     @discardableResult
-    func toggle() -> Bool {
+    func toggle(recognizedAt: CFTimeInterval? = nil) -> Bool {
         if isVisible {
-            hide()
+            hide(recognizedAt: recognizedAt)
             return true
         }
-        return show()
+        return show(recognizedAt: recognizedAt)
     }
 
     @discardableResult
-    func show() -> Bool {
-        show(initialTab: lastSelectedTab)
+    func show(recognizedAt: CFTimeInterval? = nil) -> Bool {
+        show(initialTab: lastSelectedTab, recognizedAt: recognizedAt)
     }
 
     @discardableResult
@@ -248,9 +279,13 @@ final class ProgramBoardOverlayController {
     }
 
     @discardableResult
-    private func show(initialTab: WorkspaceTab) -> Bool {
+    private func show(
+        initialTab: WorkspaceTab,
+        recognizedAt: CFTimeInterval? = nil
+    ) -> Bool {
         if resumeAfterExternalWindow(initialTab: initialTab) { return true }
         guard !isVisible else { return true }
+        let probe = WorkspaceLatencyProbe(recognizedAt: recognizedAt)
         let settingsContent = settingsContentProvider?()
         let route = boardRouteResolver()
         let activityProjectPaths = projectScopeProvider()
@@ -270,7 +305,7 @@ final class ProgramBoardOverlayController {
             noSessionHandler?()
             return false
         }
-        present(opening: opening, settingsContent: settingsContent)
+        present(opening: opening, settingsContent: settingsContent, probe: probe)
         return true
     }
 
@@ -303,7 +338,11 @@ final class ProgramBoardOverlayController {
         show(initialTab: initialTab)
     }
 
-    private func present(opening: WorkspaceOpening, settingsContent: AnyView?) {
+    private func present(
+        opening: WorkspaceOpening,
+        settingsContent: AnyView?,
+        probe: WorkspaceLatencyProbe
+    ) {
         workspace.configure(
             showsWorkTab: opening.showsWorkTab,
             showsTerminalTab: opening.showsTerminalTab,
@@ -325,56 +364,68 @@ final class ProgramBoardOverlayController {
         model.hasActiveSession = sessionActiveProvider()
 
         let contentFrame = NSRect(origin: .zero, size: p.frame.size)
-        let hosting = NSHostingView(rootView: ProgramBoardOverlayView(
-            model: model,
-            workspace: workspace,
-            settingsContent: settingsContent,
-            terminalContent: { [weak self] projectPath in
-                self?.terminalContentProvider?(projectPath)
-            },
-            onDismiss: { [weak self] in self?.hide() },
-            onWorkspaceTabChange: { [weak self] tab in self?.workspaceTabDidChange(tab) },
-            onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
-            onStartSession: { [weak self] in self?.startSession() },
-            onEndSession: { [weak self] in self?.endSession() },
-            onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
-            onCreateCommit: { [weak self] request in self?.commitCreate(request) },
-            onCreateCancel: { [weak self] in self?.cancelCreate() },
-            onEditStart: { [weak self] detail in self?.beginEdit(detail: detail) },
-            onEditCommit: { [weak self] request in self?.commitEdit(request) },
-            onEditCancel: { [weak self] in self?.cancelEdit() },
-            onDelete: { [weak self] request in self?.handleDelete(request) },
-            onDrop: { [weak self] item, sourceLane, targetLane in
-                self?.handleDrop(item: item, from: sourceLane, to: targetLane)
-            }
-        ))
-        hosting.frame = contentFrame
-        hosting.autoresizingMask = [.width, .height]
-        hosting.layer?.backgroundColor = NSColor.clear.cgColor
+        let displayGeometry = screen.map(NotchStatusDisplayGeometry.init(screen:))
+            ?? NotchStatusDisplayGeometry(screenFrame: p.frame)
+        let container: BoardRevealContainerView
+        if !dismissInFlight,
+           let cachedContainer = p.contentView as? BoardRevealContainerView,
+           cachedContainer.canReuse(displayGeometry: displayGeometry) {
+            cachedContainer.prepareForOpening(startsLoading: opening.startsLoading)
+            container = cachedContainer
+        } else {
+            let hosting = NSHostingView(rootView: ProgramBoardOverlayView(
+                model: model,
+                workspace: workspace,
+                settingsContent: settingsContent,
+                terminalContent: { [weak self] projectPath in
+                    self?.terminalContentProvider?(projectPath)
+                },
+                onDismiss: { [weak self] in self?.hide() },
+                onWorkspaceTabChange: { [weak self] tab in self?.workspaceTabDidChange(tab) },
+                onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
+                onStartSession: { [weak self] in self?.startSession() },
+                onEndSession: { [weak self] in self?.endSession() },
+                onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
+                onCreateCommit: { [weak self] request in self?.commitCreate(request) },
+                onCreateCancel: { [weak self] in self?.cancelCreate() },
+                onEditStart: { [weak self] detail in self?.beginEdit(detail: detail) },
+                onEditCommit: { [weak self] request in self?.commitEdit(request) },
+                onEditCancel: { [weak self] in self?.cancelEdit() },
+                onDelete: { [weak self] request in self?.handleDelete(request) },
+                onDrop: { [weak self] item, sourceLane, targetLane in
+                    self?.handleDrop(item: item, from: sourceLane, to: targetLane)
+                }
+            ))
+            hosting.frame = contentFrame
+            hosting.autoresizingMask = [.width, .height]
+            hosting.layer?.backgroundColor = NSColor.clear.cgColor
 
-        let container = BoardRevealContainerView(
-            frame: contentFrame,
-            contentView: hosting,
-            displayGeometry: screen.map(NotchStatusDisplayGeometry.init(screen:))
-                ?? NotchStatusDisplayGeometry(screenFrame: p.frame),
-            startsLoading: opening.startsLoading
-        )
-        container.autoresizingMask = [.width, .height]
-
-        p.contentView = container
+            container = BoardRevealContainerView(
+                frame: contentFrame,
+                contentView: hosting,
+                displayGeometry: displayGeometry,
+                startsLoading: opening.startsLoading
+            )
+            container.autoresizingMask = [.width, .height]
+            p.contentView = container
+        }
         p.orderFrontRegardless()
+        probe.log("gesture_to_first_visible_frame")
         panel = p
         revealContainer = container
+        dismissInFlight = false
         isVisible = true
         updatePanelKeyEligibility()
         DispatchQueue.main.async { [weak container] in
-            container?.animateReveal {}
+            container?.animateReveal {
+                probe.log("gesture_to_interactive_content")
+            }
         }
 
         startThemePoll()
         startStatusPoll()
         if opening.reloadsWork {
-            checkForUpdates(inBackground: !opening.startsLoading)
+            checkForUpdates(inBackground: true)
         } else {
             loadingStateHandler?(false)
         }
@@ -446,8 +497,9 @@ final class ProgramBoardOverlayController {
         updatePanelKeyEligibility()
     }
 
-    func hide() {
+    func hide(recognizedAt: CFTimeInterval? = nil) {
         guard isVisible else { return }
+        let probe = WorkspaceLatencyProbe(recognizedAt: recognizedAt)
         updateCheckTask?.cancel()
         updateCheckTask = nil
         contentLoadBlocked = false
@@ -459,6 +511,7 @@ final class ProgramBoardOverlayController {
         stopThemePoll()
         stopStatusPoll()
         isVisible = false
+        dismissInFlight = true
         let panelToDismiss = panel
         let container = revealContainer ?? panelToDismiss?.contentView as? BoardRevealContainerView
         if let container {
@@ -466,15 +519,16 @@ final class ProgramBoardOverlayController {
                 guard let panelToDismiss else { return }
                 if let self, self.revealContainer !== container { return }
                 panelToDismiss.orderOut(nil)
+                probe.log("close_to_panel_hidden")
                 if let self, self.panel === panelToDismiss {
-                    self.panel?.contentView = nil
-                    self.revealContainer = nil
+                    self.dismissInFlight = false
                 }
             }
         } else {
             panelToDismiss?.orderOut(nil)
-            panelToDismiss?.contentView = nil
+            probe.log("close_to_panel_hidden")
             revealContainer = nil
+            dismissInFlight = false
         }
     }
 
