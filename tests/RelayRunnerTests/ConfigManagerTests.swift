@@ -4,7 +4,7 @@ import XCTest
 
 final class ConfigManagerTests: XCTestCase {
 
-    func testOrchestratorAndSubagentSettingsPersistThroughConfigManager() throws {
+    func testOrchestratorAndSubagentPolicyPersistThroughConfigManager() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)
         var config = AppConfig()
@@ -29,6 +29,8 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertTrue(raw.contains("orchestrator_effort = \"max\""))
         XCTAssertTrue(raw.contains("codex_reasoning_effort = \"default\""))
         XCTAssertTrue(raw.contains("subagent_sizing_policy = \"user_default\""))
+        XCTAssertFalse(raw.contains("subagent_model"))
+        XCTAssertFalse(raw.contains("subagent_effort"))
         XCTAssertTrue(raw.contains("messenger_enabled = false"))
         XCTAssertTrue(raw.contains("messenger_model = \"sonnet\""))
         XCTAssertEqual(loaded.general.provider, .claude)
@@ -36,8 +38,8 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertEqual(loaded.general.orchestrator_effort, "max")
         XCTAssertEqual(loaded.general.codex_reasoning_effort, GeneralConfig.defaultCodexReasoningEffort)
         XCTAssertEqual(loaded.general.subagent_sizing_policy, .userDefault)
-        XCTAssertEqual(loaded.general.subagent_model, "strong")
-        XCTAssertEqual(loaded.general.subagent_effort, "xhigh")
+        XCTAssertEqual(loaded.general.subagent_model, GeneralConfig.defaultSubagentModel)
+        XCTAssertEqual(loaded.general.subagent_effort, GeneralConfig.defaultSubagentEffort)
         XCTAssertFalse(loaded.general.messenger_enabled)
         XCTAssertEqual(loaded.general.messenger_model, "sonnet")
         XCTAssertEqual(loaded.general.messenger_effort, "low")
@@ -88,6 +90,30 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertEqual(loaded.general.subagent_effort, GeneralConfig.defaultSubagentEffort)
         XCTAssertEqual(loaded.general.messenger_model, GeneralConfig.defaultMessengerModel)
         XCTAssertEqual(loaded.general.messenger_effort, GeneralConfig.defaultMessengerEffort)
+    }
+
+    func testLegacySubagentModelAndEffortLoadButDoNotRoundTrip() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try """
+        [general]
+        subagent_sizing_policy = "user_default"
+        subagent_model = "strong"
+        subagent_effort = "xhigh"
+        """.write(to: manager.configPath, atomically: true, encoding: .utf8)
+
+        let loaded = manager.load()
+
+        XCTAssertEqual(loaded.general.subagent_sizing_policy, .userDefault)
+        XCTAssertEqual(loaded.general.subagent_model, "strong")
+        XCTAssertEqual(loaded.general.subagent_effort, "xhigh")
+
+        try manager.save(loaded)
+        let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
+
+        XCTAssertFalse(raw.contains("subagent_model"))
+        XCTAssertFalse(raw.contains("subagent_effort"))
     }
 
     private func temporaryConfigDir() -> URL {

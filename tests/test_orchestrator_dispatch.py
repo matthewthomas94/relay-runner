@@ -178,9 +178,11 @@ class OrchestratorDispatchTests(unittest.TestCase):
             daemon.cfg = {
                 "general": {
                     "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
                     "model": "gpt-5.6-sol",
                     "subagent_model": "strong",
                     "subagent_effort": "high",
+                    "orchestrator_effort": "high",
                 }
             }
 
@@ -192,10 +194,10 @@ class OrchestratorDispatchTests(unittest.TestCase):
             start_worker.assert_called_once()
             run = result["run"]
             self.assertEqual(run["model_alias"], "gpt-5.6-sol")
-            self.assertEqual(run["worker_model"], "strong")
+            self.assertEqual(run["worker_model"], "codex:gpt-5.6-sol")
             self.assertEqual(run["worker_effort"], "high")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "strong")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:gpt-5.6-sol")
             self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
 
     def test_ready_sweeper_applies_user_default_worker_sizing_to_ready_ticket(self):
@@ -210,9 +212,11 @@ class OrchestratorDispatchTests(unittest.TestCase):
             daemon.cfg = {
                 "general": {
                     "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
                     "model": "gpt-5.5",
                     "subagent_model": "strong",
                     "subagent_effort": "xhigh",
+                    "orchestrator_effort": "xhigh",
                 }
             }
 
@@ -224,14 +228,14 @@ class OrchestratorDispatchTests(unittest.TestCase):
             start_worker.assert_called_once()
             self.assertEqual(result["dispatched"][0]["ticket_id"], "RR-1")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "strong")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:gpt-5.5")
             self.assertEqual(ticket["_raw_fields"]["worker_effort"], "xhigh")
             self.assertIn(
-                "Codex uses model_reasoning_effort and Claude uses --effort",
+                "Use my defaults preserves provider default model semantics",
                 ticket["_raw_fields"]["worker_provider_notes"],
             )
 
-    def test_user_default_worker_sizing_preserves_explicit_ticket_sizing(self):
+    def test_user_default_worker_sizing_overrides_explicit_ticket_sizing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -251,21 +255,115 @@ class OrchestratorDispatchTests(unittest.TestCase):
             daemon.cfg = {
                 "general": {
                     "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
                     "model": "gpt-5.6-sol",
                     "subagent_model": "strong",
                     "subagent_effort": "high",
+                    "orchestrator_effort": "high",
                 }
             }
 
             with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
                 result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
 
-            self.assertEqual(result["run"]["model_alias"], "gpt-5.4-mini")
-            self.assertEqual(result["run"]["worker_model"], "fast")
-            self.assertEqual(result["run"]["worker_effort"], "low")
+            self.assertEqual(result["run"]["model_alias"], "gpt-5.6-sol")
+            self.assertEqual(result["run"]["worker_model"], "codex:gpt-5.6-sol")
+            self.assertEqual(result["run"]["worker_effort"], "high")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "fast")
-            self.assertEqual(ticket["_raw_fields"]["worker_effort"], "low")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:gpt-5.6-sol")
+            self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
+
+    def test_user_default_default_model_omits_codex_model_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="ready",
+                run_id=None,
+                sizing=True,
+                worker_model="strong",
+                worker_effort="high",
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.cfg = {
+                "general": {
+                    "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
+                    "model": "default",
+                    "orchestrator_effort": "default",
+                }
+            }
+
+            with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            self.assertIsNone(result["run"]["model_alias"])
+            self.assertEqual(result["run"]["worker_model"], "codex:default")
+            command = Worker(
+                run_id=result["run"]["id"],
+                run=result["run"],
+                prompt="",
+                agent_bin="codex",
+                agent_kind="codex",
+                store=daemon.runs,
+                log_path=Path(tmp) / "run.log",
+                timeout_seconds=1,
+            )._command()
+            self.assertNotIn("--model", command)
+
+    def test_user_default_inherits_claude_model_and_effort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="ready",
+                run_id=None,
+                sizing=True,
+                worker_model="strong",
+                worker_effort="high",
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="claude")
+            daemon.cfg = {
+                "general": {
+                    "subagent_sizing_policy": "user_default",
+                    "provider": "claude",
+                    "model": "sonnet",
+                    "orchestrator_effort": "high",
+                }
+            }
+
+            with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            run = result["run"]
+            self.assertEqual(run["provider_key"], "claude")
+            self.assertEqual(run["model_alias"], "sonnet")
+            self.assertEqual(run["worker_model"], "claude:sonnet")
+            self.assertEqual(run["worker_effort"], "high")
+            command = Worker(
+                run_id=run["id"],
+                run=run,
+                prompt="",
+                agent_bin="claude",
+                agent_kind="claude",
+                store=daemon.runs,
+                log_path=Path(tmp) / "run.log",
+                timeout_seconds=1,
+            )._command()
+            self.assertIn("--model", command)
+            self.assertIn("sonnet", command)
+            self.assertIn("--effort", command)
+            self.assertIn("high", command)
 
     def test_dispatch_records_valid_codex_sizing_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:

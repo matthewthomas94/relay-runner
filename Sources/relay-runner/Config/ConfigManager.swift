@@ -159,8 +159,6 @@ final class ConfigManager {
         lines.append("messenger_model = \"\(c.general.messenger_model)\"")
         lines.append("messenger_effort = \"\(c.general.messenger_effort)\"")
         lines.append("subagent_sizing_policy = \"\(c.general.subagent_sizing_policy.rawValue)\"")
-        lines.append("subagent_model = \"\(c.general.subagent_model)\"")
-        lines.append("subagent_effort = \"\(c.general.subagent_effort)\"")
         lines.append("")
 
         lines.append("[awareness]")
