@@ -58,13 +58,12 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(ProgramBoardLayout.headerHorizontalInset, 16)
         XCTAssertEqual(ProgramBoardLayout.headerLeadingInset, 24)
         XCTAssertEqual(ProgramBoardLayout.projectsHeaderHeight, 32)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonWidth, 68)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHeight, 24)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHorizontalPadding, 8)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonVerticalPadding, 4)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHeight, SharedActionButtonMetrics.controlHeight)
+        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHeight, 28)
+        XCTAssertEqual(ProgramBoardLayout.compactControlHeight, 24)
         XCTAssertEqual(
             ProgramBoardLayout.newTicketButtonSize,
-            ProgramBoardLayout.selectAllButtonHeight
+            ProgramBoardLayout.compactControlHeight
         )
         XCTAssertEqual(ProgramBoardLayout.workHeaderHeight, 36)
         XCTAssertEqual(ProgramBoardLayout.workCardTopOffset, 100)
@@ -132,14 +131,45 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         XCTAssertEqual(allProjects.selectAllTitle, "Select all")
         XCTAssertEqual(allProjects.selectedScopeTitle, "All projects")
-        XCTAssertTrue(allProjects.selectAllUsesActiveText)
+        XCTAssertEqual(allProjects.selectAllProminence, .primary)
         XCTAssertEqual(selectedProject.selectedScopeTitle, "mentistic")
-        XCTAssertFalse(selectedProject.selectAllUsesActiveText)
+        XCTAssertEqual(selectedProject.selectAllProminence, .secondary)
 
         let activeText = ProgramBoardStyle.neutralTextNSColor.usingColorSpace(.sRGB)
         XCTAssertEqual(activeText?.redComponent ?? 0, 248 / 255, accuracy: 0.001)
         XCTAssertEqual(activeText?.greenComponent ?? 0, 250 / 255, accuracy: 0.001)
         XCTAssertEqual(activeText?.blueComponent ?? 0, 252 / 255, accuracy: 0.001)
+    }
+
+    func testProgramEditButtonPresentationKeepsEnablementHelpAndAccessibilityLabel() {
+        let enabled = ProgramEditButtonPresentation.resolve(
+            isEnabled: true,
+            help: "Edit ticket"
+        )
+        let disabled = ProgramEditButtonPresentation.resolve(
+            isEnabled: false,
+            help: "Ticket identity is unavailable"
+        )
+
+        XCTAssertTrue(enabled.isEnabled)
+        XCTAssertEqual(enabled.help, "Edit ticket")
+        XCTAssertEqual(enabled.accessibilityLabel, "Edit ticket")
+        XCTAssertFalse(disabled.isEnabled)
+        XCTAssertEqual(disabled.help, "Ticket identity is unavailable")
+        XCTAssertEqual(disabled.accessibilityLabel, "Edit ticket")
+    }
+
+    func testWorkspaceBoardUsesSharedActionButtonsForSelectAllAndEdit() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("ProgramWorkspaceActionButton(\n                title: presentation.selectAllTitle"))
+        XCTAssertTrue(contents.contains("ProgramEditCapsuleButton(\n                    presentation: ProgramEditButtonPresentation.resolve("))
+        XCTAssertTrue(contents.contains("SharedActionButtonChrome("))
     }
 
     func testProgramBoardProjectHoverPresentationKeepsSelectedAndDisabledPrecedence() {
