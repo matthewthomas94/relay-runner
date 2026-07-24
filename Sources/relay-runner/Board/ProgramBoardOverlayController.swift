@@ -228,21 +228,29 @@ final class ProgramBoardOverlayController {
         statusPollTimer?.invalidate()
     }
 
-    func toggle() {
-        if isVisible { hide() } else { show() }
+    @discardableResult
+    func toggle() -> Bool {
+        if isVisible {
+            hide()
+            return true
+        }
+        return show()
     }
 
-    func show() {
+    @discardableResult
+    func show() -> Bool {
         show(initialTab: lastSelectedTab)
     }
 
-    func showWork() {
+    @discardableResult
+    func showWork() -> Bool {
         show(initialTab: .work)
     }
 
-    private func show(initialTab: WorkspaceTab) {
-        if resumeAfterExternalWindow(initialTab: initialTab) { return }
-        guard !isVisible else { return }
+    @discardableResult
+    private func show(initialTab: WorkspaceTab) -> Bool {
+        if resumeAfterExternalWindow(initialTab: initialTab) { return true }
+        guard !isVisible else { return true }
         let settingsContent = settingsContentProvider?()
         let route = boardRouteResolver()
         let activityProjectPaths = projectScopeProvider()
@@ -260,9 +268,10 @@ final class ProgramBoardOverlayController {
             activityProjectPaths: activityProjectPaths
         ) else {
             noSessionHandler?()
-            return
+            return false
         }
         present(opening: opening, settingsContent: settingsContent)
+        return true
     }
 
     private static func projectScope(
