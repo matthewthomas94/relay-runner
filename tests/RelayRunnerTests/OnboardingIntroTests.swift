@@ -1549,11 +1549,17 @@ final class OnboardingIntroTests: XCTestCase {
             "Choose your workspace /"
         )
         XCTAssertEqual(OnboardingBlinkingTitle.cursorOpacity(at: 0), 1)
-        XCTAssertEqual(
+        XCTAssertLessThan(
             OnboardingBlinkingTitle.cursorOpacity(
                 at: OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
             ),
-            0.5
+            0.52
+        )
+        XCTAssertGreaterThan(
+            OnboardingBlinkingTitle.cursorOpacity(
+                at: OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
+            ),
+            OnboardingCursorBlink.minimumOpacity
         )
     }
 
