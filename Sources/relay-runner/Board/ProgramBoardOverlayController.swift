@@ -328,7 +328,6 @@ final class ProgramBoardOverlayController {
             onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
             onStartSession: { [weak self] in self?.startSession() },
             onEndSession: { [weak self] in self?.endSession() },
-            onOpenProject: { [weak self] repoPath in self?.selectProject(repoPath) },
             onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
             onCreateCommit: { [weak self] request in self?.commitCreate(request) },
             onCreateCancel: { [weak self] in self?.cancelCreate() },

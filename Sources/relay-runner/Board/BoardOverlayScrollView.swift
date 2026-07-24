@@ -35,23 +35,24 @@ struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
 final class BoardOverlayScrollContainer: NSView {
     private let scrollView = NSScrollView()
     private let documentView = BoardOverlayScrollDocumentView()
-    private let hostingView: NSHostingView<AnyView>
+    private let hostingView: BoardOverlayScrollHostingView
     private let thumbView = NSView()
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
     private var hideWorkItem: DispatchWorkItem?
     private var lastLaidOutWidth: CGFloat = 0
     private var lastViewportHeight: CGFloat = 0
-    private var lastLaidOutHeight: CGFloat = 0
+    private var lastContentHeight: CGFloat = 0
+    private var isPerformingLayout = false
 
     init(rootView: AnyView) {
-        hostingView = NSHostingView(rootView: rootView)
+        hostingView = BoardOverlayScrollHostingView(rootView: rootView)
         super.init(frame: .zero)
         setup()
     }
 
     required init?(coder: NSCoder) {
-        hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+        hostingView = BoardOverlayScrollHostingView(rootView: AnyView(EmptyView()))
         super.init(coder: coder)
         setup()
     }
@@ -100,6 +101,11 @@ final class BoardOverlayScrollContainer: NSView {
 
     private func setup() {
         wantsLayer = true
+        hostingView.onLayout = { [weak self] in
+            guard let self, !self.isPerformingLayout else { return }
+            self.layoutDocument(force: true)
+            self.updateThumbFrame()
+        }
 
         scrollView.contentView = BoardOverlayScrollClipView()
         scrollView.drawsBackground = false
@@ -139,16 +145,23 @@ final class BoardOverlayScrollContainer: NSView {
     }
 
     private func layoutDocument(force: Bool) {
+        guard !isPerformingLayout else { return }
         let viewport = scrollView.contentView.bounds.size
         guard viewport.width > 0 else { return }
+        isPerformingLayout = true
+        defer { isPerformingLayout = false }
+
+        let proposedHeight = max(hostingView.frame.height, 1)
+        hostingView.frame = CGRect(origin: .zero, size: CGSize(width: viewport.width, height: proposedHeight))
+        hostingView.layoutSubtreeIfNeeded()
+        let fittingHeight = hostingView.fittingSize.height
+
         if !force,
            abs(viewport.width - lastLaidOutWidth) < 0.5,
            abs(viewport.height - lastViewportHeight) < 0.5,
-           lastLaidOutHeight > 0 {
+           abs(fittingHeight - lastContentHeight) < 0.5 {
             return
         }
-        hostingView.frame = CGRect(origin: .zero, size: CGSize(width: viewport.width, height: 1))
-        let fittingHeight = hostingView.fittingSize.height
         let documentHeight = max(viewport.height, fittingHeight)
         documentView.frame = CGRect(
             origin: .zero,
@@ -161,7 +174,7 @@ final class BoardOverlayScrollContainer: NSView {
         clampScrollOffset(documentHeight: documentHeight, viewportHeight: viewport.height)
         lastLaidOutWidth = viewport.width
         lastViewportHeight = viewport.height
-        lastLaidOutHeight = documentHeight
+        lastContentHeight = fittingHeight
     }
 
     private func clampScrollOffset(documentHeight: CGFloat, viewportHeight: CGFloat) {
@@ -254,6 +267,15 @@ final class BoardOverlayScrollContainer: NSView {
     deinit {
         hideWorkItem?.cancel()
         NotificationCenter.default.removeObserver(self)
+    }
+}
+
+final class BoardOverlayScrollHostingView: NSHostingView<AnyView> {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
     }
 }
 
