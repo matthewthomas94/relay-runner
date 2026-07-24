@@ -70,7 +70,8 @@ protocol OnboardingIntroPresenting: AnyObject {
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
                                  signInAction: @escaping () -> Void)
     func presentWorkspacePrompt(currentPath: String,
-                                action: @escaping () -> Void)
+                                continueAction: @escaping () -> Void,
+                                browseAction: @escaping () -> Void)
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
                          retryAction: @escaping () -> Void)
     func dismiss(completion: @escaping () -> Void)
@@ -544,13 +545,18 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
     }
 
     func presentWorkspacePrompt(currentPath: String,
-                                action: @escaping () -> Void) {
+                                continueAction: @escaping () -> Void,
+                                browseAction: @escaping () -> Void) {
         timelineTimer?.invalidate()
         timelineTimer = nil
         removeSkipMonitors()
 
         let surface = ensureSurface()
-        surface.rootView.showWorkspacePrompt(currentPath: currentPath, action: action)
+        surface.rootView.showWorkspacePrompt(
+            currentPath: currentPath,
+            continueAction: continueAction,
+            browseAction: browseAction
+        )
 
         guard surface.didCreate else { return }
         DispatchQueue.main.async { [weak container = surface.container] in
@@ -1162,14 +1168,19 @@ private final class OnboardingIntroWorkspaceSurfaceView: NSView {
 
     init(frame frameRect: NSRect,
          currentPath: String,
-         action: @escaping () -> Void) {
+         continueAction: @escaping () -> Void,
+         browseAction: @escaping () -> Void) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         addSubview(hostingView)
-        update(currentPath: currentPath, action: action)
+        update(
+            currentPath: currentPath,
+            continueAction: continueAction,
+            browseAction: browseAction
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -1182,13 +1193,15 @@ private final class OnboardingIntroWorkspaceSurfaceView: NSView {
     }
 
     private func update(currentPath: String,
-                        action: @escaping () -> Void) {
+                        continueAction: @escaping () -> Void,
+                        browseAction: @escaping () -> Void) {
         hostingView.rootView = AnyView(
             ZStack {
                 Color.clear
                 OnboardingIntroWorkspacePromptView(
                     currentPath: currentPath,
-                    action: action
+                    continueAction: continueAction,
+                    browseAction: browseAction
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
@@ -1351,7 +1364,8 @@ struct OnboardingIntroAgentLoginPromptView: View {
 struct OnboardingIntroWorkspacePromptView: View {
     static let controlHeight: CGFloat = 52 * OnboardingPermissionTreatment.actionScale
     let currentPath: String
-    let action: () -> Void
+    let continueAction: () -> Void
+    let browseAction: () -> Void
 
     var body: some View {
         VStack(spacing: 28) {
@@ -1374,12 +1388,22 @@ struct OnboardingIntroWorkspacePromptView: View {
                             .stroke(Color.white.opacity(0.12))
                     )
 
-                OnboardingIntroWhiteActionButton(
-                    title: "Browse\u{2026}",
-                    accessibilityLabel: "Browse for workspace folder",
-                    height: Self.controlHeight,
-                    action: action
-                )
+                HStack(spacing: 8) {
+                    OnboardingIntroWhiteActionButton(
+                        title: "Continue",
+                        accessibilityLabel: "Continue with the current workspace folder",
+                        height: Self.controlHeight,
+                        action: continueAction
+                    )
+                    .keyboardShortcut(.defaultAction)
+
+                    OnboardingIntroWhiteActionButton(
+                        title: "Browse\u{2026}",
+                        accessibilityLabel: "Browse for workspace folder",
+                        height: Self.controlHeight,
+                        action: browseAction
+                    )
+                }
             }
 
             Text(OnboardingView.workspaceFolderHelpText)
