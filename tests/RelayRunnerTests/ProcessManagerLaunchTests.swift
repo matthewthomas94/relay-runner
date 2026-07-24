@@ -121,6 +121,48 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(claudeScript.contains("\"/relay-bridge\""))
     }
 
+    func testEmbeddedLaunchScriptRegistersSessionScopedCompletionHooksForCodexAndClaude() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+
+        var codexConfig = AppConfig()
+        codexConfig.general.provider = .codex
+        let codexScript = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/scripts/relay-bridge",
+            target: .codex,
+            agentBinary: "/usr/local/bin/codex",
+            config: codexConfig,
+            voiceDelivery: .appOwned,
+            homeDirectory: home
+        )
+
+        var claudeConfig = AppConfig()
+        claudeConfig.general.provider = .claude
+        let claudeScript = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/scripts/relay-bridge",
+            target: .claude,
+            agentBinary: "/usr/local/bin/claude",
+            config: claudeConfig,
+            voiceDelivery: .appOwned,
+            homeDirectory: home
+        )
+
+        XCTAssertTrue(codexScript.contains("--enable hooks"))
+        XCTAssertTrue(codexScript.contains("--dangerously-bypass-hook-trust"))
+        XCTAssertTrue(codexScript.contains("hooks.UserPromptSubmit="))
+        XCTAssertTrue(codexScript.contains("hooks.Stop="))
+        XCTAssertTrue(codexScript.contains("Relay voice prompt binding"))
+        XCTAssertTrue(codexScript.contains("Relay voice completion"))
+        XCTAssertTrue(codexScript.contains("/Relay Runner/services/relay_completion_hook.py"))
+        XCTAssertFalse(codexScript.contains("--settings"))
+
+        XCTAssertTrue(claudeScript.contains("--settings"))
+        XCTAssertTrue(claudeScript.contains("\"UserPromptSubmit\""))
+        XCTAssertTrue(claudeScript.contains("\"Stop\""))
+        XCTAssertTrue(claudeScript.contains("\"StopFailure\""))
+        XCTAssertTrue(claudeScript.contains("/Relay Runner/services/relay_completion_hook.py"))
+        XCTAssertFalse(claudeScript.contains("--dangerously-bypass-hook-trust"))
+    }
+
     func testExternalLaunchScriptDoesNotInjectAppOwnedHiddenInstructions() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         var config = AppConfig()
@@ -137,6 +179,9 @@ final class ProcessManagerLaunchTests: XCTestCase {
 
         XCTAssertFalse(script.contains("developer_instructions="))
         XCTAssertFalse(script.contains("--append-system-prompt"))
+        XCTAssertFalse(script.contains("relay_completion_hook.py"))
+        XCTAssertFalse(script.contains("hooks.UserPromptSubmit"))
+        XCTAssertFalse(script.contains("--settings"))
         XCTAssertTrue(script.contains("Use the relay-bridge skill now."))
     }
 
