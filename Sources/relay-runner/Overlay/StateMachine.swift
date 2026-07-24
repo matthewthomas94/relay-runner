@@ -121,8 +121,9 @@ final class StateMachine: @unchecked Sendable {
         case ("tts", "message_waiting"):
             pendingAcknowledgement = nil
             clearWorkingProgress()
-            messagePreview = text
-            state = .messageWaiting(preview: text)
+            let preview = normalizedMessagePreview(text) ?? messagePreview
+            messagePreview = preview
+            state = .messageWaiting(preview: preview)
 
         case ("tts", "preparing"):
             pendingAcknowledgement = nil
@@ -206,9 +207,13 @@ final class StateMachine: @unchecked Sendable {
     /// Transition from sent/cancelled → idle after the confirmation period.
     func dismissSent() {
         switch state {
-        case .sent, .cancelled(_):
+        case .sent:
             state = .idle
             sentEnteredAt = nil
+        case .cancelled(_):
+            state = .idle
+            sentEnteredAt = nil
+            messagePreview = nil
         default:
             break
         }
