@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import relay_runner
 
@@ -1076,6 +1077,195 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(detail.unavailableMessage?.contains("Ticket file was not found") == true)
     }
 
+    func testTicketParserIgnoresAbsoluteAndRemoteImageAttachmentPaths() {
+        let body = """
+        ## Description
+
+        Review the attachment handling.
+
+        ## Attachments
+
+        - ![safe.png](attachments/TL-1/safe.png)
+        - ![absolute.png](/tmp/absolute.png)
+        - ![remote.png](https://example.com/remote.png)
+        """
+
+        XCTAssertEqual(
+            TicketParser.extractImageAttachmentPaths(body),
+            ["attachments/TL-1/safe.png"]
+        )
+    }
+
+    func testProgramBoardTicketDetailLoadsImageAttachmentsInTicketOrder() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let repo = root.appendingPathComponent("tools", isDirectory: true)
+        let attachmentDirectory = repo
+            .appendingPathComponent(".orchestrator/attachments/TL-1", isDirectory: true)
+        let portrait = attachmentDirectory.appendingPathComponent("portrait.png")
+        let landscape = attachmentDirectory.appendingPathComponent("landscape.jpg")
+        let screenshot = attachmentDirectory.appendingPathComponent("workspace-screenshot.png")
+        try writeTestImage(at: portrait, fileType: .png, size: NSSize(width: 80, height: 140))
+        try writeTestImage(at: landscape, fileType: .jpeg, size: NSSize(width: 180, height: 90))
+        try writeTestImage(at: screenshot, fileType: .png, size: NSSize(width: 2400, height: 1600))
+        try writeTicket(
+            repo: repo,
+            id: "TL-1",
+            title: "Tools backlog",
+            status: "backlog",
+            body: """
+            ## Description
+
+            Show image previews.
+
+            ## Acceptance criteria
+
+            - [ ] Images are visible.
+
+            ## Attachments
+
+            - ![portrait.png](attachments/TL-1/portrait.png)
+            - ![landscape.jpg](attachments/TL-1/landscape.jpg)
+            - ![workspace-screenshot.png](attachments/TL-1/workspace-screenshot.png)
+            """
+        )
+        let item = try ticketItem(
+            projectName: "Tools",
+            path: repo.path,
+            ticketID: "TL-1",
+            title: "Tools backlog",
+            status: "backlog"
+        )
+
+        let detail = ProgramTicketDetail.load(item: item)
+
+        XCTAssertEqual(
+            detail.imageAttachments.map(\.filename),
+            ["portrait.png", "landscape.jpg", "workspace-screenshot.png"]
+        )
+        XCTAssertEqual(
+            detail.imageAttachments.compactMap { attachment in
+                if case .preview(let url) = attachment.state {
+                    return url.path
+                }
+                return nil
+            },
+            [portrait.path, landscape.path, screenshot.path]
+        )
+    }
+
+    func testProgramBoardTicketDetailImageAttachmentsStayScopedToOwningProject() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
+        let toolsRepo = root.appendingPathComponent("tools", isDirectory: true)
+        for repo in [clientRepo, toolsRepo] {
+            try writeTicket(
+                repo: repo,
+                id: "TL-1",
+                title: "Shared ticket",
+                status: "backlog",
+                body: """
+                ## Description
+
+                Verify project scoping.
+
+                ## Attachments
+
+                - ![shared.png](attachments/TL-1/shared.png)
+                """
+            )
+            try writeTestImage(
+                at: repo.appendingPathComponent(".orchestrator/attachments/TL-1/shared.png"),
+                fileType: .png
+            )
+        }
+
+        let clientDetail = ProgramTicketDetail.load(item: try ticketItem(
+            projectName: "Client Dashboard",
+            path: clientRepo.path,
+            ticketID: "TL-1",
+            title: "Shared ticket",
+            status: "backlog"
+        ))
+        let toolsDetail = ProgramTicketDetail.load(item: try ticketItem(
+            projectName: "Tools",
+            path: toolsRepo.path,
+            ticketID: "TL-1",
+            title: "Shared ticket",
+            status: "backlog"
+        ))
+
+        let clientPath = try XCTUnwrap(previewPath(clientDetail.imageAttachments.first))
+        let toolsPath = try XCTUnwrap(previewPath(toolsDetail.imageAttachments.first))
+        XCTAssertTrue(clientPath.hasPrefix(clientRepo.path + "/.orchestrator/attachments/TL-1/"))
+        XCTAssertTrue(toolsPath.hasPrefix(toolsRepo.path + "/.orchestrator/attachments/TL-1/"))
+        XCTAssertNotEqual(clientPath, toolsPath)
+    }
+
+    func testProgramBoardTicketDetailRejectsEscapingMissingAndCorruptImageAttachments() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let repo = root.appendingPathComponent("tools", isDirectory: true)
+        let attachmentDirectory = repo
+            .appendingPathComponent(".orchestrator/attachments/TL-1", isDirectory: true)
+        try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
+
+        let valid = attachmentDirectory.appendingPathComponent("valid.png")
+        try writeTestImage(at: valid, fileType: .png)
+        let corrupt = attachmentDirectory.appendingPathComponent("corrupt.png")
+        try Data([0x00, 0x01, 0x02]).write(to: corrupt)
+        let outside = repo.appendingPathComponent(".orchestrator/outside.png")
+        try writeTestImage(at: outside, fileType: .png)
+        let link = attachmentDirectory.appendingPathComponent("escape-link.png")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+
+        try writeTicket(
+            repo: repo,
+            id: "TL-1",
+            title: "Attachment safety",
+            status: "backlog",
+            body: """
+            ## Description
+
+            Validate attachment safety.
+
+            ## Attachments
+
+            - ![valid.png](attachments/TL-1/valid.png)
+            - ![escape.png](attachments/TL-1/../escape.png)
+            - ![missing.png](attachments/TL-1/missing.png)
+            - ![corrupt.png](attachments/TL-1/corrupt.png)
+            - ![escape-link.png](attachments/TL-1/escape-link.png)
+            """
+        )
+        let item = try ticketItem(
+            projectName: "Tools",
+            path: repo.path,
+            ticketID: "TL-1",
+            title: "Attachment safety",
+            status: "backlog"
+        )
+
+        let detail = ProgramTicketDetail.load(item: item)
+
+        XCTAssertEqual(detail.imageAttachments.map(\.filename), [
+            "valid.png",
+            "escape.png",
+            "missing.png",
+            "corrupt.png",
+            "escape-link.png",
+        ])
+        XCTAssertEqual(previewPath(detail.imageAttachments[0]), valid.path)
+        XCTAssertEqual(failureReason(detail.imageAttachments[1]), "Image preview unavailable.")
+        XCTAssertEqual(failureReason(detail.imageAttachments[2]), "Image file is missing.")
+        XCTAssertEqual(failureReason(detail.imageAttachments[3]), "Image file could not be opened.")
+        XCTAssertEqual(failureReason(detail.imageAttachments[4]), "Image preview unavailable.")
+    }
+
     func testProgramBoardEditRequestRoutesAllAndFilteredItemsToOwningChildRepo() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1919,6 +2109,54 @@ final class ProgramBoardStatusTests: XCTestCase {
         let data = try XCTUnwrap(request.httpBody)
         let decoded = try JSONSerialization.jsonObject(with: data)
         return try XCTUnwrap(decoded as? [String: Any])
+    }
+
+    private func previewPath(_ attachment: ProgramTicketImageAttachment?) -> String? {
+        guard let attachment else { return nil }
+        if case .preview(let url) = attachment.state {
+            return url.path
+        }
+        return nil
+    }
+
+    private func failureReason(_ attachment: ProgramTicketImageAttachment) -> String? {
+        if case .failure(let reason) = attachment.state {
+            return reason
+        }
+        return nil
+    }
+
+    private func writeTestImage(
+        at url: URL,
+        fileType: NSBitmapImageRep.FileType,
+        size: NSSize = NSSize(width: 64, height: 64)
+    ) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let width = max(Int(size.width), 1)
+        let height = max(Int(size.height), 1)
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        NSColor.systemBlue.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        let data = try XCTUnwrap(rep.representation(using: fileType, properties: [:]))
+        try data.write(to: url)
     }
 
     private func temporaryDirectory() throws -> URL {
