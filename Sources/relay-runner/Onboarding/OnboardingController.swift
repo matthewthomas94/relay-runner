@@ -404,7 +404,12 @@ final class OnboardingController {
         setOnboardingNotchOverrideActive(true)
         intro.presentWorkspacePrompt(
             currentPath: Self.workspacePromptDisplayPath(getWorkingDirectory()),
-            action: { [weak self, weak intro] in
+            continueAction: { [weak self] in
+                self?.completeFreshWorkspaceSelection(
+                    Self.workspacePromptDisplayPath(self?.getWorkingDirectory() ?? "")
+                )
+            },
+            browseAction: { [weak self, weak intro] in
                 self?.pickFreshWorkspace(intro: intro)
             }
         )

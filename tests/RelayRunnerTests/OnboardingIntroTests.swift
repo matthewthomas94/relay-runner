@@ -823,6 +823,84 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
     }
 
+    func testWorkspaceContinuePersistsExistingPathWithoutOpeningPicker() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let installer = FakeRuntimeInstaller(installStatus: .succeeded)
+        var workingDirectoryWrites: [String] = []
+        var pickerCalls = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            getWorkingDirectory: { "/Users/example/current" },
+            setWorkingDirectory: { workingDirectoryWrites.append($0) },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { installer },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { _, _ in pickerCalls += 1 },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+
+        intro.performWorkspaceContinueAction()
+
+        XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
+        XCTAssertEqual(workingDirectoryWrites, ["/Users/example/current"])
+        XCTAssertEqual(pickerCalls, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
+    func testWorkspaceContinueUsesHomeFallbackWithoutOpeningPicker() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let installer = FakeRuntimeInstaller(installStatus: .succeeded)
+        var workingDirectoryWrites: [String] = []
+        var pickerCalls = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            getWorkingDirectory: { "" },
+            setWorkingDirectory: { workingDirectoryWrites.append($0) },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { installer },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { _, _ in pickerCalls += 1 },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+
+        intro.performWorkspaceContinueAction()
+
+        XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory()])
+        XCTAssertEqual(workingDirectoryWrites, [NSHomeDirectory()])
+        XCTAssertEqual(pickerCalls, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
     func testInterruptedReadyResumeRestoresWorkspaceWithoutCinematicOrSettings() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -1733,6 +1811,7 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private var claudeAction: (() -> Void)?
     private var runtimeRetryAction: (() -> Void)?
     private var loginAction: (() -> Void)?
+    private var workspaceContinueAction: (() -> Void)?
     private var workspaceAction: (() -> Void)?
     var onDismiss: (() -> Void)?
 
@@ -1773,10 +1852,12 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     }
 
     func presentWorkspacePrompt(currentPath: String,
-                                action: @escaping () -> Void) {
+                                continueAction: @escaping () -> Void,
+                                browseAction: @escaping () -> Void) {
         events.append("workspace")
         workspacePromptPaths.append(currentPath)
-        workspaceAction = action
+        workspaceContinueAction = continueAction
+        workspaceAction = browseAction
     }
 
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
@@ -1816,6 +1897,10 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
         loginAction?()
     }
 
+    func performWorkspaceContinueAction() {
+        workspaceContinueAction?()
+    }
+
     func performWorkspaceAction() {
         workspaceAction?()
     }
@@ -1841,6 +1926,7 @@ private final class DeferredDismissIntroPresenterFactory {
 private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
     private let eventSink: (String) -> Void
     private var codexAction: (() -> Void)?
+    private var workspaceContinueAction: (() -> Void)?
     private var workspaceAction: (() -> Void)?
     private var dismissCompletion: (() -> Void)?
     private var defersDismissal = false
@@ -1873,8 +1959,10 @@ private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
                                  signInAction: @escaping () -> Void) {}
 
     func presentWorkspacePrompt(currentPath: String,
-                                action: @escaping () -> Void) {
-        workspaceAction = action
+                                continueAction: @escaping () -> Void,
+                                browseAction: @escaping () -> Void) {
+        workspaceContinueAction = continueAction
+        workspaceAction = browseAction
     }
 
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
@@ -1900,6 +1988,10 @@ private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
 
     func performWorkspaceAction() {
         workspaceAction?()
+    }
+
+    func performWorkspaceContinueAction() {
+        workspaceContinueAction?()
     }
 
     func completeDismissal() {
