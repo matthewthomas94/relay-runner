@@ -2,7 +2,7 @@ import XCTest
 @testable import relay_runner
 
 final class ProgramBoardOverlayControllerTests: XCTestCase {
-    func testSingleRepoRouteOpensWorkspaceScopedToThatRepo() {
+    func testSingleRepoColdRouteOpensResponsiveShellAndLoadsWorkInBackground() {
         let project = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/client-dashboard"))
         let opening = ProgramBoardOverlayController.workspaceOpening(
             route: .project(project),
@@ -17,8 +17,8 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(opening?.initialTab, .work)
         XCTAssertEqual(opening?.projectScope, ["/repo/client-dashboard"])
         XCTAssertEqual(opening?.selectedProjectPath, "/repo/client-dashboard")
-        XCTAssertEqual(opening?.startsLoading, true)
-        XCTAssertEqual(opening?.contentLoadBlocked, true)
+        XCTAssertEqual(opening?.startsLoading, false)
+        XCTAssertEqual(opening?.contentLoadBlocked, false)
         XCTAssertEqual(opening?.reloadsWork, true)
     }
 
@@ -153,5 +153,16 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
                 help: "End the active Relay Runner voice session"
             )
         )
+    }
+
+    func testWorkspaceLatencyMetricRoundsMilliseconds() {
+        let metric = WorkspaceLatencyMetric.measure(
+            "gesture_to_first_visible_frame",
+            from: 10,
+            to: 10.096
+        )
+
+        XCTAssertEqual(metric.name, "gesture_to_first_visible_frame")
+        XCTAssertEqual(metric.milliseconds, 96)
     }
 }

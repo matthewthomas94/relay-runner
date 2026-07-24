@@ -1,6 +1,7 @@
 import AVFAudio
 import FluidAudio
 import Foundation
+import QuartzCore
 
 /// FluidAudio Parakeet STT engine. Ported from stt-sidecar/Sources/VoiceListen/main.swift.
 /// Runs audio capture, VAD, transcription, and gesture detection in a background task.
@@ -13,6 +14,7 @@ final class STTEngine: @unchecked Sendable {
     var wasCancelled = false
     var playRequested = false
     var boardToggleRequested = false
+    var boardToggleRequestedAt: CFTimeInterval?
     var partialTranscription = ""
     var statusMessage = ""
     var recordingStartedSerial = 0
@@ -308,6 +310,7 @@ final class STTEngine: @unchecked Sendable {
 
                 case .boardToggle:
                     boardToggleRequested = true
+                    boardToggleRequestedAt = CACurrentMediaTime()
                     NSLog("[STTEngine] Workspace toggle requested (double-tap Shift)")
                     continue
                 }
