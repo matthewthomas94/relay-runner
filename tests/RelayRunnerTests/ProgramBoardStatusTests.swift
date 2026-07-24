@@ -650,6 +650,49 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(ticket.draft)
     }
 
+    func testProgramBoardTicketCreatorIngestsImageAttachments() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let repo = root.appendingPathComponent("tools", isDirectory: true)
+        try writeConfig(repo: repo, prefix: "TL", nextID: 7)
+        let sourceDirectory = root.appendingPathComponent("designs", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: sourceDirectory,
+            withIntermediateDirectories: true
+        )
+        let sourceImage = sourceDirectory.appendingPathComponent("Settings Layout.PNG")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: sourceImage)
+        let secondImage = sourceDirectory.appendingPathComponent("Mobile Mockup.jpeg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: secondImage)
+
+        let request = ProgramBoardCreateRequest(
+            repoPath: repo.path,
+            status: .backlog,
+            title: "Implement settings design",
+            description: "Match the attached design.",
+            imageURLs: [sourceImage, secondImage]
+        )
+        let result = try ProgramBoardTicketCreator.create(request)
+
+        let storedImage = repo.appendingPathComponent(
+            ".orchestrator/attachments/TL-7/Settings-Layout.png"
+        )
+        XCTAssertEqual(try Data(contentsOf: storedImage), Data([0x89, 0x50, 0x4E, 0x47]))
+        XCTAssertEqual(
+            TicketParser.extractImageAttachmentPaths(result.ticket.body),
+            [
+                "attachments/TL-7/Settings-Layout.png",
+                "attachments/TL-7/Mobile-Mockup.jpeg",
+            ]
+        )
+        XCTAssertTrue(
+            result.ticket.body.contains(
+                "- ![Settings-Layout.png](attachments/TL-7/Settings-Layout.png)"
+            )
+        )
+    }
+
     func testProgramBoardViewModelReloadUsesDashboardFetcherForAllAndSelectedScopes() async throws {
         let clientPath = "/repo/client-dashboard"
         let toolsPath = "/repo/tools"
@@ -1188,6 +1231,57 @@ final class ProgramBoardStatusTests: XCTestCase {
             "- [x] Tooling work is editable.\n- [ ] Program Board refreshes."
         )
         XCTAssertTrue(saved.body.contains("## Notes\n\nPreserve this section."))
+    }
+
+    func testProgramBoardTicketEditorAppendsImageWithoutReplacingExistingAttachment() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let repo = root.appendingPathComponent("tools", isDirectory: true)
+        try writeTicket(
+            repo: repo,
+            id: "TL-1",
+            title: "Tools backlog",
+            status: "backlog",
+            body: """
+            ## Description
+
+            Tools work.
+
+            ## Attachments
+
+            - ![existing.png](attachments/TL-1/existing.png)
+            """
+        )
+        let sourceImage = root.appendingPathComponent("Updated design.jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: sourceImage)
+        let request = ProgramBoardEditRequest(
+            repoPath: repo.path,
+            ticketID: "TL-1",
+            title: "Tools backlog",
+            status: .backlog,
+            priority: .medium,
+            description: "Tools work.",
+            acceptanceCriteria: "",
+            imageURLs: [sourceImage]
+        )
+
+        let result = try ProgramBoardTicketEditor.save(request)
+
+        XCTAssertEqual(
+            TicketParser.extractImageAttachmentPaths(result.ticket.body),
+            [
+                "attachments/TL-1/existing.png",
+                "attachments/TL-1/Updated-design.jpg",
+            ]
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: repo.appendingPathComponent(
+                    ".orchestrator/attachments/TL-1/Updated-design.jpg"
+                ).path
+            )
+        )
     }
 
     func testProgramBoardTicketEditorRejectsMissingTicketWithoutCreatingPlaceholder() throws {

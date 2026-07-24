@@ -537,7 +537,12 @@ def _materialize_ticket_snapshot(
         tmp = dest.with_name(dest.name + ".tmp")
         tmp.write_bytes(snapshot)
         os.replace(tmp, dest)
-    except OSError as e:
+
+        attachment_source = ticket_file.parent / "attachments" / ticket_id
+        if attachment_source.is_dir():
+            attachment_dest = workspace_path / ".orchestrator" / "attachments" / ticket_id
+            shutil.copytree(attachment_source, attachment_dest, dirs_exist_ok=True)
+    except (OSError, shutil.Error) as e:
         raise RuntimeError(f"ticket snapshot materialization failed for {ticket_id}: {e}") from e
 
 

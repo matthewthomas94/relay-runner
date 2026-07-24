@@ -17,6 +17,9 @@ Example layout for this `relay-runner` repo:
 <repo>/
   .orchestrator/
     config.toml          # project-level settings (id prefix, default branch)
+    attachments/         # optional ticket-owned image inputs
+      RR-1/
+        design.png
     RR-1.md              # one file per ticket; filename matches `id`
     RR-2.md
     RR-3.md
@@ -115,6 +118,18 @@ Two recommended sections, both freeform:
 Neither is enforced by the schema. Tickets in `backlog` often have only a description; tickets in `ready` are expected to have acceptance criteria.
 
 A `ready` ticket for provider-facing work should make provider parity explicit: Codex-specific work should say what happens for Claude, Claude-specific work should say what happens for Codex, and any deliberate difference should be visible before dispatch.
+
+### Image attachments
+
+Ticket design images live under `.orchestrator/attachments/<TICKET_ID>/` and are referenced from an optional `## Attachments` body section with paths relative to `.orchestrator/`, for example:
+
+```markdown
+## Attachments
+
+- ![settings-layout.png](attachments/RR-1/settings-layout.png)
+```
+
+The Workspace ticket editor copies selected image files into this directory and appends the Markdown references without changing ticket frontmatter. Dispatch snapshots materialize the ticket-owned attachment directory into the worker worktree even when the files are not committed yet. Workers must inspect referenced images before planning and treat them as ticket requirements. Unsupported non-image files are rejected by the editor.
 
 ## Statuses & lifecycle
 

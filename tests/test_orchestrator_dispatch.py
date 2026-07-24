@@ -41,6 +41,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertIn(f"- Source repo path: `{repo}`", prompt)
             self.assertIn(f"- Assigned worktree cwd: `{repo.parent / 'workspaces' / 'rr-1'}`", prompt)
             self.assertIn("git branch --show-current` prints exactly `relay/rr-1`", prompt)
+            self.assertIn("`.orchestrator/attachments/RR-1/`", prompt)
             self.assertIn("- Run ID: 17", prompt)
             self.assertNotIn("Mentistic Workflow", prompt)
             self.assertEqual(
@@ -342,8 +343,15 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 status="ready",
                 run_id=None,
                 sizing=True,
-                body="## Description\n\nUntracked dispatch snapshot.\n",
+                body=(
+                    "## Description\n\nUntracked dispatch snapshot.\n\n"
+                    "## Attachments\n\n"
+                    "- ![design.png](attachments/RR-1/design.png)\n"
+                ),
             )
+            attachment = repo / ".orchestrator/attachments/RR-1/design.png"
+            attachment.parent.mkdir(parents=True)
+            attachment.write_bytes(b"design-image")
             daemon = self.make_daemon(root, provider="codex")
 
             with patch.object(Worker, "start") as start_worker:
@@ -353,6 +361,11 @@ class OrchestratorDispatchTests(unittest.TestCase):
             workspace_ticket = Path(result["run"]["workspace_path"]) / ".orchestrator/RR-1.md"
             self.assertTrue(workspace_ticket.is_file())
             self.assertEqual(workspace_ticket.read_text(), (repo / ".orchestrator/RR-1.md").read_text())
+            workspace_attachment = (
+                Path(result["run"]["workspace_path"])
+                / ".orchestrator/attachments/RR-1/design.png"
+            )
+            self.assertEqual(workspace_attachment.read_bytes(), b"design-image")
             self.assertFalse((Path(result["run"]["workspace_path"]) / ".orchestrator/config.toml").exists())
 
     def test_dispatch_materializes_uncommitted_ticket_edits(self):

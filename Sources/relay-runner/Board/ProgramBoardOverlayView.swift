@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum ProgramBoardBackdropStyle {
     static let backdropOpacity: Double = 1.0
@@ -161,11 +162,12 @@ struct ProgramBoardOverlayView: View {
                 ProgramTicketCreateModal(
                     draft: draft,
                     projects: model.projectTargets,
-                    makeRequest: { selectedProjectPath, title, description in
+                    makeRequest: { selectedProjectPath, title, description, imageURLs in
                         model.createRequest(
                             selectedProjectPath: selectedProjectPath,
                             title: title,
-                            description: description
+                            description: description,
+                            imageURLs: imageURLs
                         )
                     },
                     onCommit: onCreateCommit,
@@ -178,13 +180,14 @@ struct ProgramBoardOverlayView: View {
             if let draft = model.editing {
                 ProgramTicketEditModal(
                     draft: draft,
-                    makeRequest: { title, status, priority, description, acceptanceCriteria in
+                    makeRequest: { title, status, priority, description, acceptanceCriteria, imageURLs in
                         model.editRequest(
                             title: title,
                             status: status,
                             priority: priority,
                             description: description,
-                            acceptanceCriteria: acceptanceCriteria
+                            acceptanceCriteria: acceptanceCriteria,
+                            imageURLs: imageURLs
                         )
                     },
                     onCommit: onEditCommit,
@@ -1277,6 +1280,12 @@ private struct ProgramTicketDetailPanel: View {
                         title: "Acceptance criteria",
                         text: detail.acceptanceCriteria ?? "No acceptance criteria in the ticket file."
                     )
+                    if !detail.imageAttachmentPaths.isEmpty {
+                        ProgramDetailSection(
+                            title: "Images",
+                            text: detail.imageAttachmentPaths.joined(separator: "\n")
+                        )
+                    }
                 }
             }
         }
@@ -1473,7 +1482,8 @@ private struct ProgramTicketEditModal: View {
         _ status: Ticket.Status,
         _ priority: Ticket.Priority,
         _ description: String,
-        _ acceptanceCriteria: String
+        _ acceptanceCriteria: String,
+        _ imageURLs: [URL]
     ) -> ProgramBoardEditRequest?
     let onCommit: (ProgramBoardEditRequest) -> Void
     let onCancel: () -> Void
@@ -1484,6 +1494,7 @@ private struct ProgramTicketEditModal: View {
     @State private var priority: Ticket.Priority
     @State private var description: String
     @State private var acceptanceCriteria: String
+    @State private var imageURLs: [URL] = []
     @FocusState private var titleFocused: Bool
 
     init(
@@ -1493,7 +1504,8 @@ private struct ProgramTicketEditModal: View {
             _ status: Ticket.Status,
             _ priority: Ticket.Priority,
             _ description: String,
-            _ acceptanceCriteria: String
+            _ acceptanceCriteria: String,
+            _ imageURLs: [URL]
         ) -> ProgramBoardEditRequest?,
         onCommit: @escaping (ProgramBoardEditRequest) -> Void,
         onCancel: @escaping () -> Void,
@@ -1594,6 +1606,11 @@ private struct ProgramTicketEditModal: View {
                     maxHeight: 220
                 )
 
+                ProgramTicketImageSelector(
+                    existingPaths: draft.imageAttachmentPaths,
+                    selectedURLs: $imageURLs
+                )
+
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
                     Button("Cancel", action: onCancel)
@@ -1634,7 +1651,7 @@ private struct ProgramTicketEditModal: View {
     }
 
     private var currentRequest: ProgramBoardEditRequest? {
-        makeRequest(title, status, priority, description, acceptanceCriteria)
+        makeRequest(title, status, priority, description, acceptanceCriteria, imageURLs)
     }
 
     private var deleteRequest: ProgramBoardDeleteRequest {
@@ -1679,19 +1696,30 @@ private struct ProgramEditTextArea: View {
 private struct ProgramTicketCreateModal: View {
     let draft: ProgramBoardCreateDraft
     let projects: [ProgramBoardProjectTarget]
-    let makeRequest: (_ selectedProjectPath: String?, _ title: String, _ description: String) -> ProgramBoardCreateRequest?
+    let makeRequest: (
+        _ selectedProjectPath: String?,
+        _ title: String,
+        _ description: String,
+        _ imageURLs: [URL]
+    ) -> ProgramBoardCreateRequest?
     let onCommit: (ProgramBoardCreateRequest) -> Void
     let onCancel: () -> Void
 
     @State private var selectedProjectPath: String?
     @State private var title: String
     @State private var description: String
+    @State private var imageURLs: [URL] = []
     @FocusState private var titleFocused: Bool
 
     init(
         draft: ProgramBoardCreateDraft,
         projects: [ProgramBoardProjectTarget],
-        makeRequest: @escaping (_ selectedProjectPath: String?, _ title: String, _ description: String) -> ProgramBoardCreateRequest?,
+        makeRequest: @escaping (
+            _ selectedProjectPath: String?,
+            _ title: String,
+            _ description: String,
+            _ imageURLs: [URL]
+        ) -> ProgramBoardCreateRequest?,
         onCommit: @escaping (ProgramBoardCreateRequest) -> Void,
         onCancel: @escaping () -> Void
     ) {
@@ -1772,6 +1800,11 @@ private struct ProgramTicketCreateModal: View {
                             .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
                     )
 
+                ProgramTicketImageSelector(
+                    existingPaths: [],
+                    selectedURLs: $imageURLs
+                )
+
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
                     Button("Cancel", action: onCancel)
@@ -1783,13 +1816,13 @@ private struct ProgramTicketCreateModal: View {
                         .programControlChrome()
                         .programButtonCursor()
                     Button("Save") {
-                        if let request = makeRequest(selectedProjectPath, title, description) {
+                        if let request = makeRequest(selectedProjectPath, title, description, imageURLs) {
                             onCommit(request)
                         }
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.plain)
-                    .disabled(makeRequest(selectedProjectPath, title, description) == nil)
+                    .disabled(makeRequest(selectedProjectPath, title, description, imageURLs) == nil)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .foregroundStyle(Color.white.opacity(canSave ? 1.0 : 0.45))
@@ -1816,7 +1849,106 @@ private struct ProgramTicketCreateModal: View {
     }
 
     private var canSave: Bool {
-        makeRequest(selectedProjectPath, title, description) != nil
+        makeRequest(selectedProjectPath, title, description, imageURLs) != nil
+    }
+}
+
+private struct ProgramTicketImageSelector: View {
+    let existingPaths: [String]
+    @Binding var selectedURLs: [URL]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Images")
+                    .font(AppTypography.font(.controlHeading))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .textCase(.uppercase)
+                Spacer(minLength: 0)
+                Button {
+                    addImages()
+                } label: {
+                    Label("Add images", systemImage: "photo.badge.plus")
+                        .font(AppTypography.font(.action))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.9))
+                .programControlChrome()
+                .programButtonCursor()
+            }
+
+            if existingPaths.isEmpty && selectedURLs.isEmpty {
+                Text("Attach designs for the implementation worker.")
+                    .font(AppTypography.font(.label))
+                    .foregroundStyle(ProgramBoardStyle.disabledText)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(existingPaths, id: \.self) { path in
+                            ProgramTicketImageChip(
+                                name: URL(fileURLWithPath: path).lastPathComponent
+                            )
+                        }
+                        ForEach(selectedURLs, id: \.self) { url in
+                            ProgramTicketImageChip(
+                                name: url.lastPathComponent,
+                                onRemove: {
+                                    selectedURLs.removeAll { $0 == url }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func addImages() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.image]
+        panel.message = "Choose design images to attach to this ticket."
+        guard panel.runModal() == .OK else { return }
+
+        for url in panel.urls where !selectedURLs.contains(url) {
+            selectedURLs.append(url)
+        }
+    }
+}
+
+private struct ProgramTicketImageChip: View {
+    let name: String
+    var onRemove: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "photo")
+                .font(AppTypography.symbolFont(size: 11, weight: .medium))
+            Text(name)
+                .font(AppTypography.font(.label))
+                .lineLimit(1)
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Remove image")
+            }
+        }
+        .foregroundStyle(ProgramBoardStyle.secondaryText)
+        .padding(.horizontal, 9)
+        .frame(height: 26)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(BoardDarkSurfaceStyle.contentFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
+        )
     }
 }
 

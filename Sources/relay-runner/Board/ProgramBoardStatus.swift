@@ -243,8 +243,23 @@ struct ProgramBoardCreateRequest: Equatable {
     let status: Ticket.Status
     let title: String
     let description: String
+    let imageURLs: [URL]
 
     var shouldDispatch: Bool { status == .ready }
+
+    init(
+        repoPath: String,
+        status: Ticket.Status,
+        title: String,
+        description: String,
+        imageURLs: [URL] = []
+    ) {
+        self.repoPath = repoPath
+        self.status = status
+        self.title = title
+        self.description = description
+        self.imageURLs = imageURLs
+    }
 }
 
 struct ProgramBoardCreateResult: Equatable {
@@ -263,6 +278,9 @@ struct ProgramBoardEditDraft: Equatable, Identifiable {
     var acceptanceCriteria: String
 
     var id: String { identity.ticketPath }
+    var imageAttachmentPaths: [String] {
+        TicketParser.extractImageAttachmentPaths(original.body)
+    }
 }
 
 struct ProgramBoardEditRequest: Equatable {
@@ -273,6 +291,27 @@ struct ProgramBoardEditRequest: Equatable {
     let priority: Ticket.Priority
     let description: String
     let acceptanceCriteria: String
+    let imageURLs: [URL]
+
+    init(
+        repoPath: String,
+        ticketID: String,
+        title: String,
+        status: Ticket.Status,
+        priority: Ticket.Priority,
+        description: String,
+        acceptanceCriteria: String,
+        imageURLs: [URL] = []
+    ) {
+        self.repoPath = repoPath
+        self.ticketID = ticketID
+        self.title = title
+        self.status = status
+        self.priority = priority
+        self.description = description
+        self.acceptanceCriteria = acceptanceCriteria
+        self.imageURLs = imageURLs
+    }
 }
 
 struct ProgramBoardEditResult: Equatable {
@@ -431,6 +470,7 @@ enum ProgramBoardCreatePolicy {
         selectedProjectPath: String?,
         title: String,
         description: String,
+        imageURLs: [URL] = [],
         projects: [ProgramBoardProjectTarget]
     ) -> ProgramBoardCreateRequest? {
         guard let selectedProjectPath,
@@ -442,7 +482,8 @@ enum ProgramBoardCreatePolicy {
             repoPath: selectedProjectPath,
             status: draft.status,
             title: trimmedTitle.isEmpty ? "Untitled" : trimmedTitle,
-            description: description
+            description: description,
+            imageURLs: imageURLs
         )
     }
 }
@@ -483,7 +524,12 @@ enum ProgramBoardTicketCreator {
             description: withDescription.description,
             body: withDescription.body
         )
-        let ticketToSave = TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
+        let sizedTicket = TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
+        let ticketToSave = try TicketImageStore.ingest(
+            request.imageURLs,
+            into: sizedTicket,
+            in: project
+        )
         try TicketWriter.save(ticketToSave, in: project)
         return ProgramBoardCreateResult(
             ticket: ticketToSave,
@@ -516,7 +562,8 @@ enum ProgramBoardEditPolicy {
         status: Ticket.Status,
         priority: Ticket.Priority,
         description: String,
-        acceptanceCriteria: String
+        acceptanceCriteria: String,
+        imageURLs: [URL] = []
     ) -> ProgramBoardEditRequest {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return ProgramBoardEditRequest(
@@ -526,7 +573,8 @@ enum ProgramBoardEditPolicy {
             status: status,
             priority: priority,
             description: description,
-            acceptanceCriteria: acceptanceCriteria
+            acceptanceCriteria: acceptanceCriteria,
+            imageURLs: imageURLs
         )
     }
 }
@@ -581,9 +629,15 @@ enum ProgramBoardTicketEditor {
             description: withBody.description,
             body: withBody.body
         )
-        let ticketToSave = updated.status == .ready
+        let sizedTicket = updated.status == .ready
             ? TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
             : updated
+        let ticketToSave = try TicketImageStore.ingest(
+            request.imageURLs,
+            into: sizedTicket,
+            in: project,
+            fileManager: fileManager
+        )
 
         try TicketWriter.save(ticketToSave, in: project)
         let refreshed = [ticketToSave] + ProjectResolver.scanTickets(in: project).filter { $0.id != ticketToSave.id }
@@ -997,6 +1051,10 @@ struct ProgramTicketDetail: Equatable, Identifiable {
         Self.clean(identity?.projectName) ?? Self.clean(item.project?.name) ?? "Unknown project"
     }
 
+    var imageAttachmentPaths: [String] {
+        ticket.map { TicketParser.extractImageAttachmentPaths($0.body) } ?? []
+    }
+
     static func load(
         item: ProgramStatusItem,
         fileManager: FileManager = .default
@@ -1251,7 +1309,8 @@ final class ProgramBoardViewModel {
     func createRequest(
         selectedProjectPath: String?,
         title: String,
-        description: String
+        description: String,
+        imageURLs: [URL] = []
     ) -> ProgramBoardCreateRequest? {
         guard let creating else { return nil }
         return ProgramBoardCreatePolicy.request(
@@ -1259,6 +1318,7 @@ final class ProgramBoardViewModel {
             selectedProjectPath: selectedProjectPath,
             title: title,
             description: description,
+            imageURLs: imageURLs,
             projects: projectTargets
         )
     }
@@ -1268,7 +1328,8 @@ final class ProgramBoardViewModel {
         status: Ticket.Status,
         priority: Ticket.Priority,
         description: String,
-        acceptanceCriteria: String
+        acceptanceCriteria: String,
+        imageURLs: [URL] = []
     ) -> ProgramBoardEditRequest? {
         guard let editing else { return nil }
         return ProgramBoardEditPolicy.request(
@@ -1277,7 +1338,8 @@ final class ProgramBoardViewModel {
             status: status,
             priority: priority,
             description: description,
-            acceptanceCriteria: acceptanceCriteria
+            acceptanceCriteria: acceptanceCriteria,
+            imageURLs: imageURLs
         )
     }
 
