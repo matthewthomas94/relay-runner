@@ -268,6 +268,89 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(stateMachine.messagePreview, "Previously spoken reply")
     }
 
+    func testBlankWaitingAndPlaybackEventsPreserveAvailableResponsePreview() {
+        let stateMachine = StateMachine()
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Completed response.",
+            autoDismiss: nil
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "  ",
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .messageWaiting(preview: "Completed response."))
+        XCTAssertEqual(stateMachine.messagePreview, "Completed response.")
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "preparing",
+            text: nil,
+            autoDismiss: nil
+        )
+        XCTAssertEqual(stateMachine.state, .preparing)
+        XCTAssertEqual(stateMachine.messagePreview, "Completed response.")
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "speaking",
+            text: "",
+            autoDismiss: nil
+        )
+        XCTAssertEqual(stateMachine.state, .speaking)
+        XCTAssertEqual(stateMachine.messagePreview, "Completed response.")
+
+        stateMachine.setCancelled()
+        XCTAssertEqual(stateMachine.state, .cancelled(.tts))
+        XCTAssertEqual(stateMachine.messagePreview, "Completed response.")
+
+        stateMachine.dismissSent()
+        XCTAssertEqual(stateMachine.state, .idle)
+        XCTAssertNil(stateMachine.messagePreview)
+    }
+
+    func testConsecutiveResponsesUseFreshWaitingPreviewAfterIdle() {
+        let stateMachine = StateMachine()
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "First response.",
+            autoDismiss: nil
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "idle",
+            text: nil,
+            autoDismiss: nil
+        )
+        XCTAssertNil(stateMachine.messagePreview)
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: nil,
+            autoDismiss: nil
+        )
+        XCTAssertEqual(stateMachine.state, .messageWaiting(preview: nil))
+        XCTAssertNil(stateMachine.messagePreview)
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Second response.",
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .messageWaiting(preview: "Second response."))
+        XCTAssertEqual(stateMachine.messagePreview, "Second response.")
+    }
+
     func testBridgeWorkingEventStoresFreshSanitizedProgressWithoutChangingVisibleState() {
         var now = Date(timeIntervalSince1970: 1_000)
         let stateMachine = StateMachine(now: { now })

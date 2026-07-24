@@ -47,6 +47,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker.played_wavs = []
         worker._play_text = lambda text: worker.played_texts.append(text)
         worker._play_wav = lambda wav: worker.played_wavs.append(wav)
+        worker._play_chime = lambda: None
         worker._cancel_speculation = lambda: None
         return worker
 
@@ -129,6 +130,28 @@ class TTSWorkerReplayTests(unittest.TestCase):
 
         self.assertEqual(worker.played_texts, ["fresh pending"])
         self.assertEqual(worker._last_unheard_text, "")
+
+    def test_collected_chunks_refresh_waiting_preview_before_playback(self):
+        worker = self.make_worker()
+        speculations = []
+        chimes = []
+        worker._start_speculation = lambda text: speculations.append(text)
+        worker._play_chime = lambda: chimes.append(True)
+
+        with patch.object(tts_worker, "_notify_state") as notify_state:
+            worker._handle_collected_chunk("First part.")
+            worker._handle_collected_chunk("Second part.")
+
+        self.assertEqual(
+            [(call.args[0], call.kwargs["text"]) for call in notify_state.call_args_list],
+            [
+                ("message_waiting", "First part."),
+                ("message_waiting", "First part. Second part."),
+            ],
+        )
+        self.assertEqual(speculations, ["First part.", "First part. Second part."])
+        self.assertEqual(chimes, [True])
+        self.assertEqual(worker._last_response_text, "First part. Second part.")
 
     def test_sentence_chunks_preserve_sentence_boundaries_and_tail(self):
         chunks = tts_worker._sentence_chunks(" First sentence. Second? Tail without punctuation ")
