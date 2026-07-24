@@ -153,7 +153,7 @@ enum AppTypography {
         case .appTitle:
             return Definition(face: .ppMoriSemibold, size: 22, fallbackWeight: .semibold)
         case .onboardingHero:
-            return Definition(face: .ppTelegrafRegular, size: 48, fallbackWeight: .regular)
+            return Definition(face: .ppTelegrafRegular, size: 32, fallbackWeight: .regular)
         case .screenTitle:
             return Definition(face: .ppMoriSemibold, size: 17, fallbackWeight: .semibold)
         case .workspaceHeading:
