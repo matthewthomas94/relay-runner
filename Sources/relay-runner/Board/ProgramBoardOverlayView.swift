@@ -1025,6 +1025,10 @@ private struct ProgramWorkCard: View {
         )
     }
 
+    private var activeGlowPresentation: ProgramActiveTicketGlowPresentation {
+        ProgramActiveTicketGlowPresentation.resolve(item: item, reduceMotion: reduceMotion)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -1096,6 +1100,9 @@ private struct ProgramWorkCard: View {
                 disabled: false
             )
         )
+        .background {
+            ProgramActiveTicketGlowBackground(presentation: activeGlowPresentation)
+        }
         .animation(
             presentation.animationDuration == 0
                 ? nil

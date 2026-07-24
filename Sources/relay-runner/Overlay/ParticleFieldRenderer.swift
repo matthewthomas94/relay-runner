@@ -45,11 +45,12 @@ final class ParticleFieldRenderer {
 
     private let gradientLayer = CAGradientLayer()
     private let particleLayer = CALayer()
+    private let animationClock: ParticleFieldAnimationClock
 
     private var currentTheme: Theme?
     private var intensityMultiplier: Double = 0.6
 
-    private var animationTimer: Timer?
+    private var animationToken: UUID?
     private var startTime: CFTimeInterval = 0
 
     private var bitmapContext: CGContext?
@@ -70,7 +71,9 @@ final class ParticleFieldRenderer {
     private let maxDotRadius: CGFloat = 3.0
     private let minDotRadius: CGFloat = 0.3
 
-    init() {
+    init(animationClock: ParticleFieldAnimationClock = .shared) {
+        self.animationClock = animationClock
+
         // Dark gradient behind particles: transparent at top, dark at bottom
         gradientLayer.colors = [
             NSColor(white: 0, alpha: 0).cgColor,
@@ -86,12 +89,13 @@ final class ParticleFieldRenderer {
     }
 
     deinit {
-        animationTimer?.invalidate()
+        stopAnimation()
     }
 
     // MARK: - Public
 
     func attach(to hostView: NSView) {
+        hostView.wantsLayer = true
         if let layer = hostView.layer {
             layer.addSublayer(gradientLayer)
             layer.addSublayer(particleLayer)
@@ -153,19 +157,19 @@ final class ParticleFieldRenderer {
     // MARK: - Animation loop
 
     private func startAnimation() {
-        guard animationTimer == nil else { return }
+        guard animationToken == nil else { return }
         startTime = CACurrentMediaTime()
         renderFrame()
-        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+        animationToken = animationClock.add { [weak self] in
             self?.renderFrame()
         }
-        RunLoop.main.add(timer, forMode: .common)
-        animationTimer = timer
     }
 
     private func stopAnimation() {
-        animationTimer?.invalidate()
-        animationTimer = nil
+        if let animationToken {
+            animationClock.remove(animationToken)
+            self.animationToken = nil
+        }
     }
 
     private func renderFrame() {
@@ -313,5 +317,60 @@ final class ParticleFieldRenderer {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )
+    }
+}
+
+final class ParticleFieldAnimationClock {
+    static let shared = ParticleFieldAnimationClock()
+
+    private var callbacks: [UUID: () -> Void] = [:]
+    private var timer: Timer?
+    private let interval: TimeInterval
+
+    init(interval: TimeInterval = 1.0 / 30) {
+        self.interval = interval
+    }
+
+    deinit {
+        timer?.invalidate()
+    }
+
+    var activeCallbackCount: Int {
+        callbacks.count
+    }
+
+    @discardableResult
+    func add(_ callback: @escaping () -> Void) -> UUID {
+        let token = UUID()
+        callbacks[token] = callback
+        startIfNeeded()
+        return token
+    }
+
+    func remove(_ token: UUID) {
+        callbacks[token] = nil
+        if callbacks.isEmpty {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
+    func tickForTesting() {
+        tick()
+    }
+
+    private func startIfNeeded() {
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func tick() {
+        for callback in Array(callbacks.values) {
+            callback()
+        }
     }
 }
