@@ -16,7 +16,7 @@ The persistent orchestrator may have attached extra context for this ticket. Tre
 
 1. **Verify the worktree.** Before editing anything, confirm your current working directory is `{{workspace_path}}` and `git branch --show-current` prints exactly `{{branch}}`. If either check fails, do not edit files or commit; write the mismatch to stdout and stop so the orchestrator can retry safely.
 
-2. **Load the ticket.** Read `.orchestrator/{{ticket_id}}.md` from the assigned worktree — title, description, acceptance criteria, priority, blockers. The file has YAML frontmatter followed by markdown sections. If the file is missing, abort (the orchestrator captures stdout).
+2. **Load the ticket.** Read `.orchestrator/{{ticket_id}}.md` from the assigned worktree — title, description, acceptance criteria, priority, blockers, and attachments. The file has YAML frontmatter followed by markdown sections. If an `## Attachments` section references design images under `.orchestrator/attachments/{{ticket_id}}/`, inspect those files before planning and treat them as ticket requirements. If the ticket file or a referenced attachment is missing, abort (the orchestrator captures stdout).
 
 3. **Mark in-progress.** Edit the ticket's YAML frontmatter:
    - `status: in_progress`

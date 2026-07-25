@@ -29,6 +29,10 @@ final class PermissionNotifier {
     func recordChange(_ kind: PermissionKind,
                       from old: PermissionStatus,
                       to new: PermissionStatus) {
+        // Input Monitoring is no longer a surfaced requirement. Existing
+        // grants remain compatible, but losing one must not send the user to
+        // a Settings row that no longer exists.
+        guard kind != .inputMonitoring else { return }
         guard old == .granted, new != .granted else { return }
 
         if let last = lastNotified[kind],

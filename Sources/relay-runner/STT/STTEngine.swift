@@ -1,6 +1,7 @@
 import AVFAudio
 import FluidAudio
 import Foundation
+import QuartzCore
 
 /// FluidAudio Parakeet STT engine. Ported from stt-sidecar/Sources/VoiceListen/main.swift.
 /// Runs audio capture, VAD, transcription, and gesture detection in a background task.
@@ -13,8 +14,12 @@ final class STTEngine: @unchecked Sendable {
     var wasCancelled = false
     var playRequested = false
     var boardToggleRequested = false
+    var boardToggleRequestedAt: CFTimeInterval?
     var partialTranscription = ""
     var statusMessage = ""
+    var recordingStartedSerial = 0
+    var speechDetectedSerial = 0
+    var deliveredTranscriptSerial = 0
 
     // MARK: - Configuration
 
@@ -253,6 +258,7 @@ final class STTEngine: @unchecked Sendable {
                     transcript.reset()
                     mediaSettleDeadline = Date().addingTimeInterval(Double(mediaSettleMs) / 1000)
                     isRecording = true
+                    recordingStartedSerial += 1
                     partialTranscription = "Preparing\u{2026}"
                     NSLog("[STTEngine] Settling (\(mediaSettleMs)ms for media pause)")
                     FIFOWriter.write("__STATUS__:preparing...")
@@ -260,6 +266,7 @@ final class STTEngine: @unchecked Sendable {
                 case .stopRecording(_):
                     if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
                         if FIFOWriter.write(finalText) {
+                            deliveredTranscriptSerial += 1
                             NSLog("[STTEngine] >> \(finalText)")
                         }
                     }
@@ -282,6 +289,7 @@ final class STTEngine: @unchecked Sendable {
                 case .interrupt:
                     if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
                         if FIFOWriter.write(finalText) {
+                            deliveredTranscriptSerial += 1
                             NSLog("[STTEngine] >> \(finalText)")
                         }
                     } else {
@@ -302,6 +310,7 @@ final class STTEngine: @unchecked Sendable {
 
                 case .boardToggle:
                     boardToggleRequested = true
+                    boardToggleRequestedAt = CACurrentMediaTime()
                     NSLog("[STTEngine] Workspace toggle requested (double-tap Shift)")
                     continue
                 }
@@ -350,6 +359,7 @@ final class STTEngine: @unchecked Sendable {
             guard let text = try await transcribeMeaningfulText(audio) else { continue }
 
             transcript.refine(text)
+            speechDetectedSerial += 1
             let renderedTranscript = transcript.transcript
             partialTranscription = renderedTranscript
             NSLog("[STTEngine] (refining) \(renderedTranscript)")

@@ -250,16 +250,25 @@ final class RelayTerminalViewInputOriginTests: XCTestCase {
 }
 
 final class RelayVoiceCommandDeliveryTests: XCTestCase {
-    func testClaimCopiesMetadataAfterSplitPromptAndSubmitEvents() throws {
+    func testClaimPublishesMetadataBeforeSubmitAndWaitsForProviderAcknowledgement() throws {
         let fixture = try makeFixture()
         try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
-        let metadata = #"{"relay_command_id":"cmd-1","relay_command_seq":1}"#
+        let metadata = #"{"provider":"codex","relay_command_id":"cmd-1","relay_command_seq":1}"#
         try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
         var sent: [String] = []
+        var claimBeforeEnter: String?
         var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
         let delivery = RelayVoiceCommandDelivery(
             paths: fixture.paths,
-            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            send: { data in
+                let text = String(decoding: data, as: UTF8.self)
+                if text == "\r" {
+                    claimBeforeEnter = try? String(contentsOf: fixture.claimed)
+                }
+                sent.append(text)
+            },
+            acknowledgementTimeout: 0.5,
             schedule: { delay, _, work in scheduled.append((delay, work)) },
             isRunning: { true }
         )
@@ -276,7 +285,227 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         scheduled[0].work()
 
         XCTAssertEqual(sent, ["Fix the bridge", "\r"])
+        XCTAssertEqual(claimBeforeEnter, metadata)
         XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata)
+        let eventsBeforeAck = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(eventsBeforeAck.contains(#""event":"submit_attempt""#))
+        XCTAssertFalse(eventsBeforeAck.contains(#""event":"submit""#))
+        XCTAssertFalse(eventsBeforeAck.contains(#""event":"provider_acknowledged""#))
+
+        try writeProviderTurns([
+            providerTurn(seq: 1, id: "cmd-1", provider: "codex", state: "active"),
+        ], to: fixture.providerTurns)
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"claimed""#))
+        XCTAssertTrue(events.contains(#""event":"prompt_write""#))
+        XCTAssertTrue(events.contains(#""event":"claim_published""#))
+        XCTAssertTrue(events.contains(#""event":"submit_attempt""#))
+        XCTAssertTrue(events.contains(#""event":"provider_acknowledged""#))
+        XCTAssertTrue(events.contains(#""provider":"codex""#))
+        XCTAssertTrue(events.contains(#""relay_command_id":"cmd-1""#))
+        XCTAssertFalse(events.contains("Fix the bridge"))
+    }
+
+    func testMissingProviderAcknowledgementRetriesReturnWithoutRewritingPrompt() throws {
+        let fixture = try makeFixture()
+        try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        let metadata = #"{"provider":"codex","relay_command_id":"cmd-1","relay_command_seq":1}"#
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            acknowledgementTimeout: 0.5,
+            schedule: { delay, _, work in scheduled.append((delay, work)) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        scheduled[0].work()
+        scheduled[1].work()
+
+        XCTAssertEqual(sent, ["Fix the bridge", "\r", "\r"])
+        XCTAssertEqual(sent.filter { $0 == "Fix the bridge" }.count, 1)
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"submit_ack_timeout""#))
+        XCTAssertTrue(events.contains(#""event":"submit_retry""#))
+        XCTAssertTrue(events.contains(#""attempt":2"#))
+        XCTAssertFalse(events.contains("Fix the bridge"))
+    }
+
+    func testDelayedProviderAcknowledgementAfterRetryPreventsFailure() throws {
+        let fixture = try makeFixture()
+        try Data().write(to: fixture.voiceInput)
+        try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        let metadata = #"{"provider":"codex","relay_command_id":"cmd-1","relay_command_seq":1}"#
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            acknowledgementTimeout: 0.5,
+            schedule: { delay, _, work in scheduled.append((delay, work)) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        scheduled[0].work()
+        scheduled[1].work()
+        try writeProviderTurns([
+            providerTurn(seq: 1, id: "cmd-1", provider: "codex", state: "active"),
+        ], to: fixture.providerTurns)
+        scheduled[2].work()
+
+        XCTAssertEqual(sent, ["Fix the bridge", "\r", "\r"])
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"provider_acknowledged""#))
+        XCTAssertFalse(events.contains(#""event":"submit_ack_failed""#))
+        XCTAssertTrue((try String(contentsOf: fixture.voiceInput)).isEmpty)
+    }
+
+    func testSubmitFailureClearsComposerAndPublishesVisibleFailure() throws {
+        let fixture = try makeFixture()
+        try Data().write(to: fixture.voiceInput)
+        try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        let metadata = #"{"provider":"claude","relay_command_id":"cmd-1","relay_command_seq":1}"#
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            acknowledgementTimeout: 0.5,
+            maxSubmitAttempts: 2,
+            schedule: { delay, _, work in scheduled.append((delay, work)) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        scheduled[0].work()
+        scheduled[1].work()
+        scheduled[2].work()
+
+        XCTAssertEqual(sent, ["Fix the bridge", "\r", "\r", "\u{15}"])
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"submit_ack_failed""#))
+        XCTAssertTrue(events.contains(#""event":"submit_recovery_clear""#))
+        XCTAssertTrue(events.contains(#""event":"delivery_failure_published""#))
+        XCTAssertTrue(events.contains(#""provider":"claude""#))
+        XCTAssertFalse(events.contains("Fix the bridge"))
+        let control = try String(contentsOf: fixture.voiceInput)
+        XCTAssertTrue(control.contains("__ORCHESTRATOR_REPLY__:"))
+        XCTAssertTrue(control.contains(#""relay_command_id":"cmd-1""#))
+        XCTAssertFalse(control.contains("Fix the bridge"))
+    }
+
+    func testProviderExitDuringAcknowledgementPublishesFailureWithoutReplay() throws {
+        let fixture = try makeFixture()
+        try Data().write(to: fixture.voiceInput)
+        try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        let metadata = #"{"provider":"codex","relay_command_id":"cmd-1","relay_command_seq":1}"#
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
+        var running = true
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            acknowledgementTimeout: 0.5,
+            schedule: { delay, _, work in scheduled.append((delay, work)) },
+            isRunning: { running }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        scheduled[0].work()
+        running = false
+        scheduled[1].work()
+
+        XCTAssertEqual(sent, ["Fix the bridge", "\r"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path))
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"submit_aborted_not_running""#))
+        XCTAssertTrue(events.contains(#""event":"delivery_failure_published""#))
+        XCTAssertFalse(events.contains("Fix the bridge"))
+        let control = try String(contentsOf: fixture.voiceInput)
+        XCTAssertTrue(control.contains("__ORCHESTRATOR_REPLY__:"))
+        XCTAssertTrue(control.contains(#""relay_command_id":"cmd-1""#))
+    }
+
+    func testConsecutiveCommandWaitsForAcknowledgementBeforeClaimingNext() throws {
+        let fixture = try makeFixture()
+        let firstMetadata = #"{"provider":"codex","relay_command_id":"cmd-1","relay_command_seq":1}"#
+        let secondMetadata = #"{"provider":"codex","relay_command_id":"cmd-2","relay_command_seq":2}"#
+        try "First request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try firstMetadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try firstMetadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            acknowledgementTimeout: 0.5,
+            schedule: { delay, _, work in scheduled.append((delay, work)) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        scheduled[0].work()
+        try "Second request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try secondMetadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try secondMetadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        XCTAssertEqual(sent, ["First request", "\r"])
+
+        try writeProviderTurns([
+            providerTurn(seq: 1, id: "cmd-1", provider: "codex", state: "completed_final"),
+        ], to: fixture.providerTurns)
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+
+        XCTAssertEqual(sent, ["First request", "\r", "Second request"])
+        XCTAssertEqual(scheduled.count, 3)
+    }
+
+    func testStaleProviderAcknowledgementCannotCompleteNewerPendingCommand() throws {
+        let fixture = try makeFixture()
+        let metadata = #"{"provider":"claude","relay_command_id":"cmd-2","relay_command_seq":2}"#
+        try "Second request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        try writeProviderTurns([
+            providerTurn(seq: 1, id: "cmd-1", provider: "claude", state: "completed_final"),
+        ], to: fixture.providerTurns)
+        var sent: [String] = []
+        var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            acknowledgementTimeout: 0.5,
+            schedule: { delay, _, work in scheduled.append((delay, work)) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        scheduled[0].work()
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        scheduled[1].work()
+
+        XCTAssertEqual(sent, ["Second request", "\r", "\r"])
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertFalse(events.contains(#""event":"provider_acknowledged""#))
+        XCTAssertTrue(events.contains(#""event":"submit_retry""#))
+        XCTAssertTrue(events.contains(#""provider":"claude""#))
     }
 
     func testDeliveryDefersWhenTypedInputIsPending() throws {
@@ -301,6 +530,116 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path))
     }
 
+    func testRapidCommandPreemptsBeforeFirstSubmitWithoutStaleEnter() throws {
+        let fixture = try makeFixture()
+        let firstMetadata = #"{"relay_command_id":"cmd-1","relay_command_seq":1}"#
+        let secondMetadata = #"{"relay_command_id":"cmd-2","relay_command_seq":2}"#
+        try "First request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try firstMetadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try firstMetadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        var scheduled: [() -> Void] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            schedule: { _, _, work in scheduled.append(work) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        try "Second request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try secondMetadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try secondMetadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        scheduled[0]()
+
+        XCTAssertEqual(sent, ["First request", "\u{15}"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.claimed.path))
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        XCTAssertEqual(sent, ["First request", "\u{15}", "Second request"])
+        XCTAssertEqual(scheduled.count, 2)
+        scheduled[1]()
+
+        XCTAssertEqual(sent, ["First request", "\u{15}", "Second request", "\r"])
+        XCTAssertEqual(try String(contentsOf: fixture.claimed), secondMetadata)
+    }
+
+    func testStaleReadyCommandIsDroppedBeforePromptWrite() throws {
+        let fixture = try makeFixture()
+        let staleMetadata = #"{"relay_command_id":"cmd-1","relay_command_seq":1}"#
+        let currentMetadata = #"{"relay_command_id":"cmd-2","relay_command_seq":2}"#
+        try "Stale request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try staleMetadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try currentMetadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+
+        XCTAssertEqual(sent, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.claimed.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path))
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"stale_command_dropped""#))
+        XCTAssertFalse(events.contains("Stale request"))
+    }
+
+    func testDeliveryDefersNormalCommandWhileProviderTurnIsActive() throws {
+        let fixture = try makeFixture()
+        let metadata = #"{"relay_command_id":"cmd-2","relay_command_seq":2}"#
+        try "Second request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try #"{"records":[{"relay_command_id":"cmd-1","relay_command_seq":1,"state":"active"}]}"#
+            .write(to: fixture.providerTurns, atomically: true, encoding: .utf8)
+        let oldDate = Date(timeIntervalSinceReferenceDate: 1)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: fixture.command.path)
+        var sent: [String] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            isRunning: { true }
+        )
+
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+
+        XCTAssertEqual(sent, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path))
+        let attrs = try FileManager.default.attributesOfItem(atPath: fixture.command.path)
+        let modified = try XCTUnwrap(attrs[.modificationDate] as? Date)
+        XCTAssertGreaterThan(modified, oldDate)
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"deferred_provider_active""#))
+        XCTAssertFalse(events.contains("Second request"))
+    }
+
+    func testInterruptBypassesActiveProviderTurnDeferral() throws {
+        let fixture = try makeFixture()
+        let metadata = #"{"relay_command_id":"cmd-3","relay_command_seq":3}"#
+        try "__INTERRUPT__\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        try #"{"records":[{"relay_command_id":"cmd-1","relay_command_seq":1,"state":"active"}]}"#
+            .write(to: fixture.providerTurns, atomically: true, encoding: .utf8)
+        var sent: [[UInt8]] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(Array(data)) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+
+        XCTAssertEqual(sent, [[3]])
+        XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path))
+    }
+
     func testInterruptPayloadUsesControlCWithoutPromptText() {
         XCTAssertEqual(
             RelayVoiceCommandDelivery.providerInputEvents(for: "Fix the bridge\n"),
@@ -315,6 +654,10 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         command: URL,
         metadata: URL,
         claimed: URL,
+        commandState: URL,
+        providerTurns: URL,
+        deliveryEvents: URL,
+        voiceInput: URL,
         heartbeat: URL,
         paths: RelayVoiceCommandDelivery.Paths
     ) {
@@ -325,20 +668,57 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         let command = root.appendingPathComponent("voice_cmd_ready")
         let metadata = root.appendingPathComponent("voice_cmd_ready.meta")
         let claimed = root.appendingPathComponent("voice_cmd_claimed.json")
+        let commandState = root.appendingPathComponent("voice_command_state.json")
+        let providerTurns = root.appendingPathComponent("voice_provider_turns.json")
+        let deliveryEvents = root.appendingPathComponent("relay_terminal_delivery_events.jsonl")
+        let voiceInput = root.appendingPathComponent("voice_in.fifo")
         let heartbeat = root.appendingPathComponent("voice_bridge_heartbeat")
         return (
             root: root,
             command: command,
             metadata: metadata,
             claimed: claimed,
+            commandState: commandState,
+            providerTurns: providerTurns,
+            deliveryEvents: deliveryEvents,
+            voiceInput: voiceInput,
             heartbeat: heartbeat,
             paths: RelayVoiceCommandDelivery.Paths(
                 command: command.path,
                 metadata: metadata.path,
                 claimed: claimed.path,
+                commandState: commandState.path,
+                providerTurns: providerTurns.path,
+                deliveryEvents: deliveryEvents.path,
+                voiceInput: voiceInput.path,
                 heartbeat: heartbeat.path
             )
         )
+    }
+
+    private func providerTurn(
+        seq: Int,
+        id: String,
+        provider: String,
+        state: String
+    ) -> [String: Any] {
+        [
+            "relay_command_seq": seq,
+            "relay_command_id": id,
+            "provider": provider,
+            "state": state,
+            "session_id": "session-\(provider)",
+            "updated_at": Date().timeIntervalSince1970,
+        ]
+    }
+
+    private func writeProviderTurns(_ records: [[String: Any]], to url: URL) throws {
+        let payload: [String: Any] = [
+            "version": 1,
+            "records": records,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        try data.write(to: url, options: .atomic)
     }
 }
 

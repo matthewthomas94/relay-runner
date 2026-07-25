@@ -148,20 +148,51 @@ enum SettingsLayout {
     static let systemFocusEffectDisabled = true
 }
 
-struct SettingsActionButton: View {
-    enum Prominence {
-        case primary
-        case secondary
-        case icon
-    }
+enum SharedActionButtonProminence {
+    case primary
+    case secondary
+    case icon
+}
 
-    let title: String
-    let systemImage: String?
-    var prominence: Prominence = .secondary
-    var isEnabled = true
-    var accessibilityLabel: String?
-    var helpText: String?
+enum SharedActionButtonMetrics {
+    static let controlHeight: CGFloat = 28
+    static let cornerRadius: CGFloat = SettingsLayout.sidebarCornerRadius
+    static let horizontalPadding: CGFloat = 11
+    static let iconSpacing: CGFloat = 6
+}
+
+struct SharedActionButtonPalette {
+    let foreground: Color
+    let fill: Color
+    let stroke: Color
+}
+
+struct SharedActionButtonChrome<Label: View>: View {
+    let prominence: SharedActionButtonProminence
+    let isEnabled: Bool
+    let accessibilityLabel: String
+    let helpText: String
+    let palette: SharedActionButtonPalette
     let action: () -> Void
+    @ViewBuilder let label: () -> Label
+
+    init(
+        prominence: SharedActionButtonProminence,
+        isEnabled: Bool,
+        accessibilityLabel: String,
+        helpText: String,
+        palette: SharedActionButtonPalette,
+        action: @escaping () -> Void,
+        @ViewBuilder label: @escaping () -> Label
+    ) {
+        self.prominence = prominence
+        self.isEnabled = isEnabled
+        self.accessibilityLabel = accessibilityLabel
+        self.helpText = helpText
+        self.palette = palette
+        self.action = action
+        self.label = label
+    }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
@@ -174,33 +205,23 @@ struct SettingsActionButton: View {
             isFocused: isFocused,
             reduceMotion: reduceMotion
         )
-        let shape = RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius, style: .continuous)
 
         Button(action: action) {
-            HStack(spacing: systemImage == nil || prominence == .icon ? 0 : 6) {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .font(AppTypography.symbolFont(size: prominence == .icon ? 12 : 10, weight: .bold))
-                        .accessibilityHidden(true)
-                }
-                if prominence != .icon {
-                    Text(title)
-                        .font(AppTypography.font(.button))
-                }
-            }
-            .foregroundStyle(foregroundColor.opacity(presentation.foregroundOpacity))
-            .padding(.horizontal, prominence == .icon ? 0 : 11)
-            .frame(
-                width: prominence == .icon ? 28 : nil,
-                height: 28
-            )
-            .background(
-                shape.fill(fillColor.opacity(fillOpacity(from: presentation)))
-            )
-            .overlay(
-                shape.stroke(strokeColor.opacity(strokeOpacity(from: presentation)), lineWidth: 1)
-            )
-            .contentShape(shape)
+            label()
+                .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
+                .padding(.horizontal, prominence == .icon ? 0 : SharedActionButtonMetrics.horizontalPadding)
+                .frame(
+                    width: prominence == .icon ? SharedActionButtonMetrics.controlHeight : nil,
+                    height: SharedActionButtonMetrics.controlHeight
+                )
+                .background(
+                    shape.fill(palette.fill.opacity(fillOpacity(from: presentation)))
+                )
+                .overlay(
+                    shape.stroke(palette.stroke.opacity(strokeOpacity(from: presentation)), lineWidth: 1)
+                )
+                .contentShape(shape)
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -209,20 +230,8 @@ struct SettingsActionButton: View {
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
-        .accessibilityLabel(accessibilityLabel ?? title)
-        .help(helpText ?? title)
-    }
-
-    private var fillColor: Color {
-        prominence == .primary ? SettingsSurfaceColor.neutralAccent : Color.white
-    }
-
-    private var strokeColor: Color {
-        prominence == .primary ? SettingsSurfaceColor.neutralAccent : SettingsSurfaceColor.focusRing
-    }
-
-    private var foregroundColor: Color {
-        prominence == .primary ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.primaryText
+        .accessibilityLabel(accessibilityLabel)
+        .help(helpText)
     }
 
     private func fillOpacity(from presentation: SettingsActionPresentation) -> Double {
@@ -240,6 +249,73 @@ struct SettingsActionButton: View {
             return presentation.strokeOpacity
         case .secondary, .icon:
             return presentation.neutralStrokeOpacity
+        }
+    }
+}
+
+struct SettingsActionButton: View {
+    enum Prominence {
+        case primary
+        case secondary
+        case icon
+    }
+
+    let title: String
+    let systemImage: String?
+    var prominence: Prominence = .secondary
+    var isEnabled = true
+    var accessibilityLabel: String?
+    var helpText: String?
+    let action: () -> Void
+
+    var body: some View {
+        SharedActionButtonChrome(
+            prominence: sharedProminence,
+            isEnabled: isEnabled,
+            accessibilityLabel: accessibilityLabel ?? title,
+            helpText: helpText ?? title,
+            palette: SharedActionButtonPalette(
+                foreground: foregroundColor,
+                fill: fillColor,
+                stroke: strokeColor
+            ),
+            action: action,
+            label: {
+            HStack(spacing: systemImage == nil || prominence == .icon ? 0 : SharedActionButtonMetrics.iconSpacing) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(AppTypography.symbolFont(size: prominence == .icon ? 12 : 10, weight: .bold))
+                        .accessibilityHidden(true)
+                }
+                if prominence != .icon {
+                    Text(title)
+                        .font(AppTypography.font(.button))
+                }
+            }
+            }
+        )
+    }
+
+    private var fillColor: Color {
+        prominence == .primary ? SettingsSurfaceColor.neutralAccent : Color.white
+    }
+
+    private var strokeColor: Color {
+        prominence == .primary ? SettingsSurfaceColor.neutralAccent : SettingsSurfaceColor.focusRing
+    }
+
+    private var foregroundColor: Color {
+        prominence == .primary ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.primaryText
+    }
+
+    private var sharedProminence: SharedActionButtonProminence {
+        switch prominence {
+        case .primary:
+            return .primary
+        case .secondary:
+            return .secondary
+        case .icon:
+            return .icon
         }
     }
 }

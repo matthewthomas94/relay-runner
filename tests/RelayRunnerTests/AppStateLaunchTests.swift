@@ -56,6 +56,21 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertEqual(config.general.working_directory, "/Users/example/dev")
     }
 
+    func testOnboardingTutorialOnlyReusesRunningEmbeddedMenuSession() {
+        XCTAssertTrue(AppState.shouldReuseOnboardingTutorialSession(
+            menuSessionActive: true,
+            embeddedProcessRunning: true
+        ))
+        XCTAssertFalse(AppState.shouldReuseOnboardingTutorialSession(
+            menuSessionActive: false,
+            embeddedProcessRunning: true
+        ))
+        XCTAssertFalse(AppState.shouldReuseOnboardingTutorialSession(
+            menuSessionActive: true,
+            embeddedProcessRunning: false
+        ))
+    }
+
     func testOnboardingNotchOverrideUsesNotWorkingPresentation() {
         let presentation = AppState.onboardingNotchPresentation(active: true)
 

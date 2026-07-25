@@ -58,4 +58,22 @@ final class BoardRevealTransitionTests: XCTestCase {
         )
         XCTAssertGreaterThan(plan.expandedFrame.height, NotchStatusPlacementPlanner.glyphSize.height)
     }
+
+    func testWorkspaceFirstMotionBudgetIsSeparateFromRevealDuration() {
+        XCTAssertEqual(BoardRevealTransitionTiming.firstMotionBudget, 0.10)
+        XCTAssertEqual(BoardRevealTransitionTiming.expandToFullWidthDuration, 0.24)
+        XCTAssertEqual(BoardRevealTransitionTiming.expandDuration, 0.34)
+        XCTAssertEqual(BoardRevealTransitionTiming.contentRevealDuration, 0.38)
+        XCTAssertEqual(BoardRevealTransitionTiming.revealAnimationDuration, 0.96, accuracy: 0.001)
+        XCTAssertGreaterThan(BoardRevealTransitionTiming.revealAnimationDuration, 0.30)
+    }
+
+    func testWorkspaceFirstMotionBudgetIsSeparateFromDismissDuration() {
+        XCTAssertEqual(BoardRevealTransitionTiming.firstMotionBudget, 0.10)
+        XCTAssertEqual(BoardRevealTransitionTiming.contentHideDuration, 0.22)
+        XCTAssertEqual(BoardRevealTransitionTiming.dismissToFullWidthDuration, 0.24)
+        XCTAssertEqual(BoardRevealTransitionTiming.compactDuration, 0.22)
+        XCTAssertEqual(BoardRevealTransitionTiming.dismissAnimationDuration, 0.68, accuracy: 0.001)
+        XCTAssertGreaterThan(BoardRevealTransitionTiming.dismissAnimationDuration, 0.25)
+    }
 }

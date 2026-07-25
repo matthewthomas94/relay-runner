@@ -59,6 +59,12 @@ def _notify_state(state: str, **kwargs):
         pass
 
 
+def publish_waiting_preview(text: str) -> None:
+    preview = str(text or "").strip()
+    if preview:
+        _notify_state("message_waiting", text=preview[:2000])
+
+
 def _resolve_chime(name: str) -> str:
     if os.path.isabs(name):
         return name
@@ -219,30 +225,38 @@ class TTSWorker:
                 continue
 
             idle_ticks = 0
-            with self._lock:
-                was_empty = not self._pending_text.strip()
-                if self._pending_text:
-                    self._pending_text += " " + chunk
-                else:
-                    self._pending_text = chunk
+            self._handle_collected_chunk(chunk)
 
-                full_text = self._pending_text.strip()
-                if was_empty and full_text:
-                    self._last_response_text = full_text
-                    self._play_chime()
-                    # Send the full text (capped generously) — the overlay
-                    # pill grows vertically to fit it, so cropping here just
-                    # hides the tail of long responses for no reason. 2000 is
-                    # a soft safety net for pathological inputs.
-                    _notify_state("message_waiting", text=full_text[:2000])
-                elif full_text:
-                    self._last_response_text = full_text
+    def _handle_collected_chunk(self, chunk: str):
+        with self._lock:
+            was_empty = not self._pending_text.strip()
+            if self._pending_text:
+                self._pending_text += " " + chunk
+            else:
+                self._pending_text = chunk
 
-            # Kick off speculative TTS in parallel with the pill so audio is
-            # ready by the time the user double-taps Option. Outside the main
-            # lock — speculation has its own lock and Kokoro can take seconds.
-            if full_text and not self._playing:
-                self._start_speculation(full_text)
+            full_text = self._pending_text.strip()
+            if full_text:
+                self._last_response_text = full_text
+            is_playing = self._playing
+
+        if not full_text:
+            return
+
+        if was_empty:
+            self._play_chime()
+
+        # Send the full text (capped generously) every time the queued
+        # response grows. Deferred-playback overlays should render the latest
+        # response body before playback starts, not wait for a later preparing
+        # or speaking event to repopulate the pill.
+        publish_waiting_preview(full_text)
+
+        # Kick off speculative TTS in parallel with the pill so audio is
+        # ready by the time the user double-taps Option. Outside the main
+        # lock — speculation has its own lock and Kokoro can take seconds.
+        if not is_playing:
+            self._start_speculation(full_text)
 
     def _control_loop(self):
         """Listen on Unix socket for play/pause/skip commands."""

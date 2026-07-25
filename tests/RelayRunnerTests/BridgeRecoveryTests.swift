@@ -119,7 +119,32 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
-    func testRecordingStartBlocksWhenVoiceCommandIsAlreadyWaiting() {
+    func testWatchdogSurfacesQueuedCommandWhenConsumerIsHealthy() {
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: true,
+                daemonAlive: true,
+                consumerAlive: true,
+                wasAlive: true,
+                sessionBridgeSeen: true,
+                elapsedSinceSessionStart: 120,
+                pendingDeliveryState: .waiting
+            ),
+            .voiceCommandQueued
+        )
+    }
+
+    func testVoiceCommandQueuedPresentationUsesPassiveReplacementCopy() {
+        let presentation = AppState.voiceCommandQueuedPresentation
+
+        XCTAssertEqual(presentation.statusText, "Voice command queued")
+        XCTAssertEqual(presentation.title, "Voice command queued")
+        XCTAssertTrue(presentation.body.contains("Speak again to replace"))
+        XCTAssertFalse(presentation.body.contains("listener"))
+        XCTAssertFalse(presentation.body.contains("new session"))
+    }
+
+    func testRecordingStartAllowsQueuedVoiceCommandWhenConsumerIsHealthy() {
         XCTAssertEqual(
             AppState.recordingStartBridgeAction(
                 bridgeRecoveryInFlight: false,
@@ -128,9 +153,11 @@ final class BridgeRecoveryTests: XCTestCase {
                 hasSessionContext: true,
                 pendingDeliveryState: .waiting
             ),
-            .waitForPendingCommand
+            .allowRecording
         )
+    }
 
+    func testRecordingStartBlocksWhenVoiceCommandDeliveryTimedOut() {
         XCTAssertEqual(
             AppState.recordingStartBridgeAction(
                 bridgeRecoveryInFlight: false,
@@ -195,6 +222,17 @@ final class BridgeRecoveryTests: XCTestCase {
                 consumerAlive: false,
                 hasSessionContext: true,
                 pendingDeliveryState: .none
+            ),
+            .waitForConsumer
+        )
+
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: false,
+                hasSessionContext: true,
+                pendingDeliveryState: .waiting
             ),
             .waitForConsumer
         )
@@ -277,6 +315,30 @@ final class BridgeRecoveryTests: XCTestCase {
                 bridgeRecoveryInFlight: true,
                 daemonAlive: true,
                 consumerAlive: true
+            )
+        )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true,
+                sessionControlsTutorialActive: true
+            )
+        )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true,
+                suppressesStartupGreeting: true
             )
         )
     }
@@ -420,6 +482,22 @@ final class BridgeRecoveryTests: XCTestCase {
         XCTAssertTrue(script.contains("RELAY_PROVIDER=''"))
         XCTAssertTrue(script.contains("unset RELAY_RUNNER_PROVIDER"))
         XCTAssertTrue(script.contains("provider=${3:-none}"))
+    }
+
+    func testRecoveryScriptPreservesTutorialGreetingSuppression() {
+        let script = ProcessManager.bridgeRecoveryScript(
+            relayBridge: "/usr/local/bin/relay-bridge",
+            context: .init(workingDirectory: "/Users/example/tutorial", provider: "codex"),
+            suppressStartupGreeting: true
+        )
+
+        XCTAssertTrue(script.contains("\"$2\" --relay --suppress-startup-greeting"))
+        XCTAssertFalse(
+            ProcessManager.bridgeRecoveryScript(
+                relayBridge: "/usr/local/bin/relay-bridge",
+                context: .init(workingDirectory: "/Users/example/normal", provider: "codex")
+            ).contains("--suppress-startup-greeting")
+        )
     }
 
     func testPendingVoiceCommandTimesOutAfterDocumentedDeliveryTimeout() throws {

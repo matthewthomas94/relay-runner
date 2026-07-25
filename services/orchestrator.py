@@ -107,9 +107,28 @@ WORKER_MODEL_TIERS = {
 }
 CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
-AUTO_DISPATCH_SOURCES = frozenset({"ready-sweeper", "dependency-progression"})
+GENERAL_MODEL_OPTIONS = {
+    "codex": {
+        "default",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
+    },
+    "claude": {"default", "best", "fable", "opus", "sonnet", "haiku"},
+}
+BASE_GENERAL_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
+AUTO_DISPATCH_SOURCES = frozenset({"ready-sweeper", "dependency-progression", "orchestrator-review-retry"})
 MAX_AUTO_DISPATCH_ATTEMPTS = 5
 AUTO_DISPATCH_BACKOFF_SECONDS = 30.0
+QUEUE_DRAIN_ACTIVE_STATES = frozenset({"active", "waiting", "blocked"})
+QUEUE_DRAIN_TERMINAL_STATES = frozenset({"completed", "canceled"})
+QUEUE_DRAIN_QUIESCENCE_SECONDS = 2.0
+QUEUE_DRAIN_MONITOR_INTERVAL_SECONDS = 5.0
+QUEUE_DRAIN_STALE_AFTER_SECONDS = 30 * 60.0
 DETERMINISTIC_FAILURE_PREFIXES = (
     "missing worker sizing metadata",
     "invalid worker_model",
@@ -117,6 +136,15 @@ DETERMINISTIC_FAILURE_PREFIXES = (
     "worker_model",
     "ticket snapshot materialization failed",
     "worker exited 0 but did not complete ticket",
+)
+DETERMINISTIC_PROVIDER_LAUNCH_MARKERS = (
+    "model_reasoning_effort",
+    "reasoning effort",
+    "reasoning_effort",
+    "--effort",
+    "--model",
+    "invalid value",
+    "unsupported value",
 )
 ORCHESTRATOR_ACTION_KINDS = frozenset({
     "create_ticket",
@@ -408,6 +436,57 @@ def _configured_orchestrator_model(general: dict[str, Any] | None) -> str | None
     return model if model and model != "default" else None
 
 
+def _uses_inherited_worker_defaults(general: dict[str, Any] | None) -> bool:
+    return (
+        isinstance(general, dict)
+        and str(general.get("subagent_sizing_policy") or "").strip().lower() == "user_default"
+    )
+
+
+def _normalized_general_model(general: dict[str, Any], agent_kind: str) -> str:
+    model = str(general.get("model") or "").strip().lower()
+    return model if model in GENERAL_MODEL_OPTIONS[agent_kind] else "default"
+
+
+def _general_effort_options(agent_kind: str, model: str) -> frozenset[str]:
+    if agent_kind == "codex":
+        if model in {"gpt-5.6-sol", "gpt-5.6-terra"}:
+            return BASE_GENERAL_EFFORTS | frozenset({"max", "ultra"})
+        if model == "gpt-5.6-luna":
+            return BASE_GENERAL_EFFORTS | frozenset({"max"})
+        if model in {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"}:
+            return BASE_GENERAL_EFFORTS
+        return frozenset({"default"})
+    if model in {"best", "fable", "opus"}:
+        return BASE_GENERAL_EFFORTS | frozenset({"max"})
+    if model == "sonnet":
+        return frozenset({"default", "low", "medium", "high", "max"})
+    return frozenset({"default"})
+
+
+def _normalized_general_effort(general: dict[str, Any], agent_kind: str, model: str) -> str:
+    effort = str(
+        general.get("orchestrator_effort") or general.get("codex_reasoning_effort") or ""
+    ).strip().lower()
+    return effort if effort in _general_effort_options(agent_kind, model) else "default"
+
+
+def _inherited_worker_sizing(general: dict[str, Any], agent_kind: str) -> dict[str, str | None]:
+    model = _normalized_general_model(general, agent_kind)
+    effort = _normalized_general_effort(general, agent_kind, model)
+    return {
+        "provider_key": agent_kind,
+        "model_alias": None if model == "default" else model,
+        "worker_model": f"{agent_kind}:{model}",
+        "worker_effort": effort,
+        "worker_sizing_rationale": "Inherited provider, model, and effort from Relay Runner General Settings.",
+        "worker_provider_notes": (
+            "Use my defaults preserves provider default model semantics; Codex uses "
+            "model_reasoning_effort and Claude uses --effort."
+        ),
+    }
+
+
 def _validate_worker_effort(worker_effort: str, *, worker_model: str, agent_kind: str,
                             provider_notes: str) -> str:
     effort = worker_effort.strip().lower()
@@ -433,7 +512,10 @@ def resolve_worker_sizing(
     ticket: dict[str, Any],
     agent_kind: str,
     general: dict[str, Any] | None = None,
-) -> dict[str, str]:
+) -> dict[str, str | None]:
+    if _uses_inherited_worker_defaults(general):
+        return _inherited_worker_sizing(general or {}, agent_kind)
+
     missing = [field for field in WORKER_SIZING_FIELDS if not _required_sizing_value(ticket, field)]
     if missing:
         raise ValueError("missing worker sizing metadata: " + ", ".join(missing))
@@ -469,39 +551,31 @@ def raw_worker_sizing_metadata(ticket: dict[str, Any], agent_kind: str) -> dict[
     }
 
 
-def _normalized_default_worker_sizing(general: dict[str, Any]) -> dict[str, str] | None:
-    if str(general.get("subagent_sizing_policy") or "").strip().lower() != "user_default":
+def _normalized_default_worker_sizing(
+    general: dict[str, Any],
+    agent_kind: str | None = None,
+) -> dict[str, str] | None:
+    if not _uses_inherited_worker_defaults(general):
         return None
-    model = str(general.get("subagent_model") or "").strip().lower()
-    if model not in WORKER_MODEL_TIERS["codex"]:
-        model = "balanced"
-    effort = str(general.get("subagent_effort") or "").strip().lower()
-    if effort not in CODEX_WORKER_EFFORTS:
-        effort = "medium"
-    return {
-        "worker_model": model,
-        "worker_effort": effort,
-        "worker_sizing_rationale": "User default from Relay Runner Settings.",
-        "worker_provider_notes": (
-            "User default applies to Codex and Claude; Codex uses "
-            "model_reasoning_effort and Claude uses --effort."
-        ),
-    }
+    effective_agent_kind = agent_kind or _provider_from_general(general, "codex")
+    inherited = _inherited_worker_sizing(general, effective_agent_kind)
+    return {field: str(inherited[field] or "") for field in WORKER_SIZING_FIELDS}
 
 
 def apply_default_worker_sizing(
     ticket: dict[str, Any],
     general: dict[str, Any],
+    agent_kind: str | None = None,
 ) -> bool:
-    defaults = _normalized_default_worker_sizing(general)
+    defaults = _normalized_default_worker_sizing(general, agent_kind=agent_kind)
     if not defaults:
-        return False
-    if any(_required_sizing_value(ticket, field) for field in WORKER_SIZING_FIELDS):
         return False
     raw = ticket.setdefault("_raw_fields", {})
     if not isinstance(raw, dict):
         raw = {}
         ticket["_raw_fields"] = raw
+    if all(str(raw.get(field) or "") == defaults[field] for field in WORKER_SIZING_FIELDS):
+        return False
     raw.update(defaults)
     return True
 
@@ -517,11 +591,21 @@ def _dispatch_failure_signature(reason: str | None) -> str | None:
     return text.lower()
 
 
+def _is_deterministic_provider_launch_failure(signature: str) -> bool:
+    if not signature.startswith("exit="):
+        return False
+    if "http 400" not in signature and "bad request" not in signature and "invalid request" not in signature:
+        return False
+    return any(marker in signature for marker in DETERMINISTIC_PROVIDER_LAUNCH_MARKERS)
+
+
 def _is_deterministic_dispatch_failure(reason: str | None) -> bool:
     signature = _dispatch_failure_signature(reason)
     if not signature:
         return False
-    return any(signature.startswith(prefix) for prefix in DETERMINISTIC_FAILURE_PREFIXES)
+    if any(signature.startswith(prefix) for prefix in DETERMINISTIC_FAILURE_PREFIXES):
+        return True
+    return _is_deterministic_provider_launch_failure(signature)
 
 
 def _materialize_ticket_snapshot(
@@ -537,7 +621,12 @@ def _materialize_ticket_snapshot(
         tmp = dest.with_name(dest.name + ".tmp")
         tmp.write_bytes(snapshot)
         os.replace(tmp, dest)
-    except OSError as e:
+
+        attachment_source = ticket_file.parent / "attachments" / ticket_id
+        if attachment_source.is_dir():
+            attachment_dest = workspace_path / ".orchestrator" / "attachments" / ticket_id
+            shutil.copytree(attachment_source, attachment_dest, dirs_exist_ok=True)
+    except (OSError, shutil.Error) as e:
         raise RuntimeError(f"ticket snapshot materialization failed for {ticket_id}: {e}") from e
 
 
@@ -1036,6 +1125,350 @@ def derive_codex_activity(item: dict | None) -> str:
 # Stores
 # ---------------------------------------------------------------------------
 
+def _json_list(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item)]
+    if not raw:
+        return []
+    try:
+        decoded = json.loads(str(raw))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [str(item) for item in decoded if str(item)]
+
+
+def _queue_drain_id(repo_path: str, target_branch: str, provider_key: str, sequence: int) -> str:
+    digest = hashlib.sha1(
+        f"{Path(repo_path).expanduser().resolve()}|{target_branch}|{provider_key}|{sequence}".encode("utf-8")
+    ).hexdigest()[:12]
+    return f"drain-{digest}-{sequence}"
+
+
+def _provider_goal_mode(provider_key: str) -> str:
+    provider = OrchestratorSessionStore._normalize_provider(provider_key)
+    if provider == "codex":
+        return "codex-goal-lifecycle"
+    # The installed Claude CLI exposes background agents but no documented goal
+    # primitive equivalent to Codex /goal, so Relay Runner supplies persistence.
+    return "relay-runner-durable-goal"
+
+
+class QueueDrainStore:
+    """Durable rolling queue-drain goal records.
+
+    The board and ticket files remain the source of truth for user work. This
+    store is the daemon's restartable liveness ledger: which tickets joined the
+    current drain, why each ticket is active/scheduled/waiting/blocked, and when
+    the drain has stayed quiescent long enough to complete.
+    """
+
+    SCHEMA_VERSION = 1
+
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS queue_drains (
+        id TEXT PRIMARY KEY,
+        repo_path TEXT NOT NULL,
+        target_branch TEXT NOT NULL,
+        provider_key TEXT NOT NULL,
+        provider_goal_id TEXT,
+        provider_goal_state TEXT NOT NULL,
+        provider_goal_mode TEXT NOT NULL,
+        state TEXT NOT NULL,
+        status_message TEXT,
+        observed_ticket_ids TEXT NOT NULL DEFAULT '[]',
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        quiescent_since REAL,
+        completed_at REAL,
+        canceled_at REAL
+    );
+    CREATE INDEX IF NOT EXISTS idx_queue_drains_repo_state
+        ON queue_drains(repo_path, state);
+    CREATE TABLE IF NOT EXISTS queue_drain_items (
+        drain_id TEXT NOT NULL,
+        ticket_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        run_id INTEGER,
+        reason TEXT,
+        next_action_at REAL,
+        blocker_owner TEXT,
+        blocker_next_step TEXT,
+        unresolved_dependencies TEXT NOT NULL DEFAULT '[]',
+        updated_at REAL NOT NULL,
+        PRIMARY KEY(drain_id, ticket_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_queue_drain_items_ticket
+        ON queue_drain_items(ticket_id);
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._init()
+
+    @contextmanager
+    def _conn(self):
+        with self._lock:
+            conn = sqlite3.connect(str(self.path), isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+            finally:
+                conn.close()
+
+    def _init(self) -> None:
+        with self._conn() as c:
+            current = int(c.execute("PRAGMA user_version").fetchone()[0])
+            if current != self.SCHEMA_VERSION:
+                c.execute("DROP TABLE IF EXISTS queue_drain_items")
+                c.execute("DROP TABLE IF EXISTS queue_drains")
+                c.executescript(self.SCHEMA)
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+            else:
+                c.executescript(self.SCHEMA)
+
+    def active_for_repo(self, repo_path: str) -> dict[str, Any] | None:
+        repo = str(Path(repo_path).expanduser().resolve())
+        placeholders = ",".join("?" * len(QUEUE_DRAIN_ACTIVE_STATES))
+        with self._conn() as c:
+            row = c.execute(
+                f"SELECT * FROM queue_drains WHERE repo_path = ? AND state IN ({placeholders}) "
+                "ORDER BY created_at DESC LIMIT 1",
+                (repo, *sorted(QUEUE_DRAIN_ACTIVE_STATES)),
+            ).fetchone()
+            return self._public_drain(c, row) if row else None
+
+    def active_repo_paths(self) -> list[str]:
+        placeholders = ",".join("?" * len(QUEUE_DRAIN_ACTIVE_STATES))
+        with self._conn() as c:
+            rows = c.execute(
+                f"SELECT DISTINCT repo_path FROM queue_drains WHERE state IN ({placeholders})",
+                tuple(sorted(QUEUE_DRAIN_ACTIVE_STATES)),
+            ).fetchall()
+            return [str(row["repo_path"]) for row in rows]
+
+    def ensure_active(
+        self,
+        *,
+        repo_path: str,
+        target_branch: str,
+        provider_key: str,
+        observed_ticket_ids: list[str],
+        status_message: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        repo = str(Path(repo_path).expanduser().resolve())
+        provider = OrchestratorSessionStore._normalize_provider(provider_key)
+        target = str(target_branch or "main")
+        observed = sorted({str(ticket_id).upper() for ticket_id in observed_ticket_ids if str(ticket_id).strip()})
+        now = time.time()
+        with self._conn() as c:
+            placeholders = ",".join("?" * len(QUEUE_DRAIN_ACTIVE_STATES))
+            row = c.execute(
+                f"SELECT * FROM queue_drains WHERE repo_path = ? AND state IN ({placeholders}) "
+                "ORDER BY created_at DESC LIMIT 1",
+                (repo, *sorted(QUEUE_DRAIN_ACTIVE_STATES)),
+            ).fetchone()
+            if row:
+                merged = sorted(set(_json_list(row["observed_ticket_ids"])) | set(observed))
+                c.execute(
+                    "UPDATE queue_drains SET observed_ticket_ids = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(merged), now, row["id"]),
+                )
+                fresh = c.execute("SELECT * FROM queue_drains WHERE id = ?", (row["id"],)).fetchone()
+                return self._public_drain(c, fresh), False
+
+            row = c.execute(
+                "SELECT COUNT(*) AS count FROM queue_drains WHERE repo_path = ? AND target_branch = ? "
+                "AND provider_key = ?",
+                (repo, target, provider),
+            ).fetchone()
+            sequence = int(row["count"] or 0) + 1
+            drain_id = _queue_drain_id(repo, target, provider, sequence)
+            provider_goal_mode = _provider_goal_mode(provider)
+            provider_goal_id = f"{provider}:{drain_id}" if provider == "codex" else drain_id
+            message = status_message or f"Draining {len(observed)} queued/in-progress ticket(s)."
+            c.execute(
+                "INSERT INTO queue_drains("
+                "id, repo_path, target_branch, provider_key, provider_goal_id, provider_goal_state, "
+                "provider_goal_mode, state, status_message, observed_ticket_ids, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    drain_id,
+                    repo,
+                    target,
+                    provider,
+                    provider_goal_id,
+                    "active",
+                    provider_goal_mode,
+                    "active",
+                    message,
+                    json.dumps(observed),
+                    now,
+                    now,
+                ),
+            )
+            fresh = c.execute("SELECT * FROM queue_drains WHERE id = ?", (drain_id,)).fetchone()
+            return self._public_drain(c, fresh), True
+
+    def update_items(self, drain_id: str, items: list[dict[str, Any]]) -> None:
+        now = time.time()
+        with self._conn() as c:
+            for item in items:
+                c.execute(
+                    "INSERT INTO queue_drain_items("
+                    "drain_id, ticket_id, state, run_id, reason, next_action_at, blocker_owner, "
+                    "blocker_next_step, unresolved_dependencies, updated_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(drain_id, ticket_id) DO UPDATE SET "
+                    "state = excluded.state, run_id = excluded.run_id, reason = excluded.reason, "
+                    "next_action_at = excluded.next_action_at, blocker_owner = excluded.blocker_owner, "
+                    "blocker_next_step = excluded.blocker_next_step, "
+                    "unresolved_dependencies = excluded.unresolved_dependencies, updated_at = excluded.updated_at",
+                    (
+                        drain_id,
+                        str(item["ticket_id"]).upper(),
+                        item.get("state") or "unknown",
+                        item.get("run_id"),
+                        item.get("reason"),
+                        item.get("next_action_at"),
+                        item.get("blocker_owner"),
+                        item.get("blocker_next_step"),
+                        json.dumps(item.get("unresolved_dependencies") or []),
+                        now,
+                    ),
+                )
+
+    def update_state(
+        self,
+        drain_id: str,
+        *,
+        state: str,
+        provider_goal_state: str | None = None,
+        status_message: str | None = None,
+        quiescent_since: float | None = None,
+        complete: bool = False,
+        canceled: bool = False,
+    ) -> dict[str, Any] | None:
+        now = time.time()
+        fields = ["state = ?", "updated_at = ?"]
+        values: list[Any] = [state, now]
+        if provider_goal_state is not None:
+            fields.append("provider_goal_state = ?")
+            values.append(provider_goal_state)
+        if status_message is not None:
+            fields.append("status_message = ?")
+            values.append(status_message)
+        fields.append("quiescent_since = ?")
+        values.append(quiescent_since)
+        if complete:
+            fields.append("completed_at = ?")
+            values.append(now)
+        if canceled:
+            fields.append("canceled_at = ?")
+            values.append(now)
+        values.append(drain_id)
+        with self._conn() as c:
+            c.execute(f"UPDATE queue_drains SET {', '.join(fields)} WHERE id = ?", values)
+            row = c.execute("SELECT * FROM queue_drains WHERE id = ?", (drain_id,)).fetchone()
+            return self._public_drain(c, row) if row else None
+
+    def append_observed(self, drain_id: str, ticket_ids: list[str]) -> dict[str, Any] | None:
+        normalized = {str(ticket_id).upper() for ticket_id in ticket_ids if str(ticket_id).strip()}
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM queue_drains WHERE id = ?", (drain_id,)).fetchone()
+            if not row:
+                return None
+            merged = sorted(set(_json_list(row["observed_ticket_ids"])) | normalized)
+            c.execute(
+                "UPDATE queue_drains SET observed_ticket_ids = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(merged), time.time(), drain_id),
+            )
+            fresh = c.execute("SELECT * FROM queue_drains WHERE id = ?", (drain_id,)).fetchone()
+            return self._public_drain(c, fresh)
+
+    def cancel(self, drain_id: str, *, reason: str | None = None) -> dict[str, Any] | None:
+        message = reason or "Queue drain canceled by user."
+        return self.update_state(
+            drain_id,
+            state="canceled",
+            provider_goal_state="canceled",
+            status_message=message,
+            quiescent_since=None,
+            canceled=True,
+        )
+
+    def list(self, *, repo_path: str | None = None, include_terminal: bool = False, limit: int = 20) -> list[dict[str, Any]]:
+        limit = max(1, int(limit or 20))
+        repo = str(Path(repo_path).expanduser().resolve()) if repo_path else None
+        clauses: list[str] = []
+        values: list[Any] = []
+        if repo:
+            clauses.append("repo_path = ?")
+            values.append(repo)
+        if not include_terminal:
+            placeholders = ",".join("?" * len(QUEUE_DRAIN_TERMINAL_STATES))
+            clauses.append(f"state NOT IN ({placeholders})")
+            values.extend(sorted(QUEUE_DRAIN_TERMINAL_STATES))
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        values.append(limit)
+        with self._conn() as c:
+            rows = c.execute(
+                f"SELECT * FROM queue_drains {where}ORDER BY created_at DESC LIMIT ?",
+                values,
+            ).fetchall()
+            return [self._public_drain(c, row) for row in rows]
+
+    def get(self, drain_id: str) -> dict[str, Any] | None:
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM queue_drains WHERE id = ?", (drain_id,)).fetchone()
+            return self._public_drain(c, row) if row else None
+
+    def _items(self, conn: sqlite3.Connection, drain_id: str) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT * FROM queue_drain_items WHERE drain_id = ? ORDER BY ticket_id",
+            (drain_id,),
+        ).fetchall()
+        return [
+            {
+                "ticket_id": row["ticket_id"],
+                "state": row["state"],
+                "run_id": row["run_id"],
+                "reason": row["reason"],
+                "next_action_at": row["next_action_at"],
+                "blocker_owner": row["blocker_owner"],
+                "blocker_next_step": row["blocker_next_step"],
+                "unresolved_dependencies": _json_list(row["unresolved_dependencies"]),
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def _public_drain(self, conn: sqlite3.Connection, row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}
+        return {
+            "id": row["id"],
+            "repo_path": row["repo_path"],
+            "target_branch": row["target_branch"],
+            "provider_key": row["provider_key"],
+            "provider_goal_id": row["provider_goal_id"],
+            "provider_goal_state": row["provider_goal_state"],
+            "provider_goal_mode": row["provider_goal_mode"],
+            "state": row["state"],
+            "status_message": row["status_message"],
+            "observed_ticket_ids": _json_list(row["observed_ticket_ids"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "quiescent_since": row["quiescent_since"],
+            "completed_at": row["completed_at"],
+            "canceled_at": row["canceled_at"],
+            "items": self._items(conn, row["id"]),
+        }
+
+
 class RunsStore:
     SCHEMA_VERSION = 4  # bump when the runs table shape changes
 
@@ -1180,6 +1613,29 @@ class RunsStore:
                     "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)
                 ).fetchall()
             return [dict(r) for r in rows]
+
+    def list_for_repo(self, repo_path: str, *, limit: int = 1000) -> list[dict]:
+        repo = str(Path(repo_path).expanduser().resolve())
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM runs WHERE repo_path = ? ORDER BY id DESC LIMIT ?",
+                (repo, max(1, int(limit))),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def active_count(self, repo_path: str | None = None) -> int:
+        placeholders = ",".join("?" * len(self.ACTIVE_STATES))
+        params: list[Any] = [*self.ACTIVE_STATES]
+        repo_clause = ""
+        if repo_path is not None:
+            repo_clause = "AND repo_path = ? "
+            params.append(str(Path(repo_path).expanduser().resolve()))
+        with self._conn() as c:
+            row = c.execute(
+                f"SELECT COUNT(*) AS count FROM runs WHERE state IN ({placeholders}) {repo_clause}",
+                params,
+            ).fetchone()
+            return int(row["count"] or 0)
 
     def find_active(self, ticket_id: str, repo_path: str | None = None) -> dict | None:
         ph = ",".join("?" * len(self.ACTIVE_STATES))
@@ -2211,8 +2667,12 @@ def validate_worker_completion(
 # ---------------------------------------------------------------------------
 
 def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
-    model_alias = str(run.get("model_alias") or "").strip()
-    worker_effort = str(run.get("worker_effort") or "").strip()
+    model_alias = str(run.get("model_alias") or "").strip().lower()
+    worker_effort = str(run.get("worker_effort") or "").strip().lower()
+    if model_alias == "default":
+        model_alias = ""
+    if worker_effort == "default":
+        worker_effort = ""
     if agent_kind == "claude":
         # Claude stream-json gives assistant/tool_use/tool_result events. The
         # same command shape is used for implementation and review workers so
@@ -2650,6 +3110,7 @@ class ReviewWorker:
                 return
 
             self.store.update(self.run_id, state="Reviewing", pid=self.proc.pid)
+            self.store.set_activity(self.run_id, "Reviewing worker branch")
             self._emit_lifecycle("run-reviewing", queue_messenger=False)
 
             try:
@@ -2662,6 +3123,14 @@ class ReviewWorker:
             watchdog = threading.Timer(self.timeout_seconds, self._on_timeout)
             watchdog.daemon = True
             watchdog.start()
+            hb_stop = threading.Event()
+            hb_thread = threading.Thread(
+                target=self._heartbeat,
+                args=(hb_stop,),
+                name=f"review-worker-{self.run_id}-hb",
+                daemon=True,
+            )
+            hb_thread.start()
             tail: collections.deque[str] = collections.deque(maxlen=5)
             try:
                 for line in self.proc.stdout:  # type: ignore[union-attr]
@@ -2671,6 +3140,7 @@ class ReviewWorker:
                         tail.append(stripped[:500])
             finally:
                 log.flush()
+                hb_stop.set()
                 watchdog.cancel()
 
             self.proc.wait()
@@ -2708,6 +3178,10 @@ class ReviewWorker:
             agent_bin=self.agent_bin,
             run=self.run,
         )
+
+    def _heartbeat(self, stop: threading.Event) -> None:
+        while not stop.wait(ACTIVITY_HEARTBEAT_SECONDS):
+            self.store.touch_activity(self.run_id)
 
     def _on_timeout(self) -> None:
         self._timed_out = True
@@ -2747,9 +3221,11 @@ class Daemon:
         self.workflow_path = _resolve_workflow_default(orch_cfg.get("default_workflow_path", ""))
         self.worker_timeout = int(orch_cfg.get("worker_timeout_seconds", 1800))
         self.port = int(orch_cfg.get("port", DEFAULT_PORT))
+        self.max_concurrent_workers = max(0, int(orch_cfg.get("max_concurrent_workers", 0) or 0))
 
         data = _data_root()
         self.runs = RunsStore(data / "runs.db", index_path=data / "runs.json")
+        self.queue_drains = QueueDrainStore(data / "queue_drains.db")
         self.orchestrator_sessions = OrchestratorSessionStore(data / "orchestrator_sessions.db")
         self.orchestrator_commands = OrchestratorCommandStore(data / "orchestrator_commands.db")
         self.messenger_outcomes = MessengerOutcomeStore(data / "messenger_outcomes.db")
@@ -2787,6 +3263,10 @@ class Daemon:
             self.agent_kind,
             str(orch_cfg.get("command") or ""),
         )
+        try:
+            self.reconcile_queue_drains(trigger="daemon-startup")
+        except Exception as e:  # noqa: BLE001 - daemon startup must still finish.
+            print(f"[orchestrator] queue-drain startup reconcile failed: {e}", file=sys.stderr)
 
     # -- prompt rendering -------------------------------------------------
 
@@ -2893,6 +3373,592 @@ class Daemon:
             return kind, self.agent_bin, general
         return kind, _find_agent_bin(kind), general
 
+    def _queue_drain_store(self) -> QueueDrainStore | None:
+        return getattr(self, "queue_drains", None)
+
+    def _queue_drain_quiescence_seconds(self) -> float:
+        return float(getattr(self, "queue_drain_quiescence_seconds", QUEUE_DRAIN_QUIESCENCE_SECONDS))
+
+    def _max_concurrent_workers(self) -> int:
+        return max(0, int(getattr(self, "max_concurrent_workers", 0) or 0))
+
+    def _capacity_wait_reason(self, *, repo_path: str) -> tuple[str, float] | None:
+        max_workers = self._max_concurrent_workers()
+        if max_workers <= 0:
+            return None
+        active = self.runs.active_count(repo_path)
+        if active < max_workers:
+            return None
+        return (
+            f"capacity wait: {active}/{max_workers} implementation worker slot(s) active",
+            time.time() + QUEUE_DRAIN_MONITOR_INTERVAL_SECONDS,
+        )
+
+    def _repo_runs(self, repo_path: str) -> list[dict[str, Any]]:
+        try:
+            return self.runs.list_for_repo(repo_path, limit=5000)
+        except AttributeError:
+            return [
+                run for run in self.runs.list(limit=5000)
+                if str(Path(str(run.get("repo_path") or "")).expanduser().resolve()) == str(Path(repo_path).expanduser().resolve())
+            ]
+
+    @staticmethod
+    def _latest_runs_by_ticket(runs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        latest: dict[str, dict[str, Any]] = {}
+        for run in sorted(runs, key=lambda item: int(item.get("id") or 0), reverse=True):
+            ticket_id = str(run.get("ticket_id") or "").upper()
+            if ticket_id and ticket_id not in latest:
+                latest[ticket_id] = run
+        return latest
+
+    @staticmethod
+    def _run_activity_age(run: dict[str, Any], now: float) -> float | None:
+        raw = run.get("activity_at") or run.get("started_at")
+        try:
+            stamp = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, now - stamp)
+
+    def _run_stale(self, run: dict[str, Any], now: float) -> bool:
+        state = str(run.get("state") or "")
+        if state not in {"Claimed", "Running", "Reviewing"}:
+            return False
+        age = self._run_activity_age(run, now)
+        return bool(age is not None and age >= QUEUE_DRAIN_STALE_AFTER_SECONDS)
+
+    def _ensure_queue_drain_for_ticket(
+        self,
+        *,
+        repo: Path,
+        ticket: dict[str, Any],
+        provider_key: str,
+        target_branch: str,
+        trigger: str,
+    ) -> dict[str, Any] | None:
+        store = self._queue_drain_store()
+        if store is None or ticket.get("canceled") or ticket.get("draft"):
+            return None
+        if ticket.get("status") not in {"ready", "in_progress"}:
+            return None
+        drain, created = store.ensure_active(
+            repo_path=str(repo),
+            target_branch=target_branch,
+            provider_key=provider_key,
+            observed_ticket_ids=[str(ticket["id"])],
+            status_message=f"Queue drain started by {trigger}.",
+        )
+        if created:
+            self._emit_lifecycle(
+                "reasoning-summary",
+                message=f"Started queue drain {drain['id']} for {ticket['id']}.",
+                repo_path=str(repo),
+                provider_key=provider_key,
+            )
+        return drain
+
+    def _queue_drain_candidate_ids(
+        self,
+        *,
+        tickets: list[dict[str, Any]],
+        runs_by_ticket: dict[str, dict[str, Any]],
+        active_drain: dict[str, Any] | None,
+    ) -> list[str]:
+        by_id = {str(ticket["id"]).upper(): ticket for ticket in tickets}
+        observed = set(active_drain.get("observed_ticket_ids", []) if active_drain else [])
+        for ticket in tickets:
+            ticket_id = str(ticket["id"]).upper()
+            if ticket.get("canceled") or ticket.get("draft"):
+                continue
+            if ticket.get("status") in {"ready", "in_progress"}:
+                observed.add(ticket_id)
+        for ticket_id, run in runs_by_ticket.items():
+            state = str(run.get("state") or "")
+            ticket = by_id.get(ticket_id)
+            if ticket and ticket.get("status") == "done":
+                continue
+            if state in set(self.runs.ACTIVE_STATES) | set(REVIEW_BLOCKING_STATES):
+                observed.add(ticket_id)
+
+        # Dependency predecessors are part of the drain only when an observed
+        # ticket is waiting on them; unrelated backlog remains outside the goal.
+        expanded = set(observed)
+        for ticket_id in list(observed):
+            ticket = by_id.get(ticket_id)
+            if not ticket:
+                continue
+            for dep_id in ticket.get("depends_on", []):
+                dep = by_id.get(str(dep_id).upper())
+                if dep and dep.get("status") != "done":
+                    expanded.add(str(dep_id).upper())
+        return sorted(expanded)
+
+    def _blocked_item(
+        self,
+        ticket_id: str,
+        *,
+        reason: str,
+        owner: str = "human",
+        next_step: str | None = None,
+        run_id: int | None = None,
+        unresolved_dependencies: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "ticket_id": ticket_id,
+            "state": "blocked",
+            "run_id": run_id,
+            "reason": reason,
+            "blocker_owner": owner,
+            "blocker_next_step": next_step or reason,
+            "unresolved_dependencies": unresolved_dependencies or [],
+        }
+
+    def _classify_queue_drain_item(
+        self,
+        *,
+        repo: Path,
+        ticket_id: str,
+        ticket: dict[str, Any] | None,
+        all_tickets: list[dict[str, Any]],
+        latest_run: dict[str, Any] | None,
+        skip: dict[str, Any] | None,
+        drive_reviews: bool,
+        now: float,
+    ) -> dict[str, Any]:
+        if ticket is None:
+            return self._blocked_item(
+                ticket_id,
+                reason="ticket file missing",
+                next_step=f"Restore .orchestrator/{ticket_id}.md or cancel the drain.",
+            )
+
+        if ticket.get("canceled"):
+            return {
+                "ticket_id": ticket_id,
+                "state": "canceled",
+                "reason": "ticket is canceled",
+                "unresolved_dependencies": [],
+            }
+
+        by_id = {str(item["id"]).upper(): item for item in all_tickets}
+        unresolved = [
+            dep_id for dep_id in ticket.get("depends_on", [])
+            if not by_id.get(str(dep_id).upper()) or by_id[str(dep_id).upper()].get("status") != "done"
+        ]
+        if unresolved:
+            return {
+                "ticket_id": ticket_id,
+                "state": "dependency_waiting",
+                "reason": f"waiting on {', '.join(unresolved)}",
+                "unresolved_dependencies": unresolved,
+                "blocker_owner": "dependency",
+                "blocker_next_step": "Automatically resume when every predecessor is reviewed, merged, and done.",
+            }
+
+        run_state = str((latest_run or {}).get("state") or "")
+        run_id = int(latest_run["id"]) if latest_run and latest_run.get("id") is not None else None
+        if latest_run and self._run_stale(latest_run, now):
+            age = self._run_activity_age(latest_run, now)
+            if run_state == "Reviewing":
+                self.runs.update(
+                    run_id,
+                    state="AwaitingReview",
+                    last_error=f"stale review ownership recovered after {int((age or 0) // 60)}m without activity",
+                )
+                with self._review_workers_lock:
+                    self._review_workers.pop(run_id, None)
+                run_state = "AwaitingReview"
+            else:
+                self.runs.update(
+                    run_id,
+                    state="Stalled",
+                    last_error=f"stale worker ownership recovered after {int((age or 0) // 60)}m without activity",
+                    ended=True,
+                    exit_code=-1,
+                )
+                latest_run = self.runs.get(run_id)
+                run_state = "Stalled"
+
+        if run_state in self.runs.ACTIVE_STATES:
+            return {
+                "ticket_id": ticket_id,
+                "state": "active",
+                "run_id": run_id,
+                "reason": run_state,
+                "unresolved_dependencies": [],
+            }
+
+        if run_state == "Reviewing":
+            return {
+                "ticket_id": ticket_id,
+                "state": "reviewing",
+                "run_id": run_id,
+                "reason": "review/merge worker active",
+                "unresolved_dependencies": [],
+            }
+
+        if run_state in {"AwaitingReview", "Succeeded"}:
+            review_active = run_id in getattr(self, "_review_workers", {})
+            if drive_reviews and not review_active:
+                try:
+                    result = self.dispatch_review_worker(run_id, source="queue-drain")
+                    review_active = bool(result.get("review_dispatched") or result.get("review_already_active"))
+                except Exception as e:  # noqa: BLE001 - leave a visible blocker.
+                    return self._blocked_item(
+                        ticket_id,
+                        run_id=run_id,
+                        reason=f"review dispatch failed: {e}",
+                        next_step="Fix review worker launch or run review manually, then reconcile the drain.",
+                    )
+            return {
+                "ticket_id": ticket_id,
+                "state": "reviewing" if review_active else "awaiting_review",
+                "run_id": run_id,
+                "reason": "review worker scheduled" if review_active else "awaiting review dispatch",
+                "next_action_at": now if not review_active else None,
+                "unresolved_dependencies": [],
+            }
+
+        if run_state == "MergeConflict":
+            return self._blocked_item(
+                ticket_id,
+                run_id=run_id,
+                reason=str(latest_run.get("last_error") or "merge conflict"),
+                next_step="Resolve the merge conflict or request an explicit retry.",
+            )
+
+        if ticket.get("status") == "done":
+            if latest_run and run_state not in {"Merged", ""}:
+                return self._blocked_item(
+                    ticket_id,
+                    run_id=run_id,
+                    reason=f"source ticket is done but latest run is {run_state}",
+                    next_step="Inspect the run and merge evidence before completing the drain.",
+                )
+            return {
+                "ticket_id": ticket_id,
+                "state": "done",
+                "run_id": run_id,
+                "reason": "source ticket is done",
+                "unresolved_dependencies": [],
+            }
+
+        if skip:
+            reason = str(skip.get("reason") or "")
+            error = str(skip.get("error") or "")
+            if reason == "capacity_wait":
+                return {
+                    "ticket_id": ticket_id,
+                    "state": "scheduled",
+                    "run_id": skip.get("run_id"),
+                    "reason": skip.get("message") or "waiting for worker capacity",
+                    "next_action_at": skip.get("next_action_at"),
+                    "unresolved_dependencies": [],
+                }
+            if reason == "dispatch_failed":
+                if "backoff active" in error:
+                    next_action_at = None
+                    if latest_run and latest_run.get("ended_at") is not None:
+                        try:
+                            next_action_at = float(latest_run["ended_at"]) + AUTO_DISPATCH_BACKOFF_SECONDS
+                        except (TypeError, ValueError):
+                            next_action_at = now + AUTO_DISPATCH_BACKOFF_SECONDS
+                    return {
+                        "ticket_id": ticket_id,
+                        "state": "scheduled",
+                        "run_id": run_id,
+                        "reason": error,
+                        "next_action_at": next_action_at or now + AUTO_DISPATCH_BACKOFF_SECONDS,
+                        "unresolved_dependencies": [],
+                    }
+                return self._blocked_item(
+                    ticket_id,
+                    run_id=run_id,
+                    reason=error or "dispatch failed",
+                    next_step="Fix the dispatch blocker and explicitly redispatch or reconcile the drain.",
+                )
+            if reason == "run_id_present":
+                return self._blocked_item(
+                    ticket_id,
+                    run_id=skip.get("run_id"),
+                    reason="ticket has run_id but no live/mergeable run was found",
+                    next_step="Inspect the recorded run_id, reset the ticket, or explicitly redispatch.",
+                )
+
+        if run_state in {"Failed", "Stalled"}:
+            blocker = self._auto_dispatch_blocker(
+                ticket_id=ticket_id,
+                repo_path=str(repo),
+                source="ready-sweeper",
+            )
+            if blocker:
+                if "backoff active" in blocker:
+                    next_action_at = now + AUTO_DISPATCH_BACKOFF_SECONDS
+                    if latest_run and latest_run.get("ended_at") is not None:
+                        try:
+                            next_action_at = float(latest_run["ended_at"]) + AUTO_DISPATCH_BACKOFF_SECONDS
+                        except (TypeError, ValueError):
+                            pass
+                    return {
+                        "ticket_id": ticket_id,
+                        "state": "scheduled",
+                        "run_id": run_id,
+                        "reason": blocker,
+                        "next_action_at": next_action_at,
+                        "unresolved_dependencies": [],
+                    }
+                return self._blocked_item(
+                    ticket_id,
+                    run_id=run_id,
+                    reason=blocker,
+                    next_step="Fix the last error and explicitly redispatch the ticket.",
+                )
+
+        if ticket.get("status") == "ready":
+            return {
+                "ticket_id": ticket_id,
+                "state": "scheduled",
+                "reason": "ready for automatic dispatch",
+                "next_action_at": now,
+                "unresolved_dependencies": [],
+            }
+
+        if ticket.get("status") == "in_progress":
+            return self._blocked_item(
+                ticket_id,
+                run_id=ticket.get("run_id"),
+                reason="ticket is in progress without a live or reviewable run",
+                next_step="Inspect the partial work, mark it ready again, or cancel it.",
+            )
+
+        return {
+            "ticket_id": ticket_id,
+            "state": "done" if ticket.get("status") == "done" else "scheduled",
+            "run_id": run_id,
+            "reason": f"ticket status {ticket.get('status')}",
+            "unresolved_dependencies": [],
+        }
+
+    def _record_queue_drain_locked(
+        self,
+        *,
+        repo: Path,
+        trigger: str | None = None,
+        sweep_result: dict[str, Any] | None = None,
+        drive_reviews: bool = True,
+    ) -> dict[str, Any] | None:
+        store = self._queue_drain_store()
+        if store is None:
+            return None
+
+        tickets = scan_repo(repo)
+        runs = self._repo_runs(str(repo))
+        runs_by_ticket = self._latest_runs_by_ticket(runs)
+        active_drain = store.active_for_repo(str(repo))
+        observed_ids = self._queue_drain_candidate_ids(
+            tickets=tickets,
+            runs_by_ticket=runs_by_ticket,
+            active_drain=active_drain,
+        )
+        if not active_drain and not observed_ids:
+            return None
+
+        provider_key = self.agent_kind
+        try:
+            provider_key = self._effective_worker_agent()[0]
+        except Exception:
+            provider_key = self.agent_kind
+        target_branch = _git_text(str(repo), "branch", "--show-current") or self._resolve_default_branch(str(repo))
+        drain, created = store.ensure_active(
+            repo_path=str(repo),
+            target_branch=target_branch,
+            provider_key=provider_key,
+            observed_ticket_ids=observed_ids,
+            status_message=f"Queue drain started by {trigger or 'reconcile'}.",
+        )
+        if active_drain:
+            drain = store.append_observed(drain["id"], observed_ids) or drain
+        elif created:
+            self._emit_lifecycle(
+                "reasoning-summary",
+                message=f"Started queue drain {drain['id']}.",
+                repo_path=str(repo),
+                provider_key=provider_key,
+            )
+
+        tickets_by_id = {str(ticket["id"]).upper(): ticket for ticket in tickets}
+        observed_ids = sorted(set(drain.get("observed_ticket_ids", [])) | set(observed_ids))
+        skip_by_id = {
+            str(item.get("ticket_id") or "").upper(): item
+            for item in (sweep_result or {}).get("skipped", [])
+            if item.get("ticket_id")
+        }
+        items = [
+            self._classify_queue_drain_item(
+                repo=repo,
+                ticket_id=ticket_id,
+                ticket=tickets_by_id.get(ticket_id),
+                all_tickets=tickets,
+                latest_run=runs_by_ticket.get(ticket_id),
+                skip=skip_by_id.get(ticket_id),
+                drive_reviews=drive_reviews,
+                now=time.time(),
+            )
+            for ticket_id in observed_ids
+        ]
+        store.update_items(drain["id"], items)
+
+        blocking = [item for item in items if item.get("state") == "blocked"]
+        unfinished = [
+            item for item in items
+            if item.get("state") not in {"done", "canceled"}
+        ]
+        quiescent_since = drain.get("quiescent_since")
+        if blocking:
+            first = blocking[0]
+            message = (
+                f"Queue drain blocked on {first['ticket_id']}: "
+                f"{first.get('blocker_next_step') or first.get('reason')}"
+            )
+            return store.update_state(
+                drain["id"],
+                state="blocked",
+                provider_goal_state="blocked",
+                status_message=message,
+                quiescent_since=None,
+            )
+
+        if unfinished:
+            state = "active" if any(item.get("state") in {"active", "reviewing", "awaiting_review", "scheduled"} for item in unfinished) else "waiting"
+            message = f"Queue drain waiting on {len(unfinished)} ticket(s)."
+            return store.update_state(
+                drain["id"],
+                state=state,
+                provider_goal_state="active",
+                status_message=message,
+                quiescent_since=None,
+            )
+
+        now = time.time()
+        if quiescent_since is None:
+            return store.update_state(
+                drain["id"],
+                state="waiting",
+                provider_goal_state="active",
+                status_message=(
+                    "Queue drain is quiescent; verifying for "
+                    f"{self._queue_drain_quiescence_seconds():g}s before completion."
+                ),
+                quiescent_since=now,
+            )
+        try:
+            quiet_for = now - float(quiescent_since)
+        except (TypeError, ValueError):
+            quiet_for = 0.0
+        if quiet_for < self._queue_drain_quiescence_seconds():
+            return store.update_state(
+                drain["id"],
+                state="waiting",
+                provider_goal_state="active",
+                status_message="Queue drain is still in the quiescence window.",
+                quiescent_since=float(quiescent_since),
+            )
+
+        completed = store.update_state(
+            drain["id"],
+            state="completed",
+            provider_goal_state="completed",
+            status_message=f"Queue drain completed after {len(items)} observed ticket(s).",
+            quiescent_since=float(quiescent_since),
+            complete=True,
+        )
+        self._emit_lifecycle(
+            "reasoning-summary",
+            message=f"Queue drain {drain['id']} completed.",
+            repo_path=str(repo),
+            provider_key=provider_key,
+        )
+        return completed
+
+    def reconcile_queue_drain(self, *, repo_path: str, trigger: str | None = None) -> dict[str, Any]:
+        if not repo_path:
+            raise ValueError("repo_path is required")
+        repo = Path(repo_path).expanduser().resolve()
+        if not repo.is_dir() or not (repo / ".git").exists():
+            raise ValueError(f"repo_path {repo} is not a git repository")
+        with self._authoring_mutex():
+            sweep = self._sweep_ready_tickets_locked(
+                repo=repo,
+                trigger=trigger or "queue-drain",
+                record_drain=False,
+            )
+            drain = self._record_queue_drain_locked(
+                repo=repo,
+                trigger=trigger or "queue-drain",
+                sweep_result=sweep,
+                drive_reviews=True,
+            )
+        return {"repo_path": str(repo), "trigger": trigger, "sweep": sweep, "drain": drain}
+
+    def reconcile_queue_drains(
+        self,
+        *,
+        repo_paths: list[str] | None = None,
+        trigger: str | None = None,
+    ) -> dict[str, Any]:
+        store = self._queue_drain_store()
+        requested = [
+            str(Path(path).expanduser().resolve())
+            for path in (repo_paths or [])
+            if str(path).strip()
+        ]
+        if not requested:
+            requested = _registered_project_repo_paths(self.program_registry_path)
+            if store is not None:
+                requested.extend(store.active_repo_paths())
+        seen: set[str] = set()
+        projects: list[dict[str, Any]] = []
+        for path in requested:
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                projects.append(self.reconcile_queue_drain(
+                    repo_path=path,
+                    trigger=trigger or "queue-drain-monitor",
+                ))
+            except (ValueError, RuntimeError) as e:
+                projects.append({"repo_path": path, "error": str(e)})
+        return {"trigger": trigger, "projects": projects}
+
+    def list_queue_drains(
+        self,
+        *,
+        repo_path: str | None = None,
+        include_terminal: bool = False,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        store = self._queue_drain_store()
+        if store is None:
+            return []
+        return store.list(repo_path=repo_path, include_terminal=include_terminal, limit=limit)
+
+    def cancel_queue_drain(self, drain_id: str, *, reason: str | None = None) -> dict[str, Any]:
+        store = self._queue_drain_store()
+        if store is None:
+            raise ValueError("queue drain store is unavailable")
+        result = store.cancel(drain_id, reason=reason)
+        if result is None:
+            raise ValueError(f"unknown queue drain {drain_id}")
+        self._emit_lifecycle(
+            "reasoning-summary",
+            message=f"Queue drain {drain_id} canceled.",
+            repo_path=result.get("repo_path"),
+            provider_key=result.get("provider_key"),
+        )
+        return {"queue_drain": result}
+
     def _auto_dispatch_blocker(
         self,
         *,
@@ -2976,6 +4042,26 @@ class Daemon:
         )
         return self.runs.get(run_id)
 
+    def _record_queue_drain_after_event(
+        self,
+        *,
+        repo_path: str | None,
+        trigger: str,
+        drive_reviews: bool = True,
+    ) -> None:
+        if not repo_path:
+            return
+        try:
+            repo = Path(repo_path).expanduser().resolve()
+            if repo.is_dir() and (repo / ".git").exists():
+                self._record_queue_drain_locked(
+                    repo=repo,
+                    trigger=trigger,
+                    drive_reviews=drive_reviews,
+                )
+        except Exception as e:  # noqa: BLE001 - caller outcome is already durable.
+            print(f"[orchestrator] queue-drain record failed after {trigger}: {e}", file=sys.stderr)
+
     @staticmethod
     def _resolve_default_branch(repo_path: str) -> str:
         """Resolve the repo's default branch via `git symbolic-ref`. Falls back to 'main'."""
@@ -3024,15 +4110,28 @@ class Daemon:
         workspace_path = self.workspace_root / workspace_slug(str(repo), ticket_id)
         log_path = workspace_path / ".relay" / "run.log"
         base_branch = self._resolve_default_branch(str(repo))
+        target_branch = _git_text(str(repo), "branch", "--show-current") or base_branch
 
         with self._dispatch_lock:
             worker_provider, worker_bin, general_config = self._effective_worker_agent()
+            self._ensure_queue_drain_for_ticket(
+                repo=repo,
+                ticket=ticket,
+                provider_key=worker_provider,
+                target_branch=target_branch,
+                trigger=source,
+            )
             existing = self.runs.find_active(ticket_id, repo_path=str(repo))
             if existing:
                 print(
                     f"[orchestrator] dispatch skipped for {ticket_id} from {source}: "
                     f"already active run {existing['id']}",
                     file=sys.stderr,
+                )
+                self._record_queue_drain_after_event(
+                    repo_path=str(repo),
+                    trigger=f"dispatch-{source}-already-active",
+                    drive_reviews=False,
                 )
                 return {"already_active": True, "run": existing}
 
@@ -3046,6 +4145,11 @@ class Daemon:
                 print(
                     f"[orchestrator] dispatch skipped for {ticket_id} from {source}: {reason}",
                     file=sys.stderr,
+                )
+                self._record_queue_drain_after_event(
+                    repo_path=str(repo),
+                    trigger=f"dispatch-{source}-awaiting-merge",
+                    drive_reviews=True,
                 )
                 return {
                     "already_active": True,
@@ -3064,9 +4168,18 @@ class Daemon:
                     f"[orchestrator] auto-dispatch held for {ticket_id} from {source}: {auto_blocker}",
                     file=sys.stderr,
                 )
+                self._record_queue_drain_after_event(
+                    repo_path=str(repo),
+                    trigger=f"dispatch-{source}-held",
+                    drive_reviews=False,
+                )
                 raise RuntimeError(auto_blocker)
 
-            applied_default_sizing = apply_default_worker_sizing(ticket, general_config)
+            applied_default_sizing = apply_default_worker_sizing(
+                ticket,
+                general_config,
+                agent_kind=worker_provider,
+            )
             if applied_default_sizing:
                 write_ticket(ticket_file, ticket)
 
@@ -3074,7 +4187,7 @@ class Daemon:
                 sizing = resolve_worker_sizing(
                     ticket,
                     worker_provider,
-                    general=general_config if applied_default_sizing else {},
+                    general=general_config if _uses_inherited_worker_defaults(general_config) else {},
                 )
             except ValueError as e:
                 reason = str(e)
@@ -3091,6 +4204,11 @@ class Daemon:
                 print(
                     f"[orchestrator] dispatch refused for {ticket_id} from {source}: {reason}",
                     file=sys.stderr,
+                )
+                self._record_queue_drain_after_event(
+                    repo_path=str(repo),
+                    trigger=f"dispatch-{source}-refused",
+                    drive_reviews=False,
                 )
                 raise ValueError(reason) from e
 
@@ -3125,6 +4243,11 @@ class Daemon:
                     repo_path=str(repo),
                     provider_key=sizing.get("provider_key"),
                 )
+                self._record_queue_drain_after_event(
+                    repo_path=str(repo),
+                    trigger=f"dispatch-{source}-worktree-failed",
+                    drive_reviews=False,
+                )
                 raise
 
             try:
@@ -3152,6 +4275,11 @@ class Daemon:
                     source="worker",
                     repo_path=str(repo),
                     provider_key=sizing.get("provider_key"),
+                )
+                self._record_queue_drain_after_event(
+                    repo_path=str(repo),
+                    trigger=f"dispatch-{source}-snapshot-failed",
+                    drive_reviews=False,
                 )
                 raise
 
@@ -3203,7 +4331,13 @@ class Daemon:
                 file=sys.stderr,
             )
 
-        return {"already_active": False, "run": self.runs.get(run_id)}
+        run = self.runs.get(run_id)
+        self._record_queue_drain_after_event(
+            repo_path=str(repo),
+            trigger=f"dispatch-{source}-claimed",
+            drive_reviews=False,
+        )
+        return {"already_active": False, "run": run}
 
     def _on_worker_complete(self, run_id: int) -> None:
         with self._workers_lock:
@@ -3226,13 +4360,30 @@ class Daemon:
                     provider_key=run.get("provider_key"),
                 )
                 print(f"[orchestrator] review dispatch failed for run {run_id}: {e}", file=sys.stderr)
+            self._record_queue_drain_after_event(
+                repo_path=run.get("repo_path"),
+                trigger="worker-completion",
+                drive_reviews=False,
+            )
             return
         # Dependency progression now happens only after the review worker
         # accepts and merges the implementation branch.
+        self._record_queue_drain_after_event(
+            repo_path=run.get("repo_path"),
+            trigger="worker-completion",
+            drive_reviews=False,
+        )
 
     def _on_review_worker_complete(self, run_id: int) -> None:
         with self._review_workers_lock:
             self._review_workers.pop(run_id, None)
+        run = self.runs.get(run_id)
+        if run:
+            self._record_queue_drain_after_event(
+                repo_path=run.get("repo_path"),
+                trigger="review-worker-completion",
+                drive_reviews=False,
+            )
 
     def _build_review_prompt(
         self,
@@ -3404,7 +4555,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 )
             try:
                 self.dispatch(ticket_id=dep["id"], repo_path=str(repo), source="dependency-progression")
-            except ValueError as e:
+            except (ValueError, RuntimeError) as e:
                 # Daemon refused dispatch (e.g. file missing, already active);
                 # the status flip stays — user can drag/redispatch manually.
                 print(f"[orchestrator] auto-dispatch declined for {dep['id']}: {e}", file=sys.stderr)
@@ -3446,7 +4597,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         with self._authoring_mutex():
             return self._sweep_ready_tickets_locked(repo=repo, trigger=trigger)
 
-    def _sweep_ready_tickets_locked(self, *, repo: Path, trigger: str | None = None) -> dict:
+    def _sweep_ready_tickets_locked(
+        self,
+        *,
+        repo: Path,
+        trigger: str | None = None,
+        record_drain: bool = True,
+    ) -> dict:
         promoted = self._promote_unblocked_dependents(repo_path=str(repo))
         all_tickets = scan_repo(repo)
         dispatched: list[dict[str, Any]] = []
@@ -3472,6 +4629,12 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 continue
             if not all_deps_done(ticket, all_tickets):
                 skip(ticket, "dependencies_not_done")
+                continue
+
+            capacity_wait = self._capacity_wait_reason(repo_path=str(repo))
+            if capacity_wait is not None:
+                message, next_action_at = capacity_wait
+                skip(ticket, "capacity_wait", message=message, next_action_at=next_action_at)
                 continue
 
             existing = self.runs.find_active(ticket["id"], repo_path=str(repo))
@@ -3518,13 +4681,21 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 file=sys.stderr,
             )
 
-        return {
+        result = {
             "repo_path": str(repo),
             "trigger": trigger,
             "promoted": promoted,
             "dispatched": dispatched,
             "skipped": skipped,
         }
+        if record_drain:
+            result["drain"] = self._record_queue_drain_locked(
+                repo=repo,
+                trigger=trigger,
+                sweep_result=result,
+                drive_reviews=True,
+            )
+        return result
 
     def sweep_program_ready_tickets(
         self,
@@ -3642,6 +4813,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 repo_path=repo_path,
                 provider_key=run.get("provider_key"),
             )
+            self._record_queue_drain_after_event(
+                repo_path=repo_path,
+                trigger="merge-blocked-dirty-source",
+                drive_reviews=False,
+            )
             return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
         merge = _git(
@@ -3666,6 +4842,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 repo_path=repo_path,
                 provider_key=run.get("provider_key"),
             )
+            self._record_queue_drain_after_event(
+                repo_path=repo_path,
+                trigger="merge-conflict",
+                drive_reviews=False,
+            )
             return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
         merged_ticket = read_ticket(Path(repo_path) / ".orchestrator" / f"{ticket_id}.md")
@@ -3680,6 +4861,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 message=f"{ticket_id} run {run_id} merge needs attention",
                 repo_path=repo_path,
                 provider_key=run.get("provider_key"),
+            )
+            self._record_queue_drain_after_event(
+                repo_path=repo_path,
+                trigger="merge-missing-done-ticket",
+                drive_reviews=False,
             )
             return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
@@ -3698,6 +4884,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             self._progress_dependents(repo_path=repo_path, finished_ticket_id=ticket_id)
         except Exception as e:  # noqa: BLE001 — merge succeeded; report follow-up safely
             print(f"[orchestrator] dep-progression error after merging {ticket_id}: {e}", file=sys.stderr)
+        self._record_queue_drain_after_event(
+            repo_path=repo_path,
+            trigger="run-merged",
+            drive_reviews=True,
+        )
 
         result: dict[str, Any] = {
             "accepted": True,
@@ -3747,11 +4938,19 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         if worktree_error:
             result["worktree_error"] = worktree_error
         if redispatch:
-            result["redispatched"] = self.dispatch(
-                ticket_id=ticket_id,
-                repo_path=repo_path,
-                source="orchestrator-review-retry",
-            )
+            try:
+                result["redispatched"] = self.dispatch(
+                    ticket_id=ticket_id,
+                    repo_path=repo_path,
+                    source="orchestrator-review-retry",
+                )
+            except (ValueError, RuntimeError) as e:
+                result["redispatch_error"] = str(e)
+        self._record_queue_drain_after_event(
+            repo_path=repo_path,
+            trigger="review-retry",
+            drive_reviews=False,
+        )
         return result
 
     def ensure_orchestrator_session(
@@ -4434,6 +5633,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 # Drop the throwaway branch ref so a re-dispatch starts fresh off the
                 # current default branch instead of attaching to the old tip.
                 delete_branch(repo_path, run["branch"])
+        self._record_queue_drain_after_event(
+            repo_path=run.get("repo_path"),
+            trigger="run-canceled",
+            drive_reviews=False,
+        )
         return result
 
     def shutdown(self) -> None:
@@ -4491,6 +5695,18 @@ class Handler(BaseHTTPRequestHandler):
                 state = (query.get("state") or [None])[0]
                 limit = int((query.get("limit") or ["100"])[0])
                 return 200, {"runs": self.daemon.list_runs(state=state, limit=limit)}
+
+            if method == "GET" and segments == ["v1", "queue-drains"]:
+                repo_path = (query.get("repo_path") or [None])[0]
+                include_terminal = str((query.get("include_terminal") or ["false"])[0]).lower() in {"1", "true", "yes"}
+                limit = int((query.get("limit") or ["20"])[0])
+                return 200, {
+                    "queue_drains": self.daemon.list_queue_drains(
+                        repo_path=repo_path,
+                        include_terminal=include_terminal,
+                        limit=limit,
+                    )
+                }
 
             if method == "GET" and segments == ["v1", "program", "status"]:
                 status_query = (query.get("query") or ["summary"])[0]
@@ -4652,6 +5868,29 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return 200, result
 
+            if method == "POST" and segments == ["v1", "queue-drain", "reconcile"]:
+                body = _read_body(self)
+                repo_paths = body.get("repo_paths")
+                if isinstance(repo_paths, str):
+                    repo_paths = [repo_paths]
+                if body.get("repo_path"):
+                    repo_paths = [body.get("repo_path")]
+                result = self.daemon.reconcile_queue_drains(
+                    repo_paths=repo_paths if isinstance(repo_paths, list) else None,
+                    trigger=body.get("trigger"),
+                )
+                return 200, result
+
+            if (method == "POST" and len(segments) == 4
+                    and segments[:2] == ["v1", "queue-drains"]
+                    and segments[3] == "cancel"):
+                body = _read_body(self)
+                result = self.daemon.cancel_queue_drain(
+                    segments[2],
+                    reason=body.get("reason"),
+                )
+                return 200, result
+
             if method == "GET" and len(segments) == 3 and segments[:2] == ["v1", "runs"]:
                 run = self.daemon.get_run(int(segments[2]))
                 return (200 if run else 404), {"run": run}
@@ -4773,6 +6012,15 @@ def serve(daemon: Daemon) -> None:
                 print(f"[orchestrator] command processing loop failed: {e}", file=sys.stderr)
 
     threading.Thread(target=_command_loop, name="orchestrator-command-loop", daemon=True).start()
+
+    def _queue_drain_loop():
+        while not stop.wait(QUEUE_DRAIN_MONITOR_INTERVAL_SECONDS):
+            try:
+                daemon.reconcile_queue_drains(trigger="queue-drain-monitor")
+            except Exception as e:  # noqa: BLE001 - keep the HTTP daemon alive.
+                print(f"[orchestrator] queue-drain monitor failed: {e}", file=sys.stderr)
+
+    threading.Thread(target=_queue_drain_loop, name="queue-drain-monitor", daemon=True).start()
 
     try:
         server.serve_forever(poll_interval=0.5)

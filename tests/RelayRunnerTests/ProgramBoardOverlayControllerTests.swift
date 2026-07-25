@@ -2,7 +2,7 @@ import XCTest
 @testable import relay_runner
 
 final class ProgramBoardOverlayControllerTests: XCTestCase {
-    func testSingleRepoRouteOpensWorkspaceScopedToThatRepo() {
+    func testSingleRepoColdRouteOpensResponsiveShellAndLoadsWorkInBackground() {
         let project = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/client-dashboard"))
         let opening = ProgramBoardOverlayController.workspaceOpening(
             route: .project(project),
@@ -22,6 +22,22 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(opening?.reloadsWork, true)
     }
 
+    func testSingleRepoWarmRouteKeepsCachedWorkspaceContentVisibleDuringRefresh() {
+        let project = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/client-dashboard"))
+        let opening = ProgramBoardOverlayController.workspaceOpening(
+            route: .project(project),
+            initialTab: .work,
+            hasTerminalTab: true,
+            hasSettingsTab: true,
+            hasCachedSnapshot: true,
+            activityProjectPaths: ["/repo/client-dashboard", "/repo/other"]
+        )
+
+        XCTAssertEqual(opening?.startsLoading, false)
+        XCTAssertEqual(opening?.contentLoadBlocked, false)
+        XCTAssertEqual(opening?.reloadsWork, true)
+    }
+
     func testWorkspaceRouteOpensWorkspaceAcrossDiscoveredProjects() {
         let opening = ProgramBoardOverlayController.workspaceOpening(
             route: .programBoard,
@@ -37,6 +53,22 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertNil(opening?.selectedProjectPath)
         XCTAssertEqual(opening?.startsLoading, false)
         XCTAssertEqual(opening?.contentLoadBlocked, false)
+        XCTAssertEqual(opening?.reloadsWork, true)
+    }
+
+    func testWorkspaceRouteWithoutSnapshotUsesPassiveLoadingUntilBoardDataArrives() {
+        let opening = ProgramBoardOverlayController.workspaceOpening(
+            route: .programBoard,
+            initialTab: .work,
+            hasTerminalTab: true,
+            hasSettingsTab: false,
+            hasCachedSnapshot: false,
+            activityProjectPaths: ["/repo/client-dashboard", "/repo/api"]
+        )
+
+        XCTAssertEqual(opening?.showsWorkTab, true)
+        XCTAssertEqual(opening?.startsLoading, true)
+        XCTAssertEqual(opening?.contentLoadBlocked, true)
         XCTAssertEqual(opening?.reloadsWork, true)
     }
 
@@ -153,5 +185,23 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
                 help: "End the active Relay Runner voice session"
             )
         )
+    }
+
+    func testWorkspaceLatencyMetricRoundsMilliseconds() {
+        let metric = WorkspaceLatencyMetric.measure(
+            "command_to_first_motion",
+            from: 10,
+            to: 10.096
+        )
+
+        XCTAssertEqual(metric.name, "command_to_first_motion")
+        XCTAssertEqual(metric.milliseconds, 96)
+    }
+
+    func testWorkspaceAnimationDurationMetricRoundsMilliseconds() {
+        let metric = WorkspaceLatencyMetric.duration("reveal_duration", 0.955)
+
+        XCTAssertEqual(metric.name, "reveal_duration")
+        XCTAssertEqual(metric.milliseconds, 955)
     }
 }

@@ -56,6 +56,27 @@ The daemon:
 
 The worker reads the ticket file, flips its status to `in_progress`, implements the change, commits the code with a conventional commit referencing the ticket, then flips the ticket's status to `done` (or leaves it `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits land on the worker's branch.
 
+### Rolling queue drain
+
+When the first ticket enters `ready` or `in_progress`, the daemon creates one durable queue-drain record in `queue_drains.db`. The record has a stable drain id, repo path, target branch, provider, provider-goal state, observed ticket ids, and one status row per observed ticket. New `ready` or `in_progress` tickets join the active drain automatically; unrelated backlog tickets stay out of scope unless they are unresolved predecessors of an observed ticket.
+
+The invariant is that every queued or in-progress ticket must show one of these states:
+
+- `active`: an implementation worker is claimed or running with current activity.
+- `scheduled`: a bounded next action exists, such as a ready-sweep retry or a capacity wait.
+- `dependency_waiting`: unresolved predecessor tickets are named and will wake after merge/done publication.
+- `awaiting_review` or `reviewing`: implementation succeeded and the independent review/merge worker is pending or active.
+- `blocked`: automatic progress stopped on a specific ticket/run, with owner and required next step.
+- `canceled`: the ticket or drain was canceled.
+- `done`: the source ticket is done and accepted work has reached the target branch.
+- `completed`: every observed ticket is done or canceled, no observed run remains active/reviewing/retrying/stale/conflicted, and the quiescence window has elapsed.
+
+The daemon reconciles this state from board sweeps, worker completion callbacks, review-worker callbacks, merge decisions, cancellation, startup recovery, and a bounded monitor loop. It does not keep Codex or Claude spending tokens to poll unchanged state. Stale implementation ownership is marked `Stalled` and recovered through the same capped auto-dispatch path; stale review ownership returns to `AwaitingReview` and gets a review worker again. Deterministic failures, exhausted automatic retries, merge conflicts, missing authority, broken dependencies, and capacity waits are visible in the drain record instead of becoming silent loops.
+
+Codex surfaces that support Goals can use their `/goal` lifecycle as the foreground completion contract. Relay Runner still stores the executable drain state locally so it survives daemon restarts and app recovery. The installed Claude CLI does not expose an equivalent documented goal primitive, so Claude sessions use the same Relay Runner durable drain semantics and report the provider difference in the drain's `provider_goal_mode`.
+
+Foreground sessions can inspect the drain through `queue_drain_status` or HTTP `GET /v1/queue-drains`, and can force a bounded reconcile with `POST /v1/queue-drain/reconcile`. Completion stops at reviewed merge/done publication; Relay Runner does not add an automatic release, build, install, push, or deployment.
+
 ### 4. Check status / cancel
 
 ```
@@ -63,6 +84,7 @@ list_runs                          → all recent runs, newest first
 list_runs --state=Running          → only active ones
 get_run --run_id=17                → details for one run
 cancel_run --run_id=17             → SIGTERM the worker, prune the worktree
+queue_drain_status reconcile=true  → inspect/reconcile rolling drain state
 ```
 
 Voice equivalents work too: "what are the agents doing?", "how's MA-6?", "stop MA-6".
@@ -83,7 +105,7 @@ Relay Runner runs as a three-role loop: the fast messenger owns spoken conversat
 2. **Ticket authoring.** Raw Relay command captures are private metadata, not board cards or ticket body text. The foreground orchestrator/PM writes refined `.orchestrator/<ticket_id>.md` tickets with actionable summaries and acceptance criteria when work should be delegated.
 3. **Worker creation.** Once a ticket is refined enough, the foreground orchestrator/PM moves it to `ready` or calls the shared dispatch path. The board auto-dispatches `ready`, and direct dispatch stays available for retries or explicit manual control.
 4. **Worker execution.** The daemon creates an isolated worktree on `relay/<id>`, renders the worker workflow prompt, and launches the configured agent. The worker claims the ticket, implements the change, verifies it, commits code, and appends a run log entry before exiting.
-5. **Review and merge.** The orchestrating session reviews completed worker branches, chooses merge order, resolves conflicts intentionally, and merges worker commits into the working branch. That merge publishes `done` on the board and triggers any dependent auto-promotion.
+5. **Review and merge.** Successful implementation runs automatically receive an independent review/merge worker. Accepted work merges through the daemon path, which publishes `done` on the board, prunes the throwaway worktree/branch, records the drain item as done, and triggers dependent auto-promotion.
 6. **Status and response synthesis.** The foreground orchestrator/PM mirrors provider-visible progress and worker events to the messenger, then sends its authoritative final response. The messenger uses that bounded public context to speak concise updates and the final outcome while the orchestrator stays frontstage and workers do backstage work.
 
 Codex and Claude share the same stale-command checks, ticket schema, and dispatch API. Provider-specific differences stay at process launch and sizing rendering: Codex uses `model_reasoning_effort`, Claude uses `--effort`, and both providers use the same `low`, `medium`, `high`, and `xhigh` effort values for provider-neutral work.
@@ -142,6 +164,7 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | `<repo>/.orchestrator/<TICKET_ID>.md` | One ticket per file (board source of truth) |
 | `<repo>/.orchestrator/config.toml` | Repo-scoped ticket counter (`prefix`, `next_id`) |
 | `~/Library/Application Support/relay-runner/orchestrator/runs.db` | Run history (SQLite) |
+| `~/Library/Application Support/relay-runner/orchestrator/queue_drains.db` | Durable rolling queue-drain goals and observed ticket states |
 | `~/Library/Application Support/relay-runner/orchestrator/orchestrator_sessions.db` | Persistent orchestrator lifecycle state |
 | `~/Library/Application Support/relay-runner/orchestrator/orchestrator_commands.db` | Legacy/private Relay command store for explicit structured orchestrator actions |
 | `~/Library/Application Support/relay-runner/workspaces/<sanitized-id>/` | Per-ticket worktree |
@@ -185,7 +208,6 @@ Then read `<workspace>/.relay/run.log`. The default timeout is 30 minutes; tune 
 
 ## Limits (MVP)
 
-- No retry / backoff — failed runs stay failed; redispatch manually.
 - No cross-machine orchestration.
 - No PR opening — worktree is left for human review.
-- Concurrency is uncapped at the daemon level (workers all spawn in parallel); rate-limiting happens at the configured agent tier. Add a `max_concurrent` config knob if you need to clamp.
+- Concurrency is uncapped by default. Set `[orchestrator].max_concurrent_workers` to make automatic queue drains expose capacity waits and resume when a slot opens.

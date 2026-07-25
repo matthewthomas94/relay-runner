@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import os
+import io
 import queue
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 import json
 from pathlib import Path
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
@@ -20,6 +23,7 @@ sys.modules.setdefault(
 )
 
 import voice_bridge  # noqa: E402
+import relay_completion_hook  # noqa: E402
 
 
 def claim_ready_command(path: str) -> str:
@@ -86,6 +90,158 @@ class RejectingTraceMessenger(FakeMessenger):
 
 
 class VoiceBridgePreemptionTests(unittest.TestCase):
+    def test_relay_startup_queues_greeting_once(self):
+        worker = FakeTTSWorker()
+        shutdown_event = threading.Event()
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=None),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text", return_value=True) as queue_tts,
+        ):
+            voice_bridge._run_relay(worker, shutdown_event)
+
+        queue_tts.assert_called_once_with(
+            voice_bridge.STARTUP_GREETING,
+            worker.input_queue,
+            allow_pending_command=True,
+        )
+
+    def test_relay_startup_skips_greeting_when_tutorial_suppresses_it(self):
+        worker = FakeTTSWorker()
+        shutdown_event = threading.Event()
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=None),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text") as queue_tts,
+        ):
+            voice_bridge._run_relay(
+                worker,
+                shutdown_event,
+                suppress_startup_greeting=True,
+            )
+
+        queue_tts.assert_not_called()
+
+    def test_parse_args_recognizes_tutorial_startup_greeting_suppression(self):
+        with mock.patch.object(
+            sys,
+            "argv",
+            ["voice_bridge.py", "--relay", "--suppress-startup-greeting"],
+        ):
+            cli = voice_bridge._parse_args()
+
+        self.assertTrue(cli["relay"])
+        self.assertTrue(cli["suppress_startup_greeting"])
+
+    def test_tutorial_session_suppresses_only_first_fast_messenger_reply(self):
+        worker = FakeTTSWorker()
+        messenger = FakeMessenger()
+        shutdown_event = threading.Event()
+        action = types.SimpleNamespace(kind="non_work", outcome="normal conversation")
+
+        def read_once(_fd, _size):
+            shutdown_event.set()
+            return b"Hello.\nWhat is next?\n"
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge.os, "close"),
+            mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+            mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_begin_relay_command", side_effect=[
+                {
+                    "relay_command_seq": 1,
+                    "relay_command_id": "tutorial-1",
+                },
+                {
+                    "relay_command_seq": 2,
+                    "relay_command_id": "normal-2",
+                },
+            ]),
+            mock.patch.object(voice_bridge, "resolve_command_action", return_value=action),
+            mock.patch.object(voice_bridge, "format_command_for_agent", return_value="Hello."),
+            mock.patch.object(voice_bridge, "_metadata_for_action", return_value={
+                "relay_command_seq": 1,
+                "relay_command_id": "tutorial-1",
+                "action": "conversation",
+            }),
+            mock.patch.object(
+                voice_bridge,
+                "_should_fanout_raw_instruction_to_orchestrator",
+                return_value=False,
+            ),
+            mock.patch.object(voice_bridge, "_queue_voice_acknowledgement", return_value=True),
+            mock.patch.object(voice_bridge, "_start_pm_update_mode"),
+            mock.patch.object(voice_bridge, "_publish_command") as publish_command,
+        ):
+            voice_bridge._run_relay(
+                worker,
+                shutdown_event,
+                messenger=messenger,
+                suppress_startup_greeting=True,
+            )
+
+        self.assertEqual(
+            messenger.users,
+            [(
+                "What is next?",
+                {
+                    "relay_command_seq": 2,
+                    "relay_command_id": "normal-2",
+                },
+            )],
+        )
+        self.assertEqual(publish_command.call_count, 2)
+
+    def test_voice_command_publication_does_not_arm_missing_final_fallback(self):
+        worker = FakeTTSWorker()
+        shutdown_event = threading.Event()
+        action = types.SimpleNamespace(kind="non_work", outcome="foreground command")
+
+        def read_once(_fd, _size):
+            shutdown_event.set()
+            return b"summarize status\n"
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge.os, "close"),
+            mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+            mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text", return_value=True),
+            mock.patch.object(voice_bridge, "_begin_relay_command", return_value={
+                "relay_command_seq": 1,
+                "relay_command_id": "cmd-1",
+            }),
+            mock.patch.object(voice_bridge, "resolve_command_action", return_value=action),
+            mock.patch.object(voice_bridge, "format_command_for_agent", return_value="agent prompt"),
+            mock.patch.object(voice_bridge, "_metadata_for_action", return_value={
+                "relay_command_seq": 1,
+                "relay_command_id": "cmd-1",
+                "action": "non_work",
+            }),
+            mock.patch.object(voice_bridge, "_should_fanout_raw_instruction_to_orchestrator", return_value=False),
+            mock.patch.object(voice_bridge, "_queue_voice_acknowledgement", return_value=True),
+            mock.patch.object(voice_bridge, "_start_pm_update_mode"),
+            mock.patch.object(voice_bridge, "_publish_command") as publish_command,
+            mock.patch.object(voice_bridge, "_schedule_foreground_reply_fallback") as schedule_fallback,
+        ):
+            voice_bridge._run_relay(worker, shutdown_event, messenger=FakeMessenger())
+
+        publish_command.assert_called_once()
+        schedule_fallback.assert_not_called()
+
     def test_newer_command_suppresses_stale_tts_after_first_claimed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
@@ -130,11 +286,29 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertTrue(queued)
             self.assertEqual(tts_queue.get_nowait(), "fresh response")
 
+    def test_tts_queue_publishes_waiting_preview_before_collection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            tts_queue: queue.Queue = queue.Queue()
+            previews: list[tuple[str, bool]] = []
+
+            queued = voice_bridge._queue_tts_text(
+                "**fresh** response",
+                tts_queue,
+                command_path=command_path,
+                notify_waiting_preview=lambda text: previews.append((text, tts_queue.empty())),
+            )
+
+            self.assertTrue(queued)
+            self.assertEqual(previews, [("fresh response", True)])
+            self.assertEqual(tts_queue.get_nowait(), "fresh response")
+
     def test_sequence_tagged_tts_drops_after_command_superseded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
             state_path = os.path.join(temp_dir, "voice_command_state.json")
             tts_queue: queue.Queue = queue.Queue()
+            previews: list[str] = []
 
             Path(state_path).write_text(json.dumps({
                 "relay_command_seq": 2,
@@ -157,14 +331,17 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 tts_queue,
                 command_path=command_path,
                 state_path=state_path,
+                notify_waiting_preview=lambda text: previews.append(text),
             ))
             self.assertTrue(voice_bridge._queue_tts_text(
                 fresh,
                 tts_queue,
                 command_path=command_path,
                 state_path=state_path,
+                notify_waiting_preview=lambda text: previews.append(text),
             ))
             self.assertEqual(tts_queue.get_nowait(), "fresh response")
+            self.assertEqual(previews, ["fresh response"])
 
     def test_messenger_tts_can_speak_while_orchestrator_command_is_pending(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -654,14 +831,16 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             worker = FakeTTSWorker()
             payload = json.dumps({"text": "The authoritative result.", **command})
 
-            handled = voice_bridge._handle_orchestrator_reply_control(
-                payload,
-                tts_worker=worker,
-                messenger=messenger,
-                state_path=state_path,
-            )
+            with mock.patch.object(voice_bridge, "publish_waiting_preview") as preview:
+                handled = voice_bridge._handle_orchestrator_reply_control(
+                    payload,
+                    tts_worker=worker,
+                    messenger=messenger,
+                    state_path=state_path,
+                )
 
             self.assertTrue(handled)
+            preview.assert_called_once_with("The authoritative result.")
             self.assertEqual(worker.input_queue.get_nowait(), "The authoritative result.")
             self.assertFalse(os.path.exists(command_path))
 
@@ -767,6 +946,621 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 "relay_command_seq": command["relay_command_seq"],
                 "relay_command_id": command["relay_command_id"],
             }])
+
+    def test_late_provider_final_cancels_pending_missing_final_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "what changed",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            action = voice_bridge.resolve_command_action(
+                "what changed",
+                repo_path=temp_dir,
+                relay_command=command,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            thread = voice_bridge._schedule_foreground_reply_fallback(
+                relay_command=command,
+                action=action,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+                delay_seconds=0.05,
+            )
+            payload = json.dumps({"text": "The late authoritative result.", **command})
+            voice_bridge._handle_orchestrator_reply_control(
+                payload,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+            )
+            thread.join(timeout=1)
+
+            self.assertEqual(messenger.finals, [{
+                "text": "The late authoritative result.",
+                "relay_command_seq": command["relay_command_seq"],
+                "relay_command_id": command["relay_command_id"],
+            }])
+
+    def test_missing_foreground_reply_fallback_waits_while_provider_turn_is_active(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            command = voice_bridge._begin_relay_command(
+                "long running request",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            Path(turns_path).write_text(json.dumps({
+                "records": [{
+                    **command,
+                    "session_id": "provider-session",
+                    "state": "active",
+                    "updated_at": 1,
+                }]
+            }))
+            action = voice_bridge.resolve_command_action(
+                "long running request",
+                repo_path=temp_dir,
+                relay_command=command,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            with mock.patch.object(voice_bridge, "PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS", 0.01):
+                thread = voice_bridge._schedule_foreground_reply_fallback(
+                    relay_command=command,
+                    action=action,
+                    tts_worker=worker,
+                    messenger=messenger,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    delay_seconds=0,
+                )
+                time.sleep(0.05)
+                self.assertEqual(messenger.finals, [])
+                Path(turns_path).write_text(json.dumps({
+                    "records": [{
+                        **command,
+                        "session_id": "provider-session",
+                        "state": "empty",
+                        "updated_at": 2,
+                    }]
+                }))
+                thread.join(timeout=1)
+
+            self.assertEqual(len(messenger.finals), 1)
+            self.assertIn("did not send a spoken final reply", messenger.finals[0]["text"])
+
+    def test_missing_foreground_reply_fallback_waits_for_pending_command_behind_active_turn(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            command = voice_bridge._begin_relay_command(
+                "second request",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            Path(command_path).write_text("second request")
+            Path(meta_path).write_text(json.dumps(command))
+            Path(turns_path).write_text(json.dumps({
+                "records": [{
+                    "relay_command_seq": command["relay_command_seq"] - 1,
+                    "relay_command_id": "first",
+                    "session_id": "provider-session",
+                    "state": "active",
+                    "updated_at": 1,
+                }]
+            }))
+            action = voice_bridge.resolve_command_action(
+                "second request",
+                repo_path=temp_dir,
+                relay_command=command,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            with mock.patch.object(voice_bridge, "PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS", 0.01):
+                thread = voice_bridge._schedule_foreground_reply_fallback(
+                    relay_command=command,
+                    action=action,
+                    tts_worker=worker,
+                    messenger=messenger,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    command_path=command_path,
+                    meta_path=meta_path,
+                    delay_seconds=0,
+                )
+                time.sleep(0.05)
+                self.assertEqual(messenger.finals, [])
+
+                Path(turns_path).write_text(json.dumps({
+                    "records": [{
+                        "relay_command_seq": command["relay_command_seq"] - 1,
+                        "relay_command_id": "first",
+                        "session_id": "provider-session",
+                        "state": "stale",
+                        "updated_at": 2,
+                    }]
+                }))
+                time.sleep(0.05)
+                self.assertEqual(messenger.finals, [])
+
+                os.remove(command_path)
+                os.remove(meta_path)
+                thread.join(timeout=1)
+
+            self.assertEqual(len(messenger.finals), 1)
+            self.assertIn("did not send a spoken final reply", messenger.finals[0]["text"])
+
+    def test_completion_hook_binds_exact_claimed_prompt_without_storing_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            claim = {
+                "relay_command_seq": 7,
+                "relay_command_id": "cmd-7",
+                "agent_prompt": "Refined private agent prompt",
+                "source_text": "raw voice text",
+                "action": "dispatch_ticket",
+                "provider": "codex",
+            }
+            Path(state_path).write_text(json.dumps(claim))
+            Path(claim_path).write_text(json.dumps(claim))
+
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-1",
+                    "turn_id": "turn-1",
+                    "prompt": "Refined private agent prompt",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=10,
+                stderr=io.StringIO(),
+            ))
+            self.assertFalse(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-2",
+                    "turn_id": "turn-2",
+                    "prompt": "ordinary typed prompt",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=11,
+                stderr=io.StringIO(),
+            ))
+            self.assertFalse(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-3",
+                    "turn_id": "turn-3",
+                    "prompt": "Refined private agent prompt",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=12,
+                stderr=io.StringIO(),
+            ))
+            self.assertFalse(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-4",
+                    "turn_id": "turn-4",
+                    "prompt": "Improve documentation in @filename",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=13,
+                stderr=io.StringIO(),
+            ))
+
+            stored = Path(turns_path).read_text()
+            self.assertIn('"state": "active"', stored)
+            self.assertIn('"prompt_sha256"', stored)
+            self.assertNotIn("Refined private agent prompt", stored)
+            self.assertNotIn("raw voice text", stored)
+            self.assertNotIn("Improve documentation", stored)
+
+    def test_completion_hook_rapid_turns_deliver_only_current_final(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            first = {
+                "relay_command_seq": 11,
+                "relay_command_id": "cmd-11",
+                "agent_prompt": "First prompt",
+                "action": "non_work",
+                "provider": "codex",
+            }
+            second = {
+                "relay_command_seq": 12,
+                "relay_command_id": "cmd-12",
+                "agent_prompt": "Second prompt",
+                "action": "non_work",
+                "provider": "codex",
+            }
+            delivered: list[dict] = []
+            Path(state_path).write_text(json.dumps(first))
+            Path(claim_path).write_text(json.dumps(first))
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-rapid",
+                    "turn_id": "turn-11",
+                    "prompt": "First prompt",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=40,
+                stderr=io.StringIO(),
+            ))
+
+            Path(state_path).write_text(json.dumps(second))
+            Path(claim_path).write_text(json.dumps(second))
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-rapid",
+                    "turn_id": "turn-12",
+                    "prompt": "Second prompt",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=41,
+                stderr=io.StringIO(),
+            ))
+            self.assertFalse(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": "session-rapid",
+                    "turn_id": "turn-11",
+                    "last_assistant_message": "Superseded final.",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                write_control=lambda payload: delivered.append(payload) or True,
+                now=42,
+                stderr=io.StringIO(),
+            ))
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": "session-rapid",
+                    "turn_id": "turn-12",
+                    "last_assistant_message": "Current final.",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                write_control=lambda payload: delivered.append(payload) or True,
+                now=43,
+                stderr=io.StringIO(),
+            ))
+
+            self.assertEqual([payload.get("text") for payload in delivered], ["Current final."])
+            self.assertEqual(delivered[0]["relay_command_id"], "cmd-12")
+
+    def test_completion_hook_does_not_guess_unidentified_stop_with_multiple_active_turns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            current = {
+                "relay_command_seq": 14,
+                "relay_command_id": "cmd-14",
+                "agent_prompt": "Second prompt",
+                "provider": "claude",
+            }
+            Path(state_path).write_text(json.dumps(current))
+            Path(turns_path).write_text(json.dumps({
+                "records": [
+                    {
+                        "state": "active",
+                        "session_id": "ambiguous-session",
+                        "relay_command_seq": 13,
+                        "relay_command_id": "cmd-13",
+                    },
+                    {
+                        "state": "active",
+                        "session_id": "ambiguous-session",
+                        "relay_command_seq": 14,
+                        "relay_command_id": "cmd-14",
+                    },
+                ]
+            }))
+            delivered: list[dict] = []
+
+            handled = relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": "ambiguous-session",
+                    "last_assistant_message": "Could belong to either turn.",
+                },
+                state_path=state_path,
+                turns_path=turns_path,
+                write_control=lambda payload: delivered.append(payload) or True,
+                now=50,
+                stderr=io.StringIO(),
+            )
+
+            self.assertFalse(handled)
+            self.assertEqual(delivered, [])
+
+    def test_completion_hook_stop_delivers_only_correlated_provider_final(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            claim = {
+                "relay_command_seq": 8,
+                "relay_command_id": "cmd-8",
+                "agent_prompt": "Do provider completion",
+                "action": "update_ticket",
+                "provider": "claude",
+            }
+            Path(state_path).write_text(json.dumps(claim))
+            Path(claim_path).write_text(json.dumps(claim))
+            delivered: list[dict] = []
+
+            relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-8",
+                    "prompt": "Do provider completion",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=20,
+                stderr=io.StringIO(),
+            )
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": "session-8",
+                    "last_assistant_message": "Authoritative final from provider.",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                write_control=lambda payload: delivered.append(payload) or True,
+                now=21,
+                stderr=io.StringIO(),
+            ))
+
+            self.assertEqual(delivered, [{
+                "event": "Stop",
+                "relay_command_seq": 8,
+                "relay_command_id": "cmd-8",
+                "session_id": "session-8",
+                "provider": "claude",
+                "action": "update_ticket",
+                "text": "Authoritative final from provider.",
+            }])
+            stored = Path(turns_path).read_text()
+            self.assertIn('"state": "completed_final"', stored)
+            self.assertIn('"delivery": "sent"', stored)
+            self.assertNotIn("Authoritative final from provider.", stored)
+
+    def test_completion_hook_empty_stop_delivers_bounded_warning_signal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            claim = {
+                "relay_command_seq": 9,
+                "relay_command_id": "cmd-9",
+                "agent_prompt": "Do empty completion",
+                "action": "dispatch_ticket",
+                "provider": "codex",
+            }
+            Path(state_path).write_text(json.dumps(claim))
+            Path(claim_path).write_text(json.dumps(claim))
+            delivered: list[dict] = []
+
+            relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-9",
+                    "turn_id": "turn-9",
+                    "prompt": "Do empty completion",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=30,
+                stderr=io.StringIO(),
+            )
+            relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": "session-9",
+                    "turn_id": "turn-9",
+                    "last_assistant_message": "",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                write_control=lambda payload: delivered.append(payload) or True,
+                now=31,
+                stderr=io.StringIO(),
+            )
+
+            self.assertEqual(delivered, [{
+                "event": "Stop",
+                "relay_command_seq": 9,
+                "relay_command_id": "cmd-9",
+                "session_id": "session-9",
+                "turn_id": "turn-9",
+                "provider": "codex",
+                "action": "dispatch_ticket",
+                "completion_status": "empty",
+            }])
+
+    def test_provider_completion_control_deduplicates_after_explicit_reply(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "summarize result",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            explicit = json.dumps({"text": "Explicit final.", **command})
+            provider = json.dumps({"text": "Provider final.", **command})
+            self.assertTrue(voice_bridge._handle_orchestrator_reply_control(
+                explicit,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+            ))
+            self.assertTrue(voice_bridge._handle_provider_completion_control(
+                provider,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+            ))
+
+            self.assertEqual(messenger.finals, [{
+                "text": "Explicit final.",
+                "relay_command_seq": command["relay_command_seq"],
+                "relay_command_id": command["relay_command_id"],
+            }])
+
+    def test_provider_completion_control_rejects_superseded_command(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            stale = voice_bridge._begin_relay_command(
+                "first",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            voice_bridge._begin_relay_command(
+                "second",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            self.assertFalse(voice_bridge._handle_provider_completion_control(
+                json.dumps({"text": "Stale provider final.", **stale}),
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+            ))
+            self.assertEqual(messenger.finals, [])
+
+    def test_provider_completion_control_routes_empty_completion_to_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            self.assertTrue(voice_bridge._handle_provider_completion_control(
+                json.dumps({**command, "completion_status": "empty", "action": "dispatch_ticket"}),
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+                fallback_delay_seconds=0,
+            ))
+            deadline = time.time() + 1
+            while not messenger.finals and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(len(messenger.finals), 1)
+            self.assertIn("worker updates will still be announced", messenger.finals[0]["text"])
+
+    def test_provider_completion_control_arms_missing_final_after_terminal_event(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            with mock.patch.object(
+                voice_bridge,
+                "_schedule_foreground_reply_fallback",
+                return_value=object(),
+            ) as schedule_fallback:
+                handled = voice_bridge._handle_provider_completion_control(
+                    json.dumps({**command, "completion_status": "empty", "action": "dispatch_ticket"}),
+                    tts_worker=worker,
+                    messenger=messenger,
+                    state_path=state_path,
+                    fallback_delay_seconds=3.5,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(messenger.finals, [])
+            schedule_fallback.assert_called_once()
+            kwargs = schedule_fallback.call_args.kwargs
+            scheduled_command = kwargs["relay_command"]
+            self.assertEqual(scheduled_command["relay_command_seq"], command["relay_command_seq"])
+            self.assertEqual(scheduled_command["relay_command_id"], command["relay_command_id"])
+            self.assertEqual(scheduled_command["completion_status"], "empty")
+            self.assertEqual(kwargs["action_kind"], "dispatch_ticket")
+            self.assertEqual(kwargs["delay_seconds"], 3.5)
+
+    def test_provider_completion_recovery_fallback_publishes_waiting_preview(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "summarize result",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            messenger = RejectingMessenger()
+            worker = FakeTTSWorker()
+            payload = json.dumps({"text": "Recovered provider final.", **command})
+
+            with mock.patch.object(voice_bridge, "publish_waiting_preview") as preview:
+                handled = voice_bridge._handle_provider_completion_control(
+                    payload,
+                    tts_worker=worker,
+                    messenger=messenger,
+                    state_path=state_path,
+                )
+
+            self.assertTrue(handled)
+            preview.assert_called_once_with("Recovered provider final.")
+            self.assertEqual(worker.input_queue.get_nowait(), "Recovered provider final.")
 
     def test_pending_messenger_outcome_poll_delivers_and_acks_trace(self):
         messenger = FakeMessenger()
@@ -892,6 +1686,39 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertFalse(os.path.exists(command_path))
             self.assertFalse(os.path.exists(meta_path))
             self.assertEqual(json.loads(Path(state_path).read_text()), state_before_dismissal)
+
+    def test_published_command_records_exact_agent_prompt_for_voice_origin(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            source_text = "fix the login bug"
+            relay_command = voice_bridge._begin_relay_command(
+                source_text,
+                state_path=state_path,
+                event_log_path=None,
+            )
+            action = voice_bridge.resolve_command_action(
+                source_text,
+                repo_path=temp_dir,
+                relay_command=relay_command,
+            )
+            agent_prompt = voice_bridge.format_command_for_agent(action)
+
+            self.assertNotEqual(agent_prompt, source_text)
+            voice_bridge._publish_command(
+                agent_prompt,
+                voice_bridge._metadata_for_action(action, relay_command),
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+            )
+
+            claimed = json.loads(Path(meta_path).read_text())
+            current = json.loads(Path(state_path).read_text())
+            self.assertEqual(claimed["source_text"], source_text)
+            self.assertEqual(claimed["agent_prompt"], agent_prompt)
+            self.assertEqual(current["agent_prompt"], agent_prompt)
 
     def test_explicit_interrupt_still_supersedes_claimed_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1093,6 +1920,13 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertEqual(script.count('print("__ORCHESTRATOR_REPLY__:" + json.dumps(payload)'), 2)
         self.assertEqual(script.count('"kind":"reasoning-summary"'), 2)
         self.assertNotIn("Voice bridge is ready. You can speak at any point.", script)
+
+    def test_build_bundle_includes_provider_completion_hook_service(self):
+        script_path = os.path.join(ROOT, "scripts", "build-dmg.sh")
+        with open(script_path) as f:
+            script = f.read()
+
+        self.assertIn("relay_completion_hook.py", script)
 
 
 if __name__ == "__main__":

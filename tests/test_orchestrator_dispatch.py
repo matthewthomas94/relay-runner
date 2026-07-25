@@ -41,6 +41,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertIn(f"- Source repo path: `{repo}`", prompt)
             self.assertIn(f"- Assigned worktree cwd: `{repo.parent / 'workspaces' / 'rr-1'}`", prompt)
             self.assertIn("git branch --show-current` prints exactly `relay/rr-1`", prompt)
+            self.assertIn("`.orchestrator/attachments/RR-1/`", prompt)
             self.assertIn("- Run ID: 17", prompt)
             self.assertNotIn("Mentistic Workflow", prompt)
             self.assertEqual(
@@ -105,6 +106,40 @@ class OrchestratorDispatchTests(unittest.TestCase):
         self.assertIn("--effort", command)
         self.assertIn("xhigh", command)
         self.assertNotIn("model_reasoning_effort=xhigh", command)
+
+    def test_worker_omits_default_model_and_effort_sentinels(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                worker = object.__new__(Worker)
+                worker.agent_kind = provider
+                worker.agent_bin = provider
+                worker.run = {"model_alias": "default", "worker_effort": "default"}
+
+                command = Worker._command(worker)
+
+                self.assertNotIn("--model", command)
+                self.assertNotIn("--effort", command)
+                self.assertNotIn("model_reasoning_effort=default", command)
+
+    def test_worker_applies_effort_without_default_model_override(self):
+        codex = object.__new__(Worker)
+        codex.agent_kind = "codex"
+        codex.agent_bin = "codex"
+        codex.run = {"worker_effort": "high"}
+
+        claude = object.__new__(Worker)
+        claude.agent_kind = "claude"
+        claude.agent_bin = "claude"
+        claude.run = {"worker_effort": "high"}
+
+        codex_command = Worker._command(codex)
+        claude_command = Worker._command(claude)
+
+        self.assertNotIn("--model", codex_command)
+        self.assertIn("model_reasoning_effort=high", codex_command)
+        self.assertNotIn("--model", claude_command)
+        self.assertIn("--effort", claude_command)
+        self.assertIn("high", claude_command)
 
     def test_review_worker_uses_same_provider_effort_flags(self):
         codex = object.__new__(ReviewWorker)
@@ -177,9 +212,11 @@ class OrchestratorDispatchTests(unittest.TestCase):
             daemon.cfg = {
                 "general": {
                     "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
                     "model": "gpt-5.6-sol",
                     "subagent_model": "strong",
                     "subagent_effort": "high",
+                    "orchestrator_effort": "high",
                 }
             }
 
@@ -191,10 +228,10 @@ class OrchestratorDispatchTests(unittest.TestCase):
             start_worker.assert_called_once()
             run = result["run"]
             self.assertEqual(run["model_alias"], "gpt-5.6-sol")
-            self.assertEqual(run["worker_model"], "strong")
+            self.assertEqual(run["worker_model"], "codex:gpt-5.6-sol")
             self.assertEqual(run["worker_effort"], "high")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "strong")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:gpt-5.6-sol")
             self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
 
     def test_ready_sweeper_applies_user_default_worker_sizing_to_ready_ticket(self):
@@ -209,9 +246,11 @@ class OrchestratorDispatchTests(unittest.TestCase):
             daemon.cfg = {
                 "general": {
                     "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
                     "model": "gpt-5.5",
                     "subagent_model": "strong",
                     "subagent_effort": "xhigh",
+                    "orchestrator_effort": "xhigh",
                 }
             }
 
@@ -223,14 +262,14 @@ class OrchestratorDispatchTests(unittest.TestCase):
             start_worker.assert_called_once()
             self.assertEqual(result["dispatched"][0]["ticket_id"], "RR-1")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "strong")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:gpt-5.5")
             self.assertEqual(ticket["_raw_fields"]["worker_effort"], "xhigh")
             self.assertIn(
-                "Codex uses model_reasoning_effort and Claude uses --effort",
+                "Use my defaults preserves provider default model semantics",
                 ticket["_raw_fields"]["worker_provider_notes"],
             )
 
-    def test_user_default_worker_sizing_preserves_explicit_ticket_sizing(self):
+    def test_user_default_worker_sizing_overrides_explicit_ticket_sizing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -250,21 +289,193 @@ class OrchestratorDispatchTests(unittest.TestCase):
             daemon.cfg = {
                 "general": {
                     "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
                     "model": "gpt-5.6-sol",
                     "subagent_model": "strong",
                     "subagent_effort": "high",
+                    "orchestrator_effort": "high",
                 }
             }
 
             with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
                 result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
 
-            self.assertEqual(result["run"]["model_alias"], "gpt-5.4-mini")
-            self.assertEqual(result["run"]["worker_model"], "fast")
-            self.assertEqual(result["run"]["worker_effort"], "low")
+            self.assertEqual(result["run"]["model_alias"], "gpt-5.6-sol")
+            self.assertEqual(result["run"]["worker_model"], "codex:gpt-5.6-sol")
+            self.assertEqual(result["run"]["worker_effort"], "high")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "fast")
-            self.assertEqual(ticket["_raw_fields"]["worker_effort"], "low")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:gpt-5.6-sol")
+            self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
+
+    def test_user_default_default_model_omits_codex_model_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="ready",
+                run_id=None,
+                sizing=True,
+                worker_model="strong",
+                worker_effort="high",
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.cfg = {
+                "general": {
+                    "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
+                    "model": "default",
+                    "orchestrator_effort": "default",
+                }
+            }
+
+            with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            self.assertIsNone(result["run"]["model_alias"])
+            self.assertEqual(result["run"]["worker_model"], "codex:default")
+            self.assertEqual(result["run"]["worker_effort"], "default")
+            command = Worker(
+                run_id=result["run"]["id"],
+                run=result["run"],
+                prompt="",
+                agent_bin="codex",
+                agent_kind="codex",
+                store=daemon.runs,
+                log_path=Path(tmp) / "run.log",
+                timeout_seconds=1,
+            )._command()
+            self.assertNotIn("--model", command)
+            self.assertNotIn("--config", command)
+
+    def test_user_default_inherits_claude_model_and_effort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="ready",
+                run_id=None,
+                sizing=True,
+                worker_model="strong",
+                worker_effort="high",
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="claude")
+            daemon.cfg = {
+                "general": {
+                    "subagent_sizing_policy": "user_default",
+                    "provider": "claude",
+                    "model": "sonnet",
+                    "orchestrator_effort": "high",
+                }
+            }
+
+            with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            run = result["run"]
+            self.assertEqual(run["provider_key"], "claude")
+            self.assertEqual(run["model_alias"], "sonnet")
+            self.assertEqual(run["worker_model"], "claude:sonnet")
+            self.assertEqual(run["worker_effort"], "high")
+            command = Worker(
+                run_id=run["id"],
+                run=run,
+                prompt="",
+                agent_bin="claude",
+                agent_kind="claude",
+                store=daemon.runs,
+                log_path=Path(tmp) / "run.log",
+                timeout_seconds=1,
+            )._command()
+            self.assertIn("--model", command)
+            self.assertIn("sonnet", command)
+            self.assertIn("--effort", command)
+            self.assertIn("high", command)
+
+    def test_user_default_inherits_codex_model_without_default_effort_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.cfg = {
+                "general": {
+                    "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
+                    "model": "gpt-5.4-mini",
+                    "orchestrator_effort": "default",
+                }
+            }
+
+            with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            run = result["run"]
+            self.assertEqual(run["model_alias"], "gpt-5.4-mini")
+            self.assertEqual(run["worker_effort"], "default")
+            command = Worker(
+                run_id=run["id"],
+                run=run,
+                prompt="",
+                agent_bin="codex",
+                agent_kind="codex",
+                store=daemon.runs,
+                log_path=Path(tmp) / "run.log",
+                timeout_seconds=1,
+            )._command()
+            self.assertIn("--model", command)
+            self.assertIn("gpt-5.4-mini", command)
+            self.assertNotIn("--config", command)
+
+    def test_user_default_omits_claude_model_and_effort_sentinels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="claude")
+            daemon.cfg = {
+                "general": {
+                    "subagent_sizing_policy": "user_default",
+                    "provider": "claude",
+                    "model": "default",
+                    "orchestrator_effort": "default",
+                }
+            }
+
+            with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            run = result["run"]
+            self.assertIsNone(run["model_alias"])
+            self.assertEqual(run["worker_effort"], "default")
+            self.assertEqual(run["worker_model"], "claude:default")
+            command = Worker(
+                run_id=run["id"],
+                run=run,
+                prompt="",
+                agent_bin="claude",
+                agent_kind="claude",
+                store=daemon.runs,
+                log_path=Path(tmp) / "run.log",
+                timeout_seconds=1,
+            )._command()
+            self.assertNotIn("--model", command)
+            self.assertNotIn("--effort", command)
 
     def test_dispatch_records_valid_codex_sizing_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -342,8 +553,15 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 status="ready",
                 run_id=None,
                 sizing=True,
-                body="## Description\n\nUntracked dispatch snapshot.\n",
+                body=(
+                    "## Description\n\nUntracked dispatch snapshot.\n\n"
+                    "## Attachments\n\n"
+                    "- ![design.png](attachments/RR-1/design.png)\n"
+                ),
             )
+            attachment = repo / ".orchestrator/attachments/RR-1/design.png"
+            attachment.parent.mkdir(parents=True)
+            attachment.write_bytes(b"design-image")
             daemon = self.make_daemon(root, provider="codex")
 
             with patch.object(Worker, "start") as start_worker:
@@ -353,6 +571,11 @@ class OrchestratorDispatchTests(unittest.TestCase):
             workspace_ticket = Path(result["run"]["workspace_path"]) / ".orchestrator/RR-1.md"
             self.assertTrue(workspace_ticket.is_file())
             self.assertEqual(workspace_ticket.read_text(), (repo / ".orchestrator/RR-1.md").read_text())
+            workspace_attachment = (
+                Path(result["run"]["workspace_path"])
+                / ".orchestrator/attachments/RR-1/design.png"
+            )
+            self.assertEqual(workspace_attachment.read_bytes(), b"design-image")
             self.assertFalse((Path(result["run"]["workspace_path"]) / ".orchestrator/config.toml").exists())
 
     def test_dispatch_materializes_uncommitted_ticket_edits(self):
@@ -490,6 +713,48 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertEqual(result["skipped"][0]["reason"], "dispatch_failed")
             self.assertIn("automatic retry circuit open", result["skipped"][0]["error"])
             self.assertEqual(len(daemon.runs.list()), 1)
+
+    def test_ready_sweeper_holds_after_deterministic_provider_launch_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            failed = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "workspaces" / "rr-1"),
+                branch="relay/rr-1",
+                state="Failed",
+                attempt=1,
+                provider_key="codex",
+                model_alias=None,
+                worker_model="codex:default",
+                worker_effort="default",
+            )
+            daemon.runs.update(
+                failed,
+                ended=True,
+                exit_code=1,
+                last_error=(
+                    "exit=1; tail=Error: HTTP 400 bad request: "
+                    "invalid value for model_reasoning_effort=default"
+                ),
+            )
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            self.assertEqual(result["dispatched"], [])
+            self.assertEqual(result["skipped"][0]["reason"], "dispatch_failed")
+            self.assertIn("automatic retry circuit open", result["skipped"][0]["error"])
+            self.assertIn("model_reasoning_effort=default", result["skipped"][0]["error"])
 
     def test_ready_sweeper_backs_off_after_recent_transient_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1169,6 +1434,8 @@ class OrchestratorDispatchTests(unittest.TestCase):
             updated = daemon.runs.get(run_id)
             self.assertEqual(updated["state"], "AwaitingReview")
             self.assertIn("review worker failed: exit=7", updated["last_error"])
+            self.assertEqual(updated["activity"], "Reviewing worker branch")
+            self.assertIsNotNone(updated["activity_at"])
 
     def test_accept_worker_run_merges_prunes_and_progresses_dependents(self):
         with tempfile.TemporaryDirectory() as tmp:

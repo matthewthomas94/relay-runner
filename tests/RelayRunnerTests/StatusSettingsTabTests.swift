@@ -33,26 +33,26 @@ final class StatusSettingsTabTests: XCTestCase {
         XCTAssertFalse(contents.contains("Re-run Setup Walkthrough"))
     }
 
-    func testPrivacyPermissionsExposeCompleteOrderedList() {
+    func testPrivacyPermissionsExcludeInputMonitoring() {
         XCTAssertEqual(
             StatusSettingsTab.privacyPermissionOrder,
-            [.microphone, .accessibility, .inputMonitoring, .screenRecording]
+            [.microphone, .accessibility, .screenRecording]
         )
         XCTAssertEqual(
             StatusSettingsTab.privacyPermissionOrder.map(\.displayName),
-            ["Microphone", "Accessibility", "Input Monitoring", "Screen Recording"]
+            ["Microphone", "Accessibility", "Screen Recording"]
         )
     }
 
-    func testInputMonitoringDeniedDetailNamesHotkeyRecovery() {
-        let detail = StatusSettingsTab.permissionDetailText(
-            kind: .inputMonitoring,
-            status: .denied,
-            restricted: false
+    func testHiddenInputMonitoringResetDoesNotSurfaceInSettings() {
+        XCTAssertEqual(
+            StatusSettingsTab.visibleResetPermissions([.inputMonitoring]),
+            []
         )
-
-        XCTAssertTrue(detail.contains("global activation keys"))
-        XCTAssertTrue(detail.contains("double-tap Shift Workspace hotkey"))
+        XCTAssertEqual(
+            StatusSettingsTab.visibleResetPermissions([.inputMonitoring, .accessibility]),
+            [.accessibility]
+        )
     }
 
     func testAccessibilityDetailNamesRelayActionsRatherThanHotkeys() {
@@ -102,8 +102,8 @@ final class StatusSettingsTabTests: XCTestCase {
             .requestSetup(.accessibility)
         )
         XCTAssertEqual(
-            StatusSettingsTab.permissionActionIntent(kind: .inputMonitoring, status: .notDetermined),
-            .requestSetup(.inputMonitoring)
+            StatusSettingsTab.permissionActionIntent(kind: .screenRecording, status: .notDetermined),
+            .requestSetup(.screenRecording)
         )
     }
 }

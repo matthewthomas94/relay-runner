@@ -173,16 +173,9 @@ final class OnboardingIntroTests: XCTestCase {
         statuses[.accessibility] = .granted
         postGrant(.accessibility)
         drainMainQueue()
-        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone, .accessibility, .inputMonitoring])
-
-        intro.performPermissionAction()
-        statuses[.inputMonitoring] = .granted
-        postGrant(.inputMonitoring)
-        drainMainQueue()
         XCTAssertEqual(intro.permissionPrompts.map(\.permission), [
             .microphone,
             .accessibility,
-            .inputMonitoring,
             .screenRecording,
         ])
 
@@ -457,11 +450,363 @@ final class OnboardingIntroTests: XCTestCase {
         intro.performWorkspaceAction()
 
         XCTAssertEqual(workingDirectoryWrites, ["/Users/example/dev"])
-        XCTAssertEqual(events, ["dismiss", "notch:false", "picker", "notch:true", "dismiss", "notch:false", "workspaceOpen"])
+        XCTAssertEqual(events, ["dismiss", "notch:false", "picker", "notch:true"])
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        completeSessionControlsTutorial(controller)
+
         XCTAssertEqual(workspaceOpenCount, 1)
-        XCTAssertEqual(intro.completionPromptCount, 1)
+        XCTAssertEqual(
+            intro.tutorialPresentations.map(\.screen),
+            [.intro, .recording, .recordingActive, .playback, .cancellation, .workspace]
+        )
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.started.path))
+        XCTAssertNil(OnboardingResumeState.load())
+    }
+
+    func testTutorialMovesFromRecordingActiveToPlaybackWhileWaitingForResponse() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+        beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
+
+        controller.noteTutorialResponseReady("Startup greeting")
+        controller.noteTutorialRecordingStarted()
+        controller.noteTutorialSpeechDetected()
+        controller.noteTutorialRecordingSent()
+        controller.noteTutorialResponseReady("")
+        controller.noteTutorialResponseReady("   ")
+        controller.noteTutorialPlaybackRequested()
+
+        XCTAssertEqual(
+            intro.tutorialPresentations.map(\.screen),
+            [.intro, .recording, .recordingActive, .playback]
+        )
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        controller.noteTutorialResponseReady("Hello, how are you?")
+        controller.noteTutorialPlaybackRequested()
+
+        XCTAssertEqual(
+            intro.tutorialPresentations.map(\.screen),
+            [.intro, .recording, .recordingActive, .playback]
+        )
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
+    }
+
+    func testTutorialCancellationAcceptsWaitingOrPlayingReplayForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            for playBeforeCancelling in [false, true] {
+                OnboardingResumeState.clear()
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: directory) }
+
+                let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+                let intro = CapturingIntroPresenter()
+                let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+                beginSessionControlsTutorial(controller, intro: intro, provider: provider)
+
+                controller.noteTutorialRecordingStarted()
+                XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .recordingActive])
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecordingActive)
+
+                controller.noteTutorialSpeechDetected()
+                controller.noteTutorialRecordingSent()
+                XCTAssertEqual(
+                    intro.tutorialPresentations.map(\.screen),
+                    [.intro, .recording, .recordingActive, .playback]
+                )
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
+
+                controller.noteTutorialResponseReady("Hello, how are you?")
+                controller.noteTutorialCancelRequested()
+                controller.noteTutorialPlaybackRequested()
+                controller.noteTutorialCancelRequested()
+                controller.noteTutorialPlaybackStarted()
+                controller.noteTutorialCancelRequested()
+
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
+                XCTAssertEqual(
+                    controller.noteTutorialPlaybackFinished(),
+                    "Hello, how are you?"
+                )
+                XCTAssertEqual(
+                    intro.tutorialPresentations.map(\.screen),
+                    [.intro, .recording, .recordingActive, .playback, .cancellation]
+                )
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialCancellation)
+
+                if playBeforeCancelling {
+                    controller.noteTutorialPlaybackRequested()
+                }
+                controller.noteTutorialCancelRequested()
+
+                XCTAssertEqual(
+                    intro.tutorialPresentations.map(\.screen),
+                    [.intro, .recording, .recordingActive, .playback, .cancellation, .workspace]
+                )
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialWorkspace)
+                controller.noteTutorialPlaybackStarted()
+                XCTAssertNil(controller.noteTutorialPlaybackFinished())
+            }
+        }
+    }
+
+    func testTutorialRecognizesPlaybackThatStartedBeforeGesturePoll() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+        beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
+        controller.noteTutorialRecordingStarted()
+        controller.noteTutorialSpeechDetected()
+        controller.noteTutorialRecordingSent()
+        controller.noteTutorialResponseReady("Hello, how are you?")
+
+        controller.noteTutorialPlaybackRequested(playbackActive: true)
+        controller.noteTutorialPlaybackFinished()
+
+        XCTAssertEqual(intro.tutorialPresentations.last?.screen, .cancellation)
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialCancellation)
+    }
+
+    func testTutorialResumeTransientSubstepsFallsBackToRecordingWithoutStaleState() throws {
+        for step in [
+            OnboardingStepID.tutorialRecordingActive,
+            .tutorialPlayback,
+            .tutorialCancellation,
+        ] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            OnboardingResumeState.save(
+                step: step,
+                provider: .codex,
+                parentPermissionsReviewed: true
+            )
+            let intro = CapturingIntroPresenter()
+            let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+
+            controller.showIfNeeded()
+
+            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.recording])
+            XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+
+            controller.noteTutorialPlaybackRequested()
+            controller.noteTutorialCancelRequested()
+
+            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.recording])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        }
+    }
+
+    func testTutorialRecordingWaitsForVoiceConsumerReadinessForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            OnboardingResumeState.save(
+                step: .tutorialRecording,
+                provider: provider,
+                parentPermissionsReviewed: true
+            )
+            let intro = CapturingIntroPresenter()
+            var sessionReady = false
+            let controller = makeSessionControlsTutorialController(
+                flagURLs: flagURLs,
+                intro: intro,
+                tutorialSessionReady: { sessionReady }
+            )
+
+            controller.showIfNeeded()
+
+            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro])
+            XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialIntro)
+
+            sessionReady = true
+            waitForMainQueue(after: 0.05)
+
+            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording])
+            XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+        }
+    }
+
+    func testTutorialResponseAndGestureGatesAreProviderNeutral() throws {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            let intro = CapturingIntroPresenter()
+            var workspaceOpenCount = 0
+            let controller = makeSessionControlsTutorialController(
+                flagURLs: flagURLs,
+                intro: intro,
+                workspaceOpen: { workspaceOpenCount += 1 }
+            )
+
+            beginSessionControlsTutorial(controller, intro: intro, provider: provider)
+            completeSessionControlsTutorial(controller)
+
+            XCTAssertEqual(
+                intro.tutorialPresentations.map(\.screen),
+                [.intro, .recording, .recordingActive, .playback, .cancellation, .workspace],
+                "provider: \(provider.rawValue)"
+            )
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: flagURLs.onboarded.path),
+                "provider: \(provider.rawValue)"
+            )
+            XCTAssertEqual(workspaceOpenCount, 1, "provider: \(provider.rawValue)")
+        }
+    }
+
+    func testTutorialWorkspaceToggleCanRetryAfterNoSuccessSignal() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var workspaceOpenCount = 0
+        let controller = makeSessionControlsTutorialController(
+            flagURLs: flagURLs,
+            intro: intro,
+            workspaceOpen: { workspaceOpenCount += 1 }
+        )
+
+        beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
+        controller.noteTutorialRecordingStarted()
+        controller.noteTutorialSpeechDetected()
+        controller.noteTutorialRecordingSent()
+        controller.noteTutorialResponseReady("Hello, how are you?")
+        controller.noteTutorialPlaybackRequested()
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialPlaybackFinished()
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialCancelRequested()
+        drainMainQueue()
+
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialWorkspace)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        drainMainQueue()
+
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialWorkspace)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertEqual(workspaceOpenCount, 0)
+
+        controller.noteTutorialWorkspaceToggled()
+        drainMainQueue()
+
+        XCTAssertNil(OnboardingResumeState.load())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertEqual(workspaceOpenCount, 1)
+    }
+
+    func testTutorialWorkspaceToggleCompletesExactlyOnce() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var workspaceOpenCount = 0
+        let controller = makeSessionControlsTutorialController(
+            flagURLs: flagURLs,
+            intro: intro,
+            workspaceOpen: { workspaceOpenCount += 1 }
+        )
+
+        beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
+        controller.noteTutorialRecordingStarted()
+        controller.noteTutorialSpeechDetected()
+        controller.noteTutorialRecordingSent()
+        controller.noteTutorialResponseReady("Hello, how are you?")
+        controller.noteTutorialPlaybackRequested()
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialPlaybackFinished()
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialCancelRequested()
+        controller.noteTutorialWorkspaceToggled()
+        controller.noteTutorialWorkspaceToggled()
+        drainMainQueue()
+
+        XCTAssertNil(OnboardingResumeState.load())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertEqual(workspaceOpenCount, 1)
+    }
+
+    func testTutorialSessionStartupFailureShowsRetryWithoutCompletingOnboarding() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var sessionStarts = [false, true]
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { _ in },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/dev") }
+            },
+            reduceMotion: { true },
+            startSessionForTutorial: {
+                sessionStarts.removeFirst()
+            }
+        )
+
+        controller.showIfNeeded()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+        intro.performWorkspaceAction()
+
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.sessionRetry])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialSessionRetry)
+
+        intro.performRuntimeRetry()
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.sessionRetry, .intro])
+
+        completeSessionControlsTutorial(controller)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
         XCTAssertNil(OnboardingResumeState.load())
     }
 
@@ -515,87 +860,29 @@ final class OnboardingIntroTests: XCTestCase {
             "picker",
             "persist:/Users/example/dev",
             "notch:true",
+        ])
+        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro])
+        XCTAssertEqual(firstRunExperienceStates, [true])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        completeSessionControlsTutorial(controller)
+
+        XCTAssertEqual(events, [
+            "dismiss",
+            "notch:false",
+            "picker",
+            "persist:/Users/example/dev",
+            "notch:true",
             "dismiss",
             "notch:false",
             "firstRun:false",
             "workspaceOpen",
         ])
-        XCTAssertEqual(intro.completionRevealCallbackCount, 1)
         XCTAssertEqual(firstRunExperienceStates, [true, false])
-        XCTAssertEqual(intro.completionPromptCount, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
     }
 
-    func testWorkspaceCompletionWaitsForRevealCompletionBeforeHoldDismissUnlockAndWorkspaceOpen() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
-        let intro = CapturingIntroPresenter()
-        intro.completionRevealCompletesImmediately = false
-        var events: [String] = []
-        intro.onDismiss = { events.append("dismiss") }
-        let controller = OnboardingController(
-            permissions: PermissionsManager(),
-            flagURLs: flagURLs,
-            setWorkingDirectory: { events.append("persist:\($0)") },
-            setOnboardingNotchOverrideActive: { events.append("notch:\($0)") },
-            setFirstRunExperienceActive: { events.append("firstRun:\($0)") },
-            permissionStatus: { _ in .granted },
-            makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
-            runtimeAlreadyInstalled: { _ in false },
-            isAgentAuthenticated: { _ in true },
-            runtimePollInterval: 0.01,
-            introAdvanceDelay: 0,
-            pickWorkspaceDirectory: { prepare, completion in
-                prepare { completion("/Users/example/dev") }
-            },
-            reduceMotion: { false },
-            openWorkspaceAfterCompletion: { events.append("workspaceOpen") },
-            completionHoldDuration: 0.05
-        )
-
-        controller.showIfNeeded()
-        intro.completeCinematic()
-        intro.performCodexAction()
-        waitForMainQueue(after: 0.05)
-        events.removeAll()
-
-        intro.performWorkspaceAction()
-
-        XCTAssertEqual(events, ["dismiss", "notch:false", "persist:/Users/example/dev", "notch:true"])
-        XCTAssertEqual(intro.completionPromptCount, 1)
-        XCTAssertEqual(intro.completionRevealCallbackCount, 0)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
-
-        waitForMainQueue(after: 0.08)
-
-        XCTAssertEqual(events, ["dismiss", "notch:false", "persist:/Users/example/dev", "notch:true"])
-        XCTAssertEqual(intro.completionRevealCallbackCount, 0)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
-
-        intro.completeCompletionReveal()
-        XCTAssertEqual(intro.completionRevealCallbackCount, 1)
-
-        waitForMainQueue(after: 0.08)
-
-        XCTAssertEqual(events, [
-            "dismiss",
-            "notch:false",
-            "persist:/Users/example/dev",
-            "notch:true",
-            "dismiss",
-            "notch:false",
-            "firstRun:false",
-            "workspaceOpen",
-        ])
-        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
-    }
-
-    func testWorkspaceCompletionHoldDelaysUnlockAndWorkspaceOpenWhenMotionAllowed() throws {
+    func testWorkspaceTutorialDoesNotFinishUntilAllControlEventsSucceed() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -622,8 +909,7 @@ final class OnboardingIntroTests: XCTestCase {
                 prepare { completion("/Users/example/dev") }
             },
             reduceMotion: { false },
-            openWorkspaceAfterCompletion: { events.append("workspaceOpen") },
-            completionHoldDuration: 0.05
+            openWorkspaceAfterCompletion: { events.append("workspaceOpen") }
         )
 
         controller.showIfNeeded()
@@ -635,11 +921,14 @@ final class OnboardingIntroTests: XCTestCase {
         intro.performWorkspaceAction()
 
         XCTAssertEqual(events, ["dismiss", "notch:false", "persist:/Users/example/dev", "notch:true"])
-        XCTAssertEqual(intro.completionPromptCount, 1)
-        XCTAssertEqual(intro.completionRevealCallbackCount, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
 
         waitForMainQueue(after: 0.08)
+
+        XCTAssertEqual(events, ["dismiss", "notch:false", "persist:/Users/example/dev", "notch:true"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        completeSessionControlsTutorial(controller)
 
         XCTAssertEqual(events, [
             "dismiss",
@@ -651,14 +940,68 @@ final class OnboardingIntroTests: XCTestCase {
             "firstRun:false",
             "workspaceOpen",
         ])
-        intro.completeCompletionReveal()
-        XCTAssertEqual(intro.completionRevealCallbackCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
+    func testWorkspaceTutorialCompletesAfterOrderedControlEventsWhenMotionAllowed() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var events: [String] = []
+        intro.onDismiss = { events.append("dismiss") }
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { events.append("persist:\($0)") },
+            setOnboardingNotchOverrideActive: { events.append("notch:\($0)") },
+            setFirstRunExperienceActive: { events.append("firstRun:\($0)") },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/dev") }
+            },
+            reduceMotion: { false },
+            openWorkspaceAfterCompletion: { events.append("workspaceOpen") }
+        )
+
+        controller.showIfNeeded()
+        intro.completeCinematic()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+        events.removeAll()
+
+        intro.performWorkspaceAction()
+
+        XCTAssertEqual(events, ["dismiss", "notch:false", "persist:/Users/example/dev", "notch:true"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        completeSessionControlsTutorial(controller)
+
+        XCTAssertEqual(events, [
+            "dismiss",
+            "notch:false",
+            "persist:/Users/example/dev",
+            "notch:true",
+            "dismiss",
+            "notch:false",
+            "firstRun:false",
+            "workspaceOpen",
+        ])
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.started.path))
         XCTAssertNil(OnboardingResumeState.load())
     }
 
-    func testWorkspaceCompletionRetainsControllerOwnedPresenterUntilDismissalCompletes() throws {
+    func testWorkspaceTutorialRetainsControllerOwnedPresenterUntilDismissalCompletes() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -701,12 +1044,22 @@ final class OnboardingIntroTests: XCTestCase {
             "notch:false",
             "persist:/Users/example/dev",
             "notch:true",
-            "dismiss",
         ])
-        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
         XCTAssertNotNil(presenterFactory.presenter)
         XCTAssertFalse(events.contains("firstRun:false"))
         XCTAssertFalse(events.contains("workspaceOpen"))
+
+        completeSessionControlsTutorial(controller)
+
+        XCTAssertEqual(events, [
+            "dismiss",
+            "notch:false",
+            "persist:/Users/example/dev",
+            "notch:true",
+            "dismiss",
+        ])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
 
         presenterFactory.presenter?.completeDismissal()
         drainMainQueue()
@@ -761,6 +1114,84 @@ final class OnboardingIntroTests: XCTestCase {
 
         XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory(), NSHomeDirectory()])
         XCTAssertTrue(workingDirectoryWrites.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
+    func testWorkspaceContinuePersistsExistingPathWithoutOpeningPicker() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let installer = FakeRuntimeInstaller(installStatus: .succeeded)
+        var workingDirectoryWrites: [String] = []
+        var pickerCalls = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            getWorkingDirectory: { "/Users/example/current" },
+            setWorkingDirectory: { workingDirectoryWrites.append($0) },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { installer },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { _, _ in pickerCalls += 1 },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+
+        intro.performWorkspaceContinueAction()
+
+        XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
+        XCTAssertEqual(workingDirectoryWrites, ["/Users/example/current"])
+        XCTAssertEqual(pickerCalls, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
+    func testWorkspaceContinueUsesHomeFallbackWithoutOpeningPicker() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let installer = FakeRuntimeInstaller(installStatus: .succeeded)
+        var workingDirectoryWrites: [String] = []
+        var pickerCalls = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            getWorkingDirectory: { "" },
+            setWorkingDirectory: { workingDirectoryWrites.append($0) },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { installer },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            pickWorkspaceDirectory: { _, _ in pickerCalls += 1 },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+
+        intro.performWorkspaceContinueAction()
+
+        XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory()])
+        XCTAssertEqual(workingDirectoryWrites, [NSHomeDirectory()])
+        XCTAssertEqual(pickerCalls, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
     }
 
@@ -978,6 +1409,7 @@ final class OnboardingIntroTests: XCTestCase {
         intro.performWorkspaceAction()
 
         XCTAssertEqual(workingDirectoryWrites, ["/Users/example/new-workspace"])
+        completeSessionControlsTutorial(controller)
         XCTAssertEqual(firstRunExperienceStates, [true, false])
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.manualRedo.path))
     }
@@ -1055,6 +1487,7 @@ final class OnboardingIntroTests: XCTestCase {
         resumedIntro.performWorkspaceAction()
 
         XCTAssertEqual(workspaceWrites, ["/Users/example/recovered-workspace"])
+        completeSessionControlsTutorial(resumedController)
         XCTAssertEqual(firstRunExperienceStates, [true, false])
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.manualRedo.path))
     }
@@ -1099,6 +1532,7 @@ final class OnboardingIntroTests: XCTestCase {
         intro.performWorkspaceAction()
 
         XCTAssertEqual(workspaceWrites, ["/Users/example/recovered-workspace"])
+        completeSessionControlsTutorial(controller)
         XCTAssertEqual(firstRunExperienceStates, [true, false])
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.manualRedo.path))
     }
@@ -1171,8 +1605,7 @@ final class OnboardingIntroTests: XCTestCase {
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/workspace") }
             },
-            reduceMotion: { false },
-            completionHoldDuration: 0
+            reduceMotion: { false }
         )
 
         for (index, intro) in intros.enumerated() {
@@ -1194,6 +1627,7 @@ final class OnboardingIntroTests: XCTestCase {
             XCTAssertEqual(intro.workspacePromptPaths, [NSHomeDirectory()])
 
             intro.performWorkspaceAction()
+            completeSessionControlsTutorial(controller)
             XCTAssertEqual(introIndex, index + 1)
             statuses[.microphone] = .denied
         }
@@ -1409,11 +1843,17 @@ final class OnboardingIntroTests: XCTestCase {
             "Choose your workspace /"
         )
         XCTAssertEqual(OnboardingBlinkingTitle.cursorOpacity(at: 0), 1)
-        XCTAssertEqual(
+        XCTAssertLessThan(
             OnboardingBlinkingTitle.cursorOpacity(
                 at: OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
             ),
-            0.5
+            0.52
+        )
+        XCTAssertGreaterThan(
+            OnboardingBlinkingTitle.cursorOpacity(
+                at: OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
+            ),
+            OnboardingCursorBlink.minimumOpacity
         )
     }
 
@@ -1514,14 +1954,6 @@ final class OnboardingIntroTests: XCTestCase {
         ))
         XCTAssertTrue(OnboardingView.surfaceVisible(
             for: .microphone,
-            activePermissionSetupKind: nil
-        ))
-        XCTAssertFalse(OnboardingView.surfaceVisible(
-            for: .inputMonitoring,
-            activePermissionSetupKind: .inputMonitoring
-        ))
-        XCTAssertTrue(OnboardingView.surfaceVisible(
-            for: .inputMonitoring,
             activePermissionSetupKind: nil
         ))
         XCTAssertTrue(OnboardingView.surfaceVisible(
@@ -1643,6 +2075,64 @@ final class OnboardingIntroTests: XCTestCase {
         )
         XCTAssertNotEqual(rect.midY, screen.midY, accuracy: 0.001, file: file, line: line)
     }
+
+    private func makeSessionControlsTutorialController(
+        flagURLs: OnboardingFlagURLs,
+        intro: CapturingIntroPresenter,
+        tutorialSessionReady: @escaping () -> Bool = { true },
+        workspaceOpen: @escaping () -> Void = {}
+    ) -> OnboardingController {
+        OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { _ in },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            tutorialSessionReadyPollInterval: 0.01,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/dev") }
+            },
+            reduceMotion: { true },
+            tutorialSessionReady: tutorialSessionReady,
+            openWorkspaceAfterCompletion: workspaceOpen
+        )
+    }
+
+    private func beginSessionControlsTutorial(
+        _ controller: OnboardingController,
+        intro: CapturingIntroPresenter,
+        provider: GeneralConfig.AgentProvider
+    ) {
+        controller.showIfNeeded()
+        switch provider {
+        case .codex:
+            intro.performCodexAction()
+        case .claude:
+            intro.performClaudeAction()
+        }
+        waitForMainQueue(after: 0.05)
+        intro.performWorkspaceAction()
+        drainMainQueue()
+    }
+
+    private func completeSessionControlsTutorial(_ controller: OnboardingController) {
+        drainMainQueue()
+        controller.noteTutorialRecordingStarted()
+        controller.noteTutorialSpeechDetected()
+        controller.noteTutorialRecordingSent()
+        controller.noteTutorialResponseReady("Hello, how are you?")
+        controller.noteTutorialPlaybackRequested()
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialPlaybackFinished()
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialCancelRequested()
+        controller.noteTutorialWorkspaceToggled()
+        drainMainQueue()
+    }
 }
 
 private final class CapturingIntroPresenter: OnboardingIntroPresenting {
@@ -1653,17 +2143,15 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private(set) var runtimePrompts: [OnboardingRuntimePromptPresentation] = []
     private(set) var loginPrompts: [OnboardingAgentLoginPromptPresentation] = []
     private(set) var workspacePromptPaths: [String] = []
-    private(set) var completionPromptCount = 0
-    private(set) var completionRevealCallbackCount = 0
+    private(set) var tutorialPresentations: [OnboardingTutorialPresentation] = []
     private var cinematicCompletion: (() -> Void)?
     private var permissionAction: (() -> Void)?
     private var codexAction: (() -> Void)?
     private var claudeAction: (() -> Void)?
     private var runtimeRetryAction: (() -> Void)?
     private var loginAction: (() -> Void)?
+    private var workspaceContinueAction: (() -> Void)?
     private var workspaceAction: (() -> Void)?
-    private var completionRevealAction: (() -> Void)?
-    var completionRevealCompletesImmediately = true
     var onDismiss: (() -> Void)?
 
     func present(completion: @escaping () -> Void) {
@@ -1703,23 +2191,19 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     }
 
     func presentWorkspacePrompt(currentPath: String,
-                                action: @escaping () -> Void) {
+                                continueAction: @escaping () -> Void,
+                                browseAction: @escaping () -> Void) {
         events.append("workspace")
         workspacePromptPaths.append(currentPath)
-        workspaceAction = action
+        workspaceContinueAction = continueAction
+        workspaceAction = browseAction
     }
 
-    func presentCompletionPrompt(revealCompletion: @escaping () -> Void) {
-        events.append("completion")
-        completionPromptCount += 1
-        completionRevealAction = { [weak self] in
-            guard let self else { return }
-            self.completionRevealCallbackCount += 1
-            revealCompletion()
-        }
-        if completionRevealCompletesImmediately {
-            completeCompletionReveal()
-        }
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void) {
+        events.append("tutorial:\(presentation.screen.rawValue)")
+        tutorialPresentations.append(presentation)
+        runtimeRetryAction = retryAction
     }
 
     func dismiss(completion: @escaping () -> Void) {
@@ -1752,15 +2236,14 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
         loginAction?()
     }
 
+    func performWorkspaceContinueAction() {
+        workspaceContinueAction?()
+    }
+
     func performWorkspaceAction() {
         workspaceAction?()
     }
 
-    func completeCompletionReveal() {
-        let action = completionRevealAction
-        completionRevealAction = nil
-        action?()
-    }
 }
 
 private final class DeferredDismissIntroPresenterFactory {
@@ -1782,6 +2265,7 @@ private final class DeferredDismissIntroPresenterFactory {
 private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
     private let eventSink: (String) -> Void
     private var codexAction: (() -> Void)?
+    private var workspaceContinueAction: (() -> Void)?
     private var workspaceAction: (() -> Void)?
     private var dismissCompletion: (() -> Void)?
     private var defersDismissal = false
@@ -1814,13 +2298,17 @@ private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
                                  signInAction: @escaping () -> Void) {}
 
     func presentWorkspacePrompt(currentPath: String,
-                                action: @escaping () -> Void) {
-        workspaceAction = action
+                                continueAction: @escaping () -> Void,
+                                browseAction: @escaping () -> Void) {
+        workspaceContinueAction = continueAction
+        workspaceAction = browseAction
     }
 
-    func presentCompletionPrompt(revealCompletion: @escaping () -> Void) {
-        defersDismissal = true
-        revealCompletion()
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void) {
+        if presentation.screen == .workspace {
+            defersDismissal = true
+        }
     }
 
     func dismiss(completion: @escaping () -> Void) {
@@ -1839,6 +2327,10 @@ private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
 
     func performWorkspaceAction() {
         workspaceAction?()
+    }
+
+    func performWorkspaceContinueAction() {
+        workspaceContinueAction?()
     }
 
     func completeDismissal() {

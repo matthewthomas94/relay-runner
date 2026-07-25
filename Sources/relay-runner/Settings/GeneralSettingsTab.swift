@@ -7,8 +7,6 @@ struct GeneralSettingsTab: View {
     static let orchestratorModelLabel = "Orchestrator Model"
     static let orchestratorEffortLabel = "Orchestrator Effort"
     static let subagentSizingLabel = "Sub-agent sizing"
-    static let subagentModelLabel = "Sub-agent Model"
-    static let subagentEffortLabel = "Sub-agent Effort"
 
     @Binding var config: GeneralConfig
     var onOpenExternalWindow: () -> Void = {}
@@ -65,27 +63,6 @@ struct GeneralSettingsTab: View {
                     }
                 }
 
-                if config.subagent_sizing_policy == .userDefault {
-                    SettingsDivider()
-
-                    SettingsControlRow(Self.subagentModelLabel) {
-                        Picker(Self.subagentModelLabel, selection: subagentModelSelection) {
-                            ForEach(GeneralConfig.subagentModelOptions) { option in
-                                Text(option.label).tag(option.value)
-                            }
-                        }
-                    }
-
-                    SettingsDivider()
-
-                    SettingsControlRow(Self.subagentEffortLabel) {
-                        Picker(Self.subagentEffortLabel, selection: subagentEffortSelection) {
-                            ForEach(GeneralConfig.subagentEffortOptions) { option in
-                                Text(option.label).tag(option.value)
-                            }
-                        }
-                    }
-                }
             }
 
             SettingsSection("Workspace") {
@@ -192,20 +169,6 @@ struct GeneralSettingsTab: View {
                     model: config.model
                 )
             }
-        )
-    }
-
-    private var subagentModelSelection: Binding<String> {
-        Binding(
-            get: { config.subagent_model },
-            set: { config.subagent_model = GeneralConfig.normalizedSubagentModel($0) }
-        )
-    }
-
-    private var subagentEffortSelection: Binding<String> {
-        Binding(
-            get: { config.subagent_effort },
-            set: { config.subagent_effort = GeneralConfig.normalizedSubagentEffort($0) }
         )
     }
 

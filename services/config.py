@@ -126,8 +126,6 @@ def load_config(config_path: str | None = None) -> dict:
             "messenger_model": "default",
             "messenger_effort": "default",
             "subagent_sizing_policy": "orchestrator_decides",
-            "subagent_model": "balanced",
-            "subagent_effort": "medium",
         },
         "orchestrator": {
             "agent": "codex",
@@ -279,11 +277,13 @@ def _migrate_config(
     general["subagent_sizing_policy"] = (
         policy if policy in {"orchestrator_decides", "user_default"} else "orchestrator_decides"
     )
-    subagent_model = str(general.get("subagent_model", "balanced")).strip().lower()
-    general["subagent_model"] = (
-        subagent_model if subagent_model in {"fast", "balanced", "strong"} else "balanced"
-    )
-    subagent_effort = str(general.get("subagent_effort", "medium")).strip().lower()
-    general["subagent_effort"] = (
-        subagent_effort if subagent_effort in {"low", "medium", "high", "xhigh"} else "medium"
-    )
+    if "subagent_model" in general:
+        subagent_model = str(general.get("subagent_model", "balanced")).strip().lower()
+        general["subagent_model"] = (
+            subagent_model if subagent_model in {"fast", "balanced", "strong"} else "balanced"
+        )
+    if "subagent_effort" in general:
+        subagent_effort = str(general.get("subagent_effort", "medium")).strip().lower()
+        general["subagent_effort"] = (
+            subagent_effort if subagent_effort in {"low", "medium", "high", "xhigh"} else "medium"
+        )

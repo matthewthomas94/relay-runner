@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ProgramDashboardSnapshot: Equatable {
     let summary: ProgramStatusResponse
@@ -243,8 +245,23 @@ struct ProgramBoardCreateRequest: Equatable {
     let status: Ticket.Status
     let title: String
     let description: String
+    let imageURLs: [URL]
 
     var shouldDispatch: Bool { status == .ready }
+
+    init(
+        repoPath: String,
+        status: Ticket.Status,
+        title: String,
+        description: String,
+        imageURLs: [URL] = []
+    ) {
+        self.repoPath = repoPath
+        self.status = status
+        self.title = title
+        self.description = description
+        self.imageURLs = imageURLs
+    }
 }
 
 struct ProgramBoardCreateResult: Equatable {
@@ -263,6 +280,9 @@ struct ProgramBoardEditDraft: Equatable, Identifiable {
     var acceptanceCriteria: String
 
     var id: String { identity.ticketPath }
+    var imageAttachmentPaths: [String] {
+        TicketParser.extractImageAttachmentPaths(original.body)
+    }
 }
 
 struct ProgramBoardEditRequest: Equatable {
@@ -273,6 +293,27 @@ struct ProgramBoardEditRequest: Equatable {
     let priority: Ticket.Priority
     let description: String
     let acceptanceCriteria: String
+    let imageURLs: [URL]
+
+    init(
+        repoPath: String,
+        ticketID: String,
+        title: String,
+        status: Ticket.Status,
+        priority: Ticket.Priority,
+        description: String,
+        acceptanceCriteria: String,
+        imageURLs: [URL] = []
+    ) {
+        self.repoPath = repoPath
+        self.ticketID = ticketID
+        self.title = title
+        self.status = status
+        self.priority = priority
+        self.description = description
+        self.acceptanceCriteria = acceptanceCriteria
+        self.imageURLs = imageURLs
+    }
 }
 
 struct ProgramBoardEditResult: Equatable {
@@ -431,6 +472,7 @@ enum ProgramBoardCreatePolicy {
         selectedProjectPath: String?,
         title: String,
         description: String,
+        imageURLs: [URL] = [],
         projects: [ProgramBoardProjectTarget]
     ) -> ProgramBoardCreateRequest? {
         guard let selectedProjectPath,
@@ -442,7 +484,8 @@ enum ProgramBoardCreatePolicy {
             repoPath: selectedProjectPath,
             status: draft.status,
             title: trimmedTitle.isEmpty ? "Untitled" : trimmedTitle,
-            description: description
+            description: description,
+            imageURLs: imageURLs
         )
     }
 }
@@ -483,7 +526,12 @@ enum ProgramBoardTicketCreator {
             description: withDescription.description,
             body: withDescription.body
         )
-        let ticketToSave = TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
+        let sizedTicket = TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
+        let ticketToSave = try TicketImageStore.ingest(
+            request.imageURLs,
+            into: sizedTicket,
+            in: project
+        )
         try TicketWriter.save(ticketToSave, in: project)
         return ProgramBoardCreateResult(
             ticket: ticketToSave,
@@ -516,7 +564,8 @@ enum ProgramBoardEditPolicy {
         status: Ticket.Status,
         priority: Ticket.Priority,
         description: String,
-        acceptanceCriteria: String
+        acceptanceCriteria: String,
+        imageURLs: [URL] = []
     ) -> ProgramBoardEditRequest {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return ProgramBoardEditRequest(
@@ -526,7 +575,8 @@ enum ProgramBoardEditPolicy {
             status: status,
             priority: priority,
             description: description,
-            acceptanceCriteria: acceptanceCriteria
+            acceptanceCriteria: acceptanceCriteria,
+            imageURLs: imageURLs
         )
     }
 }
@@ -581,9 +631,15 @@ enum ProgramBoardTicketEditor {
             description: withBody.description,
             body: withBody.body
         )
-        let ticketToSave = updated.status == .ready
+        let sizedTicket = updated.status == .ready
             ? TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
             : updated
+        let ticketToSave = try TicketImageStore.ingest(
+            request.imageURLs,
+            into: sizedTicket,
+            in: project,
+            fileManager: fileManager
+        )
 
         try TicketWriter.save(ticketToSave, in: project)
         let refreshed = [ticketToSave] + ProjectResolver.scanTickets(in: project).filter { $0.id != ticketToSave.id }
@@ -978,6 +1034,20 @@ struct ProgramTicketIdentity: Equatable {
     }
 }
 
+struct ProgramTicketImageAttachment: Equatable, Identifiable {
+    enum State: Equatable {
+        case preview(URL)
+        case failure(String)
+    }
+
+    let relativePath: String
+    let filename: String
+    let accessibilityLabel: String
+    let state: State
+
+    var id: String { relativePath }
+}
+
 struct ProgramTicketDetail: Equatable, Identifiable {
     let item: ProgramStatusItem
     let identity: ProgramTicketIdentity?
@@ -985,6 +1055,7 @@ struct ProgramTicketDetail: Equatable, Identifiable {
     let ticketPath: String?
     let description: String?
     let acceptanceCriteria: String?
+    let imageAttachments: [ProgramTicketImageAttachment]
     let unavailableMessage: String?
 
     var id: String { item.id }
@@ -995,6 +1066,10 @@ struct ProgramTicketDetail: Equatable, Identifiable {
 
     var projectName: String {
         Self.clean(identity?.projectName) ?? Self.clean(item.project?.name) ?? "Unknown project"
+    }
+
+    var imageAttachmentPaths: [String] {
+        ticket.map { TicketParser.extractImageAttachmentPaths($0.body) } ?? []
     }
 
     static func load(
@@ -1009,6 +1084,7 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticketPath: nil,
                 description: nil,
                 acceptanceCriteria: nil,
+                imageAttachments: [],
                 unavailableMessage: "Ticket identity is unavailable for this Program Workspace item."
             )
         }
@@ -1022,6 +1098,7 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticketPath: ticketPath,
                 description: nil,
                 acceptanceCriteria: nil,
+                imageAttachments: [],
                 unavailableMessage: "Ticket file was not found at \(ticketPath)."
             )
         }
@@ -1036,6 +1113,11 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticketPath: ticketPath,
                 description: TicketParser.extractFullDescription(ticket.body),
                 acceptanceCriteria: TicketParser.extractAcceptanceCriteria(ticket.body),
+                imageAttachments: resolveImageAttachments(
+                    ticket: ticket,
+                    projectPath: identity.projectPath,
+                    fileManager: fileManager
+                ),
                 unavailableMessage: nil
             )
         } catch {
@@ -1046,9 +1128,97 @@ struct ProgramTicketDetail: Equatable, Identifiable {
                 ticketPath: ticketPath,
                 description: nil,
                 acceptanceCriteria: nil,
+                imageAttachments: [],
                 unavailableMessage: "Ticket file could not be read: \(error)."
             )
         }
+    }
+
+    private static func resolveImageAttachments(
+        ticket: Ticket,
+        projectPath: String,
+        fileManager: FileManager
+    ) -> [ProgramTicketImageAttachment] {
+        let orchestratorDirectory = URL(fileURLWithPath: projectPath, isDirectory: true)
+            .appendingPathComponent(".orchestrator", isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let allowedDirectory = orchestratorDirectory
+            .appendingPathComponent("attachments", isDirectory: true)
+            .appendingPathComponent(ticket.id, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+
+        return TicketParser.extractImageAttachmentPaths(ticket.body).map { relativePath in
+            resolveImageAttachment(
+                relativePath: relativePath,
+                ticketID: ticket.id,
+                orchestratorDirectory: orchestratorDirectory,
+                allowedDirectory: allowedDirectory,
+                fileManager: fileManager
+            )
+        }
+    }
+
+    private static func resolveImageAttachment(
+        relativePath: String,
+        ticketID: String,
+        orchestratorDirectory: URL,
+        allowedDirectory: URL,
+        fileManager: FileManager
+    ) -> ProgramTicketImageAttachment {
+        let filename = URL(fileURLWithPath: relativePath).lastPathComponent
+        let fallbackName = filename.isEmpty ? relativePath : filename
+
+        func failure(_ reason: String) -> ProgramTicketImageAttachment {
+            ProgramTicketImageAttachment(
+                relativePath: relativePath,
+                filename: fallbackName,
+                accessibilityLabel: "Ticket attachment \(fallbackName)",
+                state: .failure(reason)
+            )
+        }
+
+        guard !relativePath.isEmpty,
+              !relativePath.hasPrefix("/"),
+              !relativePath.hasPrefix("~"),
+              URL(string: relativePath)?.scheme == nil,
+              relativePath.hasPrefix("attachments/\(ticketID)/") else {
+            return failure("Image preview unavailable.")
+        }
+
+        let candidate = orchestratorDirectory
+            .appendingPathComponent(relativePath, isDirectory: false)
+            .standardizedFileURL
+        let resolved = candidate.resolvingSymlinksInPath()
+        guard isDescendantOrFile(resolved, in: allowedDirectory) else {
+            return failure("Image preview unavailable.")
+        }
+        guard fileManager.fileExists(atPath: resolved.path),
+              fileManager.isReadableFile(atPath: resolved.path),
+              (try? resolved.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            return failure("Image file is missing.")
+        }
+        guard let contentType = UTType(filenameExtension: resolved.pathExtension),
+              contentType.conforms(to: .image) else {
+            return failure("Image format is unsupported.")
+        }
+        guard NSImage(contentsOf: resolved) != nil else {
+            return failure("Image file could not be opened.")
+        }
+        return ProgramTicketImageAttachment(
+            relativePath: relativePath,
+            filename: fallbackName,
+            accessibilityLabel: "Ticket attachment \(fallbackName)",
+            state: .preview(resolved)
+        )
+    }
+
+    private static func isDescendantOrFile(_ file: URL, in directory: URL) -> Bool {
+        let filePath = file.standardizedFileURL.resolvingSymlinksInPath().path
+        let directoryPath = directory.standardizedFileURL.resolvingSymlinksInPath().path
+        let prefix = directoryPath.hasSuffix("/") ? directoryPath : directoryPath + "/"
+        return filePath.hasPrefix(prefix)
     }
 
     private static func clean(_ value: String?) -> String? {
@@ -1251,7 +1421,8 @@ final class ProgramBoardViewModel {
     func createRequest(
         selectedProjectPath: String?,
         title: String,
-        description: String
+        description: String,
+        imageURLs: [URL] = []
     ) -> ProgramBoardCreateRequest? {
         guard let creating else { return nil }
         return ProgramBoardCreatePolicy.request(
@@ -1259,6 +1430,7 @@ final class ProgramBoardViewModel {
             selectedProjectPath: selectedProjectPath,
             title: title,
             description: description,
+            imageURLs: imageURLs,
             projects: projectTargets
         )
     }
@@ -1268,7 +1440,8 @@ final class ProgramBoardViewModel {
         status: Ticket.Status,
         priority: Ticket.Priority,
         description: String,
-        acceptanceCriteria: String
+        acceptanceCriteria: String,
+        imageURLs: [URL] = []
     ) -> ProgramBoardEditRequest? {
         guard let editing else { return nil }
         return ProgramBoardEditPolicy.request(
@@ -1277,7 +1450,8 @@ final class ProgramBoardViewModel {
             status: status,
             priority: priority,
             description: description,
-            acceptanceCriteria: acceptanceCriteria
+            acceptanceCriteria: acceptanceCriteria,
+            imageURLs: imageURLs
         )
     }
 

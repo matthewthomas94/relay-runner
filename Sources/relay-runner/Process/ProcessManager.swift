@@ -9,6 +9,8 @@ final class ProcessManager {
     private static let voiceCommandMetaPath = "/tmp/voice_cmd_ready.meta"
     private static let voiceCommandStatePath = "/tmp/voice_command_state.json"
     private static let voiceCommandClaimedPath = "/tmp/voice_cmd_claimed.json"
+    private static let voiceProviderTurnsPath = "/tmp/voice_provider_turns.json"
+    private static let terminalDeliveryEventsPath = "/tmp/relay_terminal_delivery_events.jsonl"
     private static let heartbeatPath = "/tmp/voice_bridge_heartbeat"
     private static let bridgeStopRequestedPath = "/tmp/voice_bridge_stop_requested"
     private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
@@ -24,6 +26,8 @@ final class ProcessManager {
         voiceCommandMetaPath,
         voiceCommandStatePath,
         voiceCommandClaimedPath,
+        voiceProviderTurnsPath,
+        terminalDeliveryEventsPath,
         "/tmp/tts_in.fifo",
         "/tmp/tts_control.sock",
         heartbeatPath,
@@ -167,7 +171,8 @@ final class ProcessManager {
             metaURL: URL(fileURLWithPath: Self.voiceCommandMetaPath),
             stateURL: URL(fileURLWithPath: Self.voiceCommandStatePath),
             claimedURL: URL(fileURLWithPath: Self.voiceCommandClaimedPath),
-            now: now
+            now: now,
+            providerTurnsURL: URL(fileURLWithPath: Self.voiceProviderTurnsPath)
         )
     }
 
@@ -185,6 +190,7 @@ final class ProcessManager {
             voiceCommandMetaPath: voiceCommandMetaPath,
             voiceCommandStatePath: voiceCommandStatePath,
             voiceCommandClaimedPath: voiceCommandClaimedPath,
+            voiceProviderTurnsPath: voiceProviderTurnsPath,
             heartbeatPath: heartbeatPath,
             sessionMarkerPaths: [bridgeSocketPath, bridgeCwdPath],
             now: Date()
@@ -196,18 +202,22 @@ final class ProcessManager {
         voiceCommandMetaPath: String? = nil,
         voiceCommandStatePath: String? = nil,
         voiceCommandClaimedPath: String? = nil,
+        voiceProviderTurnsPath: String? = nil,
         heartbeatPath: String,
         sessionMarkerPaths: [String],
         now: Date,
         fileManager fm: FileManager = .default
     ) -> Bool {
-        // Fast check: if a voice command has been pending for >10s, consumer is dead
-        // (in normal flow, the agent reads voice_cmd_ready within ~1s)
+        // Fast check: if a voice command has been pending for >10s with no
+        // active provider turn, consumer delivery is stuck. While Codex or
+        // Claude is actively running, newer commands may legitimately wait for
+        // the next preemption checkpoint.
         if voiceCommandTimedOut(
             voiceCommandPath: voiceCommandPath,
             voiceCommandMetaPath: voiceCommandMetaPath,
             voiceCommandStatePath: voiceCommandStatePath,
             voiceCommandClaimedPath: voiceCommandClaimedPath,
+            voiceProviderTurnsPath: voiceProviderTurnsPath,
             now: now,
             fileManager: fm
         ) {
@@ -249,6 +259,7 @@ final class ProcessManager {
         voiceCommandMetaPath: String?,
         voiceCommandStatePath: String?,
         voiceCommandClaimedPath: String?,
+        voiceProviderTurnsPath: String?,
         now: Date,
         fileManager fm: FileManager
     ) -> Bool {
@@ -265,6 +276,7 @@ final class ProcessManager {
                 stateURL: URL(fileURLWithPath: statePath),
                 claimedURL: URL(fileURLWithPath: claimedPath),
                 now: now,
+                providerTurnsURL: voiceProviderTurnsPath.map { URL(fileURLWithPath: $0) },
                 fileManager: fm
             )
             switch state {
@@ -300,6 +312,7 @@ final class ProcessManager {
         claimedURL: URL,
         now: Date,
         timeout: TimeInterval = pendingVoiceCommandTimeout,
+        providerTurnsURL: URL? = nil,
         fileManager fm: FileManager = .default
     ) -> PendingVoiceCommandDeliveryState {
         guard fm.fileExists(atPath: commandURL.path),
@@ -319,7 +332,12 @@ final class ProcessManager {
             return .stale
         }
 
-        return now.timeIntervalSince(modified) > timeout ? .timedOut : .waiting
+        if now.timeIntervalSince(modified) > timeout {
+            return providerTurnsURL.map { providerTurnActive(providerTurnsURL: $0) } == true
+                ? .waiting
+                : .timedOut
+        }
+        return .waiting
     }
 
     private static func modificationDate(of path: String, fileManager fm: FileManager) -> Date? {
@@ -358,6 +376,18 @@ final class ProcessManager {
         (value as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    private static func providerTurnActive(providerTurnsURL: URL) -> Bool {
+        guard let data = try? Data(contentsOf: providerTurnsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let records = object["records"] as? [[String: Any]] else {
+            return false
+        }
+        return records.contains { record in
+            (record["state"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) == "active"
+        }
+    }
+
     struct BridgeRecoveryContext: Equatable {
         let workingDirectory: String
         let provider: String?
@@ -393,12 +423,22 @@ final class ProcessManager {
     }
 
     @discardableResult
-    func relaunchBridgeDaemon(context: BridgeRecoveryContext) -> Bool {
+    func relaunchBridgeDaemon(
+        context: BridgeRecoveryContext,
+        suppressStartupGreeting: Bool = false
+    ) -> Bool {
         guard !Self.bridgeStopRequested() else { return false }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", Self.bridgeRecoveryScript(relayBridge: bundledRelayBridge.path, context: context)]
+        proc.arguments = [
+            "-c",
+            Self.bridgeRecoveryScript(
+                relayBridge: bundledRelayBridge.path,
+                context: context,
+                suppressStartupGreeting: suppressStartupGreeting
+            ),
+        ]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do {
@@ -411,8 +451,13 @@ final class ProcessManager {
         }
     }
 
-    static func bridgeRecoveryScript(relayBridge: String, context: BridgeRecoveryContext) -> String {
+    static func bridgeRecoveryScript(
+        relayBridge: String,
+        context: BridgeRecoveryContext,
+        suppressStartupGreeting: Bool = false
+    ) -> String {
         let provider = context.provider ?? ""
+        let greetingFlag = suppressStartupGreeting ? " --suppress-startup-greeting" : ""
         return """
         set +e
         RELAY_CWD=\(shellQuoted(context.workingDirectory))
@@ -468,11 +513,11 @@ final class ProcessManager {
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         pkill -f '[v]oice_bridge.py' 2>/dev/null || true
-        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
-        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
+        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
         submit_status=$?
         echo "[relay-runner] app watchdog launchctl submit exit_status=$submit_status provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         for _ in $(seq 1 20); do
@@ -494,7 +539,7 @@ final class ProcessManager {
         [ "$print_status" -eq 0 ] || echo "[relay-runner] app watchdog launchctl print exit_status=$print_status" >> "$VOICE_BRIDGE_LOG"
         echo "[relay-runner] app watchdog falling back to direct background launch." >> "$VOICE_BRIDGE_LOG"
         launchctl remove com.relay.voicebridge 2>/dev/null || true
-        nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-runner] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1 &
+        nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1 &
         fallback_pid=$!
         echo "[relay-runner] app watchdog direct fallback launched pid=$fallback_pid provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         for _ in $(seq 1 20); do
@@ -637,7 +682,8 @@ final class ProcessManager {
     /// the same shipped relay contract.
     func prepareNewSession(
         config: AppConfig,
-        voiceDelivery: SessionVoiceDelivery = .agentSkill
+        voiceDelivery: SessionVoiceDelivery = .agentSkill,
+        suppressStartupGreeting: Bool = false
     ) throws -> PreparedSessionLaunch {
         Self.clearBridgeStopRequested()
 
@@ -670,7 +716,8 @@ final class ProcessManager {
             target: target,
             agentBinary: agentBinary,
             config: config,
-            voiceDelivery: voiceDelivery
+            voiceDelivery: voiceDelivery,
+            suppressStartupGreeting: suppressStartupGreeting
         )
         try script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
@@ -734,6 +781,7 @@ final class ProcessManager {
         agentBinary: String,
         config: AppConfig,
         voiceDelivery: SessionVoiceDelivery = .agentSkill,
+        suppressStartupGreeting: Bool = false,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> String {
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
@@ -746,7 +794,8 @@ final class ProcessManager {
         let cdLine = Self.cdLine(config.general.working_directory, homeDirectory: homeDirectory)
         let bridgeStartLine = Self.bridgeStartLine(
             relayBridge: relayBridge,
-            voiceDelivery: voiceDelivery
+            voiceDelivery: voiceDelivery,
+            suppressStartupGreeting: suppressStartupGreeting
         )
         let launchLine = Self.agentLaunchLine(
             binary: agentBinary,
@@ -755,6 +804,11 @@ final class ProcessManager {
             reasoningEffortFlag: reasoningEffortFlag,
             bypassFlag: bypassFlag,
             appOwnedInstructionFlag: Self.appOwnedInstructionFlag(
+                target: target,
+                voiceDelivery: voiceDelivery
+            ),
+            completionHookFlag: Self.appOwnedCompletionHookFlag(
+                relayBridge: relayBridge,
                 target: target,
                 voiceDelivery: voiceDelivery
             ),
@@ -868,10 +922,10 @@ final class ProcessManager {
     You are the app-owned foreground Relay orchestrator/PM in Relay Runner integrated terminal.
     Relay Runner has already started the voice bridge and injects each claimed voice turn into this provider prompt; do not invoke relay-bridge or start a polling loop.
     Dispatching a worker or sending a final response ends only the current provider turn. The Relay session remains active for later user turns and worker updates; never invoke relay-stop or end the session unless the user explicitly asks to stop it.
-    A turn is voice-originated only when its prompt text exactly matches source_text in /tmp/voice_cmd_claimed.json; otherwise treat it as a normal typed turn and do not use claimed metadata or write messenger trace/reply events. For a matching voice turn, treat its relay_command_seq and relay_command_id as authority. Before follow-up actions, compare /tmp/voice_command_state.json; if a newer command is present, stop stale work and handle the newest intent.
+    A turn is voice-originated only when its prompt text exactly matches agent_prompt in /tmp/voice_cmd_claimed.json. For legacy metadata without agent_prompt, require an exact source_text match instead. Otherwise treat it as a normal typed turn and do not use claimed metadata or write messenger trace/reply events. For a matching voice turn, treat its relay_command_seq and relay_command_id as authority. Before follow-up actions, compare /tmp/voice_command_state.json; if a newer command is present, stop stale work and handle the newest intent.
     Resolve each command as non-work/control, direct action, ticket creation/refinement, ticket update, worker dispatch, or clarification. Raw Relay command captures are private metadata and must not appear in visible .orchestrator tickets. Do not implement substantial project work inline unless the user explicitly asks.
     Use mcp__relay-actions__* for screen manipulation and mcp__relay-vision__screenshot for screenshots; never use native computer-use fallbacks for those capabilities, and do not call propose_action.
-    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. Send the final spoken outcome as __ORCHESTRATOR_REPLY__ with the claimed seq/id. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
+    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop; an explicit current __ORCHESTRATOR_REPLY__ with the claimed seq/id remains authoritative and deduplicates the later hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
     Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible in this terminal.
     """
 
@@ -911,6 +965,75 @@ final class ProcessManager {
         return escaped
     }
 
+    private static func jsonStringLiteral(_ value: String) -> String {
+        var escaped = "\""
+        for character in value {
+            switch character {
+            case "\\":
+                escaped += "\\\\"
+            case "\"":
+                escaped += "\\\""
+            case "\n":
+                escaped += "\\n"
+            case "\r":
+                escaped += "\\r"
+            case "\t":
+                escaped += "\\t"
+            default:
+                escaped.append(character)
+            }
+        }
+        escaped += "\""
+        return escaped
+    }
+
+    private static func completionHookScriptPath(relayBridge: String) -> String {
+        URL(fileURLWithPath: relayBridge)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("services/relay_completion_hook.py")
+            .path
+    }
+
+    private static func completionHookCommand(relayBridge: String) -> String {
+        "/usr/bin/python3 \(Self.shellQuoted(Self.completionHookScriptPath(relayBridge: relayBridge)))"
+    }
+
+    private static func codexCompletionHookFlag(event: String, command: String, statusMessage: String) -> String {
+        let handler = "[{ hooks = [{ type = \"command\", command = \(Self.tomlBasicStringLiteral(command)), timeout = 2, statusMessage = \(Self.tomlBasicStringLiteral(statusMessage)) }] }]"
+        return "-c \(Self.shellQuoted("hooks.\(event)=\(handler)")) "
+    }
+
+    private static func claudeCompletionHookSettings(command: String) -> String {
+        let handler = "[{\"hooks\":[{\"type\":\"command\",\"command\":\(Self.jsonStringLiteral(command)),\"timeout\":2}]}]"
+        return "{\"hooks\":{\"UserPromptSubmit\":\(handler),\"Stop\":\(handler),\"StopFailure\":\(handler)}}"
+    }
+
+    private static func appOwnedCompletionHookFlag(
+        relayBridge: String,
+        target: AgentTarget,
+        voiceDelivery: SessionVoiceDelivery
+    ) -> String {
+        guard voiceDelivery == .appOwned else { return "" }
+        let command = Self.completionHookCommand(relayBridge: relayBridge)
+        switch target {
+        case .codex:
+            return "--enable hooks --dangerously-bypass-hook-trust "
+                + Self.codexCompletionHookFlag(
+                    event: "UserPromptSubmit",
+                    command: command,
+                    statusMessage: "Relay voice prompt binding"
+                )
+                + Self.codexCompletionHookFlag(
+                    event: "Stop",
+                    command: command,
+                    statusMessage: "Relay voice completion"
+                )
+        case .claude:
+            return "--settings \(Self.shellQuoted(Self.claudeCompletionHookSettings(command: command))) "
+        }
+    }
+
     private static func agentLaunchLine(
         binary: String,
         target: AgentTarget,
@@ -918,9 +1041,10 @@ final class ProcessManager {
         reasoningEffortFlag: String,
         bypassFlag: String,
         appOwnedInstructionFlag: String,
+        completionHookFlag: String,
         voiceDelivery: SessionVoiceDelivery
     ) -> String {
-        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(appOwnedInstructionFlag)\(bypassFlag)"
+        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(appOwnedInstructionFlag)\(completionHookFlag)\(bypassFlag)"
             .trimmingCharacters(in: .whitespaces)
         guard voiceDelivery == .agentSkill else {
             return prefix
@@ -935,11 +1059,15 @@ final class ProcessManager {
 
     private static func bridgeStartLine(
         relayBridge: String,
-        voiceDelivery: SessionVoiceDelivery
+        voiceDelivery: SessionVoiceDelivery,
+        suppressStartupGreeting: Bool
     ) -> String {
         switch voiceDelivery {
         case .appOwned:
-            return "\(Self.shellQuoted(relayBridge)) --start-daemon || { echo '[Relay Runner] Voice bridge failed.'; exit 1; }"
+            let greetingFlag = suppressStartupGreeting
+                ? " --suppress-startup-greeting"
+                : ""
+            return "\(Self.shellQuoted(relayBridge)) --start-daemon\(greetingFlag) || { echo '[Relay Runner] Voice bridge failed.'; exit 1; }"
         case .agentSkill:
             return "\(Self.shellQuoted(relayBridge)) --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }"
         }

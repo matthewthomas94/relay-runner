@@ -4,6 +4,8 @@ enum OnboardingStepID: String, CaseIterable {
     case welcome
     case agentChoice
     case microphone
+    /// Legacy resume value retained so older installs skip the removed step
+    /// instead of failing to decode their saved onboarding state.
     case inputMonitoring
     case parentAccessibility
     case parentScreenRecording
@@ -13,6 +15,13 @@ enum OnboardingStepID: String, CaseIterable {
     case pythonSetup
     case agentLogin
     case ready
+    case tutorialIntro
+    case tutorialRecording
+    case tutorialRecordingActive
+    case tutorialPlayback
+    case tutorialCancellation
+    case tutorialWorkspace
+    case tutorialSessionRetry
 }
 
 enum OnboardingResumeState {

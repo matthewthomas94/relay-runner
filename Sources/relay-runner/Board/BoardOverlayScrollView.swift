@@ -8,22 +8,25 @@ enum BoardOverlayScrollContentInsets {
 
 struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
     let contentInsets: EdgeInsets
+    let resetID: AnyHashable?
     let content: Content
 
     init(
         contentInsets: EdgeInsets = BoardOverlayScrollContentInsets.standard,
+        resetID: AnyHashable? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.contentInsets = contentInsets
+        self.resetID = resetID
         self.content = content()
     }
 
     func makeNSView(context: Context) -> BoardOverlayScrollContainer {
-        BoardOverlayScrollContainer(rootView: AnyView(scrollContent))
+        BoardOverlayScrollContainer(rootView: AnyView(scrollContent), resetID: resetID)
     }
 
     func updateNSView(_ nsView: BoardOverlayScrollContainer, context: Context) {
-        nsView.update(rootView: AnyView(scrollContent))
+        nsView.update(rootView: AnyView(scrollContent), resetID: resetID)
     }
 
     private var scrollContent: some View {
@@ -35,23 +38,26 @@ struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
 final class BoardOverlayScrollContainer: NSView {
     private let scrollView = NSScrollView()
     private let documentView = BoardOverlayScrollDocumentView()
-    private let hostingView: NSHostingView<AnyView>
+    private let hostingView: BoardOverlayScrollHostingView
     private let thumbView = NSView()
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
     private var hideWorkItem: DispatchWorkItem?
     private var lastLaidOutWidth: CGFloat = 0
     private var lastViewportHeight: CGFloat = 0
-    private var lastLaidOutHeight: CGFloat = 0
+    private var lastContentHeight: CGFloat = 0
+    private var isPerformingLayout = false
+    private var resetID: AnyHashable?
 
-    init(rootView: AnyView) {
-        hostingView = NSHostingView(rootView: rootView)
+    init(rootView: AnyView, resetID: AnyHashable? = nil) {
+        hostingView = BoardOverlayScrollHostingView(rootView: rootView)
+        self.resetID = resetID
         super.init(frame: .zero)
         setup()
     }
 
     required init?(coder: NSCoder) {
-        hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+        hostingView = BoardOverlayScrollHostingView(rootView: AnyView(EmptyView()))
         super.init(coder: coder)
         setup()
     }
@@ -92,14 +98,24 @@ final class BoardOverlayScrollContainer: NSView {
         scheduleHide(after: 0.25)
     }
 
-    func update(rootView: AnyView) {
+    func update(rootView: AnyView, resetID: AnyHashable? = nil) {
+        let shouldResetOffset = self.resetID != resetID
+        self.resetID = resetID
         hostingView.rootView = rootView
         layoutDocument(force: true)
+        if shouldResetOffset {
+            scrollToTop()
+        }
         updateThumbFrame()
     }
 
     private func setup() {
         wantsLayer = true
+        hostingView.onLayout = { [weak self] in
+            guard let self, !self.isPerformingLayout else { return }
+            self.layoutDocument(force: true)
+            self.updateThumbFrame()
+        }
 
         scrollView.contentView = BoardOverlayScrollClipView()
         scrollView.drawsBackground = false
@@ -139,16 +155,23 @@ final class BoardOverlayScrollContainer: NSView {
     }
 
     private func layoutDocument(force: Bool) {
+        guard !isPerformingLayout else { return }
         let viewport = scrollView.contentView.bounds.size
         guard viewport.width > 0 else { return }
+        isPerformingLayout = true
+        defer { isPerformingLayout = false }
+
+        let proposedHeight = max(hostingView.frame.height, 1)
+        hostingView.frame = CGRect(origin: .zero, size: CGSize(width: viewport.width, height: proposedHeight))
+        hostingView.layoutSubtreeIfNeeded()
+        let fittingHeight = hostingView.fittingSize.height
+
         if !force,
            abs(viewport.width - lastLaidOutWidth) < 0.5,
            abs(viewport.height - lastViewportHeight) < 0.5,
-           lastLaidOutHeight > 0 {
+           abs(fittingHeight - lastContentHeight) < 0.5 {
             return
         }
-        hostingView.frame = CGRect(origin: .zero, size: CGSize(width: viewport.width, height: 1))
-        let fittingHeight = hostingView.fittingSize.height
         let documentHeight = max(viewport.height, fittingHeight)
         documentView.frame = CGRect(
             origin: .zero,
@@ -161,7 +184,7 @@ final class BoardOverlayScrollContainer: NSView {
         clampScrollOffset(documentHeight: documentHeight, viewportHeight: viewport.height)
         lastLaidOutWidth = viewport.width
         lastViewportHeight = viewport.height
-        lastLaidOutHeight = documentHeight
+        lastContentHeight = fittingHeight
     }
 
     private func clampScrollOffset(documentHeight: CGFloat, viewportHeight: CGFloat) {
@@ -172,6 +195,15 @@ final class BoardOverlayScrollContainer: NSView {
             return
         }
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: clampedY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func scrollToTop() {
+        let currentOrigin = scrollView.contentView.bounds.origin
+        guard abs(currentOrigin.y) > 0.5 || abs(currentOrigin.x) > 0.5 else {
+            return
+        }
+        scrollView.contentView.scroll(to: .zero)
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
@@ -254,6 +286,15 @@ final class BoardOverlayScrollContainer: NSView {
     deinit {
         hideWorkItem?.cancel()
         NotificationCenter.default.removeObserver(self)
+    }
+}
+
+final class BoardOverlayScrollHostingView: NSHostingView<AnyView> {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
     }
 }
 

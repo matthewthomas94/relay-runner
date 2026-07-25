@@ -25,8 +25,9 @@ enum PermissionStatus: Equatable {
 /// - Microphone: required to capture speech.
 /// - Accessibility: required by Relay Runner's app-hosted Relay Actions tool
 ///   host to click, type, press keys, scroll, and automate UI.
-/// - Input Monitoring: required to capture non-Caps-Lock global activation
-///   keys and the double-tap Shift Workspace hotkey.
+/// - Input Monitoring: retained as a compatibility signal for existing
+///   grants. Accessibility already covers Relay Runner's global hotkeys, so
+///   this permission is not requested during setup.
 /// - Screen Recording: required by Relay Runner's app-hosted Relay Vision
 ///   screenshot tool. Without it, the screenshot tool returns a clear error
 ///   string but the rest of the app keeps working.
@@ -51,7 +52,6 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     static let guidedSetupOrder: [PermissionKind] = [
         .microphone,
         .accessibility,
-        .inputMonitoring,
         .screenRecording,
     ]
 }
@@ -151,7 +151,7 @@ final class PermissionsManager {
     }
 
     /// True when every first-run voice permission is granted. Relay Runner can
-    /// still run with Accessibility / Input Monitoring / Screen Recording
+    /// still run with Accessibility / Screen Recording
     /// denied; those are surfaced contextually when a feature needs them.
     var allGranted: Bool {
         microphone == .granted

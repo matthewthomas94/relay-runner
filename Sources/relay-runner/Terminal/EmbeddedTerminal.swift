@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Observation
 import SwiftTerm
 import SwiftUI
@@ -355,12 +356,32 @@ final class RelayVoiceCommandDelivery {
         var command = "/tmp/voice_cmd_ready"
         var metadata = "/tmp/voice_cmd_ready.meta"
         var claimed = "/tmp/voice_cmd_claimed.json"
+        var commandState = "/tmp/voice_command_state.json"
+        var providerTurns = "/tmp/voice_provider_turns.json"
+        var deliveryEvents = "/tmp/relay_terminal_delivery_events.jsonl"
+        var voiceInput = "/tmp/voice_in.fifo"
         var heartbeat = "/tmp/voice_bridge_heartbeat"
     }
 
     struct ClaimedCommand: Equatable {
         let text: String
         let metadata: Data?
+    }
+
+    private struct RelayCommandKey: Equatable {
+        let seq: Int
+        let id: String
+        let provider: String?
+
+        static func == (lhs: RelayCommandKey, rhs: RelayCommandKey) -> Bool {
+            lhs.seq == rhs.seq && lhs.id == rhs.id
+        }
+    }
+
+    private struct PendingSubmission: Equatable {
+        let key: RelayCommandKey
+        let events: [[UInt8]]
+        var attempts: Int
     }
 
     typealias Send = (ArraySlice<UInt8>) -> Void
@@ -370,16 +391,24 @@ final class RelayVoiceCommandDelivery {
     private let send: Send
     private let schedule: Schedule
     private let submitDelay: TimeInterval
+    private let acknowledgementTimeout: TimeInterval
+    private let maxSubmitAttempts: Int
     private let isRunning: () -> Bool
     private let fileManager: FileManager
     private let queue = DispatchQueue(label: "relay-runner.voice-command-delivery")
     private var timer: DispatchSourceTimer?
     private var inputTracker = RelayTerminalInputTracker()
+    private var submitInFlight = false
+    private var pendingSubmission: PendingSubmission?
+    private var deliveryOrder = 0
+    private var lastDeferredProviderActiveKey: RelayCommandKey?
 
     init(
         paths: Paths = Paths(),
         send: @escaping Send,
         submitDelay: TimeInterval = 0.12,
+        acknowledgementTimeout: TimeInterval = 2.0,
+        maxSubmitAttempts: Int = 2,
         schedule: @escaping Schedule = { delay, queue, work in
             queue.asyncAfter(deadline: .now() + delay, execute: work)
         },
@@ -389,6 +418,8 @@ final class RelayVoiceCommandDelivery {
         self.paths = paths
         self.send = send
         self.submitDelay = submitDelay
+        self.acknowledgementTimeout = acknowledgementTimeout
+        self.maxSubmitAttempts = max(1, maxSubmitAttempts)
         self.schedule = schedule
         self.isRunning = isRunning
         self.fileManager = fileManager
@@ -423,25 +454,81 @@ final class RelayVoiceCommandDelivery {
     @discardableResult
     func claimAndSendIfPossible() -> Bool {
         touchHeartbeat()
-        guard isRunning(), !inputTracker.hasUnsubmittedInput else { return false }
+        if completePendingSubmissionIfAcknowledged() {
+            return true
+        }
+        guard isRunning(),
+              !submitInFlight,
+              pendingSubmission == nil,
+              !inputTracker.hasUnsubmittedInput,
+              providerReadyForNextCommand() else { return false }
+        lastDeferredProviderActiveKey = nil
         guard let command = claimNextCommand() else { return false }
         guard let events = Self.providerInputEvents(for: command.text),
               let first = events.first else { return true }
-        send(ArraySlice(first))
-        guard events.count > 1 else {
-            writeClaimedMetadata(command.metadata)
+        let key = Self.relayCommandKey(from: command.metadata)
+        if let key, !isCommandCurrent(key) {
+            recordDeliveryEvent("stale_command_dropped", key: key)
             return true
         }
+        recordDeliveryEvent("claimed", key: key)
+        send(ArraySlice(first))
+        recordDeliveryEvent("prompt_write", key: key)
+        guard events.count > 1 else {
+            writeClaimedMetadata(command.metadata)
+            recordDeliveryEvent("claim_published", key: key)
+            return true
+        }
+        submitInFlight = true
         let remaining = Array(events.dropFirst())
         schedule(submitDelay, queue) { [weak self] in
-            guard let self, self.isRunning() else { return }
+            guard let self else { return }
+            defer { self.submitInFlight = false }
+            guard self.isRunning() else {
+                if let key {
+                    self.recordDeliveryEvent("submit_aborted_not_running", key: key, fields: ["attempt": 0])
+                    let published = self.publishDeliveryFailure(for: key)
+                    self.recordDeliveryEvent(
+                        published ? "delivery_failure_published" : "delivery_failure_publish_failed",
+                        key: key
+                    )
+                }
+                return
+            }
             self.touchHeartbeat()
-            for event in remaining {
-                self.send(ArraySlice(event))
+            if let key, !self.isCommandCurrent(key) {
+                self.send(ArraySlice([21]))
+                self.recordDeliveryEvent("stale_prompt_cleared", key: key)
+                return
             }
             self.writeClaimedMetadata(command.metadata)
+            self.recordDeliveryEvent("claim_published", key: key)
+            guard let key else {
+                for event in remaining {
+                    self.send(ArraySlice(event))
+                    self.recordDeliveryEvent("submit_attempt", key: nil)
+                }
+                return
+            }
+            self.pendingSubmission = PendingSubmission(key: key, events: remaining, attempts: 0)
+            self.sendPendingSubmissionAttempt()
         }
         return true
+    }
+
+    private func providerReadyForNextCommand() -> Bool {
+        guard providerTurnActive() else { return true }
+        guard let text = peekPendingCommandText() else { return false }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines) == "__INTERRUPT__" {
+            return true
+        }
+        touchPendingCommand()
+        let key = pendingCommandKey()
+        if key != lastDeferredProviderActiveKey {
+            recordDeliveryEvent("deferred_provider_active", key: key)
+            lastDeferredProviderActiveKey = key
+        }
+        return false
     }
 
     func claimNextCommand() -> ClaimedCommand? {
@@ -488,6 +575,250 @@ final class RelayVoiceCommandDelivery {
         guard let metadata else { return }
         let claimedURL = URL(fileURLWithPath: paths.claimed)
         try? metadata.write(to: claimedURL, options: .atomic)
+    }
+
+    private func isCommandCurrent(_ key: RelayCommandKey) -> Bool {
+        let stateURL = URL(fileURLWithPath: paths.commandState)
+        guard let data = try? Data(contentsOf: stateURL),
+              let stateKey = Self.relayCommandKey(from: data) else {
+            return false
+        }
+        return stateKey == key
+    }
+
+    private func providerTurnActive() -> Bool {
+        let turnsURL = URL(fileURLWithPath: paths.providerTurns)
+        guard let data = try? Data(contentsOf: turnsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let records = object["records"] as? [[String: Any]] else {
+            return false
+        }
+        return records.contains { record in
+            (record["state"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) == "active"
+        }
+    }
+
+    private func providerTurnState(for key: RelayCommandKey) -> String? {
+        let turnsURL = URL(fileURLWithPath: paths.providerTurns)
+        guard let data = try? Data(contentsOf: turnsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let records = object["records"] as? [[String: Any]] else {
+            return nil
+        }
+        for record in records.reversed() where Self.relayCommandKey(from: record) == key {
+            let state = (record["state"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return state?.isEmpty == false ? state : nil
+        }
+        return nil
+    }
+
+    @discardableResult
+    private func completePendingSubmissionIfAcknowledged() -> Bool {
+        guard let pending = pendingSubmission,
+              let state = providerTurnState(for: pending.key),
+              state != "stale" else {
+            return false
+        }
+        recordDeliveryEvent(
+            "provider_acknowledged",
+            key: pending.key,
+            fields: ["attempt": pending.attempts, "provider_turn_state": state]
+        )
+        pendingSubmission = nil
+        return true
+    }
+
+    private func sendPendingSubmissionAttempt() {
+        guard var pending = pendingSubmission else { return }
+        guard isRunning() else {
+            failPendingSubmission(pending, event: "submit_aborted_not_running")
+            return
+        }
+        pending.attempts += 1
+        pendingSubmission = pending
+        if pending.attempts > 1 {
+            recordDeliveryEvent("submit_retry", key: pending.key, fields: ["attempt": pending.attempts])
+        }
+        for event in pending.events {
+            send(ArraySlice(event))
+            recordDeliveryEvent("submit_attempt", key: pending.key, fields: ["attempt": pending.attempts])
+        }
+        schedule(acknowledgementTimeout, queue) { [weak self] in
+            self?.handleAcknowledgementTimeout(for: pending.key, attempt: pending.attempts)
+        }
+    }
+
+    private func handleAcknowledgementTimeout(for key: RelayCommandKey, attempt: Int) {
+        touchHeartbeat()
+        guard let pending = pendingSubmission,
+              pending.key == key,
+              pending.attempts == attempt else {
+            return
+        }
+        if completePendingSubmissionIfAcknowledged() {
+            return
+        }
+        guard isRunning() else {
+            failPendingSubmission(pending, event: "submit_aborted_not_running")
+            return
+        }
+        if !isCommandCurrent(key) {
+            if providerTurnActive() {
+                recordDeliveryEvent("stale_ack_wait_provider_active", key: key, fields: ["attempt": attempt])
+                schedule(min(acknowledgementTimeout, 0.5), queue) { [weak self] in
+                    self?.handleAcknowledgementTimeout(for: key, attempt: attempt)
+                }
+            } else {
+                send(ArraySlice([21]))
+                recordDeliveryEvent("stale_prompt_cleared", key: key, fields: ["attempt": attempt])
+                pendingSubmission = nil
+            }
+            return
+        }
+        if providerTurnActive() {
+            recordDeliveryEvent("submit_ack_wait_provider_active", key: key, fields: ["attempt": attempt])
+            schedule(min(acknowledgementTimeout, 0.5), queue) { [weak self] in
+                self?.handleAcknowledgementTimeout(for: key, attempt: attempt)
+            }
+            return
+        }
+        recordDeliveryEvent("submit_ack_timeout", key: key, fields: ["attempt": attempt])
+        if attempt < maxSubmitAttempts {
+            sendPendingSubmissionAttempt()
+            return
+        }
+        send(ArraySlice([21]))
+        recordDeliveryEvent("submit_recovery_clear", key: key, fields: ["attempt": attempt])
+        failPendingSubmission(pending, event: "submit_ack_failed")
+    }
+
+    private func failPendingSubmission(_ pending: PendingSubmission, event: String) {
+        recordDeliveryEvent(event, key: pending.key, fields: ["attempt": pending.attempts])
+        let published = publishDeliveryFailure(for: pending.key)
+        recordDeliveryEvent(
+            published ? "delivery_failure_published" : "delivery_failure_publish_failed",
+            key: pending.key
+        )
+        pendingSubmission = nil
+    }
+
+    @discardableResult
+    private func publishDeliveryFailure(for key: RelayCommandKey) -> Bool {
+        var payload: [String: Any] = [
+            "text": "The voice command was not delivered to the provider, so I cleared the terminal prompt before it could run accidentally. Please try that command again.",
+            "relay_command_seq": key.seq,
+            "relay_command_id": key.id,
+        ]
+        if let provider = key.provider {
+            payload["provider"] = provider
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        return writeBridgeControlLine("__ORCHESTRATOR_REPLY__:\(json)")
+    }
+
+    @discardableResult
+    private func writeBridgeControlLine(_ line: String) -> Bool {
+        guard fileManager.fileExists(atPath: paths.voiceInput) else { return false }
+        let fd = Darwin.open(paths.voiceInput, O_WRONLY | O_NONBLOCK | O_APPEND)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+        let bytes = Array((line + "\n").utf8)
+        let written = bytes.withUnsafeBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return 0 }
+            return Darwin.write(fd, baseAddress, buffer.count)
+        }
+        return written == bytes.count
+    }
+
+    private func peekPendingCommandText() -> String? {
+        let commandURL = URL(fileURLWithPath: paths.command)
+        return try? String(contentsOf: commandURL, encoding: .utf8)
+    }
+
+    private func pendingCommandKey() -> RelayCommandKey? {
+        let metadataURL = URL(fileURLWithPath: paths.metadata)
+        return Self.relayCommandKey(from: try? Data(contentsOf: metadataURL))
+    }
+
+    private func touchPendingCommand() {
+        let now = Date()
+        for path in [paths.command, paths.metadata] where fileManager.fileExists(atPath: path) {
+            try? fileManager.setAttributes([.modificationDate: now], ofItemAtPath: path)
+        }
+    }
+
+    private static func relayCommandKey(from data: Data?) -> RelayCommandKey? {
+        guard let data,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let key = relayCommandKey(from: object) else {
+            return nil
+        }
+        return key
+    }
+
+    private static func relayCommandKey(from object: [String: Any]) -> RelayCommandKey? {
+        guard
+              let seq = relayCommandSeq(object["relay_command_seq"]),
+              let id = object["relay_command_id"] as? String,
+              !id.isEmpty else {
+            return nil
+        }
+        let provider = (object["provider"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return RelayCommandKey(seq: seq, id: id, provider: provider?.isEmpty == false ? provider : nil)
+    }
+
+    private static func relayCommandSeq(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String { return Int(string) }
+        return nil
+    }
+
+    private func recordDeliveryEvent(
+        _ event: String,
+        key: RelayCommandKey?,
+        fields: [String: Any] = [:]
+    ) {
+        deliveryOrder += 1
+        var payload: [String: Any] = [
+            "event": event,
+            "order": deliveryOrder,
+            "timestamp": Date().timeIntervalSince1970,
+        ]
+        for (name, value) in fields {
+            payload[name] = value
+        }
+        if let key {
+            payload["relay_command_seq"] = key.seq
+            payload["relay_command_id"] = key.id
+        }
+        let provider = key?.provider
+            ?? ProcessInfo.processInfo.environment["RELAY_RUNNER_PROVIDER"]
+        if let provider,
+           !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["provider"] = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let lineData = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let line = String(data: lineData, encoding: .utf8) else {
+            return
+        }
+        appendBoundedLine(line, to: URL(fileURLWithPath: paths.deliveryEvents), limit: 128)
+    }
+
+    private func appendBoundedLine(_ line: String, to url: URL, limit: Int) {
+        var lines: [String] = []
+        if let existing = try? String(contentsOf: url, encoding: .utf8) {
+            lines = existing.split(separator: "\n").map(String.init)
+        }
+        lines.append(line)
+        lines = Array(lines.suffix(max(1, limit)))
+        let contents = lines.joined(separator: "\n") + "\n"
+        try? contents.write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func touchHeartbeat() {

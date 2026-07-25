@@ -77,6 +77,54 @@ final class BridgeConsumerLivenessTests: XCTestCase {
         ))
     }
 
+    func testCurrentPendingVoiceCommandWaitsWhileProviderTurnIsActive() throws {
+        let fixture = try makeFixture()
+        let now = Date(timeIntervalSinceReferenceDate: 10_000)
+        let metadata: [String: Any] = [
+            "relay_command_seq": 10,
+            "relay_command_id": "cmd-10",
+        ]
+        try writeFile(fixture.socket, modifiedAt: now)
+        try writeFile(fixture.heartbeat, modifiedAt: now)
+        try writeFile(
+            fixture.command,
+            modifiedAt: now.addingTimeInterval(-(ProcessManager.pendingVoiceCommandTimeout + 5))
+        )
+        try writeJSON(metadata, to: fixture.meta)
+        try writeJSON(metadata, to: fixture.state)
+        try writeJSON([
+            "version": 1,
+            "records": [[
+                "relay_command_seq": 9,
+                "relay_command_id": "cmd-9",
+                "state": "active",
+            ]],
+        ], to: fixture.providerTurns)
+
+        XCTAssertTrue(ProcessManager.relayConsumerAlive(
+            voiceCommandPath: fixture.command.path,
+            voiceCommandMetaPath: fixture.meta.path,
+            voiceCommandStatePath: fixture.state.path,
+            voiceCommandClaimedPath: fixture.claimed.path,
+            voiceProviderTurnsPath: fixture.providerTurns.path,
+            heartbeatPath: fixture.heartbeat.path,
+            sessionMarkerPaths: [fixture.socket.path],
+            now: now
+        ))
+
+        XCTAssertEqual(
+            ProcessManager.pendingVoiceCommandDeliveryState(
+                commandURL: fixture.command,
+                metaURL: fixture.meta,
+                stateURL: fixture.state,
+                claimedURL: fixture.claimed,
+                now: now,
+                providerTurnsURL: fixture.providerTurns
+            ),
+            .waiting
+        )
+    }
+
     func testClaimedPendingVoiceCommandDoesNotMarkConsumerDead() throws {
         let fixture = try makeFixture()
         let now = Date(timeIntervalSinceReferenceDate: 10_000)
@@ -149,6 +197,7 @@ final class BridgeConsumerLivenessTests: XCTestCase {
         meta: URL,
         state: URL,
         claimed: URL,
+        providerTurns: URL,
         heartbeat: URL
     ) {
         let root = FileManager.default.temporaryDirectory
@@ -162,6 +211,7 @@ final class BridgeConsumerLivenessTests: XCTestCase {
             meta: root.appendingPathComponent("voice_cmd_ready.meta"),
             state: root.appendingPathComponent("voice_command_state.json"),
             claimed: root.appendingPathComponent("voice_cmd_claimed.json"),
+            providerTurns: root.appendingPathComponent("voice_provider_turns.json"),
             heartbeat: root.appendingPathComponent("voice_bridge_heartbeat")
         )
     }

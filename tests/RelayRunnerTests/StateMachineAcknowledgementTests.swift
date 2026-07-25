@@ -61,7 +61,7 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(OverlayController.compactPillTitle(for: .processing, suffix: "\u{2026}"), "Thinking\u{2026}")
         XCTAssertEqual(
             OverlayController.compactPillTitle(for: .sessionReady),
-            "Tap caps lock to record a message"
+            "Hello, what would you like to work on?"
         )
         XCTAssertEqual(OverlayController.compactPillTitle(for: .preparing, suffix: "..."), "Preparing speech...")
         XCTAssertEqual(OverlayController.compactPillTitle(for: .messageWaiting(preview: nil), suffix: "..."), "Response ready...")
@@ -81,6 +81,55 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(
             OverlayController.fullPillTitle(for: .idle, actionHint: "Ignored"),
             nil
+        )
+    }
+
+    func testPreviewBodyIsRetainedAcrossResponsePlaybackStates() {
+        XCTAssertEqual(
+            OverlayController.previewBody(
+                for: .messageWaiting(preview: "Ready response."),
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            ),
+            "Ready response."
+        )
+        XCTAssertEqual(
+            OverlayController.previewBody(
+                for: .preparing,
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            ),
+            "Ready response."
+        )
+        XCTAssertEqual(
+            OverlayController.previewBody(
+                for: .speaking,
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            ),
+            "Ready response."
+        )
+        XCTAssertEqual(
+            OverlayController.previewBody(
+                for: .cancelled(.tts),
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            ),
+            "Ready response."
+        )
+        XCTAssertNil(
+            OverlayController.previewBody(
+                for: .messageWaiting(preview: "Ready response."),
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: false
+            )
+        )
+        XCTAssertNil(
+            OverlayController.previewBody(
+                for: .processing,
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            )
         )
     }
 
@@ -266,6 +315,89 @@ final class StateMachineAcknowledgementTests: XCTestCase {
 
         XCTAssertEqual(stateMachine.state, .speaking)
         XCTAssertEqual(stateMachine.messagePreview, "Previously spoken reply")
+    }
+
+    func testBlankWaitingAndPlaybackEventsPreserveAvailableResponsePreview() {
+        let stateMachine = StateMachine()
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Completed response.",
+            autoDismiss: nil
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "  ",
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .messageWaiting(preview: "Completed response."))
+        XCTAssertEqual(stateMachine.messagePreview, "Completed response.")
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "preparing",
+            text: nil,
+            autoDismiss: nil
+        )
+        XCTAssertEqual(stateMachine.state, .preparing)
+        XCTAssertEqual(stateMachine.messagePreview, "Completed response.")
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "speaking",
+            text: "",
+            autoDismiss: nil
+        )
+        XCTAssertEqual(stateMachine.state, .speaking)
+        XCTAssertEqual(stateMachine.messagePreview, "Completed response.")
+
+        stateMachine.setCancelled()
+        XCTAssertEqual(stateMachine.state, .cancelled(.tts))
+        XCTAssertEqual(stateMachine.messagePreview, "Completed response.")
+
+        stateMachine.dismissSent()
+        XCTAssertEqual(stateMachine.state, .idle)
+        XCTAssertNil(stateMachine.messagePreview)
+    }
+
+    func testConsecutiveResponsesUseFreshWaitingPreviewAfterIdle() {
+        let stateMachine = StateMachine()
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "First response.",
+            autoDismiss: nil
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "idle",
+            text: nil,
+            autoDismiss: nil
+        )
+        XCTAssertNil(stateMachine.messagePreview)
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: nil,
+            autoDismiss: nil
+        )
+        XCTAssertEqual(stateMachine.state, .messageWaiting(preview: nil))
+        XCTAssertNil(stateMachine.messagePreview)
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Second response.",
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .messageWaiting(preview: "Second response."))
+        XCTAssertEqual(stateMachine.messagePreview, "Second response.")
     }
 
     func testBridgeWorkingEventStoresFreshSanitizedProgressWithoutChangingVisibleState() {

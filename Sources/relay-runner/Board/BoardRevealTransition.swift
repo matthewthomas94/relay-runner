@@ -1,6 +1,24 @@
 import AppKit
 import QuartzCore
 
+enum BoardRevealTransitionTiming {
+    static let firstMotionBudget: TimeInterval = 0.10
+    static let expandToFullWidthDuration: TimeInterval = 0.24
+    static let expandDuration: TimeInterval = 0.34
+    static let contentRevealDuration: TimeInterval = 0.38
+    static let contentHideDuration: TimeInterval = 0.22
+    static let dismissToFullWidthDuration: TimeInterval = 0.24
+    static let compactDuration: TimeInterval = 0.22
+
+    static var revealAnimationDuration: TimeInterval {
+        expandToFullWidthDuration + expandDuration + contentRevealDuration
+    }
+
+    static var dismissAnimationDuration: TimeInterval {
+        contentHideDuration + dismissToFullWidthDuration + compactDuration
+    }
+}
+
 struct BoardRevealTransitionPlan: Equatable {
     let compactFrame: CGRect
     let fullWidthFrame: CGRect
@@ -97,6 +115,7 @@ extension NotchStatusDisplayGeometry {
 }
 
 final class BoardRevealContainerView: NSView {
+    private let plan: BoardRevealTransitionPlan
     private let revealView: BoardRevealSurfaceView
     private let glyphView: BoardRevealGlyphView
     private let contentContainerView = NSView()
@@ -115,6 +134,7 @@ final class BoardRevealContainerView: NSView {
         startsLoading: Bool
     ) {
         let plan = BoardRevealTransitionPlanner.plan(for: displayGeometry)
+        self.plan = plan
         self.revealView = BoardRevealSurfaceView(frame: frame, plan: plan)
         self.glyphView = BoardRevealGlyphView(frame: frame, plan: plan)
         self.hostedContentView = contentView
@@ -169,6 +189,21 @@ final class BoardRevealContainerView: NSView {
         revealContentIfReady()
     }
 
+    func canReuse(displayGeometry: NotchStatusDisplayGeometry) -> Bool {
+        BoardRevealTransitionPlanner.plan(for: displayGeometry) == plan
+    }
+
+    func prepareForOpening(startsLoading: Bool) {
+        revealView.cancelAnimation()
+        revealView.showCompact()
+        revealExpanded = false
+        contentVisible = false
+        contentContainerView.alphaValue = 0
+        contentContainerView.isHidden = true
+        setContentYOffset(Self.hiddenContentYOffset)
+        setLoading(startsLoading)
+    }
+
     func setUpdateCheckActive(_ active: Bool) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
@@ -180,15 +215,19 @@ final class BoardRevealContainerView: NSView {
         glyphView.setLoading(active)
     }
 
-    func animateReveal(completion: @escaping () -> Void) {
+    func animateReveal(
+        firstMotion: @escaping () -> Void,
+        completion: @escaping () -> Void
+    ) {
         guard !reduceMotion else {
+            firstMotion()
             revealExpanded = true
             revealView.showExpanded()
             revealContentIfReady(completion: completion)
             return
         }
 
-        revealView.animateToFullWidth { [weak self] in
+        revealView.animateToFullWidth(firstMotion: firstMotion) { [weak self] in
             guard let self else { return }
             self.revealView.animateToExpanded { [weak self] in
                 guard let self else { return }
@@ -198,14 +237,23 @@ final class BoardRevealContainerView: NSView {
         }
     }
 
-    func animateDismiss(completion: @escaping () -> Void) {
+    func animateReveal(completion: @escaping () -> Void) {
+        animateReveal(firstMotion: {}, completion: completion)
+    }
+
+    func animateDismiss(
+        firstMotion: @escaping () -> Void,
+        completion: @escaping () -> Void
+    ) {
         guard !reduceMotion else {
+            firstMotion()
             revealView.cancelAnimation()
             contentContainerView.isHidden = true
             completion()
             return
         }
 
+        firstMotion()
         hideContentIfNeeded { [weak self] in
             guard let self else { return }
             self.revealView.setLoading(false)
@@ -216,6 +264,10 @@ final class BoardRevealContainerView: NSView {
                 }
             }
         }
+    }
+
+    func animateDismiss(completion: @escaping () -> Void) {
+        animateDismiss(firstMotion: {}, completion: completion)
     }
 
     private func revealContentIfReady(completion: (() -> Void)? = nil) {
@@ -236,9 +288,13 @@ final class BoardRevealContainerView: NSView {
         contentContainerView.isHidden = false
         contentContainerView.alphaValue = 0
         setContentYOffset(Self.hiddenContentYOffset)
-        animateContentYOffset(from: Self.hiddenContentYOffset, to: 0, duration: 0.38)
+        animateContentYOffset(
+            from: Self.hiddenContentYOffset,
+            to: 0,
+            duration: BoardRevealTransitionTiming.contentRevealDuration
+        )
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.38
+            context.duration = BoardRevealTransitionTiming.contentRevealDuration
             context.timingFunction = Self.revealTiming
             contentContainerView.animator().alphaValue = 1
         } completionHandler: {
@@ -253,9 +309,13 @@ final class BoardRevealContainerView: NSView {
         }
 
         contentVisible = false
-        animateContentYOffset(from: 0, to: Self.hiddenContentYOffset, duration: 0.22)
+        animateContentYOffset(
+            from: 0,
+            to: Self.hiddenContentYOffset,
+            duration: BoardRevealTransitionTiming.contentHideDuration
+        )
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.22
+            context.duration = BoardRevealTransitionTiming.contentHideDuration
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.5, 0, 0.75, 0)
             contentContainerView.animator().alphaValue = 0
         } completionHandler: { [weak self] in
@@ -315,22 +375,52 @@ private final class BoardRevealSurfaceView: NSView {
         needsDisplay = true
     }
 
+    func showCompact() {
+        cancelAnimation()
+        surfaceFrame = plan.compactFrame
+        needsDisplay = true
+    }
+
     func setLoading(_ loading: Bool) {
         guard self.loading != loading else { return }
         self.loading = loading
         needsDisplay = true
     }
 
-    func animateToFullWidth(completion: @escaping () -> Void) {
-        animate(to: plan.fullWidthFrame, duration: 0.24, completion: completion)
+    func animateToFullWidth(
+        firstMotion: (() -> Void)? = nil,
+        completion: @escaping () -> Void
+    ) {
+        animate(
+            to: plan.fullWidthFrame,
+            duration: BoardRevealTransitionTiming.expandToFullWidthDuration,
+            firstMotion: firstMotion,
+            completion: completion
+        )
     }
 
-    func animateToExpanded(completion: @escaping () -> Void) {
-        animate(to: plan.expandedFrame, duration: 0.34, completion: completion)
+    func animateToExpanded(
+        firstMotion: (() -> Void)? = nil,
+        completion: @escaping () -> Void
+    ) {
+        animate(
+            to: plan.expandedFrame,
+            duration: BoardRevealTransitionTiming.expandDuration,
+            firstMotion: firstMotion,
+            completion: completion
+        )
     }
 
-    func animateToCompact(completion: @escaping () -> Void) {
-        animate(to: plan.compactFrame, duration: 0.22, completion: completion)
+    func animateToCompact(
+        firstMotion: (() -> Void)? = nil,
+        completion: @escaping () -> Void
+    ) {
+        animate(
+            to: plan.compactFrame,
+            duration: BoardRevealTransitionTiming.compactDuration,
+            firstMotion: firstMotion,
+            completion: completion
+        )
     }
 
     func cancelAnimation() {
@@ -350,12 +440,14 @@ private final class BoardRevealSurfaceView: NSView {
     private func animate(
         to targetFrame: CGRect,
         duration: TimeInterval,
+        firstMotion: (() -> Void)? = nil,
         completion: @escaping () -> Void
     ) {
         cancelAnimation()
 
         let startFrame = surfaceFrame
         let startTime = CACurrentMediaTime()
+        var reportedFirstMotion = false
         animationCompletion = completion
 
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
@@ -369,6 +461,10 @@ private final class BoardRevealSurfaceView: NSView {
             let progress = Self.easeOutQuart(CGFloat(rawProgress))
             self.surfaceFrame = Self.interpolate(from: startFrame, to: targetFrame, progress: progress)
             self.needsDisplay = true
+            if !reportedFirstMotion {
+                reportedFirstMotion = true
+                firstMotion?()
+            }
 
             if rawProgress >= 1 {
                 timer.invalidate()

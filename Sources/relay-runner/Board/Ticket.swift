@@ -273,6 +273,43 @@ enum TicketParser {
         replaceSection(named: "Acceptance criteria", in: body, with: newAcceptanceCriteria, insertAtTop: false)
     }
 
+    static func extractImageAttachmentPaths(_ body: String) -> [String] {
+        guard let attachments = extractSection(named: "Attachments", in: body) else {
+            return []
+        }
+
+        var paths: [String] = []
+        for line in attachments.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let destinationStart = trimmed.range(of: "]("),
+                  let destinationEnd = trimmed[destinationStart.upperBound...].firstIndex(of: ")") else {
+                continue
+            }
+            let destination = String(trimmed[destinationStart.upperBound..<destinationEnd])
+            guard destination.hasPrefix("attachments/"), !paths.contains(destination) else {
+                continue
+            }
+            paths.append(destination)
+        }
+        return paths
+    }
+
+    static func appendingImageAttachments(in body: String, paths: [String]) -> String {
+        let existingContent = extractSection(named: "Attachments", in: body) ?? ""
+        let existingPaths = Set(extractImageAttachmentPaths(body))
+        var seenPaths = existingPaths
+        let additions = paths.compactMap { path -> String? in
+            guard seenPaths.insert(path).inserted else { return nil }
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            return "- ![\(name)](\(path))"
+        }
+        guard !additions.isEmpty else { return body }
+
+        let content = ([existingContent].filter { !$0.isEmpty } + additions)
+            .joined(separator: "\n")
+        return replaceSection(named: "Attachments", in: body, with: content, insertAtTop: false)
+    }
+
     static func extractSection(named heading: String, in body: String) -> String? {
         let lines = body.components(separatedBy: "\n")
         guard let headingIdx = lines.firstIndex(where: { isHeading($0, named: heading) }) else {

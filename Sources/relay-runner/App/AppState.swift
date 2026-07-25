@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 import SwiftUI
 
 private struct NotchActivitySnapshot {
@@ -32,6 +33,12 @@ final class AppState {
     }
 
     struct BridgeRecoveryFailurePresentation: Equatable {
+        let statusText: String
+        let title: String
+        let body: String
+    }
+
+    struct ProgramStatusPresentation: Equatable {
         let statusText: String
         let title: String
         let body: String
@@ -116,6 +123,16 @@ final class AppState {
             onOpenExternalWindow: { [weak self] in
                 self?.suspendWorkspaceForExternalWindow()
             },
+            startSessionForTutorial: { [weak self] in
+                self?.startOnboardingTutorialSession() ?? false
+            },
+            tutorialSessionReady: { [weak self] in
+                guard let self else { return false }
+                let daemonAlive = self.processManager.bridgeAlive()
+                return self.embeddedTerminal.isEmbeddedProcessRunning
+                    && daemonAlive
+                    && self.processManager.bridgeConsumerAlive()
+            },
             openWorkspaceAfterCompletion: { [weak self] in
                 self?.showWorkspaceWork()
             }
@@ -164,6 +181,9 @@ final class AppState {
         didSet { syncNotchStatusSurface() }
     }
     private var wasRecording = false
+    private var observedRecordingStartedSerial = 0
+    private var observedSpeechDetectedSerial = 0
+    private var observedDeliveredTranscriptSerial = 0
     /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
     private var sessionPromptCapsState = false
     private var sessionPromptGate = SessionPromptGate()
@@ -178,6 +198,9 @@ final class AppState {
         }
     }
     private var sessionReadyShownForCurrentBridgeSession = false
+    /// Session-level contract shared by the bridge and app overlay. Tutorial
+    /// sessions suppress both greeting sources, including after recovery.
+    private var activeSessionSuppressesStartupGreeting = false
     private var bridgeRecoveryInFlight = false {
         didSet { syncNotchStatusSurface() }
     }
@@ -470,7 +493,7 @@ final class AppState {
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
         // Hook permission transitions: notify on revoke, auto-recover STT
-        // when mic/input-monitoring comes back (the STT engine binds to the
+        // when mic/global-event access comes back (the STT engine binds to the
         // mic + installs NSEvent monitors at start, so neither recovers
         // without a restart).
         permissions.onChange = { [weak self] kind, old, new in
@@ -484,7 +507,7 @@ final class AppState {
                     } else {
                         self.restartSTTForRecovery()
                     }
-                } else if kind == .inputMonitoring {
+                } else if kind == .accessibility || kind == .inputMonitoring {
                     self.programBoardOverlay.installGlobalDismissHotkey()
                     self.restartSTTForRecovery()
                 }
@@ -618,6 +641,7 @@ final class AppState {
     private func startConfiguredSTT(reason: String, failureLogPrefix: String) {
         let engine = STTEngine(config: config.stt)
         sttEngine = engine
+        resetObservedTutorialSTTSerials()
         sttSetupStartedAt = Date()
         sttSetupSucceeded = false
         sttEngineError = nil
@@ -683,6 +707,7 @@ final class AppState {
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
         sessionReadyShownForCurrentBridgeSession = false
+        activeSessionSuppressesStartupGreeting = false
         sessionStartTime = .distantPast
         wizardShownForCurrentBridgeSession = false
         statusText = "Ready"
@@ -704,6 +729,7 @@ final class AppState {
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
         sessionReadyShownForCurrentBridgeSession = false
+        activeSessionSuppressesStartupGreeting = false
         stopOverlay()
         sttEngine?.stop()
         sttEngine = nil
@@ -725,6 +751,7 @@ final class AppState {
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
         sessionReadyShownForCurrentBridgeSession = false
+        activeSessionSuppressesStartupGreeting = false
         statusText = "Updating"
         sttEngine?.cancelRecording()
         sttSetupStartedAt = nil
@@ -806,14 +833,18 @@ final class AppState {
         return hasExplicitWorkspace && oldGeneral.provider != newGeneral.provider
     }
 
+    @discardableResult
     func newSession(
         workingDirectory: String? = nil,
-        destination: SessionLaunchDestination = .embedded
-    ) {
-        guard allowsAppShellAccess else { return }
+        destination: SessionLaunchDestination = .embedded,
+        allowDuringFirstRun: Bool = false,
+        showsWorkspaceOnLaunch: Bool = true,
+        suppressesStartupGreeting: Bool = false
+    ) -> Bool {
+        guard allowsAppShellAccess || allowDuringFirstRun else { return false }
         guard permissions.microphone == .granted else {
             onboarding.showAlways()
-            return
+            return false
         }
         let request = Self.sessionLaunchRequest(
             from: config,
@@ -838,6 +869,7 @@ final class AppState {
         sessionStartTime = Date()
         sessionBridgeSeen = false
         sessionReadyShownForCurrentBridgeSession = false
+        activeSessionSuppressesStartupGreeting = suppressesStartupGreeting
         sessionPromptGate.reset()
         activeSessionLaunchConfig = launchConfig
         // Bridge is about to launch — assume alive until watchdog says otherwise
@@ -858,7 +890,8 @@ final class AppState {
                 (request.destination == .embedded) ? .appOwned : .agentSkill
             let prepared = try processManager.prepareNewSession(
                 config: launchConfig,
-                voiceDelivery: voiceDelivery
+                voiceDelivery: voiceDelivery,
+                suppressStartupGreeting: suppressesStartupGreeting
             )
             switch request.destination {
             case .embedded:
@@ -879,9 +912,11 @@ final class AppState {
             bridgeAliveCache = false
             sessionBridgeSeen = false
             sessionReadyShownForCurrentBridgeSession = false
+            activeSessionSuppressesStartupGreeting = false
             sessionStartTime = .distantPast
             statusText = "Ready"
             NSLog("[AppState] Failed to start session: \(error)")
+            return false
         }
         isRunning = true
         if menuSessionActive {
@@ -890,6 +925,9 @@ final class AppState {
 
         // Ensure overlay is running
         if overlayController == nil { startOverlay() }
+        if !showsWorkspaceOnLaunch {
+            return menuSessionActive
+        }
         if request.destination == .externalTerminal && menuSessionActive {
             if programBoardOverlay.isVisible {
                 programBoardOverlay.hide()
@@ -897,6 +935,31 @@ final class AppState {
         } else {
             programBoardOverlay.showTerminal()
         }
+        return menuSessionActive
+    }
+
+    private func startOnboardingTutorialSession() -> Bool {
+        // A context-backed bridge can outlive its terminal consumer. The
+        // tutorial can only reuse the app-owned process that receives voice.
+        if Self.shouldReuseOnboardingTutorialSession(
+            menuSessionActive: menuSessionActive,
+            embeddedProcessRunning: embeddedTerminal.isEmbeddedProcessRunning
+        ) {
+            activeSessionSuppressesStartupGreeting = true
+            return true
+        }
+        return newSession(
+            allowDuringFirstRun: true,
+            showsWorkspaceOnLaunch: false,
+            suppressesStartupGreeting: true
+        )
+    }
+
+    static func shouldReuseOnboardingTutorialSession(
+        menuSessionActive: Bool,
+        embeddedProcessRunning: Bool
+    ) -> Bool {
+        menuSessionActive && embeddedProcessRunning
     }
 
     static func sessionLaunchRequest(
@@ -964,13 +1027,17 @@ final class AppState {
 
     /// Show or hide the unified Workspace overlay. Single-repo sessions scope
     /// Work to that repo; workspace sessions aggregate discovered child repos.
-    func toggleBoard() {
-        guard allowsAppShellAccess else { return }
-        programBoardOverlay.toggle()
+    @discardableResult
+    func toggleBoard(
+        allowDuringFirstRun: Bool = false,
+        recognizedAt: CFTimeInterval? = nil
+    ) -> Bool {
+        guard allowsAppShellAccess || allowDuringFirstRun else { return false }
+        return programBoardOverlay.toggle(recognizedAt: recognizedAt)
     }
 
     func toggleWorkspace() {
-        toggleBoard()
+        _ = toggleBoard()
     }
 
     func showWorkspaceSettings() {
@@ -1041,6 +1108,7 @@ final class AppState {
                 sessionBridgeSeen: self.sessionBridgeSeen,
                 elapsedSinceSessionStart: elapsed,
                 pendingDeliveryTimedOut: pendingDeliveryTimedOut,
+                pendingDeliveryState: pendingDeliveryState,
                 stopRequested: self.processManager.bridgeStopRequested(),
                 recoverySuppressed: self.bridgeRecoverySuppressedForUpdate
             )
@@ -1058,6 +1126,7 @@ final class AppState {
                 self.activeSessionLaunchConfig = nil
                 self.sessionBridgeSeen = false
                 self.sessionReadyShownForCurrentBridgeSession = false
+                self.activeSessionSuppressesStartupGreeting = false
                 self.statusText = "Ready"
                 return
             case .keepDaemon:
@@ -1071,6 +1140,11 @@ final class AppState {
                     self.statusText = "Session"
                 }
                 return
+            case .voiceCommandQueued:
+                self.bridgeAliveCache = true
+                if self.statusText != Self.voiceCommandQueuedPresentation.statusText {
+                    self.surfaceVoiceCommandQueued()
+                }
             case .waitForConsumer:
                 self.bridgeAliveCache = true
                 if self.statusText != "Voice command waiting" {
@@ -1093,6 +1167,7 @@ final class AppState {
                 self.activeSessionLaunchConfig = nil
                 self.sessionBridgeSeen = false
                 self.sessionReadyShownForCurrentBridgeSession = false
+                self.activeSessionSuppressesStartupGreeting = false
                 self.surfaceBridgeRecoveryFailure(reason: reason)
                 return
             case .markDead:
@@ -1102,7 +1177,10 @@ final class AppState {
             }
 
             // Track externally-started bridges (e.g. /relay-bridge)
-            if alive && !self.menuSessionActive && self.statusText != "Session" {
+            if alive,
+               action != .voiceCommandQueued,
+               !self.menuSessionActive,
+               self.statusText != "Session" {
                 self.statusText = "Session"
                 // External /relay-bridge counts as the first session run
                 // for onboarding purposes — same as the menu Start Session
@@ -1149,7 +1227,9 @@ final class AppState {
             sessionReadyShownForCurrentBridgeSession: sessionReadyShownForCurrentBridgeSession,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
             daemonAlive: daemonAlive,
-            consumerAlive: consumerAlive
+            consumerAlive: consumerAlive,
+            sessionControlsTutorialActive: onboarding.isSessionControlsTutorialActive,
+            suppressesStartupGreeting: activeSessionSuppressesStartupGreeting
         ) else {
             return
         }
@@ -1164,7 +1244,9 @@ final class AppState {
         sessionReadyShownForCurrentBridgeSession: Bool,
         bridgeRecoveryInFlight: Bool,
         daemonAlive: Bool,
-        consumerAlive: Bool
+        consumerAlive: Bool,
+        sessionControlsTutorialActive: Bool = false,
+        suppressesStartupGreeting: Bool = false
     ) -> Bool {
         menuSessionActive
             && !sessionBridgeSeen
@@ -1172,10 +1254,13 @@ final class AppState {
             && !bridgeRecoveryInFlight
             && daemonAlive
             && consumerAlive
+            && !sessionControlsTutorialActive
+            && !suppressesStartupGreeting
     }
 
     enum BridgeWatchdogAction: Equatable {
         case alive
+        case voiceCommandQueued
         case keepDaemon
         case waitForConsumer
         case waitForLaunch
@@ -1193,6 +1278,7 @@ final class AppState {
         sessionBridgeSeen: Bool,
         elapsedSinceSessionStart: TimeInterval,
         pendingDeliveryTimedOut: Bool = false,
+        pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState = .none,
         stopRequested: Bool = false,
         recoverySuppressed: Bool = false
     ) -> BridgeWatchdogAction {
@@ -1203,10 +1289,14 @@ final class AppState {
             return .markDead
         }
         if daemonAlive && consumerAlive {
+            if pendingDeliveryState == .waiting {
+                return .voiceCommandQueued
+            }
             return .alive
         }
+        let deliveryTimedOut = pendingDeliveryTimedOut || pendingDeliveryState == .timedOut
         if daemonAlive && !consumerAlive {
-            if pendingDeliveryTimedOut {
+            if deliveryTimedOut {
                 return (menuSessionActive || wasAlive || hasSessionContext) ? .waitForConsumer : .reapOrphan
             }
             return (menuSessionActive || wasAlive || hasSessionContext) ? .keepDaemon : .reapOrphan
@@ -1245,7 +1335,7 @@ final class AppState {
         if !daemonAlive {
             return hasSessionContext ? .recoverBridge : .promptForSession
         }
-        if pendingDeliveryState == .waiting || pendingDeliveryState == .timedOut {
+        if pendingDeliveryState == .timedOut {
             return .waitForPendingCommand
         }
         if !consumerAlive {
@@ -1273,8 +1363,12 @@ final class AppState {
         NSLog("[AppState] Relaunching voice bridge daemon for \(context.workingDirectory) reason=\(reason)")
 
         let processManager = self.processManager
+        let suppressStartupGreeting = activeSessionSuppressesStartupGreeting
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let recovered = processManager.relaunchBridgeDaemon(context: context)
+            let recovered = processManager.relaunchBridgeDaemon(
+                context: context,
+                suppressStartupGreeting: suppressStartupGreeting
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.bridgeRecoveryInFlight = false
@@ -1287,6 +1381,7 @@ final class AppState {
                     self.activeSessionLaunchConfig = nil
                     self.sessionBridgeSeen = false
                     self.sessionReadyShownForCurrentBridgeSession = false
+                    self.activeSessionSuppressesStartupGreeting = false
                     self.statusText = "Ready"
                     NSLog("[AppState] Voice bridge recovery ignored because session stop was requested")
                     return
@@ -1304,6 +1399,7 @@ final class AppState {
                     self.activeSessionLaunchConfig = nil
                     self.sessionBridgeSeen = false
                     self.sessionReadyShownForCurrentBridgeSession = false
+                    self.activeSessionSuppressesStartupGreeting = false
                     self.surfaceBridgeRecoveryFailure(reason: reason)
                     NSLog("[AppState] Voice bridge daemon recovery failed")
                 }
@@ -1342,6 +1438,19 @@ final class AppState {
             title: "Voice command waiting",
             body: "Relay Runner recorded a voice command, but the active Codex or Claude listener has not claimed it yet. Keep the agent turn running, or start a new session before speaking again."
         )
+        syncNotchActivitySurface()
+    }
+
+    static let voiceCommandQueuedPresentation = ProgramStatusPresentation(
+        statusText: "Voice command queued",
+        title: "Voice command queued",
+        body: "Relay Runner is holding the latest voice command until the active Codex or Claude turn can take it. Speak again to replace the queued command."
+    )
+
+    private func surfaceVoiceCommandQueued() {
+        let presentation = Self.voiceCommandQueuedPresentation
+        statusText = presentation.statusText
+        stateMachine.showProgramStatus(title: presentation.title, body: presentation.body)
         syncNotchActivitySurface()
     }
 
@@ -1407,7 +1516,12 @@ final class AppState {
         guard overlayController == nil else { return }
 
         // State event bus (listens for Python service state)
-        let bus = StateEventBus(stateMachine: stateMachine)
+        let bus = StateEventBus(
+            stateMachine: stateMachine,
+            onServiceEvent: { [weak self] source, state, text in
+                self?.handleOnboardingTutorialServiceEvent(source: source, state: state, text: text)
+            }
+        )
         eventBus = bus
         Task { await bus.start() }
 
@@ -1425,7 +1539,7 @@ final class AppState {
             onToggleBoard: { [weak self] in
                 guard let self else { return }
                 await MainActor.run {
-                    self.toggleBoard()
+                    _ = self.toggleBoard(recognizedAt: CACurrentMediaTime())
                 }
             },
             onActivateProject: { [weak self] pathOrAlias, provider in
@@ -1456,11 +1570,13 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Workspace overlay — install Esc dismissal only once macOS has already
-        // granted Input Monitoring. The double-tap Shift board trigger is
+        // Workspace overlay — install Esc dismissal once macOS has granted
+        // either global-event permission. Accessibility is the normal setup
+        // path; an existing Input Monitoring grant remains compatible. The
+        // double-tap Shift board trigger is
         // emitted by the STT gesture monitor so it shares the same recovery
         // path as Option/Control activation gestures.
-        if permissions.inputMonitoring == .granted {
+        if permissions.accessibility == .granted || permissions.inputMonitoring == .granted {
             programBoardOverlay.installGlobalDismissHotkey()
         }
         programBoardOverlay.setThemeResolver { [weak self] in
@@ -1510,10 +1626,20 @@ final class AppState {
 
             let nowRecording = engine.isRecording
             let justStartedRecording = nowRecording && !self.wasRecording
+            self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: false)
 
             if engine.boardToggleRequested {
+                let recognizedAt = engine.boardToggleRequestedAt ?? CACurrentMediaTime()
                 engine.boardToggleRequested = false
-                self.toggleBoard()
+                engine.boardToggleRequestedAt = nil
+                let allowDuringOnboarding = self.onboarding.isAwaitingTutorialWorkspaceToggle
+                if self.toggleBoard(
+                    allowDuringFirstRun: allowDuringOnboarding,
+                    recognizedAt: recognizedAt
+                ),
+                   allowDuringOnboarding {
+                    self.onboarding.noteTutorialWorkspaceToggled()
+                }
             }
 
             // Session prompt: handle responses
@@ -1521,6 +1647,7 @@ final class AppState {
                 if engine.playRequested {
                     // Double-tap Alt → start new session
                     engine.playRequested = false
+                    self.onboarding.noteTutorialPlaybackRequested()
                     self.stateMachine.dismissSessionPrompt()
                     self.newSession()
                 } else if CapsLockGesture.isCapsLockOn() != self.sessionPromptCapsState {
@@ -1555,6 +1682,7 @@ final class AppState {
                 switch bridgeAction {
                 case .allowRecording:
                     self.bridgeAliveCache = true
+                    self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: true)
                 case .waitForBridgeRecovery:
                     engine.cancelRecording()
                     self.wasRecording = false
@@ -1581,6 +1709,7 @@ final class AppState {
                     let recovering = self.startBridgeRecovery(reason: "recording-start")
                     if !recovering {
                         self.menuSessionActive = false
+                        self.activeSessionSuppressesStartupGreeting = false
                         self.showSessionPromptIfAllowed()
                     }
                     engine.cancelRecording()
@@ -1589,6 +1718,7 @@ final class AppState {
                 case .promptForSession:
                     self.bridgeAliveCache = false
                     self.menuSessionActive = false
+                    self.activeSessionSuppressesStartupGreeting = false
                     self.showSessionPromptIfAllowed()
                     engine.cancelRecording()
                     self.wasRecording = false
@@ -1597,11 +1727,22 @@ final class AppState {
             }
 
             // Clear stale play requests
-            if engine.playRequested { engine.playRequested = false }
+            if engine.playRequested {
+                engine.playRequested = false
+                let playbackActive: Bool
+                switch self.stateMachine.state {
+                case .preparing, .speaking:
+                    playbackActive = true
+                default:
+                    playbackActive = false
+                }
+                self.onboarding.noteTutorialPlaybackRequested(playbackActive: playbackActive)
+            }
 
             if engine.wasCancelled {
                 engine.wasCancelled = false
                 self.stateMachine.setCancelled()
+                self.onboarding.noteTutorialCancelRequested()
             } else {
                 self.stateMachine.updateSTT(isRecording: nowRecording, partial: engine.partialTranscription)
             }
@@ -1614,6 +1755,48 @@ final class AppState {
         guard programBoardLoading != isLoading else { return }
         programBoardLoading = isLoading
         syncNotchActivitySurface()
+    }
+
+    private func resetObservedTutorialSTTSerials() {
+        observedRecordingStartedSerial = 0
+        observedSpeechDetectedSerial = 0
+        observedDeliveredTranscriptSerial = 0
+    }
+
+    private func publishOnboardingTutorialSTTEvents(from engine: STTEngine,
+                                                   includeRecordingStart: Bool) {
+        if includeRecordingStart && engine.recordingStartedSerial > observedRecordingStartedSerial {
+            observedRecordingStartedSerial = engine.recordingStartedSerial
+            onboarding.noteTutorialRecordingStarted()
+        }
+        if engine.speechDetectedSerial > observedSpeechDetectedSerial {
+            observedSpeechDetectedSerial = engine.speechDetectedSerial
+            onboarding.noteTutorialSpeechDetected()
+        }
+        if engine.deliveredTranscriptSerial > observedDeliveredTranscriptSerial {
+            observedDeliveredTranscriptSerial = engine.deliveredTranscriptSerial
+            onboarding.noteTutorialRecordingSent()
+        }
+    }
+
+    private func handleOnboardingTutorialServiceEvent(source: String, state: String, text: String?) {
+        guard source == "tts" else { return }
+        switch state {
+        case "message_waiting":
+            onboarding.noteTutorialResponseReady(text)
+        case "preparing", "speaking":
+            onboarding.noteTutorialPlaybackStarted()
+        case "idle":
+            if let response = onboarding.noteTutorialPlaybackFinished() {
+                stateMachine.handleServiceEvent(
+                    source: "tts",
+                    newState: "message_waiting",
+                    text: response
+                )
+            }
+        default:
+            break
+        }
     }
 
     private func suspendWorkspaceForExternalWindow() {
