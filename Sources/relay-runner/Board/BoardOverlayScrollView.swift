@@ -8,22 +8,25 @@ enum BoardOverlayScrollContentInsets {
 
 struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
     let contentInsets: EdgeInsets
+    let resetID: AnyHashable?
     let content: Content
 
     init(
         contentInsets: EdgeInsets = BoardOverlayScrollContentInsets.standard,
+        resetID: AnyHashable? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.contentInsets = contentInsets
+        self.resetID = resetID
         self.content = content()
     }
 
     func makeNSView(context: Context) -> BoardOverlayScrollContainer {
-        BoardOverlayScrollContainer(rootView: AnyView(scrollContent))
+        BoardOverlayScrollContainer(rootView: AnyView(scrollContent), resetID: resetID)
     }
 
     func updateNSView(_ nsView: BoardOverlayScrollContainer, context: Context) {
-        nsView.update(rootView: AnyView(scrollContent))
+        nsView.update(rootView: AnyView(scrollContent), resetID: resetID)
     }
 
     private var scrollContent: some View {
@@ -44,9 +47,11 @@ final class BoardOverlayScrollContainer: NSView {
     private var lastViewportHeight: CGFloat = 0
     private var lastContentHeight: CGFloat = 0
     private var isPerformingLayout = false
+    private var resetID: AnyHashable?
 
-    init(rootView: AnyView) {
+    init(rootView: AnyView, resetID: AnyHashable? = nil) {
         hostingView = BoardOverlayScrollHostingView(rootView: rootView)
+        self.resetID = resetID
         super.init(frame: .zero)
         setup()
     }
@@ -93,9 +98,14 @@ final class BoardOverlayScrollContainer: NSView {
         scheduleHide(after: 0.25)
     }
 
-    func update(rootView: AnyView) {
+    func update(rootView: AnyView, resetID: AnyHashable? = nil) {
+        let shouldResetOffset = self.resetID != resetID
+        self.resetID = resetID
         hostingView.rootView = rootView
         layoutDocument(force: true)
+        if shouldResetOffset {
+            scrollToTop()
+        }
         updateThumbFrame()
     }
 
@@ -185,6 +195,15 @@ final class BoardOverlayScrollContainer: NSView {
             return
         }
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: clampedY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func scrollToTop() {
+        let currentOrigin = scrollView.contentView.bounds.origin
+        guard abs(currentOrigin.y) > 0.5 || abs(currentOrigin.x) > 0.5 else {
+            return
+        }
+        scrollView.contentView.scroll(to: .zero)
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 

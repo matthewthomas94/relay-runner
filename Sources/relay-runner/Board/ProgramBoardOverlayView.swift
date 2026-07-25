@@ -850,7 +850,7 @@ private struct ProgramWorkColumnPanel: View {
             .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
             .frame(height: ProgramBoardLayout.workHeaderHeight)
 
-            ProgramColumnTicketScrollView {
+            ProgramColumnTicketScrollView(resetID: "\(lane.id)-\(model.selectedProjectPath ?? "all")") {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
                     if items.isEmpty {
@@ -888,10 +888,16 @@ private struct ProgramWorkColumnPanel: View {
 }
 
 struct ProgramColumnTicketScrollView<Content: View>: View {
+    let resetID: AnyHashable?
     @ViewBuilder let content: Content
 
+    init(resetID: AnyHashable? = nil, @ViewBuilder content: () -> Content) {
+        self.resetID = resetID
+        self.content = content()
+    }
+
     var body: some View {
-        BoardOverlayScrollView(contentInsets: ProgramBoardLayout.workScrollContentInsets) {
+        BoardOverlayScrollView(contentInsets: ProgramBoardLayout.workScrollContentInsets, resetID: resetID) {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
