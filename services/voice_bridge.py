@@ -1610,10 +1610,33 @@ def _deliver_missing_foreground_reply(
     return delivered
 
 
+def _log_foreground_reply_fallback_event(
+    event: str,
+    *,
+    relay_command: dict,
+    turns_path: str,
+    reason: str | None = None,
+) -> None:
+    key = _relay_command_key(relay_command)
+    fields = [f"event={event}"]
+    if key is not None:
+        fields.append(f"relay_command_seq={key[0]}")
+        fields.append(f"relay_command_id={key[1]}")
+    state = _provider_turn_state(relay_command, turns_path=turns_path) or "none"
+    fields.append(f"provider_turn_state={state}")
+    provider = str(relay_command.get("provider") or "").strip()
+    if provider:
+        fields.append(f"provider={provider}")
+    if reason:
+        fields.append(f"reason={reason}")
+    print("[voice_bridge] foreground_reply_fallback " + " ".join(fields), file=sys.stderr)
+
+
 def _schedule_foreground_reply_fallback(
     *,
     relay_command: dict,
-    action,
+    action=None,
+    action_kind: str | None = None,
     tts_worker: TTSWorker,
     messenger: MessengerRuntime | None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
@@ -1628,6 +1651,13 @@ def _schedule_foreground_reply_fallback(
     delay = FOREGROUND_REPLY_FALLBACK_SECONDS if delay_seconds is None else delay_seconds
     if delay < 0:
         return None
+    if action_kind is None:
+        action_kind = getattr(action, "kind", None)
+    _log_foreground_reply_fallback_event(
+        "armed",
+        relay_command=relay_command,
+        turns_path=turns_path,
+    )
 
     def _run() -> None:
         sleep_for = delay
@@ -1635,26 +1665,68 @@ def _schedule_foreground_reply_fallback(
             if sleep_for > 0:
                 time.sleep(sleep_for)
             if _foreground_reply_delivered(relay_command):
+                _log_foreground_reply_fallback_event(
+                    "cancelled",
+                    relay_command=relay_command,
+                    turns_path=turns_path,
+                    reason="reply_delivered",
+                )
                 return
             if not _relay_command_current(key[0], key[1], state_path=state_path):
-                return
-            if (
-                _command_pending_delivery(
-                    relay_command,
-                    command_path=command_path,
-                    meta_path=meta_path,
+                _log_foreground_reply_fallback_event(
+                    "cancelled",
+                    relay_command=relay_command,
+                    turns_path=turns_path,
+                    reason="superseded",
                 )
-                or _provider_turn_active(relay_command, turns_path=turns_path)
-                or _any_provider_turn_active(turns_path=turns_path)
+                return
+            if _command_pending_delivery(
+                relay_command,
+                command_path=command_path,
+                meta_path=meta_path,
             ):
+                _log_foreground_reply_fallback_event(
+                    "deferred",
+                    relay_command=relay_command,
+                    turns_path=turns_path,
+                    reason="pending_delivery",
+                )
                 sleep_for = max(0.25, PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS)
                 continue
-            _deliver_missing_foreground_reply(
+            if _provider_turn_active(relay_command, turns_path=turns_path):
+                _log_foreground_reply_fallback_event(
+                    "deferred",
+                    relay_command=relay_command,
+                    turns_path=turns_path,
+                    reason="correlated_turn_active",
+                )
+                sleep_for = max(0.25, PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS)
+                continue
+            if _any_provider_turn_active(turns_path=turns_path):
+                _log_foreground_reply_fallback_event(
+                    "deferred",
+                    relay_command=relay_command,
+                    turns_path=turns_path,
+                    reason="provider_turn_active",
+                )
+                sleep_for = max(0.25, PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS)
+                continue
+            _log_foreground_reply_fallback_event(
+                "eligible",
                 relay_command=relay_command,
-                action_kind=getattr(action, "kind", None),
+                turns_path=turns_path,
+            )
+            delivered = _deliver_missing_foreground_reply(
+                relay_command=relay_command,
+                action_kind=action_kind,
                 tts_worker=tts_worker,
                 messenger=messenger,
                 state_path=state_path,
+            )
+            _log_foreground_reply_fallback_event(
+                "emitted" if delivered else "delivery_failed",
+                relay_command=relay_command,
+                turns_path=turns_path,
             )
             return
 
@@ -1673,6 +1745,10 @@ def _handle_provider_completion_control(
     tts_worker: TTSWorker,
     messenger: MessengerRuntime | None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    command_path: str = VOICE_CMD_FILE,
+    meta_path: str = VOICE_CMD_META_FILE,
+    fallback_delay_seconds: float | None = None,
 ) -> bool:
     """Route provider Stop hook completion through the authoritative reply path."""
     text = raw.strip()
@@ -1714,13 +1790,18 @@ def _handle_provider_completion_control(
             state_path=state_path,
         )
 
-    return _deliver_missing_foreground_reply(
+    thread = _schedule_foreground_reply_fallback(
         relay_command=command,
-        action_kind=str(data.get("action") or ""),
         tts_worker=tts_worker,
         messenger=messenger,
         state_path=state_path,
+        turns_path=turns_path,
+        command_path=command_path,
+        meta_path=meta_path,
+        action_kind=str(data.get("action") or ""),
+        delay_seconds=fallback_delay_seconds,
     )
+    return thread is not None
 
 
 def _handle_orchestrator_reply_control(
@@ -1919,12 +2000,6 @@ def _run_relay(
                 _publish_command(
                     format_command_for_agent(action),
                     _metadata_for_action(action, relay_command),
-                )
-                _schedule_foreground_reply_fallback(
-                    relay_command=relay_command,
-                    action=action,
-                    tts_worker=tts_worker,
-                    messenger=messenger,
                 )
                 print(
                     f"[voice_bridge] Voice command ready: {action.outcome}",

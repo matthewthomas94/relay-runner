@@ -109,6 +109,46 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             allow_pending_command=True,
         )
 
+    def test_voice_command_publication_does_not_arm_missing_final_fallback(self):
+        worker = FakeTTSWorker()
+        shutdown_event = threading.Event()
+        action = types.SimpleNamespace(kind="non_work", outcome="foreground command")
+
+        def read_once(_fd, _size):
+            shutdown_event.set()
+            return b"summarize status\n"
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge.os, "close"),
+            mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+            mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text", return_value=True),
+            mock.patch.object(voice_bridge, "_begin_relay_command", return_value={
+                "relay_command_seq": 1,
+                "relay_command_id": "cmd-1",
+            }),
+            mock.patch.object(voice_bridge, "resolve_command_action", return_value=action),
+            mock.patch.object(voice_bridge, "format_command_for_agent", return_value="agent prompt"),
+            mock.patch.object(voice_bridge, "_metadata_for_action", return_value={
+                "relay_command_seq": 1,
+                "relay_command_id": "cmd-1",
+                "action": "non_work",
+            }),
+            mock.patch.object(voice_bridge, "_should_fanout_raw_instruction_to_orchestrator", return_value=False),
+            mock.patch.object(voice_bridge, "_queue_voice_acknowledgement", return_value=True),
+            mock.patch.object(voice_bridge, "_start_pm_update_mode"),
+            mock.patch.object(voice_bridge, "_publish_command") as publish_command,
+            mock.patch.object(voice_bridge, "_schedule_foreground_reply_fallback") as schedule_fallback,
+        ):
+            voice_bridge._run_relay(worker, shutdown_event, messenger=FakeMessenger())
+
+        publish_command.assert_called_once()
+        schedule_fallback.assert_not_called()
+
     def test_newer_command_suppresses_stale_tts_after_first_claimed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
@@ -814,6 +854,46 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 "relay_command_id": command["relay_command_id"],
             }])
 
+    def test_late_provider_final_cancels_pending_missing_final_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "what changed",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            action = voice_bridge.resolve_command_action(
+                "what changed",
+                repo_path=temp_dir,
+                relay_command=command,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            thread = voice_bridge._schedule_foreground_reply_fallback(
+                relay_command=command,
+                action=action,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+                delay_seconds=0.05,
+            )
+            payload = json.dumps({"text": "The late authoritative result.", **command})
+            voice_bridge._handle_orchestrator_reply_control(
+                payload,
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+            )
+            thread.join(timeout=1)
+
+            self.assertEqual(messenger.finals, [{
+                "text": "The late authoritative result.",
+                "relay_command_seq": command["relay_command_seq"],
+                "relay_command_id": command["relay_command_id"],
+            }])
+
     def test_missing_foreground_reply_fallback_waits_while_provider_turn_is_active(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             voice_bridge._reset_foreground_reply_delivery_for_tests()
@@ -1320,9 +1400,49 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 tts_worker=worker,
                 messenger=messenger,
                 state_path=state_path,
+                fallback_delay_seconds=0,
             ))
+            deadline = time.time() + 1
+            while not messenger.finals and time.time() < deadline:
+                time.sleep(0.01)
             self.assertEqual(len(messenger.finals), 1)
             self.assertIn("worker updates will still be announced", messenger.finals[0]["text"])
+
+    def test_provider_completion_control_arms_missing_final_after_terminal_event(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+
+            with mock.patch.object(
+                voice_bridge,
+                "_schedule_foreground_reply_fallback",
+                return_value=object(),
+            ) as schedule_fallback:
+                handled = voice_bridge._handle_provider_completion_control(
+                    json.dumps({**command, "completion_status": "empty", "action": "dispatch_ticket"}),
+                    tts_worker=worker,
+                    messenger=messenger,
+                    state_path=state_path,
+                    fallback_delay_seconds=3.5,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(messenger.finals, [])
+            schedule_fallback.assert_called_once()
+            kwargs = schedule_fallback.call_args.kwargs
+            scheduled_command = kwargs["relay_command"]
+            self.assertEqual(scheduled_command["relay_command_seq"], command["relay_command_seq"])
+            self.assertEqual(scheduled_command["relay_command_id"], command["relay_command_id"])
+            self.assertEqual(scheduled_command["completion_status"], "empty")
+            self.assertEqual(kwargs["action_kind"], "dispatch_ticket")
+            self.assertEqual(kwargs["delay_seconds"], 3.5)
 
     def test_provider_completion_recovery_fallback_publishes_waiting_preview(self):
         with tempfile.TemporaryDirectory() as temp_dir:
