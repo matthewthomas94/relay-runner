@@ -107,6 +107,40 @@ class OrchestratorDispatchTests(unittest.TestCase):
         self.assertIn("xhigh", command)
         self.assertNotIn("model_reasoning_effort=xhigh", command)
 
+    def test_worker_omits_default_model_and_effort_sentinels(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                worker = object.__new__(Worker)
+                worker.agent_kind = provider
+                worker.agent_bin = provider
+                worker.run = {"model_alias": "default", "worker_effort": "default"}
+
+                command = Worker._command(worker)
+
+                self.assertNotIn("--model", command)
+                self.assertNotIn("--effort", command)
+                self.assertNotIn("model_reasoning_effort=default", command)
+
+    def test_worker_applies_effort_without_default_model_override(self):
+        codex = object.__new__(Worker)
+        codex.agent_kind = "codex"
+        codex.agent_bin = "codex"
+        codex.run = {"worker_effort": "high"}
+
+        claude = object.__new__(Worker)
+        claude.agent_kind = "claude"
+        claude.agent_bin = "claude"
+        claude.run = {"worker_effort": "high"}
+
+        codex_command = Worker._command(codex)
+        claude_command = Worker._command(claude)
+
+        self.assertNotIn("--model", codex_command)
+        self.assertIn("model_reasoning_effort=high", codex_command)
+        self.assertNotIn("--model", claude_command)
+        self.assertIn("--effort", claude_command)
+        self.assertIn("high", claude_command)
+
     def test_review_worker_uses_same_provider_effort_flags(self):
         codex = object.__new__(ReviewWorker)
         codex.agent_kind = "codex"
@@ -304,6 +338,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
 
             self.assertIsNone(result["run"]["model_alias"])
             self.assertEqual(result["run"]["worker_model"], "codex:default")
+            self.assertEqual(result["run"]["worker_effort"], "default")
             command = Worker(
                 run_id=result["run"]["id"],
                 run=result["run"],
@@ -315,6 +350,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 timeout_seconds=1,
             )._command()
             self.assertNotIn("--model", command)
+            self.assertNotIn("--config", command)
 
     def test_user_default_inherits_claude_model_and_effort(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -364,6 +400,82 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertIn("sonnet", command)
             self.assertIn("--effort", command)
             self.assertIn("high", command)
+
+    def test_user_default_inherits_codex_model_without_default_effort_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.cfg = {
+                "general": {
+                    "subagent_sizing_policy": "user_default",
+                    "provider": "codex",
+                    "model": "gpt-5.4-mini",
+                    "orchestrator_effort": "default",
+                }
+            }
+
+            with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            run = result["run"]
+            self.assertEqual(run["model_alias"], "gpt-5.4-mini")
+            self.assertEqual(run["worker_effort"], "default")
+            command = Worker(
+                run_id=run["id"],
+                run=run,
+                prompt="",
+                agent_bin="codex",
+                agent_kind="codex",
+                store=daemon.runs,
+                log_path=Path(tmp) / "run.log",
+                timeout_seconds=1,
+            )._command()
+            self.assertIn("--model", command)
+            self.assertIn("gpt-5.4-mini", command)
+            self.assertNotIn("--config", command)
+
+    def test_user_default_omits_claude_model_and_effort_sentinels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="claude")
+            daemon.cfg = {
+                "general": {
+                    "subagent_sizing_policy": "user_default",
+                    "provider": "claude",
+                    "model": "default",
+                    "orchestrator_effort": "default",
+                }
+            }
+
+            with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
+                result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            run = result["run"]
+            self.assertIsNone(run["model_alias"])
+            self.assertEqual(run["worker_effort"], "default")
+            self.assertEqual(run["worker_model"], "claude:default")
+            command = Worker(
+                run_id=run["id"],
+                run=run,
+                prompt="",
+                agent_bin="claude",
+                agent_kind="claude",
+                store=daemon.runs,
+                log_path=Path(tmp) / "run.log",
+                timeout_seconds=1,
+            )._command()
+            self.assertNotIn("--model", command)
+            self.assertNotIn("--effort", command)
 
     def test_dispatch_records_valid_codex_sizing_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -601,6 +713,48 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertEqual(result["skipped"][0]["reason"], "dispatch_failed")
             self.assertIn("automatic retry circuit open", result["skipped"][0]["error"])
             self.assertEqual(len(daemon.runs.list()), 1)
+
+    def test_ready_sweeper_holds_after_deterministic_provider_launch_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            failed = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "workspaces" / "rr-1"),
+                branch="relay/rr-1",
+                state="Failed",
+                attempt=1,
+                provider_key="codex",
+                model_alias=None,
+                worker_model="codex:default",
+                worker_effort="default",
+            )
+            daemon.runs.update(
+                failed,
+                ended=True,
+                exit_code=1,
+                last_error=(
+                    "exit=1; tail=Error: HTTP 400 bad request: "
+                    "invalid value for model_reasoning_effort=default"
+                ),
+            )
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            self.assertEqual(result["dispatched"], [])
+            self.assertEqual(result["skipped"][0]["reason"], "dispatch_failed")
+            self.assertIn("automatic retry circuit open", result["skipped"][0]["error"])
+            self.assertIn("model_reasoning_effort=default", result["skipped"][0]["error"])
 
     def test_ready_sweeper_backs_off_after_recent_transient_failure(self):
         with tempfile.TemporaryDirectory() as tmp:

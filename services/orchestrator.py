@@ -132,6 +132,15 @@ DETERMINISTIC_FAILURE_PREFIXES = (
     "ticket snapshot materialization failed",
     "worker exited 0 but did not complete ticket",
 )
+DETERMINISTIC_PROVIDER_LAUNCH_MARKERS = (
+    "model_reasoning_effort",
+    "reasoning effort",
+    "reasoning_effort",
+    "--effort",
+    "--model",
+    "invalid value",
+    "unsupported value",
+)
 ORCHESTRATOR_ACTION_KINDS = frozenset({
     "create_ticket",
     "edit_ticket",
@@ -577,11 +586,21 @@ def _dispatch_failure_signature(reason: str | None) -> str | None:
     return text.lower()
 
 
+def _is_deterministic_provider_launch_failure(signature: str) -> bool:
+    if not signature.startswith("exit="):
+        return False
+    if "http 400" not in signature and "bad request" not in signature and "invalid request" not in signature:
+        return False
+    return any(marker in signature for marker in DETERMINISTIC_PROVIDER_LAUNCH_MARKERS)
+
+
 def _is_deterministic_dispatch_failure(reason: str | None) -> bool:
     signature = _dispatch_failure_signature(reason)
     if not signature:
         return False
-    return any(signature.startswith(prefix) for prefix in DETERMINISTIC_FAILURE_PREFIXES)
+    if any(signature.startswith(prefix) for prefix in DETERMINISTIC_FAILURE_PREFIXES):
+        return True
+    return _is_deterministic_provider_launch_failure(signature)
 
 
 def _materialize_ticket_snapshot(
@@ -2276,8 +2295,12 @@ def validate_worker_completion(
 # ---------------------------------------------------------------------------
 
 def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
-    model_alias = str(run.get("model_alias") or "").strip()
-    worker_effort = str(run.get("worker_effort") or "").strip()
+    model_alias = str(run.get("model_alias") or "").strip().lower()
+    worker_effort = str(run.get("worker_effort") or "").strip().lower()
+    if model_alias == "default":
+        model_alias = ""
+    if worker_effort == "default":
+        worker_effort = ""
     if agent_kind == "claude":
         # Claude stream-json gives assistant/tool_use/tool_result events. The
         # same command shape is used for implementation and review workers so
