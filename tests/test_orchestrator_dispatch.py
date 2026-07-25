@@ -1434,6 +1434,8 @@ class OrchestratorDispatchTests(unittest.TestCase):
             updated = daemon.runs.get(run_id)
             self.assertEqual(updated["state"], "AwaitingReview")
             self.assertIn("review worker failed: exit=7", updated["last_error"])
+            self.assertEqual(updated["activity"], "Reviewing worker branch")
+            self.assertIsNotNone(updated["activity_at"])
 
     def test_accept_worker_run_merges_prunes_and_progresses_dependents(self):
         with tempfile.TemporaryDirectory() as tmp:

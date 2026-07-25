@@ -20,6 +20,7 @@ final class MCPServer {
         let registered: [any MCPTool] = [
             DispatchTicketTool(),
             ListRunsTool(),
+            QueueDrainStatusTool(),
             GetRunTool(),
             InspectRunForReviewTool(),
             ReviewRunTool(),

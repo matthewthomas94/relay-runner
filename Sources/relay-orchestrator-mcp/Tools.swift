@@ -145,6 +145,58 @@ struct ListRunsTool: MCPTool {
     }
 }
 
+// MARK: - queue_drain_status
+
+struct QueueDrainStatusTool: MCPTool {
+    let name = "queue_drain_status"
+    let description = """
+        Inspect the durable rolling queue-drain goal for a repo. Optionally reconcile first, which runs the \
+        bounded ready/review drain pass without spending provider model tokens. The payload shows observed \
+        ticket IDs, provider goal mode/state, scheduled next actions, dependency waits, blockers, and completion state.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "repo_path": [
+                    "type": "string",
+                    "description": "Optional absolute path to the local git repo. When omitted, active drains across registered projects are returned.",
+                ],
+                "include_terminal": [
+                    "type": "boolean",
+                    "description": "Include completed or canceled drain records. Default: false.",
+                ],
+                "reconcile": [
+                    "type": "boolean",
+                    "description": "Run a bounded queue-drain reconciliation before reading status. Default: false.",
+                ],
+            ],
+            "required": [],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        if (arguments["reconcile"] as? Bool) == true {
+            var body: [String: Any] = ["trigger": "mcp-queue-drain-status"]
+            if let repoPath = arguments["repo_path"] as? String, !repoPath.isEmpty {
+                body["repo_path"] = repoPath
+            }
+            _ = try await DaemonClient.request(method: "POST", path: "/v1/queue-drain/reconcile", body: body)
+        }
+
+        var query: [String] = []
+        if let repoPath = arguments["repo_path"] as? String, !repoPath.isEmpty {
+            query.append("repo_path=\(urlEscape(repoPath))")
+        }
+        if let includeTerminal = arguments["include_terminal"] as? Bool, includeTerminal {
+            query.append("include_terminal=true")
+        }
+        let path = "/v1/queue-drains" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
+        return try await proxy(method: "GET", path: path)
+    }
+}
+
 // MARK: - get_run
 
 struct GetRunTool: MCPTool {
