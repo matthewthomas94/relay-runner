@@ -38,6 +38,12 @@ final class AppState {
         let body: String
     }
 
+    struct ProgramStatusPresentation: Equatable {
+        let statusText: String
+        let title: String
+        let body: String
+    }
+
     var config: AppConfig
     var isRunning = false
     var statusText = "Idle"
@@ -1071,6 +1077,7 @@ final class AppState {
                 sessionBridgeSeen: self.sessionBridgeSeen,
                 elapsedSinceSessionStart: elapsed,
                 pendingDeliveryTimedOut: pendingDeliveryTimedOut,
+                pendingDeliveryState: pendingDeliveryState,
                 stopRequested: self.processManager.bridgeStopRequested(),
                 recoverySuppressed: self.bridgeRecoverySuppressedForUpdate
             )
@@ -1101,6 +1108,11 @@ final class AppState {
                     self.statusText = "Session"
                 }
                 return
+            case .voiceCommandQueued:
+                self.bridgeAliveCache = true
+                if self.statusText != Self.voiceCommandQueuedPresentation.statusText {
+                    self.surfaceVoiceCommandQueued()
+                }
             case .waitForConsumer:
                 self.bridgeAliveCache = true
                 if self.statusText != "Voice command waiting" {
@@ -1132,7 +1144,10 @@ final class AppState {
             }
 
             // Track externally-started bridges (e.g. /relay-bridge)
-            if alive && !self.menuSessionActive && self.statusText != "Session" {
+            if alive,
+               action != .voiceCommandQueued,
+               !self.menuSessionActive,
+               self.statusText != "Session" {
                 self.statusText = "Session"
                 // External /relay-bridge counts as the first session run
                 // for onboarding purposes — same as the menu Start Session
@@ -1206,6 +1221,7 @@ final class AppState {
 
     enum BridgeWatchdogAction: Equatable {
         case alive
+        case voiceCommandQueued
         case keepDaemon
         case waitForConsumer
         case waitForLaunch
@@ -1223,6 +1239,7 @@ final class AppState {
         sessionBridgeSeen: Bool,
         elapsedSinceSessionStart: TimeInterval,
         pendingDeliveryTimedOut: Bool = false,
+        pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState = .none,
         stopRequested: Bool = false,
         recoverySuppressed: Bool = false
     ) -> BridgeWatchdogAction {
@@ -1233,10 +1250,14 @@ final class AppState {
             return .markDead
         }
         if daemonAlive && consumerAlive {
+            if pendingDeliveryState == .waiting {
+                return .voiceCommandQueued
+            }
             return .alive
         }
+        let deliveryTimedOut = pendingDeliveryTimedOut || pendingDeliveryState == .timedOut
         if daemonAlive && !consumerAlive {
-            if pendingDeliveryTimedOut {
+            if deliveryTimedOut {
                 return (menuSessionActive || wasAlive || hasSessionContext) ? .waitForConsumer : .reapOrphan
             }
             return (menuSessionActive || wasAlive || hasSessionContext) ? .keepDaemon : .reapOrphan
@@ -1275,7 +1296,7 @@ final class AppState {
         if !daemonAlive {
             return hasSessionContext ? .recoverBridge : .promptForSession
         }
-        if pendingDeliveryState == .waiting || pendingDeliveryState == .timedOut {
+        if pendingDeliveryState == .timedOut {
             return .waitForPendingCommand
         }
         if !consumerAlive {
@@ -1372,6 +1393,19 @@ final class AppState {
             title: "Voice command waiting",
             body: "Relay Runner recorded a voice command, but the active Codex or Claude listener has not claimed it yet. Keep the agent turn running, or start a new session before speaking again."
         )
+        syncNotchActivitySurface()
+    }
+
+    static let voiceCommandQueuedPresentation = ProgramStatusPresentation(
+        statusText: "Voice command queued",
+        title: "Voice command queued",
+        body: "Relay Runner is holding the latest voice command until the active Codex or Claude turn can take it. Speak again to replace the queued command."
+    )
+
+    private func surfaceVoiceCommandQueued() {
+        let presentation = Self.voiceCommandQueuedPresentation
+        statusText = presentation.statusText
+        stateMachine.showProgramStatus(title: presentation.title, body: presentation.body)
         syncNotchActivitySurface()
     }
 

@@ -171,7 +171,8 @@ final class ProcessManager {
             metaURL: URL(fileURLWithPath: Self.voiceCommandMetaPath),
             stateURL: URL(fileURLWithPath: Self.voiceCommandStatePath),
             claimedURL: URL(fileURLWithPath: Self.voiceCommandClaimedPath),
-            now: now
+            now: now,
+            providerTurnsURL: URL(fileURLWithPath: Self.voiceProviderTurnsPath)
         )
     }
 
@@ -189,6 +190,7 @@ final class ProcessManager {
             voiceCommandMetaPath: voiceCommandMetaPath,
             voiceCommandStatePath: voiceCommandStatePath,
             voiceCommandClaimedPath: voiceCommandClaimedPath,
+            voiceProviderTurnsPath: voiceProviderTurnsPath,
             heartbeatPath: heartbeatPath,
             sessionMarkerPaths: [bridgeSocketPath, bridgeCwdPath],
             now: Date()
@@ -200,18 +202,22 @@ final class ProcessManager {
         voiceCommandMetaPath: String? = nil,
         voiceCommandStatePath: String? = nil,
         voiceCommandClaimedPath: String? = nil,
+        voiceProviderTurnsPath: String? = nil,
         heartbeatPath: String,
         sessionMarkerPaths: [String],
         now: Date,
         fileManager fm: FileManager = .default
     ) -> Bool {
-        // Fast check: if a voice command has been pending for >10s, consumer is dead
-        // (in normal flow, the agent reads voice_cmd_ready within ~1s)
+        // Fast check: if a voice command has been pending for >10s with no
+        // active provider turn, consumer delivery is stuck. While Codex or
+        // Claude is actively running, newer commands may legitimately wait for
+        // the next preemption checkpoint.
         if voiceCommandTimedOut(
             voiceCommandPath: voiceCommandPath,
             voiceCommandMetaPath: voiceCommandMetaPath,
             voiceCommandStatePath: voiceCommandStatePath,
             voiceCommandClaimedPath: voiceCommandClaimedPath,
+            voiceProviderTurnsPath: voiceProviderTurnsPath,
             now: now,
             fileManager: fm
         ) {
@@ -253,6 +259,7 @@ final class ProcessManager {
         voiceCommandMetaPath: String?,
         voiceCommandStatePath: String?,
         voiceCommandClaimedPath: String?,
+        voiceProviderTurnsPath: String?,
         now: Date,
         fileManager fm: FileManager
     ) -> Bool {
@@ -269,6 +276,7 @@ final class ProcessManager {
                 stateURL: URL(fileURLWithPath: statePath),
                 claimedURL: URL(fileURLWithPath: claimedPath),
                 now: now,
+                providerTurnsURL: voiceProviderTurnsPath.map { URL(fileURLWithPath: $0) },
                 fileManager: fm
             )
             switch state {
@@ -304,6 +312,7 @@ final class ProcessManager {
         claimedURL: URL,
         now: Date,
         timeout: TimeInterval = pendingVoiceCommandTimeout,
+        providerTurnsURL: URL? = nil,
         fileManager fm: FileManager = .default
     ) -> PendingVoiceCommandDeliveryState {
         guard fm.fileExists(atPath: commandURL.path),
@@ -323,7 +332,12 @@ final class ProcessManager {
             return .stale
         }
 
-        return now.timeIntervalSince(modified) > timeout ? .timedOut : .waiting
+        if now.timeIntervalSince(modified) > timeout {
+            return providerTurnsURL.map { providerTurnActive(providerTurnsURL: $0) } == true
+                ? .waiting
+                : .timedOut
+        }
+        return .waiting
     }
 
     private static func modificationDate(of path: String, fileManager fm: FileManager) -> Date? {
@@ -360,6 +374,18 @@ final class ProcessManager {
 
     private static func relayCommandId(_ value: Any?) -> String? {
         (value as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    private static func providerTurnActive(providerTurnsURL: URL) -> Bool {
+        guard let data = try? Data(contentsOf: providerTurnsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let records = object["records"] as? [[String: Any]] else {
+            return false
+        }
+        return records.contains { record in
+            (record["state"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) == "active"
+        }
     }
 
     struct BridgeRecoveryContext: Equatable {
