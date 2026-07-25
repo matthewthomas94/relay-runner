@@ -41,9 +41,9 @@ enum OnboardingPermissionTreatment {
         case .microphone:
             return "Relay Runner needs to hear you so it can transcribe your speech. Audio stays completely local — nothing is sent off your Mac."
         case .accessibility:
-            return "Accessibility lets Relay Runner host Relay Actions for clicking, typing, pressing keys, scrolling, and UI automation. Trigger keys and hotkeys use Input Monitoring instead."
+            return "Accessibility lets Relay Runner host Relay Actions for clicking, typing, pressing keys, scrolling, and UI automation, and observe the global key events used for hotkeys."
         case .inputMonitoring:
-            return "Input Monitoring lets Relay Runner capture global keyboard events. It enables non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey; voice still works with microphone permission alone if you skip it."
+            return "Input Monitoring is the listen-only alternative for global keyboard events when Accessibility is not granted. It enables non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey; voice still works with microphone permission alone if you skip it."
         case .screenRecording:
             return "Screen Recording lets Relay Vision capture screenshots for visual grounding. Voice transcription and speech don't need it."
         }
@@ -228,7 +228,6 @@ struct OnboardingView: View {
         case agentChoice
         case microphone
         case parentAccessibility
-        case inputMonitoring
         case parentScreenRecording
         case pythonSetup
         case agentLogin
@@ -238,7 +237,6 @@ struct OnboardingView: View {
             switch self {
             case .microphone:      return .microphone
             case .parentAccessibility: return .accessibility
-            case .inputMonitoring: return .inputMonitoring
             case .parentScreenRecording: return .screenRecording
             default:               return nil
             }
@@ -253,7 +251,6 @@ struct OnboardingView: View {
             case .welcome:           return .welcome
             case .agentChoice:       return .agentChoice
             case .microphone:        return .microphone
-            case .inputMonitoring:   return .inputMonitoring
             case .parentAccessibility: return .parentAccessibility
             case .parentScreenRecording: return .parentScreenRecording
             case .pythonSetup:       return .pythonSetup
@@ -267,7 +264,7 @@ struct OnboardingView: View {
             case .welcome:           self = .welcome
             case .agentChoice:       self = .agentChoice
             case .microphone:        self = .microphone
-            case .inputMonitoring:   self = .inputMonitoring
+            case .inputMonitoring:   return nil
             case .parentAccessibility, .parentPermissions:
                 self = .parentAccessibility
             case .parentScreenRecording:
@@ -277,7 +274,9 @@ struct OnboardingView: View {
             case .ready:             self = .ready
             case .tutorialIntro,
                  .tutorialRecording,
+                 .tutorialRecordingActive,
                  .tutorialPlayback,
+                 .tutorialCancellation,
                  .tutorialWorkspace,
                  .tutorialSessionRetry:
                 return nil
@@ -350,11 +349,6 @@ struct OnboardingView: View {
             autoAdvance(for: .accessibility, status: new)
             publishPresentation()
         }
-        .onChange(of: permissions.inputMonitoring) { _, new in
-            syncSurfaceVisibility()
-            autoAdvance(for: .inputMonitoring, status: new)
-            publishPresentation()
-        }
         .onChange(of: permissions.screenRecording) { _, new in
             syncSurfaceVisibility()
             autoAdvance(for: .screenRecording, status: new)
@@ -420,7 +414,6 @@ struct OnboardingView: View {
         case .welcome:          welcomeView
         case .agentChoice:      agentChoiceView
         case .microphone:       permissionView(for: .microphone)
-        case .inputMonitoring:  permissionView(for: .inputMonitoring)
         case .parentAccessibility: permissionView(for: .accessibility)
         case .parentScreenRecording: permissionView(for: .screenRecording)
         case .pythonSetup:      pythonSetupView
@@ -935,7 +928,6 @@ struct OnboardingView: View {
         let runtimeReadiness = setupStatus()
         let readiness = currentReadiness
         let voiceReady = readiness.voiceReady
-        let inputMonitoringSummary = Self.inputMonitoringSummary(status: permissions.inputMonitoring)
         return VStack(spacing: 16) {
             Spacer(minLength: 4)
             if runtimeReadiness.isPreparing {
@@ -971,9 +963,6 @@ struct OnboardingView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                if let inputMonitoringSummary {
-                    inputMonitoringDeferredNotice(detail: inputMonitoringSummary)
-                }
                 Text("Two ways to start a voice session:")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1013,39 +1002,6 @@ struct OnboardingView: View {
         case .ready:
             return readiness.title
         }
-    }
-
-    private func inputMonitoringDeferredNotice(detail: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "keyboard.badge.eye")
-                .foregroundStyle(.orange)
-                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Input Monitoring deferred")
-                    .font(AppTypography.font(.cardHeading))
-                Text(detail)
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-            SettingsActionButton(
-                title: "Open Settings",
-                systemImage: "gearshape",
-                prominence: .secondary
-            ) {
-                requestInputMonitoringPermission()
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.10))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.orange.opacity(0.35))
-        )
     }
 
     /// Path picker used by first-run setup and the Ready step. The user must actively click
@@ -1234,7 +1190,7 @@ struct OnboardingView: View {
                 isEnabled: hasConfirmedWorkingDirectory || !showsWorkingDirectoryPicker,
                 shortcut: .default
             ) { beginGuidedSetup() }
-        case .microphone, .inputMonitoring, .parentAccessibility, .parentScreenRecording:
+        case .microphone, .parentAccessibility, .parentScreenRecording:
             return nil
         case .pythonSetup:
             return pythonPrimaryAction
@@ -1359,37 +1315,6 @@ struct OnboardingView: View {
             ) {
                 persistResume()
                 startPermissionSetup(.microphone, purpose: permissionExplanation(for: .microphone))
-            }
-        }
-    }
-
-    private var inputMonitoringPrimaryAction: OnboardingFooterAction {
-        switch permissions.inputMonitoring {
-        case .granted:
-            return footerAction(
-                title: "Continue",
-                systemImage: "arrow.right",
-                prominence: .primary,
-                shortcut: .default
-            ) { advance() }
-        case .notDetermined, .denied:
-            return footerAction(
-                title: "Open Input Monitoring Settings",
-                systemImage: "keyboard",
-                prominence: .primary,
-                shortcut: .default
-            ) {
-                startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
-            }
-        case .restricted:
-            return footerAction(
-                title: "Open System Settings",
-                systemImage: "gearshape",
-                prominence: .primary,
-                shortcut: .default
-            ) {
-                persistResume()
-                startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
             }
         }
     }
@@ -1666,7 +1591,6 @@ struct OnboardingView: View {
         case .welcome:          return "Welcome to Relay Runner"
         case .agentChoice:      return "Coding Agent"
         case .microphone:       return "Microphone"
-        case .inputMonitoring:  return "Input Monitoring"
         case .parentAccessibility: return "Accessibility"
         case .parentScreenRecording: return "Screen Recording"
         case .pythonSetup:      return "Python Environment"
@@ -1681,7 +1605,7 @@ struct OnboardingView: View {
             return "Guided setup walkthrough"
         case .agentChoice:
             return "Provider, model, effort, and workspace"
-        case .microphone, .inputMonitoring, .parentAccessibility, .parentScreenRecording:
+        case .microphone, .parentAccessibility, .parentScreenRecording:
             return "Privacy permission setup"
         case .pythonSetup:
             return "Local runtime preparation"
@@ -1865,19 +1789,6 @@ struct OnboardingView: View {
         return nil
     }
 
-    static func inputMonitoringSummary(status: PermissionStatus) -> String? {
-        switch status {
-        case .granted:
-            return nil
-        case .notDetermined:
-            return "Voice works with microphone permission alone. Grant Input Monitoring later to enable non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey."
-        case .denied:
-            return "Voice works with microphone permission alone. Restore Input Monitoring to re-enable non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey."
-        case .restricted:
-            return "Voice works with microphone permission alone, but a device policy appears to block Input Monitoring. Ask IT to allow Relay Runner before global activation keys and the double-tap Shift Workspace hotkey can work."
-        }
-    }
-
     static func initialSurfaceVisible(for step: Step) -> Bool {
         true
     }
@@ -1888,17 +1799,11 @@ struct OnboardingView: View {
         return activePermissionSetupKind != kind
     }
 
-    private func requestInputMonitoringPermission() {
-        persistResume()
-        startPermissionSetup(.inputMonitoring, purpose: permissionExplanation(for: .inputMonitoring))
-    }
-
     private var currentReadiness: GuidedSetupReadiness {
         GuidedSetupReadiness(
             provider: selectedAgentProvider,
             microphone: permissions.microphone,
             accessibility: permissions.accessibility,
-            inputMonitoring: permissions.inputMonitoring,
             screenRecording: permissions.screenRecording,
             pythonInstalled: venvReady,
             agentSignedIn: agentSignedIn,

@@ -423,12 +423,22 @@ final class ProcessManager {
     }
 
     @discardableResult
-    func relaunchBridgeDaemon(context: BridgeRecoveryContext) -> Bool {
+    func relaunchBridgeDaemon(
+        context: BridgeRecoveryContext,
+        suppressStartupGreeting: Bool = false
+    ) -> Bool {
         guard !Self.bridgeStopRequested() else { return false }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", Self.bridgeRecoveryScript(relayBridge: bundledRelayBridge.path, context: context)]
+        proc.arguments = [
+            "-c",
+            Self.bridgeRecoveryScript(
+                relayBridge: bundledRelayBridge.path,
+                context: context,
+                suppressStartupGreeting: suppressStartupGreeting
+            ),
+        ]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do {
@@ -441,8 +451,13 @@ final class ProcessManager {
         }
     }
 
-    static func bridgeRecoveryScript(relayBridge: String, context: BridgeRecoveryContext) -> String {
+    static func bridgeRecoveryScript(
+        relayBridge: String,
+        context: BridgeRecoveryContext,
+        suppressStartupGreeting: Bool = false
+    ) -> String {
         let provider = context.provider ?? ""
+        let greetingFlag = suppressStartupGreeting ? " --suppress-startup-greeting" : ""
         return """
         set +e
         RELAY_CWD=\(shellQuoted(context.workingDirectory))
@@ -502,7 +517,7 @@ final class ProcessManager {
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
-        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
+        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
         submit_status=$?
         echo "[relay-runner] app watchdog launchctl submit exit_status=$submit_status provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         for _ in $(seq 1 20); do
@@ -524,7 +539,7 @@ final class ProcessManager {
         [ "$print_status" -eq 0 ] || echo "[relay-runner] app watchdog launchctl print exit_status=$print_status" >> "$VOICE_BRIDGE_LOG"
         echo "[relay-runner] app watchdog falling back to direct background launch." >> "$VOICE_BRIDGE_LOG"
         launchctl remove com.relay.voicebridge 2>/dev/null || true
-        nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-runner] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1 &
+        nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1 &
         fallback_pid=$!
         echo "[relay-runner] app watchdog direct fallback launched pid=$fallback_pid provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         for _ in $(seq 1 20); do
@@ -667,7 +682,8 @@ final class ProcessManager {
     /// the same shipped relay contract.
     func prepareNewSession(
         config: AppConfig,
-        voiceDelivery: SessionVoiceDelivery = .agentSkill
+        voiceDelivery: SessionVoiceDelivery = .agentSkill,
+        suppressStartupGreeting: Bool = false
     ) throws -> PreparedSessionLaunch {
         Self.clearBridgeStopRequested()
 
@@ -700,7 +716,8 @@ final class ProcessManager {
             target: target,
             agentBinary: agentBinary,
             config: config,
-            voiceDelivery: voiceDelivery
+            voiceDelivery: voiceDelivery,
+            suppressStartupGreeting: suppressStartupGreeting
         )
         try script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
@@ -764,6 +781,7 @@ final class ProcessManager {
         agentBinary: String,
         config: AppConfig,
         voiceDelivery: SessionVoiceDelivery = .agentSkill,
+        suppressStartupGreeting: Bool = false,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> String {
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
@@ -776,7 +794,8 @@ final class ProcessManager {
         let cdLine = Self.cdLine(config.general.working_directory, homeDirectory: homeDirectory)
         let bridgeStartLine = Self.bridgeStartLine(
             relayBridge: relayBridge,
-            voiceDelivery: voiceDelivery
+            voiceDelivery: voiceDelivery,
+            suppressStartupGreeting: suppressStartupGreeting
         )
         let launchLine = Self.agentLaunchLine(
             binary: agentBinary,
@@ -1040,11 +1059,15 @@ final class ProcessManager {
 
     private static func bridgeStartLine(
         relayBridge: String,
-        voiceDelivery: SessionVoiceDelivery
+        voiceDelivery: SessionVoiceDelivery,
+        suppressStartupGreeting: Bool
     ) -> String {
         switch voiceDelivery {
         case .appOwned:
-            return "\(Self.shellQuoted(relayBridge)) --start-daemon || { echo '[Relay Runner] Voice bridge failed.'; exit 1; }"
+            let greetingFlag = suppressStartupGreeting
+                ? " --suppress-startup-greeting"
+                : ""
+            return "\(Self.shellQuoted(relayBridge)) --start-daemon\(greetingFlag) || { echo '[Relay Runner] Voice bridge failed.'; exit 1; }"
         case .agentSkill:
             return "\(Self.shellQuoted(relayBridge)) --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }"
         }

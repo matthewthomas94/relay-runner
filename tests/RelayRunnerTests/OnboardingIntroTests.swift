@@ -173,16 +173,9 @@ final class OnboardingIntroTests: XCTestCase {
         statuses[.accessibility] = .granted
         postGrant(.accessibility)
         drainMainQueue()
-        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone, .accessibility, .inputMonitoring])
-
-        intro.performPermissionAction()
-        statuses[.inputMonitoring] = .granted
-        postGrant(.inputMonitoring)
-        drainMainQueue()
         XCTAssertEqual(intro.permissionPrompts.map(\.permission), [
             .microphone,
             .accessibility,
-            .inputMonitoring,
             .screenRecording,
         ])
 
@@ -464,13 +457,16 @@ final class OnboardingIntroTests: XCTestCase {
         completeSessionControlsTutorial(controller)
 
         XCTAssertEqual(workspaceOpenCount, 1)
-        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .playback, .workspace])
+        XCTAssertEqual(
+            intro.tutorialPresentations.map(\.screen),
+            [.intro, .recording, .recordingActive, .playback, .cancellation, .workspace]
+        )
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.started.path))
         XCTAssertNil(OnboardingResumeState.load())
     }
 
-    func testTutorialRecordingWaitsForNonemptyResponseBeforePlayback() throws {
+    func testTutorialMovesFromRecordingActiveToPlaybackWhileWaitingForResponse() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -489,17 +485,84 @@ final class OnboardingIntroTests: XCTestCase {
         controller.noteTutorialResponseReady("   ")
         controller.noteTutorialPlaybackRequested()
 
-        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording])
-        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+        XCTAssertEqual(
+            intro.tutorialPresentations.map(\.screen),
+            [.intro, .recording, .recordingActive, .playback]
+        )
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
 
         controller.noteTutorialResponseReady("Hello, how are you?")
+        controller.noteTutorialPlaybackRequested()
 
-        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .playback])
+        XCTAssertEqual(
+            intro.tutorialPresentations.map(\.screen),
+            [.intro, .recording, .recordingActive, .playback]
+        )
         XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
     }
 
-    func testTutorialPlaybackRequiresPlayReplayAndActiveCancel() throws {
+    func testTutorialCancellationAcceptsWaitingOrPlayingReplayForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            for playBeforeCancelling in [false, true] {
+                OnboardingResumeState.clear()
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: directory) }
+
+                let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+                let intro = CapturingIntroPresenter()
+                let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+                beginSessionControlsTutorial(controller, intro: intro, provider: provider)
+
+                controller.noteTutorialRecordingStarted()
+                XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .recordingActive])
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecordingActive)
+
+                controller.noteTutorialSpeechDetected()
+                controller.noteTutorialRecordingSent()
+                XCTAssertEqual(
+                    intro.tutorialPresentations.map(\.screen),
+                    [.intro, .recording, .recordingActive, .playback]
+                )
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
+
+                controller.noteTutorialResponseReady("Hello, how are you?")
+                controller.noteTutorialCancelRequested()
+                controller.noteTutorialPlaybackRequested()
+                controller.noteTutorialCancelRequested()
+                controller.noteTutorialPlaybackStarted()
+                controller.noteTutorialCancelRequested()
+
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
+                XCTAssertEqual(
+                    controller.noteTutorialPlaybackFinished(),
+                    "Hello, how are you?"
+                )
+                XCTAssertEqual(
+                    intro.tutorialPresentations.map(\.screen),
+                    [.intro, .recording, .recordingActive, .playback, .cancellation]
+                )
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialCancellation)
+
+                if playBeforeCancelling {
+                    controller.noteTutorialPlaybackRequested()
+                }
+                controller.noteTutorialCancelRequested()
+
+                XCTAssertEqual(
+                    intro.tutorialPresentations.map(\.screen),
+                    [.intro, .recording, .recordingActive, .playback, .cancellation, .workspace]
+                )
+                XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialWorkspace)
+                controller.noteTutorialPlaybackStarted()
+                XCTAssertNil(controller.noteTutorialPlaybackFinished())
+            }
+        }
+    }
+
+    func testTutorialRecognizesPlaybackThatStartedBeforeGesturePoll() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -509,52 +572,85 @@ final class OnboardingIntroTests: XCTestCase {
         let intro = CapturingIntroPresenter()
         let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
         beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
-
         controller.noteTutorialRecordingStarted()
         controller.noteTutorialSpeechDetected()
         controller.noteTutorialRecordingSent()
         controller.noteTutorialResponseReady("Hello, how are you?")
-        controller.noteTutorialCancelRequested(playbackActive: true)
-        controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialCancelRequested(playbackActive: true)
-        controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialCancelRequested(playbackActive: false)
 
-        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .playback])
-        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        controller.noteTutorialPlaybackRequested(playbackActive: true)
+        controller.noteTutorialPlaybackFinished()
 
-        controller.noteTutorialCancelRequested(playbackActive: true)
-
-        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .playback, .workspace])
-        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialWorkspace)
+        XCTAssertEqual(intro.tutorialPresentations.last?.screen, .cancellation)
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialCancellation)
     }
 
-    func testTutorialResumePlaybackFallsBackToRecordingWithoutStaleResponse() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+    func testTutorialResumeTransientSubstepsFallsBackToRecordingWithoutStaleState() throws {
+        for step in [
+            OnboardingStepID.tutorialRecordingActive,
+            .tutorialPlayback,
+            .tutorialCancellation,
+        ] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
 
-        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
-        OnboardingResumeState.save(
-            step: .tutorialPlayback,
-            provider: .codex,
-            parentPermissionsReviewed: true
-        )
-        let intro = CapturingIntroPresenter()
-        let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            OnboardingResumeState.save(
+                step: step,
+                provider: .codex,
+                parentPermissionsReviewed: true
+            )
+            let intro = CapturingIntroPresenter()
+            let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
 
-        controller.showIfNeeded()
+            controller.showIfNeeded()
 
-        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.recording])
-        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.recording])
+            XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
 
-        controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialCancelRequested(playbackActive: true)
+            controller.noteTutorialPlaybackRequested()
+            controller.noteTutorialCancelRequested()
 
-        XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.recording])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.recording])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        }
+    }
+
+    func testTutorialRecordingWaitsForVoiceConsumerReadinessForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            OnboardingResumeState.save(
+                step: .tutorialRecording,
+                provider: provider,
+                parentPermissionsReviewed: true
+            )
+            let intro = CapturingIntroPresenter()
+            var sessionReady = false
+            let controller = makeSessionControlsTutorialController(
+                flagURLs: flagURLs,
+                intro: intro,
+                tutorialSessionReady: { sessionReady }
+            )
+
+            controller.showIfNeeded()
+
+            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro])
+            XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialIntro)
+
+            sessionReady = true
+            waitForMainQueue(after: 0.05)
+
+            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording])
+            XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+        }
     }
 
     func testTutorialResponseAndGestureGatesAreProviderNeutral() throws {
@@ -579,7 +675,7 @@ final class OnboardingIntroTests: XCTestCase {
 
             XCTAssertEqual(
                 intro.tutorialPresentations.map(\.screen),
-                [.intro, .recording, .playback, .workspace],
+                [.intro, .recording, .recordingActive, .playback, .cancellation, .workspace],
                 "provider: \(provider.rawValue)"
             )
             XCTAssertTrue(
@@ -611,8 +707,10 @@ final class OnboardingIntroTests: XCTestCase {
         controller.noteTutorialRecordingSent()
         controller.noteTutorialResponseReady("Hello, how are you?")
         controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialCancelRequested(playbackActive: true)
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialPlaybackFinished()
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialCancelRequested()
         drainMainQueue()
 
         XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialWorkspace)
@@ -653,8 +751,10 @@ final class OnboardingIntroTests: XCTestCase {
         controller.noteTutorialRecordingSent()
         controller.noteTutorialResponseReady("Hello, how are you?")
         controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialCancelRequested(playbackActive: true)
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialPlaybackFinished()
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialCancelRequested()
         controller.noteTutorialWorkspaceToggled()
         controller.noteTutorialWorkspaceToggled()
         drainMainQueue()
@@ -1856,14 +1956,6 @@ final class OnboardingIntroTests: XCTestCase {
             for: .microphone,
             activePermissionSetupKind: nil
         ))
-        XCTAssertFalse(OnboardingView.surfaceVisible(
-            for: .inputMonitoring,
-            activePermissionSetupKind: .inputMonitoring
-        ))
-        XCTAssertTrue(OnboardingView.surfaceVisible(
-            for: .inputMonitoring,
-            activePermissionSetupKind: nil
-        ))
         XCTAssertTrue(OnboardingView.surfaceVisible(
             for: .agentChoice,
             activePermissionSetupKind: .microphone
@@ -1987,6 +2079,7 @@ final class OnboardingIntroTests: XCTestCase {
     private func makeSessionControlsTutorialController(
         flagURLs: OnboardingFlagURLs,
         intro: CapturingIntroPresenter,
+        tutorialSessionReady: @escaping () -> Bool = { true },
         workspaceOpen: @escaping () -> Void = {}
     ) -> OnboardingController {
         OnboardingController(
@@ -1999,10 +2092,12 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            tutorialSessionReadyPollInterval: 0.01,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/dev") }
             },
             reduceMotion: { true },
+            tutorialSessionReady: tutorialSessionReady,
             openWorkspaceAfterCompletion: workspaceOpen
         )
     }
@@ -2031,8 +2126,10 @@ final class OnboardingIntroTests: XCTestCase {
         controller.noteTutorialRecordingSent()
         controller.noteTutorialResponseReady("Hello, how are you?")
         controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialPlaybackRequested()
-        controller.noteTutorialCancelRequested(playbackActive: true)
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialPlaybackFinished()
+        controller.noteTutorialPlaybackStarted()
+        controller.noteTutorialCancelRequested()
         controller.noteTutorialWorkspaceToggled()
         drainMainQueue()
     }

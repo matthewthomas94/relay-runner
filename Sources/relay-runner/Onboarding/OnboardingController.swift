@@ -80,12 +80,14 @@ final class OnboardingController {
     private let runtimePollInterval: TimeInterval
     private let authPollInterval: TimeInterval
     private let introAdvanceDelay: TimeInterval
+    private let tutorialSessionReadyPollInterval: TimeInterval
     private let pickWorkspaceDirectory: (
         _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
         _ completion: @escaping (String?) -> Void
     ) -> Void
     private let reduceMotion: () -> Bool
     private let startSessionForTutorial: () -> Bool
+    private let tutorialSessionReady: () -> Bool
     private let openWorkspaceAfterCompletion: () -> Void
     private var freshPermissionState: FreshPermissionState?
     private var freshWorkspaceSelectionInFlight = false
@@ -141,6 +143,7 @@ final class OnboardingController {
          runtimePollInterval: TimeInterval = 0.5,
          authPollInterval: TimeInterval = 1.0,
          introAdvanceDelay: TimeInterval = 0.4,
+         tutorialSessionReadyPollInterval: TimeInterval = 0.2,
          pickWorkspaceDirectory: @escaping (
             _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
             _ completion: @escaping (String?) -> Void
@@ -158,6 +161,7 @@ final class OnboardingController {
          },
          reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
          startSessionForTutorial: @escaping () -> Bool = { true },
+         tutorialSessionReady: @escaping () -> Bool = { true },
          openWorkspaceAfterCompletion: @escaping () -> Void = {}) {
         self.presentation = presentation
         self.flagURLs = flagURLs
@@ -183,9 +187,11 @@ final class OnboardingController {
         self.runtimePollInterval = runtimePollInterval
         self.authPollInterval = authPollInterval
         self.introAdvanceDelay = introAdvanceDelay
+        self.tutorialSessionReadyPollInterval = tutorialSessionReadyPollInterval
         self.pickWorkspaceDirectory = pickWorkspaceDirectory
         self.reduceMotion = reduceMotion
         self.startSessionForTutorial = startSessionForTutorial
+        self.tutorialSessionReady = tutorialSessionReady
         self.openWorkspaceAfterCompletion = openWorkspaceAfterCompletion
     }
 
@@ -511,7 +517,13 @@ final class OnboardingController {
         }
 
         switch resumeState?.step {
-        case .tutorialIntro, .tutorialRecording, .tutorialPlayback, .tutorialWorkspace, .tutorialSessionRetry:
+        case .tutorialIntro,
+             .tutorialRecording,
+             .tutorialRecordingActive,
+             .tutorialPlayback,
+             .tutorialCancellation,
+             .tutorialWorkspace,
+             .tutorialSessionRetry:
             if let step = resumeState?.step,
                let screen = OnboardingSessionControlsTutorial.screen(for: step) {
                 beginSessionControlsTutorial(screen: screen)
@@ -783,15 +795,29 @@ final class OnboardingController {
             return
         }
 
-        let safeScreen: OnboardingTutorialScreen = screen == .playback ? .recording : screen
-        if screen == .playback {
+        let transientScreens: [OnboardingTutorialScreen] = [
+            .recordingActive,
+            .playback,
+            .cancellation,
+        ]
+        let safeScreen: OnboardingTutorialScreen = transientScreens.contains(screen)
+            ? .recording
+            : screen
+        if transientScreens.contains(screen) {
             tutorialState?.recordingGate = .waitingForStart
             tutorialState?.playbackGate = .waitingForPlayback
             tutorialState?.responseText = nil
         }
 
-        presentTutorial(screen: safeScreen)
-        if safeScreen == .intro {
+        let presentedScreen: OnboardingTutorialScreen
+        if safeScreen == .recording && !tutorialSessionReady() {
+            presentedScreen = .intro
+        } else {
+            presentedScreen = safeScreen
+        }
+
+        presentTutorial(screen: presentedScreen)
+        if presentedScreen == .intro {
             scheduleTutorialIntroAdvance(provider: provider)
         }
     }
@@ -818,13 +844,28 @@ final class OnboardingController {
     }
 
     private func scheduleTutorialIntroAdvance(provider: GeneralConfig.AgentProvider) {
+        let delay = reduceMotion() ? 0 : introAdvanceDelay
+        scheduleTutorialIntroAdvance(provider: provider, after: delay)
+    }
+
+    private func scheduleTutorialIntroAdvance(
+        provider: GeneralConfig.AgentProvider,
+        after delay: TimeInterval
+    ) {
         let work = DispatchWorkItem { [weak self] in
             guard let self,
-                  self.tutorialState?.provider == provider else { return }
+                  self.tutorialState?.provider == provider,
+                  OnboardingResumeState.load()?.step == .tutorialIntro else { return }
+            guard self.tutorialSessionReady() else {
+                self.scheduleTutorialIntroAdvance(
+                    provider: provider,
+                    after: self.tutorialSessionReadyPollInterval
+                )
+                return
+            }
             self.presentTutorial(screen: .recording)
         }
         tutorialIntroAdvance = work
-        let delay = reduceMotion() ? 0 : introAdvanceDelay
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
@@ -835,6 +876,10 @@ final class OnboardingController {
 
     var isAwaitingTutorialWorkspaceToggle: Bool {
         OnboardingResumeState.load()?.step == .tutorialWorkspace
+    }
+
+    var isSessionControlsTutorialActive: Bool {
+        tutorialState != nil
     }
 
     func noteTutorialRecordingStarted() {
@@ -851,7 +896,7 @@ final class OnboardingController {
 
     func noteTutorialResponseReady(_ text: String?) {
         guard var state = tutorialState,
-              OnboardingResumeState.load()?.step == .tutorialRecording,
+              OnboardingResumeState.load()?.step == .tutorialPlayback,
               state.recordingGate == .waitingForResponse,
               let response = text?.trimmingCharacters(in: .whitespacesAndNewlines),
               !response.isEmpty else { return }
@@ -861,30 +906,72 @@ final class OnboardingController {
             event: .responseReady
         )
         tutorialState = state
-        if state.recordingGate == .complete {
-            presentTutorial(screen: .playback)
-        }
     }
 
-    func noteTutorialPlaybackRequested() {
+    func noteTutorialPlaybackRequested(playbackActive: Bool = false) {
         guard var state = tutorialState,
-              OnboardingResumeState.load()?.step == .tutorialPlayback,
+              let step = OnboardingResumeState.load()?.step,
+              step == .tutorialPlayback || step == .tutorialCancellation,
+              state.recordingGate == .complete,
               state.responseText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         else { return }
         state.playbackGate = OnboardingSessionControlsTutorial.nextPlaybackGate(
             state.playbackGate,
             event: .playbackRequested
         )
+        if playbackActive {
+            state.playbackGate = OnboardingSessionControlsTutorial.nextPlaybackGate(
+                state.playbackGate,
+                event: .playbackStarted
+            )
+        }
         tutorialState = state
     }
 
-    func noteTutorialCancelRequested(playbackActive: Bool) {
+    func noteTutorialPlaybackStarted() {
         guard var state = tutorialState,
-              OnboardingResumeState.load()?.step == .tutorialPlayback else { return }
+              let step = OnboardingResumeState.load()?.step,
+              step == .tutorialPlayback || step == .tutorialCancellation else { return }
         state.playbackGate = OnboardingSessionControlsTutorial.nextPlaybackGate(
             state.playbackGate,
-            event: .cancelRequested,
-            playbackActive: playbackActive
+            event: .playbackStarted
+        )
+        tutorialState = state
+    }
+
+    @discardableResult
+    func noteTutorialPlaybackFinished() -> String? {
+        guard var state = tutorialState,
+              OnboardingResumeState.load()?.step == .tutorialPlayback else {
+            return persistentTutorialReplayResponse
+        }
+        let previousGate = state.playbackGate
+        state.playbackGate = OnboardingSessionControlsTutorial.nextPlaybackGate(
+            state.playbackGate,
+            event: .playbackFinished
+        )
+        tutorialState = state
+        guard previousGate == .waitingForInitialPlaybackEnd,
+              state.playbackGate == .waitingForReplayStart else { return nil }
+
+        presentTutorial(screen: .cancellation)
+        return persistentTutorialReplayResponse
+    }
+
+    private var persistentTutorialReplayResponse: String? {
+        guard OnboardingResumeState.load()?.step == .tutorialCancellation,
+              let response = tutorialState?.responseText?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !response.isEmpty else { return nil }
+        return response
+    }
+
+    func noteTutorialCancelRequested() {
+        guard var state = tutorialState,
+              OnboardingResumeState.load()?.step == .tutorialCancellation else { return }
+        state.playbackGate = OnboardingSessionControlsTutorial.nextPlaybackGate(
+            state.playbackGate,
+            event: .cancelRequested
         )
         tutorialState = state
         if state.playbackGate == .complete {
@@ -901,13 +988,19 @@ final class OnboardingController {
 
     private func advanceRecordingTutorial(with event: OnboardingSessionControlsTutorial.Event) {
         guard var state = tutorialState,
-              OnboardingResumeState.load()?.step == .tutorialRecording else { return }
+              let step = OnboardingResumeState.load()?.step,
+              step == .tutorialRecording || step == .tutorialRecordingActive else { return }
+        let previousGate = state.recordingGate
         state.recordingGate = OnboardingSessionControlsTutorial.nextRecordingGate(
             state.recordingGate,
             event: event
         )
         tutorialState = state
-        if state.recordingGate == .complete {
+        if previousGate == .waitingForStart,
+           state.recordingGate == .waitingForSpeech {
+            presentTutorial(screen: .recordingActive)
+        } else if previousGate == .waitingForSend,
+                  state.recordingGate == .waitingForResponse {
             presentTutorial(screen: .playback)
         }
     }

@@ -109,6 +109,99 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             allow_pending_command=True,
         )
 
+    def test_relay_startup_skips_greeting_when_tutorial_suppresses_it(self):
+        worker = FakeTTSWorker()
+        shutdown_event = threading.Event()
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=None),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text") as queue_tts,
+        ):
+            voice_bridge._run_relay(
+                worker,
+                shutdown_event,
+                suppress_startup_greeting=True,
+            )
+
+        queue_tts.assert_not_called()
+
+    def test_parse_args_recognizes_tutorial_startup_greeting_suppression(self):
+        with mock.patch.object(
+            sys,
+            "argv",
+            ["voice_bridge.py", "--relay", "--suppress-startup-greeting"],
+        ):
+            cli = voice_bridge._parse_args()
+
+        self.assertTrue(cli["relay"])
+        self.assertTrue(cli["suppress_startup_greeting"])
+
+    def test_tutorial_session_suppresses_only_first_fast_messenger_reply(self):
+        worker = FakeTTSWorker()
+        messenger = FakeMessenger()
+        shutdown_event = threading.Event()
+        action = types.SimpleNamespace(kind="non_work", outcome="normal conversation")
+
+        def read_once(_fd, _size):
+            shutdown_event.set()
+            return b"Hello.\nWhat is next?\n"
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge.os, "close"),
+            mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+            mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_begin_relay_command", side_effect=[
+                {
+                    "relay_command_seq": 1,
+                    "relay_command_id": "tutorial-1",
+                },
+                {
+                    "relay_command_seq": 2,
+                    "relay_command_id": "normal-2",
+                },
+            ]),
+            mock.patch.object(voice_bridge, "resolve_command_action", return_value=action),
+            mock.patch.object(voice_bridge, "format_command_for_agent", return_value="Hello."),
+            mock.patch.object(voice_bridge, "_metadata_for_action", return_value={
+                "relay_command_seq": 1,
+                "relay_command_id": "tutorial-1",
+                "action": "conversation",
+            }),
+            mock.patch.object(
+                voice_bridge,
+                "_should_fanout_raw_instruction_to_orchestrator",
+                return_value=False,
+            ),
+            mock.patch.object(voice_bridge, "_queue_voice_acknowledgement", return_value=True),
+            mock.patch.object(voice_bridge, "_start_pm_update_mode"),
+            mock.patch.object(voice_bridge, "_publish_command") as publish_command,
+        ):
+            voice_bridge._run_relay(
+                worker,
+                shutdown_event,
+                messenger=messenger,
+                suppress_startup_greeting=True,
+            )
+
+        self.assertEqual(
+            messenger.users,
+            [(
+                "What is next?",
+                {
+                    "relay_command_seq": 2,
+                    "relay_command_id": "normal-2",
+                },
+            )],
+        )
+        self.assertEqual(publish_command.call_count, 2)
+
     def test_voice_command_publication_does_not_arm_missing_final_fallback(self):
         worker = FakeTTSWorker()
         shutdown_event = threading.Event()

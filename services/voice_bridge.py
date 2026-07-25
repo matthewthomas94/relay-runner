@@ -1311,7 +1311,7 @@ def _reset_foreground_reply_delivery_for_tests() -> None:
 
 
 def _parse_args() -> dict:
-    """Parse CLI args: --config <path>, --session <id>, --relay."""
+    """Parse CLI args for direct and relay bridge modes."""
     args = sys.argv[1:]
     result: dict = {}
     for i, arg in enumerate(args):
@@ -1319,6 +1319,8 @@ def _parse_args() -> dict:
             result["session"] = args[i + 1]
         elif arg == "--relay":
             result["relay"] = True
+        elif arg == "--suppress-startup-greeting":
+            result["suppress_startup_greeting"] = True
     return result
 
 
@@ -1881,8 +1883,11 @@ def _run_relay(
     *,
     orchestrator_session: dict | None = None,
     messenger: MessengerRuntime | None = None,
+    suppress_startup_greeting: bool = False,
 ):
     """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
+    suppress_next_messenger_user_reply = suppress_startup_greeting
+
     # Create TTS input FIFO
     for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE, VOICE_PROVIDER_TURNS_FILE]:
         try:
@@ -1893,11 +1898,12 @@ def _run_relay(
     if not ensure_fifo(TTS_IN_FIFO):
         return
 
-    _queue_tts_text(
-        STARTUP_GREETING,
-        tts_worker.input_queue,
-        allow_pending_command=True,
-    )
+    if not suppress_startup_greeting:
+        _queue_tts_text(
+            STARTUP_GREETING,
+            tts_worker.input_queue,
+            allow_pending_command=True,
+        )
 
     # Start TTS input reader thread
     tts_reader = threading.Thread(
@@ -1970,7 +1976,13 @@ def _run_relay(
                 # action for the foreground orchestrator session.
                 tts_worker.skip()
                 relay_command = _begin_relay_command(text)
-                if messenger is not None:
+                # Tutorial sessions need one authoritative reply to exercise
+                # play, replay, and cancel. A fast social reply here would race
+                # the foreground provider and leave its second greeting queued
+                # after the tutorial has already advanced.
+                should_submit_to_messenger = not suppress_next_messenger_user_reply
+                suppress_next_messenger_user_reply = False
+                if messenger is not None and should_submit_to_messenger:
                     messenger.submit_user(text, relay_command)
                 _queue_voice_acknowledgement(
                     relay_command,
@@ -2090,6 +2102,10 @@ def main():
                 shutdown_event,
                 orchestrator_session=orchestrator_session,
                 messenger=messenger,
+                suppress_startup_greeting=cli.get(
+                    "suppress_startup_greeting",
+                    False,
+                ),
             )
         finally:
             shutdown_event.set()

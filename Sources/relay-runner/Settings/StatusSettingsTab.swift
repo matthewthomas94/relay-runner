@@ -12,7 +12,6 @@ struct StatusSettingsTab: View {
     static let privacyPermissionOrder: [PermissionKind] = [
         .microphone,
         .accessibility,
-        .inputMonitoring,
         .screenRecording,
     ]
     static let onboardingSectionTitle = "Onboarding"
@@ -48,7 +47,7 @@ struct StatusSettingsTab: View {
                 }
             }
 
-            if !appState.permissions.resetSinceLastRun.isEmpty {
+            if !Self.visibleResetPermissions(appState.permissions.resetSinceLastRun).isEmpty {
                 SettingsSection {
                     SettingsRow {
                         staleGrantBanner
@@ -84,9 +83,8 @@ struct StatusSettingsTab: View {
     /// automatically when the user re-grants.
     @ViewBuilder
     private var staleGrantBanner: some View {
-        let names = appState.permissions.resetSinceLastRun
-            .map { $0.displayName }
-            .sorted()
+        let names = Self.visibleResetPermissions(appState.permissions.resetSinceLastRun)
+            .map(\.displayName)
             .joined(separator: ", ")
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "arrow.counterclockwise.circle.fill")
@@ -122,7 +120,11 @@ struct StatusSettingsTab: View {
         return statusRow(
             label: kind.displayName,
             state: permissionState(status: status, restricted: restricted),
-            detail: Self.permissionDetailText(kind: kind, status: status, restricted: restricted),
+            detail: Self.permissionDetailText(
+                kind: kind,
+                status: status,
+                restricted: restricted
+            ),
             action: permissionAction(kind: kind, status: status)
         )
     }
@@ -252,15 +254,11 @@ struct StatusSettingsTab: View {
             return "Denied — click Ask Again to show Apple's microphone prompt."
         case .denied where kind == .accessibility:
             return "Denied — Relay Actions click, type, key, scroll, and UI automation are disabled until restored."
-        case .denied where kind == .inputMonitoring:
-            return "Denied — global activation keys and the double-tap Shift Workspace hotkey are disabled until restored."
         case .denied where kind == .screenRecording:
             return "Denied — Relay Vision screenshots are disabled until restored in System Settings."
         case .denied:        return "Denied — open System Settings to allow."
         case .notDetermined where kind == .accessibility:
             return "Not set up — grant to enable Relay Actions click, type, key, scroll, and UI automation."
-        case .notDetermined where kind == .inputMonitoring:
-            return "Not set up — grant to enable global activation keys and the double-tap Shift Workspace hotkey."
         case .notDetermined where kind == .screenRecording:
             return "Not set up — grant to enable Relay Vision screenshots."
         case .notDetermined: return "Not yet requested."
@@ -273,15 +271,6 @@ struct StatusSettingsTab: View {
         guard let title = Self.permissionActionTitle(kind: kind, status: status) else { return nil }
         if kind == .microphone {
             return RowAction(title: title, systemImage: "mic.badge.plus") {
-                appState.requestPermissionSetup(
-                    kind,
-                    source: .settingsStatus,
-                    purpose: Self.permissionDetailText(kind: kind, status: status, restricted: false)
-                )
-            }
-        }
-        if kind == .inputMonitoring {
-            return RowAction(title: title, systemImage: "keyboard") {
                 appState.requestPermissionSetup(
                     kind,
                     source: .settingsStatus,
@@ -304,10 +293,11 @@ struct StatusSettingsTab: View {
         if kind == .microphone {
             return status == .denied ? "Ask Again" : "Request"
         }
-        if kind == .inputMonitoring {
-            return "Restore Hotkeys"
-        }
         return "Open Settings"
+    }
+
+    static func visibleResetPermissions(_ resetPermissions: Set<PermissionKind>) -> [PermissionKind] {
+        privacyPermissionOrder.filter(resetPermissions.contains)
     }
 
     static func permissionActionIntent(kind: PermissionKind,

@@ -68,9 +68,35 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(script.contains("--venv-only"))
         XCTAssertFalse(script.contains("Use the relay-bridge skill now."))
         XCTAssertFalse(script.contains("\"/relay-bridge\""))
+        XCTAssertFalse(script.contains("--suppress-startup-greeting"))
         XCTAssertTrue(script.contains("developer_instructions="))
         XCTAssertTrue(script.contains("exec '/usr/local/bin/codex'"))
         XCTAssertTrue(script.contains("--dangerously-bypass-approvals-and-sandbox"))
+    }
+
+    func testTutorialLaunchScriptSuppressesOnlyTheInitialBridgeGreetingForCodexAndClaude() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            var config = AppConfig()
+            config.general.provider = provider
+            let target: ProcessManager.AgentTarget = provider == .codex ? .codex : .claude
+            let binary = provider == .codex ? "/usr/local/bin/codex" : "/usr/local/bin/claude"
+
+            let script = ProcessManager.launchScript(
+                relayBridge: "/Relay Runner/relay-bridge",
+                target: target,
+                agentBinary: binary,
+                config: config,
+                voiceDelivery: .appOwned,
+                suppressStartupGreeting: true,
+                homeDirectory: home
+            )
+
+            XCTAssertTrue(script.contains(
+                "'/Relay Runner/relay-bridge' --start-daemon --suppress-startup-greeting"
+            ))
+        }
     }
 
     func testEmbeddedLaunchScriptPassesEquivalentHiddenRelayInstructionsForCodexAndClaude() {

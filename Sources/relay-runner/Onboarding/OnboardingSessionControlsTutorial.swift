@@ -3,9 +3,15 @@ import SwiftUI
 enum OnboardingTutorialScreen: String, Equatable {
     case intro
     case recording
+    case recordingActive
     case playback
+    case cancellation
     case workspace
     case sessionRetry
+
+    var showsLoadingIndicator: Bool {
+        self == .intro
+    }
 }
 
 struct OnboardingTutorialPresentation: Equatable {
@@ -21,6 +27,8 @@ enum OnboardingSessionControlsTutorial {
         case recordingSent
         case responseReady
         case playbackRequested
+        case playbackStarted
+        case playbackFinished
         case cancelRequested
         case workspaceToggled
     }
@@ -35,7 +43,9 @@ enum OnboardingSessionControlsTutorial {
 
     enum PlaybackGate: Equatable {
         case waitingForPlayback
-        case waitingForReplay
+        case waitingForInitialPlaybackStart
+        case waitingForInitialPlaybackEnd
+        case waitingForReplayStart
         case waitingForCancel
         case complete
     }
@@ -56,14 +66,20 @@ enum OnboardingSessionControlsTutorial {
     }
 
     static func nextPlaybackGate(_ gate: PlaybackGate,
-                                 event: Event,
-                                 playbackActive: Bool = false) -> PlaybackGate {
+                                 event: Event) -> PlaybackGate {
         switch (gate, event) {
         case (.waitingForPlayback, .playbackRequested):
-            return .waitingForReplay
-        case (.waitingForReplay, .playbackRequested):
+            return .waitingForInitialPlaybackStart
+        case (.waitingForInitialPlaybackStart, .playbackStarted):
+            return .waitingForInitialPlaybackEnd
+        case (.waitingForInitialPlaybackEnd, .playbackFinished):
+            return .waitingForReplayStart
+        case (.waitingForReplayStart, .playbackRequested),
+             (.waitingForReplayStart, .playbackStarted):
             return .waitingForCancel
-        case (.waitingForCancel, .cancelRequested) where playbackActive:
+        case (.waitingForReplayStart, .cancelRequested):
+            return .complete
+        case (.waitingForCancel, .cancelRequested):
             return .complete
         default:
             return gate
@@ -76,8 +92,12 @@ enum OnboardingSessionControlsTutorial {
             return .tutorialIntro
         case .recording:
             return .tutorialRecording
+        case .recordingActive:
+            return .tutorialRecordingActive
         case .playback:
             return .tutorialPlayback
+        case .cancellation:
+            return .tutorialCancellation
         case .workspace:
             return .tutorialWorkspace
         case .sessionRetry:
@@ -91,8 +111,12 @@ enum OnboardingSessionControlsTutorial {
             return .intro
         case .tutorialRecording:
             return .recording
+        case .tutorialRecordingActive:
+            return .recordingActive
         case .tutorialPlayback:
             return .playback
+        case .tutorialCancellation:
+            return .cancellation
         case .tutorialWorkspace:
             return .workspace
         case .tutorialSessionRetry:
@@ -122,41 +146,63 @@ struct OnboardingTutorialView: View {
     private var content: some View {
         switch presentation.screen {
         case .intro:
-            OnboardingBlinkingTitle(
-                "Great, now lets learn the basics /",
-                reduceMotion: presentation.reduceMotion
-            )
+            ZStack {
+                OnboardingBlinkingTitle(
+                    "Great, now lets learn the basics /",
+                    reduceMotion: presentation.reduceMotion
+                )
+                if presentation.screen.showsLoadingIndicator {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(.white)
+                        .offset(y: 72)
+                        .accessibilityLabel("Preparing voice session")
+                }
+            }
         case .recording:
             HStack(alignment: .center, spacing: 30) {
-                tutorialText("turn")
+                tutorialText("Turn")
                 OnboardingTutorialKeycap(
                     animation: .capsLock,
                     reduceMotion: presentation.reduceMotion
                 )
-                tutorialText("on & say hi, turn it off to send /")
+                tutorialText("on & say hi /")
+            }
+        case .recordingActive:
+            HStack(alignment: .center, spacing: 30) {
+                tutorialText("Now turn")
+                OnboardingTutorialKeycap(
+                    animation: .capsLock,
+                    reduceMotion: presentation.reduceMotion
+                )
+                tutorialText("off to send the message /")
             }
         case .playback:
             HStack(alignment: .center, spacing: 26) {
-                tutorialText("Double tap")
+                tutorialText("Wait for a reply then double tap")
                 OnboardingTutorialKeycap(
                     animation: .playbackOption,
                     reduceMotion: presentation.reduceMotion
                 )
-                tutorialText("to play/ replay, double tap")
+                tutorialText("to play or replay /")
+            }
+        case .cancellation:
+            HStack(alignment: .center, spacing: 26) {
+                tutorialText("Double tap")
                 OnboardingTutorialKeycap(
                     animation: .playbackControl,
                     reduceMotion: presentation.reduceMotion
                 )
-                tutorialText("to cancel /")
+                tutorialText("to cancel playback /")
             }
         case .workspace:
             HStack(alignment: .center, spacing: 30) {
-                tutorialText("You're all set, double tap")
+                tutorialText("Finally, double tap")
                 OnboardingTutorialKeycap(
                     animation: .shift,
                     reduceMotion: presentation.reduceMotion
                 )
-                tutorialText("to enter/ exit your workspace /")
+                tutorialText("to enter & exit your workspace /")
             }
         case .sessionRetry:
             VStack(spacing: 32) {
@@ -191,11 +237,15 @@ struct OnboardingTutorialView: View {
         case .intro:
             return "Great, now lets learn the basics"
         case .recording:
-            return "Turn Caps Lock on and say hi, turn it off to send"
+            return "Turn Caps Lock on and say hi"
+        case .recordingActive:
+            return "Now turn Caps Lock off to send the message"
         case .playback:
-            return "Double tap Option to play or replay, double tap Control to cancel"
+            return "Wait for a reply then double tap Option to play or replay"
+        case .cancellation:
+            return "Double tap Control to cancel playback"
         case .workspace:
-            return "You're all set, double tap Shift to enter or exit your workspace"
+            return "Finally, double tap Shift to enter and exit your workspace"
         case .sessionRetry:
             return "Session setup needs attention"
         }
@@ -224,7 +274,7 @@ enum OnboardingTutorialKeycapKind {
     var width: CGFloat {
         switch self {
         case .control:
-            return 118
+            return 120
         case .capsLock, .option, .shift:
             return 120
         }
@@ -237,7 +287,7 @@ enum OnboardingTutorialKeycapKind {
         case .option:
             return 114
         case .control:
-            return 112
+            return 114
         case .shift:
             return 51
         }
@@ -382,7 +432,7 @@ extension OnboardingSessionControlsTutorial {
             return doubleTapPhase(
                 at: time,
                 cycleDuration: animation.cycleDuration,
-                tapStarts: [1.30, 1.52]
+                tapStarts: [0.0, 0.22]
             )
         case .shift:
             return doubleTapPhase(

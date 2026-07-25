@@ -6,6 +6,8 @@
 #   relay-bridge --relay             # Same as default; kept for existing skill launchers
 #   relay-bridge --venv-only         # Run venv bootstrap and exit 0 (used by onboarding)
 #   relay-bridge --start-daemon      # Bootstrap, launch detached bridge daemon, exit
+#   relay-bridge --suppress-startup-greeting
+#                                    # Skip the initial TTS greeting for tutorial sessions
 #   relay-bridge --install-skills    # Force-write Relay skills/commands and exit 0
 #
 # Supported voice sessions run through Start Session or the installed
@@ -88,6 +90,7 @@ VENV_ONLY=false
 INSTALL_SKILLS_ONLY=false
 ROTATE_LOG_ONLY=false
 START_DAEMON_ONLY=false
+SUPPRESS_STARTUP_GREETING=false
 
 # Emit a progress marker the SwiftUI installer can parse to drive a
 # determinate progress bar. Format: `RELAY_PROGRESS:<percent>:<label>`.
@@ -923,7 +926,11 @@ start_voice_bridge_daemon() {
     local relay_cwd="${PWD}"
     local relay_bridge="$SCRIPT_DIR/relay-bridge"
     local relay_provider="${RELAY_RUNNER_PROVIDER:-}"
+    local relay_startup_flag=""
     local voice_bridge_log
+    if $SUPPRESS_STARTUP_GREETING; then
+        relay_startup_flag="--suppress-startup-greeting"
+    fi
     voice_bridge_log="$(voice_bridge_log_path)"
 
     VOICE_BRIDGE_LOG_REASON=start \
@@ -934,7 +941,7 @@ start_voice_bridge_daemon() {
     launchctl remove com.relay.voicebridge 2>/dev/null || true
     echo "[relay-bridge] launching via launchctl provider=${relay_provider:-none} cwd=$relay_cwd bridge=$relay_bridge" >> "$voice_bridge_log"
     set +e
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" >> "$voice_bridge_log" 2>&1
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" >> "$voice_bridge_log" 2>&1
     local submit_status=$?
     set -e
     echo "[relay-bridge] launchctl submit exit_status=$submit_status provider=${relay_provider:-none}" >> "$voice_bridge_log"
@@ -959,7 +966,7 @@ start_voice_bridge_daemon() {
     [ "$print_status" -eq 0 ] || echo "[relay-bridge] launchctl print exit_status=$print_status" >> "$voice_bridge_log"
     echo "[relay-bridge] falling back to direct background launch." >> "$voice_bridge_log"
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" >> "$voice_bridge_log" 2>&1 &
+    nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" >> "$voice_bridge_log" 2>&1 &
     local fallback_pid=$!
     echo "[relay-bridge] direct fallback launched pid=$fallback_pid provider=${relay_provider:-none}" >> "$voice_bridge_log"
     for i in $(seq 1 20); do
@@ -980,6 +987,10 @@ for arg in "$@"; do
         --install-skills) INSTALL_SKILLS_ONLY=true ;;
         --rotate-log) ROTATE_LOG_ONLY=true ;;
         --start-daemon) START_DAEMON_ONLY=true ;;
+        --suppress-startup-greeting)
+            SUPPRESS_STARTUP_GREETING=true
+            __rb_args+=("$arg")
+            ;;
         *) __rb_args+=("$arg") ;;
     esac
 done

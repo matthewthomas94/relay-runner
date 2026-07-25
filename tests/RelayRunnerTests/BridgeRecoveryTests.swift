@@ -317,6 +317,30 @@ final class BridgeRecoveryTests: XCTestCase {
                 consumerAlive: true
             )
         )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true,
+                sessionControlsTutorialActive: true
+            )
+        )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true,
+                suppressesStartupGreeting: true
+            )
+        )
     }
 
     func testWatchdogRecoversTimedOutPendingVoiceCommandWhenDaemonIsMissing() {
@@ -458,6 +482,22 @@ final class BridgeRecoveryTests: XCTestCase {
         XCTAssertTrue(script.contains("RELAY_PROVIDER=''"))
         XCTAssertTrue(script.contains("unset RELAY_RUNNER_PROVIDER"))
         XCTAssertTrue(script.contains("provider=${3:-none}"))
+    }
+
+    func testRecoveryScriptPreservesTutorialGreetingSuppression() {
+        let script = ProcessManager.bridgeRecoveryScript(
+            relayBridge: "/usr/local/bin/relay-bridge",
+            context: .init(workingDirectory: "/Users/example/tutorial", provider: "codex"),
+            suppressStartupGreeting: true
+        )
+
+        XCTAssertTrue(script.contains("\"$2\" --relay --suppress-startup-greeting"))
+        XCTAssertFalse(
+            ProcessManager.bridgeRecoveryScript(
+                relayBridge: "/usr/local/bin/relay-bridge",
+                context: .init(workingDirectory: "/Users/example/normal", provider: "codex")
+            ).contains("--suppress-startup-greeting")
+        )
     }
 
     func testPendingVoiceCommandTimesOutAfterDocumentedDeliveryTimeout() throws {

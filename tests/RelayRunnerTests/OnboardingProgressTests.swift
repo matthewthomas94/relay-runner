@@ -34,45 +34,59 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(gate, .complete)
     }
 
-    func testTutorialPlaybackGateRequiresPlayReplayThenActiveCancel() {
+    func testTutorialPlaybackGateAcceptsCancelWhileReplayIsWaitingOrPlaying() {
         var gate = OnboardingSessionControlsTutorial.PlaybackGate.waitingForPlayback
 
-        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(
-            gate,
-            event: .cancelRequested,
-            playbackActive: true
-        )
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .cancelRequested)
         XCTAssertEqual(gate, .waitingForPlayback)
 
         gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .playbackRequested)
-        XCTAssertEqual(gate, .waitingForReplay)
+        XCTAssertEqual(gate, .waitingForInitialPlaybackStart)
 
-        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .recordingStarted)
-        XCTAssertEqual(gate, .waitingForReplay)
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .playbackFinished)
+        XCTAssertEqual(gate, .waitingForInitialPlaybackStart)
 
-        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .cancelRequested)
+        XCTAssertEqual(gate, .waitingForInitialPlaybackStart)
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .playbackStarted)
+        XCTAssertEqual(gate, .waitingForInitialPlaybackEnd)
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .cancelRequested)
+        XCTAssertEqual(gate, .waitingForInitialPlaybackEnd)
+
+        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .playbackFinished)
+        XCTAssertEqual(gate, .waitingForReplayStart)
+
+        let waitingCancel = OnboardingSessionControlsTutorial.nextPlaybackGate(
             gate,
-            event: .cancelRequested,
-            playbackActive: true
+            event: .cancelRequested
         )
-        XCTAssertEqual(gate, .waitingForReplay)
+        XCTAssertEqual(waitingCancel, .complete)
 
-        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(gate, event: .playbackRequested)
-        XCTAssertEqual(gate, .waitingForCancel)
-
-        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(
+        var playingCancel = OnboardingSessionControlsTutorial.nextPlaybackGate(
             gate,
-            event: .cancelRequested,
-            playbackActive: false
+            event: .playbackRequested
         )
-        XCTAssertEqual(gate, .waitingForCancel)
+        XCTAssertEqual(playingCancel, .waitingForCancel)
 
-        gate = OnboardingSessionControlsTutorial.nextPlaybackGate(
-            gate,
-            event: .cancelRequested,
-            playbackActive: true
+        playingCancel = OnboardingSessionControlsTutorial.nextPlaybackGate(
+            playingCancel,
+            event: .playbackStarted
         )
-        XCTAssertEqual(gate, .complete)
+        XCTAssertEqual(playingCancel, .waitingForCancel)
+
+        playingCancel = OnboardingSessionControlsTutorial.nextPlaybackGate(
+            playingCancel,
+            event: .playbackFinished
+        )
+        XCTAssertEqual(playingCancel, .waitingForCancel)
+
+        playingCancel = OnboardingSessionControlsTutorial.nextPlaybackGate(
+            playingCancel,
+            event: .cancelRequested
+        )
+        XCTAssertEqual(playingCancel, .complete)
     }
 
     func testSimplifiedMicrophoneOnlyProgressIsNotSettingsHosted() {
@@ -119,34 +133,6 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(agentChoice, "1 of 3")
         XCTAssertEqual(python, "2 of 3")
         XCTAssertEqual(login, "3 of 3")
-    }
-
-    func testFullFlowDoesNotIncludeInputMonitoringProgress() {
-        let label = OnboardingView.progressLabel(
-            for: .inputMonitoring,
-            simplified: false,
-            requiresAgentChoice: false,
-            permissionStatus: { _ in .denied },
-            venvInstalled: true,
-            agentSignedIn: true
-        )
-
-        XCTAssertNil(label)
-    }
-
-    func testSimplifiedInputMonitoringMissingDoesNotCreateSettingsRecoveryStep() {
-        let label = OnboardingView.progressLabel(
-            for: .inputMonitoring,
-            simplified: true,
-            requiresAgentChoice: false,
-            permissionStatus: { kind in
-                kind == .inputMonitoring ? .denied : .granted
-            },
-            venvInstalled: true,
-            agentSignedIn: true
-        )
-
-        XCTAssertNil(label)
     }
 
     func testSimplifiedProviderChoiceDoesNotIncludeParentPermissionGuidance() {
@@ -198,7 +184,9 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertNil(accessibility)
     }
 
-    func testPermissionResumeMarkerSkipsToReadyWhenNonPermissionSetupIsComplete() {
+    func testLegacyInputMonitoringResumeMarkerIsIgnored() {
+        XCTAssertNil(OnboardingView.Step(resumeID: .inputMonitoring))
+
         let step = OnboardingView.initialStep(
             simplified: true,
             resumeStep: .inputMonitoring,
@@ -211,20 +199,6 @@ final class OnboardingProgressTests: XCTestCase {
         )
 
         XCTAssertEqual(step, .ready)
-    }
-
-    func testGrantedInputMonitoringResumeContinuesToRuntimeSetup() {
-        let next = OnboardingView.nextStepAfter(
-            .inputMonitoring,
-            requiresAgentChoice: false,
-            requiresParentPermissionGuidance: true,
-            parentPermissionsReviewed: false,
-            permissionStatus: { _ in .granted },
-            venvInstalled: false,
-            agentSignedIn: true
-        )
-
-        XCTAssertEqual(next, .pythonSetup)
     }
 
     func testLegacyParentPermissionsResumeReturnsToAccessibilityRecovery() {
@@ -273,27 +247,10 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertNil(screenRecording)
     }
 
-    func testReadySummaryNamesDeferredInputMonitoringFeatures() {
-        let summary = OnboardingView.inputMonitoringSummary(status: .denied)
-
-        XCTAssertNotNil(summary)
-        XCTAssertTrue(summary?.contains("microphone permission alone") ?? false)
-        XCTAssertTrue(summary?.contains("non-Caps-Lock activation keys") ?? false)
-        XCTAssertTrue(summary?.contains("double-tap Shift Workspace hotkey") ?? false)
-    }
-
-    func testReadySummaryClearsWhenInputMonitoringGranted() {
-        XCTAssertNil(OnboardingView.inputMonitoringSummary(status: .granted))
-    }
-
     func testPermissionTreatmentUsesFigmaPromptCopyAndButtonConstants() {
         XCTAssertEqual(
             OnboardingPermissionTreatment.prompt(for: .microphone),
             "Let’s start with your mic /"
-        )
-        XCTAssertEqual(
-            OnboardingPermissionTreatment.prompt(for: .inputMonitoring),
-            "Next let’s set up your hotkeys with input monitoring /"
         )
         XCTAssertEqual(
             OnboardingPermissionTreatment.prompt(for: .screenRecording),

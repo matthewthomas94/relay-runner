@@ -126,6 +126,13 @@ final class AppState {
             startSessionForTutorial: { [weak self] in
                 self?.startOnboardingTutorialSession() ?? false
             },
+            tutorialSessionReady: { [weak self] in
+                guard let self else { return false }
+                let daemonAlive = self.processManager.bridgeAlive()
+                return self.embeddedTerminal.isEmbeddedProcessRunning
+                    && daemonAlive
+                    && self.processManager.bridgeConsumerAlive()
+            },
             openWorkspaceAfterCompletion: { [weak self] in
                 self?.showWorkspaceWork()
             }
@@ -191,6 +198,9 @@ final class AppState {
         }
     }
     private var sessionReadyShownForCurrentBridgeSession = false
+    /// Session-level contract shared by the bridge and app overlay. Tutorial
+    /// sessions suppress both greeting sources, including after recovery.
+    private var activeSessionSuppressesStartupGreeting = false
     private var bridgeRecoveryInFlight = false {
         didSet { syncNotchStatusSurface() }
     }
@@ -483,7 +493,7 @@ final class AppState {
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
         // Hook permission transitions: notify on revoke, auto-recover STT
-        // when mic/input-monitoring comes back (the STT engine binds to the
+        // when mic/global-event access comes back (the STT engine binds to the
         // mic + installs NSEvent monitors at start, so neither recovers
         // without a restart).
         permissions.onChange = { [weak self] kind, old, new in
@@ -497,7 +507,7 @@ final class AppState {
                     } else {
                         self.restartSTTForRecovery()
                     }
-                } else if kind == .inputMonitoring {
+                } else if kind == .accessibility || kind == .inputMonitoring {
                     self.programBoardOverlay.installGlobalDismissHotkey()
                     self.restartSTTForRecovery()
                 }
@@ -697,6 +707,7 @@ final class AppState {
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
         sessionReadyShownForCurrentBridgeSession = false
+        activeSessionSuppressesStartupGreeting = false
         sessionStartTime = .distantPast
         wizardShownForCurrentBridgeSession = false
         statusText = "Ready"
@@ -718,6 +729,7 @@ final class AppState {
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
         sessionReadyShownForCurrentBridgeSession = false
+        activeSessionSuppressesStartupGreeting = false
         stopOverlay()
         sttEngine?.stop()
         sttEngine = nil
@@ -739,6 +751,7 @@ final class AppState {
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
         sessionReadyShownForCurrentBridgeSession = false
+        activeSessionSuppressesStartupGreeting = false
         statusText = "Updating"
         sttEngine?.cancelRecording()
         sttSetupStartedAt = nil
@@ -825,7 +838,8 @@ final class AppState {
         workingDirectory: String? = nil,
         destination: SessionLaunchDestination = .embedded,
         allowDuringFirstRun: Bool = false,
-        showsWorkspaceOnLaunch: Bool = true
+        showsWorkspaceOnLaunch: Bool = true,
+        suppressesStartupGreeting: Bool = false
     ) -> Bool {
         guard allowsAppShellAccess || allowDuringFirstRun else { return false }
         guard permissions.microphone == .granted else {
@@ -855,6 +869,7 @@ final class AppState {
         sessionStartTime = Date()
         sessionBridgeSeen = false
         sessionReadyShownForCurrentBridgeSession = false
+        activeSessionSuppressesStartupGreeting = suppressesStartupGreeting
         sessionPromptGate.reset()
         activeSessionLaunchConfig = launchConfig
         // Bridge is about to launch — assume alive until watchdog says otherwise
@@ -875,7 +890,8 @@ final class AppState {
                 (request.destination == .embedded) ? .appOwned : .agentSkill
             let prepared = try processManager.prepareNewSession(
                 config: launchConfig,
-                voiceDelivery: voiceDelivery
+                voiceDelivery: voiceDelivery,
+                suppressStartupGreeting: suppressesStartupGreeting
             )
             switch request.destination {
             case .embedded:
@@ -896,6 +912,7 @@ final class AppState {
             bridgeAliveCache = false
             sessionBridgeSeen = false
             sessionReadyShownForCurrentBridgeSession = false
+            activeSessionSuppressesStartupGreeting = false
             sessionStartTime = .distantPast
             statusText = "Ready"
             NSLog("[AppState] Failed to start session: \(error)")
@@ -922,13 +939,27 @@ final class AppState {
     }
 
     private func startOnboardingTutorialSession() -> Bool {
-        if hasActiveSession {
+        // A context-backed bridge can outlive its terminal consumer. The
+        // tutorial can only reuse the app-owned process that receives voice.
+        if Self.shouldReuseOnboardingTutorialSession(
+            menuSessionActive: menuSessionActive,
+            embeddedProcessRunning: embeddedTerminal.isEmbeddedProcessRunning
+        ) {
+            activeSessionSuppressesStartupGreeting = true
             return true
         }
         return newSession(
             allowDuringFirstRun: true,
-            showsWorkspaceOnLaunch: false
+            showsWorkspaceOnLaunch: false,
+            suppressesStartupGreeting: true
         )
+    }
+
+    static func shouldReuseOnboardingTutorialSession(
+        menuSessionActive: Bool,
+        embeddedProcessRunning: Bool
+    ) -> Bool {
+        menuSessionActive && embeddedProcessRunning
     }
 
     static func sessionLaunchRequest(
@@ -1095,6 +1126,7 @@ final class AppState {
                 self.activeSessionLaunchConfig = nil
                 self.sessionBridgeSeen = false
                 self.sessionReadyShownForCurrentBridgeSession = false
+                self.activeSessionSuppressesStartupGreeting = false
                 self.statusText = "Ready"
                 return
             case .keepDaemon:
@@ -1135,6 +1167,7 @@ final class AppState {
                 self.activeSessionLaunchConfig = nil
                 self.sessionBridgeSeen = false
                 self.sessionReadyShownForCurrentBridgeSession = false
+                self.activeSessionSuppressesStartupGreeting = false
                 self.surfaceBridgeRecoveryFailure(reason: reason)
                 return
             case .markDead:
@@ -1194,7 +1227,9 @@ final class AppState {
             sessionReadyShownForCurrentBridgeSession: sessionReadyShownForCurrentBridgeSession,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
             daemonAlive: daemonAlive,
-            consumerAlive: consumerAlive
+            consumerAlive: consumerAlive,
+            sessionControlsTutorialActive: onboarding.isSessionControlsTutorialActive,
+            suppressesStartupGreeting: activeSessionSuppressesStartupGreeting
         ) else {
             return
         }
@@ -1209,7 +1244,9 @@ final class AppState {
         sessionReadyShownForCurrentBridgeSession: Bool,
         bridgeRecoveryInFlight: Bool,
         daemonAlive: Bool,
-        consumerAlive: Bool
+        consumerAlive: Bool,
+        sessionControlsTutorialActive: Bool = false,
+        suppressesStartupGreeting: Bool = false
     ) -> Bool {
         menuSessionActive
             && !sessionBridgeSeen
@@ -1217,6 +1254,8 @@ final class AppState {
             && !bridgeRecoveryInFlight
             && daemonAlive
             && consumerAlive
+            && !sessionControlsTutorialActive
+            && !suppressesStartupGreeting
     }
 
     enum BridgeWatchdogAction: Equatable {
@@ -1324,8 +1363,12 @@ final class AppState {
         NSLog("[AppState] Relaunching voice bridge daemon for \(context.workingDirectory) reason=\(reason)")
 
         let processManager = self.processManager
+        let suppressStartupGreeting = activeSessionSuppressesStartupGreeting
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let recovered = processManager.relaunchBridgeDaemon(context: context)
+            let recovered = processManager.relaunchBridgeDaemon(
+                context: context,
+                suppressStartupGreeting: suppressStartupGreeting
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.bridgeRecoveryInFlight = false
@@ -1338,6 +1381,7 @@ final class AppState {
                     self.activeSessionLaunchConfig = nil
                     self.sessionBridgeSeen = false
                     self.sessionReadyShownForCurrentBridgeSession = false
+                    self.activeSessionSuppressesStartupGreeting = false
                     self.statusText = "Ready"
                     NSLog("[AppState] Voice bridge recovery ignored because session stop was requested")
                     return
@@ -1355,6 +1399,7 @@ final class AppState {
                     self.activeSessionLaunchConfig = nil
                     self.sessionBridgeSeen = false
                     self.sessionReadyShownForCurrentBridgeSession = false
+                    self.activeSessionSuppressesStartupGreeting = false
                     self.surfaceBridgeRecoveryFailure(reason: reason)
                     NSLog("[AppState] Voice bridge daemon recovery failed")
                 }
@@ -1525,11 +1570,13 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Workspace overlay — install Esc dismissal only once macOS has already
-        // granted Input Monitoring. The double-tap Shift board trigger is
+        // Workspace overlay — install Esc dismissal once macOS has granted
+        // either global-event permission. Accessibility is the normal setup
+        // path; an existing Input Monitoring grant remains compatible. The
+        // double-tap Shift board trigger is
         // emitted by the STT gesture monitor so it shares the same recovery
         // path as Option/Control activation gestures.
-        if permissions.inputMonitoring == .granted {
+        if permissions.accessibility == .granted || permissions.inputMonitoring == .granted {
             programBoardOverlay.installGlobalDismissHotkey()
         }
         programBoardOverlay.setThemeResolver { [weak self] in
@@ -1662,6 +1709,7 @@ final class AppState {
                     let recovering = self.startBridgeRecovery(reason: "recording-start")
                     if !recovering {
                         self.menuSessionActive = false
+                        self.activeSessionSuppressesStartupGreeting = false
                         self.showSessionPromptIfAllowed()
                     }
                     engine.cancelRecording()
@@ -1670,6 +1718,7 @@ final class AppState {
                 case .promptForSession:
                     self.bridgeAliveCache = false
                     self.menuSessionActive = false
+                    self.activeSessionSuppressesStartupGreeting = false
                     self.showSessionPromptIfAllowed()
                     engine.cancelRecording()
                     self.wasRecording = false
@@ -1680,19 +1729,20 @@ final class AppState {
             // Clear stale play requests
             if engine.playRequested {
                 engine.playRequested = false
-                self.onboarding.noteTutorialPlaybackRequested()
+                let playbackActive: Bool
+                switch self.stateMachine.state {
+                case .preparing, .speaking:
+                    playbackActive = true
+                default:
+                    playbackActive = false
+                }
+                self.onboarding.noteTutorialPlaybackRequested(playbackActive: playbackActive)
             }
 
             if engine.wasCancelled {
                 engine.wasCancelled = false
-                let playbackActive: Bool
-                if case .speaking = self.stateMachine.state {
-                    playbackActive = true
-                } else {
-                    playbackActive = false
-                }
-                self.onboarding.noteTutorialCancelRequested(playbackActive: playbackActive)
                 self.stateMachine.setCancelled()
+                self.onboarding.noteTutorialCancelRequested()
             } else {
                 self.stateMachine.updateSTT(isRecording: nowRecording, partial: engine.partialTranscription)
             }
@@ -1730,8 +1780,23 @@ final class AppState {
     }
 
     private func handleOnboardingTutorialServiceEvent(source: String, state: String, text: String?) {
-        guard source == "tts", state == "message_waiting" else { return }
-        onboarding.noteTutorialResponseReady(text)
+        guard source == "tts" else { return }
+        switch state {
+        case "message_waiting":
+            onboarding.noteTutorialResponseReady(text)
+        case "preparing", "speaking":
+            onboarding.noteTutorialPlaybackStarted()
+        case "idle":
+            if let response = onboarding.noteTutorialPlaybackFinished() {
+                stateMachine.handleServiceEvent(
+                    source: "tts",
+                    newState: "message_waiting",
+                    text: response
+                )
+            }
+        default:
+            break
+        }
     }
 
     private func suspendWorkspaceForExternalWindow() {
