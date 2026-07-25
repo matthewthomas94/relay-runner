@@ -2,19 +2,20 @@ import AppKit
 import QuartzCore
 
 enum BoardRevealTransitionTiming {
-    static let expandDuration: TimeInterval = 0.18
-    static let contentRevealDuration: TimeInterval = 0.10
-    static let contentHideDuration: TimeInterval = 0.08
-    static let compactDuration: TimeInterval = 0.14
-    static let warmOpenInteractiveBudget: TimeInterval = 0.30
-    static let closeHiddenBudget: TimeInterval = 0.25
+    static let firstMotionBudget: TimeInterval = 0.10
+    static let expandToFullWidthDuration: TimeInterval = 0.24
+    static let expandDuration: TimeInterval = 0.34
+    static let contentRevealDuration: TimeInterval = 0.38
+    static let contentHideDuration: TimeInterval = 0.22
+    static let dismissToFullWidthDuration: TimeInterval = 0.24
+    static let compactDuration: TimeInterval = 0.22
 
-    static var warmOpenInteractiveDuration: TimeInterval {
-        expandDuration + contentRevealDuration
+    static var revealAnimationDuration: TimeInterval {
+        expandToFullWidthDuration + expandDuration + contentRevealDuration
     }
 
-    static var closeHiddenDuration: TimeInterval {
-        contentHideDuration + compactDuration
+    static var dismissAnimationDuration: TimeInterval {
+        contentHideDuration + dismissToFullWidthDuration + compactDuration
     }
 }
 
@@ -214,36 +215,59 @@ final class BoardRevealContainerView: NSView {
         glyphView.setLoading(active)
     }
 
-    func animateReveal(completion: @escaping () -> Void) {
+    func animateReveal(
+        firstMotion: @escaping () -> Void,
+        completion: @escaping () -> Void
+    ) {
         guard !reduceMotion else {
+            firstMotion()
             revealExpanded = true
             revealView.showExpanded()
             revealContentIfReady(completion: completion)
             return
         }
 
-        revealView.animateToExpanded { [weak self] in
+        revealView.animateToFullWidth(firstMotion: firstMotion) { [weak self] in
             guard let self else { return }
-            self.revealExpanded = true
-            self.revealContentIfReady(completion: completion)
+            self.revealView.animateToExpanded { [weak self] in
+                guard let self else { return }
+                self.revealExpanded = true
+                self.revealContentIfReady(completion: completion)
+            }
         }
     }
 
-    func animateDismiss(completion: @escaping () -> Void) {
+    func animateReveal(completion: @escaping () -> Void) {
+        animateReveal(firstMotion: {}, completion: completion)
+    }
+
+    func animateDismiss(
+        firstMotion: @escaping () -> Void,
+        completion: @escaping () -> Void
+    ) {
         guard !reduceMotion else {
+            firstMotion()
             revealView.cancelAnimation()
             contentContainerView.isHidden = true
             completion()
             return
         }
 
+        firstMotion()
         hideContentIfNeeded { [weak self] in
             guard let self else { return }
             self.revealView.setLoading(false)
-            self.revealView.animateToCompact {
-                completion()
+            self.revealView.animateToFullWidth { [weak self] in
+                guard let self else { return }
+                self.revealView.animateToCompact {
+                    completion()
+                }
             }
         }
+    }
+
+    func animateDismiss(completion: @escaping () -> Void) {
+        animateDismiss(firstMotion: {}, completion: completion)
     }
 
     private func revealContentIfReady(completion: (() -> Void)? = nil) {
@@ -363,22 +387,38 @@ private final class BoardRevealSurfaceView: NSView {
         needsDisplay = true
     }
 
-    func animateToFullWidth(completion: @escaping () -> Void) {
-        animate(to: plan.fullWidthFrame, duration: 0.24, completion: completion)
-    }
-
-    func animateToExpanded(completion: @escaping () -> Void) {
+    func animateToFullWidth(
+        firstMotion: (() -> Void)? = nil,
+        completion: @escaping () -> Void
+    ) {
         animate(
-            to: plan.expandedFrame,
-            duration: BoardRevealTransitionTiming.expandDuration,
+            to: plan.fullWidthFrame,
+            duration: BoardRevealTransitionTiming.expandToFullWidthDuration,
+            firstMotion: firstMotion,
             completion: completion
         )
     }
 
-    func animateToCompact(completion: @escaping () -> Void) {
+    func animateToExpanded(
+        firstMotion: (() -> Void)? = nil,
+        completion: @escaping () -> Void
+    ) {
+        animate(
+            to: plan.expandedFrame,
+            duration: BoardRevealTransitionTiming.expandDuration,
+            firstMotion: firstMotion,
+            completion: completion
+        )
+    }
+
+    func animateToCompact(
+        firstMotion: (() -> Void)? = nil,
+        completion: @escaping () -> Void
+    ) {
         animate(
             to: plan.compactFrame,
             duration: BoardRevealTransitionTiming.compactDuration,
+            firstMotion: firstMotion,
             completion: completion
         )
     }
@@ -400,12 +440,14 @@ private final class BoardRevealSurfaceView: NSView {
     private func animate(
         to targetFrame: CGRect,
         duration: TimeInterval,
+        firstMotion: (() -> Void)? = nil,
         completion: @escaping () -> Void
     ) {
         cancelAnimation()
 
         let startFrame = surfaceFrame
         let startTime = CACurrentMediaTime()
+        var reportedFirstMotion = false
         animationCompletion = completion
 
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
@@ -419,6 +461,10 @@ private final class BoardRevealSurfaceView: NSView {
             let progress = Self.easeOutQuart(CGFloat(rawProgress))
             self.surfaceFrame = Self.interpolate(from: startFrame, to: targetFrame, progress: progress)
             self.needsDisplay = true
+            if !reportedFirstMotion {
+                reportedFirstMotion = true
+                firstMotion?()
+            }
 
             if rawProgress >= 1 {
                 timer.invalidate()
