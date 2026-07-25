@@ -221,6 +221,20 @@ final class OverlayController {
         return actionHint
     }
 
+    static func previewBody(
+        for state: OverlayState,
+        messagePreview: String?,
+        messagePreviewEnabled: Bool
+    ) -> String? {
+        guard messagePreviewEnabled, let messagePreview else { return nil }
+        switch state {
+        case .messageWaiting, .preparing, .speaking, .cancelled(.tts):
+            return messagePreview
+        default:
+            return nil
+        }
+    }
+
     private func applyState(_ sm: StateMachine) {
         let state = sm.state
         let partial = sm.partialTranscription
@@ -266,7 +280,13 @@ final class OverlayController {
 
         case .cancelled(let source):
             if state != lastAppliedState {
-                if let title = Self.compactPillTitle(for: state) {
+                if let preview = Self.previewBody(
+                    for: state,
+                    messagePreview: preview,
+                    messagePreviewEnabled: config.message_preview
+                ), let title = Self.fullPillTitle(for: state, actionHint: "Response cancelled") {
+                    pill.showFull(title: title, body: preview, theme: .tts)
+                } else if let title = Self.compactPillTitle(for: state) {
                     pill.showCompact(title: title, theme: source == .stt ? .stt : .tts)
                 }
             }
@@ -283,13 +303,26 @@ final class OverlayController {
             }
 
         case .preparing:
-            if state != lastAppliedState,
-               let title = Self.compactPillTitle(for: state, suffix: "...") {
+            if let preview = Self.previewBody(
+                for: state,
+                messagePreview: preview,
+                messagePreviewEnabled: config.message_preview
+            ) {
+                if state != lastAppliedState || preview != lastPreview,
+                   let title = Self.fullPillTitle(for: state, actionHint: "Preparing speech...") {
+                    pill.showFull(title: title, body: preview, theme: .tts)
+                }
+            } else if state != lastAppliedState,
+                      let title = Self.compactPillTitle(for: state, suffix: "...") {
                 pill.showCompact(title: title, theme: .tts)
             }
 
         case .messageWaiting:
-            if config.message_preview, let preview {
+            if let preview = Self.previewBody(
+                for: state,
+                messagePreview: preview,
+                messagePreviewEnabled: config.message_preview
+            ) {
                 if preview != lastPreview || state != lastAppliedState,
                    let title = Self.fullPillTitle(for: state, actionHint: "Double tap Option to play") {
                     pill.showFull(title: title, body: preview, theme: .tts)
@@ -300,7 +333,11 @@ final class OverlayController {
             }
 
         case .speaking:
-            if config.message_preview, let preview {
+            if let preview = Self.previewBody(
+                for: state,
+                messagePreview: preview,
+                messagePreviewEnabled: config.message_preview
+            ) {
                 if state != lastAppliedState || preview != lastPreview,
                    let title = Self.fullPillTitle(for: state, actionHint: "Double tap Control to cancel") {
                     pill.showFull(title: title, body: preview, theme: .tts)

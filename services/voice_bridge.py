@@ -38,7 +38,7 @@ from pm_frontstage import (
 )
 from config import load_config
 from messenger import MessengerRuntime, create_messenger_runtime
-from tts_worker import TTSWorker
+from tts_worker import TTSWorker, publish_waiting_preview
 
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 BRIDGE_CONTROL_SOCK = os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock")
@@ -1398,6 +1398,7 @@ def _queue_tts_text(
     command_path: str = VOICE_CMD_FILE,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     allow_pending_command: bool = False,
+    notify_waiting_preview=None,
 ) -> bool:
     """Queue TTS unless a newer Relay command is already waiting."""
     text, command_seq, command_id = _parse_tts_payload(text)
@@ -1417,6 +1418,12 @@ def _queue_tts_text(
             file=sys.stderr,
         )
         return False
+    publisher = publish_waiting_preview if notify_waiting_preview is None else notify_waiting_preview
+    if publisher is not None:
+        try:
+            publisher(text)
+        except Exception as exc:
+            print(f"[voice_bridge] Could not publish waiting preview: {exc}", file=sys.stderr)
     tts_queue.put(text)
     return True
 
@@ -1765,6 +1772,7 @@ def _handle_orchestrator_reply_control(
         json.dumps(payload),
         tts_worker.input_queue,
         state_path=state_path,
+        allow_pending_command=True,
     )
     if delivered:
         _mark_foreground_reply_delivered(command)
