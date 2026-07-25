@@ -143,6 +143,29 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(snapshot.summary.query, "summary")
     }
 
+    func testProgramDashboardRetriesDelayedServiceReadinessBeyondInitialWindow() async throws {
+        let recorder = FetchAttemptRecorder()
+
+        let snapshot = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+            fetchDashboard: {
+                let attempt = await recorder.nextAttempt()
+                if attempt < 7 {
+                    throw URLError(.cannotConnectToHost)
+                }
+                return self.dashboardSnapshot()
+            },
+            sleep: { _ in }
+        )
+
+        let attemptCount = await recorder.count()
+        XCTAssertEqual(attemptCount, 7)
+        XCTAssertEqual(snapshot.summary.query, "summary")
+        XCTAssertGreaterThanOrEqual(
+            OrchestratorClient.programDashboardConnectionRetryDelaysNanoseconds.count,
+            6
+        )
+    }
+
     func testProgramDashboardDoesNotRetryPermanentFailures() async throws {
         let recorder = FetchAttemptRecorder()
 
@@ -188,6 +211,30 @@ final class OrchestratorClientTests: XCTestCase {
 
         let attemptCount = await recorder.count()
         XCTAssertEqual(attemptCount, 3)
+    }
+
+    func testProgramDashboardRetryStopsWhenBackoffIsCancelled() async throws {
+        let recorder = FetchAttemptRecorder()
+
+        do {
+            _ = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+                retryDelaysNanoseconds: [1, 1],
+                fetchDashboard: {
+                    _ = await recorder.nextAttempt()
+                    throw URLError(.cannotConnectToHost)
+                },
+                sleep: { _ in
+                    throw CancellationError()
+                }
+            )
+            XCTFail("Expected dashboard fetch to be cancelled")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let attemptCount = await recorder.count()
+        XCTAssertEqual(attemptCount, 1)
     }
 
     func testProgramDashboardRefreshesStaleDaemonSchemaAndRetries() async throws {

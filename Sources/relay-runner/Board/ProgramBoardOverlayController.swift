@@ -184,7 +184,7 @@ final class ProgramBoardOverlayController {
             showsTerminalTab: hasTerminalTab,
             showsSettingsTab: hasSettingsTab
         )
-        let blocksContent = false
+        let blocksContent = showsWorkTab && !hasCachedSnapshot
         return WorkspaceOpening(
             showsWorkTab: showsWorkTab,
             showsTerminalTab: hasTerminalTab,
