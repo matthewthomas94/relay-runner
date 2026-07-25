@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Observation
 import SwiftTerm
 import SwiftUI
@@ -358,6 +359,7 @@ final class RelayVoiceCommandDelivery {
         var commandState = "/tmp/voice_command_state.json"
         var providerTurns = "/tmp/voice_provider_turns.json"
         var deliveryEvents = "/tmp/relay_terminal_delivery_events.jsonl"
+        var voiceInput = "/tmp/voice_in.fifo"
         var heartbeat = "/tmp/voice_bridge_heartbeat"
     }
 
@@ -376,6 +378,12 @@ final class RelayVoiceCommandDelivery {
         }
     }
 
+    private struct PendingSubmission: Equatable {
+        let key: RelayCommandKey
+        let events: [[UInt8]]
+        var attempts: Int
+    }
+
     typealias Send = (ArraySlice<UInt8>) -> Void
     typealias Schedule = (TimeInterval, DispatchQueue, @escaping () -> Void) -> Void
 
@@ -383,12 +391,15 @@ final class RelayVoiceCommandDelivery {
     private let send: Send
     private let schedule: Schedule
     private let submitDelay: TimeInterval
+    private let acknowledgementTimeout: TimeInterval
+    private let maxSubmitAttempts: Int
     private let isRunning: () -> Bool
     private let fileManager: FileManager
     private let queue = DispatchQueue(label: "relay-runner.voice-command-delivery")
     private var timer: DispatchSourceTimer?
     private var inputTracker = RelayTerminalInputTracker()
     private var submitInFlight = false
+    private var pendingSubmission: PendingSubmission?
     private var deliveryOrder = 0
     private var lastDeferredProviderActiveKey: RelayCommandKey?
 
@@ -396,6 +407,8 @@ final class RelayVoiceCommandDelivery {
         paths: Paths = Paths(),
         send: @escaping Send,
         submitDelay: TimeInterval = 0.12,
+        acknowledgementTimeout: TimeInterval = 2.0,
+        maxSubmitAttempts: Int = 2,
         schedule: @escaping Schedule = { delay, queue, work in
             queue.asyncAfter(deadline: .now() + delay, execute: work)
         },
@@ -405,6 +418,8 @@ final class RelayVoiceCommandDelivery {
         self.paths = paths
         self.send = send
         self.submitDelay = submitDelay
+        self.acknowledgementTimeout = acknowledgementTimeout
+        self.maxSubmitAttempts = max(1, maxSubmitAttempts)
         self.schedule = schedule
         self.isRunning = isRunning
         self.fileManager = fileManager
@@ -439,8 +454,12 @@ final class RelayVoiceCommandDelivery {
     @discardableResult
     func claimAndSendIfPossible() -> Bool {
         touchHeartbeat()
+        if completePendingSubmissionIfAcknowledged() {
+            return true
+        }
         guard isRunning(),
               !submitInFlight,
+              pendingSubmission == nil,
               !inputTracker.hasUnsubmittedInput,
               providerReadyForNextCommand() else { return false }
         lastDeferredProviderActiveKey = nil
@@ -465,7 +484,17 @@ final class RelayVoiceCommandDelivery {
         schedule(submitDelay, queue) { [weak self] in
             guard let self else { return }
             defer { self.submitInFlight = false }
-            guard self.isRunning() else { return }
+            guard self.isRunning() else {
+                if let key {
+                    self.recordDeliveryEvent("submit_aborted_not_running", key: key, fields: ["attempt": 0])
+                    let published = self.publishDeliveryFailure(for: key)
+                    self.recordDeliveryEvent(
+                        published ? "delivery_failure_published" : "delivery_failure_publish_failed",
+                        key: key
+                    )
+                }
+                return
+            }
             self.touchHeartbeat()
             if let key, !self.isCommandCurrent(key) {
                 self.send(ArraySlice([21]))
@@ -474,10 +503,15 @@ final class RelayVoiceCommandDelivery {
             }
             self.writeClaimedMetadata(command.metadata)
             self.recordDeliveryEvent("claim_published", key: key)
-            for event in remaining {
-                self.send(ArraySlice(event))
-                self.recordDeliveryEvent("submit", key: key)
+            guard let key else {
+                for event in remaining {
+                    self.send(ArraySlice(event))
+                    self.recordDeliveryEvent("submit_attempt", key: nil)
+                }
+                return
             }
+            self.pendingSubmission = PendingSubmission(key: key, events: remaining, attempts: 0)
+            self.sendPendingSubmissionAttempt()
         }
         return true
     }
@@ -564,6 +598,142 @@ final class RelayVoiceCommandDelivery {
         }
     }
 
+    private func providerTurnState(for key: RelayCommandKey) -> String? {
+        let turnsURL = URL(fileURLWithPath: paths.providerTurns)
+        guard let data = try? Data(contentsOf: turnsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let records = object["records"] as? [[String: Any]] else {
+            return nil
+        }
+        for record in records.reversed() where Self.relayCommandKey(from: record) == key {
+            let state = (record["state"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return state?.isEmpty == false ? state : nil
+        }
+        return nil
+    }
+
+    @discardableResult
+    private func completePendingSubmissionIfAcknowledged() -> Bool {
+        guard let pending = pendingSubmission,
+              let state = providerTurnState(for: pending.key),
+              state != "stale" else {
+            return false
+        }
+        recordDeliveryEvent(
+            "provider_acknowledged",
+            key: pending.key,
+            fields: ["attempt": pending.attempts, "provider_turn_state": state]
+        )
+        pendingSubmission = nil
+        return true
+    }
+
+    private func sendPendingSubmissionAttempt() {
+        guard var pending = pendingSubmission else { return }
+        guard isRunning() else {
+            failPendingSubmission(pending, event: "submit_aborted_not_running")
+            return
+        }
+        pending.attempts += 1
+        pendingSubmission = pending
+        if pending.attempts > 1 {
+            recordDeliveryEvent("submit_retry", key: pending.key, fields: ["attempt": pending.attempts])
+        }
+        for event in pending.events {
+            send(ArraySlice(event))
+            recordDeliveryEvent("submit_attempt", key: pending.key, fields: ["attempt": pending.attempts])
+        }
+        schedule(acknowledgementTimeout, queue) { [weak self] in
+            self?.handleAcknowledgementTimeout(for: pending.key, attempt: pending.attempts)
+        }
+    }
+
+    private func handleAcknowledgementTimeout(for key: RelayCommandKey, attempt: Int) {
+        touchHeartbeat()
+        guard let pending = pendingSubmission,
+              pending.key == key,
+              pending.attempts == attempt else {
+            return
+        }
+        if completePendingSubmissionIfAcknowledged() {
+            return
+        }
+        guard isRunning() else {
+            failPendingSubmission(pending, event: "submit_aborted_not_running")
+            return
+        }
+        if !isCommandCurrent(key) {
+            if providerTurnActive() {
+                recordDeliveryEvent("stale_ack_wait_provider_active", key: key, fields: ["attempt": attempt])
+                schedule(min(acknowledgementTimeout, 0.5), queue) { [weak self] in
+                    self?.handleAcknowledgementTimeout(for: key, attempt: attempt)
+                }
+            } else {
+                send(ArraySlice([21]))
+                recordDeliveryEvent("stale_prompt_cleared", key: key, fields: ["attempt": attempt])
+                pendingSubmission = nil
+            }
+            return
+        }
+        if providerTurnActive() {
+            recordDeliveryEvent("submit_ack_wait_provider_active", key: key, fields: ["attempt": attempt])
+            schedule(min(acknowledgementTimeout, 0.5), queue) { [weak self] in
+                self?.handleAcknowledgementTimeout(for: key, attempt: attempt)
+            }
+            return
+        }
+        recordDeliveryEvent("submit_ack_timeout", key: key, fields: ["attempt": attempt])
+        if attempt < maxSubmitAttempts {
+            sendPendingSubmissionAttempt()
+            return
+        }
+        send(ArraySlice([21]))
+        recordDeliveryEvent("submit_recovery_clear", key: key, fields: ["attempt": attempt])
+        failPendingSubmission(pending, event: "submit_ack_failed")
+    }
+
+    private func failPendingSubmission(_ pending: PendingSubmission, event: String) {
+        recordDeliveryEvent(event, key: pending.key, fields: ["attempt": pending.attempts])
+        let published = publishDeliveryFailure(for: pending.key)
+        recordDeliveryEvent(
+            published ? "delivery_failure_published" : "delivery_failure_publish_failed",
+            key: pending.key
+        )
+        pendingSubmission = nil
+    }
+
+    @discardableResult
+    private func publishDeliveryFailure(for key: RelayCommandKey) -> Bool {
+        var payload: [String: Any] = [
+            "text": "The voice command was not delivered to the provider, so I cleared the terminal prompt before it could run accidentally. Please try that command again.",
+            "relay_command_seq": key.seq,
+            "relay_command_id": key.id,
+        ]
+        if let provider = key.provider {
+            payload["provider"] = provider
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        return writeBridgeControlLine("__ORCHESTRATOR_REPLY__:\(json)")
+    }
+
+    @discardableResult
+    private func writeBridgeControlLine(_ line: String) -> Bool {
+        guard fileManager.fileExists(atPath: paths.voiceInput) else { return false }
+        let fd = Darwin.open(paths.voiceInput, O_WRONLY | O_NONBLOCK | O_APPEND)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+        let bytes = Array((line + "\n").utf8)
+        let written = bytes.withUnsafeBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return 0 }
+            return Darwin.write(fd, baseAddress, buffer.count)
+        }
+        return written == bytes.count
+    }
+
     private func peekPendingCommandText() -> String? {
         let commandURL = URL(fileURLWithPath: paths.command)
         return try? String(contentsOf: commandURL, encoding: .utf8)
@@ -584,6 +754,14 @@ final class RelayVoiceCommandDelivery {
     private static func relayCommandKey(from data: Data?) -> RelayCommandKey? {
         guard let data,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let key = relayCommandKey(from: object) else {
+            return nil
+        }
+        return key
+    }
+
+    private static func relayCommandKey(from object: [String: Any]) -> RelayCommandKey? {
+        guard
               let seq = relayCommandSeq(object["relay_command_seq"]),
               let id = object["relay_command_id"] as? String,
               !id.isEmpty else {
@@ -601,13 +779,20 @@ final class RelayVoiceCommandDelivery {
         return nil
     }
 
-    private func recordDeliveryEvent(_ event: String, key: RelayCommandKey?) {
+    private func recordDeliveryEvent(
+        _ event: String,
+        key: RelayCommandKey?,
+        fields: [String: Any] = [:]
+    ) {
         deliveryOrder += 1
         var payload: [String: Any] = [
             "event": event,
             "order": deliveryOrder,
             "timestamp": Date().timeIntervalSince1970,
         ]
+        for (name, value) in fields {
+            payload[name] = value
+        }
         if let key {
             payload["relay_command_seq"] = key.seq
             payload["relay_command_id"] = key.id
