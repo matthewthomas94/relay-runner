@@ -119,7 +119,32 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
-    func testRecordingStartBlocksWhenVoiceCommandIsAlreadyWaiting() {
+    func testWatchdogSurfacesQueuedCommandWhenConsumerIsHealthy() {
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: true,
+                daemonAlive: true,
+                consumerAlive: true,
+                wasAlive: true,
+                sessionBridgeSeen: true,
+                elapsedSinceSessionStart: 120,
+                pendingDeliveryState: .waiting
+            ),
+            .voiceCommandQueued
+        )
+    }
+
+    func testVoiceCommandQueuedPresentationUsesPassiveReplacementCopy() {
+        let presentation = AppState.voiceCommandQueuedPresentation
+
+        XCTAssertEqual(presentation.statusText, "Voice command queued")
+        XCTAssertEqual(presentation.title, "Voice command queued")
+        XCTAssertTrue(presentation.body.contains("Speak again to replace"))
+        XCTAssertFalse(presentation.body.contains("listener"))
+        XCTAssertFalse(presentation.body.contains("new session"))
+    }
+
+    func testRecordingStartAllowsQueuedVoiceCommandWhenConsumerIsHealthy() {
         XCTAssertEqual(
             AppState.recordingStartBridgeAction(
                 bridgeRecoveryInFlight: false,
@@ -128,9 +153,11 @@ final class BridgeRecoveryTests: XCTestCase {
                 hasSessionContext: true,
                 pendingDeliveryState: .waiting
             ),
-            .waitForPendingCommand
+            .allowRecording
         )
+    }
 
+    func testRecordingStartBlocksWhenVoiceCommandDeliveryTimedOut() {
         XCTAssertEqual(
             AppState.recordingStartBridgeAction(
                 bridgeRecoveryInFlight: false,
@@ -195,6 +222,17 @@ final class BridgeRecoveryTests: XCTestCase {
                 consumerAlive: false,
                 hasSessionContext: true,
                 pendingDeliveryState: .none
+            ),
+            .waitForConsumer
+        )
+
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: false,
+                hasSessionContext: true,
+                pendingDeliveryState: .waiting
             ),
             .waitForConsumer
         )
