@@ -41,12 +41,18 @@ enum OrchestratorClient {
 
     private static let portFile = "/tmp/relay_orchestrator.port"
     private static let defaultPort = 7634
-    private static let programDashboardConnectionRetryDelaysNanoseconds: [UInt64] = [
+    static let programDashboardConnectionRetryDelaysNanoseconds: [UInt64] = [
         150_000_000,
         300_000_000,
         600_000_000,
         1_000_000_000,
         1_500_000_000,
+        2_000_000_000,
+        2_000_000_000,
+        2_000_000_000,
+        3_000_000_000,
+        3_000_000_000,
+        5_000_000_000,
     ]
 
     /// Dispatch a ticket. Returns immediately; the request runs on URLSession's
@@ -145,6 +151,7 @@ enum OrchestratorClient {
                 }
                 try Task.checkCancellation()
                 try await sleep(retryDelay)
+                try Task.checkCancellation()
             }
         }
     }

@@ -2001,10 +2001,37 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(
             ProgramBoardContentPresentation.resolve(
                 hasSnapshot: true,
+                hasRegisteredProjects: true,
+                reloadState: .failed("daemon unavailable")
+            ),
+            .board
+        )
+        XCTAssertEqual(
+            ProgramBoardContentPresentation.resolve(
+                hasSnapshot: true,
                 hasRegisteredProjects: false,
                 reloadState: .succeeded
             ),
             .noRegisteredProjects
+        )
+        XCTAssertEqual(
+            ProgramBoardContentPresentation.resolve(
+                hasSnapshot: true,
+                hasRegisteredProjects: true,
+                reloadState: .succeeded
+            ),
+            .board
+        )
+    }
+
+    func testProgramBoardContentPresentationTransitionsFromPassiveLoadingToBoard() {
+        XCTAssertEqual(
+            ProgramBoardContentPresentation.resolve(
+                hasSnapshot: false,
+                hasRegisteredProjects: false,
+                reloadState: .loading
+            ),
+            .empty
         )
         XCTAssertEqual(
             ProgramBoardContentPresentation.resolve(

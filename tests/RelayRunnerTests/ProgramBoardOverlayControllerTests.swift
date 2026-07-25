@@ -17,6 +17,22 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(opening?.initialTab, .work)
         XCTAssertEqual(opening?.projectScope, ["/repo/client-dashboard"])
         XCTAssertEqual(opening?.selectedProjectPath, "/repo/client-dashboard")
+        XCTAssertEqual(opening?.startsLoading, true)
+        XCTAssertEqual(opening?.contentLoadBlocked, true)
+        XCTAssertEqual(opening?.reloadsWork, true)
+    }
+
+    func testSingleRepoWarmRouteKeepsCachedWorkspaceContentVisibleDuringRefresh() {
+        let project = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/client-dashboard"))
+        let opening = ProgramBoardOverlayController.workspaceOpening(
+            route: .project(project),
+            initialTab: .work,
+            hasTerminalTab: true,
+            hasSettingsTab: true,
+            hasCachedSnapshot: true,
+            activityProjectPaths: ["/repo/client-dashboard", "/repo/other"]
+        )
+
         XCTAssertEqual(opening?.startsLoading, false)
         XCTAssertEqual(opening?.contentLoadBlocked, false)
         XCTAssertEqual(opening?.reloadsWork, true)
@@ -37,6 +53,22 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertNil(opening?.selectedProjectPath)
         XCTAssertEqual(opening?.startsLoading, false)
         XCTAssertEqual(opening?.contentLoadBlocked, false)
+        XCTAssertEqual(opening?.reloadsWork, true)
+    }
+
+    func testWorkspaceRouteWithoutSnapshotUsesPassiveLoadingUntilBoardDataArrives() {
+        let opening = ProgramBoardOverlayController.workspaceOpening(
+            route: .programBoard,
+            initialTab: .work,
+            hasTerminalTab: true,
+            hasSettingsTab: false,
+            hasCachedSnapshot: false,
+            activityProjectPaths: ["/repo/client-dashboard", "/repo/api"]
+        )
+
+        XCTAssertEqual(opening?.showsWorkTab, true)
+        XCTAssertEqual(opening?.startsLoading, true)
+        XCTAssertEqual(opening?.contentLoadBlocked, true)
         XCTAssertEqual(opening?.reloadsWork, true)
     }
 
