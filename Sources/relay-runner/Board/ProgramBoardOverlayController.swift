@@ -16,6 +16,13 @@ struct WorkspaceLatencyMetric: Equatable {
             milliseconds: Int(((end - start) * 1000).rounded())
         )
     }
+
+    static func duration(_ name: String, _ duration: CFTimeInterval) -> WorkspaceLatencyMetric {
+        WorkspaceLatencyMetric(
+            name: name,
+            milliseconds: Int((duration * 1000).rounded())
+        )
+    }
 }
 
 private struct WorkspaceLatencyProbe {
@@ -28,6 +35,11 @@ private struct WorkspaceLatencyProbe {
     func log(_ name: String, at time: CFTimeInterval = CACurrentMediaTime()) {
         let metric = WorkspaceLatencyMetric.measure(name, from: recognizedAt, to: time)
         NSLog("[relay-runner] Workspace latency \(metric.name)=\(metric.milliseconds)ms")
+    }
+
+    func logDuration(_ name: String, duration: CFTimeInterval) {
+        let metric = WorkspaceLatencyMetric.duration(name, duration)
+        NSLog("[relay-runner] Workspace animation \(metric.name)=\(metric.milliseconds)ms")
     }
 }
 
@@ -410,16 +422,25 @@ final class ProgramBoardOverlayController {
             p.contentView = container
         }
         p.orderFrontRegardless()
-        probe.log("gesture_to_first_visible_frame")
+        probe.log("command_to_first_visible_shell")
+        probe.logDuration(
+            "reveal_duration",
+            duration: BoardRevealTransitionTiming.revealAnimationDuration
+        )
         panel = p
         revealContainer = container
         dismissInFlight = false
         isVisible = true
         updatePanelKeyEligibility()
         DispatchQueue.main.async { [weak container] in
-            container?.animateReveal {
-                probe.log("gesture_to_interactive_content")
-            }
+            container?.animateReveal(
+                firstMotion: {
+                    probe.log("command_to_first_motion")
+                },
+                completion: {
+                    probe.log("command_to_interactive_content")
+                }
+            )
         }
 
         startThemePoll()
@@ -500,6 +521,10 @@ final class ProgramBoardOverlayController {
     func hide(recognizedAt: CFTimeInterval? = nil) {
         guard isVisible else { return }
         let probe = WorkspaceLatencyProbe(recognizedAt: recognizedAt)
+        probe.logDuration(
+            "dismiss_duration",
+            duration: BoardRevealTransitionTiming.dismissAnimationDuration
+        )
         updateCheckTask?.cancel()
         updateCheckTask = nil
         contentLoadBlocked = false
@@ -515,18 +540,23 @@ final class ProgramBoardOverlayController {
         let panelToDismiss = panel
         let container = revealContainer ?? panelToDismiss?.contentView as? BoardRevealContainerView
         if let container {
-            container.animateDismiss { [weak self, weak panelToDismiss] in
-                guard let panelToDismiss else { return }
-                if let self, self.revealContainer !== container { return }
-                panelToDismiss.orderOut(nil)
-                probe.log("close_to_panel_hidden")
-                if let self, self.panel === panelToDismiss {
-                    self.dismissInFlight = false
+            container.animateDismiss(
+                firstMotion: {
+                    probe.log("command_to_first_motion")
+                },
+                completion: { [weak self, weak panelToDismiss] in
+                    guard let panelToDismiss else { return }
+                    if let self, self.revealContainer !== container { return }
+                    panelToDismiss.orderOut(nil)
+                    probe.log("command_to_hidden")
+                    if let self, self.panel === panelToDismiss {
+                        self.dismissInFlight = false
+                    }
                 }
-            }
+            )
         } else {
             panelToDismiss?.orderOut(nil)
-            probe.log("close_to_panel_hidden")
+            probe.log("command_to_hidden")
             revealContainer = nil
             dismissInFlight = false
         }

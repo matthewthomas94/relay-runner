@@ -189,12 +189,19 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
 
     func testWorkspaceLatencyMetricRoundsMilliseconds() {
         let metric = WorkspaceLatencyMetric.measure(
-            "gesture_to_first_visible_frame",
+            "command_to_first_motion",
             from: 10,
             to: 10.096
         )
 
-        XCTAssertEqual(metric.name, "gesture_to_first_visible_frame")
+        XCTAssertEqual(metric.name, "command_to_first_motion")
         XCTAssertEqual(metric.milliseconds, 96)
+    }
+
+    func testWorkspaceAnimationDurationMetricRoundsMilliseconds() {
+        let metric = WorkspaceLatencyMetric.duration("reveal_duration", 0.955)
+
+        XCTAssertEqual(metric.name, "reveal_duration")
+        XCTAssertEqual(metric.milliseconds, 955)
     }
 }
