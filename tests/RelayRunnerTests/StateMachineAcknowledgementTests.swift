@@ -84,6 +84,55 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         )
     }
 
+    func testPreviewBodyIsRetainedAcrossResponsePlaybackStates() {
+        XCTAssertEqual(
+            OverlayController.previewBody(
+                for: .messageWaiting(preview: "Ready response."),
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            ),
+            "Ready response."
+        )
+        XCTAssertEqual(
+            OverlayController.previewBody(
+                for: .preparing,
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            ),
+            "Ready response."
+        )
+        XCTAssertEqual(
+            OverlayController.previewBody(
+                for: .speaking,
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            ),
+            "Ready response."
+        )
+        XCTAssertEqual(
+            OverlayController.previewBody(
+                for: .cancelled(.tts),
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            ),
+            "Ready response."
+        )
+        XCTAssertNil(
+            OverlayController.previewBody(
+                for: .messageWaiting(preview: "Ready response."),
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: false
+            )
+        )
+        XCTAssertNil(
+            OverlayController.previewBody(
+                for: .processing,
+                messagePreview: "Ready response.",
+                messagePreviewEnabled: true
+            )
+        )
+    }
+
     func testSessionReadyIsIdleOnlyAndDismissesToIdle() {
         let stateMachine = StateMachine()
 

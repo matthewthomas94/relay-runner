@@ -59,6 +59,12 @@ def _notify_state(state: str, **kwargs):
         pass
 
 
+def publish_waiting_preview(text: str) -> None:
+    preview = str(text or "").strip()
+    if preview:
+        _notify_state("message_waiting", text=preview[:2000])
+
+
 def _resolve_chime(name: str) -> str:
     if os.path.isabs(name):
         return name
@@ -244,7 +250,7 @@ class TTSWorker:
         # response grows. Deferred-playback overlays should render the latest
         # response body before playback starts, not wait for a later preparing
         # or speaking event to repopulate the pill.
-        _notify_state("message_waiting", text=full_text[:2000])
+        publish_waiting_preview(full_text)
 
         # Kick off speculative TTS in parallel with the pill so audio is
         # ready by the time the user double-taps Option. Outside the main
