@@ -198,12 +198,16 @@ struct ProgramBoardOverlayView: View {
             }
         }
         .coordinateSpace(name: "programBoard")
+        .background(
+            ProgramBoardWindowFrameReader { frame in
+                model.updateBoardFrameInWindow(frame)
+            }
+        )
         .ignoresSafeArea(edges: .top)
         .onChange(of: workspace.selectedTab) { _, tab in
             onWorkspaceTabChange(tab)
         }
         .onPreferenceChange(ProgramColumnFramesKey.self) { model.columnFrames = $0 }
-        .onPreferenceChange(ProgramCardFramesKey.self) { model.cardFrames = $0 }
     }
 }
 
@@ -238,11 +242,61 @@ private struct ProgramColumnFramesKey: PreferenceKey {
     }
 }
 
-private struct ProgramCardFramesKey: PreferenceKey {
-    typealias Value = [String: CGRect]
-    static var defaultValue: Value = [:]
-    static func reduce(value: inout Value, nextValue: () -> Value) {
-        value.merge(nextValue()) { $1 }
+private struct ProgramBoardWindowFrameReader: NSViewRepresentable {
+    let onChange: (CGRect) -> Void
+
+    func makeNSView(context: Context) -> ProgramBoardWindowFrameReaderView {
+        ProgramBoardWindowFrameReaderView(onChange: onChange)
+    }
+
+    func updateNSView(_ nsView: ProgramBoardWindowFrameReaderView, context: Context) {
+        nsView.onChange = onChange
+        nsView.reportFrame()
+    }
+}
+
+private final class ProgramBoardWindowFrameReaderView: NSView {
+    var onChange: (CGRect) -> Void
+    private var lastFrame: CGRect = .null
+
+    init(onChange: @escaping (CGRect) -> Void) {
+        self.onChange = onChange
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        onChange = { _ in }
+        super.init(coder: coder)
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        reportFrame()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        reportFrame()
+    }
+
+    func reportFrame() {
+        guard window != nil else { return }
+        let frame = convert(bounds, to: nil)
+        guard frame.width > 0,
+              frame.height > 0,
+              frame != lastFrame else {
+            return
+        }
+        lastFrame = frame
+        DispatchQueue.main.async { [weak self] in
+            self?.onChange(frame)
+        }
     }
 }
 
@@ -967,54 +1021,61 @@ private struct DraggableProgramWorkCard: View {
             onEdit: onEdit
         )
             .opacity(isBeingDragged ? 0.25 : 1.0)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: ProgramCardFramesKey.self,
-                        value: [item.id: proxy.frame(in: .named("programBoard"))]
-                    )
-                }
-            )
             .contentShape(Rectangle())
             .programGrabCursor(dragging: isBeingDragged, enabled: canDrag)
-            .gesture(
-                DragGesture(minimumDistance: 5, coordinateSpace: .named("programBoard"))
-                    .onChanged { value in
-                        guard canDrag else { return }
-                        let target = model.dropTarget(
-                            at: value.location,
-                            for: item,
-                            sourceLane: lane
-                        )
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            if model.dragItemID == nil {
-                                model.beginDrag(
-                                    item: item,
-                                    sourceLane: lane,
-                                    location: value.location,
-                                    cardCenterOffset: cardCenterOffset(startLocation: value.startLocation),
-                                    target: target
-                                )
-                            } else {
-                                model.updateDrag(location: value.location, target: target)
-                            }
-                        }
-                    }
-                    .onEnded { _ in
-                        guard canDrag else { return }
-                        if let target = model.dragTarget, target.isValid {
-                            onDrop(item, lane, target.lane)
-                        }
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            model.endDrag()
-                        }
-                    }
+            .overlay(
+                ProgramWorkCardDragEventLayer(
+                    canDrag: canDrag,
+                    onSelect: onSelect,
+                    onFrameChange: { frame in
+                        model.updateCardFrame(id: item.id, windowFrame: frame)
+                    },
+                    windowLocationToBoardLocation: { location in
+                        model.boardLocation(fromWindowLocation: location)
+                    },
+                    onChanged: { location, startLocation in
+                        updateDrag(location: location, startLocation: startLocation)
+                    },
+                    onEnded: endDrag
+                )
             )
             .help(canDrag ? "Drag ticket to another lane" : "This ticket cannot be dragged while a worker owns its state")
+    }
+
+    private func updateDrag(location: CGPoint, startLocation: CGPoint) {
+        guard canDrag else { return }
+        let target = model.dropTarget(
+            at: location,
+            for: item,
+            sourceLane: lane
+        )
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            if model.dragItemID == nil {
+                model.beginDrag(
+                    item: item,
+                    sourceLane: lane,
+                    location: location,
+                    cardCenterOffset: cardCenterOffset(startLocation: startLocation),
+                    target: target
+                )
+            } else {
+                model.updateDrag(location: location, target: target)
+            }
+        }
+    }
+
+    private func endDrag() {
+        guard canDrag else { return }
+        if let target = model.dragTarget, target.isValid {
+            onDrop(item, lane, target.lane)
+        }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            model.endDrag()
+        }
     }
 
     private func cardCenterOffset(startLocation: CGPoint) -> CGSize {
@@ -1022,6 +1083,114 @@ private struct DraggableProgramWorkCard: View {
             cardFrame: model.cardFrames[item.id],
             startLocation: startLocation
         )
+    }
+}
+
+private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
+    let canDrag: Bool
+    let onSelect: () -> Void
+    let onFrameChange: (CGRect) -> Void
+    let windowLocationToBoardLocation: (CGPoint) -> CGPoint?
+    let onChanged: (_ location: CGPoint, _ startLocation: CGPoint) -> Void
+    let onEnded: () -> Void
+
+    func makeNSView(context: Context) -> ProgramWorkCardDragEventView {
+        ProgramWorkCardDragEventView()
+    }
+
+    func updateNSView(_ nsView: ProgramWorkCardDragEventView, context: Context) {
+        nsView.canDrag = canDrag
+        nsView.onSelect = onSelect
+        nsView.onFrameChange = onFrameChange
+        nsView.windowLocationToBoardLocation = windowLocationToBoardLocation
+        nsView.onChanged = onChanged
+        nsView.onEnded = onEnded
+        nsView.reportFrame()
+    }
+}
+
+private final class ProgramWorkCardDragEventView: NSView {
+    static let dragThreshold: CGFloat = 5
+
+    var canDrag = false
+    var onSelect: () -> Void = {}
+    var onFrameChange: (CGRect) -> Void = { _ in }
+    var windowLocationToBoardLocation: (CGPoint) -> CGPoint? = { _ in nil }
+    var onChanged: (_ location: CGPoint, _ startLocation: CGPoint) -> Void = { _, _ in }
+    var onEnded: () -> Void = {}
+
+    private var mouseDownLocation: CGPoint?
+    private var dragStarted = false
+    private var lastFrame: CGRect = .null
+
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point),
+              !editButtonHitExclusion.contains(point) else {
+            return nil
+        }
+        return self
+    }
+
+    override func layout() {
+        super.layout()
+        reportFrame()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        reportFrame()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownLocation = boardLocation(for: event)
+        dragStarted = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard canDrag,
+              let startLocation = mouseDownLocation,
+              let location = boardLocation(for: event) else {
+            return
+        }
+        guard dragStarted || hypot(location.x - startLocation.x, location.y - startLocation.y) >= Self.dragThreshold else {
+            return
+        }
+        dragStarted = true
+        onChanged(location, startLocation)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if dragStarted {
+            onEnded()
+        } else {
+            onSelect()
+        }
+        mouseDownLocation = nil
+        dragStarted = false
+    }
+
+    func reportFrame() {
+        guard window != nil else { return }
+        let frame = convert(bounds, to: nil)
+        guard frame.width > 0,
+              frame.height > 0,
+              frame != lastFrame else {
+            return
+        }
+        lastFrame = frame
+        DispatchQueue.main.async { [weak self] in
+            self?.onFrameChange(frame)
+        }
+    }
+
+    private var editButtonHitExclusion: CGRect {
+        CGRect(x: max(0, bounds.maxX - 84), y: bounds.minY, width: 84, height: 48)
+    }
+
+    private func boardLocation(for event: NSEvent) -> CGPoint? {
+        windowLocationToBoardLocation(event.locationInWindow)
     }
 }
 
