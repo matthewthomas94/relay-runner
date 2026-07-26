@@ -4,6 +4,48 @@ import XCTest
 
 final class ConfigManagerTests: XCTestCase {
 
+    func testFreshConfigPersistsDefaultTTSRate() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+
+        let loaded = manager.load()
+        let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
+
+        XCTAssertEqual(loaded.tts.rate, 1.3)
+        XCTAssertTrue(raw.contains("rate = 1.3"))
+    }
+
+    func testMissingTTSRateFallsBackToDefaultWithoutRewritingExplicitValues() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try """
+        [tts]
+        voice = "bf_emma"
+        auto_play = true
+        """.write(to: manager.configPath, atomically: true, encoding: .utf8)
+
+        let loaded = manager.load()
+
+        XCTAssertEqual(loaded.tts.voice, "bf_emma")
+        XCTAssertTrue(loaded.tts.auto_play)
+        XCTAssertEqual(loaded.tts.rate, 1.3)
+    }
+
+    func testExplicitTTSRateIsPreserved() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try """
+        [tts]
+        rate = 1.1
+        """.write(to: manager.configPath, atomically: true, encoding: .utf8)
+
+        let loaded = manager.load()
+
+        XCTAssertEqual(loaded.tts.rate, 1.1)
+    }
+
     func testOrchestratorAndSubagentPolicyPersistThroughConfigManager() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)

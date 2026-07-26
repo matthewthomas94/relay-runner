@@ -103,7 +103,7 @@ def load_config(config_path: str | None = None) -> dict:
         "tts": {
             "engine": "kokoro",
             "voice": "bm_lewis",
-            "rate": 1.1,
+            "rate": 1.3,
             "auto_play": False,
             "chime": "Tink",
             "show_notification": True,
@@ -180,7 +180,7 @@ def _migrate_config(
         tts["voice"] = voice_map.get(tts.get("voice", ""), "af_bella")
 
     # Migrate WPM rate (int > 10) to speed multiplier (0.5-2.0)
-    rate = tts.get("rate", 1.0)
+    rate = tts.get("rate", 1.3)
     if isinstance(rate, int) and rate > 10:
         tts["rate"] = round(max(0.5, min(2.0, 2.0 - (rate - 100) * 1.5 / 200)), 1)
 

@@ -251,6 +251,10 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(AwarenessSettingsTab.particleIntensityAccessibilityValue(0.73), "73 percent")
     }
 
+    func testFreshTTSConfigDefaultsSpeechSpeedToOnePointThreeX() {
+        XCTAssertEqual(AppConfig().tts.rate, 1.3)
+    }
+
     func testSTTInputDeviceIsReadOnlyPresentation() throws {
         XCTAssertEqual(STTSettingsTab.inputDeviceDisplayName("default"), "System Default")
         XCTAssertEqual(STTSettingsTab.inputDeviceDisplayName("  Studio Mic  "), "Studio Mic")

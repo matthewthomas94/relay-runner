@@ -47,6 +47,7 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(path)
 
+        self.assertEqual(config["tts"]["rate"], 1.3)
         self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
         self.assertEqual(config["general"]["orchestrator_effort"], "default")
         self.assertEqual(config["general"]["subagent_sizing_policy"], "orchestrator_decides")
@@ -55,6 +56,39 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config["general"]["messenger_enabled"])
         self.assertEqual(config["general"]["messenger_model"], "default")
         self.assertEqual(config["general"]["messenger_effort"], "default")
+
+    def test_load_config_defaults_missing_tts_rate_to_one_point_three(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                """
+                [tts]
+                voice = "bf_emma"
+                auto_play = true
+                """,
+                encoding="utf-8",
+            )
+
+            config = load_config(str(path))
+
+        self.assertEqual(config["tts"]["voice"], "bf_emma")
+        self.assertTrue(config["tts"]["auto_play"])
+        self.assertEqual(config["tts"]["rate"], 1.3)
+
+    def test_load_config_preserves_explicit_tts_rate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                """
+                [tts]
+                rate = 1.1
+                """,
+                encoding="utf-8",
+            )
+
+            config = load_config(str(path))
+
+        self.assertEqual(config["tts"]["rate"], 1.1)
 
     def test_load_config_normalizes_codex_reasoning_effort(self):
         with tempfile.TemporaryDirectory() as tmp:
