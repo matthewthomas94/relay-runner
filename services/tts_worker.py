@@ -162,7 +162,7 @@ class TTSWorker:
 
         # Read initial config
         cfg = load_config()["tts"]
-        self._voice: str = cfg.get("voice", "af_bella")
+        self._voice: str = cfg.get("voice", "bm_george")
         self._rate: float = float(cfg.get("rate", 1.3))
         self._chime: str = _resolve_chime(cfg.get("chime", "Tink"))
         self._auto_play: bool = cfg.get("auto_play", False)

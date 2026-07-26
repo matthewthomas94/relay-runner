@@ -47,6 +47,7 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(path)
 
+        self.assertEqual(config["tts"]["voice"], "bm_george")
         self.assertEqual(config["tts"]["rate"], 1.3)
         self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
         self.assertEqual(config["general"]["orchestrator_effort"], "default")

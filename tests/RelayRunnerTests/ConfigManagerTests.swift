@@ -11,7 +11,9 @@ final class ConfigManagerTests: XCTestCase {
         let loaded = manager.load()
         let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
 
+        XCTAssertEqual(loaded.tts.voice, "bm_george")
         XCTAssertEqual(loaded.tts.rate, 1.3)
+        XCTAssertTrue(raw.contains("voice = \"bm_george\""))
         XCTAssertTrue(raw.contains("rate = 1.3"))
     }
 
