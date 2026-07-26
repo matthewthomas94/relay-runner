@@ -804,7 +804,7 @@ private struct ProjectCount: View {
     }
 }
 
-private struct ProgramWorkColumnPanel: View {
+struct ProgramWorkColumnPanel: View {
     @Bindable var model: ProgramBoardViewModel
     let lane: ProgramBoardLane
     let showsProjectContext: Bool
@@ -823,6 +823,20 @@ private struct ProgramWorkColumnPanel: View {
             return nil
         }
         return target
+    }
+
+    private var scrollResetID: String {
+        let scopeID = model.selectedProjectPath ?? "all"
+        let topTicketID = items.first.map { item in
+            let identity = [
+                item.project?.path,
+                item.ticketID,
+            ]
+            .compactMap { $0 }
+            .joined(separator: "|")
+            return identity.isEmpty ? item.id : identity
+        } ?? "empty"
+        return "\(lane.id)-\(scopeID)-\(topTicketID)"
     }
 
     var body: some View {
@@ -850,7 +864,7 @@ private struct ProgramWorkColumnPanel: View {
             .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
             .frame(height: ProgramBoardLayout.workHeaderHeight)
 
-            ProgramColumnTicketScrollView(resetID: "\(lane.id)-\(model.selectedProjectPath ?? "all")") {
+            ProgramColumnTicketScrollView(resetID: scrollResetID) {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
                     if items.isEmpty {

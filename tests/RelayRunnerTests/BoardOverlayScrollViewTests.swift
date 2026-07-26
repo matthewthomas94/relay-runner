@@ -230,6 +230,45 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertEqual(doneAfter.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
     }
 
+    func testProgramWorkColumnSameScopeNewTopTicketReturnsDoneLaneToTop() throws {
+        let model = ProgramBoardViewModel()
+        model.snapshot = programDashboardSnapshot(doneItems: doneTickets(start: 100, count: 212))
+
+        let host = NSHostingView(rootView: AnyView(programWorkColumnHost(model: model, lane: .done)))
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+
+        let initialContainer = try XCTUnwrap(findScrollContainer(in: host))
+        let initialViews = try scrollViews(in: initialContainer)
+        initialViews.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 220))
+        initialViews.scrollView.reflectScrolledClipView(initialViews.scrollView.contentView)
+        XCTAssertGreaterThan(initialViews.scrollView.documentVisibleRect.minY, 200)
+
+        let prependedTitle = "Prepended done ticket that must be complete at the top"
+        model.snapshot = programDashboardSnapshot(
+            doneItems: [
+                programWorkItem(
+                    ticketID: "RR-500",
+                    title: prependedTitle,
+                    status: Ticket.Status.done.rawValue
+                ),
+            ] + doneTickets(start: 100, count: 212)
+        )
+        host.rootView = AnyView(programWorkColumnHost(model: model, lane: .done))
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+
+        let updatedContainer = try XCTUnwrap(findScrollContainer(in: host))
+        let updatedViews = try scrollViews(in: updatedContainer)
+        XCTAssertEqual(updatedViews.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
+
+        let updatedThumb = try XCTUnwrap(thumbView(in: updatedContainer))
+        XCTAssertEqual(updatedThumb.frame.minY, 6, accuracy: 0.5)
+
+        let expectedFirstCardTop = ProgramBoardLayout.workScrollContentInsets.top
+            + ProgramBoardLayout.dropIndicatorHeight
+            + ProgramBoardLayout.dropIndicatorBottomPadding
+        XCTAssertLessThan(expectedFirstCardTop, updatedViews.scrollView.contentView.bounds.height)
+    }
+
     func testTicketDetailOmitsOpenWorkspaceAction() {
         let item = ProgramStatusItem(
             project: ProgramStatusProject(name: "Relay Runner", path: "/repo/relay-runner"),
@@ -364,6 +403,81 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             }
         }
         .frame(width: 560, height: 633)
+    }
+
+    private func programWorkColumnHost(model: ProgramBoardViewModel, lane: ProgramBoardLane) -> some View {
+        ProgramWorkColumnPanel(
+            model: model,
+            lane: lane,
+            showsProjectContext: true,
+            theme: nil,
+            canCreate: true,
+            onCreate: {},
+            onEdit: { _ in },
+            onDrop: { _, _, _ in }
+        )
+        .frame(width: 270, height: BoardSurfaceLayout.columnHeight)
+        .coordinateSpace(name: "programBoard")
+    }
+
+    private func programDashboardSnapshot(doneItems: [ProgramStatusItem]) -> ProgramDashboardSnapshot {
+        ProgramDashboardSnapshot(
+            summary: programStatusResponse(
+                query: "summary",
+                items: [
+                    ProgramStatusItem(
+                        project: ProgramStatusProject(name: "relay-runner", path: "/repo/relay-runner"),
+                        ticketID: nil,
+                        title: nil,
+                        status: nil,
+                        priority: nil,
+                        doneTickets: doneItems.count
+                    ),
+                ]
+            ),
+            backlogWork: programStatusResponse(query: "backlog_lane", items: []),
+            readyWork: programStatusResponse(query: "ready_lane", items: []),
+            inProgressWork: programStatusResponse(query: "in_progress_lane", items: []),
+            doneWork: programStatusResponse(query: "done_lane", items: doneItems),
+            awaitingMerge: programStatusResponse(query: "awaiting_merge", items: [])
+        )
+    }
+
+    private func programStatusResponse(query: String, items: [ProgramStatusItem]) -> ProgramStatusResponse {
+        ProgramStatusResponse(
+            query: query,
+            provider: nil,
+            message: "Response.",
+            items: items,
+            counts: ProgramStatusCounts(projects: 1, items: items.count)
+        )
+    }
+
+    private func doneTickets(start: Int, count: Int) -> [ProgramStatusItem] {
+        (start..<(start + count)).map { index in
+            programWorkItem(
+                ticketID: "RR-\(index)",
+                title: "Done ticket \(index) with variable copy length \(String(repeating: "detail ", count: index % 4 + 1))",
+                status: Ticket.Status.done.rawValue,
+                dependsOn: index % 3 == 0 ? ["RR-\(index - 1)"] : []
+            )
+        }
+    }
+
+    private func programWorkItem(
+        ticketID: String,
+        title: String,
+        status: String,
+        dependsOn: [String] = []
+    ) -> ProgramStatusItem {
+        ProgramStatusItem(
+            project: ProgramStatusProject(name: "relay-runner", path: "/repo/relay-runner"),
+            ticketID: ticketID,
+            title: title,
+            status: status,
+            priority: Ticket.Priority.medium.rawValue,
+            dependsOn: dependsOn
+        )
     }
 }
 
