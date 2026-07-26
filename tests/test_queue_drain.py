@@ -16,7 +16,6 @@ sys.path.insert(0, SERVICES)
 
 from orchestrator import (  # noqa: E402
     MAX_AUTO_DISPATCH_ATTEMPTS,
-    QUEUE_DRAIN_STALE_AFTER_SECONDS,
     Daemon,
     MessengerOutcomeStore,
     QueueDrainStore,
@@ -73,7 +72,7 @@ class QueueDrainTests(unittest.TestCase):
             self.git(repo, "commit", "-m", "add tickets")
             daemon = self.make_daemon(root, provider="codex")
             daemon.max_concurrent_workers = 1
-            daemon.runs.insert(
+            active_run_id = daemon.runs.insert(
                 ticket_id="RR-0",
                 repo_path=str(repo.resolve()),
                 workspace_path=str(root / "workspaces" / "rr-0"),
@@ -82,6 +81,7 @@ class QueueDrainTests(unittest.TestCase):
                 provider_key="codex",
                 model_alias="gpt-5.5",
             )
+            daemon.runs.update(active_run_id, pid=os.getpid())
 
             with patch("orchestrator.create_worktree") as create_worktree, \
                     patch.object(Worker, "start") as start_worker:
@@ -97,7 +97,7 @@ class QueueDrainTests(unittest.TestCase):
             self.assertIn("capacity wait", items["RR-1"]["reason"])
             self.assertIsNotNone(items["RR-1"]["next_action_at"])
 
-    def test_stale_active_run_is_recovered_once_and_scheduled(self):
+    def test_old_live_active_run_remains_active(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -115,7 +115,8 @@ class QueueDrainTests(unittest.TestCase):
                 provider_key="codex",
                 model_alias="gpt-5.5",
             )
-            stale_at = time.time() - QUEUE_DRAIN_STALE_AFTER_SECONDS - 60
+            stale_at = time.time() - 24 * 60 * 60
+            daemon.runs.update(run_id, pid=os.getpid())
             with daemon.runs._conn() as conn:
                 conn.execute(
                     "UPDATE runs SET activity_at = ?, started_at = ? WHERE id = ?",
@@ -128,9 +129,45 @@ class QueueDrainTests(unittest.TestCase):
 
             create_worktree.assert_not_called()
             start_worker.assert_not_called()
+            active = daemon.runs.get(run_id)
+            self.assertEqual(active["state"], "Running")
+            self.assertIsNone(active["last_error"])
+            item = result["drain"]["items"][0]
+            self.assertEqual(item["state"], "active")
+
+            daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+            self.assertEqual(len(daemon.runs.list()), 1)
+
+    def test_dead_active_run_is_recovered_once_and_scheduled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "workspaces" / "rr-1"),
+                branch="relay/rr-1",
+                state="Running",
+                provider_key="codex",
+                model_alias="gpt-5.5",
+            )
+            daemon.runs.update(run_id, pid=999_999)
+
+            with patch("orchestrator._process_is_alive", return_value=False), \
+                    patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
             recovered = daemon.runs.get(run_id)
             self.assertEqual(recovered["state"], "Stalled")
-            self.assertIn("stale worker ownership recovered", recovered["last_error"])
+            self.assertIn("process is no longer running", recovered["last_error"])
             item = result["drain"]["items"][0]
             self.assertEqual(item["state"], "scheduled")
             self.assertIn("backoff active", item["reason"])
@@ -170,7 +207,7 @@ class QueueDrainTests(unittest.TestCase):
             self.assertEqual(item["state"], "reviewing")
             self.assertEqual(item["run_id"], run_id)
 
-    def test_stale_review_owner_is_recovered_and_replaced(self):
+    def test_old_live_review_owner_is_not_recovered(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -191,23 +228,56 @@ class QueueDrainTests(unittest.TestCase):
                 model_alias="sonnet",
                 worker_effort="high",
             )
-            stale_at = time.time() - QUEUE_DRAIN_STALE_AFTER_SECONDS - 60
+            daemon.runs.update(run_id, pid=os.getpid())
+            stale_at = time.time() - 24 * 60 * 60
             with daemon.runs._conn() as conn:
                 conn.execute(
                     "UPDATE runs SET activity_at = ?, started_at = ? WHERE id = ?",
                     (stale_at, stale_at, run_id),
                 )
-            stale_owner = object()
-            daemon._review_workers[run_id] = stale_owner
 
             with patch.object(ReviewWorker, "start") as start_review:
                 result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
 
+            start_review.assert_not_called()
+            active = daemon.runs.get(run_id)
+            self.assertEqual(active["state"], "Reviewing")
+            self.assertIsNone(active["last_error"])
+            item = result["drain"]["items"][0]
+            self.assertEqual(item["state"], "reviewing")
+            self.assertEqual(item["run_id"], run_id)
+
+    def test_dead_review_owner_is_recovered_and_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "rr-1"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            workspace.mkdir(parents=True)
+            daemon = self.make_daemon(root, provider="claude")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(workspace),
+                branch="relay/rr-1",
+                state="Reviewing",
+                provider_key="claude",
+                model_alias="sonnet",
+                worker_effort="high",
+            )
+            daemon.runs.update(run_id, pid=999_999)
+
+            with patch("orchestrator._process_is_alive", return_value=False), \
+                    patch.object(ReviewWorker, "start") as start_review:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
             start_review.assert_called_once()
-            self.assertIsNot(daemon._review_workers[run_id], stale_owner)
             recovered = daemon.runs.get(run_id)
             self.assertEqual(recovered["state"], "AwaitingReview")
-            self.assertIn("stale review ownership recovered", recovered["last_error"])
+            self.assertIn("process is no longer running", recovered["last_error"])
             item = result["drain"]["items"][0]
             self.assertEqual(item["state"], "reviewing")
             self.assertEqual(item["run_id"], run_id)
@@ -324,7 +394,9 @@ class QueueDrainTests(unittest.TestCase):
         daemon.workspace_root = root / "workspaces"
         daemon.branch_prefix = "relay/"
         daemon.workflow_path = Path(ROOT) / "services" / "orchestrator_workflow.md"
-        daemon.worker_timeout = 30
+        daemon.worker_health_check_seconds = 600
+        daemon._run_health = {}
+        daemon._run_health_lock = threading.Lock()
         daemon.port = 7634
         daemon.agent_kind = provider
         daemon.agent_bin = provider

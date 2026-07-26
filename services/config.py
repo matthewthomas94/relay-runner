@@ -134,7 +134,7 @@ def load_config(config_path: str | None = None) -> dict:
             "workspace_root": "",
             "branch_prefix": "relay/",
             "default_workflow_path": "",
-            "worker_timeout_seconds": 1800,
+            "worker_health_check_seconds": 600,
         },
     }
 
@@ -170,6 +170,11 @@ def _migrate_config(
     general_had_orchestrator_effort: bool = True,
 ):
     """Migrate legacy config values in-place."""
+    orchestrator = config.get("orchestrator", {})
+    # Worker wall-clock deadlines were removed. Keep old config files safe by
+    # discarding the legacy value rather than interpreting it as a new limit.
+    orchestrator.pop("worker_timeout_seconds", None)
+
     tts = config.get("tts", {})
 
     # Migrate say/piper -> kokoro

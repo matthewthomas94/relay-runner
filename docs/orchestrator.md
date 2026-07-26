@@ -200,7 +200,7 @@ If you're validating the bundled app instead of the repo checkout, rebuild or re
 ```
 cancel_run --run_id=N --prune_worktree=false
 ```
-Then read `<workspace>/.relay/run.log`. The default timeout is 30 minutes; tune via `[orchestrator].worker_timeout_seconds` in `config.toml`.
+Then read `<workspace>/.relay/run.log`. Implementation and review workers have no wall-clock deadline. The daemon performs an advisory health check every 10 minutes by comparing process liveness, worker-log growth, activity, commits, and worktree changes. A live run with no observable progress raises a visible warning but keeps running; only explicit cancellation, process exit/failure, or a separately identified critical condition stops it. Tune the observation interval via `[orchestrator].worker_health_check_seconds` in `config.toml`.
 
 **Dispatch fails with "ticket not found".** The orchestrator requires `<repo>/.orchestrator/<ticket_id>.md` to exist before dispatching. Either create the ticket via the board UI (or by hand following [the spec](specs/orchestrator-tickets.md)) and commit it, or fix the `ticket_id` argument if it was a typo.
 

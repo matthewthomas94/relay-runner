@@ -98,6 +98,8 @@ class PMFrontstageTests(unittest.TestCase):
             "ticket-updating": "Updating RR-9",
             "dispatch-preparing": "Preparing RR-9 dispatch",
             "run-reviewing": "Reviewing RR-9 run 12",
+            "run-health-check": "RR-9 run 12 health check passed",
+            "run-health-warning": "RR-9 run 12 may need attention",
             "run-merging": "Merging RR-9 run 12",
             "running-tests": "Running tests",
             "building": "Building project",

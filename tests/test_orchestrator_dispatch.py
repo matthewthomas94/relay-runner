@@ -347,7 +347,6 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 agent_kind="codex",
                 store=daemon.runs,
                 log_path=Path(tmp) / "run.log",
-                timeout_seconds=1,
             )._command()
             self.assertNotIn("--model", command)
             self.assertNotIn("--config", command)
@@ -394,7 +393,6 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 agent_kind="claude",
                 store=daemon.runs,
                 log_path=Path(tmp) / "run.log",
-                timeout_seconds=1,
             )._command()
             self.assertIn("--model", command)
             self.assertIn("sonnet", command)
@@ -433,7 +431,6 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 agent_kind="codex",
                 store=daemon.runs,
                 log_path=Path(tmp) / "run.log",
-                timeout_seconds=1,
             )._command()
             self.assertIn("--model", command)
             self.assertIn("gpt-5.4-mini", command)
@@ -472,7 +469,6 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 agent_kind="claude",
                 store=daemon.runs,
                 log_path=Path(tmp) / "run.log",
-                timeout_seconds=1,
             )._command()
             self.assertNotIn("--model", command)
             self.assertNotIn("--effort", command)
@@ -1426,7 +1422,6 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 agent_kind="codex",
                 store=daemon.runs,
                 log_path=workspace / ".relay" / "run.log",
-                timeout_seconds=30,
             )
 
             review._run()
@@ -1587,7 +1582,9 @@ class OrchestratorDispatchTests(unittest.TestCase):
         daemon.workspace_root = root / "workspaces"
         daemon.branch_prefix = "relay/"
         daemon.workflow_path = Path(ROOT) / "services" / "orchestrator_workflow.md"
-        daemon.worker_timeout = 30
+        daemon.worker_health_check_seconds = 600
+        daemon._run_health = {}
+        daemon._run_health_lock = threading.Lock()
         daemon.port = 7634
         daemon.agent_kind = provider
         daemon.agent_bin = provider

@@ -128,7 +128,7 @@ QUEUE_DRAIN_ACTIVE_STATES = frozenset({"active", "waiting", "blocked"})
 QUEUE_DRAIN_TERMINAL_STATES = frozenset({"completed", "canceled"})
 QUEUE_DRAIN_QUIESCENCE_SECONDS = 2.0
 QUEUE_DRAIN_MONITOR_INTERVAL_SECONDS = 5.0
-QUEUE_DRAIN_STALE_AFTER_SECONDS = 30 * 60.0
+DEFAULT_WORKER_HEALTH_CHECK_SECONDS = 10 * 60.0
 DETERMINISTIC_FAILURE_PREFIXES = (
     "missing worker sizing metadata",
     "invalid worker_model",
@@ -146,6 +146,26 @@ DETERMINISTIC_PROVIDER_LAUNCH_MARKERS = (
     "invalid value",
     "unsupported value",
 )
+
+
+def _process_is_alive(pid: Any) -> bool:
+    try:
+        process_id = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if process_id <= 0:
+        return False
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 ORCHESTRATOR_ACTION_KINDS = frozenset({
     "create_ticket",
     "edit_ticket",
@@ -1670,16 +1690,28 @@ class RunsStore:
             return dict(row) if row else None
 
     def reconcile_on_startup(self) -> int:
-        """Mark any in-flight run from a prior daemon as Stalled. Returns count."""
+        """Recover abandoned runs while preserving worker processes still alive."""
         ph = ",".join("?" * len(self.ACTIVE_STATES))
         with self._conn() as c:
-            cur = c.execute(
+            rows = c.execute(
+                f"SELECT id, pid FROM runs WHERE state IN ({ph})",
+                self.ACTIVE_STATES,
+            ).fetchall()
+            abandoned = [
+                int(row["id"])
+                for row in rows
+                if not _process_is_alive(row["pid"])
+            ]
+            if not abandoned:
+                return 0
+            placeholders = ",".join("?" * len(abandoned))
+            c.execute(
                 f"UPDATE runs SET state = 'Stalled', ended_at = ?, "
-                "last_error = 'Daemon restarted while run was active' "
-                f"WHERE state IN ({ph})",
-                (time.time(), *self.ACTIVE_STATES),
+                "last_error = 'Worker process was no longer running when daemon restarted' "
+                f"WHERE id IN ({placeholders})",
+                (time.time(), *abandoned),
             )
-            return cur.rowcount
+            return len(abandoned)
 
     def next_attempt(self, ticket_id: str, repo_path: str | None = None) -> int:
         """Returns the attempt number to use for a new run on this ticket (1 if none, max+1 otherwise)."""
@@ -2713,7 +2745,7 @@ class Worker:
     def __init__(self, *, run_id: int, run: dict, prompt: str, agent_bin: str,
                  agent_kind: str,
                  workflow_path: Path | None = None,
-                 store: RunsStore, log_path: Path, timeout_seconds: int,
+                 store: RunsStore, log_path: Path,
                  on_complete: Callable[[int], None] | None = None,
                  emit_lifecycle: Callable[..., dict[str, Any] | None] | None = None):
         self.run_id = run_id
@@ -2724,13 +2756,11 @@ class Worker:
         self.workflow_path = workflow_path
         self.store = store
         self.log_path = log_path
-        self.timeout_seconds = timeout_seconds
         self.on_complete = on_complete
         self.emit_lifecycle = emit_lifecycle
         self.proc: subprocess.Popen | None = None
         self.thread: threading.Thread | None = None
         self._cancel_requested = threading.Event()
-        self._timed_out = False
         # Tool-use ids dispatched but not yet resolved by a tool_result. Shared
         # with the heartbeat thread, so guarded by a lock.
         self._inflight: set[str] = set()
@@ -2827,11 +2857,6 @@ class Worker:
             except (BrokenPipeError, OSError):
                 pass
 
-            # The read loop blocks on readline, so the timeout can't be enforced
-            # inline — a watchdog terminates the process and the loop ends on EOF.
-            watchdog = threading.Timer(self.timeout_seconds, self._on_timeout)
-            watchdog.daemon = True
-            watchdog.start()
             # Keep activity_at fresh while a tool is in flight (e.g. a long
             # `swift build`) so the board doesn't read it as stalled.
             hb_stop = threading.Event()
@@ -2846,6 +2871,8 @@ class Worker:
             try:
                 for line in self.proc.stdout:  # type: ignore[union-attr]
                     log.write(line)
+                    # The daemon's advisory health check observes log growth.
+                    log.flush()
                     stripped = line.strip()
                     if not stripped:
                         continue
@@ -2854,18 +2881,11 @@ class Worker:
             finally:
                 log.flush()
                 hb_stop.set()
-                watchdog.cancel()
 
             self.proc.wait()
             rc = self.proc.returncode
 
-            if self._timed_out:
-                log.write(f"\n[orchestrator] worker timed out at {self.timeout_seconds}s\n")
-                self.store.update(self.run_id, state="Failed",
-                                  last_error=f"Timed out after {self.timeout_seconds}s",
-                                  ended=True, exit_code=-1)
-                self._emit_lifecycle("run-failed")
-            elif self._cancel_requested.is_set():
+            if self._cancel_requested.is_set():
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
                 self._emit_lifecycle("run-canceled")
             elif rc == 0:
@@ -2921,10 +2941,6 @@ class Worker:
                 self.on_complete(self.run_id)
             except Exception:  # noqa: BLE001 — don't let callback crash worker thread
                 pass
-
-    def _on_timeout(self) -> None:
-        self._timed_out = True
-        self._terminate()
 
     def _heartbeat(self, stop: threading.Event) -> None:
         while not stop.wait(ACTIVITY_HEARTBEAT_SECONDS):
@@ -3014,7 +3030,7 @@ class ReviewWorker:
 
     def __init__(self, *, run_id: int, run: dict, prompt: str, agent_bin: str,
                  agent_kind: str, store: RunsStore, log_path: Path,
-                 timeout_seconds: int, on_complete: Callable[[int], None] | None = None,
+                 on_complete: Callable[[int], None] | None = None,
                  emit_lifecycle: Callable[..., dict[str, Any] | None] | None = None):
         self.run_id = run_id
         self.run = run
@@ -3023,12 +3039,10 @@ class ReviewWorker:
         self.agent_kind = agent_kind
         self.store = store
         self.log_path = log_path
-        self.timeout_seconds = timeout_seconds
         self.on_complete = on_complete
         self.emit_lifecycle = emit_lifecycle
         self.proc: subprocess.Popen | None = None
         self.thread: threading.Thread | None = None
-        self._timed_out = False
 
     def start(self) -> None:
         self.thread = threading.Thread(
@@ -3120,9 +3134,6 @@ class ReviewWorker:
             except (BrokenPipeError, OSError):
                 pass
 
-            watchdog = threading.Timer(self.timeout_seconds, self._on_timeout)
-            watchdog.daemon = True
-            watchdog.start()
             hb_stop = threading.Event()
             hb_thread = threading.Thread(
                 target=self._heartbeat,
@@ -3135,13 +3146,14 @@ class ReviewWorker:
             try:
                 for line in self.proc.stdout:  # type: ignore[union-attr]
                     log.write(line)
+                    # The daemon's advisory health check observes log growth.
+                    log.flush()
                     stripped = line.strip()
                     if stripped:
                         tail.append(stripped[:500])
             finally:
                 log.flush()
                 hb_stop.set()
-                watchdog.cancel()
 
             self.proc.wait()
             rc = self.proc.returncode
@@ -3149,9 +3161,7 @@ class ReviewWorker:
             if current.get("state") in {"Merged", "MergeConflict", "Failed"}:
                 return
 
-            if self._timed_out:
-                reason = f"Review worker timed out after {self.timeout_seconds}s"
-            elif rc == 0:
+            if rc == 0:
                 reason = "review worker exited 0 without accepting or retrying run"
             else:
                 reason = f"review worker failed: exit={rc}; tail={' / '.join(tail)[:500]}"
@@ -3183,22 +3193,6 @@ class ReviewWorker:
         while not stop.wait(ACTIVITY_HEARTBEAT_SECONDS):
             self.store.touch_activity(self.run_id)
 
-    def _on_timeout(self) -> None:
-        self._timed_out = True
-        proc = self.proc
-        if not proc:
-            return
-        try:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-        except OSError:
-            pass
-
     def _notify_complete(self):
         if self.on_complete:
             try:
@@ -3219,7 +3213,15 @@ class Daemon:
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         self.branch_prefix = orch_cfg.get("branch_prefix", "relay/")
         self.workflow_path = _resolve_workflow_default(orch_cfg.get("default_workflow_path", ""))
-        self.worker_timeout = int(orch_cfg.get("worker_timeout_seconds", 1800))
+        self.worker_health_check_seconds = max(
+            1.0,
+            float(
+                orch_cfg.get(
+                    "worker_health_check_seconds",
+                    DEFAULT_WORKER_HEALTH_CHECK_SECONDS,
+                )
+            ),
+        )
         self.port = int(orch_cfg.get("port", DEFAULT_PORT))
         self.max_concurrent_workers = max(0, int(orch_cfg.get("max_concurrent_workers", 0) or 0))
 
@@ -3241,6 +3243,8 @@ class Daemon:
         self._workers_lock = threading.Lock()
         self._review_workers: dict[int, ReviewWorker] = {}
         self._review_workers_lock = threading.Lock()
+        self._run_health: dict[int, dict[str, Any]] = {}
+        self._run_health_lock = threading.Lock()
 
         stalled = self.runs.reconcile_on_startup()
         if stalled:
@@ -3412,21 +3416,172 @@ class Daemon:
                 latest[ticket_id] = run
         return latest
 
-    @staticmethod
-    def _run_activity_age(run: dict[str, Any], now: float) -> float | None:
-        raw = run.get("activity_at") or run.get("started_at")
-        try:
-            stamp = float(raw)
-        except (TypeError, ValueError):
-            return None
-        return max(0.0, now - stamp)
+    def _local_run_owner(self, run_id: int, state: str) -> Any | None:
+        if state == "Reviewing":
+            workers = getattr(self, "_review_workers", {})
+            lock = getattr(self, "_review_workers_lock", None)
+        else:
+            workers = getattr(self, "_workers", {})
+            lock = getattr(self, "_workers_lock", None)
+        if lock is None:
+            return workers.get(run_id)
+        with lock:
+            return workers.get(run_id)
 
-    def _run_stale(self, run: dict[str, Any], now: float) -> bool:
+    def _run_abandoned(self, run: dict[str, Any]) -> bool:
         state = str(run.get("state") or "")
         if state not in {"Claimed", "Running", "Reviewing"}:
             return False
-        age = self._run_activity_age(run, now)
-        return bool(age is not None and age >= QUEUE_DRAIN_STALE_AFTER_SECONDS)
+        try:
+            run_id = int(run.get("id"))
+        except (TypeError, ValueError):
+            return False
+        owner = self._local_run_owner(run_id, state)
+        if owner is not None:
+            proc = getattr(owner, "proc", None)
+            if proc is None or proc.poll() is None:
+                return False
+        # A claim without a pid is still in the dispatch handoff window. If the
+        # daemon restarts during that window, reconcile_on_startup recovers it.
+        if state == "Claimed" and not run.get("pid"):
+            return False
+        return not _process_is_alive(run.get("pid"))
+
+    @staticmethod
+    def _run_progress_signature(run: dict[str, Any]) -> tuple[Any, ...]:
+        workspace_path = str(run.get("workspace_path") or "")
+        head = ""
+        status = ""
+        if workspace_path:
+            head = _git_head(workspace_path) or ""
+            result = _git(
+                workspace_path,
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=normal",
+                check=False,
+            )
+            if result.returncode == 0:
+                status = result.stdout or ""
+
+        log_size = -1
+        log_mtime_ns = -1
+        raw_log_path = str(run.get("log_path") or "")
+        if raw_log_path:
+            try:
+                log_stat = Path(raw_log_path).stat()
+                log_size = log_stat.st_size
+                log_mtime_ns = log_stat.st_mtime_ns
+            except OSError:
+                pass
+
+        return (
+            str(run.get("activity") or ""),
+            head,
+            status,
+            log_size,
+            log_mtime_ns,
+        )
+
+    def _health_check_interval(self) -> float:
+        return max(
+            1.0,
+            float(
+                getattr(
+                    self,
+                    "worker_health_check_seconds",
+                    DEFAULT_WORKER_HEALTH_CHECK_SECONDS,
+                )
+            ),
+        )
+
+    @staticmethod
+    def _health_check_window_label(seconds: float) -> str:
+        minutes = seconds / 60.0
+        if minutes.is_integer():
+            value = int(minutes)
+            return f"{value} minute" if value == 1 else f"{value} minutes"
+        return f"{seconds:g} seconds"
+
+    def _health_tracking(self) -> tuple[dict[int, dict[str, Any]], threading.Lock]:
+        health = getattr(self, "_run_health", None)
+        if health is None:
+            health = {}
+            self._run_health = health
+        lock = getattr(self, "_run_health_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._run_health_lock = lock
+        return health, lock
+
+    def _forget_run_health(self, run_id: int) -> None:
+        health, lock = self._health_tracking()
+        with lock:
+            health.pop(run_id, None)
+
+    def _observe_run_health(self, run: dict[str, Any], *, now: float) -> str | None:
+        if not _process_is_alive(run.get("pid")):
+            return None
+        run_id = int(run["id"])
+        interval = self._health_check_interval()
+        health, lock = self._health_tracking()
+        event_kind: str | None = None
+        event_message: str | None = None
+        queue_messenger = True
+
+        with lock:
+            previous = health.get(run_id)
+            if previous is None:
+                health[run_id] = {
+                    "checked_at": now,
+                    "signature": self._run_progress_signature(run),
+                    "warning": None,
+                }
+                return None
+
+            warning = previous.get("warning")
+            if now - float(previous["checked_at"]) < interval:
+                return str(warning) if warning else None
+
+            signature = self._run_progress_signature(run)
+            window = self._health_check_window_label(interval)
+            if signature == previous.get("signature"):
+                event_kind = "run-health-warning"
+                event_message = (
+                    f"{run['ticket_id']} run {run_id} is alive but has no observable "
+                    f"progress in the last {window}"
+                )
+                # Keep the trace current every interval, but only speak when the
+                # run first enters the warning state.
+                queue_messenger = not bool(warning)
+                warning = event_message
+            else:
+                event_kind = "run-health-check"
+                event_message = (
+                    f"{run['ticket_id']} run {run_id} is alive and made observable "
+                    f"progress in the last {window}"
+                )
+                queue_messenger = False
+                warning = None
+            health[run_id] = {
+                "checked_at": now,
+                "signature": signature,
+                "warning": warning,
+            }
+
+        if event_kind and event_message:
+            kwargs: dict[str, Any] = {
+                "ticket_id": run.get("ticket_id"),
+                "run_id": run_id,
+                "source": "orchestrator",
+                "message": event_message,
+                "repo_path": run.get("repo_path"),
+                "provider_key": run.get("provider_key"),
+            }
+            if not queue_messenger:
+                kwargs["queue_messenger"] = False
+            self._emit_lifecycle(event_kind, **kwargs)
+        return str(warning) if warning else None
 
     def _ensure_queue_drain_for_ticket(
         self,
@@ -3558,13 +3713,13 @@ class Daemon:
 
         run_state = str((latest_run or {}).get("state") or "")
         run_id = int(latest_run["id"]) if latest_run and latest_run.get("id") is not None else None
-        if latest_run and self._run_stale(latest_run, now):
-            age = self._run_activity_age(latest_run, now)
+        if latest_run and self._run_abandoned(latest_run):
+            self._forget_run_health(run_id)
             if run_state == "Reviewing":
                 self.runs.update(
                     run_id,
                     state="AwaitingReview",
-                    last_error=f"stale review ownership recovered after {int((age or 0) // 60)}m without activity",
+                    last_error="review worker process is no longer running; ownership recovered",
                 )
                 with self._review_workers_lock:
                     self._review_workers.pop(run_id, None)
@@ -3573,19 +3728,23 @@ class Daemon:
                 self.runs.update(
                     run_id,
                     state="Stalled",
-                    last_error=f"stale worker ownership recovered after {int((age or 0) // 60)}m without activity",
+                    last_error="worker process is no longer running; ownership recovered",
                     ended=True,
                     exit_code=-1,
                 )
                 latest_run = self.runs.get(run_id)
                 run_state = "Stalled"
 
+        health_warning = None
+        if latest_run and run_state in set(self.runs.ACTIVE_STATES) | {"Reviewing"}:
+            health_warning = self._observe_run_health(latest_run, now=now)
+
         if run_state in self.runs.ACTIVE_STATES:
             return {
                 "ticket_id": ticket_id,
                 "state": "active",
                 "run_id": run_id,
-                "reason": run_state,
+                "reason": health_warning or run_state,
                 "unresolved_dependencies": [],
             }
 
@@ -3594,7 +3753,7 @@ class Daemon:
                 "ticket_id": ticket_id,
                 "state": "reviewing",
                 "run_id": run_id,
-                "reason": "review/merge worker active",
+                "reason": health_warning or "review/merge worker active",
                 "unresolved_dependencies": [],
             }
 
@@ -4317,7 +4476,7 @@ class Daemon:
             worker = Worker(
                 run_id=run_id, run=run, prompt=prompt, agent_bin=worker_bin,
                 agent_kind=worker_provider, workflow_path=workflow_path,
-                store=self.runs, log_path=log_path, timeout_seconds=self.worker_timeout,
+                store=self.runs, log_path=log_path,
                 on_complete=self._on_worker_complete,
                 emit_lifecycle=self._emit_lifecycle,
             )
@@ -4342,6 +4501,7 @@ class Daemon:
     def _on_worker_complete(self, run_id: int) -> None:
         with self._workers_lock:
             self._workers.pop(run_id, None)
+        self._forget_run_health(run_id)
         run = self.runs.get(run_id)
         if not run:
             return
@@ -4377,6 +4537,7 @@ class Daemon:
     def _on_review_worker_complete(self, run_id: int) -> None:
         with self._review_workers_lock:
             self._review_workers.pop(run_id, None)
+        self._forget_run_health(run_id)
         run = self.runs.get(run_id)
         if run:
             self._record_queue_drain_after_event(
@@ -4507,7 +4668,6 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 agent_kind=review_provider,
                 store=self.runs,
                 log_path=log_path,
-                timeout_seconds=self.worker_timeout,
                 on_complete=self._on_review_worker_complete,
                 emit_lifecycle=self._emit_lifecycle,
             )

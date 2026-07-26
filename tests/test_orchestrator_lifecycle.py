@@ -604,7 +604,9 @@ class OrchestratorLifecycleTests(unittest.TestCase):
         daemon.workspace_root = root / "workspaces"
         daemon.branch_prefix = "relay/"
         daemon.workflow_path = Path(ROOT) / "services" / "orchestrator_workflow.md"
-        daemon.worker_timeout = 30
+        daemon.worker_health_check_seconds = 600
+        daemon._run_health = {}
+        daemon._run_health_lock = threading.Lock()
         daemon.agent_kind = provider
         daemon.agent_bin = provider
         daemon.runs = orchestrator.RunsStore(root / "runs.db")

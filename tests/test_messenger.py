@@ -353,6 +353,34 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_unscoped_health_warning_speaks_without_command_metadata(self):
+        backend = FakeBackend(["RR-7 is still alive, but it may need attention."])
+        spoken: list[tuple[str, int | None, str | None]] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append((text, seq, command_id)),
+            is_current=lambda seq, command_id: False,
+        )
+        runtime.start()
+        try:
+            accepted = runtime.submit_trace({
+                "kind": "run-health-warning",
+                "message": "RR-7 run 12 is alive but has no observable progress in the last 10 minutes",
+                "source": "orchestrator",
+                "ticket_id": "RR-7",
+                "run_id": 12,
+            })
+
+            self.assertTrue(accepted)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            self.assertEqual(
+                spoken[0],
+                ("RR-7 is still alive, but it may need attention.", None, None),
+            )
+            self.assertIn("WORKER LIFECYCLE (run-health-warning)", backend.prompts[0])
+        finally:
+            runtime.shutdown()
+
     def test_silent_unscoped_worker_lifecycle_falls_back_to_event_text(self):
         backend = FakeBackend(["__SILENT__"])
         spoken: list[str] = []

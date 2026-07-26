@@ -51,6 +51,7 @@ _CODEX_MODELS = frozenset({
 _CLAUDE_MODELS = frozenset({"best", "fable", "opus", "sonnet", "haiku"})
 _BASE_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
 _UNSCOPED_LIFECYCLE_KINDS = frozenset({
+    "run-health-warning",
     "run-review-needed",
     "run-failed",
     "run-canceled",
