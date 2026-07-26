@@ -36,7 +36,7 @@ struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
 }
 
 final class BoardOverlayScrollContainer: NSView {
-    private let scrollView = NSScrollView()
+    private let scrollView = BoardOverlayKeyboardScrollView()
     private let documentView = BoardOverlayScrollDocumentView()
     private let hostingView: BoardOverlayScrollHostingView
     private let thumbView = NSView()
@@ -47,6 +47,8 @@ final class BoardOverlayScrollContainer: NSView {
     private var lastViewportHeight: CGFloat = 0
     private var lastContentHeight: CGFloat = 0
     private var isPerformingLayout = false
+    private var isDeferredLayoutCorrection = false
+    private var pendingLayoutCorrection = false
     private var resetID: AnyHashable?
 
     init(rootView: AnyView, resetID: AnyHashable? = nil) {
@@ -165,26 +167,60 @@ final class BoardOverlayScrollContainer: NSView {
         hostingView.frame = CGRect(origin: .zero, size: CGSize(width: viewport.width, height: proposedHeight))
         hostingView.layoutSubtreeIfNeeded()
         let fittingHeight = hostingView.fittingSize.height
+        let correctsHostedOverflow = fittingHeight > viewport.height + 1
+        var hostedBounds = correctsHostedOverflow ? hostingView.descendantBoundsInSelf() : nil
+        var hostedMinY = min(0, hostedBounds?.minY ?? 0)
+        var hostedMaxY = max(fittingHeight, hostedBounds?.maxY ?? fittingHeight)
+        var contentHeight = hostedMaxY - hostedMinY
 
         if !force,
            abs(viewport.width - lastLaidOutWidth) < 0.5,
            abs(viewport.height - lastViewportHeight) < 0.5,
-           abs(fittingHeight - lastContentHeight) < 0.5 {
+           abs(contentHeight - lastContentHeight) < 0.5 {
             return
         }
-        let documentHeight = max(viewport.height, fittingHeight)
+        var documentHeight = max(viewport.height, contentHeight)
         documentView.frame = CGRect(
             origin: .zero,
             size: CGSize(width: viewport.width, height: documentHeight)
         )
         hostingView.frame = CGRect(
+            origin: CGPoint(x: 0, y: -hostedMinY),
+            size: CGSize(width: viewport.width, height: fittingHeight)
+        )
+        hostingView.layoutSubtreeIfNeeded()
+
+        hostedBounds = correctsHostedOverflow ? hostingView.descendantBoundsInSelf() : nil
+        hostedMinY = min(0, hostedBounds?.minY ?? 0)
+        hostedMaxY = max(fittingHeight, hostedBounds?.maxY ?? fittingHeight)
+        contentHeight = hostedMaxY - hostedMinY
+        documentHeight = max(viewport.height, contentHeight)
+        documentView.frame = CGRect(
             origin: .zero,
+            size: CGSize(width: viewport.width, height: documentHeight)
+        )
+        hostingView.frame = CGRect(
+            origin: CGPoint(x: 0, y: -hostedMinY),
             size: CGSize(width: viewport.width, height: fittingHeight)
         )
         clampScrollOffset(documentHeight: documentHeight, viewportHeight: viewport.height)
         lastLaidOutWidth = viewport.width
         lastViewportHeight = viewport.height
-        lastContentHeight = fittingHeight
+        lastContentHeight = contentHeight
+        scheduleDeferredLayoutCorrection()
+    }
+
+    private func scheduleDeferredLayoutCorrection() {
+        guard !isDeferredLayoutCorrection, !pendingLayoutCorrection else { return }
+        pendingLayoutCorrection = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingLayoutCorrection = false
+            self.isDeferredLayoutCorrection = true
+            self.layoutDocument(force: true)
+            self.isDeferredLayoutCorrection = false
+            self.updateThumbFrame()
+        }
     }
 
     private func clampScrollOffset(documentHeight: CGFloat, viewportHeight: CGFloat) {
@@ -208,6 +244,9 @@ final class BoardOverlayScrollContainer: NSView {
     }
 
     @objc private func contentBoundsDidChange() {
+        if scrollView.documentVisibleRect.minY <= 0.5 {
+            layoutDocument(force: true)
+        }
         updateThumbFrame()
         guard isScrollable else {
             hideThumb(immediate: true)
@@ -296,10 +335,59 @@ final class BoardOverlayScrollHostingView: NSHostingView<AnyView> {
         super.layout()
         onLayout?()
     }
+
+    func descendantBoundsInSelf() -> CGRect? {
+        var result: CGRect?
+        appendDescendantBounds(of: self, to: &result)
+        return result
+    }
+
+    private func appendDescendantBounds(of view: NSView, to result: inout CGRect?) {
+        for subview in view.subviews {
+            let rect = subview.convert(subview.bounds, to: self)
+            if rect.width > 0, rect.height > 0 {
+                result = result.map { $0.union(rect) } ?? rect
+            }
+            appendDescendantBounds(of: subview, to: &result)
+        }
+    }
 }
 
 final class BoardOverlayScrollDocumentView: NSView {
     override var isFlipped: Bool { true }
+}
+
+final class BoardOverlayKeyboardScrollView: NSScrollView {
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 115:
+            scroll(toY: 0)
+        case 119:
+            scroll(toY: maxScrollOffset)
+        case 116:
+            scroll(toY: contentView.bounds.origin.y - contentView.bounds.height)
+        case 121:
+            scroll(toY: contentView.bounds.origin.y + contentView.bounds.height)
+        case 126:
+            scroll(toY: contentView.bounds.origin.y - 40)
+        case 125:
+            scroll(toY: contentView.bounds.origin.y + 40)
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    private var maxScrollOffset: CGFloat {
+        max(0, (documentView?.frame.height ?? 0) - contentView.bounds.height)
+    }
+
+    private func scroll(toY proposedY: CGFloat) {
+        let y = min(max(proposedY, 0), maxScrollOffset)
+        contentView.scroll(to: NSPoint(x: 0, y: y))
+        reflectScrolledClipView(contentView)
+    }
 }
 
 final class BoardOverlayScrollClipView: NSClipView {
