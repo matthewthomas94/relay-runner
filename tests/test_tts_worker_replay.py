@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import sys
 import tempfile
 import threading
@@ -29,6 +30,16 @@ class ImmediateThread:
 
     def start(self):
         self.target(*self.args, **self.kwargs)
+
+
+class IdleThread:
+    def __init__(self, target, args=(), kwargs=None, daemon=None):
+        self.target = target
+        self.args = args
+        self.kwargs = kwargs or {}
+
+    def start(self):
+        return None
 
 
 class TTSWorkerReplayTests(unittest.TestCase):
@@ -230,6 +241,37 @@ class TTSWorkerReplayTests(unittest.TestCase):
 
         self.assertEqual(played, ["First sentence."])
         self.assertFalse(worker._playing)
+
+    def test_play_wav_blocking_uses_default_rate_multiplier_for_afplay(self):
+        worker = self.make_worker()
+        worker._rate = 1.3
+
+        class FakeProc:
+            def wait(self):
+                return 0
+
+        with (
+            patch.object(tts_worker, "_notify_state"),
+            patch.object(tts_worker.subprocess, "Popen", return_value=FakeProc()) as popen,
+        ):
+            worker._play_wav_blocking("/tmp/test.wav")
+
+        popen.assert_called_once()
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["afplay", "/tmp/test.wav", "-r", "1.3"],
+        )
+
+    def test_worker_init_defaults_rate_to_one_point_three_when_missing(self):
+        with (
+            patch.object(tts_worker, "load_config", return_value={"tts": {"voice": "bf_emma"}}),
+            patch.object(TTSWorker, "_load_voice", lambda self: None),
+            patch.object(tts_worker.threading, "Thread", IdleThread),
+        ):
+            worker = TTSWorker(queue.Queue())
+
+        self.assertEqual(worker._voice, "bf_emma")
+        self.assertEqual(worker._rate, 1.3)
 
 
 if __name__ == "__main__":
