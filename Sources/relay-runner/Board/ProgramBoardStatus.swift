@@ -1242,6 +1242,7 @@ final class ProgramBoardViewModel {
     var dragItemID: String?
     var dragTarget: ProgramBoardDropTarget?
     var dragPreview: ProgramBoardDragState?
+    var boardFrameInWindow: CGRect?
     var columnFrames: [ProgramBoardLane: CGRect] = [:]
     var cardFrames: [String: CGRect] = [:]
     var isLoading: Bool { reloadState.isLoading }
@@ -1474,6 +1475,37 @@ final class ProgramBoardViewModel {
         return ProgramBoardDropTarget(
             lane: lane,
             isValid: dropRequest(for: item, sourceLane: sourceLane, targetLane: lane) != nil
+        )
+    }
+
+    func updateBoardFrameInWindow(_ frame: CGRect) {
+        guard frame.width > 0, frame.height > 0 else { return }
+        boardFrameInWindow = frame
+    }
+
+    func boardLocation(fromWindowLocation location: CGPoint) -> CGPoint? {
+        guard let boardFrameInWindow,
+              boardFrameInWindow.width > 0,
+              boardFrameInWindow.height > 0 else {
+            return nil
+        }
+        return CGPoint(
+            x: location.x - boardFrameInWindow.minX,
+            y: boardFrameInWindow.maxY - location.y
+        )
+    }
+
+    func updateCardFrame(id: String, windowFrame: CGRect) {
+        guard let boardFrameInWindow,
+              windowFrame.width > 0,
+              windowFrame.height > 0 else {
+            return
+        }
+        cardFrames[id] = CGRect(
+            x: windowFrame.minX - boardFrameInWindow.minX,
+            y: boardFrameInWindow.maxY - windowFrame.maxY,
+            width: windowFrame.width,
+            height: windowFrame.height
         )
     }
 

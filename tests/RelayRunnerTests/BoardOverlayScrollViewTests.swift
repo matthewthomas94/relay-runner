@@ -269,6 +269,107 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertLessThan(expectedFirstCardTop, updatedViews.scrollView.contentView.bounds.height)
     }
 
+    func testProgramWorkCardDragStartsThroughMountedScrollHierarchy() throws {
+        let model = ProgramBoardViewModel()
+        let backlogItem = programWorkItem(
+            ticketID: "RR-231",
+            title: "Mounted backlog ticket",
+            status: Ticket.Status.backlog.rawValue
+        )
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: [backlogItem],
+            doneItems: []
+        )
+
+        var drops: [(ProgramStatusItem, ProgramBoardLane, ProgramBoardLane)] = []
+        let host = NSHostingView(rootView:
+            HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
+                ProgramWorkColumnPanel(
+                    model: model,
+                    lane: .backlog,
+                    showsProjectContext: true,
+                    theme: nil,
+                    canCreate: true,
+                    onCreate: {},
+                    onEdit: { _ in },
+                    onDrop: { drops.append(($0, $1, $2)) }
+                )
+                ProgramWorkColumnPanel(
+                    model: model,
+                    lane: .done,
+                    showsProjectContext: true,
+                    theme: nil,
+                    canCreate: true,
+                    onCreate: {},
+                    onEdit: { _ in },
+                    onDrop: { drops.append(($0, $1, $2)) }
+                )
+            }
+            .frame(width: 560, height: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
+            .coordinateSpace(name: "programBoard")
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 560, height: BoardSurfaceLayout.columnHeight),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        layout(host, width: 560, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+
+        let columnWidth = (CGFloat(560) - BoardSurfaceLayout.columnSpacing) / 2
+        model.boardFrameInWindow = CGRect(x: 0, y: 0, width: 560, height: BoardSurfaceLayout.columnHeight)
+        model.columnFrames = [
+            .backlog: CGRect(x: 0, y: 0, width: columnWidth, height: BoardSurfaceLayout.columnHeight),
+            .done: CGRect(
+                x: columnWidth + BoardSurfaceLayout.columnSpacing,
+                y: 0,
+                width: columnWidth,
+                height: BoardSurfaceLayout.columnHeight
+            ),
+        ]
+        let backlogFrame = try XCTUnwrap(model.columnFrames[.backlog])
+        let doneFrame = try XCTUnwrap(model.columnFrames[.done])
+        let boardStart = CGPoint(
+            x: backlogFrame.minX + 80,
+            y: backlogFrame.minY + ProgramBoardLayout.workCardTopOffset + 32
+        )
+        let boardOverThreshold = CGPoint(x: boardStart.x + 12, y: boardStart.y)
+        let boardDoneTarget = CGPoint(x: doneFrame.midX, y: max(doneFrame.minY + 160, boardStart.y))
+        let start = windowLocation(forBoardLocation: boardStart, windowHeight: BoardSurfaceLayout.columnHeight)
+        let overThreshold = windowLocation(
+            forBoardLocation: boardOverThreshold,
+            windowHeight: BoardSurfaceLayout.columnHeight
+        )
+        let doneTarget = windowLocation(
+            forBoardLocation: boardDoneTarget,
+            windowHeight: BoardSurfaceLayout.columnHeight
+        )
+        let eventTarget = try XCTUnwrap(window.contentView?.hitTest(start))
+
+        sendMouse(.leftMouseDown, at: start, to: eventTarget, in: window)
+        sendMouse(.leftMouseDragged, at: CGPoint(x: start.x + 3, y: start.y), to: eventTarget, in: window)
+        drainMainQueue()
+        XCTAssertNil(model.dragItemID)
+
+        sendMouse(.leftMouseDragged, at: overThreshold, to: eventTarget, in: window)
+        drainMainQueue()
+        XCTAssertEqual(model.dragItemID, backlogItem.id)
+        XCTAssertNotNil(model.dragPreview)
+
+        sendMouse(.leftMouseDragged, at: doneTarget, to: eventTarget, in: window)
+        drainMainQueue()
+        XCTAssertEqual(model.dragTarget, ProgramBoardDropTarget(lane: .done, isValid: true))
+
+        sendMouse(.leftMouseUp, at: doneTarget, to: eventTarget, in: window)
+        drainMainQueue()
+        XCTAssertEqual(drops.map { [$0.0.id, $0.1.id, $0.2.id] }, [[backlogItem.id, "Backlog", "Done"]])
+        XCTAssertNil(model.dragItemID)
+    }
+
     func testTicketDetailOmitsOpenWorkspaceAction() {
         let item = ProgramStatusItem(
             project: ProgramStatusProject(name: "Relay Runner", path: "/repo/relay-runner"),
@@ -381,6 +482,44 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         return nil
     }
 
+    private func sendMouse(_ type: NSEvent.EventType, at location: CGPoint, to view: NSView, in window: NSWindow) {
+        let event = NSEvent.mouseEvent(
+            with: type,
+            location: location,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: type == .leftMouseDown ? 1 : 0,
+            pressure: type == .leftMouseUp ? 0 : 1
+        )
+        if let event {
+            switch type {
+            case .leftMouseDown:
+                view.mouseDown(with: event)
+            case .leftMouseDragged:
+                view.mouseDragged(with: event)
+            case .leftMouseUp:
+                view.mouseUp(with: event)
+            default:
+                break
+            }
+        }
+    }
+
+    private func windowLocation(forBoardLocation location: CGPoint, windowHeight: CGFloat) -> CGPoint {
+        CGPoint(x: location.x, y: windowHeight - location.y)
+    }
+
+    private func drainMainQueue() {
+        let expectation = XCTestExpectation(description: "Drain main queue")
+        DispatchQueue.main.async {
+            expectation.fulfill()
+        }
+        XCTWaiter().wait(for: [expectation], timeout: 1)
+    }
+
     private func programColumnHost(resetID: AnyHashable, cardHeights: [CGFloat]) -> some View {
         ProgramColumnTicketScrollView(resetID: resetID) {
             ProgramLaneScrollFixture(cardHeights: cardHeights)
@@ -420,7 +559,12 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         .coordinateSpace(name: "programBoard")
     }
 
-    private func programDashboardSnapshot(doneItems: [ProgramStatusItem]) -> ProgramDashboardSnapshot {
+    private func programDashboardSnapshot(
+        backlogItems: [ProgramStatusItem] = [],
+        readyItems: [ProgramStatusItem] = [],
+        inProgressItems: [ProgramStatusItem] = [],
+        doneItems: [ProgramStatusItem]
+    ) -> ProgramDashboardSnapshot {
         ProgramDashboardSnapshot(
             summary: programStatusResponse(
                 query: "summary",
@@ -435,9 +579,9 @@ final class BoardOverlayScrollViewTests: XCTestCase {
                     ),
                 ]
             ),
-            backlogWork: programStatusResponse(query: "backlog_lane", items: []),
-            readyWork: programStatusResponse(query: "ready_lane", items: []),
-            inProgressWork: programStatusResponse(query: "in_progress_lane", items: []),
+            backlogWork: programStatusResponse(query: "backlog_lane", items: backlogItems),
+            readyWork: programStatusResponse(query: "ready_lane", items: readyItems),
+            inProgressWork: programStatusResponse(query: "in_progress_lane", items: inProgressItems),
             doneWork: programStatusResponse(query: "done_lane", items: doneItems),
             awaitingMerge: programStatusResponse(query: "awaiting_merge", items: [])
         )
