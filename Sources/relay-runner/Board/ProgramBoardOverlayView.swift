@@ -310,6 +310,7 @@ private struct ProgramDragPreviewLayer: View {
                 isSelected: false,
                 showsProjectContext: true,
                 isDraggingSource: false,
+                isHovered: false,
                 onSelect: {},
                 onEdit: {}
             )
@@ -327,37 +328,54 @@ private struct ProgramDragPreviewLayer: View {
 }
 
 private struct ProgramGrabCursor: ViewModifier {
+    let hovering: Bool
     let dragging: Bool
     let enabled: Bool
     @State private var isPushed = false
 
     func body(content: Content) -> some View {
         content
-            .onHover { hovering in
-                if hovering, enabled {
-                    guard !isPushed else { return }
-                    (dragging ? NSCursor.closedHand : NSCursor.openHand).push()
-                    isPushed = true
-                } else if isPushed {
-                    NSCursor.pop()
-                    isPushed = false
-                }
+            .onAppear {
+                updateCursor(hovering: hovering)
+            }
+            .onChange(of: hovering) { _, isHovering in
+                updateCursor(hovering: isHovering)
             }
             .onChange(of: enabled) { _, isEnabled in
-                guard !isEnabled, isPushed else { return }
-                NSCursor.pop()
-                isPushed = false
+                if isEnabled {
+                    updateCursor(hovering: hovering)
+                } else {
+                    popCursor()
+                }
             }
             .onChange(of: dragging) { _, _ in
-                guard enabled, isPushed else { return }
-                NSCursor.pop()
-                (dragging ? NSCursor.closedHand : NSCursor.openHand).push()
+                guard hovering, enabled else { return }
+                popCursor()
+                pushCursor()
             }
             .onDisappear {
-                guard isPushed else { return }
-                NSCursor.pop()
-                isPushed = false
+                popCursor()
             }
+    }
+
+    private func updateCursor(hovering: Bool) {
+        if hovering, enabled {
+            pushCursor()
+        } else {
+            popCursor()
+        }
+    }
+
+    private func pushCursor() {
+        guard !isPushed else { return }
+        (dragging ? NSCursor.closedHand : NSCursor.openHand).push()
+        isPushed = true
+    }
+
+    private func popCursor() {
+        guard isPushed else { return }
+        NSCursor.pop()
+        isPushed = false
     }
 }
 
@@ -391,8 +409,8 @@ private struct ProgramButtonCursor: ViewModifier {
 }
 
 private extension View {
-    func programGrabCursor(dragging: Bool, enabled: Bool) -> some View {
-        modifier(ProgramGrabCursor(dragging: dragging, enabled: enabled))
+    func programGrabCursor(hovering: Bool, dragging: Bool, enabled: Bool) -> some View {
+        modifier(ProgramGrabCursor(hovering: hovering, dragging: dragging, enabled: enabled))
     }
 
     func programButtonCursor(enabled: Bool = true) -> some View {
@@ -881,19 +899,11 @@ struct ProgramWorkColumnPanel: View {
 
     private var scrollResetID: String {
         let scopeID = model.selectedProjectPath ?? "all"
-        let topTicketID = items.first.map { item in
-            let identity = [
-                item.project?.path,
-                item.ticketID,
-            ]
-            .compactMap { $0 }
-            .joined(separator: "|")
-            return identity.isEmpty ? item.id : identity
-        } ?? "empty"
-        return "\(lane.id)-\(scopeID)-\(topTicketID)"
+        return "\(lane.id)-\(scopeID)"
     }
 
     var body: some View {
+        let laneItems = items
         VStack(alignment: .leading, spacing: ProgramBoardLayout.workSectionSpacing) {
             HStack(alignment: .center, spacing: 8) {
                 Text(lane.title)
@@ -902,7 +912,7 @@ struct ProgramWorkColumnPanel: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
-                Text("\(items.count)")
+                Text("\(laneItems.count)")
                     .font(AppTypography.font(.count))
                     .foregroundStyle(ProgramBoardStyle.secondaryText)
                     .monospacedDigit()
@@ -921,15 +931,17 @@ struct ProgramWorkColumnPanel: View {
             ProgramColumnTicketScrollView(resetID: scrollResetID) {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
-                    if items.isEmpty {
+                    if laneItems.isEmpty {
                         ProgramColumnEmpty(text: lane.emptyText)
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
-                            ForEach(items) { item in
+                            ForEach(laneItems) { item in
                                 DraggableProgramWorkCard(
                                     model: model,
                                     item: item,
                                     lane: lane,
+                                    isFirst: item.id == laneItems.first?.id,
+                                    isLast: item.id == laneItems.last?.id,
                                     isSelected: model.selectedTicketDetail?.id == item.id,
                                     showsProjectContext: showsProjectContext,
                                     onSelect: { model.selectTicket(item) },
@@ -997,11 +1009,14 @@ private struct DraggableProgramWorkCard: View {
     @Bindable var model: ProgramBoardViewModel
     let item: ProgramStatusItem
     let lane: ProgramBoardLane
+    let isFirst: Bool
+    let isLast: Bool
     let isSelected: Bool
     let showsProjectContext: Bool
     let onSelect: () -> Void
     let onEdit: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
+    @State private var isHovered = false
 
     private var isBeingDragged: Bool {
         model.dragItemID == item.id
@@ -1017,15 +1032,23 @@ private struct DraggableProgramWorkCard: View {
             isSelected: isSelected,
             showsProjectContext: showsProjectContext,
             isDraggingSource: isBeingDragged,
+            isHovered: isHovered,
             onSelect: onSelect,
             onEdit: onEdit
         )
             .opacity(isBeingDragged ? 0.25 : 1.0)
             .contentShape(Rectangle())
-            .programGrabCursor(dragging: isBeingDragged, enabled: canDrag)
+            .programGrabCursor(
+                hovering: isHovered,
+                dragging: isBeingDragged,
+                enabled: canDrag
+            )
             .overlay(
                 ProgramWorkCardDragEventLayer(
                     canDrag: canDrag,
+                    showsEditButton: item.showsProgramBoardEditButton,
+                    scrollBoundary: scrollBoundary,
+                    onHoverChange: { isHovered = $0 },
                     onSelect: onSelect,
                     onFrameChange: { frame in
                         model.updateCardFrame(id: item.id, windowFrame: frame)
@@ -1040,6 +1063,18 @@ private struct DraggableProgramWorkCard: View {
                 )
             )
             .help(canDrag ? "Drag ticket to another lane" : "This ticket cannot be dragged while a worker owns its state")
+    }
+
+    private var scrollBoundary: BoardOverlayScrollBoundary? {
+        guard isFirst || isLast else { return nil }
+        return BoardOverlayScrollBoundary(
+            topInset: isFirst
+                ? ProgramBoardLayout.workScrollContentInsets.top
+                    + ProgramBoardLayout.dropIndicatorHeight
+                    + ProgramBoardLayout.dropIndicatorBottomPadding
+                : nil,
+            bottomInset: isLast ? ProgramBoardLayout.workScrollContentInsets.bottom : nil
+        )
     }
 
     private func updateDrag(location: CGPoint, startLocation: CGPoint) {
@@ -1088,6 +1123,9 @@ private struct DraggableProgramWorkCard: View {
 
 private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     let canDrag: Bool
+    let showsEditButton: Bool
+    let scrollBoundary: BoardOverlayScrollBoundary?
+    let onHoverChange: (Bool) -> Void
     let onSelect: () -> Void
     let onFrameChange: (CGRect) -> Void
     let windowLocationToBoardLocation: (CGPoint) -> CGPoint?
@@ -1100,6 +1138,9 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
 
     func updateNSView(_ nsView: ProgramWorkCardDragEventView, context: Context) {
         nsView.canDrag = canDrag
+        nsView.showsEditButton = showsEditButton
+        nsView.boardOverlayScrollBoundary = scrollBoundary
+        nsView.onHoverChange = onHoverChange
         nsView.onSelect = onSelect
         nsView.onFrameChange = onFrameChange
         nsView.windowLocationToBoardLocation = windowLocationToBoardLocation
@@ -1109,10 +1150,13 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     }
 }
 
-private final class ProgramWorkCardDragEventView: NSView {
+final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProviding {
     static let dragThreshold: CGFloat = 5
 
     var canDrag = false
+    var showsEditButton = true
+    var boardOverlayScrollBoundary: BoardOverlayScrollBoundary?
+    var onHoverChange: (Bool) -> Void = { _ in }
     var onSelect: () -> Void = {}
     var onFrameChange: (CGRect) -> Void = { _ in }
     var windowLocationToBoardLocation: (CGPoint) -> CGPoint? = { _ in nil }
@@ -1122,15 +1166,44 @@ private final class ProgramWorkCardDragEventView: NSView {
     private var mouseDownLocation: CGPoint?
     private var dragStarted = false
     private var lastFrame: CGRect = .null
+    private var hoverTrackingArea: NSTrackingArea?
 
     override var isFlipped: Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard bounds.contains(point),
-              !editButtonHitExclusion.contains(point) else {
+              !showsEditButton || !editButtonHitExclusion.contains(point) else {
             return nil
         }
         return self
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [
+                .activeAlways,
+                .inVisibleRect,
+                .mouseEnteredAndExited,
+                .enabledDuringMouseDrag,
+            ],
+            owner: self,
+            userInfo: nil
+        )
+        hoverTrackingArea = area
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChange(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChange(false)
     }
 
     override func layout() {
@@ -1199,10 +1272,10 @@ private struct ProgramWorkCard: View {
     let isSelected: Bool
     let showsProjectContext: Bool
     let isDraggingSource: Bool
+    let isHovered: Bool
     let onSelect: () -> Void
     let onEdit: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
 
     private var presentation: ProgramBoardInteractionPresentation {
         ProgramBoardInteractionPresentation.resolve(
@@ -1225,13 +1298,15 @@ private struct ProgramWorkCard: View {
 
                 Spacer(minLength: 0)
 
-                ProgramEditCapsuleButton(
-                    presentation: ProgramEditButtonPresentation.resolve(
-                        isEnabled: canEdit,
-                        help: editHelp
-                    ),
-                    action: onEdit
-                )
+                if item.showsProgramBoardEditButton {
+                    ProgramEditCapsuleButton(
+                        presentation: ProgramEditButtonPresentation.resolve(
+                            isEnabled: canEdit,
+                            help: editHelp
+                        ),
+                        action: onEdit
+                    )
+                }
             }
 
             Text(title)
@@ -1293,7 +1368,6 @@ private struct ProgramWorkCard: View {
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
-        .onHover { isHovered = !isDraggingSource && $0 }
         .help(cardHelp)
     }
 
@@ -1348,7 +1422,7 @@ private struct ProgramWorkCard: View {
     }
 
     private var canEdit: Bool {
-        ProgramTicketIdentity(item: item) != nil
+        item.isProgramBoardEditable
     }
 
     private var editHelp: String {
@@ -1402,13 +1476,15 @@ struct ProgramTicketDetailPanel: View {
             }
 
             HStack(alignment: .center, spacing: 8) {
-                ProgramEditCapsuleButton(
-                    presentation: ProgramEditButtonPresentation.resolve(
-                        isEnabled: detail.ticket != nil,
-                        help: detail.ticket == nil ? "Ticket file is unavailable" : "Edit child ticket"
-                    )
-                ) {
-                    onEdit()
+                if detail.item.showsProgramBoardEditButton {
+                    ProgramEditCapsuleButton(
+                        presentation: ProgramEditButtonPresentation.resolve(
+                            isEnabled: detail.ticket != nil,
+                            help: detail.ticket == nil ? "Ticket file is unavailable" : "Edit child ticket"
+                        )
+                    ) {
+                        onEdit()
+                    }
                 }
                 ProgramDetailActionButton(
                     systemName: "trash",

@@ -1412,6 +1412,10 @@ final class ProgramBoardViewModel {
     func beginEdit(detail: ProgramTicketDetail) {
         selectedTicketDetail = detail
         creating = nil
+        guard detail.item.isProgramBoardEditable else {
+            editing = nil
+            return
+        }
         editing = ProgramBoardEditPolicy.draft(from: detail)
     }
 
@@ -1671,6 +1675,18 @@ extension ProgramStatusItem {
             ticketID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
             !hasActiveWorker &&
             !isAwaitingMerge
+    }
+
+    var isProgramBoardDone: Bool {
+        programStateKeys.contains(Ticket.Status.done.rawValue)
+    }
+
+    var showsProgramBoardEditButton: Bool {
+        !isProgramBoardDone
+    }
+
+    var isProgramBoardEditable: Bool {
+        showsProgramBoardEditButton && ProgramTicketIdentity(item: self) != nil
     }
 
     private var programStateKeys: [String] {

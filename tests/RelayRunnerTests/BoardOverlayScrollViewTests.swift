@@ -231,7 +231,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertEqual(doneAfter.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
     }
 
-    func testProgramWorkColumnSameScopeNewTopTicketReturnsDoneLaneToTop() throws {
+    func testProgramWorkColumnSameScopeNewTopTicketPreservesDoneLaneOffset() throws {
         let model = ProgramBoardViewModel()
         model.snapshot = programDashboardSnapshot(doneItems: doneTickets(start: 100, count: 212))
 
@@ -259,15 +259,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
 
         let updatedContainer = try XCTUnwrap(findScrollContainer(in: host))
         let updatedViews = try scrollViews(in: updatedContainer)
-        XCTAssertEqual(updatedViews.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
-
-        let updatedThumb = try XCTUnwrap(thumbView(in: updatedContainer))
-        XCTAssertEqual(updatedThumb.frame.minY, 6, accuracy: 0.5)
-
-        let expectedFirstCardTop = ProgramBoardLayout.workScrollContentInsets.top
-            + ProgramBoardLayout.dropIndicatorHeight
-            + ProgramBoardLayout.dropIndicatorBottomPadding
-        XCTAssertLessThan(expectedFirstCardTop, updatedViews.scrollView.contentView.bounds.height)
+        XCTAssertEqual(updatedViews.scrollView.documentVisibleRect.minY, 220, accuracy: 0.5)
     }
 
     func testStableProgramWorkColumnsManualScrollInputsReachCompleteFirstCards() throws {
@@ -326,6 +318,51 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             in: containers[1],
             window: window
         )
+    }
+
+    func testDoneItemsHideEditControls() {
+        let backlogItem = programWorkItem(
+            ticketID: "RR-BACKLOG-1",
+            title: "Editable backlog ticket",
+            status: Ticket.Status.backlog.rawValue
+        )
+        let doneItem = programWorkItem(
+            ticketID: "RR-DONE-1",
+            title: "Read-only done ticket",
+            status: Ticket.Status.done.rawValue
+        )
+
+        XCTAssertTrue(backlogItem.showsProgramBoardEditButton)
+        XCTAssertFalse(doneItem.showsProgramBoardEditButton)
+    }
+
+    func testCardDragLayerReportsHoverAndDoneDoesNotReserveAnEditHitArea() throws {
+        let eventView = ProgramWorkCardDragEventView()
+        eventView.frame = CGRect(x: 0, y: 0, width: 220, height: 120)
+        let editAreaPoint = CGPoint(x: 200, y: 20)
+        var hoverStates: [Bool] = []
+        eventView.onHoverChange = { hoverStates.append($0) }
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 0,
+            pressure: 0
+        ))
+
+        eventView.mouseEntered(with: event)
+        eventView.mouseExited(with: event)
+        XCTAssertEqual(hoverStates, [true, false])
+
+        eventView.showsEditButton = true
+        XCTAssertNil(eventView.hitTest(editAreaPoint))
+
+        eventView.showsEditButton = false
+        XCTAssertTrue(eventView.hitTest(editAreaPoint) === eventView)
     }
 
     func testProgramWorkCardDragStartsThroughMountedScrollHierarchy() throws {
@@ -499,8 +536,20 @@ final class BoardOverlayScrollViewTests: XCTestCase {
     ) {
         let scrollView = try XCTUnwrap(container.subviews.compactMap { $0 as? NSScrollView }.first)
         let documentView = try XCTUnwrap(scrollView.documentView)
-        let hostingView = try XCTUnwrap(documentView.subviews.first)
+        let hostingView = try XCTUnwrap(findHostingView(in: documentView))
         return (scrollView, documentView, hostingView)
+    }
+
+    private func findHostingView(in view: NSView) -> BoardOverlayScrollHostingView? {
+        if let hostingView = view as? BoardOverlayScrollHostingView {
+            return hostingView
+        }
+        for subview in view.subviews {
+            if let hostingView = findHostingView(in: subview) {
+                return hostingView
+            }
+        }
+        return nil
     }
 
     private func findScrollContainer(in view: NSView) -> BoardOverlayScrollContainer? {

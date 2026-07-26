@@ -6,6 +6,15 @@ enum BoardOverlayScrollContentInsets {
     static let columnAligned = EdgeInsets(top: 28, leading: 0, bottom: 28, trailing: 0)
 }
 
+struct BoardOverlayScrollBoundary {
+    let topInset: CGFloat?
+    let bottomInset: CGFloat?
+}
+
+protocol BoardOverlayScrollBoundaryProviding: AnyObject {
+    var boardOverlayScrollBoundary: BoardOverlayScrollBoundary? { get }
+}
+
 struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
     let contentInsets: EdgeInsets
     let resetID: AnyHashable?
@@ -38,6 +47,7 @@ struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
 final class BoardOverlayScrollContainer: NSView {
     private let scrollView = BoardOverlayKeyboardScrollView()
     private let documentView = BoardOverlayScrollDocumentView()
+    private let contentView = BoardOverlayScrollContentView()
     private let hostingView: BoardOverlayScrollHostingView
     private let thumbView = NSView()
     private var trackingArea: NSTrackingArea?
@@ -46,9 +56,8 @@ final class BoardOverlayScrollContainer: NSView {
     private var lastLaidOutWidth: CGFloat = 0
     private var lastViewportHeight: CGFloat = 0
     private var lastContentHeight: CGFloat = 0
+    private var lastContentMinY: CGFloat = 0
     private var isPerformingLayout = false
-    private var isDeferredLayoutCorrection = false
-    private var pendingLayoutCorrection = false
     private var resetID: AnyHashable?
 
     init(rootView: AnyView, resetID: AnyHashable? = nil) {
@@ -115,7 +124,7 @@ final class BoardOverlayScrollContainer: NSView {
         wantsLayer = true
         hostingView.onLayout = { [weak self] in
             guard let self, !self.isPerformingLayout else { return }
-            self.layoutDocument(force: true)
+            self.layoutDocument()
             self.updateThumbFrame()
         }
 
@@ -130,7 +139,8 @@ final class BoardOverlayScrollContainer: NSView {
         scrollView.documentView = documentView
         addSubview(scrollView)
 
-        documentView.addSubview(hostingView)
+        documentView.addSubview(contentView)
+        contentView.addSubview(hostingView)
         hostingView.translatesAutoresizingMaskIntoConstraints = true
 
         thumbView.wantsLayer = true
@@ -164,63 +174,62 @@ final class BoardOverlayScrollContainer: NSView {
         defer { isPerformingLayout = false }
 
         let proposedHeight = max(hostingView.frame.height, 1)
-        hostingView.frame = CGRect(origin: .zero, size: CGSize(width: viewport.width, height: proposedHeight))
+        let proposedFrame = CGRect(
+            origin: .zero,
+            size: CGSize(width: viewport.width, height: proposedHeight)
+        )
+        if hostingView.frame != proposedFrame {
+            hostingView.frame = proposedFrame
+        }
         hostingView.layoutSubtreeIfNeeded()
-        let fittingHeight = hostingView.fittingSize.height
-        let correctsHostedOverflow = fittingHeight > viewport.height + 1
-        var hostedBounds = correctsHostedOverflow ? hostingView.descendantBoundsInSelf() : nil
-        var hostedMinY = min(0, hostedBounds?.minY ?? 0)
-        var hostedMaxY = max(fittingHeight, hostedBounds?.maxY ?? fittingHeight)
-        var contentHeight = hostedMaxY - hostedMinY
+        let fittingHeight = max(hostingView.fittingSize.height, 1)
+        let fittingFrame = CGRect(
+            origin: .zero,
+            size: CGSize(width: viewport.width, height: fittingHeight)
+        )
+        if hostingView.frame != fittingFrame {
+            hostingView.frame = fittingFrame
+        }
+        hostingView.layoutSubtreeIfNeeded()
+        let boundaryRange = hostingView.explicitContentBoundaryRange()
+        let contentMinY = boundaryRange?.lowerBound ?? 0
+        let contentMaxY = boundaryRange?.upperBound ?? fittingHeight
+        let contentHeight = max(1, contentMaxY - contentMinY)
 
         if !force,
            abs(viewport.width - lastLaidOutWidth) < 0.5,
            abs(viewport.height - lastViewportHeight) < 0.5,
-           abs(contentHeight - lastContentHeight) < 0.5 {
+           abs(contentHeight - lastContentHeight) < 0.5,
+           abs(contentMinY - lastContentMinY) < 0.5 {
             return
         }
-        var documentHeight = max(viewport.height, contentHeight)
-        documentView.frame = CGRect(
+        let documentHeight = max(viewport.height, contentHeight)
+        let documentFrame = CGRect(
             origin: .zero,
             size: CGSize(width: viewport.width, height: documentHeight)
         )
-        hostingView.frame = CGRect(
-            origin: CGPoint(x: 0, y: -hostedMinY),
-            size: CGSize(width: viewport.width, height: fittingHeight)
+        if documentView.frame != documentFrame {
+            documentView.frame = documentFrame
+        }
+        let contentFrame = CGRect(
+            origin: CGPoint(x: 0, y: -contentMinY),
+            size: CGSize(width: viewport.width, height: documentHeight)
         )
-        hostingView.layoutSubtreeIfNeeded()
-
-        hostedBounds = correctsHostedOverflow ? hostingView.descendantBoundsInSelf() : nil
-        hostedMinY = min(0, hostedBounds?.minY ?? 0)
-        hostedMaxY = max(fittingHeight, hostedBounds?.maxY ?? fittingHeight)
-        contentHeight = hostedMaxY - hostedMinY
-        documentHeight = max(viewport.height, contentHeight)
-        documentView.frame = CGRect(
+        if contentView.frame != contentFrame {
+            contentView.frame = contentFrame
+        }
+        let contentBounds = CGRect(
             origin: .zero,
             size: CGSize(width: viewport.width, height: documentHeight)
         )
-        hostingView.frame = CGRect(
-            origin: CGPoint(x: 0, y: -hostedMinY),
-            size: CGSize(width: viewport.width, height: fittingHeight)
-        )
+        if contentView.bounds != contentBounds {
+            contentView.bounds = contentBounds
+        }
         clampScrollOffset(documentHeight: documentHeight, viewportHeight: viewport.height)
         lastLaidOutWidth = viewport.width
         lastViewportHeight = viewport.height
         lastContentHeight = contentHeight
-        scheduleDeferredLayoutCorrection()
-    }
-
-    private func scheduleDeferredLayoutCorrection() {
-        guard !isDeferredLayoutCorrection, !pendingLayoutCorrection else { return }
-        pendingLayoutCorrection = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.pendingLayoutCorrection = false
-            self.isDeferredLayoutCorrection = true
-            self.layoutDocument(force: true)
-            self.isDeferredLayoutCorrection = false
-            self.updateThumbFrame()
-        }
+        lastContentMinY = contentMinY
     }
 
     private func clampScrollOffset(documentHeight: CGFloat, viewportHeight: CGFloat) {
@@ -244,9 +253,6 @@ final class BoardOverlayScrollContainer: NSView {
     }
 
     @objc private func contentBoundsDidChange() {
-        if scrollView.documentVisibleRect.minY <= 0.5 {
-            layoutDocument(force: true)
-        }
         updateThumbFrame()
         guard isScrollable else {
             hideThumb(immediate: true)
@@ -336,24 +342,44 @@ final class BoardOverlayScrollHostingView: NSHostingView<AnyView> {
         onLayout?()
     }
 
-    func descendantBoundsInSelf() -> CGRect? {
-        var result: CGRect?
-        appendDescendantBounds(of: self, to: &result)
-        return result
+    func explicitContentBoundaryRange() -> ClosedRange<CGFloat>? {
+        var top: CGFloat?
+        var bottom: CGFloat?
+        appendExplicitContentBoundaries(in: self, top: &top, bottom: &bottom)
+        guard let top, let bottom, bottom > top else {
+            return nil
+        }
+        return top...bottom
     }
 
-    private func appendDescendantBounds(of view: NSView, to result: inout CGRect?) {
+    private func appendExplicitContentBoundaries(
+        in view: NSView,
+        top: inout CGFloat?,
+        bottom: inout CGFloat?
+    ) {
         for subview in view.subviews {
-            let rect = subview.convert(subview.bounds, to: self)
-            if rect.width > 0, rect.height > 0 {
-                result = result.map { $0.union(rect) } ?? rect
+            if let provider = subview as? BoardOverlayScrollBoundaryProviding,
+               let boundary = provider.boardOverlayScrollBoundary {
+                let frame = subview.convert(subview.bounds, to: self)
+                if let inset = boundary.topInset {
+                    let candidate = frame.minY - inset
+                    top = min(top ?? candidate, candidate)
+                }
+                if let inset = boundary.bottomInset {
+                    let candidate = frame.maxY + inset
+                    bottom = max(bottom ?? candidate, candidate)
+                }
             }
-            appendDescendantBounds(of: subview, to: &result)
+            appendExplicitContentBoundaries(in: subview, top: &top, bottom: &bottom)
         }
     }
 }
 
 final class BoardOverlayScrollDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+final class BoardOverlayScrollContentView: NSView {
     override var isFlipped: Bool { true }
 }
 

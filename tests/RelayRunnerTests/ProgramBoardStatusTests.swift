@@ -168,7 +168,8 @@ final class ProgramBoardStatusTests: XCTestCase {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         XCTAssertTrue(contents.contains("ProgramWorkspaceActionButton(\n                title: presentation.selectAllTitle"))
-        XCTAssertTrue(contents.contains("ProgramEditCapsuleButton(\n                    presentation: ProgramEditButtonPresentation.resolve("))
+        XCTAssertTrue(contents.contains("ProgramEditCapsuleButton("))
+        XCTAssertTrue(contents.contains("presentation: ProgramEditButtonPresentation.resolve("))
         XCTAssertTrue(contents.contains("SharedActionButtonChrome("))
     }
 
@@ -1377,6 +1378,52 @@ final class ProgramBoardStatusTests: XCTestCase {
             description: "",
             acceptanceCriteria: ""
         ))
+    }
+
+    func testDoneProgramTicketsAreReadOnly() throws {
+        let repo = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try writeTicket(
+            repo: repo,
+            id: "RR-1",
+            title: "Editable backlog",
+            status: Ticket.Status.backlog.rawValue,
+            body: "## Description\n\nEditable work."
+        )
+        try writeTicket(
+            repo: repo,
+            id: "RR-2",
+            title: "Read-only done",
+            status: Ticket.Status.done.rawValue,
+            body: "## Description\n\nCompleted work."
+        )
+        let backlog = try ticketItem(
+            projectName: "Relay Runner",
+            path: repo.path,
+            ticketID: "RR-1",
+            title: "Editable backlog",
+            status: Ticket.Status.backlog.rawValue
+        )
+        let done = try ticketItem(
+            projectName: "Relay Runner",
+            path: repo.path,
+            ticketID: "RR-2",
+            title: "Read-only done",
+            status: Ticket.Status.done.rawValue
+        )
+
+        XCTAssertFalse(backlog.isProgramBoardDone)
+        XCTAssertTrue(backlog.isProgramBoardEditable)
+        XCTAssertTrue(done.isProgramBoardDone)
+        XCTAssertFalse(done.isProgramBoardEditable)
+
+        let model = ProgramBoardViewModel()
+        model.beginEdit(item: backlog)
+        XCTAssertNotNil(model.editing)
+
+        model.beginEdit(item: done)
+        XCTAssertNil(model.editing)
+        XCTAssertEqual(model.selectedTicketDetail?.item.id, done.id)
     }
 
     func testProgramBoardTicketEditorSavesOnlyOwningChildTicketAndEditableFields() throws {
