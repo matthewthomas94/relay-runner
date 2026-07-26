@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import SwiftUI
 import XCTest
 @testable import relay_runner
@@ -269,6 +270,64 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertLessThan(expectedFirstCardTop, updatedViews.scrollView.contentView.bounds.height)
     }
 
+    func testStableProgramWorkColumnsManualScrollInputsReachCompleteFirstCards() throws {
+        let model = ProgramBoardViewModel()
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: laneTickets(prefix: "RR-BACKLOG", status: Ticket.Status.backlog.rawValue, count: 24),
+            doneItems: laneTickets(prefix: "RR-DONE", status: Ticket.Status.done.rawValue, count: 220)
+        )
+
+        let host = NSHostingView(rootView:
+            HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
+                ProgramWorkColumnPanel(
+                    model: model,
+                    lane: .backlog,
+                    showsProjectContext: true,
+                    theme: nil,
+                    canCreate: true,
+                    onCreate: {},
+                    onEdit: { _ in },
+                    onDrop: { _, _, _ in }
+                )
+                ProgramWorkColumnPanel(
+                    model: model,
+                    lane: .done,
+                    showsProjectContext: true,
+                    theme: nil,
+                    canCreate: true,
+                    onCreate: {},
+                    onEdit: { _ in },
+                    onDrop: { _, _, _ in }
+                )
+            }
+            .frame(width: 560, height: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
+            .coordinateSpace(name: "programBoard")
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 560, height: BoardSurfaceLayout.columnHeight),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        layout(host, width: 560, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+
+        let containers = findScrollContainers(in: host)
+        XCTAssertEqual(containers.count, 2)
+
+        try assertManualScrollInputsReturnFirstCardToTop(
+            in: containers[0],
+            window: window
+        )
+        try assertManualScrollInputsReturnFirstCardToTop(
+            in: containers[1],
+            window: window
+        )
+    }
+
     func testProgramWorkCardDragStartsThroughMountedScrollHierarchy() throws {
         let model = ProgramBoardViewModel()
         let backlogItem = programWorkItem(
@@ -482,6 +541,141 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         return nil
     }
 
+    private func assertManualScrollInputsReturnFirstCardToTop(
+        in container: BoardOverlayScrollContainer,
+        window: NSWindow,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let views = try scrollViews(in: container)
+        let wheelDelta: CGFloat = 64
+
+        let preciseMaxOffset = scrollToBottom(views: views)
+        XCTAssertGreaterThan(preciseMaxOffset, 200, file: file, line: line)
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, preciseMaxOffset, accuracy: 0.5, file: file, line: line)
+        sendScrollWheel(
+            deltaY: wheelDelta,
+            units: .pixel,
+            repeats: Int(ceil(preciseMaxOffset / wheelDelta)) + 8,
+            to: views.scrollView,
+            in: window
+        )
+        drainMainQueue()
+        try assertFirstCardAtTop(in: container, views: views, file: file, line: line)
+
+        let wheelMaxOffset = scrollToBottom(views: views)
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, wheelMaxOffset, accuracy: 0.5, file: file, line: line)
+        sendScrollWheel(
+            deltaY: wheelDelta,
+            units: .line,
+            repeats: Int(ceil(wheelMaxOffset / wheelDelta)) + 8,
+            to: views.scrollView,
+            in: window
+        )
+        drainMainQueue()
+        try assertFirstCardAtTop(in: container, views: views, file: file, line: line)
+
+        let keyboardMaxOffset = scrollToBottom(views: views)
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, keyboardMaxOffset, accuracy: 0.5, file: file, line: line)
+        sendHomeKey(to: views.scrollView, in: window)
+        drainMainQueue()
+        try assertFirstCardAtTop(in: container, views: views, file: file, line: line)
+    }
+
+    @discardableResult
+    private func scrollToBottom(views: (scrollView: NSScrollView, documentView: NSView, hostingView: NSView)) -> CGFloat {
+        let maxOffset = views.documentView.frame.height - views.scrollView.contentView.bounds.height
+        views.scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxOffset))
+        views.scrollView.reflectScrolledClipView(views.scrollView.contentView)
+        return maxOffset
+    }
+
+    private func assertFirstCardAtTop(
+        in container: BoardOverlayScrollContainer,
+        views: (scrollView: NSScrollView, documentView: NSView, hostingView: NSView),
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5, file: file, line: line)
+        let thumb = try XCTUnwrap(thumbView(in: container), file: file, line: line)
+        XCTAssertEqual(thumb.frame.minY, 6, accuracy: 0.5, file: file, line: line)
+
+        let expectedFirstCardTop = ProgramBoardLayout.workScrollContentInsets.top
+            + ProgramBoardLayout.dropIndicatorHeight
+            + ProgramBoardLayout.dropIndicatorBottomPadding
+        let firstCardView = try XCTUnwrap(
+            programWorkCardViews(in: container).min { lhs, rhs in
+                lhs.convert(lhs.bounds, to: views.documentView).minY <
+                    rhs.convert(rhs.bounds, to: views.documentView).minY
+            },
+            file: file,
+            line: line
+        )
+        let firstCardFrame = firstCardView.convert(firstCardView.bounds, to: views.scrollView.contentView)
+        XCTAssertGreaterThanOrEqual(firstCardFrame.minY, expectedFirstCardTop, file: file, line: line)
+        XCTAssertLessThanOrEqual(firstCardFrame.maxY, views.scrollView.contentView.bounds.height, file: file, line: line)
+    }
+
+    private func programWorkCardViews(in view: NSView) -> [NSView] {
+        let currentValue = String(describing: type(of: view)).contains("ProgramWorkCardDragEventView") ? [view] : []
+        return currentValue + view.subviews.flatMap(programWorkCardViews(in:))
+    }
+
+    private func sendScrollWheel(
+        deltaY: CGFloat,
+        units: CGScrollEventUnit,
+        repeats: Int,
+        to scrollView: NSScrollView,
+        in window: NSWindow
+    ) {
+        let location = scrollView.convert(
+            CGPoint(x: scrollView.bounds.midX, y: scrollView.bounds.midY),
+            to: nil
+        )
+        for _ in 0..<repeats {
+            guard let cgEvent = CGEvent(
+                scrollWheelEvent2Source: nil,
+                units: units,
+                wheelCount: 2,
+                wheel1: Int32(deltaY),
+                wheel2: 0,
+                wheel3: 0
+            ) else {
+                XCTFail("Failed to create scroll wheel event")
+                return
+            }
+            cgEvent.location = location
+            guard let event = NSEvent(cgEvent: cgEvent) else {
+                XCTFail("Failed to create scroll wheel event")
+                return
+            }
+            scrollView.scrollWheel(with: event)
+        }
+    }
+
+    private func sendHomeKey(to scrollView: NSScrollView, in window: NSWindow) {
+        window.makeFirstResponder(scrollView)
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: scrollView.convert(
+                CGPoint(x: scrollView.bounds.midX, y: scrollView.bounds.midY),
+                to: nil
+            ),
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\u{F729}",
+            charactersIgnoringModifiers: "\u{F729}",
+            isARepeat: false,
+            keyCode: 115
+        ) else {
+            XCTFail("Failed to create home key event")
+            return
+        }
+        scrollView.keyDown(with: event)
+    }
+
     private func sendMouse(_ type: NSEvent.EventType, at location: CGPoint, to view: NSView, in window: NSWindow) {
         let event = NSEvent.mouseEvent(
             with: type,
@@ -604,6 +798,17 @@ final class BoardOverlayScrollViewTests: XCTestCase {
                 title: "Done ticket \(index) with variable copy length \(String(repeating: "detail ", count: index % 4 + 1))",
                 status: Ticket.Status.done.rawValue,
                 dependsOn: index % 3 == 0 ? ["RR-\(index - 1)"] : []
+            )
+        }
+    }
+
+    private func laneTickets(prefix: String, status: String, count: Int) -> [ProgramStatusItem] {
+        (0..<count).map { index in
+            programWorkItem(
+                ticketID: "\(prefix)-\(index)",
+                title: "Workspace lane ticket \(index) with variable card copy \(String(repeating: "detail ", count: index % 5 + 1))",
+                status: status,
+                dependsOn: index % 4 == 0 ? ["\(prefix)-dependency-\(index)"] : []
             )
         }
     }
