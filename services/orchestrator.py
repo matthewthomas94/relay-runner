@@ -52,6 +52,11 @@ from graphify_core import GraphifyCoreStore
 from graphify_ingest import ingest_registered_projects
 from pm_frontstage import OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata
 from program_status import build_program_dashboard, build_program_status
+from relay_authorization import (
+    authorization_exists,
+    mark_mutations_canceled,
+    validate_and_mark_mutation,
+)
 from session_capture import capture_session_review
 from tickets import (
     TicketParseError,
@@ -63,6 +68,7 @@ from tickets import (
 
 PORT_FILE = Path("/tmp/relay_orchestrator.port")
 RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
+RELAY_COMMAND_AUTHORIZATION_FILE = Path("/tmp/voice_command_authorizations.json")
 VOICE_STATE_SOCK = Path("/tmp/voice_state.sock")
 DEFAULT_PORT = 7634
 ORCHESTRATOR_SESSION_STATES = frozenset({
@@ -197,6 +203,11 @@ def _notify_orchestration_trace(
     relay_command_seq: int | str | None = None,
     relay_command_id: str | None = None,
 ) -> None:
+    if (relay_command_seq is not None or relay_command_id) and not _relay_command_current(
+        relay_command_seq,
+        relay_command_id,
+    ):
+        return
     payload = _orchestration_trace_payload(
         kind,
         ticket_id=ticket_id,
@@ -823,12 +834,82 @@ def _relay_command_current(relay_command_seq: int | str | None, relay_command_id
     )
 
 
-def _validate_relay_command(relay_command_seq: Any, relay_command_id: Any) -> None:
+def _validate_relay_command(
+    relay_command_seq: Any,
+    relay_command_id: Any,
+    *,
+    mutation: dict[str, Any] | None = None,
+) -> None:
     if relay_command_seq is None and not relay_command_id:
         return
-    if _relay_command_current(relay_command_seq, str(relay_command_id or "")):
+    current = _relay_command_current(relay_command_seq, str(relay_command_id or ""))
+    if current:
+        if mutation is not None and authorization_exists(
+            RELAY_COMMAND_AUTHORIZATION_FILE,
+            relay_command_seq,
+            relay_command_id,
+        ):
+            validate_and_mark_mutation(
+                RELAY_COMMAND_AUTHORIZATION_FILE,
+                relay_command_seq,
+                relay_command_id,
+                mutation,
+            )
+        return
+    if mutation is not None:
+        validate_and_mark_mutation(
+            RELAY_COMMAND_AUTHORIZATION_FILE,
+            relay_command_seq,
+            relay_command_id,
+            mutation,
+        )
         return
     raise ValueError("stale Relay command: a newer voice command has superseded this action")
+
+
+def _relay_mutation_metadata(
+    kind: str,
+    *,
+    ticket_id: str | None = None,
+    action_kind: str | None = None,
+    action_index: int | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    mutation: dict[str, Any] = {"kind": kind}
+    if ticket_id:
+        mutation["ticket_id"] = str(ticket_id).strip().upper()
+    if action_kind:
+        mutation["action_kind"] = str(action_kind).strip()
+    if action_index is not None:
+        mutation["action_index"] = action_index
+    if request_id:
+        mutation["request_id"] = request_id
+    return mutation
+
+
+def _orchestrator_action_mutation(
+    raw_action: dict[str, Any],
+    *,
+    action_index: int,
+    request_id: str | None,
+) -> dict[str, Any]:
+    return _relay_mutation_metadata(
+        "orchestrator_action",
+        ticket_id=str(raw_action.get("ticket_id") or "").strip().upper() or None,
+        action_kind=str(raw_action.get("kind") or "").strip().lower(),
+        action_index=action_index,
+        request_id=request_id,
+    )
+
+
+def _relay_canceled_entry(mutation: dict[str, Any], reason: str) -> dict[str, Any]:
+    entry = {
+        "action": mutation.get("action_kind") or mutation.get("kind"),
+        "reason": reason,
+    }
+    if mutation.get("ticket_id"):
+        entry["ticket_id"] = mutation["ticket_id"]
+    return entry
 
 
 def _autonomous_worker_sizing(general: dict[str, Any]) -> dict[str, str]:
@@ -4271,7 +4352,11 @@ class Daemon:
             raise ValueError("ticket_id is required")
         if not repo_path:
             raise ValueError("repo_path is required")
-        _validate_relay_command(relay_command_seq, relay_command_id)
+        _validate_relay_command(
+            relay_command_seq,
+            relay_command_id,
+            mutation=_relay_mutation_metadata("dispatch_ticket", ticket_id=ticket_id),
+        )
 
         repo = Path(repo_path).expanduser().resolve()
         if not repo.is_dir() or not (repo / ".git").exists():
@@ -5222,7 +5307,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
     ) -> dict:
         if not repo_path:
             raise ValueError("repo_path is required")
-        _validate_relay_command(relay_command_seq, relay_command_id)
+        _validate_relay_command(
+            relay_command_seq,
+            relay_command_id,
+            mutation=_relay_mutation_metadata("orchestrator_command"),
+        )
         result = self.orchestrator_commands.record(
             repo_path=repo_path,
             source_text=source_text,
@@ -5265,7 +5354,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         if command.get("provider_key"):
             relay_metadata["provider"] = command.get("provider_key")
 
-        if not _relay_command_current(relay_command_seq, str(relay_command_id or "")):
+        if not _relay_command_current(
+            relay_command_seq,
+            str(relay_command_id or ""),
+        ) and not authorization_exists(
+            RELAY_COMMAND_AUTHORIZATION_FILE,
+            relay_command_seq,
+            relay_command_id,
+        ):
             message = "Skipped stale Relay command because a newer command superseded it."
             updated = self.orchestrator_commands.update_status(
                 command_id,
@@ -5521,7 +5617,6 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             raise ValueError("repo_path is required")
         if not isinstance(actions, list) or not actions:
             raise ValueError("actions must be a non-empty list")
-        _validate_relay_command(relay_command_seq, relay_command_id)
 
         repo = Path(repo_path).expanduser().resolve()
         orch_dir = repo / ".orchestrator"
@@ -5540,8 +5635,56 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             dispatch_requests: list[dict[str, Any]] = []
             dispatches: list[dict[str, Any]] = []
             skipped: list[dict[str, Any]] = []
+            canceled: list[dict[str, Any]] = []
 
-            for raw_action in actions:
+            def _started_anything() -> bool:
+                return bool(tickets_written or dispatches or skipped)
+
+            def _public_dispatch_requests() -> list[dict[str, Any]]:
+                return [
+                    {
+                        key: value
+                        for key, value in request.items()
+                        if not str(key).startswith("_")
+                    }
+                    for request in dispatch_requests
+                ]
+
+            def _validate_mutation(mutation: dict[str, Any]) -> None:
+                _validate_relay_command(
+                    relay_command_seq,
+                    relay_command_id,
+                    mutation=mutation,
+                )
+
+            def _cancel_and_return(
+                mutations: list[dict[str, Any]],
+                reason: str,
+            ) -> dict[str, Any]:
+                canceled.extend(_relay_canceled_entry(mutation, reason) for mutation in mutations)
+                mark_mutations_canceled(
+                    RELAY_COMMAND_AUTHORIZATION_FILE,
+                    relay_command_seq,
+                    relay_command_id,
+                    mutations,
+                    reason=reason,
+                )
+                if action_request_id:
+                    seen_request_ids.add(action_request_id)
+                return {
+                    "repo_path": str(repo),
+                    "request_id": action_request_id,
+                    "tickets_written": tickets_written,
+                    "dispatch_requests": _public_dispatch_requests(),
+                    "dispatches": dispatches,
+                    "skipped": skipped,
+                    "canceled": canceled,
+                    "partial": True,
+                    "superseded": True,
+                    "status_message": reason,
+                }
+
+            for action_index, raw_action in enumerate(actions):
                 if not isinstance(raw_action, dict):
                     raise ValueError("each action must be an object")
                 kind = str(raw_action.get("kind") or "").strip().lower()
@@ -5549,17 +5692,82 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     raise ValueError(f"invalid orchestrator action kind: {kind!r}")
 
                 if kind == "create_ticket":
+                    mutation = _orchestrator_action_mutation(
+                        raw_action,
+                        action_index=action_index,
+                        request_id=action_request_id,
+                    )
+                    try:
+                        _validate_mutation(mutation)
+                    except ValueError as e:
+                        if not _started_anything():
+                            raise
+                        remaining = [
+                            _orchestrator_action_mutation(
+                                action,
+                                action_index=index,
+                                request_id=action_request_id,
+                            )
+                            for index, action in enumerate(actions[action_index:], start=action_index)
+                            if isinstance(action, dict)
+                        ]
+                        return _cancel_and_return(remaining, str(e))
                     ticket_id = self._create_orchestrator_ticket(repo, raw_action)
                     tickets_written.append({"ticket_id": ticket_id, "action": kind})
                 elif kind in {"edit_ticket", "update_dependencies"}:
+                    mutation = _orchestrator_action_mutation(
+                        raw_action,
+                        action_index=action_index,
+                        request_id=action_request_id,
+                    )
+                    try:
+                        _validate_mutation(mutation)
+                    except ValueError as e:
+                        if not _started_anything():
+                            raise
+                        remaining = [
+                            _orchestrator_action_mutation(
+                                action,
+                                action_index=index,
+                                request_id=action_request_id,
+                            )
+                            for index, action in enumerate(actions[action_index:], start=action_index)
+                            if isinstance(action, dict)
+                        ]
+                        return _cancel_and_return(remaining, str(e))
                     ticket_id = self._edit_orchestrator_ticket(repo, raw_action, dependencies_only=(kind == "update_dependencies"))
                     tickets_written.append({"ticket_id": ticket_id, "action": kind})
                 elif kind == "request_worker":
-                    dispatch_requests.append(self._worker_creation_request(repo, raw_action))
+                    request = self._worker_creation_request(repo, raw_action)
+                    request["_relay_action_index"] = action_index
+                    dispatch_requests.append(request)
 
             all_tickets = scan_repo(repo)
-            for request in dispatch_requests:
+            for request_index, request in enumerate(dispatch_requests):
                 ticket_id = request["ticket_id"]
+                mutation = _relay_mutation_metadata(
+                    "orchestrator_action",
+                    ticket_id=ticket_id,
+                    action_kind="request_worker",
+                    action_index=request.get("_relay_action_index"),
+                    request_id=action_request_id,
+                )
+                try:
+                    _validate_mutation(mutation)
+                except ValueError as e:
+                    if not _started_anything():
+                        raise
+                    remaining = [
+                        _relay_mutation_metadata(
+                            "orchestrator_action",
+                            ticket_id=remaining_request["ticket_id"],
+                            action_kind="request_worker",
+                            action_index=remaining_request.get("_relay_action_index"),
+                            request_id=action_request_id,
+                        )
+                        for remaining_request in dispatch_requests[request_index:]
+                    ]
+                    return _cancel_and_return(remaining, str(e))
                 ticket_path = orch_dir / f"{ticket_id}.md"
                 ticket = read_ticket(ticket_path)
                 if ticket["canceled"]:
@@ -5580,14 +5788,27 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     skipped.append({"ticket_id": ticket_id, "reason": "dependencies_not_done"})
                     continue
 
-                result = self.dispatch(
-                    ticket_id=ticket_id,
-                    repo_path=str(repo),
-                    context=request.get("dispatcher_context"),
-                    source="orchestrator-action",
-                    relay_command_seq=relay_command_seq,
-                    relay_command_id=relay_command_id,
-                )
+                try:
+                    result = self.dispatch(
+                        ticket_id=ticket_id,
+                        repo_path=str(repo),
+                        context=request.get("dispatcher_context"),
+                        source="orchestrator-action",
+                        relay_command_seq=relay_command_seq,
+                        relay_command_id=relay_command_id,
+                    )
+                except ValueError as e:
+                    if not _started_anything():
+                        raise
+                    remaining = [
+                        _relay_mutation_metadata(
+                            "dispatch_ticket",
+                            ticket_id=remaining_request["ticket_id"],
+                            request_id=action_request_id,
+                        )
+                        for remaining_request in dispatch_requests[request_index:]
+                    ]
+                    return _cancel_and_return(remaining, str(e))
                 run = result.get("run") or {}
                 dispatches.append({
                     "ticket_id": ticket_id,
@@ -5602,9 +5823,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 "repo_path": str(repo),
                 "request_id": action_request_id,
                 "tickets_written": tickets_written,
-                "dispatch_requests": dispatch_requests,
+                "dispatch_requests": _public_dispatch_requests(),
                 "dispatches": dispatches,
                 "skipped": skipped,
+                "canceled": canceled,
             }
 
     def _create_orchestrator_ticket(self, repo: Path, action: dict[str, Any]) -> str:

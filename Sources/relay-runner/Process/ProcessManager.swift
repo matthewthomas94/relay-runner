@@ -501,6 +501,7 @@ final class ProcessManager {
             fi
             cp "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_ready.meta || return 1
             cp "$REPLAY_DIR/voice_command_state.json" /tmp/voice_command_state.json || return 1
+            [ -f "$REPLAY_DIR/voice_command_authorizations.json" ] && cp "$REPLAY_DIR/voice_command_authorizations.json" /tmp/voice_command_authorizations.json
             cp "$REPLAY_DIR/voice_cmd_ready" /tmp/voice_cmd_ready.replay || return 1
             mv /tmp/voice_cmd_ready.replay /tmp/voice_cmd_ready || return 1
             echo "[relay-runner] app watchdog replayed pending voice command after bridge recovery." >> "$VOICE_BRIDGE_LOG"
@@ -508,6 +509,7 @@ final class ProcessManager {
         if [ -n "$REPLAY_DIR" ] && mv /tmp/voice_cmd_ready "$REPLAY_DIR/voice_cmd_ready" 2>/dev/null; then
             if [ -f /tmp/voice_cmd_ready.meta ] && mv /tmp/voice_cmd_ready.meta "$REPLAY_DIR/voice_cmd_ready.meta" 2>/dev/null; then
                 cp /tmp/voice_command_state.json "$REPLAY_DIR/voice_command_state.json" 2>/dev/null || cp "$REPLAY_DIR/voice_cmd_ready.meta" "$REPLAY_DIR/voice_command_state.json"
+                cp /tmp/voice_command_authorizations.json "$REPLAY_DIR/voice_command_authorizations.json" 2>/dev/null || true
                 if cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" "$REPLAY_DIR/voice_command_state.json" \
                     && { [ ! -f /tmp/voice_cmd_claimed.json ] || ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_claimed.json; }; then
                     REPLAY_READY=1
@@ -523,7 +525,7 @@ final class ProcessManager {
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         pkill -f '[v]oice_bridge.py' 2>/dev/null || true
-        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
@@ -979,7 +981,7 @@ final class ProcessManager {
     You are the app-owned foreground Relay orchestrator/PM in Relay Runner integrated terminal.
     Relay Runner has already started the voice bridge and injects each claimed voice turn into this provider prompt; do not invoke relay-bridge or start a polling loop.
     Dispatching a worker or sending a final response ends only the current provider turn. The Relay session remains active for later user turns and worker updates; never invoke relay-stop or end the session unless the user explicitly asks to stop it.
-    A turn is voice-originated only when its prompt text exactly matches agent_prompt in /tmp/voice_cmd_claimed.json. For legacy metadata without agent_prompt, require an exact source_text match instead. Otherwise treat it as a normal typed turn and do not use claimed metadata or write messenger trace/reply events. For a matching voice turn, treat its relay_command_seq and relay_command_id as authority for that provider turn. Before follow-up actions, compare /tmp/voice_command_state.json; if a newer command is present, stop stale work, do not answer or act on the newer command, and end this provider turn silently so Relay Runner can atomically claim and inject the newer command as the next turn.
+    A turn is voice-originated only when its prompt text exactly matches agent_prompt in /tmp/voice_cmd_claimed.json. For legacy metadata without agent_prompt, require an exact source_text match instead. Otherwise treat it as a normal typed turn and do not use claimed metadata or write messenger trace/reply events. For a matching voice turn, treat relay_command_seq and relay_command_id as two contracts. User-visible replies, traces, and TTS must still match /tmp/voice_command_state.json; if a newer command is present, stop stale work for output, do not answer or act on the newer command, and end this provider turn silently so Relay Runner can atomically claim and inject the newer command as the next turn. Ticket edits, dispatches, and orchestrator actions must pass the claimed seq/id to the daemon; an older bounded mutation may continue only when Relay Runner registered it and no replacement, redirect, interrupt, or cancel turn revoked it. Acknowledgement, inspection/status, and additive turns do not revoke prior authorized mutations.
     Resolve each command as non-work/control, direct action, ticket creation/refinement, ticket update, worker dispatch, or clarification. Raw Relay command captures are private metadata and must not appear in visible .orchestrator tickets. Do not implement substantial project work inline unless the user explicitly asks.
     Use mcp__relay-actions__* for screen manipulation and mcp__relay-vision__screenshot for screenshots; never use native computer-use fallbacks for those capabilities, and do not call propose_action.
     The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop; an explicit current __ORCHESTRATOR_REPLY__ with the claimed seq/id remains authoritative and deduplicates the later hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.

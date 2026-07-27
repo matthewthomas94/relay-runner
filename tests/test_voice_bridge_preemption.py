@@ -1849,6 +1849,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
         self.assertIn("pm_frontstage.py", script)
         self.assertIn("messenger.py", script)
+        self.assertIn("relay_authorization.py", script)
 
     def test_tts_dismissal_does_not_supersede_claimed_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1887,6 +1888,115 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertFalse(os.path.exists(command_path))
             self.assertFalse(os.path.exists(meta_path))
             self.assertEqual(json.loads(Path(state_path).read_text()), state_before_dismissal)
+
+    def test_acknowledgement_does_not_revoke_dispatch_authorization(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            auth_path = os.path.join(temp_dir, "voice_command_authorizations.json")
+
+            first_meta = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            first_action = voice_bridge.resolve_command_action(
+                "dispatch RR-7",
+                repo_path=temp_dir,
+                relay_command=first_meta,
+            )
+            voice_bridge._publish_command(
+                voice_bridge.format_command_for_agent(first_action),
+                voice_bridge._metadata_for_action(first_action, first_meta),
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+                authorization_path=auth_path,
+            )
+
+            second_meta = voice_bridge._begin_relay_command(
+                "okay",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            second_action = voice_bridge.resolve_command_action(
+                "okay",
+                repo_path=temp_dir,
+                relay_command=second_meta,
+            )
+            voice_bridge._publish_command(
+                voice_bridge.format_command_for_agent(second_action),
+                voice_bridge._metadata_for_action(second_action, second_meta),
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+                authorization_path=auth_path,
+            )
+
+            ledger = json.loads(Path(auth_path).read_text())
+            authorizations = ledger["authorizations"]
+            self.assertEqual(len(authorizations), 1)
+            self.assertEqual(authorizations[0]["relay_command_id"], first_meta["relay_command_id"])
+            self.assertEqual(authorizations[0]["status"], "active")
+            current = json.loads(Path(state_path).read_text())
+            self.assertEqual(current["relay_command_id"], second_meta["relay_command_id"])
+            self.assertEqual(current["authorization_relationship"], "conversation")
+
+    def test_redirect_revokes_dispatch_authorization(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            auth_path = os.path.join(temp_dir, "voice_command_authorizations.json")
+
+            first_meta = voice_bridge._begin_relay_command(
+                "dispatch RR-7",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            first_action = voice_bridge.resolve_command_action(
+                "dispatch RR-7",
+                repo_path=temp_dir,
+                relay_command=first_meta,
+            )
+            voice_bridge._publish_command(
+                voice_bridge.format_command_for_agent(first_action),
+                voice_bridge._metadata_for_action(first_action, first_meta),
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+                authorization_path=auth_path,
+            )
+
+            second_meta = voice_bridge._begin_relay_command(
+                "actually dispatch RR-8 instead",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            second_action = voice_bridge.resolve_command_action(
+                "actually dispatch RR-8 instead",
+                repo_path=temp_dir,
+                relay_command=second_meta,
+            )
+            voice_bridge._publish_command(
+                voice_bridge.format_command_for_agent(second_action),
+                voice_bridge._metadata_for_action(second_action, second_meta),
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+                authorization_path=auth_path,
+            )
+
+            ledger = json.loads(Path(auth_path).read_text())
+            statuses = {
+                record["relay_command_id"]: record["status"]
+                for record in ledger["authorizations"]
+            }
+            self.assertEqual(statuses[first_meta["relay_command_id"]], "revoked")
+            self.assertEqual(statuses[second_meta["relay_command_id"]], "active")
+            current = json.loads(Path(state_path).read_text())
+            self.assertEqual(current["authorization_relationship"], "redirect")
 
     def test_published_command_records_exact_agent_prompt_for_voice_origin(self):
         with tempfile.TemporaryDirectory() as temp_dir:

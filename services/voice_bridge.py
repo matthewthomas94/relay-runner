@@ -29,6 +29,11 @@ import urllib.request
 from pathlib import Path
 
 from command_actions import format_command_for_agent, resolve_command_action
+from relay_authorization import (
+    allowed_mutations_for_metadata,
+    command_relationship,
+    record_command_authorization,
+)
 from pm_frontstage import (
     OrchestrationTraceEvent,
     PMStatusEvent,
@@ -297,6 +302,10 @@ VOICE_CMD_FILE = "/tmp/voice_cmd_ready"
 VOICE_CMD_META_FILE = "/tmp/voice_cmd_ready.meta"
 VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
 VOICE_COMMAND_CLAIM_FILE = "/tmp/voice_cmd_claimed.json"
+VOICE_COMMAND_AUTHORIZATION_FILE = os.environ.get(
+    "VOICE_COMMAND_AUTHORIZATION_FILE",
+    "/tmp/voice_command_authorizations.json",
+)
 VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
 VOICE_COMMAND_EVENT_LOG = os.environ.get("VOICE_COMMAND_EVENT_LOG", "/tmp/relay_command_events.jsonl")
 VOICE_COMMAND_EVENT_LIMIT = 200
@@ -1008,10 +1017,16 @@ def _begin_relay_command(
 
 def _metadata_for_action(action, relay_command: dict) -> dict:
     metadata = dict(relay_command)
+    relationship = command_relationship(
+        getattr(action, "kind", None),
+        reason=getattr(action, "reason", None),
+        source_text=getattr(action, "source_text", None),
+    )
     metadata.update({
         "action": action.kind,
         "outcome": action.outcome,
         "requires_ticket": action.requires_ticket,
+        "authorization_relationship": relationship,
     })
     if action.ticket_id:
         metadata["ticket_id"] = action.ticket_id
@@ -1189,13 +1204,30 @@ def _publish_command(
     command_path: str = VOICE_CMD_FILE,
     meta_path: str = VOICE_CMD_META_FILE,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    authorization_path: str | None = None,
 ) -> None:
     """Publish a Relay command and sidecar metadata as the newest intent."""
     _discard_pending_command(command_path=command_path, meta_path=meta_path)
     published_metadata = dict(metadata)
     published_metadata["agent_prompt"] = text
+    if not published_metadata.get("authorization_relationship"):
+        published_metadata["authorization_relationship"] = command_relationship(
+            published_metadata.get("action"),
+            reason=published_metadata.get("reason"),
+            source_text=published_metadata.get("source_text"),
+        )
     _atomic_write_json(meta_path, published_metadata)
     _atomic_write_json(state_path, published_metadata)
+    if authorization_path:
+        try:
+            record_command_authorization(
+                authorization_path,
+                published_metadata,
+                relationship=str(published_metadata.get("authorization_relationship") or ""),
+                allowed_mutations=allowed_mutations_for_metadata(published_metadata),
+            )
+        except (OSError, TypeError, ValueError) as e:
+            print(f"[voice_bridge] Could not record Relay mutation authorization: {e}", file=sys.stderr)
     _write_cmd_file(text, path=command_path)
 
 
@@ -1518,6 +1550,7 @@ def _handle_relay_control_message(
     command_path: str = VOICE_CMD_FILE,
     meta_path: str = VOICE_CMD_META_FILE,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    authorization_path: str | None = None,
     event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
     messenger: MessengerRuntime | None = None,
 ) -> bool:
@@ -1538,10 +1571,16 @@ def _handle_relay_control_message(
         )
         _publish_command(
             "__INTERRUPT__",
-            {**relay_command, "action": "control", "outcome": "control action interrupt"},
+            {
+                **relay_command,
+                "action": "control",
+                "outcome": "control action interrupt",
+                "reason": "interrupt",
+            },
             command_path=command_path,
             meta_path=meta_path,
             state_path=state_path,
+            authorization_path=authorization_path,
         )
         return True
 
@@ -1924,7 +1963,15 @@ def _run_relay(
     suppress_next_messenger_user_reply = suppress_startup_greeting
 
     # Create TTS input FIFO
-    for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE, VOICE_PROVIDER_TURNS_FILE]:
+    for path in [
+        TTS_IN_FIFO,
+        VOICE_CMD_FILE,
+        VOICE_CMD_META_FILE,
+        VOICE_COMMAND_STATE_FILE,
+        VOICE_COMMAND_CLAIM_FILE,
+        VOICE_COMMAND_AUTHORIZATION_FILE,
+        VOICE_PROVIDER_TURNS_FILE,
+    ]:
         try:
             os.unlink(path)
         except OSError:
@@ -1999,7 +2046,12 @@ def _run_relay(
                 if not text:
                     continue
 
-                if _handle_relay_control_message(text, tts_worker, messenger=messenger):
+                if _handle_relay_control_message(
+                    text,
+                    tts_worker,
+                    authorization_path=VOICE_COMMAND_AUTHORIZATION_FILE,
+                    messenger=messenger,
+                ):
                     continue
 
                 # Convert "slash <command>" to "/<command>"
@@ -2011,6 +2063,21 @@ def _run_relay(
                 # action for the foreground orchestrator session.
                 tts_worker.skip()
                 relay_command = _begin_relay_command(text)
+                action = resolve_command_action(
+                    text,
+                    repo_path=Path.cwd(),
+                    relay_command=relay_command,
+                )
+                metadata = _metadata_for_action(action, relay_command)
+                try:
+                    record_command_authorization(
+                        VOICE_COMMAND_AUTHORIZATION_FILE,
+                        metadata,
+                        relationship=str(metadata.get("authorization_relationship") or ""),
+                        allowed_mutations=allowed_mutations_for_metadata(metadata),
+                    )
+                except (OSError, TypeError, ValueError) as e:
+                    print(f"[voice_bridge] Could not record Relay mutation authorization: {e}", file=sys.stderr)
                 # Tutorial sessions need one authoritative reply to exercise
                 # play, replay, and cancel. A fast social reply here would race
                 # the foreground provider and leave its second greeting queued
@@ -2023,11 +2090,6 @@ def _run_relay(
                     relay_command,
                     tts_worker.input_queue,
                     source_text=text,
-                )
-                action = resolve_command_action(
-                    text,
-                    repo_path=Path.cwd(),
-                    relay_command=relay_command,
                 )
                 if _should_fanout_raw_instruction_to_orchestrator(action):
                     _fanout_raw_instruction_to_orchestrator(
@@ -2046,7 +2108,8 @@ def _run_relay(
                 )
                 _publish_command(
                     format_command_for_agent(action),
-                    _metadata_for_action(action, relay_command),
+                    metadata,
+                    authorization_path=VOICE_COMMAND_AUTHORIZATION_FILE,
                 )
                 print(
                     f"[voice_bridge] Voice command ready: {action.outcome}",
@@ -2061,7 +2124,15 @@ def _run_relay(
                 os.close(fifo_fd)
             except OSError:
                 pass
-        for path in [TTS_IN_FIFO, VOICE_CMD_FILE, VOICE_CMD_META_FILE, VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE, VOICE_PROVIDER_TURNS_FILE]:
+        for path in [
+            TTS_IN_FIFO,
+            VOICE_CMD_FILE,
+            VOICE_CMD_META_FILE,
+            VOICE_COMMAND_STATE_FILE,
+            VOICE_COMMAND_CLAIM_FILE,
+            VOICE_COMMAND_AUTHORIZATION_FILE,
+            VOICE_PROVIDER_TURNS_FILE,
+        ]:
             try:
                 os.unlink(path)
             except OSError:
