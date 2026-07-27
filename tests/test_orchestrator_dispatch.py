@@ -17,7 +17,11 @@ sys.path.insert(0, SERVICES)
 
 import orchestrator  # noqa: E402
 from orchestrator import Daemon, MessengerOutcomeStore, ReviewWorker, RunsStore, Worker, validate_worker_completion  # noqa: E402
-from relay_authorization import allowed_mutations_for_metadata, record_command_authorization  # noqa: E402
+from relay_authorization import (  # noqa: E402
+    allowed_mutations_for_metadata,
+    record_command_authorization,
+    validate_and_mark_mutation,
+)
 from tickets import read as read_ticket  # noqa: E402
 
 
@@ -1264,6 +1268,41 @@ class OrchestratorDispatchTests(unittest.TestCase):
             create_worktree.assert_called_once()
             start_worker.assert_called_once()
             self.assertFalse(result["already_active"])
+
+    def test_multi_ticket_dispatch_authorization_rejects_outside_ticket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_path = Path(tmp) / "voice_command_authorizations.json"
+            command = {
+                "relay_command_seq": 13,
+                "relay_command_id": "batch-dispatch",
+                "action": "dispatch_ticket",
+                "source_text": "dispatch RR-1 and RR-2",
+            }
+            record_command_authorization(
+                auth_path,
+                command,
+                relationship="replacement",
+                allowed_mutations=allowed_mutations_for_metadata(command),
+                now=1,
+            )
+
+            with self.assertRaisesRegex(ValueError, "not authorized"):
+                validate_and_mark_mutation(
+                    auth_path,
+                    13,
+                    "batch-dispatch",
+                    {"kind": "dispatch_ticket", "ticket_id": "RR-999"},
+                    now=2,
+                )
+
+            record = validate_and_mark_mutation(
+                auth_path,
+                13,
+                "batch-dispatch",
+                {"kind": "dispatch_ticket", "ticket_id": "RR-2"},
+                now=3,
+            )
+            self.assertEqual(record["started_mutations"][0]["mutation"]["ticket_id"], "RR-2")
 
     def test_redirect_revokes_authorized_dispatch_before_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:

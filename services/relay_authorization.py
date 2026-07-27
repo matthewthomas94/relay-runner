@@ -245,14 +245,18 @@ def authorization_exists(path: str | Path, relay_command_seq: Any, relay_command
 
 
 def _ticket_allowed(allowed: dict[str, Any], ticket_id: str) -> bool:
+    ticket_ids = allowed.get("ticket_ids")
+    if isinstance(ticket_ids, list):
+        return ticket_id in {
+            str(value).strip().upper()
+            for value in ticket_ids
+            if str(value).strip()
+        }
     allowed_ticket = str(allowed.get("ticket_id") or "").strip().upper()
     if not allowed_ticket or allowed_ticket == "*":
         return True
     if allowed_ticket == ticket_id:
         return True
-    ticket_ids = allowed.get("ticket_ids")
-    if isinstance(ticket_ids, list):
-        return ticket_id in {str(value).strip().upper() for value in ticket_ids}
     return False
 
 
