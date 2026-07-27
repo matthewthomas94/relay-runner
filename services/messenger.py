@@ -23,10 +23,20 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
+from codex_model_catalog import (
+    CODEX_FAMILIES,
+    CODEX_MESSENGER_DEFAULT_FAMILY,
+    CODEX_PROVIDER_DEFAULT_EFFORT,
+    CodexModelResolutionError,
+    codex_family_for_model,
+    normalize_codex_family,
+    resolve_codex_effort,
+    resolve_codex_family_from_cli,
+)
 
-CODEX_DEFAULT_MODEL = "gpt-5.6-terra"
-CODEX_DEFAULT_EFFORT = "low"
-CLAUDE_DEFAULT_MODEL = "haiku"
+CODEX_DEFAULT_MODEL = CODEX_MESSENGER_DEFAULT_FAMILY
+CODEX_DEFAULT_EFFORT = CODEX_PROVIDER_DEFAULT_EFFORT
+CLAUDE_DEFAULT_MODEL = "best"
 CLAUDE_DEFAULT_EFFORT = "default"
 SILENT_RESPONSE = "__SILENT__"
 CODEX_CLI_CANDIDATES = (
@@ -39,15 +49,7 @@ CLAUDE_CLI_CANDIDATES = (
     "/usr/local/bin/claude",
 )
 
-_CODEX_MODELS = frozenset({
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.3-codex-spark",
-})
+_CODEX_MODELS = CODEX_FAMILIES
 _CLAUDE_MODELS = frozenset({"best", "fable", "opus", "sonnet", "haiku"})
 _BASE_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
 _UNSCOPED_LIFECYCLE_KINDS = frozenset({
@@ -158,9 +160,19 @@ def _normalize_model_and_effort(
     defaults: tuple[str, str],
 ) -> tuple[str, str]:
     default_model, default_effort = defaults
-    if raw_model == "default":
-        model = default_model
-    elif raw_model in (_CODEX_MODELS if provider == "codex" else _CLAUDE_MODELS):
+    if provider == "codex":
+        known_codex_selection = (
+            raw_model in {"", "default"}
+            or raw_model in _CODEX_MODELS
+            or codex_family_for_model(raw_model) is not None
+            or raw_model.startswith("gpt-")
+        )
+        model = normalize_codex_family(raw_model, default_family=default_model)
+        if not known_codex_selection:
+            raw_effort = default_effort
+    elif raw_model == "default":
+        return defaults
+    elif raw_model in _CLAUDE_MODELS:
         model = raw_model
     else:
         return defaults
@@ -177,16 +189,21 @@ def _normalize_model_and_effort(
 
 def _valid_efforts(provider: str, model: str) -> frozenset[str]:
     if provider == "codex":
-        if model in {"gpt-5.6-sol", "gpt-5.6-terra"}:
-            return _BASE_EFFORTS | {"max", "ultra"}
-        if model == "gpt-5.6-luna":
-            return _BASE_EFFORTS | {"max"}
-        return _BASE_EFFORTS
+        return _BASE_EFFORTS | {"max", "ultra"}
     if model in {"best", "fable", "opus"}:
         return _BASE_EFFORTS | {"max"}
     if model == "sonnet":
         return frozenset({"default", "low", "medium", "high", "max"})
     return frozenset({"default"})
+
+
+def resolve_messenger_catalog_selection(config: MessengerConfig) -> MessengerConfig:
+    if config.provider != "codex":
+        return config
+    family = normalize_codex_family(config.model, default_family=CODEX_MESSENGER_DEFAULT_FAMILY)
+    resolved = resolve_codex_family_from_cli(family, command=config.command)
+    effort = resolve_codex_effort(config.effort, resolved)
+    return replace(config, model=resolved.launch_model, effort=effort)
 
 
 def _command_prefix(command: str) -> list[str]:
@@ -1052,6 +1069,11 @@ def create_messenger_runtime(
         print(f"[messenger] provider command not found: {executable}", file=sys.stderr)
         return None
     config = replace(config, command=shlex.join(resolved_command))
+    try:
+        config = resolve_messenger_catalog_selection(config)
+    except CodexModelResolutionError as exc:
+        print(f"[messenger] could not resolve Codex messenger model: {exc}", file=sys.stderr)
+        return None
     backend: MessengerBackend
     if config.provider == "claude":
         backend = ClaudeMessengerBackend(config)

@@ -183,7 +183,7 @@ class CommandActionsTests(unittest.TestCase):
                 general_config={
                     "subagent_sizing_policy": "user_default",
                     "provider": "codex",
-                    "model": "gpt-5.6-sol",
+                    "model": "sol",
                     "orchestrator_effort": "high",
                     "subagent_model": "strong",
                     "subagent_effort": "xhigh",
@@ -191,10 +191,10 @@ class CommandActionsTests(unittest.TestCase):
             )
 
             raw = ticket_path.read_text()
-            self.assertIn("worker_model: codex:gpt-5.6-sol", raw)
+            self.assertIn("worker_model: codex:sol", raw)
             self.assertIn("worker_effort: high", raw)
             self.assertIn("worker_sizing_rationale", raw)
-            self.assertIn("Use my defaults preserves provider default model semantics", raw)
+            self.assertIn("Use my defaults preserves explicit stable provider selections", raw)
 
     def test_ticket_creation_omits_worker_sizing_when_orchestrator_decides(self):
         with tempfile.TemporaryDirectory() as tmp:

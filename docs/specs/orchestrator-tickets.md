@@ -104,7 +104,7 @@ Use `worker_model` as the model/tier choice and `worker_effort` as the reasoning
 - `balanced` + `medium` fits ordinary features, bug fixes, and refactors with a known implementation shape.
 - `strong` with `high` or `xhigh` fits cross-module work, ambiguous design choices, security-sensitive changes, high blast radius, or expensive build/test loops.
 
-Provider-scoped model values are allowed when the ticket intentionally requires one provider's model surface, such as `codex:gpt-5.4-mini` or `claude:sonnet`. Keep effort separate from the model field.
+Provider-scoped model values are allowed when the ticket intentionally requires one provider's stable model surface, such as `codex:luna` or `claude:sonnet`. Keep effort separate from the model field.
 
 Provider parity is part of the sizing decision. RR-102 verified that Codex workers accept `low`, `medium`, `high`, and `xhigh` through `model_reasoning_effort`, while Claude workers accept `low`, `medium`, `high`, `xhigh`, and `max` through `--effort`. Do not use `max` for provider-neutral or Codex-dispatchable tickets until a future Codex release exposes it. If a ticket is intentionally Claude-only, write that limitation in `worker_provider_notes` instead of leaving the cold worker to discover it.
 

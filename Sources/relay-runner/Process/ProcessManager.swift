@@ -83,6 +83,12 @@ final class ProcessManager {
             .path
     }
 
+    private static var servicePython: String {
+        FileManager.default.isExecutableFile(atPath: userVenvPython)
+            ? userVenvPython
+            : "/usr/bin/python3"
+    }
+
     /// Path to the bundled relay-bridge script — the single source of truth
     /// for venv install + voice-bridge launch logic. ProcessManager defers
     /// to it instead of duplicating the install bash inline.
@@ -662,6 +668,7 @@ final class ProcessManager {
         case externalTerminalLaunch
         case launcherPermissions(Int32)
         case invalidWorkingDirectory(String)
+        case codexModelResolution(String)
 
         var errorDescription: String? {
             switch self {
@@ -671,6 +678,8 @@ final class ProcessManager {
                 return "Could not prepare the Relay Runner session launcher (chmod exited with status \(status))."
             case .invalidWorkingDirectory(let path):
                 return "The session workspace folder is unavailable: \(path)"
+            case .codexModelResolution(let message):
+                return "Could not resolve the selected Codex model family: \(message)"
             }
         }
     }
@@ -702,6 +711,26 @@ final class ProcessManager {
         let relayBridge = bundledRelayBridge.path
         let target = Self.target(for: config.general.provider)
         let agentBinary = Self.resolveAgentBinary(config.general.command, target: target)
+        let codexSelection: CodexModelResolution?
+        if target == .codex {
+            do {
+                codexSelection = try CodexModelResolver.resolveViaService(
+                    family: config.general.model,
+                    effort: config.general.effectiveOrchestratorEffort,
+                    command: agentBinary,
+                    servicesDir: bundledServicesDir,
+                    pythonPath: Self.servicePython
+                )
+            } catch let error as CodexModelResolver.Error {
+                throw SessionLaunchPreparationError.codexModelResolution(
+                    error.errorDescription ?? String(describing: error)
+                )
+            } catch {
+                throw SessionLaunchPreparationError.codexModelResolution(error.localizedDescription)
+            }
+        } else {
+            codexSelection = nil
+        }
         NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) agentBinary=\(agentBinary) configPath=\(configPath)")
 
         // Relay startup is delivered as the prompt arg; if its command/skill
@@ -721,7 +750,9 @@ final class ProcessManager {
             agentBinary: agentBinary,
             config: config,
             voiceDelivery: voiceDelivery,
-            suppressStartupGreeting: suppressStartupGreeting
+            suppressStartupGreeting: suppressStartupGreeting,
+            resolvedCodexModel: codexSelection?.resolvedModel,
+            resolvedCodexEffort: codexSelection?.resolvedEffort
         )
         try script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
@@ -786,14 +817,17 @@ final class ProcessManager {
         config: AppConfig,
         voiceDelivery: SessionVoiceDelivery = .agentSkill,
         suppressStartupGreeting: Bool = false,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        resolvedCodexModel: String? = nil,
+        resolvedCodexEffort: String? = nil
     ) -> String {
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
-        let modelFlag = Self.modelFlag(config.general.model, target: target)
+        let modelFlag = Self.modelFlag(config.general.model, target: target, resolvedCodexModel: resolvedCodexModel)
         let reasoningEffortFlag = Self.orchestratorEffortFlag(
             config.general.effectiveOrchestratorEffort,
             target: target,
-            model: config.general.model
+            model: config.general.model,
+            resolvedCodexEffort: resolvedCodexEffort
         )
         let cdLine = Self.cdLine(config.general.working_directory, homeDirectory: homeDirectory)
         let bridgeStartLine = Self.bridgeStartLine(
@@ -884,25 +918,44 @@ final class ProcessManager {
     /// string when the user wants the agent's default. Single-quotes the name
     /// so a TOML-edited custom model id (e.g. `claude-sonnet-4-6`) can't
     /// break shell parsing.
-    private static func modelFlag(_ raw: String, target: AgentTarget) -> String {
+    private static func modelFlag(_ raw: String, target: AgentTarget, resolvedCodexModel: String? = nil) -> String {
         let v = raw.trimmingCharacters(in: .whitespaces).lowercased()
-        if v.isEmpty || v == "default" { return "" }
         let provider: GeneralConfig.AgentProvider
         switch target {
         case .codex: provider = .codex
         case .claude: provider = .claude
         }
-        guard GeneralConfig.isModel(v, validFor: provider) else { return "" }
-        return "--model \(Self.shellQuoted(v)) "
+        switch target {
+        case .codex:
+            guard GeneralConfig.isModel(GeneralConfig.normalizeModel(v, for: provider), validFor: provider),
+                  let resolved = resolvedCodexModel?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !resolved.isEmpty else { return "" }
+            return "--model \(Self.shellQuoted(resolved)) "
+        case .claude:
+            guard GeneralConfig.isModel(v, validFor: provider) else { return "" }
+            return "--model \(Self.shellQuoted(v)) "
+        }
     }
 
-    private static func orchestratorEffortFlag(_ raw: String, target: AgentTarget, model: String) -> String {
+    private static func orchestratorEffortFlag(
+        _ raw: String,
+        target: AgentTarget,
+        model: String,
+        resolvedCodexEffort: String? = nil
+    ) -> String {
         let provider: GeneralConfig.AgentProvider
         switch target {
         case .codex: provider = .codex
         case .claude: provider = .claude
         }
-        let effort = GeneralConfig.normalizedOrchestratorEffort(raw, for: provider, model: model)
+        let effort: String
+        if target == .codex,
+           let resolvedCodexEffort,
+           !resolvedCodexEffort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            effort = resolvedCodexEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        } else {
+            effort = GeneralConfig.normalizedOrchestratorEffort(raw, for: provider, model: model)
+        }
         guard effort != GeneralConfig.defaultReasoningEffort else { return "" }
         switch target {
         case .codex:

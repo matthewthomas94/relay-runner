@@ -108,7 +108,7 @@ final class ConfigManagerTests: XCTestCase {
 
         let loaded = manager.load()
 
-        XCTAssertEqual(loaded.general.model, "gpt-5.5")
+        XCTAssertEqual(loaded.general.model, "sol")
         XCTAssertEqual(loaded.general.orchestrator_effort, "high")
         XCTAssertEqual(loaded.general.codex_reasoning_effort, "high")
     }
@@ -121,7 +121,7 @@ final class ConfigManagerTests: XCTestCase {
         [general]
         provider = "codex"
         command = "codex"
-        orchestrator_effort = "max"
+        orchestrator_effort = "banana"
         codex_reasoning_effort = "high"
         subagent_sizing_policy = "always"
         subagent_model = "opus"

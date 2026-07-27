@@ -187,7 +187,7 @@ final class BoardProjectConfigTests: XCTestCase {
         )
         XCTAssertEqual(
             defaults?.workerProviderNotes,
-            "Use my defaults preserves provider default model semantics; Codex uses model_reasoning_effort and Claude uses --effort."
+            "Use my defaults preserves explicit stable provider selections; Codex resolves Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort."
         )
     }
 

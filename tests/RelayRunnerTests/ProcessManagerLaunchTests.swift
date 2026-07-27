@@ -232,30 +232,31 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(script.contains("cd '/Users/example'"))
     }
 
-    func testLaunchScriptPassesSelectedGPT56ModelForCodex() {
+    func testLaunchScriptPassesResolvedCodexFamilyModel() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         var config = AppConfig()
         config.general.provider = .codex
-        config.general.model = "gpt-5.6-sol"
+        config.general.model = "sol"
 
         let script = ProcessManager.launchScript(
             relayBridge: "/Relay Runner/relay-bridge",
             target: .codex,
             agentBinary: "/usr/local/bin/codex",
             config: config,
-            homeDirectory: home
+            homeDirectory: home,
+            resolvedCodexModel: "gpt-5.7-sol"
         )
 
         XCTAssertTrue(script.contains(
-            "'/usr/local/bin/codex' --model 'gpt-5.6-sol' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
+            "'/usr/local/bin/codex' --model 'gpt-5.7-sol' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
         ))
     }
 
-    func testLaunchScriptRejectsCodexPreviewModelForClaude() {
+    func testLaunchScriptRejectsCodexFamilyForClaude() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         var config = AppConfig()
         config.general.provider = .claude
-        config.general.model = "gpt-5.6-sol"
+        config.general.model = "sol"
 
         let script = ProcessManager.launchScript(
             relayBridge: "/Relay Runner/relay-bridge",
@@ -275,7 +276,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         var config = AppConfig()
         config.general.provider = .codex
-        config.general.model = "gpt-5.6-sol"
+        config.general.model = "sol"
         config.general.orchestrator_effort = "ultra"
 
         let script = ProcessManager.launchScript(
@@ -283,11 +284,13 @@ final class ProcessManagerLaunchTests: XCTestCase {
             target: .codex,
             agentBinary: "/usr/local/bin/codex",
             config: config,
-            homeDirectory: home
+            homeDirectory: home,
+            resolvedCodexModel: "gpt-5.7-sol",
+            resolvedCodexEffort: "ultra"
         )
 
         XCTAssertTrue(script.contains(
-            "'/usr/local/bin/codex' --model 'gpt-5.6-sol' -c 'model_reasoning_effort=\"ultra\"' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
+            "'/usr/local/bin/codex' --model 'gpt-5.7-sol' -c 'model_reasoning_effort=\"ultra\"' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
         ))
     }
 
@@ -312,11 +315,11 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(script.contains("model_reasoning_effort"))
     }
 
-    func testLaunchScriptOmitsDefaultOrInvalidCodexReasoningEffort() {
+    func testLaunchScriptOmitsUnknownCodexReasoningEffortWithoutResolution() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         var config = AppConfig()
         config.general.provider = .codex
-        config.general.codex_reasoning_effort = "max"
+        config.general.codex_reasoning_effort = "banana"
 
         let script = ProcessManager.launchScript(
             relayBridge: "/Relay Runner/relay-bridge",
@@ -335,17 +338,12 @@ final class ProcessManagerLaunchTests: XCTestCase {
 
         var codexConfig = AppConfig()
         codexConfig.general.provider = .codex
-        codexConfig.general.model = "gpt-5.6-luna"
+        codexConfig.general.model = "luna"
         codexConfig.general.orchestrator_effort = "ultra"
-        let codexScript = ProcessManager.launchScript(
-            relayBridge: "/Relay Runner/relay-bridge",
-            target: .codex,
-            agentBinary: "/usr/local/bin/codex",
-            config: codexConfig,
-            homeDirectory: home
+        XCTAssertEqual(
+            GeneralConfig.normalizedOrchestratorEffort("ultra", for: .codex, model: codexConfig.general.model),
+            GeneralConfig.defaultReasoningEffort
         )
-        XCTAssertTrue(codexScript.contains("--model 'gpt-5.6-luna'"))
-        XCTAssertFalse(codexScript.contains("model_reasoning_effort"))
 
         var claudeConfig = AppConfig()
         claudeConfig.general.provider = .claude
@@ -376,25 +374,36 @@ final class ProcessManagerLaunchTests: XCTestCase {
                     config.general.model = model
                     config.general.orchestrator_effort = effort
 
+                    let resolvedCodexModel: String? = provider == .codex
+                        ? "gpt-6.0-\(model)"
+                        : nil
+                    let resolvedCodexEffort: String? = provider == .codex
+                        ? (effort == GeneralConfig.defaultReasoningEffort ? "medium" : effort)
+                        : nil
                     let script = ProcessManager.launchScript(
                         relayBridge: "/Relay Runner/relay-bridge",
                         target: target,
                         agentBinary: binary,
                         config: config,
-                        homeDirectory: home
+                        homeDirectory: home,
+                        resolvedCodexModel: resolvedCodexModel,
+                        resolvedCodexEffort: resolvedCodexEffort
                     )
 
-                    if model == GeneralConfig.defaultModel {
+                    if provider == .codex {
+                        XCTAssertTrue(script.contains("--model 'gpt-6.0-\(model)'"), "\(provider) \(model) \(effort)")
+                    } else if model == GeneralConfig.defaultModel {
                         XCTAssertFalse(script.contains("--model"), "\(provider) \(model) \(effort)")
                     } else {
                         XCTAssertTrue(script.contains("--model '\(model)'"), "\(provider) \(model) \(effort)")
                     }
 
-                    if effort == GeneralConfig.defaultReasoningEffort {
-                        XCTAssertFalse(script.contains("model_reasoning_effort"), "\(provider) \(model) \(effort)")
+                    if provider == .codex {
+                        let expectedEffort = effort == GeneralConfig.defaultReasoningEffort ? "medium" : effort
+                        XCTAssertTrue(script.contains("model_reasoning_effort=\"\(expectedEffort)\""), "\(provider) \(model) \(effort)")
                         XCTAssertFalse(script.contains("--effort"), "\(provider) \(model) \(effort)")
-                    } else if provider == .codex {
-                        XCTAssertTrue(script.contains("model_reasoning_effort=\"\(effort)\""), "\(provider) \(model) \(effort)")
+                    } else if effort == GeneralConfig.defaultReasoningEffort {
+                        XCTAssertFalse(script.contains("model_reasoning_effort"), "\(provider) \(model) \(effort)")
                         XCTAssertFalse(script.contains("--effort"), "\(provider) \(model) \(effort)")
                     } else {
                         XCTAssertTrue(script.contains("--effort '\(effort)'"), "\(provider) \(model) \(effort)")

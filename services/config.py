@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import sys
 
+from codex_model_catalog import CODEX_FAMILIES, normalize_codex_family
+
 # Try tomllib (Python 3.11+), fall back to toml package, fall back to manual parsing
 try:
     import tomllib
@@ -119,11 +121,11 @@ def load_config(config_path: str | None = None) -> dict:
             "auto_start": False,
             "working_directory": "",
             "bypass_permissions": True,
-            "model": "default",
+            "model": "sol",
             "orchestrator_effort": "default",
             "codex_reasoning_effort": "default",
             "messenger_enabled": True,
-            "messenger_model": "default",
+            "messenger_model": "sol",
             "messenger_effort": "default",
             "subagent_sizing_policy": "orchestrator_decides",
             "prevent_sleep_while_running": False,
@@ -213,32 +215,20 @@ def _migrate_config(
         general["command"] = provider
 
     valid_models = {
-        "codex": {
-            "default",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.3-codex-spark",
-        },
-        "claude": {"default", "best", "fable", "opus", "sonnet", "haiku"},
+        "codex": CODEX_FAMILIES,
+        "claude": {"best", "fable", "opus", "sonnet", "haiku"},
     }
-    model = str(general.get("model", "default")).strip().lower()
-    general["model"] = model if model in valid_models[provider] else "default"
+    model = str(general.get("model", "sol" if provider == "codex" else "best")).strip().lower()
+    if provider == "codex":
+        general["model"] = normalize_codex_family(model)
+    else:
+        general["model"] = model if model in valid_models[provider] else "best"
 
     base_reasoning_efforts = {"default", "low", "medium", "high", "xhigh"}
 
     def valid_session_efforts(provider_name: str, model_name: str) -> set[str]:
         if provider_name == "codex":
-            if model_name in {"gpt-5.6-sol", "gpt-5.6-terra"}:
-                return base_reasoning_efforts | {"max", "ultra"}
-            if model_name == "gpt-5.6-luna":
-                return base_reasoning_efforts | {"max"}
-            if model_name in {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"}:
-                return base_reasoning_efforts
-            return {"default"}
+            return base_reasoning_efforts | {"max", "ultra"}
         if model_name in {"best", "fable", "opus"}:
             return base_reasoning_efforts | {"max"}
         if model_name == "sonnet":
@@ -265,15 +255,23 @@ def _migrate_config(
         else "default"
     )
 
-    messenger_model = str(general.get("messenger_model", "default")).strip().lower()
-    if messenger_model not in valid_models[provider]:
-        messenger_model = "default"
+    raw_messenger_model = str(general.get("messenger_model", general["model"])).strip().lower()
+    messenger_model = raw_messenger_model
+    if provider == "codex":
+        messenger_model = normalize_codex_family(messenger_model)
+        messenger_effort = (
+            "default"
+            if messenger_model != raw_messenger_model
+            else str(general.get("messenger_effort", "default")).strip().lower()
+        )
+        if messenger_effort not in valid_session_efforts(provider, messenger_model):
+            messenger_effort = "default"
+    elif messenger_model not in valid_models[provider]:
+        messenger_model = "best"
         messenger_effort = "default"
     else:
         messenger_effort = str(general.get("messenger_effort", "default")).strip().lower()
         effective_messenger_model = messenger_model
-        if effective_messenger_model == "default":
-            effective_messenger_model = "gpt-5.6-terra" if provider == "codex" else "haiku"
         if messenger_effort not in valid_session_efforts(provider, effective_messenger_model):
             messenger_effort = "default"
     general["messenger_model"] = messenger_model

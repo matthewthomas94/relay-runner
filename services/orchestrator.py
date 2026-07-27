@@ -40,6 +40,14 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
+from codex_model_catalog import (
+    CODEX_FAMILIES,
+    CODEX_WORKER_TIER_FAMILIES,
+    CodexModelResolutionError,
+    normalize_codex_family,
+    resolve_codex_effort,
+    resolve_codex_family_from_cli,
+)
 from graphify_core import GraphifyCoreStore
 from graphify_ingest import ingest_registered_projects
 from pm_frontstage import OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata
@@ -94,11 +102,7 @@ WORKER_SIZING_FIELDS = (
 REVIEW_BLOCKING_STATES = ("AwaitingReview", "Reviewing", "MergeConflict", "Succeeded")
 MERGEABLE_REVIEW_STATES = REVIEW_BLOCKING_STATES
 WORKER_MODEL_TIERS = {
-    "codex": {
-        "fast": "gpt-5.4-mini",
-        "balanced": "gpt-5.4",
-        "strong": "gpt-5.5",
-    },
+    "codex": CODEX_WORKER_TIER_FAMILIES,
     "claude": {
         "fast": "haiku",
         "balanced": "sonnet",
@@ -108,17 +112,8 @@ WORKER_MODEL_TIERS = {
 CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
 GENERAL_MODEL_OPTIONS = {
-    "codex": {
-        "default",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex-spark",
-    },
-    "claude": {"default", "best", "fable", "opus", "sonnet", "haiku"},
+    "codex": CODEX_FAMILIES,
+    "claude": {"best", "fable", "opus", "sonnet", "haiku"},
 }
 BASE_GENERAL_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
 AUTO_DISPATCH_SOURCES = frozenset({"ready-sweeper", "dependency-progression", "orchestrator-review-retry"})
@@ -435,6 +430,8 @@ def _resolve_worker_model(worker_model: str, agent_kind: str) -> str:
                 f"worker_model {worker_model!r} is scoped to {provider}, "
                 f"but configured worker provider is {agent_kind}"
             )
+        if agent_kind == "codex":
+            return normalize_codex_family(model)
         return model
 
     model = WORKER_MODEL_TIERS.get(agent_kind, {}).get(value)
@@ -465,18 +462,14 @@ def _uses_inherited_worker_defaults(general: dict[str, Any] | None) -> bool:
 
 def _normalized_general_model(general: dict[str, Any], agent_kind: str) -> str:
     model = str(general.get("model") or "").strip().lower()
-    return model if model in GENERAL_MODEL_OPTIONS[agent_kind] else "default"
+    if agent_kind == "codex":
+        return normalize_codex_family(model)
+    return model if model in GENERAL_MODEL_OPTIONS[agent_kind] else "best"
 
 
 def _general_effort_options(agent_kind: str, model: str) -> frozenset[str]:
     if agent_kind == "codex":
-        if model in {"gpt-5.6-sol", "gpt-5.6-terra"}:
-            return BASE_GENERAL_EFFORTS | frozenset({"max", "ultra"})
-        if model == "gpt-5.6-luna":
-            return BASE_GENERAL_EFFORTS | frozenset({"max"})
-        if model in {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"}:
-            return BASE_GENERAL_EFFORTS
-        return frozenset({"default"})
+        return BASE_GENERAL_EFFORTS | frozenset({"max", "ultra"})
     if model in {"best", "fable", "opus"}:
         return BASE_GENERAL_EFFORTS | frozenset({"max"})
     if model == "sonnet":
@@ -496,13 +489,13 @@ def _inherited_worker_sizing(general: dict[str, Any], agent_kind: str) -> dict[s
     effort = _normalized_general_effort(general, agent_kind, model)
     return {
         "provider_key": agent_kind,
-        "model_alias": None if model == "default" else model,
+        "model_alias": model,
         "worker_model": f"{agent_kind}:{model}",
         "worker_effort": effort,
         "worker_sizing_rationale": "Inherited provider, model, and effort from Relay Runner General Settings.",
         "worker_provider_notes": (
-            "Use my defaults preserves provider default model semantics; Codex uses "
-            "model_reasoning_effort and Claude uses --effort."
+            "Use my defaults preserves explicit stable provider selections; Codex resolves "
+            "Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort."
         ),
     }
 
@@ -2701,11 +2694,11 @@ def validate_worker_completion(
 def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
     model_alias = str(run.get("model_alias") or "").strip().lower()
     worker_effort = str(run.get("worker_effort") or "").strip().lower()
-    if model_alias == "default":
-        model_alias = ""
-    if worker_effort == "default":
-        worker_effort = ""
     if agent_kind == "claude":
+        if model_alias == "default":
+            model_alias = ""
+        if worker_effort == "default":
+            worker_effort = ""
         # Claude stream-json gives assistant/tool_use/tool_result events. The
         # same command shape is used for implementation and review workers so
         # provider-facing effort semantics stay aligned.
@@ -2721,6 +2714,21 @@ def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
         if worker_effort:
             cmd.extend(["--effort", worker_effort])
         return cmd
+
+    if model_alias:
+        family = normalize_codex_family(model_alias)
+        try:
+            resolved = resolve_codex_family_from_cli(family, command=agent_bin)
+            model_alias = resolved.launch_model
+            run["selected_model_family"] = family
+            run["resolved_model_alias"] = model_alias
+            if worker_effort:
+                worker_effort = resolve_codex_effort(worker_effort, resolved)
+                run["resolved_worker_effort"] = worker_effort
+        except CodexModelResolutionError as exc:
+            raise RuntimeError(f"could not resolve Codex worker model {model_alias!r}: {exc}") from exc
+    if worker_effort == "default":
+        worker_effort = ""
 
     # Codex exec --json emits JSONL events such as thread.started,
     # item.started command_execution, item.completed, and turn.completed.
@@ -2825,7 +2833,25 @@ class Worker:
             start_head = _git_head(self.run["workspace_path"])
             if start_head:
                 log.write(f"[orchestrator] start_head={start_head}\n")
-            cmd = self._command()
+            try:
+                cmd = self._command()
+            except RuntimeError as e:
+                self.store.update(
+                    self.run_id,
+                    state="Failed",
+                    last_error=str(e),
+                    ended=True,
+                    exit_code=-1,
+                )
+                log.write(f"[orchestrator] {e}\n")
+                self._emit_lifecycle("run-failed")
+                return
+            if self.run.get("selected_model_family"):
+                log.write(f"[orchestrator] selected_model_family={self.run['selected_model_family']}\n")
+            if self.run.get("resolved_model_alias"):
+                log.write(f"[orchestrator] resolved_model_alias={self.run['resolved_model_alias']}\n")
+            if self.run.get("resolved_worker_effort"):
+                log.write(f"[orchestrator] resolved_worker_effort={self.run['resolved_worker_effort']}\n")
             try:
                 self.proc = subprocess.Popen(
                     cmd,

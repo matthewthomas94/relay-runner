@@ -15,7 +15,7 @@ Relay Runner supports multiple agent providers, especially Codex and Claude. Whe
 
 Every ticket promoted to `ready` must include an explicit worker-sizing decision in frontmatter before dispatch:
 
-- `worker_model`: `fast`, `balanced`, `strong`, or a provider-scoped override such as `codex:gpt-5.4-mini` or `claude:sonnet`.
+- `worker_model`: `fast`, `balanced`, `strong`, or a provider-scoped stable override such as `codex:luna` or `claude:sonnet`.
 - `worker_effort`: `low`, `medium`, `high`, or `xhigh` for provider-neutral tickets. `max` is Claude-only unless a future Codex release verifies support.
 - `worker_sizing_rationale`: one short sentence explaining why that tier and effort match the work.
 - `worker_provider_notes`: `none` only when there are no provider-specific caveats; otherwise name the Codex/Claude difference.

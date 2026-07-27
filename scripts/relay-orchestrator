@@ -185,7 +185,7 @@ Every substantive voice or text command that asks for repo/project work must res
 
 Every ticket promoted to `ready` must include an explicit worker-sizing decision in frontmatter:
 
-- `worker_model`: `fast`, `balanced`, `strong`, or a provider-scoped override such as `codex:gpt-5.4-mini` or `claude:sonnet`.
+- `worker_model`: `fast`, `balanced`, `strong`, or a provider-scoped stable override such as `codex:luna` or `claude:sonnet`.
 - `worker_effort`: `low`, `medium`, `high`, or `xhigh` for provider-neutral tickets. `max` is Claude-only unless a future Codex release verifies support.
 - `worker_sizing_rationale`: one short sentence explaining why that tier and effort match the work.
 - `worker_provider_notes`: `none` only when there are no provider-specific caveats; otherwise name the Codex/Claude difference.
@@ -275,7 +275,7 @@ Every substantive voice or text command that asks for repo/project work must res
 
 Every ticket promoted to `ready` must include an explicit worker-sizing decision in frontmatter: `worker_model`, `worker_effort`, `worker_sizing_rationale`, and `worker_provider_notes`. Choose it based on ambiguity, code blast radius, security risk, test/build cost, and expected implementation depth.
 
-Use `worker_model: fast|balanced|strong` for provider-neutral tiers, or provider-scoped overrides such as `codex:gpt-5.4-mini` or `claude:sonnet`. Use `worker_effort: low|medium|high|xhigh` for provider-neutral tickets. `max` is Claude-only unless future Codex support is verified. Codex renders effort through `model_reasoning_effort`; Claude renders effort through `--effort`.
+Use `worker_model: fast|balanced|strong` for provider-neutral tiers, or provider-scoped stable overrides such as `codex:luna` or `claude:sonnet`. Use `worker_effort: low|medium|high|xhigh` for provider-neutral tickets. `max` is Claude-only unless future Codex support is verified. Codex renders effort through `model_reasoning_effort`; Claude renders effort through `--effort`.
 
 ## Workflow
 
