@@ -1850,6 +1850,8 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertIn("pm_frontstage.py", script)
         self.assertIn("messenger.py", script)
         self.assertIn("relay_authorization.py", script)
+        self.assertIn("codex_model_catalog.py", script)
+        self.assertNotIn('if [ -f "$PROJECT_ROOT/services/$f" ]', script)
 
     def test_tts_dismissal_does_not_supersede_claimed_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:
