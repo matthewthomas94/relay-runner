@@ -133,6 +133,9 @@ final class ProcessManagerLaunchTests: XCTestCase {
             "only when its prompt text exactly matches agent_prompt",
             "legacy metadata without agent_prompt",
             "normal typed turn and do not use claimed metadata",
+            "if a newer command is present, stop stale work",
+            "do not answer or act on the newer command",
+            "atomically claim and inject the newer command as the next turn",
             "Raw Relay command captures are private metadata",
             "mcp__relay-actions__*",
             "mcp__relay-vision__screenshot",
@@ -143,6 +146,8 @@ final class ProcessManagerLaunchTests: XCTestCase {
             XCTAssertTrue(codexScript.contains(phrase), phrase)
             XCTAssertTrue(claudeScript.contains(phrase), phrase)
         }
+        XCTAssertFalse(codexScript.contains("handle the newest intent"))
+        XCTAssertFalse(claudeScript.contains("handle the newest intent"))
         XCTAssertFalse(codexScript.contains("Use the relay-bridge skill now."))
         XCTAssertFalse(claudeScript.contains("\"/relay-bridge\""))
     }
