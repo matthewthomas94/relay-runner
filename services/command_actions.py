@@ -58,6 +58,10 @@ ORCHESTRATION_CORRECTION_RE = re.compile(
     r"|\bso\s+(?:i|we)\s+can\s+continue\s+talking\b.*\b(ticket|orchestrator)\b",
     re.IGNORECASE,
 )
+CANCEL_RE = re.compile(
+    r"\b(cancel|stop|abort|scratch\s+that|never\s+mind|nevermind)\b",
+    re.IGNORECASE,
+)
 WORK_RE = re.compile(
     r"\b(add|build|change|clean\s+up|create|debug|delete|design|fix|implement|"
     r"install|make|migrate|refactor|remove|repair|ship|test|update|wire|write)\b",
@@ -192,6 +196,9 @@ def classify_command(text: str) -> CommandAction:
 
     if ORCHESTRATION_CORRECTION_RE.search(source):
         return CommandAction(kind="control", source_text=source, reason="orchestration_process_correction")
+
+    if CANCEL_RE.search(source):
+        return CommandAction(kind="control", source_text=source, reason="cancel")
 
     if INLINE_RE.search(source):
         return CommandAction(kind="inline_work", source_text=source)
@@ -355,7 +362,9 @@ def format_command_for_agent(action: CommandAction) -> str:
             "- The foreground orchestrator/PM owns command classification and visible-ticket authoring for new raw work requests.",
             "- Raw Relay command captures are private metadata, not board cards; visible `.orchestrator/` tickets must use refined, user-safe summaries and acceptance criteria instead of transcript dumps.",
             "- Creating or editing visible `.orchestrator/` tickets is PM management work. Implementation belongs to workers unless the user explicitly asks to keep it inline.",
-            "- Relay command metadata is the stale-action guard. Before any user-visible follow-up, TTS, ticket edit, dispatch, or orchestrator action, verify this command is still current; if a newer command exists, stop this stale action and handle the newer command.",
+            "- Relay command metadata has two provider-neutral checks: newest-turn freshness gates user-visible replies, traces, and TTS; mutation authorization gates ticket edits, dispatches, and orchestrator actions.",
+            "- Before any user-visible follow-up, trace, or TTS, verify this command is still current; if a newer command exists, stop the stale output and let Relay Runner deliver the newer turn.",
+            "- Before any ticket edit, dispatch, or orchestrator action, pass relay_command_seq and relay_command_id. The daemon allows an older command only when Relay Runner registered that bounded mutation authorization and no replacement, redirect, interrupt, or cancel turn has revoked it. Acknowledgement, inspection/status, and additive turns do not revoke prior authorized mutations.",
             "- When a later dispatch request goes through relay-orchestrator, pass relay_command_seq and relay_command_id when they are present.",
             "- Your user-facing response must name the PM outcome, such as created ticket, edited ticket, dispatched worker, waiting on refined ticket content, or waiting on a target-project choice.",
         ]

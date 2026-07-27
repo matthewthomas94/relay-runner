@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import json
 import subprocess
@@ -14,7 +15,9 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
+import orchestrator  # noqa: E402
 from orchestrator import Daemon, MessengerOutcomeStore, ReviewWorker, RunsStore, Worker, validate_worker_completion  # noqa: E402
+from relay_authorization import allowed_mutations_for_metadata, record_command_authorization  # noqa: E402
 from tickets import read as read_ticket  # noqa: E402
 
 
@@ -1153,6 +1156,263 @@ class OrchestratorDispatchTests(unittest.TestCase):
 
             self.assertFalse((repo / ".orchestrator/RR-1.md").exists())
             self.assertEqual((repo / ".orchestrator/config.toml").read_text(), 'prefix = "RR"\nnext_id = 1\n')
+
+    def test_authorized_dispatch_survives_newer_acknowledgement_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            state_path = root / "voice_command_state.json"
+            auth_path = root / "voice_command_authorizations.json"
+            first = {
+                "relay_command_seq": 1,
+                "relay_command_id": "dispatch-cmd",
+                "action": "dispatch_ticket",
+                "ticket_id": "RR-1",
+                "source_text": "dispatch RR-1",
+            }
+            record_command_authorization(
+                auth_path,
+                first,
+                relationship="replacement",
+                allowed_mutations=allowed_mutations_for_metadata(first),
+                now=1,
+            )
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 2,
+                "relay_command_id": "ack-cmd",
+                "action": "conversation",
+                "authorization_relationship": "conversation",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            original_auth_path = orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE = auth_path
+            daemon = self.make_daemon(root, provider="codex")
+            try:
+                with patch("orchestrator.create_worktree") as create_worktree, \
+                        patch.object(Worker, "start") as start_worker:
+                    result = daemon.dispatch(
+                        ticket_id="RR-1",
+                        repo_path=str(repo),
+                        relay_command_seq=1,
+                        relay_command_id="dispatch-cmd",
+                    )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+                orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE = original_auth_path
+
+            create_worktree.assert_called_once()
+            start_worker.assert_called_once()
+            self.assertFalse(result["already_active"])
+            ledger = json.loads(auth_path.read_text())
+            started = ledger["authorizations"][0]["started_mutations"]
+            self.assertEqual(started[0]["mutation"]["ticket_id"], "RR-1")
+
+    def test_authorized_dispatch_survives_newer_status_question(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-2", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-2.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            state_path = root / "voice_command_state.json"
+            auth_path = root / "voice_command_authorizations.json"
+            first = {
+                "relay_command_seq": 3,
+                "relay_command_id": "dispatch-cmd",
+                "action": "dispatch_ticket",
+                "ticket_id": "RR-2",
+                "source_text": "dispatch RR-2",
+            }
+            record_command_authorization(
+                auth_path,
+                first,
+                relationship="replacement",
+                allowed_mutations=allowed_mutations_for_metadata(first),
+                now=1,
+            )
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 4,
+                "relay_command_id": "status-cmd",
+                "action": "inspect_ticket",
+                "ticket_id": "RR-2",
+                "authorization_relationship": "inspection",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            original_auth_path = orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE = auth_path
+            daemon = self.make_daemon(root, provider="claude")
+            try:
+                with patch("orchestrator.create_worktree") as create_worktree, \
+                        patch.object(Worker, "start") as start_worker:
+                    result = daemon.dispatch(
+                        ticket_id="RR-2",
+                        repo_path=str(repo),
+                        relay_command_seq=3,
+                        relay_command_id="dispatch-cmd",
+                    )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+                orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE = original_auth_path
+
+            create_worktree.assert_called_once()
+            start_worker.assert_called_once()
+            self.assertFalse(result["already_active"])
+
+    def test_redirect_revokes_authorized_dispatch_before_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-3", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-3.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            state_path = root / "voice_command_state.json"
+            auth_path = root / "voice_command_authorizations.json"
+            first = {
+                "relay_command_seq": 5,
+                "relay_command_id": "dispatch-cmd",
+                "action": "dispatch_ticket",
+                "ticket_id": "RR-3",
+                "source_text": "dispatch RR-3",
+            }
+            record_command_authorization(
+                auth_path,
+                first,
+                relationship="replacement",
+                allowed_mutations=allowed_mutations_for_metadata(first),
+                now=1,
+            )
+            redirect = {
+                "relay_command_seq": 6,
+                "relay_command_id": "redirect-cmd",
+                "action": "create_ticket",
+                "source_text": "actually fix something else instead",
+            }
+            record_command_authorization(
+                auth_path,
+                redirect,
+                relationship="redirect",
+                allowed_mutations=[],
+                now=2,
+            )
+            state_path.write_text(json.dumps({
+                **redirect,
+                "authorization_relationship": "redirect",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            original_auth_path = orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE = auth_path
+            daemon = self.make_daemon(root, provider="codex")
+            try:
+                with patch("orchestrator.create_worktree") as create_worktree, \
+                        patch.object(Worker, "start") as start_worker, \
+                        self.assertRaisesRegex(ValueError, "revoked"):
+                    daemon.dispatch(
+                        ticket_id="RR-3",
+                        repo_path=str(repo),
+                        relay_command_seq=5,
+                        relay_command_id="dispatch-cmd",
+                    )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+                orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE = original_auth_path
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+
+    def test_redirect_partway_through_multi_action_reports_canceled_remainder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-4", status="ready", run_id=None, sizing=True)
+            self.write_ticket(repo, "RR-5", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-4.md", ".orchestrator/RR-5.md")
+            self.git(repo, "commit", "-m", "add tickets")
+            state_path = root / "voice_command_state.json"
+            auth_path = root / "voice_command_authorizations.json"
+            first = {
+                "relay_command_seq": 7,
+                "relay_command_id": "batch-cmd",
+                "action": "create_ticket",
+                "source_text": "dispatch RR-4 and RR-5",
+            }
+            record_command_authorization(
+                auth_path,
+                first,
+                relationship="replacement",
+                allowed_mutations=allowed_mutations_for_metadata(first),
+                now=1,
+            )
+            state_path.write_text(json.dumps({
+                **first,
+                "authorization_relationship": "replacement",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            original_auth_path = orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE = auth_path
+            daemon = self.make_daemon(root, provider="codex")
+            dispatch_calls: list[str] = []
+
+            def fake_dispatch(**kwargs):
+                dispatch_calls.append(kwargs["ticket_id"])
+                redirect = {
+                    "relay_command_seq": 8,
+                    "relay_command_id": "redirect-cmd",
+                    "action": "create_ticket",
+                    "source_text": "actually do the other thing instead",
+                }
+                record_command_authorization(
+                    auth_path,
+                    redirect,
+                    relationship="redirect",
+                    allowed_mutations=[],
+                    now=2,
+                )
+                state_path.write_text(json.dumps({
+                    **redirect,
+                    "authorization_relationship": "redirect",
+                }))
+                return {"already_active": False, "run": {"id": 100 + len(dispatch_calls)}}
+
+            daemon.dispatch = fake_dispatch
+            try:
+                result = daemon.apply_orchestrator_actions(
+                    repo_path=str(repo),
+                    actions=[
+                        {"kind": "request_worker", "ticket_id": "RR-4"},
+                        {"kind": "request_worker", "ticket_id": "RR-5"},
+                    ],
+                    request_id="batch-1",
+                    relay_command_seq=7,
+                    relay_command_id="batch-cmd",
+                )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+                orchestrator.RELAY_COMMAND_AUTHORIZATION_FILE = original_auth_path
+
+            self.assertEqual(dispatch_calls, ["RR-4"])
+            self.assertEqual(result["dispatches"], [{
+                "ticket_id": "RR-4",
+                "run_id": 101,
+                "already_active": False,
+            }])
+            self.assertTrue(result["partial"])
+            self.assertTrue(result["superseded"])
+            self.assertEqual(result["canceled"], [{
+                "action": "request_worker",
+                "reason": result["status_message"],
+                "ticket_id": "RR-5",
+            }])
 
     def test_exit_zero_noop_is_not_successful_ticket_completion(self):
         with tempfile.TemporaryDirectory() as tmp:
