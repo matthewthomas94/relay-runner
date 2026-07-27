@@ -122,6 +122,7 @@ final class StateMachine: @unchecked Sendable {
             pendingAcknowledgement = nil
             clearWorkingProgress()
             let preview = normalizedMessagePreview(text) ?? messagePreview
+            guard preview != nil else { break }
             messagePreview = preview
             state = .messageWaiting(preview: preview)
 

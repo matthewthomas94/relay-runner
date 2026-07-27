@@ -1374,24 +1374,49 @@ def _strip_markdown_for_tts(text: str) -> str:
     return re.sub(r"[*_`]", "", text)          # any remaining markers
 
 
-def _parse_tts_payload(raw: str) -> tuple[str, int | None, str | None]:
-    """Accept plain text or JSON lines tagged with Relay command metadata."""
+def _parse_tts_payload(raw: str) -> tuple[str, str | None, int | None, str | None]:
+    """Accept plain text or JSON lines tagged with Relay command metadata.
+
+    JSON payloads use ``text`` for the spoken rendering and ``display_text`` for
+    the authoritative response preview shown in the pill.
+    """
     text = raw.strip()
     if not text:
-        return "", None, None
+        return "", None, None, None
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        return text, None, None
+        return text, None, None, None
     if not isinstance(payload, dict) or "text" not in payload:
-        return text, None, None
+        return text, None, None, None
     command_seq = payload.get("relay_command_seq")
     try:
         command_seq = int(command_seq) if command_seq is not None else None
     except (TypeError, ValueError):
         command_seq = None
     command_id = payload.get("relay_command_id")
-    return str(payload.get("text") or ""), command_seq, str(command_id) if command_id else None
+    display_text = payload.get("display_text")
+    return (
+        str(payload.get("text") or ""),
+        str(display_text) if display_text is not None else None,
+        command_seq,
+        str(command_id) if command_id else None,
+    )
+
+
+def _normalize_display_preview(text: str | None) -> str:
+    words = str(text or "").replace("\n", " ").split()
+    return " ".join(words)
+
+
+def _publish_authoritative_preview(text: str) -> None:
+    preview = _normalize_display_preview(text)
+    if not preview:
+        return
+    try:
+        publish_waiting_preview(preview)
+    except Exception as exc:
+        print(f"[voice_bridge] Could not publish authoritative preview: {exc}", file=sys.stderr)
 
 
 def _queue_tts_text(
@@ -1403,8 +1428,11 @@ def _queue_tts_text(
     notify_waiting_preview=None,
 ) -> bool:
     """Queue TTS unless a newer Relay command is already waiting."""
-    text, command_seq, command_id = _parse_tts_payload(text)
+    text, display_text, command_seq, command_id = _parse_tts_payload(text)
+    display_preview = _normalize_display_preview(display_text)
     text = _strip_markdown_for_tts(text.strip()).strip()
+    if not text and display_preview:
+        text = _strip_markdown_for_tts(display_preview).strip()
     if not text:
         return False
     if command_seq is not None or command_id:
@@ -1423,10 +1451,13 @@ def _queue_tts_text(
     publisher = publish_waiting_preview if notify_waiting_preview is None else notify_waiting_preview
     if publisher is not None:
         try:
-            publisher(text)
+            publisher(display_preview or text)
         except Exception as exc:
             print(f"[voice_bridge] Could not publish waiting preview: {exc}", file=sys.stderr)
-    tts_queue.put(text)
+    if display_preview:
+        tts_queue.put({"text": text, "display_text": display_preview})
+    else:
+        tts_queue.put(text)
     return True
 
 
@@ -1597,15 +1628,17 @@ def _deliver_missing_foreground_reply(
         "relay_command_seq": key[0],
         "relay_command_id": key[1],
     }
+    _publish_authoritative_preview(payload["text"])
     delivered = False
     if messenger is not None:
         delivered = messenger.submit_final(payload)
     if not delivered:
         delivered = _queue_tts_text(
-            json.dumps(payload),
+            json.dumps({**payload, "display_text": payload["text"]}),
             tts_worker.input_queue,
             state_path=state_path,
             allow_pending_command=True,
+            notify_waiting_preview=lambda _text: None,
         )
     if delivered:
         _mark_foreground_reply_delivered(relay_command)
@@ -1845,6 +1878,7 @@ def _handle_orchestrator_reply_control(
         if key in command:
             payload[key] = command[key]
 
+    _publish_authoritative_preview(reply)
     if messenger is not None and messenger.submit_final(payload):
         _mark_foreground_reply_delivered(command)
         return True
@@ -1852,10 +1886,11 @@ def _handle_orchestrator_reply_control(
     # A missing or out-of-sync messenger must not swallow a current outcome.
     # _queue_tts_text still rejects stale command metadata.
     delivered = _queue_tts_text(
-        json.dumps(payload),
+        json.dumps({**payload, "display_text": reply}),
         tts_worker.input_queue,
         state_path=state_path,
         allow_pending_command=True,
+        notify_waiting_preview=lambda _text: None,
     )
     if delivered:
         _mark_foreground_reply_delivered(command)
@@ -2075,9 +2110,10 @@ def main():
         messenger = create_messenger_runtime(
             cfg,
             cwd=Path.cwd(),
-            speak=lambda text, command_seq, command_id: _queue_tts_text(
+            speak=lambda text, command_seq, command_id, display_text=None: _queue_tts_text(
                 json.dumps({
                     "text": text,
+                    "display_text": display_text,
                     "relay_command_seq": command_seq,
                     "relay_command_id": command_id,
                 }),

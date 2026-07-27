@@ -226,7 +226,8 @@ final class OverlayController {
         messagePreview: String?,
         messagePreviewEnabled: Bool
     ) -> String? {
-        guard messagePreviewEnabled, let messagePreview else { return nil }
+        _ = messagePreviewEnabled
+        guard let messagePreview else { return nil }
         switch state {
         case .messageWaiting, .preparing, .speaking, .cancelled(.tts):
             return messagePreview

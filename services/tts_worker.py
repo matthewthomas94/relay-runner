@@ -134,6 +134,7 @@ class TTSWorker:
     def __init__(self, input_queue: queue.Queue):
         self.input_queue = input_queue
         self._pending_text = ""
+        self._pending_display_text = ""
         self._lock = threading.Lock()
         self._playing = False
         self._paused = False
@@ -141,7 +142,9 @@ class TTSWorker:
         self._shutdown = False
         self._last_wav: str | None = None  # Path to last played WAV for replay
         self._last_unheard_text = ""
+        self._last_unheard_display_text = ""
         self._last_response_text = ""
+        self._last_response_display_text = ""
 
         # Speculative TTS — generation runs in parallel with the pill so the
         # first sentence chunk is already on disk by the time the user
@@ -227,17 +230,36 @@ class TTSWorker:
             idle_ticks = 0
             self._handle_collected_chunk(chunk)
 
-    def _handle_collected_chunk(self, chunk: str):
+    @staticmethod
+    def _queue_texts(chunk) -> tuple[str, str]:
+        if isinstance(chunk, dict):
+            text = str(chunk.get("text") or "").strip()
+            display_text = str(chunk.get("display_text") or "").strip()
+            return text, display_text
+        return str(chunk or "").strip(), ""
+
+    def _handle_collected_chunk(self, chunk):
+        chunk_text, chunk_display_text = self._queue_texts(chunk)
+        if not chunk_text:
+            return
         with self._lock:
             was_empty = not self._pending_text.strip()
             if self._pending_text:
-                self._pending_text += " " + chunk
+                self._pending_text += " " + chunk_text
             else:
-                self._pending_text = chunk
+                self._pending_text = chunk_text
+
+            if chunk_display_text:
+                self._pending_display_text = chunk_display_text
+            elif was_empty:
+                self._pending_display_text = ""
 
             full_text = self._pending_text.strip()
             if full_text:
                 self._last_response_text = full_text
+            preview_text = self._pending_display_text.strip() or full_text
+            if preview_text:
+                self._last_response_display_text = preview_text
             is_playing = self._playing
 
         if not full_text:
@@ -250,7 +272,7 @@ class TTSWorker:
         # response grows. Deferred-playback overlays should render the latest
         # response body before playback starts, not wait for a later preparing
         # or speaking event to repopulate the pill.
-        publish_waiting_preview(full_text)
+        publish_waiting_preview(preview_text)
 
         # Kick off speculative TTS in parallel with the pill so audio is
         # ready by the time the user double-taps Option. Outside the main
@@ -302,24 +324,29 @@ class TTSWorker:
     def play(self):
         with self._lock:
             text = self._pending_text.strip()
+            display_text = self._pending_display_text.strip() or text
             self._pending_text = ""
+            self._pending_display_text = ""
             if text:
                 self._last_unheard_text = ""
+                self._last_unheard_display_text = ""
 
         if not text:
             self.replay()
             return
 
-        self._play_text(text)
+        self._play_text(text, display_text=display_text)
 
-    def _play_text(self, text: str):
+    def _play_text(self, text: str, *, display_text: str | None = None):
         chunks = _sentence_chunks(text)
         if not chunks:
             return
 
+        preview_text = str(display_text or "").strip() or text
         self._last_response_text = text
+        self._last_response_display_text = preview_text
         generation = self._begin_playback()
-        _notify_state("preparing", text=text[:2000])
+        _notify_state("preparing", text=preview_text[:2000])
 
         t = threading.Thread(
             target=self._speak_chunks,
@@ -364,9 +391,12 @@ class TTSWorker:
         self.stop_playback()
         with self._lock:
             text = self._pending_text.strip()
+            display_text = self._pending_display_text.strip() or text
             self._pending_text = ""
+            self._pending_display_text = ""
             if text:
                 self._last_unheard_text = text
+                self._last_unheard_display_text = display_text
         self._cancel_speculation()
         _notify_state("idle")
 
@@ -375,22 +405,32 @@ class TTSWorker:
         with self._lock:
             text = self._pending_text.strip()
             if text:
+                display_text = self._pending_display_text.strip() or text
                 self._pending_text = ""
+                self._pending_display_text = ""
                 self._last_unheard_text = ""
+                self._last_unheard_display_text = ""
             elif self._last_unheard_text:
                 text = self._last_unheard_text
+                display_text = self._last_unheard_display_text.strip() or text
                 self._last_unheard_text = ""
+                self._last_unheard_display_text = ""
+            else:
+                display_text = ""
 
         if text:
-            self._play_text(text)
+            self._play_text(text, display_text=display_text)
             return
 
         wav = self._last_wav
         if not wav or not os.path.isfile(wav):
             print("[tts_worker] Nothing to replay", file=sys.stderr)
             return
-        if self._last_response_text:
-            _notify_state("preparing", text=self._last_response_text[:2000])
+        if self._last_response_display_text or self._last_response_text:
+            _notify_state(
+                "preparing",
+                text=(self._last_response_display_text or self._last_response_text)[:2000],
+            )
         self._playing = True
         self._paused = False
         t = threading.Thread(target=self._play_wav, args=(wav,), daemon=True)

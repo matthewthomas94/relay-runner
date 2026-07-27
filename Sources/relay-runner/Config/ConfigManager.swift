@@ -101,7 +101,6 @@ final class ConfigManager {
         if let awareness = table["awareness"]?.tomlValue.table {
             if let v = tomlBool(awareness, "screen_glow") { config.awareness.screen_glow = v }
             if let v = tomlBool(awareness, "live_transcription") { config.awareness.live_transcription = v }
-            if let v = tomlBool(awareness, "message_preview") { config.awareness.message_preview = v }
             if let v = tomlBool(awareness, "live_captions") { config.awareness.live_captions = v }
             if let v = tomlDouble(awareness, "glow_intensity") { config.awareness.glow_intensity = v }
         }
@@ -168,7 +167,6 @@ final class ConfigManager {
         lines.append("[awareness]")
         lines.append("screen_glow = \(c.awareness.screen_glow)")
         lines.append("live_transcription = \(c.awareness.live_transcription)")
-        lines.append("message_preview = \(c.awareness.message_preview)")
         lines.append("live_captions = \(c.awareness.live_captions)")
         lines.append("glow_intensity = \(String(format: "%.1f", c.awareness.glow_intensity))")
         lines.append("")

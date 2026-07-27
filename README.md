@@ -121,7 +121,7 @@ All settings live in the Settings window. Config is persisted to:
 
 - **Screen glow** — ambient particle field during active sessions
 - **Live transcription** — show your words as you speak
-- **Message preview** — show the agent's response in the pill
+- **Response preview** — shows the agent's response in the pill
 - **Live captions**
 - **Glow intensity** — 0.1 – 1.0
 

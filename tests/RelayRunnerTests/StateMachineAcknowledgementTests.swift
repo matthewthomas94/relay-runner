@@ -117,12 +117,13 @@ final class StateMachineAcknowledgementTests: XCTestCase {
             ),
             "Ready response."
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             OverlayController.previewBody(
                 for: .messageWaiting(preview: "Ready response."),
                 messagePreview: "Ready response.",
                 messagePreviewEnabled: false
-            )
+            ),
+            "Ready response."
         )
         XCTAssertNil(
             OverlayController.previewBody(
@@ -386,7 +387,7 @@ final class StateMachineAcknowledgementTests: XCTestCase {
             text: nil,
             autoDismiss: nil
         )
-        XCTAssertEqual(stateMachine.state, .messageWaiting(preview: nil))
+        XCTAssertEqual(stateMachine.state, .idle)
         XCTAssertNil(stateMachine.messagePreview)
 
         stateMachine.handleServiceEvent(
@@ -398,6 +399,26 @@ final class StateMachineAcknowledgementTests: XCTestCase {
 
         XCTAssertEqual(stateMachine.state, .messageWaiting(preview: "Second response."))
         XCTAssertEqual(stateMachine.messagePreview, "Second response.")
+    }
+
+    func testBlankWaitingEventDoesNotReplaceCompactProcessingState() {
+        let stateMachine = StateMachine()
+
+        stateMachine.handleServiceEvent(
+            source: "bridge",
+            newState: "processing",
+            text: nil,
+            autoDismiss: nil
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "  ",
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .processing)
+        XCTAssertNil(stateMachine.messagePreview)
     }
 
     func testBridgeWorkingEventStoresFreshSanitizedProgressWithoutChangingVisibleState() {
