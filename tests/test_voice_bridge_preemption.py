@@ -303,6 +303,35 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual(previews, [("fresh response", True)])
             self.assertEqual(tts_queue.get_nowait(), "fresh response")
 
+    def test_tts_queue_uses_authoritative_display_text_separate_from_spoken_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            tts_queue: queue.Queue = queue.Queue()
+            previews: list[str] = []
+
+            queued = voice_bridge._queue_tts_text(
+                json.dumps({
+                    "text": "Short messenger wording.",
+                    "display_text": "Authoritative **provider** result.\nIncludes `code`.",
+                }),
+                tts_queue,
+                command_path=command_path,
+                notify_waiting_preview=lambda text: previews.append(text),
+            )
+
+            self.assertTrue(queued)
+            self.assertEqual(
+                previews,
+                ["Authoritative **provider** result. Includes `code`."],
+            )
+            self.assertEqual(
+                tts_queue.get_nowait(),
+                {
+                    "text": "Short messenger wording.",
+                    "display_text": "Authoritative **provider** result. Includes `code`.",
+                },
+            )
+
     def test_sequence_tagged_tts_drops_after_command_superseded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
@@ -342,6 +371,35 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             ))
             self.assertEqual(tts_queue.get_nowait(), "fresh response")
             self.assertEqual(previews, ["fresh response"])
+
+    def test_stale_authoritative_payload_does_not_publish_preview_or_queue_tts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            tts_queue: queue.Queue = queue.Queue()
+            previews: list[str] = []
+
+            Path(state_path).write_text(json.dumps({
+                "relay_command_seq": 2,
+                "relay_command_id": "second",
+            }))
+
+            stale = json.dumps({
+                "text": "Stale messenger wording.",
+                "display_text": "Stale authoritative final.",
+                "relay_command_seq": 1,
+                "relay_command_id": "first",
+            })
+
+            self.assertFalse(voice_bridge._queue_tts_text(
+                stale,
+                tts_queue,
+                command_path=command_path,
+                state_path=state_path,
+                notify_waiting_preview=lambda text: previews.append(text),
+            ))
+            self.assertEqual(previews, [])
+            self.assertTrue(tts_queue.empty())
 
     def test_messenger_tts_can_speak_while_orchestrator_command_is_pending(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -801,15 +859,17 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             worker = FakeTTSWorker()
             payload = json.dumps({"text": "The messenger is ready.", **command})
 
-            handled = voice_bridge._handle_relay_control_message(
-                f"__ORCHESTRATOR_REPLY__:{payload}",
-                worker,
-                messenger=messenger,
-                state_path=state_path,
-                event_log_path=None,
-            )
+            with mock.patch.object(voice_bridge, "publish_waiting_preview") as preview:
+                handled = voice_bridge._handle_relay_control_message(
+                    f"__ORCHESTRATOR_REPLY__:{payload}",
+                    worker,
+                    messenger=messenger,
+                    state_path=state_path,
+                    event_log_path=None,
+                )
 
             self.assertTrue(handled)
+            preview.assert_called_once_with("The messenger is ready.")
             self.assertEqual(messenger.finals, [{
                 "text": "The messenger is ready.",
                 "relay_command_seq": command["relay_command_seq"],
@@ -841,8 +901,42 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
             self.assertTrue(handled)
             preview.assert_called_once_with("The authoritative result.")
-            self.assertEqual(worker.input_queue.get_nowait(), "The authoritative result.")
+            self.assertEqual(
+                worker.input_queue.get_nowait(),
+                {
+                    "text": "The authoritative result.",
+                    "display_text": "The authoritative result.",
+                },
+            )
             self.assertFalse(os.path.exists(command_path))
+
+    def test_acknowledgement_does_not_publish_final_response_preview(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "status",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            notifications: list[tuple[str, dict]] = []
+
+            with mock.patch.object(voice_bridge, "publish_waiting_preview") as preview:
+                queued = voice_bridge._queue_voice_acknowledgement(
+                    command,
+                    queue.Queue(),
+                    command_path=command_path,
+                    meta_path=meta_path,
+                    state_path=state_path,
+                    source_text="status",
+                    delay_seconds=0,
+                    notify_state=lambda state, **kwargs: notifications.append((state, kwargs)),
+                )
+
+            self.assertTrue(queued)
+            preview.assert_not_called()
+            self.assertEqual(notifications[0][0], "acknowledgement")
 
     def test_duplicate_orchestrator_reply_control_is_spoken_once(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1661,7 +1755,13 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
             self.assertTrue(handled)
             preview.assert_called_once_with("Recovered provider final.")
-            self.assertEqual(worker.input_queue.get_nowait(), "Recovered provider final.")
+            self.assertEqual(
+                worker.input_queue.get_nowait(),
+                {
+                    "text": "Recovered provider final.",
+                    "display_text": "Recovered provider final.",
+                },
+            )
 
     def test_pending_messenger_outcome_poll_delivers_and_acks_trace(self):
         messenger = FakeMessenger()

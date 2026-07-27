@@ -46,17 +46,24 @@ class TTSWorkerReplayTests(unittest.TestCase):
     def make_worker(self):
         worker = TTSWorker.__new__(TTSWorker)
         worker._pending_text = ""
+        worker._pending_display_text = ""
         worker._lock = threading.Lock()
         worker._playing = False
         worker._paused = False
         worker._current_proc = None
         worker._last_wav = None
         worker._last_unheard_text = ""
+        worker._last_unheard_display_text = ""
         worker._last_response_text = ""
+        worker._last_response_display_text = ""
         worker._rate = 1.0
         worker.played_texts = []
+        worker.played_displays = []
         worker.played_wavs = []
-        worker._play_text = lambda text: worker.played_texts.append(text)
+        def play_text(text, *, display_text=None):
+            worker.played_texts.append(text)
+            worker.played_displays.append(display_text)
+        worker._play_text = play_text
         worker._play_wav = lambda wav: worker.played_wavs.append(wav)
         worker._play_chime = lambda: None
         worker._cancel_speculation = lambda: None
@@ -163,6 +170,28 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(speculations, ["First part.", "First part. Second part."])
         self.assertEqual(chimes, [True])
         self.assertEqual(worker._last_response_text, "First part. Second part.")
+
+    def test_display_text_is_retained_separately_from_spoken_queue_text(self):
+        worker = self.make_worker()
+        worker._start_speculation = lambda text: None
+
+        with patch.object(tts_worker, "_notify_state") as notify_state:
+            worker._handle_collected_chunk({
+                "text": "Short spoken result.",
+                "display_text": "Authoritative **provider** result.",
+            })
+
+        notify_state.assert_called_once_with(
+            "message_waiting",
+            text="Authoritative **provider** result.",
+        )
+        self.assertEqual(worker._pending_text, "Short spoken result.")
+        self.assertEqual(worker._pending_display_text, "Authoritative **provider** result.")
+
+        worker.play()
+
+        self.assertEqual(worker.played_texts, ["Short spoken result."])
+        self.assertEqual(worker.played_displays, ["Authoritative **provider** result."])
 
     def test_sentence_chunks_preserve_sentence_boundaries_and_tail(self):
         chunks = tts_worker._sentence_chunks(" First sentence. Second? Tail without punctuation ")

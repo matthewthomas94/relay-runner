@@ -14,10 +14,6 @@ struct AwarenessSettingsTab: View {
                     Toggle("Live transcription", isOn: $config.live_transcription)
                 }
                 SettingsDivider()
-                SettingsControlRow("Message preview") {
-                    Toggle("Message preview", isOn: $config.message_preview)
-                }
-                SettingsDivider()
                 SettingsControlRow("Live captions during playback") {
                     Toggle("Live captions during playback", isOn: $config.live_captions)
                 }

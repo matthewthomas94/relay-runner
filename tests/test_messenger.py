@@ -476,6 +476,36 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_final_speech_preserves_authoritative_display_text(self):
+        backend = FakeBackend(["__SILENT__", "Short spoken result."])
+        spoken: list[tuple[str, int, str, str | None]] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id, display_text: spoken.append(
+                (text, seq, command_id, display_text)
+            ),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 16, "relay_command_id": "cmd-16"}
+            runtime.submit_user("Give me the result", command)
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+            runtime.submit_final({"text": "Authoritative provider result.", **command})
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            self.assertEqual(
+                spoken[0],
+                (
+                    "Short spoken result.",
+                    16,
+                    "cmd-16",
+                    "Authoritative provider result.",
+                ),
+            )
+        finally:
+            runtime.shutdown()
+
     def test_new_user_turn_interrupts_inflight_messenger_only(self):
         backend = FakeBackend(["__SILENT__", "__SILENT__"])
         runtime = MessengerRuntime(

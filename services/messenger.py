@@ -10,6 +10,7 @@ session remains authoritative.
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import queue
 import shlex
@@ -759,13 +760,14 @@ class MessengerRuntime:
         self,
         backend: MessengerBackend,
         *,
-        speak: Callable[[str, int | None, str | None], object],
+        speak: Callable[..., object],
         is_current: Callable[[int, str], bool],
         context_limit: int = 16,
         response_timeout: float = 60.0,
     ):
         self.backend = backend
         self._speak = speak
+        self._speak_accepts_display = self._callable_accepts_display_text(speak)
         self._is_current = is_current
         self._events: queue.Queue[_MessengerEvent | None] = queue.Queue()
         self._context: deque[str] = deque(maxlen=max(4, context_limit))
@@ -929,17 +931,32 @@ class MessengerRuntime:
                     (event.kind == "orchestrator_final" or self._event_is_unscoped_lifecycle(event))
                     and self._event_is_current(event)
                 ):
-                    self._speak_safely(event.text, event.command_seq, event.command_id)
+                    self._speak_safely(
+                        event.text,
+                        event.command_seq,
+                        event.command_id,
+                        display_text=event.text,
+                    )
                 continue
             if not self._event_is_current(event):
                 continue
             if not response or response == SILENT_RESPONSE:
                 if event.kind == "orchestrator_final" or self._event_is_unscoped_lifecycle(event):
-                    self._speak_safely(event.text, event.command_seq, event.command_id)
+                    self._speak_safely(
+                        event.text,
+                        event.command_seq,
+                        event.command_id,
+                        display_text=event.text,
+                    )
                 continue
             with self._lock:
                 self._context.append(f"MESSENGER: {response}")
-            self._speak_safely(response, event.command_seq, event.command_id)
+            self._speak_safely(
+                response,
+                event.command_seq,
+                event.command_id,
+                display_text=event.text if event.kind == "orchestrator_final" else None,
+            )
 
     def _event_is_current(self, event: _MessengerEvent) -> bool:
         if event.command_seq is None or event.command_id is None:
@@ -1017,9 +1034,41 @@ class MessengerRuntime:
         if saw_shutdown:
             self._events.put(None)
 
-    def _speak_safely(self, text: str, command_seq: int | None, command_id: str | None) -> None:
+    @staticmethod
+    def _callable_accepts_display_text(speak: Callable[..., object]) -> bool:
         try:
-            self._speak(text, command_seq, command_id)
+            signature = inspect.signature(speak)
+        except (TypeError, ValueError):
+            return False
+        positional = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        return (
+            any(
+                parameter.kind == inspect.Parameter.VAR_POSITIONAL
+                for parameter in signature.parameters.values()
+            )
+            or len(positional) >= 4
+        )
+
+    def _speak_safely(
+        self,
+        text: str,
+        command_seq: int | None,
+        command_id: str | None,
+        *,
+        display_text: str | None = None,
+    ) -> None:
+        try:
+            if self._speak_accepts_display:
+                self._speak(text, command_seq, command_id, display_text)
+            else:
+                self._speak(text, command_seq, command_id)
         except Exception as exc:
             print(f"[messenger] could not queue speech: {exc}", file=sys.stderr)
 
@@ -1038,7 +1087,7 @@ def _command_key(command: dict | None) -> tuple[int, str] | None:
 def create_messenger_runtime(
     app_config: dict,
     *,
-    speak: Callable[[str, int | None, str | None], object],
+    speak: Callable[..., object],
     is_current: Callable[[int, str], bool],
     cwd: str | os.PathLike[str] | None = None,
 ) -> MessengerRuntime | None:

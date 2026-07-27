@@ -94,6 +94,25 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertTrue(loaded.general.prevent_sleep_while_running)
     }
 
+    func testLegacyMessagePreviewFalseIsIgnoredAndNotSerialized() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try """
+        [awareness]
+        message_preview = false
+        live_transcription = false
+        """.write(to: manager.configPath, atomically: true, encoding: .utf8)
+
+        let loaded = manager.load()
+        try manager.save(loaded)
+        let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
+
+        XCTAssertTrue(loaded.awareness.message_preview)
+        XCTAssertFalse(loaded.awareness.live_transcription)
+        XCTAssertFalse(raw.contains("message_preview"))
+    }
+
     func testLegacyCodexReasoningEffortMigratesToOrchestratorEffort() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)
