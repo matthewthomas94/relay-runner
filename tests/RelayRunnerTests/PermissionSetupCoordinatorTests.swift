@@ -556,7 +556,7 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
         ))
     }
 
-    func testSetupNotchLabels() {
+    func testSetupLabelsRemainAvailableButNotchPresentationIsGlyphOnly() {
         XCTAssertEqual(PermissionSetupNotchState.gettingStarted.label, "Getting started")
         XCTAssertEqual(PermissionSetupNotchState(permission: .microphone).label, "Microphone")
         XCTAssertEqual(PermissionSetupNotchState(permission: .accessibility).label, "Accessibility")
@@ -568,13 +568,16 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
             onboardingActive: false,
             permissionState: .screenRecording
         )
-        XCTAssertEqual(presentation?.activityLabels, ["Screen recording"])
+        XCTAssertEqual(presentation?.status, .working)
+        XCTAssertEqual(presentation?.activityLabels, [])
+        XCTAssertNil(presentation?.workingProgressLabel)
         let grantedPresentation = AppState.setupNotchPresentation(
             onboardingActive: false,
             permissionState: .granted(.accessibility)
         )
         XCTAssertEqual(grantedPresentation?.status, .working)
-        XCTAssertEqual(grantedPresentation?.activityLabels, ["Accessibility granted"])
+        XCTAssertEqual(grantedPresentation?.activityLabels, [])
+        XCTAssertNil(grantedPresentation?.workingProgressLabel)
         XCTAssertNil(AppState.setupNotchPresentation(onboardingActive: false, permissionState: nil))
     }
 

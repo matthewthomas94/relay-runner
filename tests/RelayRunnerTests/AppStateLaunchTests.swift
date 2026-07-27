@@ -71,11 +71,11 @@ final class AppStateLaunchTests: XCTestCase {
         ))
     }
 
-    func testOnboardingNotchOverrideUsesNotWorkingPresentation() {
+    func testOnboardingNotchOverrideUsesGlyphOnlyWorkingPresentation() {
         let presentation = AppState.onboardingNotchPresentation(active: true)
 
-        XCTAssertEqual(presentation?.status, .notWorking)
-        XCTAssertEqual(presentation?.activityLabels, ["Getting started"])
+        XCTAssertEqual(presentation?.status, .working)
+        XCTAssertEqual(presentation?.activityLabels, [])
         XCTAssertNil(presentation?.workingProgressLabel)
         XCTAssertNil(AppState.onboardingNotchPresentation(active: false))
     }

@@ -293,158 +293,139 @@ final class NotchStatusPlacementTests: XCTestCase {
             - NotchActivityLabelRenderPolicy.textRightGlyphClearance
     }
 
-    func testActivityLabelsMapVoiceAndActionStatesToConciseCopy() {
-        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .idle), [])
-        XCTAssertEqual(
-            NotchActivityLabelPlanner.labels(for: .idle, bridgeStartingUp: true),
-            ["Starting up..."]
+    func testVisualLabelAllowlistCoversEveryOverlayState() {
+        let prompt = ConfirmationPrompt(
+            summary: "Click Send",
+            risk: "high",
+            requestId: "confirm-1"
         )
-        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .sessionReady), ["Session ready"])
-        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .recording), ["Listening"])
-        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .sent), ["Sending voice"])
-        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .speaking), ["Playing"])
-        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .messageWaiting(preview: "Long response")), ["Response ready"])
+        let cases: [(OverlayState, [String])] = [
+            (.idle, []),
+            (.listening, ["Listening"]),
+            (.recording, ["Listening"]),
+            (.sent, ["Sending voice"]),
+            (.cancelled(.stt), ["Recording cancelled"]),
+            (.cancelled(.tts), ["Response cancelled"]),
+            (.processing, []),
+            (.acknowledgement(text: "Got it", autoDismiss: 2), ["Acknowledged"]),
+            (.messageWaiting(preview: "Long response"), ["Response ready"]),
+            (.preparing, ["Preparing speech"]),
+            (.speaking, ["Playing"]),
+            (.paused, []),
+            (.sessionPrompt, []),
+            (.sessionReady, []),
+            (.programStatus(title: "Program", body: "Ready"), []),
+            (.actionGlow(awaitingConfirmation: nil), ["Using screen"]),
+            (.actionGlow(awaitingConfirmation: prompt), []),
+        ]
+
+        for (state, expectedLabels) in cases {
+            let presentation = NotchVisualLabelAllowlist.presentation(for: state)
+            XCTAssertEqual(presentation.labels, expectedLabels, "\(state)")
+            XCTAssertEqual(presentation.hoverLabel, expectedLabels.first, "\(state)")
+            XCTAssertEqual(NotchActivityLabelPlanner.labels(for: state), expectedLabels, "\(state)")
+        }
+    }
+
+    func testBridgeStartupIsTheOnlyVisibleBridgeLifecycleLabel() {
         XCTAssertEqual(
-            NotchActivityLabelPlanner.labels(for: .actionGlow(awaitingConfirmation: nil)),
-            ["Using screen"]
+            NotchVisualLabelAllowlist.presentation(for: .idle, bridgeStartingUp: true),
+            NotchVisualLabelPresentation(
+                labels: ["Starting up..."],
+                hoverLabel: "Starting session"
+            )
         )
         XCTAssertEqual(
             NotchActivityLabelPlanner.labels(
-                for: .actionGlow(
-                    awaitingConfirmation: ConfirmationPrompt(
-                        summary: "Click Send",
-                        risk: "high",
-                        requestId: "confirm-1"
-                    )
-                )
+                for: .idle,
+                bridgeRecoveryInFlight: true
             ),
-            ["Awaiting approval"]
+            []
+        )
+        XCTAssertNil(
+            NotchActivityLabelPlanner.hoverLabel(
+                for: .idle,
+                bridgeRecoveryInFlight: true
+            )
+        )
+        XCTAssertTrue(
+            NotchActivityLabelPlanner.hasActiveWork(
+                state: .idle,
+                bridgeRecoveryInFlight: true
+            )
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(
+                for: .idle,
+                hasActivityLabels: true
+            ),
+            .working
         )
     }
 
-    func testWorkingProgressUsesTimedRevealAndHover() {
+    func testWorkspaceLoadingIsGlyphOnlyAndIdleRemainsStatic() {
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.labels(for: .idle),
+            []
+        )
+        XCTAssertFalse(NotchActivityLabelPlanner.hasActiveWork(state: .idle))
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: .idle, hasActivityLabels: false),
+            .notWorking
+        )
+
+        XCTAssertTrue(
+            NotchActivityLabelPlanner.hasActiveWork(
+                state: .idle,
+                boardIsLoading: true
+            )
+        )
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(
+                for: .idle,
+                hasActivityLabels: true,
+                boardIsLoading: true
+            ),
+            .working
+        )
+    }
+
+    func testSuppressedProgressCannotRevealOrExpandOnHover() {
         let progress = "The first pass found 102 SKILL.md files across user and plugin roots."
 
         XCTAssertEqual(NotchActivityLabelRenderPolicy.workingStatusRevealDuration, 2.0)
-
-        XCTAssertEqual(
-            NotchActivityLabelPlanner.labels(for: .processing),
-            []
-        )
-        XCTAssertEqual(
-            NotchStatusController.displayedActivityLabel(
-                status: .working,
-                compactLabel: nil,
-                workingProgressLabel: progress,
-                workingGlyphHovered: false,
-                workingStatusRevealActive: false
-            ),
-            nil
-        )
-        XCTAssertEqual(
-            NotchStatusController.displayedActivityLabel(
-                status: .working,
-                compactLabel: nil,
-                workingProgressLabel: progress,
-                workingGlyphHovered: false,
-                workingStatusRevealActive: true
-            ),
-            progress
-        )
-        XCTAssertEqual(
-            NotchStatusController.displayedActivityLabel(
-                status: .working,
-                compactLabel: nil,
-                workingProgressLabel: progress,
-                workingGlyphHovered: true,
-                workingStatusRevealActive: false
-            ),
-            progress
-        )
-        XCTAssertEqual(
-            NotchStatusController.displayedActivityLabelWidth(
-                status: .working,
-                compactLabel: nil,
-                workingProgressLabel: progress,
-                workingGlyphHovered: false,
-                workingStatusRevealActive: false
-            ),
-            0
-        )
-        XCTAssertEqual(
-            NotchStatusController.displayedActivityLabelWidth(
-                status: .working,
-                compactLabel: nil,
-                workingProgressLabel: progress,
-                workingGlyphHovered: true,
-                workingStatusRevealActive: false
-            ),
-            NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
-        )
-        let shortProgress = "Running tests"
-        let shortProgressWidth = NotchStatusController.displayedActivityLabelWidth(
-            status: .working,
-            compactLabel: nil,
-            workingProgressLabel: shortProgress,
-            workingGlyphHovered: true,
-            workingStatusRevealActive: false
-        )
-        XCTAssertEqual(
-            shortProgressWidth,
-            NotchStatusPlacementPlanner.activityLabelWidth(for: shortProgress)
-        )
-        XCTAssertLessThan(
-            shortProgressWidth,
-            NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth
-        )
-
-        let now = Date(timeIntervalSince1970: 2_000)
-        let run = RunState(
-            ticketId: "RR-94",
-            repoPath: "/repo",
-            runId: 94,
-            state: "Running",
-            lastError: nil,
-            activity: "Running Swift tests",
-            activityAt: now.timeIntervalSince1970
-        )
-
         XCTAssertEqual(
             NotchActivityLabelPlanner.labels(
                 for: .processing,
-                activeRuns: [run],
-                now: now
+                foregroundActivity: progress
             ),
-            ["Running tests"]
-        )
-        XCTAssertEqual(
-            NotchStatusController.displayedActivityLabel(
-                status: .working,
-                compactLabel: "Running tests",
-                workingProgressLabel: progress,
-                workingGlyphHovered: false,
-                workingStatusRevealActive: true
-            ),
-            "Running tests"
+            []
         )
         XCTAssertNil(
-            NotchStatusController.displayedActivityLabel(
-                status: .working,
-                compactLabel: "Running tests",
-                workingProgressLabel: progress,
-                workingGlyphHovered: false,
-                workingStatusRevealActive: false
+            NotchActivityLabelPlanner.hoverLabel(
+                for: .processing,
+                foregroundActivity: progress
             )
         )
         XCTAssertEqual(
             NotchStatusController.displayedActivityLabel(
                 status: .working,
-                compactLabel: "Running tests",
-                workingProgressLabel: progress,
-                workingGlyphHovered: true,
-                workingStatusRevealActive: false
+                compactLabel: nil,
+                workingProgressLabel: nil,
+                workingGlyphHovered: false,
+                workingStatusRevealActive: true
             ),
-            progress
+            nil
+        )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabelWidth(
+                status: .working,
+                compactLabel: nil,
+                workingProgressLabel: nil,
+                workingGlyphHovered: true,
+                workingStatusRevealActive: true
+            ),
+            0
         )
         XCTAssertEqual(
             NotchStatusController.displayedActivityLabel(
@@ -455,6 +436,45 @@ final class NotchStatusPlacementTests: XCTestCase {
                 workingStatusRevealActive: false
             ),
             "Listening"
+        )
+    }
+
+    func testAllowedSuppressedAllowedTransitionClearsLabelGeometry() {
+        let listening = NotchVisualLabelAllowlist.presentation(for: .recording)
+        let processing = NotchVisualLabelAllowlist.presentation(for: .processing)
+        let response = NotchVisualLabelAllowlist.presentation(
+            for: .messageWaiting(preview: "Ready")
+        )
+
+        XCTAssertGreaterThan(
+            NotchStatusController.displayedActivityLabelWidth(
+                status: .listening,
+                compactLabel: listening.labels.first,
+                workingProgressLabel: listening.hoverLabel,
+                workingGlyphHovered: false,
+                workingStatusRevealActive: true
+            ),
+            0
+        )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabelWidth(
+                status: .working,
+                compactLabel: processing.labels.first,
+                workingProgressLabel: processing.hoverLabel,
+                workingGlyphHovered: true,
+                workingStatusRevealActive: true
+            ),
+            0
+        )
+        XCTAssertGreaterThan(
+            NotchStatusController.displayedActivityLabelWidth(
+                status: .playing,
+                compactLabel: response.labels.first,
+                workingProgressLabel: response.hoverLabel,
+                workingGlyphHovered: false,
+                workingStatusRevealActive: true
+            ),
+            0
         )
     }
 
@@ -908,21 +928,44 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(rotated.y, 12, accuracy: 0.0001)
     }
 
-    func testActivityLabelsNormalizeWorkerActivityWithoutProviderSpecificCopy() {
+    func testWorkerActivityIsGlyphOnlyAcrossProviders() {
         let now = Date(timeIntervalSince1970: 2_000)
-        let run = RunState(
-            ticketId: "RR-94",
-            repoPath: "/repo",
-            runId: 94,
-            state: "Running",
-            lastError: nil,
-            activity: "Running Swift tests",
-            activityAt: now.timeIntervalSince1970
-        )
+        let runs = [
+            RunState(
+                ticketId: "RR-94",
+                repoPath: "/repo",
+                runId: 94,
+                state: "Running",
+                lastError: nil,
+                activity: "Running Swift tests",
+                activityAt: now.timeIntervalSince1970,
+                providerKey: "codex"
+            ),
+            RunState(
+                ticketId: "RR-95",
+                repoPath: "/repo",
+                runId: 95,
+                state: "Stalled",
+                lastError: nil,
+                activity: "Waiting",
+                activityAt: now.timeIntervalSince1970,
+                providerKey: "claude"
+            ),
+        ]
 
         XCTAssertEqual(
-            NotchActivityLabelPlanner.labels(for: .idle, activeRuns: [run], now: now),
-            ["Running tests"]
+            NotchActivityLabelPlanner.labels(for: .idle, activeRuns: runs, now: now),
+            []
+        )
+        XCTAssertNil(
+            NotchActivityLabelPlanner.hoverLabel(for: .idle, activeRuns: runs, now: now)
+        )
+        XCTAssertTrue(
+            NotchActivityLabelPlanner.hasActiveWork(
+                state: .idle,
+                activeRuns: runs,
+                now: now
+            )
         )
         XCTAssertEqual(
             NotchActivityLabelPlanner.label(forWorkerActivity: "rm -rf /tmp/build"),
@@ -938,7 +981,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
-    func testForegroundActivityTakesPrecedenceOverWorkerActivity() {
+    func testForegroundAndWorkerActivityRemainGlyphOnly() {
         let now = Date(timeIntervalSince1970: 2_000)
         let run = RunState(
             ticketId: "RR-145",
@@ -957,20 +1000,27 @@ final class NotchStatusPlacementTests: XCTestCase {
                 activeRuns: [run],
                 now: now
             ),
-            ["Reading project context"]
+            []
         )
-        XCTAssertEqual(
+        XCTAssertNil(
             NotchActivityLabelPlanner.hoverLabel(
                 for: .idle,
                 foregroundActivity: "Reading project context",
                 activeRuns: [run],
                 now: now
-            ),
-            "Reading project context"
+            )
+        )
+        XCTAssertTrue(
+            NotchActivityLabelPlanner.hasActiveWork(
+                state: .idle,
+                foregroundActivity: "Reading project context",
+                activeRuns: [run],
+                now: now
+            )
         )
     }
 
-    func testWorkerActivityFallsBackWhenForegroundActivityIsIdleOrMissing() {
+    func testWorkerActivityAnimatesWhenForegroundActivityIsMissing() {
         let now = Date(timeIntervalSince1970: 2_000)
         let run = RunState(
             ticketId: "RR-145",
@@ -989,7 +1039,7 @@ final class NotchStatusPlacementTests: XCTestCase {
                 activeRuns: [run],
                 now: now
             ),
-            ["Running tests"]
+            []
         )
         XCTAssertEqual(
             NotchActivityLabelPlanner.labels(
@@ -998,11 +1048,19 @@ final class NotchStatusPlacementTests: XCTestCase {
                 activeRuns: [run],
                 now: now
             ),
-            ["Running tests"]
+            []
+        )
+        XCTAssertTrue(
+            NotchActivityLabelPlanner.hasActiveWork(
+                state: .idle,
+                foregroundActivity: "   ",
+                activeRuns: [run],
+                now: now
+            )
         )
     }
 
-    func testHoverActivityLabelIncludesActiveRunDetails() {
+    func testHoverDoesNotRevealActiveRunDetails() {
         let now = Date(timeIntervalSince1970: 2_000)
         let run = RunState(
             ticketId: "RR-118",
@@ -1019,14 +1077,13 @@ final class NotchStatusPlacementTests: XCTestCase {
             ticket(id: "RR-118", title: "Restore hover trace", status: .inProgress),
         ]
 
-        XCTAssertEqual(
+        XCTAssertNil(
             NotchActivityLabelPlanner.hoverLabel(
                 for: .idle,
                 activeRuns: [run],
                 tickets: tickets,
                 now: now
-            ),
-            "RR-118 run 157: Reading source files - Restore hover trace (Codex/gpt-5)"
+            )
         )
     }
 
@@ -1054,18 +1111,17 @@ final class NotchStatusPlacementTests: XCTestCase {
             modelAlias: "sonnet"
         )
 
-        XCTAssertEqual(
+        XCTAssertNil(
             NotchActivityLabelPlanner.hoverLabel(
                 for: .idle,
                 activeRuns: [staleRun],
                 tickets: [ticket(id: "RR-119", title: "Background worker", status: .inProgress)],
                 now: now
-            ),
-            "RR-119 run 158: Worker idle - Background worker (Claude/sonnet)"
+            )
         )
     }
 
-    func testActivityLabelsIncludeWaitingDependencyWhenReadyWorkIsBlocked() {
+    func testWaitingDependencyIsGlyphOnly() {
         let tickets = [
             ticket(id: "RR-1", status: .ready, dependsOn: ["RR-0"]),
             ticket(id: "RR-0", status: .backlog),
@@ -1073,7 +1129,13 @@ final class NotchStatusPlacementTests: XCTestCase {
 
         XCTAssertEqual(
             NotchActivityLabelPlanner.labels(for: .idle, tickets: tickets),
-            ["Waiting dependency"]
+            []
+        )
+        XCTAssertNil(
+            NotchActivityLabelPlanner.hoverLabel(for: .idle, tickets: tickets)
+        )
+        XCTAssertTrue(
+            NotchActivityLabelPlanner.hasActiveWork(state: .idle, tickets: tickets)
         )
     }
 

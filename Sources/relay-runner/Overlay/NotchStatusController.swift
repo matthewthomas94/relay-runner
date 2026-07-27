@@ -482,9 +482,58 @@ enum NotchStatusSurfaceShape {
     }
 }
 
-enum NotchActivityLabelPlanner {
-    private static let maximumLabels = 3
+struct NotchVisualLabelPresentation: Equatable {
+    let labels: [String]
+    let hoverLabel: String?
+}
 
+/// The complete set of state-driven copy allowed on the notch surface.
+/// Background activity is tracked separately so hidden labels never make
+/// active work look idle.
+enum NotchVisualLabelAllowlist {
+    static func presentation(
+        for state: OverlayState,
+        bridgeStartingUp: Bool = false
+    ) -> NotchVisualLabelPresentation {
+        if bridgeStartingUp {
+            return NotchVisualLabelPresentation(
+                labels: ["Starting up..."],
+                hoverLabel: "Starting session"
+            )
+        }
+
+        let label: String?
+        switch state {
+        case .listening, .recording:
+            label = "Listening"
+        case .sent:
+            label = "Sending voice"
+        case .cancelled(.stt):
+            label = "Recording cancelled"
+        case .cancelled(.tts):
+            label = "Response cancelled"
+        case .acknowledgement:
+            label = "Acknowledged"
+        case .messageWaiting:
+            label = "Response ready"
+        case .preparing:
+            label = "Preparing speech"
+        case .speaking:
+            label = "Playing"
+        case .actionGlow(awaitingConfirmation: nil):
+            label = "Using screen"
+        case .idle, .paused, .processing, .sessionPrompt, .sessionReady,
+             .programStatus, .actionGlow:
+            label = nil
+        }
+        return NotchVisualLabelPresentation(
+            labels: label.map { [$0] } ?? [],
+            hoverLabel: label
+        )
+    }
+}
+
+enum NotchActivityLabelPlanner {
     static func labels(
         for state: OverlayState,
         foregroundActivity: String? = nil,
@@ -494,35 +543,10 @@ enum NotchActivityLabelPlanner {
         bridgeStartingUp: Bool = false,
         now: Date = Date()
     ) -> [String] {
-        var labels: [String] = []
-        let foregroundLabel = label(forWorkingProgress: foregroundActivity)
-
-        if bridgeStartingUp {
-            labels.append("Starting up...")
-        }
-        if bridgeRecoveryInFlight {
-            labels.append("Reconnecting session")
-        }
-        if let foregroundLabel {
-            labels.append(foregroundLabel)
-        } else if let stateLabel = label(for: state) {
-            labels.append(stateLabel)
-        }
-
-        if foregroundLabel == nil {
-            let runLabels = sortedActiveRuns(activeRuns)
-                .compactMap { label(for: $0, now: now) }
-            labels.append(contentsOf: runLabels)
-        }
-
-        if hasWaitingDependency(in: tickets) {
-            labels.append("Waiting dependency")
-        }
-
-        var compactLabels = conciseUnique(labels)
-        compactLabels.removeAll { $0 == "Thinking" }
-
-        return compactLabels.prefix(maximumLabels).map { $0 }
+        NotchVisualLabelAllowlist.presentation(
+            for: state,
+            bridgeStartingUp: bridgeStartingUp
+        ).labels
     }
 
     static func hoverLabel(
@@ -535,31 +559,39 @@ enum NotchActivityLabelPlanner {
         now: Date = Date(),
         ticketForRun: ((RunState) -> Ticket?)? = nil
     ) -> String? {
-        let ticketsByID = Dictionary(tickets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-
-        if let foregroundActivity = label(forWorkingProgress: foregroundActivity) {
-            return foregroundActivity
-        }
-        if let runLabel = sortedActiveRuns(activeRuns)
-            .compactMap({
-                let ticket = ticketForRun?($0) ?? ticketsByID[$0.ticketId]
-                return label(forActiveRunDetail: $0, ticket: ticket, now: now)
-            })
-            .first {
-            return runLabel
-        }
-        if bridgeStartingUp {
-            return "Starting session"
-        }
-        if bridgeRecoveryInFlight {
-            return "Reconnecting session"
-        }
-        if hasWaitingDependency(in: tickets) {
-            return "Waiting on ticket dependency"
-        }
-        return label(for: state)
+        NotchVisualLabelAllowlist.presentation(
+            for: state,
+            bridgeStartingUp: bridgeStartingUp
+        ).hoverLabel
     }
 
+    static func hasActiveWork(
+        state: OverlayState,
+        foregroundActivity: String? = nil,
+        activeRuns: [RunState] = [],
+        tickets: [Ticket] = [],
+        bridgeRecoveryInFlight: Bool = false,
+        bridgeStartingUp: Bool = false,
+        boardIsLoading: Bool = false,
+        now: Date = Date()
+    ) -> Bool {
+        if state != .idle && state != .paused {
+            return true
+        }
+        if label(forWorkingProgress: foregroundActivity) != nil {
+            return true
+        }
+        if bridgeRecoveryInFlight || bridgeStartingUp || boardIsLoading {
+            return true
+        }
+        if sortedActiveRuns(activeRuns).contains(where: { label(for: $0, now: now) != nil }) {
+            return true
+        }
+        return hasWaitingDependency(in: tickets)
+    }
+
+    /// Shared status language for consumers such as the bottom transcription
+    /// pill. Notch visibility is governed only by NotchVisualLabelAllowlist.
     static func label(for state: OverlayState) -> String? {
         switch state {
         case .idle, .paused:
