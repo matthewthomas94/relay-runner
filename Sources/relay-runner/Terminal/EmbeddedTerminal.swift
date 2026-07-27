@@ -833,12 +833,203 @@ final class RelayVoiceCommandDelivery {
     }
 }
 
+final class EmbeddedAgentDiagnostics {
+    static let markerFilename = ".embedded-agent-diagnostics"
+    static let diagnosticsDirectoryName = "embedded-agent-diagnostics"
+    static let manifestFilename = "current-session.json"
+    static let transcriptFilename = "current-transcript.log"
+    static let schemaVersion = 1
+    /// Keep only the newest 1 MiB of PTY output for the current embedded session.
+    static let defaultMaxTranscriptBytes = 1024 * 1024
+
+    private static var defaultBaseDirectory: URL {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("relay-runner", isDirectory: true)
+    }
+
+    private let directoryURL: URL
+    private let manifestURL: URL
+    private let transcriptURL: URL
+    private let provider: String
+    private let childPID: Int
+    private let workingDirectory: String
+    private let startedAt: Date
+    private let maxTranscriptBytes: Int
+    private let now: () -> Date
+    private let queue = DispatchQueue(label: "relay-runner.embedded-agent-diagnostics")
+
+    static func markerURL(baseDirectory: URL = defaultBaseDirectory) -> URL {
+        baseDirectory.appendingPathComponent(markerFilename, isDirectory: false)
+    }
+
+    static func diagnosticsDirectoryURL(baseDirectory: URL = defaultBaseDirectory) -> URL {
+        baseDirectory.appendingPathComponent(diagnosticsDirectoryName, isDirectory: true)
+    }
+
+    static func manifestURL(baseDirectory: URL = defaultBaseDirectory) -> URL {
+        diagnosticsDirectoryURL(baseDirectory: baseDirectory)
+            .appendingPathComponent(manifestFilename, isDirectory: false)
+    }
+
+    static func transcriptURL(baseDirectory: URL = defaultBaseDirectory) -> URL {
+        diagnosticsDirectoryURL(baseDirectory: baseDirectory)
+            .appendingPathComponent(transcriptFilename, isDirectory: false)
+    }
+
+    static func startIfEnabled(
+        provider: String,
+        childPID: Int,
+        workingDirectory: String,
+        baseDirectory: URL = defaultBaseDirectory,
+        now: @escaping () -> Date = Date.init,
+        maxTranscriptBytes: Int = defaultMaxTranscriptBytes
+    ) -> EmbeddedAgentDiagnostics? {
+        let markerURL = markerURL(baseDirectory: baseDirectory)
+        guard FileManager.default.fileExists(atPath: markerURL.path) else { return nil }
+
+        let diagnostics = EmbeddedAgentDiagnostics(
+            baseDirectory: baseDirectory,
+            provider: provider,
+            childPID: childPID,
+            workingDirectory: workingDirectory,
+            now: now,
+            maxTranscriptBytes: maxTranscriptBytes
+        )
+        return diagnostics.prepare() ? diagnostics : nil
+    }
+
+    private init(
+        baseDirectory: URL,
+        provider: String,
+        childPID: Int,
+        workingDirectory: String,
+        now: @escaping () -> Date,
+        maxTranscriptBytes: Int
+    ) {
+        directoryURL = Self.diagnosticsDirectoryURL(baseDirectory: baseDirectory)
+        manifestURL = Self.manifestURL(baseDirectory: baseDirectory)
+        transcriptURL = Self.transcriptURL(baseDirectory: baseDirectory)
+        self.provider = provider
+        self.childPID = childPID
+        self.workingDirectory = workingDirectory
+        self.now = now
+        self.startedAt = now()
+        self.maxTranscriptBytes = max(1, maxTranscriptBytes)
+    }
+
+    func recordPTYOutput(_ bytes: ArraySlice<UInt8>) {
+        let data = Data(bytes)
+        guard !data.isEmpty else { return }
+        queue.async { [self] in
+            appendTranscript(data)
+        }
+    }
+
+    func markExited(rawStatus: Int32?) {
+        updateLifecycle(state: "exited", rawStatus: rawStatus)
+    }
+
+    func markTerminated() {
+        updateLifecycle(state: "terminated", rawStatus: nil)
+    }
+
+    func flushForTesting() {
+        queue.sync {}
+    }
+
+    private func prepare() -> Bool {
+        do {
+            try FileManager.default.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true,
+                attributes: ownerOnlyDirectoryAttributes
+            )
+            try setOwnerOnlyPermissions(at: directoryURL, permissions: 0o700)
+            try Data().write(to: transcriptURL, options: .atomic)
+            try setOwnerOnlyPermissions(at: transcriptURL, permissions: 0o600)
+            try writeManifest(state: "running", endedAt: nil, rawStatus: nil)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func updateLifecycle(state: String, rawStatus: Int32?) {
+        queue.async { [self] in
+            try? writeManifest(state: state, endedAt: now(), rawStatus: rawStatus)
+        }
+    }
+
+    private func appendTranscript(_ data: Data) {
+        do {
+            var transcript = (try? Data(contentsOf: transcriptURL)) ?? Data()
+            transcript.append(data)
+            if transcript.count > maxTranscriptBytes {
+                transcript = transcript.suffix(maxTranscriptBytes)
+            }
+            try transcript.write(to: transcriptURL, options: .atomic)
+            try setOwnerOnlyPermissions(at: transcriptURL, permissions: 0o600)
+        } catch {
+            return
+        }
+    }
+
+    private func writeManifest(state: String, endedAt: Date?, rawStatus: Int32?) throws {
+        var payload: [String: Any] = [
+            "schema_version": Self.schemaVersion,
+            "provider": provider,
+            "child_pid": childPID,
+            "working_directory": workingDirectory,
+            "started_at": Self.format(startedAt),
+            "state": state,
+            "transcript_path": transcriptURL.path,
+        ]
+        if let endedAt {
+            payload["ended_at"] = Self.format(endedAt)
+        }
+        if let rawStatus {
+            payload["raw_exit_status"] = rawStatus
+            if let exitCode = Self.decodeWaitStatus(rawStatus) {
+                payload["exit_code"] = exitCode
+            }
+        }
+
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: manifestURL, options: .atomic)
+        try setOwnerOnlyPermissions(at: manifestURL, permissions: 0o600)
+    }
+
+    private static func format(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    private static func decodeWaitStatus(_ rawStatus: Int32) -> Int32? {
+        let signalBits = rawStatus & 0x7f
+        guard signalBits == 0 else { return nil }
+        return (rawStatus >> 8) & 0xff
+    }
+
+    private var ownerOnlyDirectoryAttributes: [FileAttributeKey: Any] {
+        [.posixPermissions: NSNumber(value: Int16(0o700))]
+    }
+
+    private func setOwnerOnlyPermissions(at url: URL, permissions: Int16) throws {
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: permissions)],
+            ofItemAtPath: url.path
+        )
+    }
+}
+
 private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDelegate, LocalProcessDelegate {
     let terminalView: RelayTerminalView
     lazy var localProcess = LocalProcess(delegate: self)
     var onExit: ((Int32?) -> Void)?
     var onTitle: ((String) -> Void)?
     private var voiceDelivery: RelayVoiceCommandDelivery?
+    private var diagnostics: EmbeddedAgentDiagnostics?
 
     init() {
         terminalView = RelayTerminalView(frame: .zero)
@@ -868,6 +1059,11 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
             currentDirectory: launch.workingDirectory
         )
         guard localProcess.running else { throw EmbeddedTerminalProcessError.couldNotStart }
+        diagnostics = EmbeddedAgentDiagnostics.startIfEnabled(
+            provider: launch.target.providerMetadataValue,
+            childPID: Int(localProcess.shellPid),
+            workingDirectory: launch.workingDirectory
+        )
         if launch.voiceDelivery == .appOwned {
             let delivery = RelayVoiceCommandDelivery(
                 send: { [weak self] data in
@@ -892,6 +1088,8 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     func terminate() {
         voiceDelivery?.stop()
         voiceDelivery = nil
+        diagnostics?.markTerminated()
+        diagnostics = nil
         localProcess.terminate()
     }
 
@@ -923,6 +1121,7 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
 
     func dataReceived(slice: ArraySlice<UInt8>) {
         terminalView.feed(byteArray: slice)
+        diagnostics?.recordPTYOutput(slice)
     }
 
     func getWindowSize() -> winsize {
@@ -937,6 +1136,8 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
         voiceDelivery?.stop()
         voiceDelivery = nil
+        diagnostics?.markExited(rawStatus: exitCode)
+        diagnostics = nil
         onExit?(exitCode)
     }
 
