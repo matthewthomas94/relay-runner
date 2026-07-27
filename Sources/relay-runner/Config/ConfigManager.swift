@@ -92,6 +92,9 @@ final class ConfigManager {
             }
             if let v = tomlString(general, "subagent_model") { config.general.subagent_model = v }
             if let v = tomlString(general, "subagent_effort") { config.general.subagent_effort = v }
+            if let v = tomlBool(general, "prevent_sleep_while_running") {
+                config.general.prevent_sleep_while_running = v
+            }
         }
 
         // Awareness
@@ -159,6 +162,7 @@ final class ConfigManager {
         lines.append("messenger_model = \"\(c.general.messenger_model)\"")
         lines.append("messenger_effort = \"\(c.general.messenger_effort)\"")
         lines.append("subagent_sizing_policy = \"\(c.general.subagent_sizing_policy.rawValue)\"")
+        lines.append("prevent_sleep_while_running = \(c.general.prevent_sleep_while_running)")
         lines.append("")
 
         lines.append("[awareness]")

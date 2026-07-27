@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import QuartzCore
 import SwiftUI
@@ -53,6 +54,10 @@ final class AppState {
     @ObservationIgnored private let checkForUpdatesAction: @MainActor () -> Void
     @ObservationIgnored private let refreshBundledOrchestratorDaemon: () async -> OrchestratorDaemonRefreshResult
     @ObservationIgnored private let refreshBundledServicesOnLaunch: Bool
+    @ObservationIgnored private let sleepPreventionController = SleepPreventionController()
+    @ObservationIgnored private var sleepPreventionTimer: Timer?
+    @ObservationIgnored private var sleepPreventionTask: Task<Void, Never>?
+    @ObservationIgnored private var appTerminationObserver: NSObjectProtocol?
 
     var serviceLifecycleMessage: String?
 
@@ -490,11 +495,19 @@ final class AppState {
         ) { [weak self] _ in
             self?.prepareForSparkleRelaunch()
         }
+        self.appTerminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.stopSleepPreventionMonitoring(releaseReason: "app-termination")
+        }
         refreshConfiguredWorkspaceDiscoveryIfNeeded(
             oldConfig: nil,
             newConfig: config,
             force: false
         )
+        updateSleepPreventionMonitoring()
         // Watch privacy permissions continuously — macOS doesn't notify us
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
@@ -546,6 +559,10 @@ final class AppState {
         if let updateRelaunchObserver {
             NotificationCenter.default.removeObserver(updateRelaunchObserver)
         }
+        if let appTerminationObserver {
+            NotificationCenter.default.removeObserver(appTerminationObserver)
+        }
+        stopSleepPreventionMonitoring(releaseReason: "deinit")
     }
 
     func checkForUpdates() {
@@ -723,11 +740,15 @@ final class AppState {
         // Cancel any in-flight recording too, so the mic indicator clears.
         sttEngine?.cancelRecording()
         stateMachine.reset()
+        syncSleepPreventionActivity()
     }
 
     /// Full shutdown (for app quit).
     func stopServices() {
-        guard isRunning else { return }
+        guard isRunning else {
+            stopSleepPreventionMonitoring(releaseReason: "services-stopped")
+            return
+        }
         stopBridgeWatchdog()
         embeddedTerminal.shutdown()
         menuSessionActive = false
@@ -745,9 +766,11 @@ final class AppState {
         processManager.stopServices()
         isRunning = false
         statusText = "Idle"
+        stopSleepPreventionMonitoring(releaseReason: "services-stopped")
     }
 
     func prepareForSparkleRelaunch() {
+        stopSleepPreventionMonitoring(releaseReason: "update-relaunch")
         bridgeRecoverySuppressedForUpdate = true
         stopBridgeWatchdog()
         embeddedTerminal.shutdown()
@@ -780,6 +803,9 @@ final class AppState {
             newConfig: newConfig,
             force: forceWorkspaceDiscovery
         )
+        if oldConfig.general.prevent_sleep_while_running != newConfig.general.prevent_sleep_while_running {
+            updateSleepPreventionMonitoring()
+        }
 
         // Hot-reload running services
         guard isRunning else { return }
@@ -942,6 +968,62 @@ final class AppState {
             programBoardOverlay.showTerminal()
         }
         return menuSessionActive
+    }
+
+    private func updateSleepPreventionMonitoring() {
+        if config.general.prevent_sleep_while_running {
+            startSleepPreventionMonitoring()
+        } else {
+            stopSleepPreventionMonitoring(releaseReason: "setting-disabled")
+        }
+    }
+
+    private func startSleepPreventionMonitoring() {
+        if sleepPreventionTimer == nil {
+            let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+                self?.syncSleepPreventionActivity()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            sleepPreventionTimer = timer
+        }
+        syncSleepPreventionActivity()
+    }
+
+    private func stopSleepPreventionMonitoring(releaseReason: String) {
+        sleepPreventionTimer?.invalidate()
+        sleepPreventionTimer = nil
+        sleepPreventionTask?.cancel()
+        sleepPreventionTask = nil
+        sleepPreventionController.release(reason: releaseReason)
+    }
+
+    private func syncSleepPreventionActivity() {
+        guard sleepPreventionTask == nil else { return }
+        sleepPreventionTask = Task { @MainActor [weak self] in
+            let activity = await Self.loadSleepPreventionActivity()
+            guard let self else { return }
+            self.sleepPreventionTask = nil
+            guard !Task.isCancelled else { return }
+            self.sleepPreventionController.sync(
+                preferenceEnabled: self.config.general.prevent_sleep_while_running,
+                activity: activity
+            )
+        }
+    }
+
+    private static func loadSleepPreventionActivity() async -> SleepPreventionActivity {
+        await Task.detached(priority: .utility) {
+            let foregroundActive = ProcessManager.activeRelaySessionAlive()
+                && ProcessManager.foregroundProviderTurnActive()
+            let projects = ProjectResolver.resolveActivityProjects()
+            let runStates = projects.flatMap { project in
+                Array(RunStateStore.load(forRepo: project.repoPath).values)
+            }
+            return SleepPreventionActivity(
+                foregroundProviderTurnActive: foregroundActive,
+                activeWorkerRunCount: SleepPreventionActivity.activeWorkerRunCount(in: runStates)
+            )
+        }.value
     }
 
     private func startOnboardingTutorialSession() -> Bool {

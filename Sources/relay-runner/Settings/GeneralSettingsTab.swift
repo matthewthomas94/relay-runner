@@ -7,6 +7,8 @@ struct GeneralSettingsTab: View {
     static let orchestratorModelLabel = "Orchestrator Model"
     static let orchestratorEffortLabel = "Orchestrator Effort"
     static let subagentSizingLabel = "Sub-agent sizing"
+    static let preventSleepLabel = "Prevent sleep while running"
+    static let preventSleepDescription = "Keep your computer awake while Relay Runner is running a task."
 
     @Binding var config: GeneralConfig
     var onOpenExternalWindow: () -> Void = {}
@@ -85,6 +87,15 @@ struct GeneralSettingsTab: View {
             SettingsSection("Startup") {
                 SettingsControlRow("Auto-start services on app launch") {
                     Toggle("Auto-start services on app launch", isOn: $config.auto_start)
+                }
+
+                SettingsDivider()
+
+                SettingsControlRow(
+                    Self.preventSleepLabel,
+                    description: Self.preventSleepDescription
+                ) {
+                    Toggle(Self.preventSleepLabel, isOn: $config.prevent_sleep_while_running)
                 }
 
                 SettingsDivider()

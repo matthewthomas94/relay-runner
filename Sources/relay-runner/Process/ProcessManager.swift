@@ -340,6 +340,10 @@ final class ProcessManager {
         return .waiting
     }
 
+    static func foregroundProviderTurnActive() -> Bool {
+        providerTurnActive(providerTurnsURL: URL(fileURLWithPath: voiceProviderTurnsPath))
+    }
+
     private static func modificationDate(of path: String, fileManager fm: FileManager) -> Date? {
         guard fm.fileExists(atPath: path),
               let attrs = try? fm.attributesOfItem(atPath: path),
@@ -376,7 +380,7 @@ final class ProcessManager {
         (value as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    private static func providerTurnActive(providerTurnsURL: URL) -> Bool {
+    static func providerTurnActive(providerTurnsURL: URL) -> Bool {
         guard let data = try? Data(contentsOf: providerTurnsURL),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let records = object["records"] as? [[String: Any]] else {
