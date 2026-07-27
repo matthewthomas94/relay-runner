@@ -31,7 +31,7 @@ enum TicketWriter {
                 workerModel: workerModel,
                 workerEffort: workerEffort,
                 workerSizingRationale: "Inherited provider, model, and effort from Relay Runner General Settings.",
-                workerProviderNotes: "Use my defaults preserves provider default model semantics; Codex uses model_reasoning_effort and Claude uses --effort."
+                workerProviderNotes: "Use my defaults preserves explicit stable provider selections; Codex resolves Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort."
             )
         }
     }

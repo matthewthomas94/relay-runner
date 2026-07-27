@@ -72,31 +72,27 @@ struct GeneralConfig: Codable, Equatable {
         }
     }
 
-    static let defaultModel = "default"
+    static let defaultCodexModelFamily = "sol"
+    static let defaultClaudeModel = "best"
+    static let defaultModel = defaultCodexModelFamily
     static let defaultReasoningEffort = "default"
     static let defaultCodexReasoningEffort = defaultReasoningEffort
-    static let defaultMessengerModel = defaultModel
+    static let defaultMessengerModel = defaultCodexModelFamily
     static let defaultMessengerEffort = defaultReasoningEffort
     static let defaultSubagentModel = "balanced"
     static let defaultSubagentEffort = "medium"
 
     static let codexModelOptions: [ModelOption] = [
-        ModelOption(label: "Default", value: defaultModel),
-        ModelOption(label: "GPT-5.6 Sol", value: "gpt-5.6-sol"),
-        ModelOption(label: "GPT-5.6 Terra", value: "gpt-5.6-terra"),
-        ModelOption(label: "GPT-5.6 Luna", value: "gpt-5.6-luna"),
-        ModelOption(label: "GPT-5.5", value: "gpt-5.5"),
-        ModelOption(label: "GPT-5.4", value: "gpt-5.4"),
-        ModelOption(label: "GPT-5.4 Mini", value: "gpt-5.4-mini"),
-        ModelOption(label: "GPT-5.3 Codex Spark", value: "gpt-5.3-codex-spark"),
+        ModelOption(label: "Sol", value: "sol"),
+        ModelOption(label: "Terra", value: "terra"),
+        ModelOption(label: "Luna", value: "luna"),
     ]
 
-    static let codexPlanAccessNote = "GPT-5.6 models and Ultra effort depend on your Codex plan."
+    static let codexPlanAccessNote = "Codex family availability and Ultra effort depend on your Codex plan."
     static let claudeFableAccessNote = "Fable requires an eligible Claude plan or usage credits and is unavailable with zero data retention."
     static let claudeBestAccessNote = "Best selects Fable when available, otherwise the latest Opus."
 
     static let claudeModelOptions: [ModelOption] = [
-        ModelOption(label: "Default", value: defaultModel),
         ModelOption(label: "Best", value: "best"),
         ModelOption(label: "Fable", value: "fable"),
         ModelOption(label: "Opus", value: "opus"),
@@ -105,11 +101,11 @@ struct GeneralConfig: Codable, Equatable {
     ]
 
     static let defaultReasoningEffortOptions: [ReasoningEffortOption] = [
-        ReasoningEffortOption(label: "Default", value: defaultCodexReasoningEffort),
+        ReasoningEffortOption(label: "Provider managed", value: defaultCodexReasoningEffort),
     ]
 
     static let baseReasoningEffortOptions: [ReasoningEffortOption] = [
-        ReasoningEffortOption(label: "Default", value: defaultReasoningEffort),
+        ReasoningEffortOption(label: "Provider managed", value: defaultReasoningEffort),
         ReasoningEffortOption(label: "Low", value: "low"),
         ReasoningEffortOption(label: "Medium", value: "medium"),
         ReasoningEffortOption(label: "High", value: "high"),
@@ -177,8 +173,7 @@ struct GeneralConfig: Codable, Equatable {
         let normalizedEffort = effort.trimmingCharacters(in: .whitespaces).lowercased()
         switch provider {
         case .codex:
-            if ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].contains(normalizedModel)
-                || normalizedEffort == "ultra" {
+            if ["sol", "terra", "luna"].contains(normalizedModel) || normalizedEffort == "ultra" {
                 return codexPlanAccessNote
             }
         case .claude:
@@ -197,12 +192,10 @@ struct GeneralConfig: Codable, Equatable {
         switch provider {
         case .codex:
             switch normalizedModel {
-            case "gpt-5.6-sol", "gpt-5.6-terra":
+            case "sol", "terra":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption, ultraReasoningEffortOption]
-            case "gpt-5.6-luna":
+            case "luna":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
-            case "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark":
-                return baseReasoningEffortOptions
             default:
                 return defaultReasoningEffortOptions
             }
@@ -212,7 +205,7 @@ struct GeneralConfig: Codable, Equatable {
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
             case "sonnet":
                 return [
-                    ReasoningEffortOption(label: "Default", value: defaultReasoningEffort),
+                    ReasoningEffortOption(label: "Provider managed", value: defaultReasoningEffort),
                     ReasoningEffortOption(label: "Low", value: "low"),
                     ReasoningEffortOption(label: "Medium", value: "medium"),
                     ReasoningEffortOption(label: "High", value: "high"),
@@ -255,7 +248,43 @@ struct GeneralConfig: Codable, Equatable {
 
     static func normalizeModel(_ model: String, for provider: AgentProvider) -> String {
         let normalized = model.trimmingCharacters(in: .whitespaces).lowercased()
-        return Self.isModel(normalized, validFor: provider) ? normalized : Self.defaultModel
+        switch provider {
+        case .codex:
+            return normalizeCodexFamily(normalized)
+        case .claude:
+            if normalized == Self.defaultReasoningEffort || normalized.isEmpty {
+                return Self.defaultClaudeModel
+            }
+            return Self.isModel(normalized, validFor: provider) ? normalized : Self.defaultClaudeModel
+        }
+    }
+
+    static func defaultModel(for provider: AgentProvider) -> String {
+        switch provider {
+        case .codex: return defaultCodexModelFamily
+        case .claude: return defaultClaudeModel
+        }
+    }
+
+    static func normalizeCodexFamily(_ model: String) -> String {
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if codexModelOptions.contains(where: { $0.value == normalized }) {
+            return normalized
+        }
+        if normalized.isEmpty || normalized == "default" {
+            return defaultCodexModelFamily
+        }
+        let parts = normalized.split(separator: "-").map(String.init)
+        if parts.count >= 3,
+           parts.first == "gpt",
+           let family = parts.last,
+           codexModelOptions.contains(where: { $0.value == family }) {
+            return family
+        }
+        if normalized.hasPrefix("gpt-") {
+            return defaultCodexModelFamily
+        }
+        return defaultCodexModelFamily
     }
 
     static func normalizedSubagentModel(_ model: String) -> String {
@@ -287,13 +316,7 @@ struct GeneralConfig: Codable, Equatable {
         model: String
     ) -> String {
         let normalizedModel = normalizeModel(model, for: provider)
-        let effectiveModel: String
-        if normalizedModel == defaultMessengerModel {
-            effectiveModel = provider == .codex ? "gpt-5.6-terra" : "haiku"
-        } else {
-            effectiveModel = normalizedModel
-        }
-        return normalizedOrchestratorEffort(effort, for: provider, model: effectiveModel)
+        return normalizedOrchestratorEffort(effort, for: provider, model: normalizedModel)
     }
 
     static func inferProvider(from command: String) -> AgentProvider {

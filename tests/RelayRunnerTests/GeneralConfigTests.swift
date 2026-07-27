@@ -28,20 +28,15 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(
             GeneralConfig.codexModelOptions,
             [
-                GeneralConfig.ModelOption(label: "Default", value: "default"),
-                GeneralConfig.ModelOption(label: "GPT-5.6 Sol", value: "gpt-5.6-sol"),
-                GeneralConfig.ModelOption(label: "GPT-5.6 Terra", value: "gpt-5.6-terra"),
-                GeneralConfig.ModelOption(label: "GPT-5.6 Luna", value: "gpt-5.6-luna"),
-                GeneralConfig.ModelOption(label: "GPT-5.5", value: "gpt-5.5"),
-                GeneralConfig.ModelOption(label: "GPT-5.4", value: "gpt-5.4"),
-                GeneralConfig.ModelOption(label: "GPT-5.4 Mini", value: "gpt-5.4-mini"),
-                GeneralConfig.ModelOption(label: "GPT-5.3 Codex Spark", value: "gpt-5.3-codex-spark"),
+                GeneralConfig.ModelOption(label: "Sol", value: "sol"),
+                GeneralConfig.ModelOption(label: "Terra", value: "terra"),
+                GeneralConfig.ModelOption(label: "Luna", value: "luna"),
             ]
         )
     }
 
-    func testGPT56ModelsAreCodexOnlyPlanGatedOptions() {
-        let models = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    func testCodexFamiliesAreCodexOnlyPlanGatedOptions() {
+        let models = ["sol", "terra", "luna"]
 
         for model in models {
             XCTAssertTrue(GeneralConfig.isModel(model, validFor: .codex))
@@ -51,7 +46,7 @@ final class GeneralConfigTests: XCTestCase {
         }
         XCTAssertEqual(
             GeneralConfig.codexPlanAccessNote,
-            "GPT-5.6 models and Ultra effort depend on your Codex plan."
+            "Codex family availability and Ultra effort depend on your Codex plan."
         )
     }
 
@@ -59,7 +54,6 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(
             GeneralConfig.claudeModelOptions,
             [
-                GeneralConfig.ModelOption(label: "Default", value: "default"),
                 GeneralConfig.ModelOption(label: "Best", value: "best"),
                 GeneralConfig.ModelOption(label: "Fable", value: "fable"),
                 GeneralConfig.ModelOption(label: "Opus", value: "opus"),
@@ -73,7 +67,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(
             GeneralConfig.codexReasoningEffortOptions,
             [
-                GeneralConfig.ReasoningEffortOption(label: "Default", value: "default"),
+                GeneralConfig.ReasoningEffortOption(label: "Provider managed", value: "default"),
                 GeneralConfig.ReasoningEffortOption(label: "Low", value: "low"),
                 GeneralConfig.ReasoningEffortOption(label: "Medium", value: "medium"),
                 GeneralConfig.ReasoningEffortOption(label: "High", value: "high"),
@@ -91,22 +85,18 @@ final class GeneralConfigTests: XCTestCase {
                 .map { ($0.model, $0.efforts) }
         )
         XCTAssertEqual(
-            codexMatrix["gpt-5.6-sol"],
+            codexMatrix["sol"],
             ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
         )
         XCTAssertEqual(
-            codexMatrix["gpt-5.6-terra"],
+            codexMatrix["terra"],
             ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
         )
         XCTAssertEqual(
-            codexMatrix["gpt-5.6-luna"],
+            codexMatrix["luna"],
             ["default", "low", "medium", "high", "xhigh", "max"]
         )
-        XCTAssertEqual(codexMatrix["gpt-5.5"], ["default", "low", "medium", "high", "xhigh"])
-        XCTAssertEqual(codexMatrix["gpt-5.4"], ["default", "low", "medium", "high", "xhigh"])
-        XCTAssertEqual(codexMatrix["gpt-5.4-mini"], ["default", "low", "medium", "high", "xhigh"])
-        XCTAssertEqual(codexMatrix["gpt-5.3-codex-spark"], ["default", "low", "medium", "high", "xhigh"])
-        XCTAssertEqual(codexMatrix["default"], ["default"])
+        XCTAssertNil(codexMatrix["default"])
 
         let claudeMatrix = Dictionary(
             uniqueKeysWithValues: GeneralConfig.modelEffortMatrix(for: .claude)
@@ -117,14 +107,14 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(claudeMatrix["opus"], ["default", "low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["sonnet"], ["default", "low", "medium", "high", "max"])
         XCTAssertEqual(claudeMatrix["haiku"], ["default"])
-        XCTAssertEqual(claudeMatrix["default"], ["default"])
+        XCTAssertNil(claudeMatrix["default"])
 
         XCTAssertEqual(
-            GeneralConfig.normalizedOrchestratorEffort("ultra", for: .codex, model: "gpt-5.6-sol"),
+            GeneralConfig.normalizedOrchestratorEffort("ultra", for: .codex, model: "sol"),
             "ultra"
         )
         XCTAssertEqual(
-            GeneralConfig.normalizedOrchestratorEffort("ultra", for: .codex, model: "gpt-5.6-luna"),
+            GeneralConfig.normalizedOrchestratorEffort("ultra", for: .codex, model: "luna"),
             GeneralConfig.defaultReasoningEffort
         )
         XCTAssertEqual(
@@ -145,21 +135,64 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(GeneralConfig.normalizedSubagentSizingPolicy("user_default"), .userDefault)
     }
 
-    func testLegacyCodexModelNormalizesToDefault() {
+    func testLegacyCodexModelNormalizesToSol() {
         var config = GeneralConfig()
         config.provider = .codex
         config.model = "gpt-5.2-codex"
 
         config.normalize(providerWasExplicit: true)
 
-        XCTAssertEqual(config.model, GeneralConfig.defaultModel)
+        XCTAssertEqual(config.model, "sol")
+    }
+
+    func testCodexResolverSelectsNewestVisibleFamilyModel() throws {
+        let resolution = try CodexModelResolver.resolve(
+            family: "terra",
+            effort: "default",
+            catalogueData: Self.fixtureCodexCatalogue
+        )
+
+        XCTAssertEqual(resolution.selectedFamily, "terra")
+        XCTAssertEqual(resolution.resolvedModel, "gpt-6.0-terra")
+        XCTAssertEqual(resolution.resolvedEffort, "medium")
+        XCTAssertEqual(resolution.supportedReasoningEfforts, ["low", "medium", "high", "xhigh"])
+    }
+
+    func testCodexResolverExcludesHiddenModelsAndReportsUnavailableFamilies() throws {
+        XCTAssertThrowsError(
+            try CodexModelResolver.resolve(
+                family: "luna",
+                catalogueData: Self.fixtureCodexCatalogue
+            )
+        ) { error in
+            XCTAssertEqual(error as? CodexModelResolver.Error, .familyUnavailable("luna"))
+        }
+    }
+
+    func testCodexResolverRejectsUnadvertisedEffort() throws {
+        XCTAssertThrowsError(
+            try CodexModelResolver.resolve(
+                family: "terra",
+                effort: "ultra",
+                catalogueData: Self.fixtureCodexCatalogue
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? CodexModelResolver.Error,
+                .unsupportedEffort(
+                    model: "gpt-6.0-terra",
+                    effort: "ultra",
+                    supported: ["low", "medium", "high", "xhigh"]
+                )
+            )
+        }
     }
 
     func testInvalidCodexReasoningEffortNormalizesToDefault() {
         var config = GeneralConfig()
         config.provider = .codex
-        config.model = "gpt-5.5"
-        config.codex_reasoning_effort = "max"
+        config.model = "luna"
+        config.codex_reasoning_effort = "ultra"
 
         config.normalize(providerWasExplicit: true)
 
@@ -170,14 +203,14 @@ final class GeneralConfigTests: XCTestCase {
         var config = GeneralConfig()
         config.provider = .codex
         config.command = "codex"
-        config.model = "gpt-5.6-sol"
+        config.model = "sol"
         config.orchestrator_effort = "ultra"
 
         config.selectProvider(.claude)
 
         XCTAssertEqual(config.provider, .claude)
         XCTAssertEqual(config.command, "claude")
-        XCTAssertEqual(config.model, GeneralConfig.defaultModel)
+        XCTAssertEqual(config.model, "best")
         XCTAssertEqual(config.codex_reasoning_effort, "default")
         XCTAssertEqual(config.orchestrator_effort, "default")
     }
@@ -185,13 +218,13 @@ final class GeneralConfigTests: XCTestCase {
     func testMessengerSettingsRemainProviderScoped() {
         var config = GeneralConfig()
         config.provider = .codex
-        config.messenger_model = "gpt-5.6-terra"
+        config.messenger_model = "terra"
         config.messenger_effort = "ultra"
 
         config.selectProvider(.claude)
 
         XCTAssertTrue(config.messenger_enabled)
-        XCTAssertEqual(config.messenger_model, GeneralConfig.defaultMessengerModel)
+        XCTAssertEqual(config.messenger_model, "best")
         XCTAssertEqual(config.messenger_effort, GeneralConfig.defaultMessengerEffort)
         XCTAssertEqual(
             GeneralConfig.normalizedMessengerEffort("low", for: .claude, model: "sonnet"),
@@ -233,4 +266,54 @@ final class GeneralConfigTests: XCTestCase {
             "Keep your computer awake while Relay Runner is running a task."
         )
     }
+
+    private static let fixtureCodexCatalogue = """
+    {
+      "data": [
+        {
+          "id": "gpt-5.7-terra",
+          "model": "gpt-5.7-terra",
+          "hidden": false,
+          "defaultReasoningEffort": "medium",
+          "supportedReasoningEfforts": [
+            {"reasoningEffort": "low"},
+            {"reasoningEffort": "medium"},
+            {"reasoningEffort": "high"},
+            {"reasoningEffort": "xhigh"}
+          ]
+        },
+        {
+          "id": "gpt-6.0-terra",
+          "model": "gpt-6.0-terra",
+          "hidden": false,
+          "defaultReasoningEffort": "medium",
+          "supportedReasoningEfforts": [
+            {"reasoningEffort": "low"},
+            {"reasoningEffort": "medium"},
+            {"reasoningEffort": "high"},
+            {"reasoningEffort": "xhigh"}
+          ]
+        },
+        {
+          "id": "gpt-7.0-terra",
+          "model": "gpt-7.0-terra",
+          "hidden": false,
+          "inputModalities": ["audio"],
+          "defaultReasoningEffort": "low",
+          "supportedReasoningEfforts": [
+            {"reasoningEffort": "low"}
+          ]
+        },
+        {
+          "id": "gpt-9.0-luna",
+          "model": "gpt-9.0-luna",
+          "hidden": true,
+          "defaultReasoningEffort": "low",
+          "supportedReasoningEfforts": [
+            {"reasoningEffort": "low"}
+          ]
+        }
+      ]
+    }
+    """.data(using: .utf8)!
 }

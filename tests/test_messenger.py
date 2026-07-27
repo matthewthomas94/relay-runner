@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -19,8 +20,39 @@ from messenger import (  # noqa: E402
     CodexMessengerBackend,
     MessengerConfig,
     MessengerRuntime,
+    resolve_messenger_catalog_selection,
     resolve_messenger_command,
 )
+
+
+CODEX_MODEL_LIST_FIXTURE = json.dumps({
+    "data": [
+        {
+            "id": "gpt-5.7-sol",
+            "model": "gpt-5.7-sol",
+            "hidden": False,
+            "defaultReasoningEffort": "low",
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low"},
+                {"reasoningEffort": "medium"},
+                {"reasoningEffort": "high"},
+                {"reasoningEffort": "xhigh"},
+            ],
+        },
+        {
+            "id": "gpt-6.0-sol",
+            "model": "gpt-6.0-sol",
+            "hidden": False,
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low"},
+                {"reasoningEffort": "medium"},
+                {"reasoningEffort": "high"},
+                {"reasoningEffort": "xhigh"},
+            ],
+        },
+    ],
+})
 
 
 class FakeBackend:
@@ -79,9 +111,9 @@ class MessengerConfigTests(unittest.TestCase):
         claude = MessengerConfig.from_app_config({"general": {"provider": "claude"}})
 
         self.assertTrue(codex.enabled)
-        self.assertEqual(codex.model, "gpt-5.6-terra")
-        self.assertEqual(codex.effort, "low")
-        self.assertEqual(claude.model, "haiku")
+        self.assertEqual(codex.model, "sol")
+        self.assertEqual(codex.effort, "default")
+        self.assertEqual(claude.model, "best")
         self.assertEqual(claude.effort, "default")
 
     def test_explicit_messenger_settings_are_provider_validated(self):
@@ -107,8 +139,17 @@ class MessengerConfigTests(unittest.TestCase):
                 "messenger_effort": "ultra",
             }
         })
-        self.assertEqual(invalid.model, "gpt-5.6-terra")
-        self.assertEqual(invalid.effort, "low")
+        self.assertEqual(invalid.model, "sol")
+        self.assertEqual(invalid.effort, "default")
+
+    def test_codex_messenger_family_resolves_from_runtime_catalogue(self):
+        config = MessengerConfig(True, "codex", "codex", "sol", "default", "/tmp")
+
+        with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
+            resolved = resolve_messenger_catalog_selection(config)
+
+        self.assertEqual(resolved.model, "gpt-6.0-sol")
+        self.assertEqual(resolved.effort, "medium")
 
     def test_prompt_forbids_work_and_hidden_reasoning(self):
         self.assertIn("Never use tools", MESSENGER_SYSTEM_PROMPT)

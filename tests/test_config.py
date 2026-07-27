@@ -14,8 +14,12 @@ from config import load_config  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):
-    def test_codex_gpt56_preview_models_are_preserved(self):
-        for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    def test_codex_suffixed_models_migrate_to_families(self):
+        for model, family in (
+            ("gpt-5.6-sol", "sol"),
+            ("gpt-5.6-terra", "terra"),
+            ("gpt-5.6-luna", "luna"),
+        ):
             with self.subTest(model=model), tempfile.TemporaryDirectory() as tmp:
                 config_path = Path(tmp) / "config.toml"
                 config_path.write_text(
@@ -26,7 +30,7 @@ class ConfigTests(unittest.TestCase):
                 config = load_config(str(config_path))
 
                 self.assertEqual(config["general"]["provider"], "codex")
-                self.assertEqual(config["general"]["model"], model)
+                self.assertEqual(config["general"]["model"], family)
 
     def test_codex_gpt56_preview_model_resets_for_claude(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -39,7 +43,7 @@ class ConfigTests(unittest.TestCase):
             config = load_config(str(config_path))
 
             self.assertEqual(config["general"]["provider"], "claude")
-            self.assertEqual(config["general"]["model"], "default")
+            self.assertEqual(config["general"]["model"], "best")
 
     def test_load_config_defaults_codex_reasoning_effort(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -55,7 +59,7 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("subagent_model", config["general"])
         self.assertNotIn("subagent_effort", config["general"])
         self.assertTrue(config["general"]["messenger_enabled"])
-        self.assertEqual(config["general"]["messenger_model"], "default")
+        self.assertEqual(config["general"]["messenger_model"], "sol")
         self.assertEqual(config["general"]["messenger_effort"], "default")
         self.assertFalse(config["general"]["prevent_sleep_while_running"])
         self.assertEqual(config["orchestrator"]["worker_health_check_seconds"], 600)
@@ -149,7 +153,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["general"]["orchestrator_effort"], "max")
         self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
 
-    def test_load_config_rejects_codex_orchestrator_effort_max(self):
+    def test_load_config_rejects_unknown_codex_orchestrator_effort(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "config.toml")
             with open(path, "w", encoding="utf-8") as f:
@@ -158,7 +162,7 @@ class ConfigTests(unittest.TestCase):
                     [general]
                     provider = "codex"
                     command = "codex"
-                    orchestrator_effort = "max"
+                    orchestrator_effort = "banana"
                     codex_reasoning_effort = "high"
                     """
                 )
@@ -170,24 +174,24 @@ class ConfigTests(unittest.TestCase):
 
     def test_load_config_applies_rr150_model_effort_matrix(self):
         cases = [
-            ("codex", "gpt-5.6-sol", "ultra", "ultra"),
-            ("codex", "gpt-5.6-terra", "ultra", "ultra"),
-            ("codex", "gpt-5.6-luna", "max", "max"),
-            ("codex", "gpt-5.6-luna", "ultra", "default"),
-            ("codex", "gpt-5.5", "xhigh", "xhigh"),
-            ("codex", "gpt-5.5", "max", "default"),
-            ("codex", "gpt-5.3-codex-spark", "xhigh", "xhigh"),
-            ("codex", "default", "low", "default"),
-            ("claude", "best", "max", "max"),
-            ("claude", "fable", "xhigh", "xhigh"),
-            ("claude", "opus", "max", "max"),
-            ("claude", "sonnet", "max", "max"),
-            ("claude", "sonnet", "xhigh", "default"),
-            ("claude", "haiku", "low", "default"),
-            ("claude", "default", "low", "default"),
+            ("codex", "sol", "ultra", "sol", "ultra"),
+            ("codex", "terra", "ultra", "terra", "ultra"),
+            ("codex", "luna", "max", "luna", "max"),
+            ("codex", "luna", "ultra", "luna", "ultra"),
+            ("codex", "gpt-5.5", "xhigh", "sol", "xhigh"),
+            ("codex", "gpt-5.6-terra", "max", "terra", "max"),
+            ("codex", "gpt-5.3-codex-spark", "xhigh", "sol", "xhigh"),
+            ("codex", "default", "low", "sol", "low"),
+            ("claude", "best", "max", "best", "max"),
+            ("claude", "fable", "xhigh", "fable", "xhigh"),
+            ("claude", "opus", "max", "opus", "max"),
+            ("claude", "sonnet", "max", "sonnet", "max"),
+            ("claude", "sonnet", "xhigh", "sonnet", "default"),
+            ("claude", "haiku", "low", "haiku", "default"),
+            ("claude", "default", "low", "best", "low"),
         ]
 
-        for provider, model, effort, expected in cases:
+        for provider, model, effort, expected_model, expected_effort in cases:
             with self.subTest(provider=provider, model=model, effort=effort), tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "config.toml"
                 path.write_text(
@@ -206,8 +210,8 @@ class ConfigTests(unittest.TestCase):
 
                 config = load_config(str(path))
 
-                self.assertEqual(config["general"]["model"], model)
-                self.assertEqual(config["general"]["orchestrator_effort"], expected)
+                self.assertEqual(config["general"]["model"], expected_model)
+                self.assertEqual(config["general"]["orchestrator_effort"], expected_effort)
 
     def test_load_config_normalizes_subagent_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,7 +269,7 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(str(path))
 
-        self.assertEqual(config["general"]["messenger_model"], "default")
+        self.assertEqual(config["general"]["messenger_model"], "sol")
         self.assertEqual(config["general"]["messenger_effort"], "default")
 
 

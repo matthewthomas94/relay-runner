@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 
 from config import load_config
+from codex_model_catalog import CODEX_FAMILIES, normalize_codex_family
 
 
 CONTROL_COMMANDS = {
@@ -491,7 +492,7 @@ def _worker_sizing_frontmatter(general_config: dict | None = None) -> str:
         f"worker_model: {provider}:{model}\n"
         f"worker_effort: {effort}\n"
         "worker_sizing_rationale: \"Inherited provider, model, and effort from Relay Runner General Settings.\"\n"
-        "worker_provider_notes: \"Use my defaults preserves provider default model semantics; Codex uses model_reasoning_effort and Claude uses --effort.\"\n"
+        "worker_provider_notes: \"Use my defaults preserves explicit stable provider selections; Codex resolves Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort.\"\n"
     )
 
 
@@ -502,32 +503,19 @@ def _normalized_general_provider(value: object) -> str:
 
 def _normalized_general_model(value: object, provider: str) -> str:
     model = str(value or "").strip().lower()
+    if provider == "codex":
+        return normalize_codex_family(model)
     valid_models = {
-        "codex": {
-            "default",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.3-codex-spark",
-        },
-        "claude": {"default", "best", "fable", "opus", "sonnet", "haiku"},
+        "codex": CODEX_FAMILIES,
+        "claude": {"best", "fable", "opus", "sonnet", "haiku"},
     }
-    return model if model in valid_models[provider] else "default"
+    return model if model in valid_models[provider] else "best"
 
 
 def _valid_general_efforts(provider: str, model: str) -> set[str]:
     base = {"default", "low", "medium", "high", "xhigh"}
     if provider == "codex":
-        if model in {"gpt-5.6-sol", "gpt-5.6-terra"}:
-            return base | {"max", "ultra"}
-        if model == "gpt-5.6-luna":
-            return base | {"max"}
-        if model in {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"}:
-            return base
-        return {"default"}
+        return base | {"max", "ultra"}
     if model in {"best", "fable", "opus"}:
         return base | {"max"}
     if model == "sonnet":

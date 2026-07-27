@@ -589,7 +589,7 @@ struct OnboardingView: View {
     private func selectAgentProvider(_ provider: GeneralConfig.AgentProvider) {
         selectedAgentProvider = provider
         if !GeneralConfig.isModel(selectedModel, validFor: provider) {
-            selectedModel = GeneralConfig.defaultModel
+            selectedModel = GeneralConfig.defaultModel(for: provider)
         }
         normalizeSelectedEffortForCurrentChoice()
         agentSignedIn = AgentAuth.isAuthenticated(for: provider)

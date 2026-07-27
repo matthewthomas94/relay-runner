@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,48 @@ sys.path.insert(0, SERVICES)
 
 from orchestrator import Daemon, MessengerOutcomeStore, ReviewWorker, RunsStore, Worker, validate_worker_completion  # noqa: E402
 from tickets import read as read_ticket  # noqa: E402
+
+
+CODEX_MODEL_LIST_FIXTURE = json.dumps({
+    "data": [
+        {
+            "id": "gpt-5.7-sol",
+            "model": "gpt-5.7-sol",
+            "hidden": False,
+            "defaultReasoningEffort": "low",
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low"},
+                {"reasoningEffort": "medium"},
+                {"reasoningEffort": "high"},
+                {"reasoningEffort": "xhigh"},
+            ],
+        },
+        {
+            "id": "gpt-6.0-sol",
+            "model": "gpt-6.0-sol",
+            "hidden": False,
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low"},
+                {"reasoningEffort": "medium"},
+                {"reasoningEffort": "high"},
+                {"reasoningEffort": "xhigh"},
+            ],
+        },
+        {
+            "id": "gpt-6.0-terra",
+            "model": "gpt-6.0-terra",
+            "hidden": False,
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low"},
+                {"reasoningEffort": "medium"},
+                {"reasoningEffort": "high"},
+                {"reasoningEffort": "xhigh"},
+            ],
+        },
+    ],
+})
 
 
 class OrchestratorDispatchTests(unittest.TestCase):
@@ -83,12 +126,13 @@ class OrchestratorDispatchTests(unittest.TestCase):
         worker = object.__new__(Worker)
         worker.agent_kind = "codex"
         worker.agent_bin = "codex"
-        worker.run = {"model_alias": "gpt-5.5", "worker_effort": "high"}
+        worker.run = {"model_alias": "sol", "worker_effort": "high"}
 
-        command = Worker._command(worker)
+        with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
+            command = Worker._command(worker)
 
         self.assertIn("--model", command)
-        self.assertIn("gpt-5.5", command)
+        self.assertIn("gpt-6.0-sol", command)
         self.assertIn("--config", command)
         self.assertIn("model_reasoning_effort=high", command)
         self.assertNotIn("--effort", command)
@@ -107,19 +151,17 @@ class OrchestratorDispatchTests(unittest.TestCase):
         self.assertIn("xhigh", command)
         self.assertNotIn("model_reasoning_effort=xhigh", command)
 
-    def test_worker_omits_default_model_and_effort_sentinels(self):
-        for provider in ("codex", "claude"):
-            with self.subTest(provider=provider):
-                worker = object.__new__(Worker)
-                worker.agent_kind = provider
-                worker.agent_bin = provider
-                worker.run = {"model_alias": "default", "worker_effort": "default"}
+    def test_claude_worker_omits_default_model_and_effort_sentinels(self):
+        worker = object.__new__(Worker)
+        worker.agent_kind = "claude"
+        worker.agent_bin = "claude"
+        worker.run = {"model_alias": "default", "worker_effort": "default"}
 
-                command = Worker._command(worker)
+        command = Worker._command(worker)
 
-                self.assertNotIn("--model", command)
-                self.assertNotIn("--effort", command)
-                self.assertNotIn("model_reasoning_effort=default", command)
+        self.assertNotIn("--model", command)
+        self.assertNotIn("--effort", command)
+        self.assertNotIn("model_reasoning_effort=default", command)
 
     def test_worker_applies_effort_without_default_model_override(self):
         codex = object.__new__(Worker)
@@ -145,14 +187,15 @@ class OrchestratorDispatchTests(unittest.TestCase):
         codex = object.__new__(ReviewWorker)
         codex.agent_kind = "codex"
         codex.agent_bin = "codex"
-        codex.run = {"model_alias": "gpt-5.5", "worker_effort": "high"}
+        codex.run = {"model_alias": "sol", "worker_effort": "high"}
 
         claude = object.__new__(ReviewWorker)
         claude.agent_kind = "claude"
         claude.agent_bin = "claude"
         claude.run = {"model_alias": "sonnet", "worker_effort": "xhigh"}
 
-        self.assertIn("model_reasoning_effort=high", ReviewWorker._command(codex))
+        with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
+            self.assertIn("model_reasoning_effort=high", ReviewWorker._command(codex))
         self.assertIn("--effort", ReviewWorker._command(claude))
         self.assertIn("xhigh", ReviewWorker._command(claude))
 
@@ -213,7 +256,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 "general": {
                     "subagent_sizing_policy": "user_default",
                     "provider": "codex",
-                    "model": "gpt-5.6-sol",
+                    "model": "sol",
                     "subagent_model": "strong",
                     "subagent_effort": "high",
                     "orchestrator_effort": "high",
@@ -227,11 +270,11 @@ class OrchestratorDispatchTests(unittest.TestCase):
             create_worktree.assert_called_once()
             start_worker.assert_called_once()
             run = result["run"]
-            self.assertEqual(run["model_alias"], "gpt-5.6-sol")
-            self.assertEqual(run["worker_model"], "codex:gpt-5.6-sol")
+            self.assertEqual(run["model_alias"], "sol")
+            self.assertEqual(run["worker_model"], "codex:sol")
             self.assertEqual(run["worker_effort"], "high")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:gpt-5.6-sol")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:sol")
             self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
 
     def test_ready_sweeper_applies_user_default_worker_sizing_to_ready_ticket(self):
@@ -247,7 +290,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 "general": {
                     "subagent_sizing_policy": "user_default",
                     "provider": "codex",
-                    "model": "gpt-5.5",
+                    "model": "sol",
                     "subagent_model": "strong",
                     "subagent_effort": "xhigh",
                     "orchestrator_effort": "xhigh",
@@ -262,10 +305,10 @@ class OrchestratorDispatchTests(unittest.TestCase):
             start_worker.assert_called_once()
             self.assertEqual(result["dispatched"][0]["ticket_id"], "RR-1")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:gpt-5.5")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:sol")
             self.assertEqual(ticket["_raw_fields"]["worker_effort"], "xhigh")
             self.assertIn(
-                "Use my defaults preserves provider default model semantics",
+                "Use my defaults preserves explicit stable provider selections",
                 ticket["_raw_fields"]["worker_provider_notes"],
             )
 
@@ -290,7 +333,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 "general": {
                     "subagent_sizing_policy": "user_default",
                     "provider": "codex",
-                    "model": "gpt-5.6-sol",
+                    "model": "sol",
                     "subagent_model": "strong",
                     "subagent_effort": "high",
                     "orchestrator_effort": "high",
@@ -300,14 +343,14 @@ class OrchestratorDispatchTests(unittest.TestCase):
             with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
                 result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
 
-            self.assertEqual(result["run"]["model_alias"], "gpt-5.6-sol")
-            self.assertEqual(result["run"]["worker_model"], "codex:gpt-5.6-sol")
+            self.assertEqual(result["run"]["model_alias"], "sol")
+            self.assertEqual(result["run"]["worker_model"], "codex:sol")
             self.assertEqual(result["run"]["worker_effort"], "high")
             ticket = read_ticket(repo / ".orchestrator/RR-1.md")
-            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:gpt-5.6-sol")
+            self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:sol")
             self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
 
-    def test_user_default_default_model_omits_codex_model_override(self):
+    def test_user_default_default_codex_model_resolves_to_sol(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -336,20 +379,22 @@ class OrchestratorDispatchTests(unittest.TestCase):
             with patch("orchestrator.create_worktree"), patch.object(Worker, "start"):
                 result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
 
-            self.assertIsNone(result["run"]["model_alias"])
-            self.assertEqual(result["run"]["worker_model"], "codex:default")
+            self.assertEqual(result["run"]["model_alias"], "sol")
+            self.assertEqual(result["run"]["worker_model"], "codex:sol")
             self.assertEqual(result["run"]["worker_effort"], "default")
-            command = Worker(
-                run_id=result["run"]["id"],
-                run=result["run"],
-                prompt="",
-                agent_bin="codex",
-                agent_kind="codex",
-                store=daemon.runs,
-                log_path=Path(tmp) / "run.log",
-            )._command()
-            self.assertNotIn("--model", command)
-            self.assertNotIn("--config", command)
+            with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
+                command = Worker(
+                    run_id=result["run"]["id"],
+                    run=result["run"],
+                    prompt="",
+                    agent_bin="codex",
+                    agent_kind="codex",
+                    store=daemon.runs,
+                    log_path=Path(tmp) / "run.log",
+                )._command()
+            self.assertIn("--model", command)
+            self.assertIn("gpt-6.0-sol", command)
+            self.assertIn("model_reasoning_effort=medium", command)
 
     def test_user_default_inherits_claude_model_and_effort(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -421,22 +466,23 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
 
             run = result["run"]
-            self.assertEqual(run["model_alias"], "gpt-5.4-mini")
+            self.assertEqual(run["model_alias"], "sol")
             self.assertEqual(run["worker_effort"], "default")
-            command = Worker(
-                run_id=run["id"],
-                run=run,
-                prompt="",
-                agent_bin="codex",
-                agent_kind="codex",
-                store=daemon.runs,
-                log_path=Path(tmp) / "run.log",
-            )._command()
+            with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
+                command = Worker(
+                    run_id=run["id"],
+                    run=run,
+                    prompt="",
+                    agent_bin="codex",
+                    agent_kind="codex",
+                    store=daemon.runs,
+                    log_path=Path(tmp) / "run.log",
+                )._command()
             self.assertIn("--model", command)
-            self.assertIn("gpt-5.4-mini", command)
-            self.assertNotIn("--config", command)
+            self.assertIn("gpt-6.0-sol", command)
+            self.assertIn("model_reasoning_effort=medium", command)
 
-    def test_user_default_omits_claude_model_and_effort_sentinels(self):
+    def test_user_default_default_claude_model_resolves_to_best(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -458,9 +504,9 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
 
             run = result["run"]
-            self.assertIsNone(run["model_alias"])
+            self.assertEqual(run["model_alias"], "best")
             self.assertEqual(run["worker_effort"], "default")
-            self.assertEqual(run["worker_model"], "claude:default")
+            self.assertEqual(run["worker_model"], "claude:best")
             command = Worker(
                 run_id=run["id"],
                 run=run,
@@ -470,7 +516,8 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 store=daemon.runs,
                 log_path=Path(tmp) / "run.log",
             )._command()
-            self.assertNotIn("--model", command)
+            self.assertIn("--model", command)
+            self.assertIn("best", command)
             self.assertNotIn("--effort", command)
 
     def test_dispatch_records_valid_codex_sizing_metadata(self):
@@ -500,7 +547,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             run = result["run"]
             self.assertEqual(run["state"], "Claimed")
             self.assertEqual(run["provider_key"], "codex")
-            self.assertEqual(run["model_alias"], "gpt-5.5")
+            self.assertEqual(run["model_alias"], "sol")
             self.assertEqual(run["worker_model"], "strong")
             self.assertEqual(run["worker_effort"], "high")
             self.assertIn("Cross-provider", run["worker_sizing_rationale"])
@@ -671,7 +718,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
 
             self.assertEqual(result["run"]["provider_key"], "codex")
-            self.assertEqual(result["run"]["model_alias"], "gpt-5.5")
+            self.assertEqual(result["run"]["model_alias"], "sol")
 
     def test_ready_sweeper_holds_after_deterministic_failed_attempt(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1410,7 +1457,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 state="Reviewing",
                 log_path=str(workspace / ".relay" / "run.log"),
                 provider_key="codex",
-                model_alias="gpt-5.5",
+                model_alias="sol",
                 worker_effort="high",
             )
             run = daemon.runs.get(run_id)
@@ -1424,7 +1471,8 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 log_path=workspace / ".relay" / "run.log",
             )
 
-            review._run()
+            with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
+                review._run()
 
             updated = daemon.runs.get(run_id)
             self.assertEqual(updated["state"], "AwaitingReview")
