@@ -1248,6 +1248,7 @@ final class ProgramBoardViewModel {
     var isLoading: Bool { reloadState.isLoading }
 
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
+    @ObservationIgnored private var reloadInFlight = false
     @ObservationIgnored private var fetchDashboard: ([String]) async throws -> ProgramDashboardSnapshot
 
     init(fetchDashboard: @escaping ([String]) async throws -> ProgramDashboardSnapshot = { repoPaths in
@@ -1265,13 +1266,23 @@ final class ProgramBoardViewModel {
     }
 
     func prepareForOpening() {
-        reloadTask?.cancel()
+        cancelReload()
         reloadState = .idle
         errorMessage = nil
         selectedTicketDetail = nil
         creating = nil
         editing = nil
         endDrag()
+    }
+
+    var hasReloadInFlight: Bool {
+        reloadInFlight
+    }
+
+    func cancelReload() {
+        reloadTask?.cancel()
+        reloadTask = nil
+        reloadInFlight = false
     }
 
     func setProjectScope(_ paths: [String], selectedProjectPath: String? = nil) {
@@ -1286,8 +1297,15 @@ final class ProgramBoardViewModel {
     }
 
     @discardableResult
+    func reloadIfIdle(inBackground: Bool) -> Task<Void, Never>? {
+        guard !reloadInFlight else { return nil }
+        return inBackground ? refreshInBackground() : reload()
+    }
+
+    @discardableResult
     func reload() -> Task<Void, Never> {
-        reloadTask?.cancel()
+        cancelReload()
+        reloadInFlight = true
         reloadState = .loading
         errorMessage = nil
         let fetchDashboard = fetchDashboard
@@ -1309,7 +1327,8 @@ final class ProgramBoardViewModel {
 
     @discardableResult
     func refreshInBackground() -> Task<Void, Never> {
-        reloadTask?.cancel()
+        cancelReload()
+        reloadInFlight = true
         errorMessage = nil
         let fetchDashboard = fetchDashboard
         let projectPaths = projectPaths
@@ -1590,12 +1609,16 @@ final class ProgramBoardViewModel {
             }
         }
         reloadState = .succeeded
+        reloadTask = nil
+        reloadInFlight = false
     }
 
     @MainActor
     private func finishReload(errorMessage: String) {
         self.errorMessage = errorMessage
         reloadState = .failed(errorMessage)
+        reloadTask = nil
+        reloadInFlight = false
     }
 }
 

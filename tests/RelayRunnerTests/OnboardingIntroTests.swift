@@ -66,6 +66,26 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
     }
 
+    func testSharedOnboardingStateLocksOtherInstancesUntilCompletion() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+
+        XCTAssertFalse(OnboardingController.sharedOnboardingInProgress(flagURLs: flagURLs))
+
+        try Data().write(to: flagURLs.started)
+        XCTAssertTrue(OnboardingController.sharedOnboardingInProgress(flagURLs: flagURLs))
+
+        try Data().write(to: flagURLs.onboarded)
+        XCTAssertFalse(OnboardingController.sharedOnboardingInProgress(flagURLs: flagURLs))
+
+        try Data().write(to: flagURLs.manualRedo)
+        XCTAssertTrue(OnboardingController.sharedOnboardingInProgress(flagURLs: flagURLs))
+    }
+
     func testCinematicCompletionShowsFirstPermissionBeforeSettingsHandoff() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -247,12 +247,18 @@ final class AppState {
         }
     }
 
-    static func allowsAppShellAccess(firstRunExperienceActive: Bool) -> Bool {
-        !firstRunExperienceActive
+    static func allowsAppShellAccess(
+        firstRunExperienceActive: Bool,
+        sharedOnboardingInProgress: Bool = false
+    ) -> Bool {
+        !firstRunExperienceActive && !sharedOnboardingInProgress
     }
 
     private var allowsAppShellAccess: Bool {
-        Self.allowsAppShellAccess(firstRunExperienceActive: isFirstRunExperienceActive)
+        Self.allowsAppShellAccess(
+            firstRunExperienceActive: isFirstRunExperienceActive,
+            sharedOnboardingInProgress: OnboardingController.sharedOnboardingInProgress()
+        )
     }
 
     func requestPermissionSetup(_ kind: PermissionKind,
