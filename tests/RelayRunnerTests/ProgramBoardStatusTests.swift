@@ -783,6 +783,30 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
     }
 
+    func testProgramBoardViewModelSlowReloadIgnoresPollingRefreshUntilSettled() async throws {
+        let snapshot = try programBoardSnapshot(
+            clientPath: "/repo/client-dashboard",
+            toolsPath: "/repo/tools"
+        )
+        let spy = ProgramDashboardFetchSpy(
+            results: [.success(snapshot)],
+            delayNanoseconds: 50_000_000
+        )
+        let model = ProgramBoardViewModel(fetchDashboard: spy.fetch)
+
+        let firstLoad = try XCTUnwrap(model.reloadIfIdle(inBackground: false))
+
+        XCTAssertTrue(model.hasReloadInFlight)
+        XCTAssertNil(model.reloadIfIdle(inBackground: false))
+        XCTAssertNil(model.reloadIfIdle(inBackground: true))
+
+        await firstLoad.value
+
+        XCTAssertFalse(model.hasReloadInFlight)
+        XCTAssertEqual(spy.callCount, 1)
+        XCTAssertEqual(model.reloadState, .succeeded)
+    }
+
     func testProgramBoardViewModelExplainsPersistentLocalServiceFailure() {
         XCTAssertEqual(
             ProgramBoardViewModel.reloadErrorMessage(for: URLError(.cannotConnectToHost)),

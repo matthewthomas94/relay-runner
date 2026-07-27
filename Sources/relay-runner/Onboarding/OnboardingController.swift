@@ -237,6 +237,15 @@ final class OnboardingController {
         !hasOnboarded && FileManager.default.fileExists(atPath: flagURLs.started.path)
     }
 
+    static func sharedOnboardingInProgress(flagURLs: OnboardingFlagURLs = .live) -> Bool {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: flagURLs.manualRedo.path) {
+            return true
+        }
+        return !fileManager.fileExists(atPath: flagURLs.onboarded.path)
+            && fileManager.fileExists(atPath: flagURLs.started.path)
+    }
+
     private var manualRedoInProgress: Bool {
         FileManager.default.fileExists(atPath: flagURLs.manualRedo.path)
     }

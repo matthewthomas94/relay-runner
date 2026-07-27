@@ -267,6 +267,7 @@ final class ProgramBoardOverlayController {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor { NSEvent.removeMonitor(m) }
         updateCheckTask?.cancel()
+        model.cancelReload()
         themePollTimer?.invalidate()
         statusPollTimer?.invalidate()
     }
@@ -473,8 +474,10 @@ final class ProgramBoardOverlayController {
         guard isVisible else { return }
         updateCheckTask?.cancel()
         updateCheckTask = nil
+        model.cancelReload()
         loadingStateHandler?(false)
         revealContainer?.setUpdateCheckActive(false)
+        revealContainer?.setLoading(false)
         lastSelectedTab = workspace.selectedTab
         setPanelKeyEligible(false)
         stopThemePoll()
@@ -527,7 +530,10 @@ final class ProgramBoardOverlayController {
         )
         updateCheckTask?.cancel()
         updateCheckTask = nil
+        model.cancelReload()
         contentLoadBlocked = false
+        revealContainer?.setLoading(false)
+        revealContainer?.setUpdateCheckActive(false)
         loadingStateHandler?(false)
         model.endDrag()
         model.cancelCreate()
@@ -604,7 +610,7 @@ final class ProgramBoardOverlayController {
             loadingStateHandler?(false)
             return
         }
-        updateCheckTask?.cancel()
+        guard !model.hasReloadInFlight else { return }
         let route = boardRouteResolver()
         let nextScope = Self.projectScope(for: route, activityProjectPaths: projectScopeProvider())
         let selectedProjectPath: String?
@@ -624,7 +630,9 @@ final class ProgramBoardOverlayController {
         }
         loadingStateHandler?(true)
 
-        let reloadTask = inBackground ? model.refreshInBackground() : model.reload()
+        guard let reloadTask = model.reloadIfIdle(inBackground: inBackground) else {
+            return
+        }
         let blocksContent = contentLoadBlocked
         updateCheckTask = Task { @MainActor [weak self] in
             await reloadTask.value

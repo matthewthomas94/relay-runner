@@ -83,6 +83,10 @@ final class AppStateLaunchTests: XCTestCase {
     func testFirstRunExperienceLocksOrdinaryAppShell() {
         XCTAssertTrue(AppState.allowsAppShellAccess(firstRunExperienceActive: false))
         XCTAssertFalse(AppState.allowsAppShellAccess(firstRunExperienceActive: true))
+        XCTAssertFalse(AppState.allowsAppShellAccess(
+            firstRunExperienceActive: false,
+            sharedOnboardingInProgress: true
+        ))
     }
 
     func testCompletedSetupOverridesStaleCompilingStatus() {
