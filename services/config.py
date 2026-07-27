@@ -126,6 +126,7 @@ def load_config(config_path: str | None = None) -> dict:
             "messenger_model": "default",
             "messenger_effort": "default",
             "subagent_sizing_policy": "orchestrator_decides",
+            "prevent_sleep_while_running": False,
         },
         "orchestrator": {
             "agent": "codex",

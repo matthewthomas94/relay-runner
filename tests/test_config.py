@@ -57,8 +57,24 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config["general"]["messenger_enabled"])
         self.assertEqual(config["general"]["messenger_model"], "default")
         self.assertEqual(config["general"]["messenger_effort"], "default")
+        self.assertFalse(config["general"]["prevent_sleep_while_running"])
         self.assertEqual(config["orchestrator"]["worker_health_check_seconds"], 600)
         self.assertNotIn("worker_timeout_seconds", config["orchestrator"])
+
+    def test_load_config_preserves_prevent_sleep_while_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                """
+                [general]
+                prevent_sleep_while_running = true
+                """,
+                encoding="utf-8",
+            )
+
+            config = load_config(str(path))
+
+        self.assertTrue(config["general"]["prevent_sleep_while_running"])
 
     def test_load_config_defaults_missing_tts_rate_to_one_point_three(self):
         with tempfile.TemporaryDirectory() as tmp:

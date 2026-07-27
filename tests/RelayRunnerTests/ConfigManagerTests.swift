@@ -13,8 +13,10 @@ final class ConfigManagerTests: XCTestCase {
 
         XCTAssertEqual(loaded.tts.voice, "bm_george")
         XCTAssertEqual(loaded.tts.rate, 1.3)
+        XCTAssertFalse(loaded.general.prevent_sleep_while_running)
         XCTAssertTrue(raw.contains("voice = \"bm_george\""))
         XCTAssertTrue(raw.contains("rate = 1.3"))
+        XCTAssertTrue(raw.contains("prevent_sleep_while_running = false"))
     }
 
     func testMissingTTSRateFallsBackToDefaultWithoutRewritingExplicitValues() throws {
@@ -65,6 +67,7 @@ final class ConfigManagerTests: XCTestCase {
         config.general.messenger_enabled = false
         config.general.messenger_model = "sonnet"
         config.general.messenger_effort = "low"
+        config.general.prevent_sleep_while_running = true
 
         try manager.save(config)
         let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
@@ -77,6 +80,7 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertFalse(raw.contains("subagent_effort"))
         XCTAssertTrue(raw.contains("messenger_enabled = false"))
         XCTAssertTrue(raw.contains("messenger_model = \"sonnet\""))
+        XCTAssertTrue(raw.contains("prevent_sleep_while_running = true"))
         XCTAssertEqual(loaded.general.provider, .claude)
         XCTAssertEqual(loaded.general.model, "fable")
         XCTAssertEqual(loaded.general.orchestrator_effort, "max")
@@ -87,6 +91,7 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertFalse(loaded.general.messenger_enabled)
         XCTAssertEqual(loaded.general.messenger_model, "sonnet")
         XCTAssertEqual(loaded.general.messenger_effort, "low")
+        XCTAssertTrue(loaded.general.prevent_sleep_while_running)
     }
 
     func testLegacyCodexReasoningEffortMigratesToOrchestratorEffort() throws {
