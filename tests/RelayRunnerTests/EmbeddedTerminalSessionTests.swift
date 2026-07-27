@@ -151,6 +151,169 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
     }
 }
 
+final class EmbeddedAgentDiagnosticsTests: XCTestCase {
+    func testMarkerAbsentDisablesDiagnosticsWithoutCreatingFiles() throws {
+        let root = try makeRoot()
+
+        let diagnostics = EmbeddedAgentDiagnostics.startIfEnabled(
+            provider: "codex",
+            childPID: 123,
+            workingDirectory: "/repo",
+            baseDirectory: root
+        )
+
+        XCTAssertNil(diagnostics)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: EmbeddedAgentDiagnostics.manifestURL(baseDirectory: root).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: EmbeddedAgentDiagnostics.transcriptURL(baseDirectory: root).path))
+    }
+
+    func testMarkerPresentWritesPrivateCurrentSessionManifest() throws {
+        let root = try makeEnabledRoot()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
+            provider: "codex",
+            childPID: 123,
+            workingDirectory: "/repo",
+            baseDirectory: root,
+            now: { now }
+        ))
+        diagnostics.flushForTesting()
+
+        let manifest = try readManifest(root)
+        XCTAssertEqual(manifest["schema_version"] as? Int, EmbeddedAgentDiagnostics.schemaVersion)
+        XCTAssertEqual(manifest["provider"] as? String, "codex")
+        XCTAssertEqual(manifest["child_pid"] as? Int, 123)
+        XCTAssertEqual(manifest["working_directory"] as? String, "/repo")
+        XCTAssertEqual(manifest["state"] as? String, "running")
+        XCTAssertEqual(manifest["started_at"] as? String, "2027-01-15T08:00:00Z")
+        XCTAssertEqual(
+            manifest["transcript_path"] as? String,
+            EmbeddedAgentDiagnostics.transcriptURL(baseDirectory: root).path
+        )
+
+        XCTAssertEqual(try permissions(at: EmbeddedAgentDiagnostics.diagnosticsDirectoryURL(baseDirectory: root)), 0o700)
+        XCTAssertEqual(try permissions(at: EmbeddedAgentDiagnostics.manifestURL(baseDirectory: root)), 0o600)
+        XCTAssertEqual(try permissions(at: EmbeddedAgentDiagnostics.transcriptURL(baseDirectory: root)), 0o600)
+    }
+
+    func testTranscriptWritesAreBoundedToNewestBytes() throws {
+        let root = try makeEnabledRoot()
+        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
+            provider: "codex",
+            childPID: 123,
+            workingDirectory: "/repo",
+            baseDirectory: root,
+            maxTranscriptBytes: 8
+        ))
+
+        diagnostics.recordPTYOutput(ArraySlice(Array("hello".utf8)))
+        diagnostics.recordPTYOutput(ArraySlice(Array(" world".utf8)))
+        diagnostics.flushForTesting()
+
+        let transcript = try String(contentsOf: EmbeddedAgentDiagnostics.transcriptURL(baseDirectory: root), encoding: .utf8)
+        XCTAssertEqual(transcript, "lo world")
+    }
+
+    func testExitLifecycleAddsExitInformation() throws {
+        let root = try makeEnabledRoot()
+        let started = Date(timeIntervalSince1970: 1_800_000_000)
+        let ended = Date(timeIntervalSince1970: 1_800_000_010)
+        var dates = [started, ended]
+        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
+            provider: "claude",
+            childPID: 456,
+            workingDirectory: "/repo",
+            baseDirectory: root,
+            now: { dates.removeFirst() }
+        ))
+
+        diagnostics.markExited(rawStatus: 256)
+        diagnostics.flushForTesting()
+
+        let manifest = try readManifest(root)
+        XCTAssertEqual(manifest["provider"] as? String, "claude")
+        XCTAssertEqual(manifest["state"] as? String, "exited")
+        XCTAssertEqual(manifest["ended_at"] as? String, "2027-01-15T08:00:10Z")
+        XCTAssertEqual(manifest["raw_exit_status"] as? Int, 256)
+        XCTAssertEqual(manifest["exit_code"] as? Int, 1)
+    }
+
+    func testExplicitTerminationUpdatesLifecycleWithoutExitCode() throws {
+        let root = try makeEnabledRoot()
+        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
+            provider: "codex",
+            childPID: 123,
+            workingDirectory: "/repo",
+            baseDirectory: root
+        ))
+
+        diagnostics.markTerminated()
+        diagnostics.flushForTesting()
+
+        let manifest = try readManifest(root)
+        XCTAssertEqual(manifest["state"] as? String, "terminated")
+        XCTAssertNil(manifest["exit_code"])
+        XCTAssertNil(manifest["raw_exit_status"])
+    }
+
+    func testDiagnosticsSetupFailureIsNonFatal() throws {
+        let root = try makeEnabledRoot()
+        let diagnosticsDirectory = EmbeddedAgentDiagnostics.diagnosticsDirectoryURL(baseDirectory: root)
+        try Data("not a directory".utf8).write(to: diagnosticsDirectory)
+
+        let diagnostics = EmbeddedAgentDiagnostics.startIfEnabled(
+            provider: "codex",
+            childPID: 123,
+            workingDirectory: "/repo",
+            baseDirectory: root
+        )
+
+        XCTAssertNil(diagnostics)
+    }
+
+    func testProviderLabelsCoverCodexAndClaude() throws {
+        for provider in ["codex", "claude"] {
+            let root = try makeEnabledRoot()
+            let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
+                provider: provider,
+                childPID: 123,
+                workingDirectory: "/repo",
+                baseDirectory: root
+            ))
+            diagnostics.flushForTesting()
+
+            let manifest = try readManifest(root)
+            XCTAssertEqual(manifest["provider"] as? String, provider)
+        }
+    }
+
+    private func makeRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("EmbeddedAgentDiagnosticsTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
+    }
+
+    private func makeEnabledRoot() throws -> URL {
+        let root = try makeRoot()
+        try Data().write(to: EmbeddedAgentDiagnostics.markerURL(baseDirectory: root))
+        return root
+    }
+
+    private func readManifest(_ root: URL) throws -> [String: Any] {
+        let data = try Data(contentsOf: EmbeddedAgentDiagnostics.manifestURL(baseDirectory: root))
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func permissions(at url: URL) throws -> Int {
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        let permissions = try XCTUnwrap(attrs[.posixPermissions] as? NSNumber)
+        return permissions.intValue & 0o777
+    }
+}
+
 final class RelayTerminalInputTrackerTests: XCTestCase {
     func testTrackerDefersVoiceDeliveryWhilePromptTextIsUnsubmitted() {
         var tracker = RelayTerminalInputTracker()
