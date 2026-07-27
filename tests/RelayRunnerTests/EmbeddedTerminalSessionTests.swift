@@ -781,6 +781,64 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(events.contains("Second request"))
     }
 
+    func testAppOwnedPendingCommandIsClaimedOnceAfterActiveTurnForCodexAndClaude() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let secondMetadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-2\",\"relay_command_seq\":2}"
+            try "Second request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try secondMetadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try secondMetadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "active"),
+            ], to: fixture.providerTurns)
+            var sent: [String] = []
+            var scheduled: [() -> Void] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+                schedule: { _, _, work in scheduled.append(work) },
+                isRunning: { true }
+            )
+
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+
+            XCTAssertEqual(sent, [], provider)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path), provider)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.metadata.path), provider)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.claimed.path), provider)
+
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "stale"),
+            ], to: fixture.providerTurns)
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent, ["Second request"], provider)
+            XCTAssertEqual(scheduled.count, 1, provider)
+            scheduled[0]()
+
+            XCTAssertEqual(sent, ["Second request", "\r"], provider)
+            XCTAssertEqual(try String(contentsOf: fixture.claimed), secondMetadata, provider)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path), provider)
+
+            try writeProviderTurns([
+                providerTurn(seq: 2, id: "cmd-2", provider: provider, state: "active"),
+            ], to: fixture.providerTurns)
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent, ["Second request", "\r"], provider)
+
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertEqual(countEvent("deferred_provider_active", in: events), 1, provider)
+            XCTAssertEqual(countEvent("claimed", in: events), 1, provider)
+            XCTAssertEqual(countEvent("prompt_write", in: events), 1, provider)
+            XCTAssertEqual(countEvent("claim_published", in: events), 1, provider)
+            XCTAssertEqual(countEvent("provider_acknowledged", in: events), 1, provider)
+            XCTAssertTrue(events.contains(#""provider":"\#(provider)""#), provider)
+            XCTAssertFalse(events.contains("Second request"), provider)
+        }
+    }
+
     func testInterruptBypassesActiveProviderTurnDeferral() throws {
         let fixture = try makeFixture()
         let metadata = #"{"relay_command_id":"cmd-3","relay_command_seq":3}"#
@@ -882,6 +940,10 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         ]
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         try data.write(to: url, options: .atomic)
+    }
+
+    private func countEvent(_ event: String, in events: String) -> Int {
+        events.components(separatedBy: "\"event\":\"\(event)\"").count - 1
     }
 }
 

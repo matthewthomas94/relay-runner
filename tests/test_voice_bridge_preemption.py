@@ -879,6 +879,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             voice_bridge._reset_foreground_reply_delivery_for_tests()
             state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
             command = voice_bridge._begin_relay_command(
                 "dispatch RR-7",
                 state_path=state_path,
@@ -898,6 +899,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 tts_worker=worker,
                 messenger=messenger,
                 state_path=state_path,
+                turns_path=turns_path,
                 delay_seconds=0,
             )
             thread.join(timeout=1)
@@ -1262,6 +1264,103 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual([payload.get("text") for payload in delivered], ["Current final."])
             self.assertEqual(delivered[0]["relay_command_id"], "cmd-12")
 
+    def test_app_owned_stale_turn_drops_final_until_newer_claim_is_injected(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    state_path = os.path.join(temp_dir, "voice_command_state.json")
+                    claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                    turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                    first = {
+                        "relay_command_seq": 21,
+                        "relay_command_id": "cmd-21",
+                        "agent_prompt": "First prompt",
+                        "action": "create_ticket",
+                        "provider": provider,
+                    }
+                    second = {
+                        "relay_command_seq": 22,
+                        "relay_command_id": "cmd-22",
+                        "agent_prompt": "Second prompt",
+                        "action": "create_ticket",
+                        "provider": provider,
+                    }
+                    delivered: list[dict] = []
+                    Path(state_path).write_text(json.dumps(first))
+                    Path(claim_path).write_text(json.dumps(first))
+
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        {
+                            "hook_event_name": "UserPromptSubmit",
+                            "session_id": f"{provider}-session",
+                            "turn_id": "turn-21",
+                            "prompt": "First prompt",
+                            "provider": provider,
+                        },
+                        claim_path=claim_path,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        now=60,
+                        stderr=io.StringIO(),
+                    ))
+
+                    Path(state_path).write_text(json.dumps(second))
+                    self.assertFalse(relay_completion_hook.handle_hook_payload(
+                        {
+                            "hook_event_name": "Stop",
+                            "session_id": f"{provider}-session",
+                            "turn_id": "turn-21",
+                            "last_assistant_message": "Stale final from active turn.",
+                            "provider": provider,
+                        },
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        write_control=lambda payload: delivered.append(payload) or True,
+                        now=61,
+                        stderr=io.StringIO(),
+                    ))
+
+                    Path(claim_path).write_text(json.dumps(second))
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        {
+                            "hook_event_name": "UserPromptSubmit",
+                            "session_id": f"{provider}-session",
+                            "turn_id": "turn-22",
+                            "prompt": "Second prompt",
+                            "provider": provider,
+                        },
+                        claim_path=claim_path,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        now=62,
+                        stderr=io.StringIO(),
+                    ))
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        {
+                            "hook_event_name": "Stop",
+                            "session_id": f"{provider}-session",
+                            "turn_id": "turn-22",
+                            "last_assistant_message": "Current final.",
+                            "provider": provider,
+                        },
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        write_control=lambda payload: delivered.append(payload) or True,
+                        now=63,
+                        stderr=io.StringIO(),
+                    ))
+
+                    self.assertEqual([payload.get("text") for payload in delivered], ["Current final."])
+                    self.assertEqual(delivered[0]["relay_command_id"], "cmd-22")
+                    self.assertEqual(delivered[0]["provider"], provider)
+                    stored_text = Path(turns_path).read_text()
+                    self.assertNotIn("Stale final from active turn.", stored_text)
+                    self.assertNotIn("Current final.", stored_text)
+                    stored = json.loads(stored_text)
+                    states = {record["relay_command_id"]: record["state"] for record in stored["records"]}
+                    self.assertEqual(states["cmd-21"], "stale")
+                    self.assertEqual(states["cmd-22"], "completed_final")
+
     def test_completion_hook_does_not_guess_unidentified_stop_with_multiple_active_turns(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "voice_command_state.json")
@@ -1480,6 +1579,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             voice_bridge._reset_foreground_reply_delivery_for_tests()
             state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
             command = voice_bridge._begin_relay_command(
                 "dispatch RR-7",
                 state_path=state_path,
@@ -1493,6 +1593,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 tts_worker=worker,
                 messenger=messenger,
                 state_path=state_path,
+                turns_path=turns_path,
                 fallback_delay_seconds=0,
             ))
             deadline = time.time() + 1
