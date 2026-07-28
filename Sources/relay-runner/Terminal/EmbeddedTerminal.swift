@@ -176,6 +176,7 @@ final class RelayTerminalView: TerminalView {
     private(set) var isSendingTerminalResponse = false
     private(set) var isSendingNavigationShortcut = false
     private var navigationKeyMonitor: Any?
+    private var rendererActivationAttempted = false
 
     deinit {
         uninstallNavigationKeyMonitor()
@@ -191,6 +192,27 @@ final class RelayTerminalView: TerminalView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         installNavigationKeyMonitorIfNeeded()
+        configureRendererFromEnvironmentIfNeeded()
+    }
+
+    @discardableResult
+    func configureRendererFromEnvironment(
+        _ environment: [String: String] = ProcessInfo.processInfo.environment,
+        activateMetal: (() throws -> Void)? = nil
+    ) -> Bool {
+        guard environment["RELAY_RUNNER_TERMINAL_RENDERER"] == "metal" else { return false }
+        do {
+            if let activateMetal {
+                try activateMetal()
+            } else {
+                try setUseMetal(true)
+            }
+            return isUsingMetalRenderer
+        } catch {
+            try? setUseMetal(false)
+            NSLog("Relay Runner: SwiftTerm Metal activation failed; using CoreGraphics (%@)", String(describing: error))
+            return false
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -262,6 +284,12 @@ final class RelayTerminalView: TerminalView {
             }
             return nil
         }
+    }
+
+    private func configureRendererFromEnvironmentIfNeeded() {
+        guard !rendererActivationAttempted else { return }
+        rendererActivationAttempted = true
+        _ = configureRendererFromEnvironment()
     }
 
     private func uninstallNavigationKeyMonitor() {
