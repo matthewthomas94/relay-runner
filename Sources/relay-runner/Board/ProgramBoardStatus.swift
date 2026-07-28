@@ -11,6 +11,22 @@ struct ProgramDashboardSnapshot: Equatable {
     let doneWork: ProgramStatusResponse
     let awaitingMerge: ProgramStatusResponse
 
+    init(
+        summary: ProgramStatusResponse,
+        backlogWork: ProgramStatusResponse,
+        readyWork: ProgramStatusResponse,
+        inProgressWork: ProgramStatusResponse,
+        doneWork: ProgramStatusResponse,
+        awaitingMerge: ProgramStatusResponse
+    ) {
+        self.summary = summary
+        self.backlogWork = Self.sortedLane(backlogWork)
+        self.readyWork = Self.sortedLane(readyWork)
+        self.inProgressWork = Self.sortedLane(inProgressWork)
+        self.doneWork = Self.sortedLane(doneWork)
+        self.awaitingMerge = awaitingMerge
+    }
+
     var projects: [ProgramStatusItem] { summary.items }
     var projectCount: Int { summary.counts.projects }
     var hasRegisteredProjects: Bool { projectCount > 0 }
@@ -36,7 +52,7 @@ struct ProgramDashboardSnapshot: Equatable {
         let filtered = selectedProjectPath.map { path in
             items.filter { $0.project?.path == path }
         } ?? items
-        return filtered.sorted(by: ProgramStatusItem.newestTicketFileFirst)
+        return filtered
     }
 
     func ticketItem(matching id: String) -> ProgramStatusItem? {
@@ -59,6 +75,24 @@ struct ProgramDashboardSnapshot: Equatable {
 
     private var allTicketItems: [ProgramStatusItem] {
         backlogWork.items + readyWork.items + inProgressWork.items + doneWork.items
+    }
+
+    private static func sortedLane(_ response: ProgramStatusResponse) -> ProgramStatusResponse {
+        let keys = response.items.map(\.ticketLaneSortKey)
+        let order = response.items.indices.sorted {
+            keys[$0].comesBefore(keys[$1])
+        }
+        guard !order.elementsEqual(response.items.indices) else {
+            return response
+        }
+        let items = order.map { response.items[$0] }
+        return ProgramStatusResponse(
+            query: response.query,
+            provider: response.provider,
+            message: response.message,
+            items: items,
+            counts: response.counts
+        )
     }
 
     func upsertingTicket(
@@ -793,6 +827,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let title: String?
     let status: String?
     let priority: String?
+    let ticketModifiedAt: Date?
     let ticketState: String?
     let runID: String?
     let attempt: String?
@@ -838,6 +873,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         title: String?,
         status: String?,
         priority: String?,
+        ticketModifiedAt: Date? = nil,
         ticketState: String? = nil,
         runID: String? = nil,
         attempt: String? = nil,
@@ -870,6 +906,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         self.title = title
         self.status = status
         self.priority = priority
+        self.ticketModifiedAt = ticketModifiedAt
         self.ticketState = ticketState
         self.runID = runID
         self.attempt = attempt
@@ -910,6 +947,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
             title: ticket.title,
             status: ticket.status.rawValue,
             priority: ticket.priority.rawValue,
+            ticketModifiedAt: ticket.modifiedAt ?? Date(),
             dependsOn: ticket.dependsOn
         )
     }
@@ -920,6 +958,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         case title
         case status
         case priority
+        case ticketModifiedAt = "ticket_modified_at"
         case ticketState = "ticket_state"
         case runID = "run_id"
         case attempt
@@ -955,6 +994,8 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         title = try values.decodeIfPresent(String.self, forKey: .title)
         status = try values.decodeIfPresent(String.self, forKey: .status)
         priority = try values.decodeIfPresent(String.self, forKey: .priority)
+        ticketModifiedAt = try values.decodeIfPresent(Double.self, forKey: .ticketModifiedAt)
+            .map(Date.init(timeIntervalSince1970:))
         ticketState = try values.decodeIfPresent(String.self, forKey: .ticketState)
         runID = Self.lossyString(values, forKey: .runID)
         attempt = Self.lossyString(values, forKey: .attempt)
@@ -1646,15 +1687,41 @@ private func clean(_ value: String?) -> String? {
     cleanedProgramValue(value)
 }
 
+fileprivate struct ProgramTicketLaneSortKey {
+    let modifiedAt: Date?
+    let ticketNumber: Int
+    let id: String
+    let title: String
+
+    func comesBefore(_ other: ProgramTicketLaneSortKey) -> Bool {
+        if let modifiedAt, let otherModifiedAt = other.modifiedAt, modifiedAt != otherModifiedAt {
+            return modifiedAt > otherModifiedAt
+        }
+        if ticketNumber != other.ticketNumber {
+            return ticketNumber > other.ticketNumber
+        }
+        if id != other.id {
+            return id > other.id
+        }
+        return title.localizedStandardCompare(other.title) == .orderedAscending
+    }
+}
+
 extension ProgramStatusItem {
-    static func newestTicketFileFirst(_ lhs: ProgramStatusItem, _ rhs: ProgramStatusItem) -> Bool {
-        Ticket.newestFirst(
-            lhsModifiedAt: lhs.ticketFileModifiedAt,
-            lhsID: lhs.ticketID,
-            lhsTitle: lhs.title,
-            rhsModifiedAt: rhs.ticketFileModifiedAt,
-            rhsID: rhs.ticketID,
-            rhsTitle: rhs.title
+    fileprivate var ticketLaneSortKey: ProgramTicketLaneSortKey {
+        let id = ticketID ?? ""
+        let number: Int
+        if let dash = id.lastIndex(of: "-"),
+           let parsed = Int(id[id.index(after: dash)...]) {
+            number = parsed
+        } else {
+            number = .min
+        }
+        return ProgramTicketLaneSortKey(
+            modifiedAt: ticketModifiedAt,
+            ticketNumber: number,
+            id: id,
+            title: title ?? ""
         )
     }
 
@@ -1716,8 +1783,4 @@ extension ProgramStatusItem {
         [status, runState, ticketState].compactMap { $0?.programStateKey }
     }
 
-    private var ticketFileModifiedAt: Date? {
-        guard let identity = ProgramTicketIdentity(item: self) else { return nil }
-        return (try? identity.ticketURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-    }
 }

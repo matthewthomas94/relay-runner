@@ -276,6 +276,29 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual([item["ticket_id"] for item in dashboard["done"]["items"]], ["RR-5"])
         self.assertEqual([item["ticket_id"] for item in dashboard["awaiting_merge"]["items"]], ["RR-4"])
 
+    def test_dashboard_carries_ticket_file_modification_time_for_lane_ordering(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket_path = Path(tmp) / "RR-1.md"
+            ticket_path.write_text("ticket")
+            os.utime(ticket_path, (1_700_000_000, 1_700_000_000))
+            _ticket(
+                store,
+                project,
+                "RR-1",
+                "Backlog work",
+                "backlog",
+                source_path=str(ticket_path),
+            )
+
+            dashboard = build_program_dashboard(store, limit=0, now=2000.0)
+
+        self.assertEqual(
+            dashboard["backlog"]["items"][0]["ticket_modified_at"],
+            1_700_000_000,
+        )
+
     def test_dashboard_limits_projects_and_lanes_to_requested_repo_paths(self):
         store = self.make_store()
         demo = _project(store, "/demo/aurora-web", "Aurora Web")
@@ -345,6 +368,7 @@ def _ticket(
     *,
     priority: str = "medium",
     depends_on: list[str] | None = None,
+    source_path: str | None = None,
 ) -> dict:
     return store.upsert_node(
         kind=NODE_TICKET,
@@ -356,6 +380,7 @@ def _ticket(
             "state": state,
             "priority": priority,
             "depends_on": depends_on or [],
+            "source_path": source_path,
         },
     )
 
