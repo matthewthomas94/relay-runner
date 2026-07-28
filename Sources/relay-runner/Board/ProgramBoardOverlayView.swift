@@ -326,58 +326,6 @@ private struct ProgramDragPreviewLayer: View {
     }
 }
 
-private struct ProgramGrabCursor: ViewModifier {
-    let hovering: Bool
-    let dragging: Bool
-    let enabled: Bool
-    @State private var isPushed = false
-
-    func body(content: Content) -> some View {
-        content
-            .onAppear {
-                updateCursor(hovering: hovering)
-            }
-            .onChange(of: hovering) { _, isHovering in
-                updateCursor(hovering: isHovering)
-            }
-            .onChange(of: enabled) { _, isEnabled in
-                if isEnabled {
-                    updateCursor(hovering: hovering)
-                } else {
-                    popCursor()
-                }
-            }
-            .onChange(of: dragging) { _, _ in
-                guard hovering, enabled else { return }
-                popCursor()
-                pushCursor()
-            }
-            .onDisappear {
-                popCursor()
-            }
-    }
-
-    private func updateCursor(hovering: Bool) {
-        if hovering, enabled {
-            pushCursor()
-        } else {
-            popCursor()
-        }
-    }
-
-    private func pushCursor() {
-        guard !isPushed else { return }
-        (dragging ? NSCursor.closedHand : NSCursor.openHand).push()
-        isPushed = true
-    }
-
-    private func popCursor() {
-        guard isPushed else { return }
-        NSCursor.pop()
-        isPushed = false
-    }
-}
-
 private struct ProgramButtonCursor: ViewModifier {
     let enabled: Bool
     @State private var isPushed = false
@@ -408,10 +356,6 @@ private struct ProgramButtonCursor: ViewModifier {
 }
 
 private extension View {
-    func programGrabCursor(hovering: Bool, dragging: Bool, enabled: Bool) -> some View {
-        modifier(ProgramGrabCursor(hovering: hovering, dragging: dragging, enabled: enabled))
-    }
-
     func programButtonCursor(enabled: Bool = true) -> some View {
         modifier(ProgramButtonCursor(enabled: enabled))
     }
@@ -1032,13 +976,9 @@ private struct DraggableProgramWorkCard: View {
         )
             .opacity(isBeingDragged ? 0.25 : 1.0)
             .contentShape(Rectangle())
-            .programGrabCursor(
-                hovering: isHovered,
-                dragging: isBeingDragged,
-                enabled: canDrag
-            )
             .overlay(
                 ProgramWorkCardDragEventLayer(
+                    interactionID: "\(model.selectedProjectPath ?? "all")|\(lane.id)|\(item.id)",
                     canDrag: canDrag,
                     scrollBoundary: scrollBoundary,
                     onHoverChange: { isHovered = $0 },
@@ -1095,8 +1035,8 @@ private struct DraggableProgramWorkCard: View {
     }
 
     private func endDrag() {
-        guard canDrag else { return }
-        if let target = model.dragTarget, target.isValid {
+        guard model.dragItemID == item.id else { return }
+        if canDrag, let target = model.dragTarget, target.isValid {
             onDrop(item, lane, target.lane)
         }
         var transaction = Transaction()
@@ -1115,6 +1055,7 @@ private struct DraggableProgramWorkCard: View {
 }
 
 private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
+    let interactionID: String
     let canDrag: Bool
     let scrollBoundary: BoardOverlayScrollBoundary?
     let onHoverChange: (Bool) -> Void
@@ -1129,7 +1070,7 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: ProgramWorkCardDragEventView, context: Context) {
-        nsView.canDrag = canDrag
+        nsView.interactionID = interactionID
         nsView.boardOverlayScrollBoundary = scrollBoundary
         nsView.onHoverChange = onHoverChange
         nsView.onSelect = onSelect
@@ -1137,14 +1078,52 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
         nsView.windowLocationToBoardLocation = windowLocationToBoardLocation
         nsView.onChanged = onChanged
         nsView.onEnded = onEnded
+        nsView.canDrag = canDrag
         nsView.reportFrame()
+        nsView.schedulePointerReconciliation()
+    }
+}
+
+enum ProgramWorkCardCursorPresentation: Equatable {
+    case arrow
+    case openHand
+    case closedHand
+
+    static func resolve(canDrag: Bool, isDragging: Bool) -> Self {
+        guard canDrag else { return .arrow }
+        return isDragging ? .closedHand : .openHand
+    }
+
+    var cursor: NSCursor {
+        switch self {
+        case .arrow:
+            return .arrow
+        case .openHand:
+            return .openHand
+        case .closedHand:
+            return .closedHand
+        }
     }
 }
 
 final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProviding {
     static let dragThreshold: CGFloat = 5
 
-    var canDrag = false
+    var interactionID = "" {
+        didSet {
+            guard interactionID != oldValue else { return }
+            cancelPointerInteraction()
+        }
+    }
+    var canDrag = false {
+        didSet {
+            guard canDrag != oldValue else { return }
+            if !canDrag, isDragActive {
+                finishDrag()
+            }
+            refreshCursorPresentation()
+        }
+    }
     var boardOverlayScrollBoundary: BoardOverlayScrollBoundary?
     var onHoverChange: (Bool) -> Void = { _ in }
     var onSelect: () -> Void = {}
@@ -1153,12 +1132,21 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     var onChanged: (_ location: CGPoint, _ startLocation: CGPoint) -> Void = { _, _ in }
     var onEnded: () -> Void = {}
 
+    private(set) var isPointerInside = false
+    private(set) var isDragActive = false
+    var pointerLocationOverride: CGPoint?
+
     private var mouseDownLocation: CGPoint?
-    private var dragStarted = false
     private var lastFrame: CGRect = .null
     private var hoverTrackingArea: NSTrackingArea?
+    private weak var observedClipView: NSClipView?
+    private var pointerReconciliationScheduled = false
 
     override var isFlipped: Bool { true }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         bounds.contains(point) ? self : nil
@@ -1175,6 +1163,8 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
                 .activeAlways,
                 .inVisibleRect,
                 .mouseEnteredAndExited,
+                .mouseMoved,
+                .cursorUpdate,
                 .enabledDuringMouseDrag,
             ],
             owner: self,
@@ -1182,29 +1172,59 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
         )
         hoverTrackingArea = area
         addTrackingArea(area)
+        schedulePointerReconciliation()
     }
 
     override func mouseEntered(with event: NSEvent) {
-        onHoverChange(true)
+        setPointerInside(true)
     }
 
     override func mouseExited(with event: NSEvent) {
-        onHoverChange(false)
+        setPointerInside(false)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        reconcilePointerContainment(atWindowLocation: event.locationInWindow)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        cursorPresentation.cursor.set()
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: cursorPresentation.cursor)
     }
 
     override func layout() {
         super.layout()
         reportFrame()
+        schedulePointerReconciliation()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        observeEnclosingClipView()
+        if superview == nil {
+            cancelPointerInteraction()
+        } else {
+            schedulePointerReconciliation()
+        }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        observeEnclosingClipView()
+        if window == nil {
+            cancelPointerInteraction()
+        } else {
+            schedulePointerReconciliation()
+        }
         reportFrame()
     }
 
     override func mouseDown(with event: NSEvent) {
         mouseDownLocation = boardLocation(for: event)
-        dragStarted = false
+        isDragActive = false
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -1213,21 +1233,29 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
               let location = boardLocation(for: event) else {
             return
         }
-        guard dragStarted || hypot(location.x - startLocation.x, location.y - startLocation.y) >= Self.dragThreshold else {
+        guard isDragActive || hypot(location.x - startLocation.x, location.y - startLocation.y) >= Self.dragThreshold else {
             return
         }
-        dragStarted = true
+        if !isDragActive {
+            isDragActive = true
+            refreshCursorPresentation()
+        }
+        NSCursor.closedHand.set()
         onChanged(location, startLocation)
     }
 
     override func mouseUp(with event: NSEvent) {
-        if dragStarted {
-            onEnded()
+        if isDragActive {
+            finishDrag()
         } else {
             onSelect()
+            mouseDownLocation = nil
         }
-        mouseDownLocation = nil
-        dragStarted = false
+        reconcilePointerContainment(atWindowLocation: event.locationInWindow)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        cancelPointerInteraction()
     }
 
     func reportFrame() {
@@ -1241,6 +1269,106 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
         lastFrame = frame
         DispatchQueue.main.async { [weak self] in
             self?.onFrameChange(frame)
+        }
+    }
+
+    func reconcilePointerContainment(atWindowLocation location: CGPoint? = nil) {
+        guard let window else {
+            setPointerInside(false)
+            return
+        }
+        let pointerLocation = location ?? pointerLocationOverride ?? window.mouseLocationOutsideOfEventStream
+        var hitView = window.contentView?.hitTest(pointerLocation)
+        while let candidate = hitView {
+            if candidate === self {
+                setPointerInside(true)
+                return
+            }
+            hitView = candidate.superview
+        }
+        setPointerInside(false)
+    }
+
+    func schedulePointerReconciliation() {
+        guard !pointerReconciliationScheduled else { return }
+        pointerReconciliationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pointerReconciliationScheduled = false
+            self.reconcilePointerContainment()
+        }
+    }
+
+    var cursorPresentation: ProgramWorkCardCursorPresentation {
+        ProgramWorkCardCursorPresentation.resolve(
+            canDrag: canDrag,
+            isDragging: isDragActive
+        )
+    }
+
+    private func observeEnclosingClipView() {
+        if let observedClipView {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.boundsDidChangeNotification,
+                object: observedClipView
+            )
+        }
+        observedClipView = enclosingScrollView?.contentView
+        guard let observedClipView else { return }
+        observedClipView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(geometryDidChange),
+            name: NSView.boundsDidChangeNotification,
+            object: observedClipView
+        )
+    }
+
+    @objc private func geometryDidChange() {
+        schedulePointerReconciliation()
+    }
+
+    private func setPointerInside(_ isInside: Bool) {
+        guard isPointerInside != isInside else { return }
+        isPointerInside = isInside
+        let hoverChange = onHoverChange
+        DispatchQueue.main.async {
+            hoverChange(isInside)
+        }
+        if isInside {
+            refreshCursorPresentation()
+        } else {
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    private func refreshCursorPresentation() {
+        window?.invalidateCursorRects(for: self)
+        guard isPointerInside || isDragActive else { return }
+        cursorPresentation.cursor.set()
+    }
+
+    private func finishDrag() {
+        guard isDragActive else { return }
+        onEnded()
+        mouseDownLocation = nil
+        isDragActive = false
+        if isPointerInside {
+            refreshCursorPresentation()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    private func cancelPointerInteraction() {
+        let ownedCursor = isPointerInside || isDragActive
+        finishDrag()
+        mouseDownLocation = nil
+        setPointerInside(false)
+        window?.invalidateCursorRects(for: self)
+        if ownedCursor {
+            NSCursor.arrow.set()
         }
     }
 
