@@ -4,6 +4,8 @@ import Foundation
 final class ProcessManager {
 
     private var bridgeProcess: Process?
+    private var tutorialTTSProcess: Process?
+    private var tutorialTTSInput: Pipe?
     private static let bridgeSocketPath = "/tmp/voice_bridge.sock"
     private static let voiceCommandPath = "/tmp/voice_cmd_ready"
     private static let voiceCommandMetaPath = "/tmp/voice_cmd_ready.meta"
@@ -15,6 +17,7 @@ final class ProcessManager {
     private static let bridgeStopRequestedPath = "/tmp/voice_bridge_stop_requested"
     private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
     private static let bridgeProviderPath = "/tmp/voice_bridge.provider"
+    private static let tutorialTTSControlPath = "/tmp/relay_tutorial_tts_control.sock"
     private static let bridgeLaunchdLabel = "com.relay.voicebridge"
     static let pendingVoiceCommandTimeout: TimeInterval = 10
     private static let staleHeartbeatTimeout: TimeInterval = 30
@@ -112,6 +115,82 @@ final class ProcessManager {
         }
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("scripts/relay-orchestrator")
+    }
+
+    // MARK: - Local onboarding speech
+
+    func startTutorialTTS() -> Bool {
+        if tutorialTTSProcess?.isRunning == true {
+            return true
+        }
+
+        let script = bundledServicesDir.appendingPathComponent("tts_worker.py")
+        guard FileManager.default.fileExists(atPath: script.path) else {
+            NSLog("[ProcessManager] Tutorial TTS worker is missing: \(script.path)")
+            return false
+        }
+
+        let input = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: Self.servicePython)
+        process.arguments = [script.path]
+        process.currentDirectoryURL = bundledServicesDir
+        process.standardInput = input
+        var environment = ProcessInfo.processInfo.environment
+        environment["TTS_CONTROL_SOCK"] = Self.tutorialTTSControlPath
+        environment["VOICE_STATE_SOCK"] = StateEventBus.socketPath
+        environment["RELAY_TUTORIAL_TTS"] = "1"
+        process.environment = environment
+
+        do {
+            try process.run()
+        } catch {
+            NSLog("[ProcessManager] Failed to start tutorial TTS: \(error)")
+            return false
+        }
+
+        tutorialTTSProcess = process
+        tutorialTTSInput = input
+        return true
+    }
+
+    @discardableResult
+    func queueTutorialTTS(_ text: String) -> Bool {
+        writeTutorialTTSLine(text)
+    }
+
+    @discardableResult
+    func tutorialTTSCommand(_ command: String) -> Bool {
+        let control: String
+        switch command {
+        case "play":
+            control = "__PLAY__"
+        case "replay":
+            control = "__REPLAY__"
+        case "skip":
+            control = "__CANCEL__"
+        default:
+            return false
+        }
+        return writeTutorialTTSLine(control)
+    }
+
+    @discardableResult
+    private func writeTutorialTTSLine(_ text: String) -> Bool {
+        guard tutorialTTSProcess?.isRunning == true,
+              let input = tutorialTTSInput,
+              let data = "\(text)\n".data(using: .utf8)
+        else { return false }
+        input.fileHandleForWriting.write(data)
+        return true
+    }
+
+    func stopTutorialTTS() {
+        guard tutorialTTSProcess != nil else { return }
+        tutorialTTSCommand("skip")
+        try? tutorialTTSInput?.fileHandleForWriting.close()
+        tutorialTTSInput = nil
+        tutorialTTSProcess = nil
     }
 
     // MARK: - Bridge lifecycle

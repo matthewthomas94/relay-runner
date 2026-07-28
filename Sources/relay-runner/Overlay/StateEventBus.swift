@@ -9,13 +9,32 @@ actor StateEventBus {
     private var fd: Int32 = -1
     private var receiveTask: Task<Void, Never>?
     private weak var stateMachine: StateMachine?
-    private let onServiceEvent: @MainActor (_ source: String, _ state: String, _ text: String?) -> Void
+    private let shouldHandleServiceEvent: @MainActor (
+        _ source: String,
+        _ tutorial: Bool
+    ) -> Bool
+    private let onServiceEvent: @MainActor (
+        _ source: String,
+        _ state: String,
+        _ text: String?,
+        _ tutorial: Bool
+    ) -> Void
 
     init(
         stateMachine: StateMachine,
-        onServiceEvent: @escaping @MainActor (_ source: String, _ state: String, _ text: String?) -> Void = { _, _, _ in }
+        shouldHandleServiceEvent: @escaping @MainActor (
+            _ source: String,
+            _ tutorial: Bool
+        ) -> Bool = { _, _ in true },
+        onServiceEvent: @escaping @MainActor (
+            _ source: String,
+            _ state: String,
+            _ text: String?,
+            _ tutorial: Bool
+        ) -> Void = { _, _, _, _ in }
     ) {
         self.stateMachine = stateMachine
+        self.shouldHandleServiceEvent = shouldHandleServiceEvent
         self.onServiceEvent = onServiceEvent
     }
 
@@ -82,20 +101,23 @@ actor StateEventBus {
                 else { continue }
 
                 let text = json["text"] as? String
+                let tutorial = json["tutorial"] as? Bool ?? false
                 let autoDismiss = json["auto_dismiss_seconds"] as? Double
 
                 NSLog("[StateEventBus] \(source):\(state)\(text.map { " text=\($0.prefix(40))" } ?? "")")
 
                 let sm = await self.stateMachine
+                let shouldHandleServiceEvent = await self.shouldHandleServiceEvent
                 let onServiceEvent = await self.onServiceEvent
                 await MainActor.run {
+                    guard shouldHandleServiceEvent(source, tutorial) else { return }
                     sm?.handleServiceEvent(
                         source: source,
                         newState: state,
                         text: text,
                         autoDismiss: autoDismiss
                     )
-                    onServiceEvent(source, state, text)
+                    onServiceEvent(source, state, text, tutorial)
                 }
             }
         }

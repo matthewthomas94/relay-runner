@@ -134,15 +134,11 @@ final class AppState {
             onOpenExternalWindow: { [weak self] in
                 self?.suspendWorkspaceForExternalWindow()
             },
-            startSessionForTutorial: { [weak self] in
-                self?.startOnboardingTutorialSession() ?? false
+            prepareTutorialSpeech: { [weak self] in
+                self?.prepareOnboardingTutorialSpeech() ?? false
             },
-            tutorialSessionReady: { [weak self] in
-                guard let self else { return false }
-                let daemonAlive = self.processManager.bridgeAlive()
-                return self.embeddedTerminal.isEmbeddedProcessRunning
-                    && daemonAlive
-                    && self.processManager.bridgeConsumerAlive()
+            stopTutorialSpeech: { [weak self] in
+                self?.stopOnboardingTutorialSpeech()
             },
             openWorkspaceAfterCompletion: { [weak self] in
                 self?.showWorkspaceWork()
@@ -196,6 +192,7 @@ final class AppState {
     private var observedRecordingStartedSerial = 0
     private var observedSpeechDetectedSerial = 0
     private var observedDeliveredTranscriptSerial = 0
+    private var observedTutorialTranscriptSerial = 0
     /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
     private var sessionPromptCapsState = false
     private var sessionPromptGate = SessionPromptGate()
@@ -660,6 +657,7 @@ final class AppState {
 
     private func startConfiguredSTT(reason: String, failureLogPrefix: String) {
         let engine = STTEngine(config: config.stt)
+        engine.tutorialActive = onboarding.isSessionControlsTutorialActive
         sttEngine = engine
         resetObservedTutorialSTTSerials()
         sttSetupStartedAt = Date()
@@ -1045,28 +1043,16 @@ final class AppState {
         )
     }
 
-    private func startOnboardingTutorialSession() -> Bool {
-        // A context-backed bridge can outlive its terminal consumer. The
-        // tutorial can only reuse the app-owned process that receives voice.
-        if Self.shouldReuseOnboardingTutorialSession(
-            menuSessionActive: menuSessionActive,
-            embeddedProcessRunning: embeddedTerminal.isEmbeddedProcessRunning
-        ) {
-            activeSessionSuppressesStartupGreeting = true
-            return true
-        }
-        return newSession(
-            allowDuringFirstRun: true,
-            showsWorkspaceOnLaunch: false,
-            suppressesStartupGreeting: true
-        )
+    private func prepareOnboardingTutorialSpeech() -> Bool {
+        guard processManager.startTutorialTTS() else { return false }
+        sttEngine?.tutorialActive = true
+        stateMachine.dismissSessionPrompt()
+        return true
     }
 
-    static func shouldReuseOnboardingTutorialSession(
-        menuSessionActive: Bool,
-        embeddedProcessRunning: Bool
-    ) -> Bool {
-        menuSessionActive && embeddedProcessRunning
+    private func stopOnboardingTutorialSpeech() {
+        sttEngine?.tutorialActive = false
+        processManager.stopTutorialTTS()
     }
 
     static func sessionLaunchRequest(
@@ -1650,8 +1636,21 @@ final class AppState {
         // State event bus (listens for Python service state)
         let bus = StateEventBus(
             stateMachine: stateMachine,
-            onServiceEvent: { [weak self] source, state, text in
-                self?.handleOnboardingTutorialServiceEvent(source: source, state: state, text: text)
+            shouldHandleServiceEvent: { [weak self] source, tutorial in
+                guard let self else { return false }
+                return Self.shouldHandleServiceEvent(
+                    source: source,
+                    tutorial: tutorial,
+                    tutorialActive: self.onboarding.isSessionControlsTutorialActive
+                )
+            },
+            onServiceEvent: { [weak self] source, state, text, tutorial in
+                self?.handleOnboardingTutorialServiceEvent(
+                    source: source,
+                    state: state,
+                    text: text,
+                    tutorial: tutorial
+                )
             }
         )
         eventBus = bus
@@ -1773,7 +1772,8 @@ final class AppState {
             }
 
             // Session prompt: handle responses
-            if case .sessionPrompt = self.stateMachine.state {
+            if case .sessionPrompt = self.stateMachine.state,
+               !self.onboarding.isSessionControlsTutorialActive {
                 if engine.playRequested {
                     // Double-tap Alt → start new session
                     engine.playRequested = false
@@ -1794,7 +1794,12 @@ final class AppState {
             // Real-time check on each recording start — the cached value
             // can be stale for up to 3s after a bridge dies.
             // Also detect orphaned relay bridges (process alive but no consumer).
-            if justStartedRecording {
+            if justStartedRecording && self.onboarding.isSessionControlsTutorialActive {
+                self.publishOnboardingTutorialSTTEvents(
+                    from: engine,
+                    includeRecordingStart: true
+                )
+            } else if justStartedRecording {
                 let daemonAlive = self.processManager.bridgeAlive()
                 let pendingDeliveryState = self.processManager.pendingVoiceCommandDeliveryState()
                 let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
@@ -1866,7 +1871,16 @@ final class AppState {
                 default:
                     playbackActive = false
                 }
-                self.onboarding.noteTutorialPlaybackRequested(playbackActive: playbackActive)
+                if let command = self.onboarding.noteTutorialPlaybackRequested(
+                    playbackActive: playbackActive
+                ) {
+                    switch command {
+                    case .play:
+                        self.processManager.tutorialTTSCommand("play")
+                    case .replay:
+                        self.processManager.tutorialTTSCommand("replay")
+                    }
+                }
             }
 
             if engine.wasCancelled {
@@ -1891,6 +1905,7 @@ final class AppState {
         observedRecordingStartedSerial = 0
         observedSpeechDetectedSerial = 0
         observedDeliveredTranscriptSerial = 0
+        observedTutorialTranscriptSerial = 0
     }
 
     private func publishOnboardingTutorialSTTEvents(from engine: STTEngine,
@@ -1905,12 +1920,39 @@ final class AppState {
         }
         if engine.deliveredTranscriptSerial > observedDeliveredTranscriptSerial {
             observedDeliveredTranscriptSerial = engine.deliveredTranscriptSerial
-            onboarding.noteTutorialRecordingSent()
+            _ = onboarding.noteTutorialRecordingSent()
+        }
+        if engine.tutorialTranscriptSerial > observedTutorialTranscriptSerial {
+            observedTutorialTranscriptSerial = engine.tutorialTranscriptSerial
+            if let reply = onboarding.noteTutorialRecordingSent() {
+                if processManager.queueTutorialTTS(reply) {
+                    onboarding.noteTutorialResponseReady(reply)
+                    stateMachine.handleServiceEvent(
+                        source: "tts",
+                        newState: "message_waiting",
+                        text: reply
+                    )
+                }
+            }
         }
     }
 
-    private func handleOnboardingTutorialServiceEvent(source: String, state: String, text: String?) {
-        guard source == "tts" else { return }
+    static func shouldHandleServiceEvent(
+        source: String,
+        tutorial: Bool,
+        tutorialActive: Bool
+    ) -> Bool {
+        guard source == "tts" else { return true }
+        return tutorial ? tutorialActive : !tutorialActive
+    }
+
+    private func handleOnboardingTutorialServiceEvent(
+        source: String,
+        state: String,
+        text: String?,
+        tutorial: Bool
+    ) {
+        guard source == "tts", tutorial else { return }
         switch state {
         case "message_waiting":
             onboarding.noteTutorialResponseReady(text)

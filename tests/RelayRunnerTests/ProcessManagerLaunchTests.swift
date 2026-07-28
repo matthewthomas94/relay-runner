@@ -74,7 +74,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(script.contains("--dangerously-bypass-approvals-and-sandbox"))
     }
 
-    func testTutorialLaunchScriptSuppressesOnlyTheInitialBridgeGreetingForCodexAndClaude() {
+    func testLaunchScriptCanSuppressOnlyTheInitialBridgeGreetingForCodexAndClaude() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
 
         for provider in [GeneralConfig.AgentProvider.codex, .claude] {

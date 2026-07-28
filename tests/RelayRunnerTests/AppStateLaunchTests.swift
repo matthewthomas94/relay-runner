@@ -56,18 +56,26 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertEqual(config.general.working_directory, "/Users/example/dev")
     }
 
-    func testOnboardingTutorialOnlyReusesRunningEmbeddedMenuSession() {
-        XCTAssertTrue(AppState.shouldReuseOnboardingTutorialSession(
-            menuSessionActive: true,
-            embeddedProcessRunning: true
+    func testOnboardingTutorialAcceptsOnlyItsIsolatedTTSState() {
+        XCTAssertTrue(AppState.shouldHandleServiceEvent(
+            source: "tts",
+            tutorial: true,
+            tutorialActive: true
         ))
-        XCTAssertFalse(AppState.shouldReuseOnboardingTutorialSession(
-            menuSessionActive: false,
-            embeddedProcessRunning: true
+        XCTAssertFalse(AppState.shouldHandleServiceEvent(
+            source: "tts",
+            tutorial: false,
+            tutorialActive: true
         ))
-        XCTAssertFalse(AppState.shouldReuseOnboardingTutorialSession(
-            menuSessionActive: true,
-            embeddedProcessRunning: false
+        XCTAssertFalse(AppState.shouldHandleServiceEvent(
+            source: "tts",
+            tutorial: true,
+            tutorialActive: false
+        ))
+        XCTAssertTrue(AppState.shouldHandleServiceEvent(
+            source: "bridge",
+            tutorial: false,
+            tutorialActive: true
         ))
     }
 

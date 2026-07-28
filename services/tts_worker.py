@@ -20,7 +20,8 @@ import numpy as np
 from config import load_config
 
 TTS_CONTROL_SOCK = os.environ.get("TTS_CONTROL_SOCK", "/tmp/tts_control.sock")
-VOICE_STATE_SOCK = "/tmp/voice_state.sock"
+VOICE_STATE_SOCK = os.environ.get("VOICE_STATE_SOCK", "/tmp/voice_state.sock")
+TUTORIAL_TTS_MODE = os.environ.get("RELAY_TUTORIAL_TTS") == "1"
 
 
 _SENTENCE_END_RE = re.compile(r"[.!?]+[\"')\]]*(?=\s+|$)")
@@ -50,7 +51,12 @@ def _sentence_chunks(text: str) -> list[str]:
 def _notify_state(state: str, **kwargs):
     """Send a state update to the overlay app via Unix datagram socket.
     Silently fails if the socket doesn't exist (overlay not running)."""
-    msg = {"source": "tts", "state": state, **kwargs}
+    msg = {
+        "source": "tts",
+        "state": state,
+        "tutorial": TUTORIAL_TTS_MODE,
+        **kwargs,
+    }
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         s.sendto(json.dumps(msg).encode(), VOICE_STATE_SOCK)
@@ -174,7 +180,7 @@ class TTSWorker:
         self._voice: str = cfg.get("voice", "bm_george")
         self._rate: float = float(cfg.get("rate", 1.3))
         self._chime: str = _resolve_chime(cfg.get("chime", "Tink"))
-        self._auto_play: bool = cfg.get("auto_play", False)
+        self._auto_play: bool = False if TUTORIAL_TTS_MODE else cfg.get("auto_play", False)
 
         # Load Kokoro model
         self._kokoro = None
@@ -217,7 +223,7 @@ class TTSWorker:
     def _load_voice(self):
         """Load Kokoro model, downloading if needed."""
         paths = _find_kokoro_model()
-        if not paths:
+        if not paths and not TUTORIAL_TTS_MODE:
             paths = _download_kokoro_model()
 
         if not paths:
@@ -260,7 +266,13 @@ class TTSWorker:
                 continue
 
             idle_ticks = 0
-            self._handle_collected_chunk(chunk)
+            self._handle_collected_item(chunk)
+
+    def _handle_collected_item(self, chunk) -> None:
+        if isinstance(chunk, dict) and chunk.get("_tutorial_control"):
+            self._handle_command(str(chunk["_tutorial_control"]))
+            return
+        self._handle_collected_chunk(chunk)
 
     @staticmethod
     def _queue_texts(chunk) -> tuple[str, str, dict | None]:
@@ -897,6 +909,17 @@ class TTSWorker:
         self.skip()
 
 
+def _handle_standalone_line(worker: TTSWorker, q: queue.Queue, text: str) -> None:
+    if text == "__PLAY__":
+        q.put({"_tutorial_control": "play"})
+    elif text == "__REPLAY__":
+        q.put({"_tutorial_control": "replay"})
+    elif text == "__CANCEL__":
+        q.put({"_tutorial_control": "skip"})
+    elif text:
+        q.put(text)
+
+
 def main():
     """Standalone mode -- read lines from stdin, queue for TTS."""
     q: queue.Queue = queue.Queue()
@@ -906,9 +929,7 @@ def main():
 
     try:
         for line in sys.stdin:
-            text = line.strip()
-            if text:
-                q.put(text)
+            _handle_standalone_line(worker, q, line.strip())
     except KeyboardInterrupt:
         pass
     finally:
