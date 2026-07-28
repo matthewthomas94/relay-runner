@@ -157,6 +157,7 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
             sourceLane: .backlog,
             targetLane: .inProgress
         ) != nil
+        XCTAssertFalse(manualInProgress)
         XCTAssertLessThan(percentileValue(orderingSamples, 0.50), 8)
         XCTAssertLessThan(percentileValue(orderingSamples, 0.95), 16.7)
         XCTAssertLessThan(percentileValue(queuedHoverSamples, 0.95), 16.7)
@@ -170,7 +171,7 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
                 + "drag_to_ready_ms=\(dragMilliseconds) "
                 + "queued_hover_p95_ms=\(percentile(queuedHoverSamples, 0.95)) "
                 + "queued_drag_p95_ms=\(percentile(queuedDragSamples, 0.95)) "
-                + "manual_in_progress_accepted=\(manualInProgress)"
+                + "manual_in_progress_rejected=\(!manualInProgress)"
         )
     }
 

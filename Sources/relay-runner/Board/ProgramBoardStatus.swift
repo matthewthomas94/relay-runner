@@ -372,6 +372,7 @@ enum ProgramBoardDropPolicy {
         targetLane: ProgramBoardLane
     ) -> ProgramBoardDropRequest? {
         guard sourceLane != targetLane,
+              targetLane != .inProgress,
               item.isProgramBoardDraggable,
               let ticketID = cleaned(item.ticketID),
               let repoPath = cleaned(item.project?.path) else {
@@ -390,7 +391,8 @@ enum ProgramBoardDropPolicy {
         ticket: Ticket,
         allTickets: [Ticket]
     ) -> ProgramBoardDropRequest? {
-        guard ticket.id == request.ticketID,
+        guard request.targetStatus != .inProgress,
+              ticket.id == request.ticketID,
               !ticket.canceled,
               ticket.runId == nil,
               ticket.status != request.targetStatus else {
