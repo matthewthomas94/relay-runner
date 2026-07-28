@@ -89,6 +89,24 @@ class RejectingTraceMessenger(FakeMessenger):
         return False
 
 
+class FakeSidecarLane:
+    def __init__(self):
+        self.submissions: list[tuple[str, dict]] = []
+
+    def submit(self, prompt: str, command: dict) -> bool:
+        self.submissions.append((prompt, command))
+        return True
+
+
+class CapturingSpeechQueue:
+    def __init__(self):
+        self.submissions: list[tuple[str, dict]] = []
+
+    def submit_text(self, text: str, **metadata) -> bool:
+        self.submissions.append((text, metadata))
+        return True
+
+
 class VoiceBridgePreemptionTests(unittest.TestCase):
     def test_relay_startup_queues_greeting_once(self):
         worker = FakeTTSWorker()
@@ -241,6 +259,81 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
         publish_command.assert_called_once()
         schedule_fallback.assert_not_called()
+
+    def test_run_sidecar_bypasses_active_foreground_publication_path(self):
+        worker = FakeTTSWorker()
+        messenger = FakeMessenger()
+        lane = FakeSidecarLane()
+        shutdown_event = threading.Event()
+        action = types.SimpleNamespace(kind="conversation", outcome="independent research")
+        disposition_payload = {
+            "intent_id": "cmd-2",
+            "route": "run_sidecar",
+            "target_work_ids": ["cmd-1"],
+            "conflicting_work_ids": [],
+            "public_reason": "Independent bounded public research.",
+            "clarification_question": None,
+            "authorization_effect": "preserve",
+            "resource_claims": [],
+        }
+        disposition = types.SimpleNamespace(
+            intent_id="cmd-2",
+            route=voice_bridge.IntentRoute.RUN_SIDECAR,
+            public_reason=disposition_payload["public_reason"],
+            to_dict=lambda: disposition_payload,
+        )
+
+        def read_once(_fd, _size):
+            shutdown_event.set()
+            return b"In parallel, research and compare the public APIs\n"
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge.os, "close"),
+            mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+            mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text", return_value=True),
+            mock.patch.object(voice_bridge, "_begin_relay_command", return_value={
+                "relay_command_seq": 2,
+                "relay_command_id": "cmd-2",
+            }),
+            mock.patch.object(voice_bridge, "resolve_command_action", return_value=action),
+            mock.patch.object(
+                voice_bridge,
+                "resolve_intent_disposition",
+                return_value=disposition,
+            ),
+            mock.patch.object(voice_bridge, "format_command_for_agent", return_value="sidecar prompt"),
+            mock.patch.object(voice_bridge, "_metadata_for_action", return_value={
+                "relay_command_seq": 2,
+                "relay_command_id": "cmd-2",
+                "intent_id": "cmd-2",
+                "source_text": "In parallel, research and compare the public APIs",
+                "work_disposition": disposition_payload,
+            }),
+            mock.patch.object(voice_bridge, "_queue_voice_acknowledgement", return_value=True),
+            mock.patch.object(
+                voice_bridge,
+                "_enqueue_sidecar_intent",
+                return_value=True,
+            ) as enqueue_sidecar,
+            mock.patch.object(voice_bridge, "_start_pm_update_mode") as start_pm_update,
+            mock.patch.object(voice_bridge, "_publish_command") as publish_command,
+        ):
+            voice_bridge._run_relay(
+                worker,
+                shutdown_event,
+                messenger=messenger,
+                sidecar_lane=lane,
+            )
+
+        enqueue_sidecar.assert_called_once()
+        publish_command.assert_not_called()
+        start_pm_update.assert_not_called()
+        self.assertEqual(messenger.users[0][1]["work_disposition"], disposition_payload)
 
     def test_newer_command_suppresses_stale_tts_after_first_claimed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1852,6 +1945,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertIn("relay_authorization.py", script)
         self.assertIn("intent_arbitration.py", script)
         self.assertIn("intent_inbox.py", script)
+        self.assertIn("sidecar_lane.py", script)
         self.assertIn("speech_coordinator.py", script)
         self.assertIn("codex_model_catalog.py", script)
         self.assertNotIn('if [ -f "$PROJECT_ROOT/services/$f" ]', script)
@@ -2137,6 +2231,126 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 [item["relay_command_id"] for item in state["deliverable_commands"]],
                 ["cmd-2"],
             )
+
+    def test_app_owned_sidecar_uses_lane_without_foreground_mailbox_deferral(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = command_path + ".meta"
+            inbox = voice_bridge.IntentInbox(os.path.join(temp_dir, "inbox.sqlite3"))
+            lane = FakeSidecarLane()
+            command = {
+                "relay_command_seq": 2,
+                "relay_command_id": "cmd-2",
+                "intent_id": "intent-2",
+                "source_text": "In parallel, research and compare the public APIs",
+                "work_disposition": {
+                    "route": "run_sidecar",
+                    "public_reason": "Independent bounded public research.",
+                },
+            }
+
+            accepted = voice_bridge._enqueue_sidecar_intent(
+                prompt="sidecar agent prompt",
+                source_text=command["source_text"],
+                metadata=command,
+                sidecar_lane=lane,
+                inbox=inbox,
+                state_path=state_path,
+            )
+
+            self.assertTrue(accepted)
+            self.assertFalse(os.path.exists(command_path))
+            self.assertFalse(os.path.exists(meta_path))
+            self.assertIsNone(inbox.materialize_next(
+                command_path=command_path,
+                metadata_path=meta_path,
+                transport="app-owned",
+            ))
+            self.assertEqual(lane.submissions[0][0], command["source_text"])
+            self.assertEqual(inbox.records()[0]["route"], "run_sidecar")
+            self.assertEqual(inbox.records()[0]["state"], "pending")
+
+            messenger = FakeMessenger()
+            started = voice_bridge.SidecarLifecycleEvent(
+                phase="started",
+                command=lane.submissions[0][1],
+                public_summary="Independent bounded public research.",
+            )
+            completed = voice_bridge.SidecarLifecycleEvent(
+                phase="completed",
+                command=lane.submissions[0][1],
+                public_summary="Independent bounded public research.",
+            )
+            self.assertTrue(voice_bridge._handle_sidecar_lifecycle(
+                started,
+                inbox=inbox,
+                messenger=messenger,
+                state_path=state_path,
+            ))
+            self.assertEqual(inbox.records()[0]["state"], "claimed")
+            self.assertTrue(voice_bridge._handle_sidecar_lifecycle(
+                completed,
+                inbox=inbox,
+                messenger=messenger,
+                state_path=state_path,
+            ))
+            self.assertEqual(inbox.records()[0]["state"], "acked")
+            self.assertEqual(
+                [trace["kind"] for trace in messenger.traces],
+                ["sidecar-started", "sidecar-completed"],
+            )
+
+    def test_sidecar_final_uses_lifecycle_speech_metadata_and_freshness(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = {
+                "relay_command_seq": 4,
+                "relay_command_id": "cmd-4",
+                "work_disposition": {
+                    "route": "run_sidecar",
+                    "public_reason": "Independent bounded public research.",
+                },
+            }
+            Path(state_path).write_text(json.dumps(command))
+            speech_queue = CapturingSpeechQueue()
+            worker = types.SimpleNamespace(input_queue=speech_queue)
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+
+            with mock.patch.object(voice_bridge, "_publish_authoritative_preview"):
+                delivered = voice_bridge._handle_sidecar_final(
+                    "The APIs differ in their retry contracts.",
+                    command,
+                    tts_worker=worker,
+                    messenger=None,
+                    state_path=state_path,
+                )
+
+            self.assertTrue(delivered)
+            self.assertEqual(len(speech_queue.submissions), 1)
+            spoken, speech_metadata = speech_queue.submissions[0]
+            self.assertEqual(spoken, "The APIs differ in their retry contracts.")
+            self.assertEqual(speech_metadata["source"], "lifecycle")
+            self.assertEqual(speech_metadata["kind"], "final")
+            self.assertTrue(speech_metadata["authoritative"])
+            self.assertEqual(
+                speech_metadata["work_disposition"]["route"],
+                "run_sidecar",
+            )
+
+            Path(state_path).write_text(json.dumps({
+                "relay_command_seq": 5,
+                "relay_command_id": "cmd-5",
+            }))
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            self.assertFalse(voice_bridge._handle_sidecar_final(
+                "Stale sidecar result.",
+                command,
+                tts_worker=worker,
+                messenger=None,
+                state_path=state_path,
+            ))
+            self.assertEqual(len(speech_queue.submissions), 1)
 
     def test_newer_pending_project_work_does_not_create_visible_tickets(self):
         with tempfile.TemporaryDirectory() as temp_dir:

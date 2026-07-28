@@ -51,6 +51,11 @@ from pm_frontstage import (
 )
 from config import load_config
 from messenger import MessengerRuntime, create_messenger_runtime
+from sidecar_lane import (
+    SidecarLane,
+    SidecarLifecycleEvent,
+    create_sidecar_executor,
+)
 from speech_coordinator import SpeechCoordinator
 from tts_worker import TTS_CONTROL_SOCK, TTSWorker, publish_waiting_preview
 
@@ -1448,6 +1453,94 @@ def _start_intent_inbox_pump(
     return thread
 
 
+def _sync_intent_inbox_state(
+    inbox: IntentInbox,
+    *,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> None:
+    try:
+        with _VOICE_STATE_LOCK:
+            sync_deliverable_state(state_path, inbox)
+    except OSError as exc:
+        print(f"[voice_bridge] Could not sync intent inbox state: {exc}", file=sys.stderr)
+
+
+def _enqueue_sidecar_intent(
+    *,
+    prompt: str,
+    source_text: str,
+    metadata: dict,
+    sidecar_lane: SidecarLane,
+    inbox: IntentInbox | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    """Route an eligible sidecar without occupying the foreground provider mailbox."""
+    stored = dict(metadata)
+    stored["agent_prompt"] = prompt
+    if inbox is not None:
+        stored = inbox.enqueue(
+            prompt,
+            stored,
+            IntentRoute.RUN_SIDECAR.value,
+        )
+    with _VOICE_STATE_LOCK:
+        _atomic_write_json(state_path, stored)
+        if inbox is not None:
+            sync_deliverable_state(state_path, inbox)
+    return sidecar_lane.submit(source_text, stored)
+
+
+def _handle_sidecar_lifecycle(
+    event: SidecarLifecycleEvent,
+    *,
+    inbox: IntentInbox | None,
+    messenger: MessengerRuntime | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    """Feed sidecar state back through the foreground speech/freshness boundary."""
+    if inbox is not None:
+        inbox.observe_claim(
+            event.command,
+            provider_turn_seen=event.phase in {"completed", "failed"},
+        )
+        _sync_intent_inbox_state(inbox, state_path=state_path)
+    if messenger is None:
+        return False
+    return messenger.submit_trace({
+        "kind": f"sidecar-{event.phase}",
+        "message": (
+            f"Sidecar state={event.phase}; "
+            f"{event.public_summary}"
+        ),
+        "command": event.command,
+        "work_disposition": event.command.get("work_disposition"),
+    })
+
+
+def _handle_sidecar_final(
+    text: str,
+    command: dict,
+    *,
+    tts_worker: TTSWorker,
+    messenger: MessengerRuntime | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    """Submit a sidecar outcome as a current authoritative lifecycle final."""
+    payload = {
+        "text": str(text or "").strip(),
+        "relay_command_seq": command.get("relay_command_seq"),
+        "relay_command_id": command.get("relay_command_id"),
+        "speech_source": "lifecycle",
+        "work_disposition": command.get("work_disposition"),
+    }
+    return _handle_orchestrator_reply_control(
+        json.dumps(payload),
+        tts_worker=tts_worker,
+        messenger=messenger,
+        state_path=state_path,
+    )
+
+
 def _foreground_reply_delivered(command: dict | None) -> bool:
     key = _relay_command_key(command)
     if key is None:
@@ -2100,6 +2193,8 @@ def _handle_orchestrator_reply_control(
     payload = {"text": reply}
     if data.get("speech_source"):
         payload["speech_source"] = str(data["speech_source"])
+    if isinstance(data.get("work_disposition"), dict):
+        payload["work_disposition"] = data["work_disposition"]
     for key in ("relay_command_seq", "relay_command_id"):
         if key in command:
             payload[key] = command[key]
@@ -2117,10 +2212,19 @@ def _handle_orchestrator_reply_control(
         state_path=state_path,
         allow_pending_command=True,
         notify_waiting_preview=lambda _text: None,
-        source="fallback",
-        kind="fallback",
+        source=(
+            "lifecycle"
+            if payload.get("speech_source") == "lifecycle"
+            else "fallback"
+        ),
+        kind=(
+            "final"
+            if payload.get("speech_source") == "lifecycle"
+            else "fallback"
+        ),
         authoritative=True,
         semantic_brief=reply,
+        work_disposition=payload.get("work_disposition"),
         replayable=True,
     )
     if delivered:
@@ -2151,6 +2255,7 @@ def _run_relay(
     messenger: MessengerRuntime | None = None,
     suppress_startup_greeting: bool = False,
     inbox: IntentInbox | None = None,
+    sidecar_lane: SidecarLane | None = None,
 ):
     """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
     suppress_next_messenger_user_reply = suppress_startup_greeting
@@ -2175,6 +2280,18 @@ def _run_relay(
 
     if inbox is not None:
         _start_intent_inbox_pump(inbox, shutdown_event)
+        if sidecar_lane is not None:
+            for pending in inbox.pending_for_route(IntentRoute.RUN_SIDECAR.value):
+                metadata = pending.get("metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                with _VOICE_STATE_LOCK:
+                    _atomic_write_json(VOICE_COMMAND_STATE_FILE, metadata)
+                    sync_deliverable_state(VOICE_COMMAND_STATE_FILE, inbox)
+                sidecar_lane.submit(
+                    str(metadata.get("source_text") or pending.get("prompt") or ""),
+                    metadata,
+                )
 
     if not suppress_startup_greeting:
         _queue_tts_text(
@@ -2276,7 +2393,7 @@ def _run_relay(
                     source_text=text,
                     active_work=_active_work(repo_path=Path.cwd()),
                 )
-                if inbox is not None:
+                if inbox is not None or disposition.route == IntentRoute.RUN_SIDECAR:
                     relay_command["work_disposition"] = disposition.to_dict()
                 metadata = _metadata_for_action(action, relay_command, disposition)
                 try:
@@ -2302,6 +2419,40 @@ def _run_relay(
                     source_text=text,
                     discard_pending_command=inbox is None,
                 )
+                if disposition.route == IntentRoute.RUN_SIDECAR:
+                    accepted = (
+                        sidecar_lane is not None
+                        and _enqueue_sidecar_intent(
+                            prompt=format_command_for_agent(action, disposition.to_dict()),
+                            source_text=text,
+                            metadata=metadata,
+                            sidecar_lane=sidecar_lane,
+                            inbox=inbox,
+                        )
+                    )
+                    if not accepted:
+                        failure = SidecarLifecycleEvent(
+                            phase="failed",
+                            command=metadata,
+                            public_summary=disposition.public_reason,
+                        )
+                        _handle_sidecar_lifecycle(
+                            failure,
+                            inbox=inbox,
+                            messenger=messenger,
+                        )
+                        _handle_sidecar_final(
+                            "The independent read-only task could not enter its bounded sidecar lane.",
+                            metadata,
+                            tts_worker=tts_worker,
+                            messenger=messenger,
+                        )
+                    print(
+                        f"[voice_bridge] Sidecar {'accepted' if accepted else 'rejected'} "
+                        f"for intent={disposition.intent_id}",
+                        file=sys.stderr,
+                    )
+                    continue
                 if _should_fanout_raw_instruction_to_orchestrator(action):
                     _fanout_raw_instruction_to_orchestrator(
                         text,
@@ -2441,6 +2592,20 @@ def main():
         )
         if messenger is not None:
             messenger.start()
+        sidecar_lane = SidecarLane(
+            create_sidecar_executor(cfg, cwd=str(Path.cwd())),
+            on_lifecycle=lambda event: _handle_sidecar_lifecycle(
+                event,
+                inbox=intent_inbox,
+                messenger=messenger,
+            ),
+            on_final=lambda text, command: _handle_sidecar_final(
+                text,
+                command,
+                tts_worker=tts_worker,
+                messenger=messenger,
+            ),
+        )
         _start_messenger_outcome_polling(
             orchestrator_session=orchestrator_session,
             messenger=messenger,
@@ -2457,9 +2622,11 @@ def main():
                     False,
                 ),
                 inbox=intent_inbox,
+                sidecar_lane=sidecar_lane,
             )
         finally:
             shutdown_event.set()
+            sidecar_lane.shutdown()
             if messenger is not None:
                 messenger.shutdown()
             stop_persistent_orchestrator_lifecycle(

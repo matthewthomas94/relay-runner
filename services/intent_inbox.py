@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _key(payload: dict[str, Any] | None) -> tuple[int, str] | None:
@@ -58,7 +58,9 @@ class IntentInbox:
                     claimed_at REAL,
                     acked_at REAL,
                     cancelled_at REAL,
-                    transport TEXT
+                    transport TEXT,
+                    lease_attempts INTEGER NOT NULL DEFAULT 0,
+                    recovered_at REAL
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS intents_command_key
                     ON intents(command_seq, command_id);
@@ -70,9 +72,23 @@ class IntentInbox:
             }
             if "ack_id" not in columns:
                 self._connection.execute("ALTER TABLE intents ADD COLUMN ack_id TEXT")
+            if "lease_attempts" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE intents ADD COLUMN lease_attempts INTEGER NOT NULL DEFAULT 0"
+                )
+            if "recovered_at" not in columns:
+                self._connection.execute("ALTER TABLE intents ADD COLUMN recovered_at REAL")
             self._connection.execute(
                 "INSERT OR REPLACE INTO inbox_meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
+            )
+            self._connection.execute(
+                """
+                UPDATE intents
+                   SET state='pending', recovered_at=?
+                 WHERE state IN ('delivered', 'claimed')
+                """,
+                (time.time(),),
             )
 
     def close(self) -> None:
@@ -125,7 +141,9 @@ class IntentInbox:
                 """
                 UPDATE intents
                    SET state='cancelled', cancelled_at=?
-                 WHERE command_seq < ? AND state IN ('pending', 'delivered')
+                 WHERE command_seq < ?
+                   AND route != 'run_sidecar'
+                   AND state IN ('pending', 'delivered', 'claimed')
                 """,
                 (now, int(command_seq)),
             )
@@ -142,8 +160,26 @@ class IntentInbox:
         if os.path.exists(command_path) or os.path.exists(metadata_path):
             return None
         with self._lock, self._connection:
+            unacked = self._connection.execute(
+                """
+                SELECT ordinal
+                  FROM intents
+                 WHERE route != 'run_sidecar'
+                   AND state IN ('delivered', 'claimed')
+                 ORDER BY ordinal
+                 LIMIT 1
+                """
+            ).fetchone()
+            if unacked is not None:
+                return None
             row = self._connection.execute(
-                "SELECT * FROM intents WHERE state='pending' ORDER BY ordinal LIMIT 1"
+                """
+                SELECT *
+                  FROM intents
+                 WHERE state='pending' AND route != 'run_sidecar'
+                 ORDER BY ordinal
+                 LIMIT 1
+                """
             ).fetchone()
             if row is None:
                 return None
@@ -158,7 +194,8 @@ class IntentInbox:
             self._connection.execute(
                 """
                 UPDATE intents
-                   SET state='delivered', delivered_at=?, transport=?
+                   SET state='delivered', delivered_at=?, transport=?,
+                       lease_attempts=lease_attempts + 1
                  WHERE ordinal=? AND state='pending'
                 """,
                 (time.time(), transport, int(row["ordinal"])),
@@ -199,6 +236,26 @@ class IntentInbox:
                     (ack_id, now, key[0], key[1]),
                 )
             return True
+
+    def pending_for_route(self, route: str) -> list[dict[str, Any]]:
+        """Return durable work owned by a non-mailbox execution lane."""
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT prompt, metadata_json
+                  FROM intents
+                 WHERE state='pending' AND route=?
+                 ORDER BY ordinal
+                """,
+                (str(route),),
+            ).fetchall()
+        return [
+            {
+                "prompt": str(row["prompt"]),
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        ]
 
     def deliverable_commands(self) -> list[dict[str, Any]]:
         with self._lock:

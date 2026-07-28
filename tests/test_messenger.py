@@ -600,6 +600,45 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_sidecar_final_preserves_lifecycle_authority_metadata(self):
+        backend = FakeBackend(["__SILENT__", "Verified sidecar result."])
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id, display_text, metadata: spoken.append(
+                (text, seq, command_id, display_text, metadata)
+            ),
+            is_current=lambda seq, command_id: True,
+        )
+        disposition = {
+            "route": "run_sidecar",
+            "public_reason": "Independent bounded public research.",
+        }
+        command = {
+            "relay_command_seq": 19,
+            "relay_command_id": "cmd-19",
+            "work_disposition": disposition,
+        }
+        runtime.start()
+        try:
+            runtime.submit_user("Compare the public APIs", command)
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+            runtime.submit_final({
+                "text": "The verified comparison is ready.",
+                "speech_source": "lifecycle",
+                "work_disposition": disposition,
+                **command,
+            })
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            metadata = spoken[0][4]
+            self.assertEqual(metadata["source"], "lifecycle")
+            self.assertEqual(metadata["kind"], "final")
+            self.assertTrue(metadata["authoritative"])
+            self.assertEqual(metadata["work_disposition"], disposition)
+        finally:
+            runtime.shutdown()
+
     def test_new_user_turn_interrupts_inflight_messenger_only(self):
         backend = FakeBackend(["__SILENT__", "__SILENT__"])
         runtime = MessengerRuntime(

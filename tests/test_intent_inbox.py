@@ -76,6 +76,12 @@ class IntentInboxTests(unittest.TestCase):
             os.unlink(command)
             os.unlink(meta)
 
+            self.assertIsNone(inbox.materialize_next(
+                command_path=command,
+                metadata_path=meta,
+                transport="manual-bridge",
+            ))
+            inbox.observe_claim(first, provider_turn_seen=True)
             second = inbox.materialize_next(
                 command_path=command,
                 metadata_path=meta,
@@ -85,11 +91,90 @@ class IntentInboxTests(unittest.TestCase):
             self.assertEqual(second["relay_command_id"], "two")
             self.assertEqual(
                 [record["state"] for record in inbox.records()],
-                ["delivered", "delivered"],
+                ["acked", "delivered"],
             )
             self.assertEqual(
                 [record["transport"] for record in inbox.records()],
                 ["app-owned", "manual-bridge"],
+            )
+
+    def test_restart_releases_oldest_unacked_delivery_before_later_pending(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "inbox.sqlite3"
+            command = str(Path(directory) / "ready")
+            meta = command + ".meta"
+            inbox = IntentInbox(path)
+            first_metadata = inbox.enqueue("first", metadata(1, "one"), "continue_current")
+            inbox.enqueue("second", metadata(2, "two"), "continue_current")
+            inbox.materialize_next(
+                command_path=command,
+                metadata_path=meta,
+                transport="app-owned",
+            )
+            os.unlink(command)
+            os.unlink(meta)
+            inbox.close()
+
+            restarted = IntentInbox(path)
+            recovered = restarted.materialize_next(
+                command_path=command,
+                metadata_path=meta,
+                transport="app-owned",
+            )
+
+            self.assertEqual(recovered["intent_delivery_id"], first_metadata["intent_delivery_id"])
+            self.assertEqual(Path(command).read_text(), "first")
+            self.assertEqual(
+                [record["state"] for record in restarted.records()],
+                ["delivered", "pending"],
+            )
+            self.assertEqual(restarted.records()[0]["lease_attempts"], 2)
+            self.assertIsNotNone(restarted.records()[0]["recovered_at"])
+
+            os.unlink(command)
+            os.unlink(meta)
+            self.assertIsNone(restarted.materialize_next(
+                command_path=command,
+                metadata_path=meta,
+                transport="app-owned",
+            ))
+            restarted.observe_claim(recovered, provider_turn_seen=True)
+            advanced = restarted.materialize_next(
+                command_path=command,
+                metadata_path=meta,
+                transport="app-owned",
+            )
+            self.assertEqual(advanced["relay_command_id"], "two")
+
+    def test_restart_recovers_claim_without_provider_ack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "inbox.sqlite3"
+            command = str(Path(directory) / "ready")
+            meta = command + ".meta"
+            inbox = IntentInbox(path)
+            first = inbox.enqueue("first", metadata(1, "one"), "continue_current")
+            inbox.enqueue("second", metadata(2, "two"), "continue_current")
+            inbox.materialize_next(
+                command_path=command,
+                metadata_path=meta,
+                transport="manual-bridge",
+            )
+            inbox.observe_claim(first, provider_turn_seen=False)
+            os.unlink(command)
+            os.unlink(meta)
+            inbox.close()
+
+            restarted = IntentInbox(path)
+            recovered = restarted.materialize_next(
+                command_path=command,
+                metadata_path=meta,
+                transport="manual-bridge",
+            )
+
+            self.assertEqual(recovered["relay_command_id"], "one")
+            self.assertEqual(
+                [record["state"] for record in restarted.records()],
+                ["delivered", "pending"],
             )
 
     def test_claim_and_ack_identity_are_idempotent(self):
@@ -117,6 +202,26 @@ class IntentInboxTests(unittest.TestCase):
             self.assertEqual(
                 [record["state"] for record in inbox.records()],
                 ["acked", "cancelled"],
+            )
+
+    def test_explicit_replace_cancels_unacked_claim_but_preserves_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = IntentInbox(Path(directory) / "inbox.sqlite3")
+            foreground = inbox.enqueue("first", metadata(1, "one"), "continue_current")
+            sidecar = inbox.enqueue(
+                "research",
+                metadata(2, "two", "run_sidecar"),
+                "run_sidecar",
+            )
+            inbox.observe_claim(foreground, provider_turn_seen=False)
+            inbox.observe_claim(sidecar, provider_turn_seen=False)
+
+            cancelled = inbox.cancel_pending_before(3, reason="explicit_replace")
+
+            self.assertEqual(cancelled, 1)
+            self.assertEqual(
+                [record["state"] for record in inbox.records()],
+                ["cancelled", "claimed"],
             )
 
     def test_state_lists_deliverable_commands_without_overloading_latest_key(self):

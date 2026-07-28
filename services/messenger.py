@@ -865,6 +865,9 @@ class MessengerRuntime:
         command_key = _command_key(command if isinstance(command, dict) else None)
         message = str(trace.get("message") or "").strip()
         kind = str(trace.get("kind") or "progress").strip().lower()
+        disposition = trace.get("work_disposition")
+        if not isinstance(disposition, dict):
+            disposition = None
         if not message:
             return False
         with self._lock:
@@ -887,6 +890,7 @@ class MessengerRuntime:
             command_seq=command_key[0] if command_key is not None else None,
             command_id=command_key[1] if command_key is not None else None,
             generation=generation,
+            work_disposition=disposition,
         ))
         return True
 
@@ -896,6 +900,9 @@ class MessengerRuntime:
         nested = payload.get("relay_command")
         command_key = _command_key(nested if isinstance(nested, dict) else payload)
         text = str(payload.get("text") or "").strip()
+        disposition = payload.get("work_disposition")
+        if not isinstance(disposition, dict):
+            disposition = None
         if not text:
             return False
         interrupt_handoff = False
@@ -927,6 +934,7 @@ class MessengerRuntime:
             command_seq=command_key[0],
             command_id=command_key[1],
             generation=generation,
+            work_disposition=disposition,
             speech_source=str(payload.get("speech_source") or "orchestrator"),
         ))
         return True
