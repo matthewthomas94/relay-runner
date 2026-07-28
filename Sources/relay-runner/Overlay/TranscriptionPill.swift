@@ -98,6 +98,9 @@ final class TranscriptionPill: NSView {
     /// is cancelled and not restarted while this body text is displayed.
     /// Reset to false when the body text changes (new message).
     private var manualScrollEngaged = false
+    /// Invalidates a teleprompter start that is still inside its initial
+    /// reading pause. A Timer alone cannot cancel that pending asyncAfter.
+    private var bodyScrollGeneration: UInt = 0
 
     // Spring-damped timing for Apple-like feel
     private let springTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
@@ -521,7 +524,7 @@ final class TranscriptionPill: NSView {
             // Otherwise (TTS, fresh entrance) start at the top and let the
             // teleprompter reveal the rest.
             let isSttPinToBottom = themeMatches(.stt) && bodyContentHeight > maxBodyHeight
-            let scrollContinues = bodyLabel.stringValue == scrolledBodyText && bodyScrollTimer != nil
+            let scrollContinues = bodyLabel.stringValue == scrolledBodyText
             let preservedY: CGFloat
             if isSttPinToBottom {
                 preservedY = 0  // bottom of label aligned with bottom of container = latest text
@@ -614,9 +617,11 @@ final class TranscriptionPill: NSView {
         // for the same text can detect that the scroll is still valid and
         // preserve position instead of restarting from the top.
         scrolledBodyText = bodyLabel.stringValue
+        let generation = bodyScrollGeneration
 
         DispatchQueue.main.asyncAfter(deadline: .now() + pauseSeconds) { [weak self] in
             guard let self else { return }
+            guard self.bodyScrollGeneration == generation else { return }
             // The state may have changed during the pause; bail if so.
             guard !self.bodyContainer.isHidden, self.bodyContainer.alphaValue > 0.01 else { return }
             // Use .common runloop mode so the timer keeps firing during
@@ -641,6 +646,7 @@ final class TranscriptionPill: NSView {
     }
 
     private func cancelBodyScroll() {
+        bodyScrollGeneration &+= 1
         bodyScrollTimer?.invalidate()
         bodyScrollTimer = nil
         scrolledBodyText = nil
@@ -654,13 +660,7 @@ final class TranscriptionPill: NSView {
     /// Only active for TTS-themed full pills with overflowing body — STT
     /// pin-to-bottom and compact pills fall through to default handling.
     override func scrollWheel(with event: NSEvent) {
-        guard !isCompact, !themeMatches(.stt) else {
-            super.scrollWheel(with: event)
-            return
-        }
-        let bodyContentHeight = bodyLabel.frame.height
-        let bodyVisibleHeight = bodyContainer.frame.height
-        guard bodyContentHeight > bodyVisibleHeight else {
+        guard acceptsManualScroll else {
             super.scrollWheel(with: event)
             return
         }
@@ -668,6 +668,8 @@ final class TranscriptionPill: NSView {
         manualScrollEngaged = true
         cancelBodyScroll()
 
+        let bodyContentHeight = bodyLabel.frame.height
+        let bodyVisibleHeight = bodyContainer.frame.height
         // origin.y range when overflowing: [bodyVisibleHeight - bodyContentHeight, 0]
         // (negative bound shows the top; 0 shows the bottom). scrollingDeltaY's
         // sign reflects raw device direction; macOS sets isDirectionInvertedFromDevice
@@ -676,7 +678,15 @@ final class TranscriptionPill: NSView {
         let minY = bodyVisibleHeight - bodyContentHeight
         let maxY: CGFloat = 0
         let currentY = bodyLabel.frame.origin.y
-        let delta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
+        let lineHeight = bodyLabel.font.map {
+            ceil($0.ascender - $0.descender + $0.leading)
+        } ?? 16
+        let delta = Self.manualScrollDelta(
+            scrollingDeltaY: event.scrollingDeltaY,
+            directionInvertedFromDevice: event.isDirectionInvertedFromDevice,
+            hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas,
+            lineHeight: lineHeight
+        )
         let newY = max(minY, min(maxY, currentY + delta))
         if newY != currentY {
             var f = bodyLabel.frame
@@ -685,16 +695,46 @@ final class TranscriptionPill: NSView {
         }
     }
 
+    static func manualScrollDelta(
+        scrollingDeltaY: CGFloat,
+        directionInvertedFromDevice: Bool,
+        hasPreciseScrollingDeltas: Bool,
+        lineHeight: CGFloat
+    ) -> CGFloat {
+        let deviceDelta = directionInvertedFromDevice ? -scrollingDeltaY : scrollingDeltaY
+        return deviceDelta * (hasPreciseScrollingDeltas ? 1 : lineHeight)
+    }
+
+    /// Scroll events can land on the title, clipped body label, or SwiftUI
+    /// keycap. Claim the hit at the pill boundary while manual scrolling is
+    /// available so every visible region follows the same responder path.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // AppKit supplies this point in the superview's coordinate space.
+        guard acceptsManualScroll, frame.contains(point) else {
+            return super.hitTest(point)
+        }
+        return self
+    }
+
     // MARK: - Pill frame in screen coordinates (for selective click-through)
 
-    /// The pill's frame in screen coordinates. Returns nil when the pill is
-    /// hidden or not attached to a window. The OverlayController polls this
-    /// each tick to decide whether the panel should intercept mouse events
-    /// (cursor over pill) or pass them through (cursor anywhere else).
-    func pillFrameOnScreen() -> NSRect? {
-        guard let window, alphaValue > 0.01 else { return nil }
+    /// The scrollable pill's frame in screen coordinates. Compact,
+    /// non-overflowing, STT, hidden, and detached pills return nil so the
+    /// full-screen overlay remains click-through for those states.
+    func manualScrollFrameOnScreen() -> NSRect? {
+        guard acceptsManualScroll, let window, window.isVisible else { return nil }
         let frameInWindow = convert(bounds, to: nil)
         return window.convertToScreen(frameInWindow)
+    }
+
+    private var acceptsManualScroll: Bool {
+        !isCompact
+            && !themeMatches(.stt)
+            && !isHidden
+            && alphaValue > 0.01
+            && !bodyContainer.isHidden
+            && bodyContainer.alphaValue > 0.01
+            && bodyLabel.frame.height > bodyContainer.frame.height
     }
 
     // MARK: - Show helper (for theme comparison)
