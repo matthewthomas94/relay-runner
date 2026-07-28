@@ -46,13 +46,20 @@ class IdleThread:
 class TTSWorkerReplayTests(unittest.TestCase):
     def make_worker(self):
         worker = TTSWorker.__new__(TTSWorker)
+        worker.input_queue = queue.Queue()
         worker._pending_text = ""
         worker._pending_display_text = ""
+        worker._pending_speech_intent = None
+        worker._current_speech_intent = None
+        worker._speech_eligibility = None
+        worker._speech_observer = None
         worker._lock = threading.Lock()
         worker._play_request_lock = threading.RLock()
         worker._playing = False
         worker._paused = False
         worker._current_proc = None
+        worker._chime_proc = None
+        worker._playback_generation = 0
         worker._last_wav = None
         worker._last_unheard_text = ""
         worker._last_unheard_display_text = ""
@@ -61,18 +68,22 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker._rate = 1.0
         worker.played_texts = []
         worker.played_displays = []
+        worker.played_intents = []
         worker.played_wavs = []
-        def play_text(text, *, display_text=None):
+        def play_text(text, *, display_text=None, speech_intent=None):
             worker.played_texts.append(text)
             worker.played_displays.append(display_text)
+            worker.played_intents.append(speech_intent)
         worker._play_text = play_text
         worker._play_wav = lambda wav: worker.played_wavs.append(wav)
         worker._play_chime = lambda: None
+        worker._start_speculation = lambda text: None
         worker._cancel_speculation = lambda: None
         return worker
 
     def make_chunk_worker(self):
         worker = self.make_worker()
+        del worker._start_speculation
         worker._kokoro = object()
         worker._spec_lock = threading.Lock()
         worker._spec_cond = threading.Condition(worker._spec_lock)
@@ -151,6 +162,36 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(worker.played_texts, ["fresh pending"])
         self.assertEqual(worker._last_unheard_text, "")
 
+    def test_play_without_pending_text_does_not_replay_stale_audio(self):
+        worker = self.make_worker()
+        worker._last_wav = self.temp_wav()
+
+        worker.play()
+
+        self.assertEqual(worker.played_wavs, [])
+
+    def test_play_drains_ineligible_items_until_it_claims_current_speech(self):
+        worker = self.make_worker()
+        events = []
+        worker._speech_eligibility = lambda payload: payload["utterance_id"] == "new"
+        worker._speech_observer = lambda state, payload: events.append(
+            (state, payload["utterance_id"])
+        )
+        worker.input_queue.put({
+            "text": "stale response",
+            "_speech_intent": {"utterance_id": "old"},
+        })
+        worker.input_queue.put({
+            "text": "current response",
+            "_speech_intent": {"utterance_id": "new"},
+        })
+
+        worker.play()
+
+        self.assertEqual(worker.played_texts, ["current response"])
+        self.assertEqual(worker.played_intents, [{"utterance_id": "new"}])
+        self.assertEqual(events, [("cancelled", "old"), ("queued", "new")])
+
     def test_play_and_replay_do_not_start_while_a_plan_is_active(self):
         worker = self.make_worker()
         worker._playing = True
@@ -184,6 +225,88 @@ class TTSWorkerReplayTests(unittest.TestCase):
         order.append("playback-started" if worker._playing else "not-started")
 
         self.assertEqual(order, ["chime-terminate", "chime-wait", "playback-started"])
+
+    def test_chime_preview_and_speculation_are_published_before_play_can_claim(self):
+        worker = self.make_worker()
+        chime_started = threading.Event()
+        play_attempted = threading.Event()
+        played_during_chime = []
+        order = []
+
+        def play_chime():
+            order.append("chime")
+            chime_started.set()
+            self.assertTrue(play_attempted.wait(1.0))
+            played_during_chime.append(bool(worker.played_texts))
+
+        def start_speculation(text):
+            order.append(("speculation", text))
+
+        worker._play_chime = play_chime
+        worker._start_speculation = start_speculation
+        original_play_text = worker._play_text
+
+        def play_text(text, **kwargs):
+            order.append(("play", text))
+            original_play_text(text, **kwargs)
+
+        worker._play_text = play_text
+
+        with patch.object(
+            tts_worker,
+            "publish_waiting_preview",
+            side_effect=lambda text: order.append(("preview", text)),
+        ):
+            collector = threading.Thread(
+                target=worker._handle_collected_chunk,
+                args=("Ready response.",),
+            )
+            collector.start()
+            self.assertTrue(chime_started.wait(1.0))
+
+            def request_play():
+                play_attempted.set()
+                worker.play()
+
+            player = threading.Thread(target=request_play)
+            player.start()
+            collector.join(timeout=1.0)
+            player.join(timeout=1.0)
+
+        self.assertFalse(collector.is_alive())
+        self.assertFalse(player.is_alive())
+        self.assertEqual(played_during_chime, [False])
+        self.assertEqual(
+            order,
+            [
+                "chime",
+                ("preview", "Ready response."),
+                ("speculation", "Ready response."),
+                ("play", "Ready response."),
+            ],
+        )
+
+    def test_duplicate_play_during_speculative_readiness_starts_one_plan(self):
+        worker = self.make_worker()
+        del worker._play_text
+        worker._kokoro = object()
+        worker._pending_text = "Ready response."
+        worker._spec_lock = threading.Lock()
+        worker._spec_cond = threading.Condition(worker._spec_lock)
+        worker._spec_text = "Ready response."
+        worker._spec_wav = None
+        worker._spec_done = False
+
+        with (
+            patch.object(tts_worker.threading, "Thread", IdleThread),
+            patch.object(tts_worker, "_notify_state"),
+        ):
+            worker.play()
+            worker.play()
+
+        self.assertTrue(worker._playing)
+        self.assertEqual(worker._playback_generation, 1)
+        self.assertEqual(worker._pending_text, "")
 
     def test_stop_observes_process_exit_before_cancellation(self):
         worker = self.make_worker()

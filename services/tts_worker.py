@@ -284,59 +284,62 @@ class TTSWorker:
         return str(chunk or "").strip(), "", None
 
     def _handle_collected_chunk(self, chunk):
-        chunk_text, chunk_display_text, speech_intent = self._queue_texts(chunk)
-        if not chunk_text:
-            return
-        if not self._speech_is_eligible(speech_intent):
-            self._observe_speech("cancelled", speech_intent)
-            return
-        with self._lock:
-            was_empty = not self._pending_text.strip()
-            if speech_intent is not None:
-                replaced_intent = getattr(self, "_pending_speech_intent", None)
-                self._pending_text = chunk_text
-                self._pending_display_text = chunk_display_text
-                self._pending_speech_intent = speech_intent
-            elif self._pending_text:
-                replaced_intent = None
-                self._pending_text += " " + chunk_text
-            else:
-                replaced_intent = None
-                self._pending_text = chunk_text
+        # Serialize collection through waiting-pill publication with play().
+        # Once the pill is visible, play can always claim this exact pending
+        # response; it cannot slip between enqueue and chime startup.
+        with self._play_request_lock:
+            chunk_text, chunk_display_text, speech_intent = self._queue_texts(chunk)
+            if not chunk_text:
+                return
+            if not self._speech_is_eligible(speech_intent):
+                self._observe_speech("cancelled", speech_intent)
+                return
+            with self._lock:
+                was_empty = not self._pending_text.strip()
+                if speech_intent is not None:
+                    replaced_intent = getattr(self, "_pending_speech_intent", None)
+                    self._pending_text = chunk_text
+                    self._pending_display_text = chunk_display_text
+                    self._pending_speech_intent = speech_intent
+                elif self._pending_text:
+                    replaced_intent = None
+                    self._pending_text += " " + chunk_text
+                else:
+                    replaced_intent = None
+                    self._pending_text = chunk_text
 
-            if chunk_display_text:
-                self._pending_display_text = chunk_display_text
-            elif was_empty:
-                self._pending_display_text = ""
+                if chunk_display_text:
+                    self._pending_display_text = chunk_display_text
+                elif was_empty:
+                    self._pending_display_text = ""
 
-            full_text = self._pending_text.strip()
-            if full_text:
-                self._last_response_text = full_text
-            preview_text = self._pending_display_text.strip() or full_text
-            if preview_text:
-                self._last_response_display_text = preview_text
-            is_playing = self._playing
+                full_text = self._pending_text.strip()
+                if full_text:
+                    self._last_response_text = full_text
+                preview_text = self._pending_display_text.strip() or full_text
+                if preview_text:
+                    self._last_response_display_text = preview_text
+                is_playing = self._playing
 
-        if replaced_intent and replaced_intent != speech_intent:
-            self._observe_speech("cancelled", replaced_intent)
-        if not full_text:
-            return
-        self._observe_speech("queued", speech_intent)
+            if replaced_intent and replaced_intent != speech_intent:
+                self._observe_speech("cancelled", replaced_intent)
+            if not full_text:
+                return
+            self._observe_speech("queued", speech_intent)
 
-        if was_empty:
-            self._play_chime()
+            if was_empty:
+                self._play_chime()
 
-        # Send the full text (capped generously) every time the queued
-        # response grows. Deferred-playback overlays should render the latest
-        # response body before playback starts, not wait for a later preparing
-        # or speaking event to repopulate the pill.
-        publish_waiting_preview(preview_text)
+            # Send the full text (capped generously) every time the queued
+            # response grows. Deferred-playback overlays should render the latest
+            # response body before playback starts, not wait for a later preparing
+            # or speaking event to repopulate the pill.
+            publish_waiting_preview(preview_text)
 
-        # Kick off speculative TTS in parallel with the pill so audio is
-        # ready by the time the user double-taps Option. Outside the main
-        # lock — speculation has its own lock and Kokoro can take seconds.
-        if not is_playing:
-            self._start_speculation(full_text)
+            # Kick off speculative TTS in parallel with the pill so audio is
+            # ready by the time the user double-taps Option.
+            if not is_playing:
+                self._start_speculation(full_text)
 
     def _control_loop(self):
         """Listen on Unix socket for play/pause/skip commands."""
@@ -385,13 +388,14 @@ class TTSWorker:
                 return
             with self._lock:
                 has_pending = bool(self._pending_text.strip())
-            if not has_pending:
+            while not has_pending:
                 try:
                     queued = self.input_queue.get_nowait()
                 except queue.Empty:
-                    queued = None
-                if queued is not None:
-                    self._handle_collected_chunk(queued)
+                    break
+                self._handle_collected_chunk(queued)
+                with self._lock:
+                    has_pending = bool(self._pending_text.strip())
             with self._lock:
                 text = self._pending_text.strip()
                 display_text = self._pending_display_text.strip() or text
@@ -404,7 +408,6 @@ class TTSWorker:
                     self._last_unheard_display_text = ""
 
             if not text:
-                self.replay()
                 return
             if not self._speech_is_eligible(speech_intent):
                 self._observe_speech("cancelled", speech_intent)
@@ -465,38 +468,40 @@ class TTSWorker:
     def stop_playback(self):
         """Stop current audio playback without clearing pending text.
         Used by __TTS_STOP__ to kill audio while preserving queued TTS."""
-        self._playback_generation = getattr(self, "_playback_generation", 0) + 1
-        proc = self._current_proc
-        if proc and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-        self._stop_chime()
-        self._playing = False
-        self._paused = False
-        intent = getattr(self, "_current_speech_intent", None)
-        self._current_speech_intent = None
-        self._observe_speech("cancelled", intent)
+        with self._play_request_lock:
+            self._playback_generation = getattr(self, "_playback_generation", 0) + 1
+            proc = self._current_proc
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            self._stop_chime()
+            self._playing = False
+            self._paused = False
+            intent = getattr(self, "_current_speech_intent", None)
+            self._current_speech_intent = None
+            self._observe_speech("cancelled", intent)
 
     def skip(self):
         """Stop playback AND discard pending text."""
-        self.stop_playback()
-        with self._lock:
-            text = self._pending_text.strip()
-            display_text = self._pending_display_text.strip() or text
-            pending_intent = getattr(self, "_pending_speech_intent", None)
-            self._pending_text = ""
-            self._pending_display_text = ""
-            self._pending_speech_intent = None
-            if text:
-                self._last_unheard_text = text
-                self._last_unheard_display_text = display_text
-        self._observe_speech("cancelled", pending_intent)
-        self._cancel_speculation()
-        _notify_state("idle")
+        with self._play_request_lock:
+            self.stop_playback()
+            with self._lock:
+                text = self._pending_text.strip()
+                display_text = self._pending_display_text.strip() or text
+                pending_intent = getattr(self, "_pending_speech_intent", None)
+                self._pending_text = ""
+                self._pending_display_text = ""
+                self._pending_speech_intent = None
+                if text:
+                    self._last_unheard_text = text
+                    self._last_unheard_display_text = display_text
+            self._observe_speech("cancelled", pending_intent)
+            self._cancel_speculation()
+            _notify_state("idle")
 
     def replay(self):
         """Replay the last spoken audio."""
