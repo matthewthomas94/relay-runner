@@ -96,7 +96,7 @@ final class ProgramBoardOverlayController {
     private var terminalFocusHandler: (() -> Void)?
     private var themePollTimer: Timer?
     private var statusPollTimer: Timer?
-    private let boardRouteResolver: () -> ProjectResolver.BoardRoute
+    private var boardRouteResolver: () -> ProjectResolver.BoardRoute
 
     init(boardRouteResolver: @escaping () -> ProjectResolver.BoardRoute = ProjectResolver.resolveBoardRoute) {
         self.boardRouteResolver = boardRouteResolver
@@ -108,6 +108,10 @@ final class ProgramBoardOverlayController {
 
     func setProjectScopeProvider(_ provider: @escaping () -> [String]) {
         projectScopeProvider = provider
+    }
+
+    func setBoardRouteResolver(_ resolver: @escaping () -> ProjectResolver.BoardRoute) {
+        boardRouteResolver = resolver
     }
 
     func setNoSessionHandler(_ handler: @escaping () -> Void) {

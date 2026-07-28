@@ -113,6 +113,47 @@ final class ProjectRegistryTests: XCTestCase {
         XCTAssertTrue(record.providers.isEmpty)
     }
 
+    func testUnchangedBridgeResolveDoesNotRewriteRegistryActivation() throws {
+        let repo = try makeTempRepo(named: "relay-runner")
+        let root = repo.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let bridgeSocket = root.appendingPathComponent("voice_bridge.sock")
+        let bridgeCwd = root.appendingPathComponent("voice_bridge.cwd")
+        let bridgeProvider = root.appendingPathComponent("voice_bridge.provider")
+        try Data().write(to: bridgeSocket)
+        try Data(repo.path.utf8).write(to: bridgeCwd)
+        try Data("codex\n".utf8).write(to: bridgeProvider)
+
+        var timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let registry = ProjectRegistry(
+            fileURL: root.appendingPathComponent("projects.json"),
+            now: { timestamp }
+        )
+        XCTAssertNotNil(ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            bridgeProviderFile: bridgeProvider,
+            registry: registry
+        ))
+        let initialData = try Data(contentsOf: registry.fileURL)
+
+        timestamp = Date(timeIntervalSince1970: 1_700_000_060)
+        XCTAssertNotNil(ProjectResolver.resolve(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwd,
+            bridgeProviderFile: bridgeProvider,
+            registry: registry
+        ))
+
+        XCTAssertEqual(try Data(contentsOf: registry.fileURL), initialData)
+        let record = try XCTUnwrap(try registry.load().projects.first)
+        XCTAssertEqual(
+            record.providers["codex"]?.lastActivatedAt,
+            Date(timeIntervalSince1970: 1_700_000_000)
+        )
+    }
+
     func testBridgeResolvePreservesExistingAlias() throws {
         let repo = try makeTempRepo(named: "client-dashboard")
         let root = repo.deletingLastPathComponent()
