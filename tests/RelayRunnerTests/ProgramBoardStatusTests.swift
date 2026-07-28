@@ -159,7 +159,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(disabled.accessibilityLabel, "Edit ticket")
     }
 
-    func testWorkspaceBoardUsesSharedActionButtonsForSelectAllAndEdit() throws {
+    func testWorkspaceBoardUsesSharedActionButtonsForSelectAllAndTicketActions() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -170,6 +170,8 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("ProgramWorkspaceActionButton(\n                title: presentation.selectAllTitle"))
         XCTAssertTrue(contents.contains("ProgramEditCapsuleButton("))
         XCTAssertTrue(contents.contains("presentation: ProgramEditButtonPresentation.resolve("))
+        XCTAssertFalse(contents.contains("showsEditButton"))
+        XCTAssertTrue(contents.contains("destructive: destructive"))
         XCTAssertTrue(contents.contains("SharedActionButtonChrome("))
     }
 

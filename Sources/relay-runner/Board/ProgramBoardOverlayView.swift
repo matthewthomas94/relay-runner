@@ -311,8 +311,7 @@ private struct ProgramDragPreviewLayer: View {
                 showsProjectContext: true,
                 isDraggingSource: false,
                 isHovered: false,
-                onSelect: {},
-                onEdit: {}
+                onSelect: {}
             )
             .frame(width: 246)
             .opacity(0.95)
@@ -582,7 +581,6 @@ private struct ProgramBoardContent: View {
                                 theme: model.theme,
                                 canCreate: !model.projectTargets.isEmpty,
                                 onCreate: { onCreateStart(lane) },
-                                onEdit: { item in onEditStart(ProgramTicketDetail.load(item: item)) },
                                 onDrop: onDrop
                             )
                         }
@@ -883,7 +881,6 @@ struct ProgramWorkColumnPanel: View {
     let theme: ParticleFieldRenderer.Theme?
     let canCreate: Bool
     let onCreate: () -> Void
-    let onEdit: (ProgramStatusItem) -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     private var items: [ProgramStatusItem] {
@@ -945,7 +942,6 @@ struct ProgramWorkColumnPanel: View {
                                     isSelected: model.selectedTicketDetail?.id == item.id,
                                     showsProjectContext: showsProjectContext,
                                     onSelect: { model.selectTicket(item) },
-                                    onEdit: { onEdit(item) },
                                     onDrop: onDrop
                                 )
                             }
@@ -1014,7 +1010,6 @@ private struct DraggableProgramWorkCard: View {
     let isSelected: Bool
     let showsProjectContext: Bool
     let onSelect: () -> Void
-    let onEdit: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
     @State private var isHovered = false
 
@@ -1033,8 +1028,7 @@ private struct DraggableProgramWorkCard: View {
             showsProjectContext: showsProjectContext,
             isDraggingSource: isBeingDragged,
             isHovered: isHovered,
-            onSelect: onSelect,
-            onEdit: onEdit
+            onSelect: onSelect
         )
             .opacity(isBeingDragged ? 0.25 : 1.0)
             .contentShape(Rectangle())
@@ -1046,7 +1040,6 @@ private struct DraggableProgramWorkCard: View {
             .overlay(
                 ProgramWorkCardDragEventLayer(
                     canDrag: canDrag,
-                    showsEditButton: item.showsProgramBoardEditButton,
                     scrollBoundary: scrollBoundary,
                     onHoverChange: { isHovered = $0 },
                     onSelect: onSelect,
@@ -1123,7 +1116,6 @@ private struct DraggableProgramWorkCard: View {
 
 private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     let canDrag: Bool
-    let showsEditButton: Bool
     let scrollBoundary: BoardOverlayScrollBoundary?
     let onHoverChange: (Bool) -> Void
     let onSelect: () -> Void
@@ -1138,7 +1130,6 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
 
     func updateNSView(_ nsView: ProgramWorkCardDragEventView, context: Context) {
         nsView.canDrag = canDrag
-        nsView.showsEditButton = showsEditButton
         nsView.boardOverlayScrollBoundary = scrollBoundary
         nsView.onHoverChange = onHoverChange
         nsView.onSelect = onSelect
@@ -1154,7 +1145,6 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     static let dragThreshold: CGFloat = 5
 
     var canDrag = false
-    var showsEditButton = true
     var boardOverlayScrollBoundary: BoardOverlayScrollBoundary?
     var onHoverChange: (Bool) -> Void = { _ in }
     var onSelect: () -> Void = {}
@@ -1171,11 +1161,7 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     override var isFlipped: Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard bounds.contains(point),
-              !showsEditButton || !editButtonHitExclusion.contains(point) else {
-            return nil
-        }
-        return self
+        bounds.contains(point) ? self : nil
     }
 
     override func updateTrackingAreas() {
@@ -1258,10 +1244,6 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
         }
     }
 
-    private var editButtonHitExclusion: CGRect {
-        CGRect(x: max(0, bounds.maxX - 84), y: bounds.minY, width: 84, height: 48)
-    }
-
     private func boardLocation(for event: NSEvent) -> CGPoint? {
         windowLocationToBoardLocation(event.locationInWindow)
     }
@@ -1274,7 +1256,6 @@ private struct ProgramWorkCard: View {
     let isDraggingSource: Bool
     let isHovered: Bool
     let onSelect: () -> Void
-    let onEdit: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var presentation: ProgramBoardInteractionPresentation {
@@ -1297,16 +1278,6 @@ private struct ProgramWorkCard: View {
                     .truncationMode(.tail)
 
                 Spacer(minLength: 0)
-
-                if item.showsProgramBoardEditButton {
-                    ProgramEditCapsuleButton(
-                        presentation: ProgramEditButtonPresentation.resolve(
-                            isEnabled: canEdit,
-                            help: editHelp
-                        ),
-                        action: onEdit
-                    )
-                }
             }
 
             Text(title)
@@ -1419,14 +1390,6 @@ private struct ProgramWorkCard: View {
             parts.append(path)
         }
         return parts.joined(separator: " - ")
-    }
-
-    private var canEdit: Bool {
-        item.isProgramBoardEditable
-    }
-
-    private var editHelp: String {
-        canEdit ? "Edit ticket" : "Ticket identity is unavailable"
     }
 
     private func cleaned(_ value: String?) -> String? {
@@ -1774,31 +1737,17 @@ private struct ProgramDetailActionButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: 6) {
-                Image(systemName: systemName)
-                    .font(AppTypography.symbolFont(size: 11, weight: .semibold))
-                Text(title)
-                    .font(AppTypography.font(.action))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .foregroundStyle(foregroundStyle)
-            .padding(.horizontal, 9)
-            .frame(height: 26)
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .programControlChrome(disabled: disabled)
-        .programButtonCursor(enabled: !disabled)
-        .help(help)
-    }
-
-    private var foregroundStyle: Color {
-        if disabled {
-            return ProgramBoardStyle.primaryText.opacity(0.45)
-        }
-        return destructive ? ProgramBoardStyle.red : ProgramBoardStyle.primaryText.opacity(0.95)
+        ProgramWorkspaceActionButton(
+            title: title,
+            systemName: systemName,
+            isEnabled: !disabled,
+            accessibilityLabel: title,
+            help: help,
+            action: action,
+            labelFont: .action,
+            symbolSize: 11,
+            destructive: destructive
+        )
     }
 }
 
@@ -2460,6 +2409,7 @@ private struct ProgramWorkspaceActionButton: View {
     let action: () -> Void
     var labelFont: AppTypography.Role = .programAction
     var symbolSize: CGFloat = 11
+    var destructive = false
 
     var body: some View {
         SharedActionButtonChrome(
@@ -2487,9 +2437,9 @@ private struct ProgramWorkspaceActionButton: View {
 
     private var palette: SharedActionButtonPalette {
         SharedActionButtonPalette(
-            foreground: prominence == .primary ? ProgramBoardStyle.neutralText : ProgramBoardStyle.primaryText,
-            fill: prominence == .primary ? ProgramBoardStyle.neutralText : Color.white,
-            stroke: ProgramBoardStyle.neutralText
+            foreground: destructive ? ProgramBoardStyle.red : prominence == .primary ? ProgramBoardStyle.neutralText : ProgramBoardStyle.primaryText,
+            fill: destructive ? ProgramBoardStyle.red : prominence == .primary ? ProgramBoardStyle.neutralText : Color.white,
+            stroke: destructive ? ProgramBoardStyle.red : ProgramBoardStyle.neutralText
         )
     }
 }
