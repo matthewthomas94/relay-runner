@@ -1665,6 +1665,95 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                         pump.join(timeout=1)
                         restarted.close()
 
+    def test_manual_relay_bridge_claim_ack_advances_two_command_queue(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    command_path = os.path.join(temp_dir, "voice_cmd_ready")
+                    meta_path = command_path + ".meta"
+                    claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                    manual_ack_path = os.path.join(temp_dir, "voice_cmd_manual_ack.json")
+                    state_path = os.path.join(temp_dir, "voice_command_state.json")
+                    turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                    inbox = voice_bridge.IntentInbox(
+                        os.path.join(temp_dir, "intent_inbox.sqlite3")
+                    )
+                    for seq in (1, 2):
+                        command = {
+                            "relay_command_seq": seq,
+                            "relay_command_id": f"cmd-{seq}",
+                            "intent_id": f"intent-{seq}",
+                            "agent_prompt": f"Manual prompt {seq}",
+                            "provider": provider,
+                        }
+                        inbox.enqueue(
+                            command["agent_prompt"],
+                            command,
+                            "continue_current",
+                        )
+
+                    shutdown_event = threading.Event()
+                    pump = voice_bridge._start_intent_inbox_pump(
+                        inbox,
+                        shutdown_event,
+                        command_path=command_path,
+                        meta_path=meta_path,
+                        claimed_path=claim_path,
+                        manual_ack_path=manual_ack_path,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        transport="manual-relay-bridge",
+                        poll_seconds=0.005,
+                    )
+                    try:
+                        for _ in range(100):
+                            if os.path.exists(command_path) and os.path.exists(meta_path):
+                                break
+                            shutdown_event.wait(0.005)
+                        self.assertTrue(os.path.exists(command_path))
+
+                        command_tmp = os.path.join(temp_dir, "claimed-command")
+                        meta_tmp = command_tmp + ".meta"
+                        os.replace(command_path, command_tmp)
+                        os.replace(meta_path, meta_tmp)
+                        Path(claim_path).write_bytes(Path(meta_tmp).read_bytes())
+                        self.assertEqual(Path(command_tmp).read_text(), "Manual prompt 1")
+
+                        for _ in range(100):
+                            if inbox.records()[0]["state"] == "claimed":
+                                break
+                            shutdown_event.wait(0.005)
+                        self.assertEqual(
+                            [record["state"] for record in inbox.records()],
+                            ["claimed", "pending"],
+                        )
+                        self.assertFalse(os.path.exists(command_path))
+                        self.assertFalse(os.path.exists(turns_path))
+
+                        Path(manual_ack_path).write_bytes(Path(meta_tmp).read_bytes())
+                        os.unlink(command_tmp)
+                        os.unlink(meta_tmp)
+
+                        for _ in range(100):
+                            if os.path.exists(command_path) and os.path.exists(meta_path):
+                                break
+                            shutdown_event.wait(0.005)
+                        self.assertEqual(Path(command_path).read_text(), "Manual prompt 2")
+                        self.assertEqual(
+                            json.loads(Path(meta_path).read_text())["relay_command_id"],
+                            "cmd-2",
+                        )
+                        self.assertEqual(
+                            [record["state"] for record in inbox.records()],
+                            ["acked", "delivered"],
+                        )
+                        self.assertFalse(os.path.exists(manual_ack_path))
+                        self.assertFalse(os.path.exists(turns_path))
+                    finally:
+                        shutdown_event.set()
+                        pump.join(timeout=1)
+                        inbox.close()
+
     def test_app_owned_stale_turn_drops_final_until_newer_claim_is_injected(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider):
@@ -2783,6 +2872,13 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertGreaterEqual(
             script.count("voice_cmd_claimed.json"),
             8,
+        )
+        self.assertEqual(
+            script.count(
+                'if [ -f "$meta_tmp" ]; then cp "$meta_tmp" '
+                "/tmp/voice_cmd_manual_ack.json.tmp"
+            ),
+            4,
         )
         self.assertGreaterEqual(
             script.count("voice_bridge_stop_requested"),

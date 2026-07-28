@@ -317,6 +317,10 @@ VOICE_CMD_FILE = "/tmp/voice_cmd_ready"
 VOICE_CMD_META_FILE = "/tmp/voice_cmd_ready.meta"
 VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
 VOICE_COMMAND_CLAIM_FILE = "/tmp/voice_cmd_claimed.json"
+VOICE_MANUAL_CLAIM_ACK_FILE = os.environ.get(
+    "VOICE_MANUAL_CLAIM_ACK_FILE",
+    "/tmp/voice_cmd_manual_ack.json",
+)
 VOICE_COMMAND_AUTHORIZATION_FILE = os.environ.get(
     "VOICE_COMMAND_AUTHORIZATION_FILE",
     "/tmp/voice_command_authorizations.json",
@@ -1414,6 +1418,26 @@ def _provider_turn_seen(
     return _provider_turn_state(command, turns_path=turns_path) is not None
 
 
+def _manual_claim_ack_matches(
+    claimed: dict | None,
+    acknowledged: dict | None,
+) -> bool:
+    """Accept only the exact durable claim written by a manual provider loop."""
+    if _relay_command_key(claimed) != _relay_command_key(acknowledged):
+        return False
+    for field in (
+        "intent_id",
+        "intent_delivery_id",
+        "intent_claim_id",
+        "intent_ack_id",
+    ):
+        claimed_value = str((claimed or {}).get(field) or "").strip()
+        acknowledged_value = str((acknowledged or {}).get(field) or "").strip()
+        if not claimed_value or claimed_value != acknowledged_value:
+            return False
+    return True
+
+
 def _start_intent_inbox_pump(
     inbox: IntentInbox,
     shutdown_event: threading.Event,
@@ -1421,6 +1445,7 @@ def _start_intent_inbox_pump(
     command_path: str = VOICE_CMD_FILE,
     meta_path: str = VOICE_CMD_META_FILE,
     claimed_path: str = VOICE_COMMAND_CLAIM_FILE,
+    manual_ack_path: str = VOICE_MANUAL_CLAIM_ACK_FILE,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
     transport: str = "shared-ready-file",
@@ -1442,6 +1467,13 @@ def _start_intent_inbox_pump(
                     claimed,
                     provider_turn_seen=_provider_turn_seen(claimed, turns_path=turns_path),
                 )
+            manual_ack = _read_json_file(manual_ack_path)
+            if _manual_claim_ack_matches(claimed, manual_ack):
+                if inbox.observe_claim(manual_ack, provider_turn_seen=True):
+                    try:
+                        os.unlink(manual_ack_path)
+                    except OSError:
+                        pass
             inbox.materialize_next(
                 command_path=command_path,
                 metadata_path=meta_path,
@@ -2310,6 +2342,7 @@ def _run_relay(
         VOICE_CMD_META_FILE,
         VOICE_COMMAND_STATE_FILE,
         VOICE_COMMAND_CLAIM_FILE,
+        VOICE_MANUAL_CLAIM_ACK_FILE,
         VOICE_COMMAND_AUTHORIZATION_FILE,
         VOICE_PROVIDER_TURNS_FILE,
     ]:
@@ -2542,6 +2575,7 @@ def _run_relay(
             VOICE_CMD_META_FILE,
             VOICE_COMMAND_STATE_FILE,
             VOICE_COMMAND_CLAIM_FILE,
+            VOICE_MANUAL_CLAIM_ACK_FILE,
             VOICE_COMMAND_AUTHORIZATION_FILE,
             VOICE_PROVIDER_TURNS_FILE,
         ]:
