@@ -356,14 +356,15 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.projects.first?.readyTickets, 1)
         XCTAssertEqual(snapshot.projects.first?.inProgressTickets, 1)
         XCTAssertEqual(snapshot.projects.first?.doneTickets, 1)
-        XCTAssertEqual(snapshot.inProgressWork.items.map(\.provider), ["Codex/gpt-5", "Claude/sonnet"])
-        XCTAssertEqual(snapshot.inProgressWork.items.first?.runID, "27")
-        XCTAssertEqual(snapshot.inProgressWork.items.first?.priority, "high")
-        XCTAssertEqual(snapshot.inProgressWork.items.first?.dependsOn, ["RR-0"])
-        XCTAssertEqual(snapshot.inProgressWork.items.first?.workerModel, "strong")
-        XCTAssertEqual(snapshot.inProgressWork.items.first?.workerEffort, "high")
-        XCTAssertEqual(snapshot.inProgressWork.items.first?.attempt, "3")
-        XCTAssertEqual(snapshot.inProgressWork.items.first?.workerSizingRationale, "Cross-provider dispatch enforcement.")
+        XCTAssertEqual(snapshot.inProgressWork.items.map(\.ticketID), ["RR-2", "RR-1"])
+        let codex = try XCTUnwrap(snapshot.inProgressWork.items.first { $0.ticketID == "RR-1" })
+        XCTAssertEqual(codex.runID, "27")
+        XCTAssertEqual(codex.priority, "high")
+        XCTAssertEqual(codex.dependsOn, ["RR-0"])
+        XCTAssertEqual(codex.workerModel, "strong")
+        XCTAssertEqual(codex.workerEffort, "high")
+        XCTAssertEqual(codex.attempt, "3")
+        XCTAssertEqual(codex.workerSizingRationale, "Cross-provider dispatch enforcement.")
     }
 
     func testProjectSelectionFiltersCanonicalTicketLanesAcrossProjects() throws {
@@ -456,50 +457,26 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(selectedProjectRequest.shouldDispatch)
     }
 
-    func testProgramBoardTicketLanesSortByOwningTicketFileModifiedAt() throws {
-        let root = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
-        let toolsRepo = root.appendingPathComponent("tools", isDirectory: true)
-        try FileManager.default.createDirectory(at: clientRepo, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: toolsRepo, withIntermediateDirectories: true)
-
-        try writeTicket(repo: clientRepo, id: "CD-90", title: "Old client backlog", status: "backlog", body: "")
-        try writeTicket(repo: clientRepo, id: "CD-1", title: "Recent client backlog", status: "backlog", body: "")
-        try writeTicket(repo: toolsRepo, id: "TL-8", title: "Middle tools backlog", status: "backlog", body: "")
-
-        try setModifiedAt(
-            Date(timeIntervalSince1970: 1_700_000_000),
-            forTicket: "CD-90",
-            in: clientRepo
-        )
-        try setModifiedAt(
-            Date(timeIntervalSince1970: 1_700_000_900),
-            forTicket: "CD-1",
-            in: clientRepo
-        )
-        try setModifiedAt(
-            Date(timeIntervalSince1970: 1_700_000_500),
-            forTicket: "TL-8",
-            in: toolsRepo
-        )
+    func testProgramBoardTicketLanesSortByDashboardModificationKey() throws {
+        let clientPath = "/missing/client-dashboard"
+        let toolsPath = "/missing/tools"
 
         let snapshot = ProgramDashboardSnapshot(
             summary: response(
                 query: "summary",
                 projects: 2,
                 items: [
-                    try projectItem(name: "Client Dashboard", path: clientRepo.path),
-                    try projectItem(name: "Tools", path: toolsRepo.path),
+                    try projectItem(name: "Client Dashboard", path: clientPath),
+                    try projectItem(name: "Tools", path: toolsPath),
                 ]
             ),
             backlogWork: response(
                 query: "backlog_lane",
                 projects: 2,
                 items: [
-                    try ticketItem(projectName: "Client Dashboard", path: clientRepo.path, ticketID: "CD-90", title: "Old client backlog", status: "backlog"),
-                    try ticketItem(projectName: "Tools", path: toolsRepo.path, ticketID: "TL-8", title: "Middle tools backlog", status: "backlog"),
-                    try ticketItem(projectName: "Client Dashboard", path: clientRepo.path, ticketID: "CD-1", title: "Recent client backlog", status: "backlog"),
+                    try ticketItem(projectName: "Client Dashboard", path: clientPath, ticketID: "CD-90", title: "Old client backlog", status: "backlog", ticketModifiedAt: 1_700_000_000),
+                    try ticketItem(projectName: "Tools", path: toolsPath, ticketID: "TL-8", title: "Middle tools backlog", status: "backlog", ticketModifiedAt: 1_700_000_500),
+                    try ticketItem(projectName: "Client Dashboard", path: clientPath, ticketID: "CD-1", title: "Recent client backlog", status: "backlog", ticketModifiedAt: 1_700_000_900),
                 ]
             ),
             readyWork: emptyResponse(query: "ready_lane", projects: 2),
@@ -509,31 +486,22 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
 
         XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: nil).map(\.ticketID), ["CD-1", "TL-8", "CD-90"])
-        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: clientRepo.path).map(\.ticketID), ["CD-1", "CD-90"])
+        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPath: clientPath).map(\.ticketID), ["CD-1", "CD-90"])
     }
 
     func testProgramBoardTicketLanesFallBackToNumericIdWhenModifiedAtTies() throws {
-        let root = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let repo = root.appendingPathComponent("client-dashboard", isDirectory: true)
-        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
-
-        try writeTicket(repo: repo, id: "CD-90", title: "High id", status: "backlog", body: "")
-        try writeTicket(repo: repo, id: "CD-1", title: "Low id", status: "backlog", body: "")
-        let modifiedAt = Date(timeIntervalSince1970: 1_700_000_000)
-        try setModifiedAt(modifiedAt, forTicket: "CD-90", in: repo)
-        try setModifiedAt(modifiedAt, forTicket: "CD-1", in: repo)
+        let repoPath = "/missing/client-dashboard"
 
         let snapshot = ProgramDashboardSnapshot(
             summary: response(
                 query: "summary",
-                items: [try projectItem(name: "Client Dashboard", path: repo.path)]
+                items: [try projectItem(name: "Client Dashboard", path: repoPath)]
             ),
             backlogWork: response(
                 query: "backlog_lane",
                 items: [
-                    try ticketItem(projectName: "Client Dashboard", path: repo.path, ticketID: "CD-1", title: "Low id", status: "backlog"),
-                    try ticketItem(projectName: "Client Dashboard", path: repo.path, ticketID: "CD-90", title: "High id", status: "backlog"),
+                    try ticketItem(projectName: "Client Dashboard", path: repoPath, ticketID: "CD-1", title: "Low id", status: "backlog", ticketModifiedAt: 1_700_000_000),
+                    try ticketItem(projectName: "Client Dashboard", path: repoPath, ticketID: "CD-90", title: "High id", status: "backlog", ticketModifiedAt: 1_700_000_000),
                 ]
             ),
             readyWork: emptyResponse(query: "ready_lane"),
@@ -2195,6 +2163,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         priority: String = "medium",
         dependsOn: [String] = [],
         blockedBy: [String] = [],
+        ticketModifiedAt: TimeInterval? = nil,
         runID: Int? = nil,
         runState: String? = nil,
         activity: String? = nil,
@@ -2212,6 +2181,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         ]
         if let runID {
             object["run_id"] = runID
+        }
+        if let ticketModifiedAt {
+            object["ticket_modified_at"] = ticketModifiedAt
         }
         if let runState {
             object["run_state"] = runState
@@ -2345,11 +2317,6 @@ final class ProgramBoardStatusTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
-    }
-
-    private func setModifiedAt(_ date: Date, forTicket id: String, in repo: URL) throws {
-        let path = repo.appendingPathComponent(".orchestrator/\(id).md").path
-        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: path)
     }
 
     private func ticket(

@@ -13,28 +13,41 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
     func testProgramBoardEventAndSortLatency() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["RR237_BENCHMARK"] == "board")
 
-        let repoPath = FileManager.default.currentDirectoryPath
-        let project = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: repoPath))
-        let items = ProjectResolver.scanTickets(in: project).map {
-            ProgramStatusItem.ticket($0, projectPath: repoPath, projectName: "relay-runner")
+        let repoPath = "/benchmark/relay-runner"
+        let items = (1...227).map { index in
+            ProgramStatusItem(
+                project: ProgramStatusProject(name: "relay-runner", path: repoPath),
+                ticketID: "RR-BENCH-\(index)",
+                title: "Mounted ticket \(index)",
+                status: Ticket.Status.done.rawValue,
+                priority: Ticket.Priority.medium.rawValue,
+                ticketModifiedAt: Date(timeIntervalSince1970: TimeInterval(index))
+            )
         }
-        let snapshot = dashboard(done: items)
-        var sortSamples: [Double] = []
-        for _ in 0..<20 {
+        let unorderedItems = (0..<items.count).map {
+            items[($0 * 67) % items.count]
+        }
+        var orderingSamples: [Double] = []
+        for offset in 0..<20 {
+            let split = offset % unorderedItems.count
+            let rotated = Array(unorderedItems[split...] + unorderedItems[..<split])
             let start = DispatchTime.now().uptimeNanoseconds
-            XCTAssertEqual(snapshot.ticketItems(in: .done, selectedProjectPath: nil).count, items.count)
-            sortSamples.append(milliseconds(since: start))
+            let ordered = dashboard(done: rotated).ticketItems(in: .done, selectedProjectPath: nil)
+            orderingSamples.append(milliseconds(since: start))
+            XCTAssertEqual(ordered.count, items.count)
+            XCTAssertEqual(ordered.first?.ticketID, "RR-BENCH-227")
         }
 
         let model = ProgramBoardViewModel()
         let backlog = ProgramStatusItem(
             project: ProgramStatusProject(name: "relay-runner", path: repoPath),
-            ticketID: "RR-BENCH",
+            ticketID: "RR-DRAG",
             title: "Mounted drag benchmark",
             status: Ticket.Status.backlog.rawValue,
-            priority: Ticket.Priority.medium.rawValue
+            priority: Ticket.Priority.medium.rawValue,
+            ticketModifiedAt: Date()
         )
-        model.snapshot = dashboard(backlog: [backlog])
+        model.snapshot = dashboard(backlog: [backlog], done: unorderedItems)
 
         let host = NSHostingView(rootView:
             HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
@@ -105,46 +118,58 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
         XCTAssertEqual(model.dragTarget, ProgramBoardDropTarget(lane: .ready, isValid: true))
         eventView.mouseUp(with: try XCTUnwrap(mouseEvent(.leftMouseUp, at: readyInWindow, window: window)))
 
-        let queuedHover = expectation(description: "hover after ticket sort")
-        let queuedHoverStart = DispatchTime.now().uptimeNanoseconds
-        var queuedHoverMilliseconds = 0.0
-        DispatchQueue.main.async {
-            eventView.mouseEntered(with: hoverEvent)
-            queuedHoverMilliseconds = self.milliseconds(since: queuedHoverStart)
-            queuedHover.fulfill()
+        var queuedHoverSamples: [Double] = []
+        for index in 0..<20 {
+            let queuedHover = expectation(description: "hover after snapshot replacement \(index)")
+            let queuedHoverStart = DispatchTime.now().uptimeNanoseconds
+            hoverStart = queuedHoverStart
+            DispatchQueue.main.async {
+                eventView.mouseEntered(with: hoverEvent)
+                queuedHoverSamples.append(self.milliseconds(since: queuedHoverStart))
+                queuedHover.fulfill()
+            }
+            model.snapshot = dashboard(backlog: [backlog], done: Array(unorderedItems.reversed()))
+            wait(for: [queuedHover], timeout: 2)
+            eventView.mouseExited(with: hoverEvent)
         }
-        XCTAssertEqual(snapshot.ticketItems(in: .done, selectedProjectPath: nil).count, items.count)
-        wait(for: [queuedHover], timeout: 2)
 
-        let queuedDrag = expectation(description: "eligible drag after ticket sort")
-        let queuedDragStart = DispatchTime.now().uptimeNanoseconds
-        var queuedDragMilliseconds = 0.0
-        let queuedMouseDown = try XCTUnwrap(mouseEvent(.leftMouseDown, at: startInWindow, window: window))
-        let queuedMouseDragged = try XCTUnwrap(mouseEvent(.leftMouseDragged, at: readyInWindow, window: window))
-        DispatchQueue.main.async {
-            eventView.mouseDown(with: queuedMouseDown)
-            eventView.mouseDragged(with: queuedMouseDragged)
-            queuedDragMilliseconds = self.milliseconds(since: queuedDragStart)
-            queuedDrag.fulfill()
+        var queuedDragSamples: [Double] = []
+        for index in 0..<20 {
+            let queuedDrag = expectation(description: "eligible drag after snapshot replacement \(index)")
+            let queuedDragStart = DispatchTime.now().uptimeNanoseconds
+            let queuedMouseDown = try XCTUnwrap(mouseEvent(.leftMouseDown, at: startInWindow, window: window))
+            let queuedMouseDragged = try XCTUnwrap(mouseEvent(.leftMouseDragged, at: readyInWindow, window: window))
+            let queuedMouseUp = try XCTUnwrap(mouseEvent(.leftMouseUp, at: readyInWindow, window: window))
+            DispatchQueue.main.async {
+                eventView.mouseDown(with: queuedMouseDown)
+                eventView.mouseDragged(with: queuedMouseDragged)
+                queuedDragSamples.append(self.milliseconds(since: queuedDragStart))
+                eventView.mouseUp(with: queuedMouseUp)
+                queuedDrag.fulfill()
+            }
+            model.snapshot = dashboard(backlog: [backlog], done: unorderedItems)
+            wait(for: [queuedDrag], timeout: 2)
+            XCTAssertEqual(model.dragTarget, nil)
         }
-        XCTAssertEqual(snapshot.ticketItems(in: .done, selectedProjectPath: nil).count, items.count)
-        wait(for: [queuedDrag], timeout: 2)
-        XCTAssertEqual(model.dragTarget, ProgramBoardDropTarget(lane: .ready, isValid: true))
 
         let manualInProgress = model.dropRequest(
             for: backlog,
             sourceLane: .backlog,
             targetLane: .inProgress
         ) != nil
+        XCTAssertLessThan(percentileValue(orderingSamples, 0.50), 8)
+        XCTAssertLessThan(percentileValue(orderingSamples, 0.95), 16.7)
+        XCTAssertLessThan(percentileValue(queuedHoverSamples, 0.95), 16.7)
+        XCTAssertLessThan(percentileValue(queuedDragSamples, 0.95), 25)
         print(
             "RR237_BOARD tickets=\(items.count) "
-                + "sort_p50_ms=\(percentile(sortSamples, 0.50)) "
-                + "sort_p95_ms=\(percentile(sortSamples, 0.95)) "
+                + "sort_p50_ms=\(percentile(orderingSamples, 0.50)) "
+                + "sort_p95_ms=\(percentile(orderingSamples, 0.95)) "
                 + "hover_p50_ms=\(percentile(hoverSamples, 0.50)) "
                 + "hover_p95_ms=\(percentile(hoverSamples, 0.95)) "
                 + "drag_to_ready_ms=\(dragMilliseconds) "
-                + "queued_hover_behind_sort_ms=\(queuedHoverMilliseconds) "
-                + "queued_drag_behind_sort_ms=\(queuedDragMilliseconds) "
+                + "queued_hover_p95_ms=\(percentile(queuedHoverSamples, 0.95)) "
+                + "queued_drag_p95_ms=\(percentile(queuedDragSamples, 0.95)) "
                 + "manual_in_progress_accepted=\(manualInProgress)"
         )
     }
@@ -297,10 +322,14 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
     }
 
     private func percentile(_ samples: [Double], _ percentile: Double) -> String {
-        guard !samples.isEmpty else { return "n/a" }
+        String(format: "%.3f", percentileValue(samples, percentile))
+    }
+
+    private func percentileValue(_ samples: [Double], _ percentile: Double) -> Double {
+        guard !samples.isEmpty else { return .infinity }
         let sorted = samples.sorted()
         let index = min(sorted.count - 1, Int(ceil(Double(sorted.count) * percentile)) - 1)
-        return String(format: "%.3f", sorted[max(0, index)])
+        return sorted[max(0, index)]
     }
 
     private func milliseconds(since start: UInt64) -> Double {

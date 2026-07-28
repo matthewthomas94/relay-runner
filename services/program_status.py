@@ -562,6 +562,7 @@ def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> di
         "title": ticket.get("title"),
         "status": status,
         "priority": _ticket_priority(ticket),
+        "ticket_modified_at": _ticket_modified_at(ticket),
         "ticket_state": _ticket_state(ticket),
         "run_id": latest_run.get("body", {}).get("run_id") if latest_run else None,
         "attempt": latest_run.get("body", {}).get("attempt") if latest_run else None,
@@ -874,6 +875,16 @@ def _project_path(project: dict[str, Any]) -> str:
 
 def _ticket_id(ticket: dict[str, Any]) -> str:
     return str(ticket.get("body", {}).get("ticket_id") or "").strip()
+
+
+def _ticket_modified_at(ticket: dict[str, Any]) -> float | None:
+    source_path = str(ticket.get("body", {}).get("source_path") or "").strip()
+    if not source_path:
+        return None
+    try:
+        return Path(source_path).stat().st_mtime
+    except OSError:
+        return None
 
 
 def _run_ticket_id(run: dict[str, Any]) -> str:
