@@ -254,7 +254,6 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
             theme: nil,
             canCreate: true,
             onCreate: {},
-            onEdit: { _ in },
             onDrop: { _, _, _ in }
         )
     }

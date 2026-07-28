@@ -278,7 +278,6 @@ final class BoardOverlayScrollViewTests: XCTestCase {
                     theme: nil,
                     canCreate: true,
                     onCreate: {},
-                    onEdit: { _ in },
                     onDrop: { _, _, _ in }
                 )
                 ProgramWorkColumnPanel(
@@ -288,7 +287,6 @@ final class BoardOverlayScrollViewTests: XCTestCase {
                     theme: nil,
                     canCreate: true,
                     onCreate: {},
-                    onEdit: { _ in },
                     onDrop: { _, _, _ in }
                 )
             }
@@ -320,7 +318,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         )
     }
 
-    func testDoneItemsHideEditControls() {
+    func testOnlyEditableItemsOfferDetailEditControls() {
         let backlogItem = programWorkItem(
             ticketID: "RR-BACKLOG-1",
             title: "Editable backlog ticket",
@@ -336,7 +334,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertFalse(doneItem.showsProgramBoardEditButton)
     }
 
-    func testCardDragLayerReportsHoverAndDoneDoesNotReserveAnEditHitArea() throws {
+    func testCardDragLayerReportsHoverAndDoesNotReserveAnEditHitArea() throws {
         let eventView = ProgramWorkCardDragEventView()
         eventView.frame = CGRect(x: 0, y: 0, width: 220, height: 120)
         let editAreaPoint = CGPoint(x: 200, y: 20)
@@ -358,10 +356,6 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         eventView.mouseExited(with: event)
         XCTAssertEqual(hoverStates, [true, false])
 
-        eventView.showsEditButton = true
-        XCTAssertNil(eventView.hitTest(editAreaPoint))
-
-        eventView.showsEditButton = false
         XCTAssertTrue(eventView.hitTest(editAreaPoint) === eventView)
     }
 
@@ -387,7 +381,6 @@ final class BoardOverlayScrollViewTests: XCTestCase {
                     theme: nil,
                     canCreate: true,
                     onCreate: {},
-                    onEdit: { _ in },
                     onDrop: { drops.append(($0, $1, $2)) }
                 )
                 ProgramWorkColumnPanel(
@@ -397,7 +390,6 @@ final class BoardOverlayScrollViewTests: XCTestCase {
                     theme: nil,
                     canCreate: true,
                     onCreate: {},
-                    onEdit: { _ in },
                     onDrop: { drops.append(($0, $1, $2)) }
                 )
             }
@@ -795,7 +787,6 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             theme: nil,
             canCreate: true,
             onCreate: {},
-            onEdit: { _ in },
             onDrop: { _, _, _ in }
         )
         .frame(width: 270, height: BoardSurfaceLayout.columnHeight)
