@@ -354,9 +354,260 @@ final class BoardOverlayScrollViewTests: XCTestCase {
 
         eventView.mouseEntered(with: event)
         eventView.mouseExited(with: event)
+        drainMainQueue()
         XCTAssertEqual(hoverStates, [true, false])
 
         XCTAssertTrue(eventView.hitTest(editAreaPoint) === eventView)
+    }
+
+    func testCardDragLayerKeepsHoverAcrossTrackingReplacementAndClearsOnIdentityAndDetachment() {
+        let eventView = ProgramWorkCardDragEventView()
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 220, height: 120),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        var hoverStates: [Bool] = []
+        eventView.onHoverChange = { hoverStates.append($0) }
+        eventView.interactionID = "all|Backlog|RR-1"
+        eventView.pointerLocationOverride = CGPoint(x: 110, y: 60)
+        window.contentView = eventView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        eventView.reconcilePointerContainment()
+        drainMainQueue()
+        XCTAssertEqual(hoverStates, [true])
+
+        eventView.updateTrackingAreas()
+        drainMainQueue()
+        XCTAssertEqual(hoverStates, [true])
+
+        eventView.interactionID = "all|Backlog|RR-2"
+        drainMainQueue()
+        XCTAssertEqual(hoverStates, [true, false])
+        eventView.reconcilePointerContainment()
+        drainMainQueue()
+        XCTAssertEqual(hoverStates, [true, false, true])
+
+        eventView.canDrag = true
+        XCTAssertEqual(eventView.cursorPresentation, .openHand)
+        eventView.canDrag = false
+        XCTAssertEqual(eventView.cursorPresentation, .arrow)
+        XCTAssertTrue(eventView.isPointerInside)
+
+        window.contentView = NSView()
+        drainMainQueue()
+        XCTAssertEqual(hoverStates, [true, false, true, false])
+        XCTAssertFalse(eventView.isPointerInside)
+    }
+
+    func testCardDragLayerCancelsActiveDragWithoutLeavingPointerState() throws {
+        let eventView = ProgramWorkCardDragEventView()
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 220, height: 120),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = eventView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        eventView.canDrag = true
+        eventView.windowLocationToBoardLocation = { $0 }
+        var changeCount = 0
+        var endCount = 0
+        eventView.onChanged = { _, _ in changeCount += 1 }
+        eventView.onEnded = { endCount += 1 }
+        let start = CGPoint(x: 40, y: 40)
+
+        sendMouse(.leftMouseDown, at: start, to: eventView, in: window)
+        sendMouse(
+            .leftMouseDragged,
+            at: CGPoint(x: start.x + ProgramWorkCardDragEventView.dragThreshold + 1, y: start.y),
+            to: eventView,
+            in: window
+        )
+        XCTAssertTrue(eventView.isDragActive)
+        XCTAssertEqual(changeCount, 1)
+
+        eventView.cancelOperation(nil)
+        drainMainQueue()
+
+        XCTAssertFalse(eventView.isDragActive)
+        XCTAssertFalse(eventView.isPointerInside)
+        XCTAssertEqual(endCount, 1)
+    }
+
+    func testCardDragLayerKeepsClickSelectionBelowDragThreshold() {
+        let eventView = ProgramWorkCardDragEventView()
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 220, height: 120),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = eventView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        eventView.canDrag = true
+        eventView.windowLocationToBoardLocation = { $0 }
+        var selectCount = 0
+        var endCount = 0
+        eventView.onSelect = { selectCount += 1 }
+        eventView.onEnded = { endCount += 1 }
+        let start = CGPoint(x: 40, y: 40)
+
+        sendMouse(.leftMouseDown, at: start, to: eventView, in: window)
+        sendMouse(
+            .leftMouseDragged,
+            at: CGPoint(x: start.x + ProgramWorkCardDragEventView.dragThreshold - 1, y: start.y),
+            to: eventView,
+            in: window
+        )
+        sendMouse(.leftMouseUp, at: start, to: eventView, in: window)
+
+        XCTAssertEqual(selectCount, 1)
+        XCTAssertEqual(endCount, 0)
+        XCTAssertFalse(eventView.isDragActive)
+    }
+
+    func testProgramWorkCardCursorPresentationMapsEligibilityAndDragState() {
+        XCTAssertEqual(
+            ProgramWorkCardCursorPresentation.resolve(canDrag: false, isDragging: false),
+            .arrow
+        )
+        XCTAssertEqual(
+            ProgramWorkCardCursorPresentation.resolve(canDrag: false, isDragging: true),
+            .arrow
+        )
+        XCTAssertEqual(
+            ProgramWorkCardCursorPresentation.resolve(canDrag: true, isDragging: false),
+            .openHand
+        )
+        XCTAssertEqual(
+            ProgramWorkCardCursorPresentation.resolve(canDrag: true, isDragging: true),
+            .closedHand
+        )
+        XCTAssertTrue(ProgramWorkCardCursorPresentation.arrow.cursor === NSCursor.arrow)
+        XCTAssertTrue(ProgramWorkCardCursorPresentation.openHand.cursor === NSCursor.openHand)
+        XCTAssertTrue(ProgramWorkCardCursorPresentation.closedHand.cursor === NSCursor.closedHand)
+
+        let activeWorker = ProgramStatusItem(
+            project: ProgramStatusProject(name: "relay-runner", path: "/repo/relay-runner"),
+            ticketID: "RR-ACTIVE",
+            title: "Active worker",
+            status: Ticket.Status.inProgress.rawValue,
+            priority: Ticket.Priority.medium.rawValue,
+            runState: "active"
+        )
+        let awaitingMerge = ProgramStatusItem(
+            project: ProgramStatusProject(name: "relay-runner", path: "/repo/relay-runner"),
+            ticketID: "RR-MERGE",
+            title: "Awaiting merge",
+            status: Ticket.Status.inProgress.rawValue,
+            priority: Ticket.Priority.medium.rawValue,
+            runState: "awaiting_merge"
+        )
+        XCTAssertFalse(activeWorker.isProgramBoardDraggable)
+        XCTAssertFalse(awaitingMerge.isProgramBoardDraggable)
+        XCTAssertEqual(
+            ProgramWorkCardCursorPresentation.resolve(
+                canDrag: activeWorker.isProgramBoardDraggable,
+                isDragging: false
+            ),
+            .arrow
+        )
+        XCTAssertEqual(
+            ProgramWorkCardCursorPresentation.resolve(
+                canDrag: awaitingMerge.isProgramBoardDraggable,
+                isDragging: false
+            ),
+            .arrow
+        )
+    }
+
+    func testMountedProgramWorkspaceKeepsHoverOnOnlyTheHitTestCardAcrossScrollAndSnapshot() throws {
+        let model = ProgramBoardViewModel()
+        let initialItems = laneTickets(
+            prefix: "RR-HOVER",
+            status: Ticket.Status.backlog.rawValue,
+            count: 12
+        )
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: initialItems,
+            doneItems: []
+        )
+        let host = NSHostingView(rootView: AnyView(
+            programWorkColumnHost(model: model, lane: .backlog)
+        ))
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 270, height: BoardSurfaceLayout.columnHeight),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+
+        let backlogContainer = try XCTUnwrap(findScrollContainer(in: host))
+        let scrollViews = try scrollViews(in: backlogContainer)
+        var cards = programWorkCardViews(in: backlogContainer)
+        XCTAssertGreaterThan(cards.count, 2)
+        let hitLocations = mountedCardHitLocations(in: window)
+        XCTAssertGreaterThan(hitLocations.count, 1)
+
+        let firstPointer = hitLocations[0].location
+        updateMountedPointer(firstPointer, cards: cards)
+        drainMainQueue()
+        XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
+        XCTAssertTrue(hitLocations[0].card.isPointerInside)
+
+        cards.forEach { $0.pointerLocationOverride = firstPointer }
+        hitLocations[0].card.updateTrackingAreas()
+        XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
+        XCTAssertTrue(hitLocations[0].card.isPointerInside)
+
+        let secondPointer = hitLocations[1].location
+        updateMountedPointer(secondPointer, cards: cards)
+        drainMainQueue()
+        XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
+        XCTAssertTrue(hitLocations[1].card.isPointerInside)
+
+        let previouslyHoveredCard = hitLocations[1].card
+        let fixedPointer = secondPointer
+        cards.forEach { $0.pointerLocationOverride = fixedPointer }
+        scrollViews.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 180))
+        scrollViews.scrollView.reflectScrolledClipView(scrollViews.scrollView.contentView)
+        drainMainQueue()
+        XCTAssertFalse(previouslyHoveredCard.isPointerInside)
+        XCTAssertLessThanOrEqual(cards.filter(\.isPointerInside).count, 1)
+
+        let oldCards = cards
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: laneTickets(
+                prefix: "RR-REFRESHED",
+                status: Ticket.Status.backlog.rawValue,
+                count: 8
+            ),
+            doneItems: []
+        )
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+
+        cards = programWorkCardViews(in: try XCTUnwrap(findScrollContainer(in: host)))
+        XCTAssertTrue(oldCards.allSatisfy { oldCard in
+            !oldCard.isPointerInside || cards.contains { $0 === oldCard }
+        })
+        updateMountedPointer(fixedPointer, cards: cards)
+        drainMainQueue()
+        XCTAssertLessThanOrEqual(cards.filter(\.isPointerInside).count, 1)
     }
 
     func testProgramWorkCardDragStartsThroughMountedScrollHierarchy() throws {
@@ -657,9 +908,39 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertLessThanOrEqual(firstCardFrame.maxY, views.scrollView.contentView.bounds.height, file: file, line: line)
     }
 
-    private func programWorkCardViews(in view: NSView) -> [NSView] {
-        let currentValue = String(describing: type(of: view)).contains("ProgramWorkCardDragEventView") ? [view] : []
+    private func programWorkCardViews(in view: NSView) -> [ProgramWorkCardDragEventView] {
+        let currentValue = (view as? ProgramWorkCardDragEventView).map { [$0] } ?? []
         return currentValue + view.subviews.flatMap(programWorkCardViews(in:))
+    }
+
+    private func updateMountedPointer(
+        _ location: CGPoint,
+        cards: [ProgramWorkCardDragEventView]
+    ) {
+        cards.forEach {
+            $0.pointerLocationOverride = location
+            $0.reconcilePointerContainment(atWindowLocation: location)
+        }
+    }
+
+    private func mountedCardHitLocations(
+        in window: NSWindow
+    ) -> [(card: ProgramWorkCardDragEventView, location: CGPoint)] {
+        var matches: [(ProgramWorkCardDragEventView, CGPoint)] = []
+        for y in stride(from: CGFloat(0), through: window.contentView?.bounds.height ?? 0, by: 2) {
+            let location = CGPoint(x: window.contentView?.bounds.midX ?? 0, y: y)
+            var hitView = window.contentView?.hitTest(location)
+            while let candidate = hitView {
+                if let card = candidate as? ProgramWorkCardDragEventView {
+                    if !matches.contains(where: { $0.0 === card }) {
+                        matches.append((card, location))
+                    }
+                    break
+                }
+                hitView = candidate.superview
+            }
+        }
+        return matches
     }
 
     private func sendScrollWheel(
