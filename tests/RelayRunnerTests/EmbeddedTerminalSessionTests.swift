@@ -902,6 +902,33 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path))
     }
 
+    func testAppOwnedInterruptPreemptionSendsOneControlCForCodexAndClaude() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-3\",\"relay_command_seq\":3,\"preempt_provider\":true,\"work_disposition\":{\"route\":\"replace_current\"}}"
+            try "__INTERRUPT__\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "active"),
+            ], to: fixture.providerTurns)
+            var sent: [[UInt8]] = []
+            var scheduled: [() -> Void] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in sent.append(Array(data)) },
+                schedule: { _, _, work in scheduled.append(work) },
+                isRunning: { true }
+            )
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+
+            XCTAssertEqual(sent, [[3]], provider)
+            XCTAssertEqual(scheduled.count, 0, provider)
+            XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata, provider)
+        }
+    }
+
     func testCompletedReplaceIntentInterruptsThenSubmitsForCodexAndClaude() throws {
         for provider in ["codex", "claude"] {
             let fixture = try makeFixture()

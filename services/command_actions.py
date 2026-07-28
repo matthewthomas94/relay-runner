@@ -16,6 +16,7 @@ import re
 
 from config import load_config
 from codex_model_catalog import CODEX_FAMILIES, normalize_codex_family
+from intent_arbitration import explicit_cancel_requested
 
 
 CONTROL_COMMANDS = {
@@ -56,10 +57,6 @@ ORCHESTRATION_CORRECTION_RE = re.compile(
     r"\bwhy\s+did\s+you\s+(?:write|create|make|dispatch)\b.*\b(ticket|orchestrator)\b"
     r"|\bthe\s+(?:entire\s+)?point\s+is\b.*\borchestrator\b.*\b(?:write|create|author)\b.*\bticket\b"
     r"|\bso\s+(?:i|we)\s+can\s+continue\s+talking\b.*\b(ticket|orchestrator)\b",
-    re.IGNORECASE,
-)
-CANCEL_RE = re.compile(
-    r"\b(cancel|stop|abort|scratch\s+that|never\s+mind|nevermind)\b",
     re.IGNORECASE,
 )
 WORK_RE = re.compile(
@@ -197,7 +194,7 @@ def classify_command(text: str) -> CommandAction:
     if ORCHESTRATION_CORRECTION_RE.search(source):
         return CommandAction(kind="control", source_text=source, reason="orchestration_process_correction")
 
-    if CANCEL_RE.search(source):
+    if explicit_cancel_requested(source):
         return CommandAction(kind="control", source_text=source, reason="cancel")
 
     if INLINE_RE.search(source):

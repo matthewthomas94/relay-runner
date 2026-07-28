@@ -2354,6 +2354,49 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual(current["relay_command_id"], second_meta["relay_command_id"])
             self.assertEqual(current["authorization_relationship"], "conversation")
 
+    def test_negated_stop_status_composes_as_additive_for_codex_and_claude(self):
+        source_text = "don't stop the current work; just give me status"
+        active_work = (voice_bridge.ActiveWork("1:active", ("repository",)),)
+
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                relay_command = {
+                    "provider": provider,
+                    "relay_command_seq": 2,
+                    "relay_command_id": f"{provider}-cmd-2",
+                    "source_text": source_text,
+                }
+                action = voice_bridge.resolve_command_action(
+                    source_text,
+                    repo_path="/tmp/repo",
+                    relay_command=relay_command,
+                )
+                disposition = voice_bridge.resolve_intent_disposition(
+                    intent_id=relay_command["relay_command_id"],
+                    action_kind=action.kind,
+                    action_reason=action.reason,
+                    source_text=source_text,
+                    active_work=active_work,
+                )
+                metadata = voice_bridge._metadata_for_action(
+                    action,
+                    relay_command,
+                    disposition,
+                )
+
+                self.assertEqual(action.kind, "conversation")
+                self.assertEqual(
+                    disposition.route,
+                    voice_bridge.IntentRoute.CONTINUE_CURRENT,
+                )
+                self.assertEqual(
+                    disposition.authorization_effect.value,
+                    "preserve",
+                )
+                self.assertEqual(metadata["authorization_relationship"], "conversation")
+                self.assertFalse(metadata["preempt_provider"])
+                self.assertEqual(metadata["provider"], provider)
+
     def test_redirect_revokes_dispatch_authorization(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")

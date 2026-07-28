@@ -493,7 +493,9 @@ final class RelayVoiceCommandDelivery {
         lastDeferredProviderActiveKey = nil
         guard let command = claimNextCommand() else { return false }
         guard var events = Self.providerInputEvents(for: command.text) else { return true }
-        if providerTurnActive(), Self.metadataRequestsProviderPreemption(command.metadata) {
+        if providerTurnActive(),
+           Self.metadataRequestsProviderPreemption(command.metadata),
+           events.first != [3] {
             events.insert([3], at: 0)
         }
         guard let first = events.first else { return true }

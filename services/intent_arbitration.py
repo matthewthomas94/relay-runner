@@ -34,6 +34,16 @@ _EXPLICIT_REPLACE_RE = re.compile(
     r"actually\s+instead|replace\s+(?:that|it)|redirect|switch\s+to)\b",
     re.IGNORECASE,
 )
+_CANCEL_RE = re.compile(
+    r"\b(cancel|stop|abort|scratch\s+that|never\s+mind|nevermind)\b",
+    re.IGNORECASE,
+)
+_NEGATED_REPLACE_RE = re.compile(
+    r"\b(?:don'?t|do\s+not|never|no\s+need\s+to)\s+"
+    r"(?:\w+\s+){0,3}?"
+    r"(?:cancel|stop|abort)(?:\s+(?:or|and)\s+(?:cancel|stop|abort))*\b",
+    re.IGNORECASE,
+)
 _AMBIGUOUS_SWITCH_RE = re.compile(
     r"\b(should\s+(?:we|i)\s+switch|maybe\s+instead|could\s+(?:we|you)\s+switch)\b",
     re.IGNORECASE,
@@ -108,6 +118,27 @@ def inferred_resource_claims(source_text: str) -> tuple[str, ...]:
     )
 
 
+def explicit_replace_requested(source_text: str, *, action_reason: str = "") -> bool:
+    """Return whether completed language positively requests work preemption."""
+    text = str(source_text or "")
+    negated = bool(_NEGATED_REPLACE_RE.search(text))
+    unnegated_text = _NEGATED_REPLACE_RE.sub("", text)
+    if _EXPLICIT_REPLACE_RE.search(unnegated_text):
+        return True
+    return action_reason.strip().lower() in {
+        "cancel",
+        "interrupt",
+        "redirect",
+        "replace",
+    } and not negated
+
+
+def explicit_cancel_requested(source_text: str) -> bool:
+    """Return whether completed language positively requests cancellation."""
+    text = _NEGATED_REPLACE_RE.sub("", str(source_text or ""))
+    return bool(_CANCEL_RE.search(text))
+
+
 def sidecar_eligible(
     *,
     source_text: str,
@@ -146,6 +177,14 @@ def resolve_intent_disposition(
     kind = str(action_kind or "conversation")
     reason = str(action_reason or "").strip().lower()
     text = str(source_text or "")
+    if (
+        kind == "control"
+        and reason in {"cancel", "interrupt", "redirect", "replace"}
+        and _NEGATED_REPLACE_RE.search(text)
+        and not explicit_replace_requested(text, action_reason=reason)
+    ):
+        kind = "conversation"
+        reason = ""
     resources = tuple(sorted({
         *(str(resource) for resource in requested_resources),
         *inferred_resource_claims(text),
@@ -187,10 +226,7 @@ def resolve_intent_disposition(
             resource_claims=resources,
         )
 
-    explicit_replace = (
-        reason in {"cancel", "interrupt", "redirect", "replace"}
-        or bool(_EXPLICIT_REPLACE_RE.search(text))
-    )
+    explicit_replace = explicit_replace_requested(text, action_reason=reason)
     if active and explicit_replace:
         return IntentDisposition(
             intent_id=intent_id,

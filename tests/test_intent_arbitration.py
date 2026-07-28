@@ -35,6 +35,17 @@ class IntentArbitrationTests(unittest.TestCase):
         self.assertEqual(disposition.authorization_effect, AuthorizationEffect.PRESERVE)
         self.assertEqual(disposition.target_work_ids, ("1:active",))
 
+    def test_negated_stop_status_preserves_active_work_even_with_cancel_hint(self):
+        disposition = self.resolve(
+            "don't stop the current work; just give me status",
+            kind="control",
+            reason="cancel",
+        )
+
+        self.assertEqual(disposition.route, IntentRoute.CONTINUE_CURRENT)
+        self.assertEqual(disposition.authorization_effect, AuthorizationEffect.PRESERVE)
+        self.assertEqual(disposition.conflicting_work_ids, ())
+
     def test_project_mutation_queues_instead_of_replacing(self):
         disposition = self.resolve("Build the export screen too", kind="create_ticket")
         self.assertEqual(disposition.route, IntentRoute.QUEUE_PROJECT_WORK)
