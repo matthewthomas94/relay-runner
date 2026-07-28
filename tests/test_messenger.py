@@ -519,6 +519,38 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_final_interrupts_inflight_handoff_and_speaks_only_final(self):
+        backend = BlockingBackend(
+            "I picked up the task, and I’ll return with the next step.",
+            ["The work is complete."],
+        )
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 18, "relay_command_id": "cmd-18"}
+            self.assertTrue(runtime.submit_user("Finish the task", command))
+            self.assertTrue(backend.first_prompt_started.wait(1.0))
+
+            self.assertTrue(runtime.submit_final({"text": "Finished.", **command}))
+            self.assertTrue(wait_until(lambda: backend.interrupt_count == 1))
+
+            backend.release_first_response.set()
+
+            self.assertTrue(
+                wait_until(
+                    lambda: spoken == ["The work is complete."] and len(backend.prompts) == 2,
+                    timeout=2.0,
+                )
+            )
+            self.assertIn("authoritative orchestrator reply", backend.prompts[1])
+        finally:
+            runtime.shutdown()
+
     def test_silent_final_falls_back_to_authoritative_text(self):
         backend = FakeBackend(["__SILENT__", "__SILENT__"])
         spoken: list[str] = []

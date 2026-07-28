@@ -797,6 +797,7 @@ class MessengerRuntime:
         self._current_command: tuple[int, str] | None = None
         self._has_trace_for_current_command = False
         self._final_commands: set[tuple[int, str]] = set()
+        self._active_event: _MessengerEvent | None = None
         self._started = False
         self._shutdown = threading.Event()
         self._worker_thread: threading.Thread | None = None
@@ -897,6 +898,7 @@ class MessengerRuntime:
         text = str(payload.get("text") or "").strip()
         if not text:
             return False
+        interrupt_handoff = False
         with self._lock:
             command_key = command_key or self._current_command
             if command_key is None or command_key != self._current_command:
@@ -907,9 +909,18 @@ class MessengerRuntime:
             if len(self._final_commands) > 100:
                 for old in list(self._final_commands)[:50]:
                     self._final_commands.discard(old)
+            active = self._active_event
+            interrupt_handoff = (
+                active is not None
+                and active.kind == "user_turn"
+                and (active.command_seq, active.command_id) == command_key
+            )
+            self._generation += 1
             generation = self._generation
             self._context.append(f"AUTHORITATIVE ORCHESTRATOR FINAL: {text}")
             self._discard_pending_kinds_locked({"user_turn", "orchestrator_trace"})
+        if interrupt_handoff:
+            self.backend.interrupt()
         self._events.put(_MessengerEvent(
             kind="orchestrator_final",
             text=text,
@@ -957,6 +968,8 @@ class MessengerRuntime:
             if not self._event_is_current(event):
                 continue
             prompt = self._prompt_for(event)
+            with self._lock:
+                self._active_event = event
             try:
                 response = self.backend.ask(prompt, timeout=self._response_timeout).strip()
             except Exception as exc:
@@ -973,6 +986,10 @@ class MessengerRuntime:
                         speech_metadata=self._speech_metadata_for(event, fallback=True),
                     )
                 continue
+            finally:
+                with self._lock:
+                    if self._active_event is event:
+                        self._active_event = None
             if not self._event_is_current(event):
                 continue
             if not response or response == SILENT_RESPONSE:
