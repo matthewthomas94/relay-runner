@@ -361,6 +361,24 @@ final class RelayTerminalInputTrackerTests: XCTestCase {
 }
 
 final class RelayTerminalViewInputOriginTests: XCTestCase {
+    func testTerminalRendererDefaultsToCoreGraphics() {
+        let view = RelayTerminalView(frame: .zero)
+
+        XCTAssertFalse(view.configureRendererFromEnvironment([:]))
+        XCTAssertFalse(view.isUsingMetalRenderer)
+    }
+
+    func testTerminalRendererFallsBackToCoreGraphicsAfterActivationError() {
+        struct ActivationError: Error {}
+        let view = RelayTerminalView(frame: .zero)
+
+        XCTAssertFalse(view.configureRendererFromEnvironment(
+            ["RELAY_RUNNER_TERMINAL_RENDERER": "metal"],
+            activateMetal: { throw ActivationError() }
+        ))
+        XCTAssertFalse(view.isUsingMetalRenderer)
+    }
+
     func testTerminalProtocolRepliesAreDistinctFromUserInput() {
         let view = RelayTerminalView(frame: .zero)
         let delegate = TerminalInputOriginCapturingDelegate(view: view)

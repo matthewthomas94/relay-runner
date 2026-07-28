@@ -1853,6 +1853,15 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertIn("codex_model_catalog.py", script)
         self.assertNotIn('if [ -f "$PROJECT_ROOT/services/$f" ]', script)
 
+    def test_build_bundle_includes_swiftterm_metal_resources(self):
+        script_path = os.path.join(ROOT, "scripts", "build-dmg.sh")
+        with open(script_path) as f:
+            script = f.read()
+
+        self.assertIn('SWIFTTERM_RESOURCE_BUNDLE="$BUILD_DIR/SwiftTerm_SwiftTerm.bundle"', script)
+        self.assertIn('cp -R "$SWIFTTERM_RESOURCE_BUNDLE" "$APP_DIR/Contents/Resources/"', script)
+        self.assertIn('error: SwiftTerm resource bundle not found after swift build', script)
+
     def test_tts_dismissal_does_not_supersede_claimed_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")

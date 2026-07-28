@@ -377,8 +377,9 @@ private final class RR237TerminalProbe: NSObject, TerminalViewDelegate, LocalPro
 
     func start() throws {
         if renderer == "metal" {
-            try terminalView.setUseMetal(true)
-            guard terminalView.isUsingMetalRenderer else {
+            guard terminalView.configureRendererFromEnvironment(
+                ["RELAY_RUNNER_TERMINAL_RENDERER": "metal"]
+            ) else {
                 throw XCTSkip("Metal renderer did not activate")
             }
         }
