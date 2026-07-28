@@ -29,6 +29,11 @@ enum ProjectResolver {
         case unavailable
     }
 
+    struct WorkspaceScope {
+        let route: BoardRoute
+        let projects: [LinkedProject]
+    }
+
     private static let bridgeSocketPath = "/tmp/voice_bridge.sock"
     private static let bridgeCwdFilePath = "/tmp/voice_bridge.cwd"
     private static let bridgeProviderFilePath = "/tmp/voice_bridge.provider"
@@ -50,8 +55,6 @@ enum ProjectResolver {
         registry: ProjectRegistry = ProjectRegistry()
     ) -> LinkedProject? {
         let fm = FileManager.default
-        // Tests can pass explicit fixture paths and use the default healthy
-        // closure; production resolve() checks process + bridge metadata.
         let bridgeAlive = bridgeSessionAlive() && fm.fileExists(atPath: bridgeSocket.path)
         if bridgeAlive,
            let raw = try? String(contentsOf: bridgeCwdFile, encoding: .utf8) {
@@ -139,46 +142,70 @@ enum ProjectResolver {
         bridgeSessionAlive: () -> Bool = { true },
         registry: ProjectRegistry = ProjectRegistry()
     ) -> BoardRoute {
+        resolveWorkspaceScope(
+            bridgeSocket: bridgeSocket,
+            bridgeCwdFile: bridgeCwdFile,
+            bridgeProviderFile: bridgeProviderFile,
+            bridgeSessionAlive: bridgeSessionAlive,
+            registry: registry
+        ).route
+    }
+
+    static func resolveWorkspaceScope(
+        bridgeSocket: URL,
+        bridgeCwdFile: URL,
+        bridgeProviderFile: URL? = nil,
+        bridgeSessionAlive: () -> Bool = { true },
+        registry: ProjectRegistry = ProjectRegistry()
+    ) -> WorkspaceScope {
         let fm = FileManager.default
         let bridgeAlive = bridgeSessionAlive() && fm.fileExists(atPath: bridgeSocket.path)
         if bridgeAlive,
            let raw = try? String(contentsOf: bridgeCwdFile, encoding: .utf8) {
             let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !path.isEmpty else { return .unavailable }
+            guard !path.isEmpty else {
+                return WorkspaceScope(route: .unavailable, projects: [])
+            }
 
             let cwdURL = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
             let provider = bridgeProviderFile.flatMap(readBridgeProvider)
             do {
                 if let explicitProject = try registry.activeProject(),
                    explicitProject.repoPath.standardizedFileURL.resolvingSymlinksInPath().path == cwdURL.path {
-                    return .project(explicitProject)
+                    return WorkspaceScope(route: .project(explicitProject), projects: [explicitProject])
                 }
                 if let project = try registry.activateBridgeCwd(at: cwdURL, provider: provider) {
-                    return .project(project)
+                    return WorkspaceScope(route: .project(project), projects: [project])
                 }
                 if let workspaceRoot = try registry.activeWorkspaceRoot(),
                    !workspaceRoot.discoveredProjectIDs.isEmpty {
-                    return .programBoard
+                    return WorkspaceScope(
+                        route: .programBoard,
+                        projects: try registry.activeWorkspaceProjects()
+                    )
                 }
-                return .unavailable
+                return WorkspaceScope(route: .unavailable, projects: [])
             } catch {
                 NSLog("[relay-runner] failed to route board for \(cwdURL.path): \(error)")
-                return .unavailable
+                return WorkspaceScope(route: .unavailable, projects: [])
             }
         }
 
         do {
             if let workspaceRoot = try registry.activeWorkspaceRoot(),
                !workspaceRoot.discoveredProjectIDs.isEmpty {
-                return .programBoard
+                return WorkspaceScope(
+                    route: .programBoard,
+                    projects: try registry.activeWorkspaceProjects()
+                )
             }
             if let project = try registry.activeProject() {
-                return .project(project)
+                return WorkspaceScope(route: .project(project), projects: [project])
             }
-            return .unavailable
+            return WorkspaceScope(route: .unavailable, projects: [])
         } catch {
             NSLog("[relay-runner] failed to resolve Workspace route: \(error)")
-            return .unavailable
+            return WorkspaceScope(route: .unavailable, projects: [])
         }
     }
 

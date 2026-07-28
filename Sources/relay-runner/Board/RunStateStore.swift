@@ -134,7 +134,7 @@ enum RunStateStore {
 
     /// `~/Library/Application Support/relay-runner/orchestrator/runs.json` —
     /// matches `_data_root()` in services/orchestrator.py.
-    private static var indexURL: URL? {
+    static var indexURL: URL? {
         guard let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first else { return nil }
@@ -154,24 +154,34 @@ enum RunStateStore {
     /// empty map when the file is absent or unreadable — the board then
     /// renders purely from ticket files.
     static func load(forRepo repoPath: URL) -> [String: RunState] {
+        Dictionary(
+            uniqueKeysWithValues: load(forRepos: [repoPath]).map { ($0.ticketId, $0) }
+        )
+    }
+
+    /// Reads the shared runs index once for a multi-project Workspace. The
+    /// previous per-project loop decoded the same file for every child repo.
+    static func load(forRepos repoPaths: [URL]) -> [RunState] {
         guard let url = indexURL,
               let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode(RunsIndex.self, from: data) else {
-            return [:]
+            return []
         }
-        let target = repoPath.resolvingSymlinksInPath().path
+        let targets = Set(repoPaths.map { $0.resolvingSymlinksInPath().path })
         var byTicket: [String: RunState] = [:]
         for run in decoded.runs {
-            guard URL(fileURLWithPath: run.repoPath).resolvingSymlinksInPath().path == target else {
+            let repoPath = URL(fileURLWithPath: run.repoPath).resolvingSymlinksInPath().path
+            guard targets.contains(repoPath) else {
                 continue
             }
-            if let existing = byTicket[run.ticketId] {
-                byTicket[run.ticketId] = prefer(existing, over: run)
+            let key = "\(repoPath)|\(run.ticketId)"
+            if let existing = byTicket[key] {
+                byTicket[key] = prefer(existing, over: run)
             } else {
-                byTicket[run.ticketId] = run
+                byTicket[key] = run
             }
         }
-        return byTicket
+        return Array(byTicket.values)
     }
 
     /// Active runs outrank terminal ones; ties break toward the newer run_id.

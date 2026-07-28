@@ -269,6 +269,7 @@ struct ProjectRegistry {
         source: ProjectActivationSource
     ) throws {
         var document = try load()
+        let original = document
         let timestamp = now()
         upsertProject(
             in: &document,
@@ -280,7 +281,9 @@ struct ProjectRegistry {
             preserveActivationSource: false,
             timestamp: timestamp
         )
-        try save(document)
+        if document != original {
+            try save(document)
+        }
     }
 
     private func registerWorkspaceRoot(
@@ -290,6 +293,7 @@ struct ProjectRegistry {
         source: ProjectActivationSource = .discovery
     ) throws {
         var document = try load()
+        let original = document
         let timestamp = now()
         let childProjectIDs = childRepoURLs.map(\.path).sorted()
 
@@ -310,6 +314,16 @@ struct ProjectRegistry {
 
         let id = rootURL.path
         let existing = document.workspaceRoots.first(where: { $0.id == id })
+        let providerKey = normalizedProvider(provider)
+        let providerChanged = providerKey.map {
+            existing?.providers[$0]?.lastActivationSource != source
+        } ?? false
+        let rootChanged = existing?.rootPath != rootURL.path
+            || existing?.displayName != rootURL.lastPathComponent
+            || existing?.discoveredProjectIDs != childProjectIDs
+            || document.activeWorkspaceRootID != id
+            || document.activeProjectID != nil
+            || original.projects.contains { $0.id == rootURL.path }
         var record = existing ?? RegisteredWorkspaceRoot(
             id: id,
             rootPath: rootURL.path,
@@ -318,12 +332,14 @@ struct ProjectRegistry {
             discoveredProjectIDs: childProjectIDs,
             providers: [:]
         )
-        record.rootPath = rootURL.path
-        record.displayName = rootURL.lastPathComponent
-        record.lastSeenAt = timestamp
-        record.discoveredProjectIDs = childProjectIDs
+        if existing == nil || rootChanged || providerChanged {
+            record.rootPath = rootURL.path
+            record.displayName = rootURL.lastPathComponent
+            record.lastSeenAt = timestamp
+            record.discoveredProjectIDs = childProjectIDs
+        }
 
-        if let providerKey = normalizedProvider(provider) {
+        if let providerKey, providerChanged || existing == nil {
             // Workspace roots and projects share provider-neutral metadata so
             // Codex and Claude resolve the same registry state.
             record.providers[providerKey] = ProjectProviderMetadata(
@@ -339,7 +355,9 @@ struct ProjectRegistry {
         }
         document.activeWorkspaceRootID = id
         document.activeProjectID = nil
-        try save(document)
+        if document != original {
+            try save(document)
+        }
     }
 
     private func upsertProject(
@@ -356,6 +374,22 @@ struct ProjectRegistry {
         let providerKey = normalizedProvider(provider)
         let existing = document.projects.first(where: { $0.id == id })
         let normalizedAlias = normalizedProjectAlias(alias) ?? existing?.alias ?? repoURL.lastPathComponent
+        let providerUnchanged = providerKey.map {
+            existing?.providers[$0]?.lastActivationSource == source
+        } ?? true
+        let activationUnchanged = !activate
+            || (document.activeProjectID == id && document.activeWorkspaceRootID == nil)
+
+        if source != .programmatic,
+           let existing,
+           existing.repoPath == repoURL.path,
+           existing.alias == normalizedAlias,
+           existing.displayName == normalizedAlias,
+           (preserveActivationSource || existing.lastActivationSource == source),
+           providerUnchanged,
+           activationUnchanged {
+            return
+        }
 
         var record = existing ?? RegisteredProject(
             id: id,

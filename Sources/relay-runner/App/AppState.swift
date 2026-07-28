@@ -3,12 +3,6 @@ import Foundation
 import QuartzCore
 import SwiftUI
 
-private struct NotchActivitySnapshot {
-    let runStates: [RunState]
-    let tickets: [Ticket]
-    let ticketsByRunKey: [String: Ticket]
-}
-
 @Observable
 final class AppState {
     enum SessionLaunchDestination: Equatable {
@@ -45,6 +39,14 @@ final class AppState {
         let body: String
     }
 
+    private struct BridgeWatchdogSample {
+        let daemonAlive: Bool
+        let consumerAlive: Bool
+        let hasSessionContext: Bool
+        let pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState
+        let stopRequested: Bool
+    }
+
     var config: AppConfig
     var isRunning = false
     var statusText = "Idle"
@@ -55,8 +57,12 @@ final class AppState {
     @ObservationIgnored private let refreshBundledOrchestratorDaemon: () async -> OrchestratorDaemonRefreshResult
     @ObservationIgnored private let refreshBundledServicesOnLaunch: Bool
     @ObservationIgnored private let sleepPreventionController = SleepPreventionController()
-    @ObservationIgnored private var sleepPreventionTimer: Timer?
-    @ObservationIgnored private var sleepPreventionTask: Task<Void, Never>?
+    @ObservationIgnored private let workspaceActivityStore = WorkspaceActivitySnapshotStore()
+    @ObservationIgnored private var workspaceActivityTimer: Timer?
+    @ObservationIgnored private var workspaceActivityTask: Task<Void, Never>?
+    @ObservationIgnored private var workspaceActivityRefreshID = 0
+    @ObservationIgnored private var workspaceDiscoveryTask: Task<Void, Never>?
+    @ObservationIgnored private var sleepPreventionMonitoringActive = false
     @ObservationIgnored private var appTerminationObserver: NSObjectProtocol?
 
     var serviceLifecycleMessage: String?
@@ -167,14 +173,15 @@ final class AppState {
     private var eventBus: StateEventBus?
     private var actionsBus: ActionsConfirmBus?
     private var sttPollTimer: Timer?
-    private var notchActivityTimer: Timer?
+    private var notchActivityPollingActive = false
     private var notchActivityRunStates: [RunState] = []
     private var notchActivityTickets: [Ticket] = []
     private var notchActivityTicketsByRunKey: [String: Ticket] = [:]
-    private var notchActivityTask: Task<Void, Never>?
+    private var workspaceActivitySnapshot = WorkspaceActivitySnapshot.empty
     private var onboardingNotchOverrideActive = false
     private var permissionSetupNotchState: PermissionSetupNotchState?
     private var bridgeWatchdog: Timer?
+    private var bridgeWatchdogTask: Task<Void, Never>?
     private var programStatusTask: Task<Void, Never>?
     /// True while a menu-started terminal session owns the bridge.
     private var menuSessionActive = false {
@@ -283,52 +290,71 @@ final class AppState {
     }
 
     private func startNotchActivityPolling() {
-        stopNotchActivityPolling()
-        syncNotchActivityProjectState()
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.syncNotchActivityProjectState()
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        notchActivityTimer = timer
+        notchActivityPollingActive = true
+        updateWorkspaceActivityPolling()
+        refreshWorkspaceActivity()
     }
 
     private func stopNotchActivityPolling() {
-        notchActivityTimer?.invalidate()
-        notchActivityTimer = nil
-        notchActivityTask?.cancel()
-        notchActivityTask = nil
+        notchActivityPollingActive = false
+        updateWorkspaceActivityPolling()
         notchActivityRunStates = []
         notchActivityTickets = []
         notchActivityTicketsByRunKey = [:]
         notchStatusController.clearWorkingActivity()
     }
 
-    private func syncNotchActivityProjectState() {
-        guard hasActiveSession else {
-            clearNotchActivityProjectState()
-            return
+    private func refreshWorkspaceActivity(invalidateRoute: Bool = false) {
+        if invalidateRoute {
+            workspaceActivityRefreshID += 1
+            workspaceActivityTask?.cancel()
+            workspaceActivityTask = nil
+            workspaceActivitySnapshot = .empty
         }
-
-        guard notchActivityTask == nil else { return }
-        notchActivityTask = Task { @MainActor [weak self] in
-            let snapshot = await Self.loadNotchActivitySnapshot()
-            guard let self else { return }
-            self.notchActivityTask = nil
-            guard !Task.isCancelled else { return }
-            guard self.hasActiveSession else {
-                self.clearNotchActivityProjectState()
-                return
+        guard workspaceActivityTask == nil else { return }
+        let bridgeSessionAlive = hasActiveSession
+        workspaceActivityRefreshID += 1
+        let refreshID = workspaceActivityRefreshID
+        workspaceActivityTask = Task { @MainActor [weak self, workspaceActivityStore] in
+            if invalidateRoute {
+                await workspaceActivityStore.cancel(invalidate: true)
             }
-            self.notchActivityRunStates = snapshot.runStates
-            self.notchActivityTickets = snapshot.tickets
-            self.notchActivityTicketsByRunKey = snapshot.ticketsByRunKey
+            let snapshot = await workspaceActivityStore.refresh(
+                bridgeSessionAlive: bridgeSessionAlive
+            )
+            guard let self, self.workspaceActivityRefreshID == refreshID else { return }
+            self.workspaceActivityTask = nil
+            guard !Task.isCancelled else { return }
+            self.workspaceActivitySnapshot = snapshot
+            if self.hasActiveSession {
+                self.notchActivityRunStates = snapshot.runStates
+                self.notchActivityTickets = snapshot.tickets
+                self.notchActivityTicketsByRunKey = snapshot.ticketsByRunKey
+            } else {
+                self.clearNotchActivityProjectState(cancelRefresh: false)
+            }
             self.syncNotchActivitySurface()
+            self.syncSleepPreventionController(with: snapshot)
+            self.programBoardOverlay.refreshRouteIfNeeded()
         }
     }
 
-    private func clearNotchActivityProjectState() {
-        notchActivityTask?.cancel()
-        notchActivityTask = nil
+    private func cancelWorkspaceActivityRefresh(invalidate: Bool) {
+        workspaceActivityRefreshID += 1
+        workspaceActivityTask?.cancel()
+        workspaceActivityTask = nil
+        Task { [workspaceActivityStore] in
+            await workspaceActivityStore.cancel(invalidate: invalidate)
+        }
+        if invalidate {
+            workspaceActivitySnapshot = .empty
+        }
+    }
+
+    private func clearNotchActivityProjectState(cancelRefresh: Bool = true) {
+        if cancelRefresh {
+            cancelWorkspaceActivityRefresh(invalidate: false)
+        }
         notchActivityRunStates = []
         notchActivityTickets = []
         notchActivityTicketsByRunKey = [:]
@@ -420,31 +446,6 @@ final class AppState {
         "\(repoPath)|\(ticketId)"
     }
 
-    private static func loadNotchActivitySnapshot() async -> NotchActivitySnapshot {
-        await Task.detached(priority: .utility) {
-            let projects = ProjectResolver.resolveActivityProjects()
-            var runStates: [RunState] = []
-            var tickets: [Ticket] = []
-            var ticketsByRunKey: [String: Ticket] = [:]
-
-            for project in projects {
-                runStates.append(contentsOf: Array(RunStateStore.load(forRepo: project.repoPath).values))
-                let projectTickets = ProjectResolver.scanTickets(in: project)
-                tickets.append(contentsOf: projectTickets)
-                let repoPath = project.repoPath.resolvingSymlinksInPath().path
-                for ticket in projectTickets {
-                    ticketsByRunKey[notchActivityRunKey(repoPath: repoPath, ticketId: ticket.id)] = ticket
-                }
-            }
-
-            return NotchActivitySnapshot(
-                runStates: runStates,
-                tickets: tickets,
-                ticketsByRunKey: ticketsByRunKey
-            )
-        }.value
-    }
-
     init(
         checkForUpdates: @escaping @MainActor () -> Void = {},
         bundleURL: URL = Bundle.main.bundleURL,
@@ -472,8 +473,11 @@ final class AppState {
         programBoardOverlay.setSessionActiveProvider { [weak self] in
             self?.hasActiveSession ?? false
         }
-        programBoardOverlay.setProjectScopeProvider {
-            ProjectResolver.resolveActivityProjects().map(\.repoPath.path)
+        programBoardOverlay.setBoardRouteResolver { [weak self] in
+            self?.workspaceActivitySnapshot.route ?? .unavailable
+        }
+        programBoardOverlay.setProjectScopeProvider { [weak self] in
+            self?.workspaceActivitySnapshot.projects.map(\.repoPath.path) ?? []
         }
         embeddedTerminal.setExitHandler { [weak self] _ in
             self?.embeddedTerminalDidExit()
@@ -733,12 +737,15 @@ final class AppState {
         // Cancel any in-flight recording too, so the mic indicator clears.
         sttEngine?.cancelRecording()
         stateMachine.reset()
-        syncSleepPreventionActivity()
+        refreshWorkspaceActivity(invalidateRoute: true)
     }
 
     /// Full shutdown (for app quit).
     func stopServices() {
         guard isRunning else {
+            workspaceDiscoveryTask?.cancel()
+            workspaceDiscoveryTask = nil
+            cancelWorkspaceActivityRefresh(invalidate: true)
             stopSleepPreventionMonitoring(releaseReason: "services-stopped")
             return
         }
@@ -759,10 +766,16 @@ final class AppState {
         processManager.stopServices()
         isRunning = false
         statusText = "Idle"
+        workspaceDiscoveryTask?.cancel()
+        workspaceDiscoveryTask = nil
+        cancelWorkspaceActivityRefresh(invalidate: true)
         stopSleepPreventionMonitoring(releaseReason: "services-stopped")
     }
 
     func prepareForSparkleRelaunch() {
+        workspaceDiscoveryTask?.cancel()
+        workspaceDiscoveryTask = nil
+        cancelWorkspaceActivityRefresh(invalidate: true)
         stopSleepPreventionMonitoring(releaseReason: "update-relaunch")
         bridgeRecoverySuppressedForUpdate = true
         stopBridgeWatchdog()
@@ -832,10 +845,26 @@ final class AppState {
         }
 
         let url = WorkspaceFolder.url(from: newConfig.general.working_directory)
-        do {
-            _ = try WorkspaceFolder.refreshDiscovery(for: newConfig.general)
-        } catch {
-            NSLog("[RelayRunner] Workspace folder discovery skipped for \(url.path): \(error)")
+        let general = newConfig.general
+        workspaceDiscoveryTask?.cancel()
+        workspaceDiscoveryTask = Task { @MainActor [weak self] in
+            let errorMessage = await Task.detached(priority: .utility) {
+                do {
+                    _ = try WorkspaceFolder.refreshDiscovery(for: general)
+                    return nil as String?
+                } catch {
+                    return "\(error)"
+                }
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.workspaceDiscoveryTask = nil
+            if let errorMessage {
+                NSLog(
+                    "[RelayRunner] Workspace folder discovery skipped for \(url.path): \(errorMessage)"
+                )
+                return
+            }
+            self.refreshWorkspaceActivity(invalidateRoute: true)
         }
     }
 
@@ -899,6 +928,7 @@ final class AppState {
         activeSessionLaunchConfig = launchConfig
         // Bridge is about to launch — assume alive until watchdog says otherwise
         bridgeAliveCache = true
+        refreshWorkspaceActivity(invalidateRoute: true)
 
         // Start STT if not already running
         if sttEngine == nil {
@@ -972,51 +1002,47 @@ final class AppState {
     }
 
     private func startSleepPreventionMonitoring() {
-        if sleepPreventionTimer == nil {
-            let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-                self?.syncSleepPreventionActivity()
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            sleepPreventionTimer = timer
-        }
+        sleepPreventionMonitoringActive = true
+        updateWorkspaceActivityPolling()
         syncSleepPreventionActivity()
     }
 
-    private func stopSleepPreventionMonitoring(releaseReason: String) {
-        sleepPreventionTimer?.invalidate()
-        sleepPreventionTimer = nil
-        sleepPreventionTask?.cancel()
-        sleepPreventionTask = nil
-        sleepPreventionController.release(reason: releaseReason)
-    }
-
-    private func syncSleepPreventionActivity() {
-        guard sleepPreventionTask == nil else { return }
-        sleepPreventionTask = Task { @MainActor [weak self] in
-            let activity = await Self.loadSleepPreventionActivity()
-            guard let self else { return }
-            self.sleepPreventionTask = nil
-            guard !Task.isCancelled else { return }
-            self.sleepPreventionController.sync(
-                preferenceEnabled: self.config.general.prevent_sleep_while_running,
-                activity: activity
-            )
+    private func updateWorkspaceActivityPolling() {
+        let shouldPoll = notchActivityPollingActive || sleepPreventionMonitoringActive
+        if shouldPoll, workspaceActivityTimer == nil {
+            let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+                self?.refreshWorkspaceActivity()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            workspaceActivityTimer = timer
+        } else if !shouldPoll {
+            workspaceActivityTimer?.invalidate()
+            workspaceActivityTimer = nil
+            cancelWorkspaceActivityRefresh(invalidate: false)
         }
     }
 
-    private static func loadSleepPreventionActivity() async -> SleepPreventionActivity {
-        await Task.detached(priority: .utility) {
-            let foregroundActive = ProcessManager.activeRelaySessionAlive()
-                && ProcessManager.foregroundProviderTurnActive()
-            let projects = ProjectResolver.resolveActivityProjects()
-            let runStates = projects.flatMap { project in
-                Array(RunStateStore.load(forRepo: project.repoPath).values)
-            }
-            return SleepPreventionActivity(
-                foregroundProviderTurnActive: foregroundActive,
-                activeWorkerRunCount: SleepPreventionActivity.activeWorkerRunCount(in: runStates)
+    private func stopSleepPreventionMonitoring(releaseReason: String) {
+        sleepPreventionMonitoringActive = false
+        sleepPreventionController.release(reason: releaseReason)
+        updateWorkspaceActivityPolling()
+    }
+
+    private func syncSleepPreventionActivity() {
+        refreshWorkspaceActivity()
+    }
+
+    private func syncSleepPreventionController(with snapshot: WorkspaceActivitySnapshot) {
+        sleepPreventionController.sync(
+            preferenceEnabled: config.general.prevent_sleep_while_running,
+            activity: SleepPreventionActivity(
+                foregroundProviderTurnActive: hasActiveSession
+                    && snapshot.foregroundProviderTurnActive,
+                activeWorkerRunCount: SleepPreventionActivity.activeWorkerRunCount(
+                    in: snapshot.runStates
+                )
             )
-        }.value
+        )
     }
 
     private func startOnboardingTutorialSession() -> Bool {
@@ -1133,16 +1159,22 @@ final class AppState {
         programBoardOverlay.showWork()
     }
 
-    func activateProject(pathOrAlias: String, provider: String?) -> ProjectActivationReply {
-        do {
-            let project = try ProjectResolver.activateProject(
-                matching: pathOrAlias,
-                provider: provider
-            )
-            return .activated(repoPath: project.repoPath.path)
-        } catch {
-            return .failed(message: "\(error)")
+    func activateProject(pathOrAlias: String, provider: String?) async -> ProjectActivationReply {
+        let reply = await Task.detached(priority: .utility) {
+            do {
+                let project = try ProjectResolver.activateProject(
+                    matching: pathOrAlias,
+                    provider: provider
+                )
+                return ProjectActivationReply.activated(repoPath: project.repoPath.path)
+            } catch {
+                return ProjectActivationReply.failed(message: "\(error)")
+            }
+        }.value
+        if case .activated = reply {
+            refreshWorkspaceActivity(invalidateRoute: true)
         }
+        return reply
     }
 
     // MARK: - Bridge watchdog
@@ -1154,150 +1186,167 @@ final class AppState {
 
     private func startBridgeWatchdog() {
         stopBridgeWatchdog()
-        let daemonAlive = processManager.bridgeAlive()
-        let consumerAlive = daemonAlive && processManager.bridgeConsumerAlive()
-        let hasSessionContext = processManager.bridgeRecoveryContext(
-            fallbackConfig: bridgeRecoveryFallbackConfig
-        ) != nil
-        bridgeAliveCache = ProcessManager.relaySessionAlive(
+        refreshBridgeWatchdog()
+        bridgeWatchdog = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            self?.refreshBridgeWatchdog()
+        }
+    }
+
+    private func refreshBridgeWatchdog() {
+        guard isRunning, bridgeWatchdogTask == nil else { return }
+        let processManager = processManager
+        let fallbackConfig = bridgeRecoveryFallbackConfig
+        bridgeWatchdogTask = Task { @MainActor [weak self] in
+            let sample = await Task.detached(priority: .utility) {
+                let daemonAlive = processManager.bridgeAlive()
+                let consumerAlive = daemonAlive && processManager.bridgeConsumerAlive()
+                return BridgeWatchdogSample(
+                    daemonAlive: daemonAlive,
+                    consumerAlive: consumerAlive,
+                    hasSessionContext: processManager.bridgeRecoveryContext(
+                        fallbackConfig: fallbackConfig
+                    ) != nil,
+                    pendingDeliveryState: processManager.pendingVoiceCommandDeliveryState(),
+                    stopRequested: processManager.bridgeStopRequested()
+                )
+            }.value
+            guard let self else { return }
+            self.bridgeWatchdogTask = nil
+            guard !Task.isCancelled, self.isRunning else { return }
+            self.applyBridgeWatchdogSample(sample)
+        }
+    }
+
+    private func applyBridgeWatchdogSample(_ sample: BridgeWatchdogSample) {
+        let daemonAlive = sample.daemonAlive
+        let consumerAlive = sample.consumerAlive
+        let hasSessionContext = sample.hasSessionContext
+        let pendingDeliveryState = sample.pendingDeliveryState
+        let pendingDeliveryTimedOut = pendingDeliveryState == .timedOut
+        let alive = ProcessManager.relaySessionAlive(
             daemonAlive: daemonAlive,
             consumerAlive: consumerAlive,
             hasSessionContext: hasSessionContext
         )
-        bridgeWatchdog = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            guard let self, self.isRunning else { return }
-            let daemonAlive = self.processManager.bridgeAlive()
-            let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
-            let hasSessionContext = self.processManager.bridgeRecoveryContext(
-                fallbackConfig: self.bridgeRecoveryFallbackConfig
-            ) != nil
-            let pendingDeliveryState = self.processManager.pendingVoiceCommandDeliveryState()
-            let pendingDeliveryTimedOut = pendingDeliveryState == .timedOut
-            let alive = ProcessManager.relaySessionAlive(
-                daemonAlive: daemonAlive,
-                consumerAlive: consumerAlive,
-                hasSessionContext: hasSessionContext
+        let wasAlive = bridgeAliveCache
+        let elapsed = Date().timeIntervalSince(sessionStartTime)
+        let action = Self.bridgeWatchdogAction(
+            menuSessionActive: menuSessionActive,
+            daemonAlive: daemonAlive,
+            consumerAlive: consumerAlive,
+            hasSessionContext: hasSessionContext,
+            wasAlive: wasAlive,
+            sessionBridgeSeen: sessionBridgeSeen,
+            elapsedSinceSessionStart: elapsed,
+            pendingDeliveryTimedOut: pendingDeliveryTimedOut,
+            pendingDeliveryState: pendingDeliveryState,
+            stopRequested: sample.stopRequested,
+            recoverySuppressed: bridgeRecoverySuppressedForUpdate
+        )
+
+        if alive != wasAlive {
+            refreshWorkspaceActivity(invalidateRoute: true)
+        }
+
+        switch action {
+        case .reapOrphan:
+            NSLog("[AppState] Relay bridge orphaned before any active session, killing")
+            processManager.killBridge()
+            bridgeAliveCache = false
+            menuSessionActive = false
+            activeSessionLaunchConfig = nil
+            sessionBridgeSeen = false
+            sessionReadyShownForCurrentBridgeSession = false
+            activeSessionSuppressesStartupGreeting = false
+            statusText = "Ready"
+            return
+        case .keepDaemon:
+            // A busy Codex/Claude turn can stop touching the consumer
+            // heartbeat while git/build work continues. A completed Codex
+            // App turn can also leave a valid context-backed daemon idle.
+            // Keep that session alive so TTS, the board, and queued voice
+            // input can recover.
+            bridgeAliveCache = true
+            if statusText != "Session" {
+                statusText = "Session"
+            }
+            return
+        case .voiceCommandQueued:
+            bridgeAliveCache = true
+            if statusText != Self.voiceCommandQueuedPresentation.statusText {
+                surfaceVoiceCommandQueued()
+            }
+        case .waitForConsumer:
+            bridgeAliveCache = true
+            if statusText != "Voice command waiting" {
+                surfaceVoiceCommandWaiting()
+            }
+            return
+        case .waitForLaunch:
+            bridgeAliveCache = true
+            return
+        case .recoverDaemon:
+            bridgeAliveCache = false
+            let reason = pendingDeliveryTimedOut
+                ? "voice-delivery-timeout"
+                : (wasAlive ? "bridge-lost" : "menu-session-lost")
+            if startBridgeRecovery(reason: reason) {
+                return
+            }
+            NSLog("[AppState] Bridge died but no recovery context was available")
+            menuSessionActive = false
+            activeSessionLaunchConfig = nil
+            sessionBridgeSeen = false
+            sessionReadyShownForCurrentBridgeSession = false
+            activeSessionSuppressesStartupGreeting = false
+            surfaceBridgeRecoveryFailure(reason: reason)
+            return
+        case .markDead:
+            bridgeAliveCache = false
+        case .alive:
+            bridgeAliveCache = true
+        }
+
+        // Track externally-started bridges (e.g. /relay-bridge)
+        if alive,
+           action != .voiceCommandQueued,
+           !menuSessionActive,
+           statusText != "Session" {
+            statusText = "Session"
+            // External /relay-bridge counts as the first session run
+            // for onboarding purposes — same as the menu Start Session
+            // path. Without this, a user who only ever uses the slash
+            // command would keep seeing the All Set re-prompt.
+            onboarding.markSessionRun()
+        }
+
+        if alive {
+            sweepReadyTicketsForActiveProject(
+                trigger: wasAlive ? "bridge-watchdog" : "bridge-reconnect"
             )
-            let wasAlive = self.bridgeAliveCache
-            let elapsed = Date().timeIntervalSince(self.sessionStartTime)
-            let action = Self.bridgeWatchdogAction(
-                menuSessionActive: self.menuSessionActive,
-                daemonAlive: daemonAlive,
-                consumerAlive: consumerAlive,
-                hasSessionContext: hasSessionContext,
-                wasAlive: wasAlive,
-                sessionBridgeSeen: self.sessionBridgeSeen,
-                elapsedSinceSessionStart: elapsed,
-                pendingDeliveryTimedOut: pendingDeliveryTimedOut,
-                pendingDeliveryState: pendingDeliveryState,
-                stopRequested: self.processManager.bridgeStopRequested(),
-                recoverySuppressed: self.bridgeRecoverySuppressedForUpdate
-            )
+        }
 
-            if daemonAlive {
-                self.programBoardOverlay.refreshRouteIfNeeded()
-            }
+        if alive {
+            // Legacy parent-permission metadata is ignored. Relay Runner
+            // now hosts Relay Actions/Vision gated calls in the app
+            // process, so Accessibility and Screen Recording belong to
+            // Relay Runner rather than the agent parent.
+            if !wasAlive { wizardShownForCurrentBridgeSession = true }
+        } else if wasAlive {
+            // Bridge died — reset the legacy session flag.
+            wizardShownForCurrentBridgeSession = false
+        }
 
-            switch action {
-            case .reapOrphan:
-                NSLog("[AppState] Relay bridge orphaned before any active session, killing")
-                self.processManager.killBridge()
-                self.bridgeAliveCache = false
-                self.menuSessionActive = false
-                self.activeSessionLaunchConfig = nil
-                self.sessionBridgeSeen = false
-                self.sessionReadyShownForCurrentBridgeSession = false
-                self.activeSessionSuppressesStartupGreeting = false
-                self.statusText = "Ready"
-                return
-            case .keepDaemon:
-                // A busy Codex/Claude turn can stop touching the consumer
-                // heartbeat while git/build work continues. A completed Codex
-                // App turn can also leave a valid context-backed daemon idle.
-                // Keep that session alive so TTS, the board, and queued voice
-                // input can recover.
-                self.bridgeAliveCache = true
-                if self.statusText != "Session" {
-                    self.statusText = "Session"
-                }
-                return
-            case .voiceCommandQueued:
-                self.bridgeAliveCache = true
-                if self.statusText != Self.voiceCommandQueuedPresentation.statusText {
-                    self.surfaceVoiceCommandQueued()
-                }
-            case .waitForConsumer:
-                self.bridgeAliveCache = true
-                if self.statusText != "Voice command waiting" {
-                    self.surfaceVoiceCommandWaiting()
-                }
-                return
-            case .waitForLaunch:
-                self.bridgeAliveCache = true
-                return
-            case .recoverDaemon:
-                self.bridgeAliveCache = false
-                let reason = pendingDeliveryTimedOut
-                    ? "voice-delivery-timeout"
-                    : (wasAlive ? "bridge-lost" : "menu-session-lost")
-                if self.startBridgeRecovery(reason: reason) {
-                    return
-                }
-                NSLog("[AppState] Bridge died but no recovery context was available")
-                self.menuSessionActive = false
-                self.activeSessionLaunchConfig = nil
-                self.sessionBridgeSeen = false
-                self.sessionReadyShownForCurrentBridgeSession = false
-                self.activeSessionSuppressesStartupGreeting = false
-                self.surfaceBridgeRecoveryFailure(reason: reason)
-                return
-            case .markDead:
-                self.bridgeAliveCache = false
-            case .alive:
-                self.bridgeAliveCache = true
-            }
+        if menuSessionActive && alive {
+            surfaceSessionReadyIfNeeded(daemonAlive: daemonAlive, consumerAlive: consumerAlive)
+            sessionBridgeSeen = true
+        }
 
-            // Track externally-started bridges (e.g. /relay-bridge)
-            if alive,
-               action != .voiceCommandQueued,
-               !self.menuSessionActive,
-               self.statusText != "Session" {
-                self.statusText = "Session"
-                // External /relay-bridge counts as the first session run
-                // for onboarding purposes — same as the menu Start Session
-                // path. Without this, a user who only ever uses the slash
-                // command would keep seeing the All Set re-prompt.
-                self.onboarding.markSessionRun()
-            }
-
-            if alive {
-                self.sweepReadyTicketsForActiveProject(
-                    trigger: wasAlive ? "bridge-watchdog" : "bridge-reconnect"
-                )
-            }
-
-            if alive {
-                // Legacy parent-permission metadata is ignored. Relay Runner
-                // now hosts Relay Actions/Vision gated calls in the app
-                // process, so Accessibility and Screen Recording belong to
-                // Relay Runner rather than the agent parent.
-                if !wasAlive { wizardShownForCurrentBridgeSession = true }
-            } else if wasAlive {
-                // Bridge died — reset the legacy session flag.
-                wizardShownForCurrentBridgeSession = false
-            }
-
-            if self.menuSessionActive && alive {
-                self.surfaceSessionReadyIfNeeded(daemonAlive: daemonAlive, consumerAlive: consumerAlive)
-                self.sessionBridgeSeen = true
-            }
-
-            if wasAlive && !alive && !self.menuSessionActive {
-                // Relay-bridge session ended externally — same idea: update
-                // status quietly, let the prompt fire on next Caps Lock.
-                NSLog("[AppState] Relay bridge died, reverting to awareness")
-                self.statusText = "Ready"
-            }
+        if wasAlive && !alive && !menuSessionActive {
+            // Relay-bridge session ended externally — same idea: update
+            // status quietly, let the prompt fire on next Caps Lock.
+            NSLog("[AppState] Relay bridge died, reverting to awareness")
+            statusText = "Ready"
         }
     }
 
@@ -1558,10 +1607,12 @@ final class AppState {
     private func stopBridgeWatchdog() {
         bridgeWatchdog?.invalidate()
         bridgeWatchdog = nil
+        bridgeWatchdogTask?.cancel()
+        bridgeWatchdogTask = nil
     }
 
     private func sweepReadyTicketsForActiveProject(trigger: String) {
-        guard let project = ProjectResolver.resolve() else { return }
+        guard case .project(let project) = workspaceActivitySnapshot.route else { return }
         OrchestratorClient.sweepReadyTickets(repoPath: project.repoPath.path, trigger: trigger)
     }
 
@@ -1627,9 +1678,7 @@ final class AppState {
                 guard let self else {
                     return .failed(message: "Relay Runner app state is unavailable.")
                 }
-                return await MainActor.run {
-                    self.activateProject(pathOrAlias: pathOrAlias, provider: provider)
-                }
+                return await self.activateProject(pathOrAlias: pathOrAlias, provider: provider)
             },
             onHostedToolPermissionMissing: { [weak self] kind, purpose in
                 guard let appState = self else { return }
