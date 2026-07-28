@@ -66,4 +66,29 @@ final class STTRecordingAccumulationTests: XCTestCase {
 
         XCTAssertEqual(buffer.get(), [5, 6, 7, 8, 9, 10].map { Float($0) })
     }
+
+    func testTutorialVoiceOutputNeverPublishesToTheVoiceFIFO() {
+        var published: [String] = []
+
+        let tutorialResult = STTEngine.writeVoiceOutput(
+            "private tutorial transcript",
+            tutorialActive: true,
+            writer: {
+                published.append($0)
+                return true
+            }
+        )
+        let ordinaryResult = STTEngine.writeVoiceOutput(
+            "ordinary command",
+            tutorialActive: false,
+            writer: {
+                published.append($0)
+                return true
+            }
+        )
+
+        XCTAssertFalse(tutorialResult)
+        XCTAssertTrue(ordinaryResult)
+        XCTAssertEqual(published, ["ordinary command"])
+    }
 }

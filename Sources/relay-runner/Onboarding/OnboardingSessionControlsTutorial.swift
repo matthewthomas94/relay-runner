@@ -21,6 +21,13 @@ struct OnboardingTutorialPresentation: Equatable {
 }
 
 enum OnboardingSessionControlsTutorial {
+    static let deterministicReply = "Hello, how are you?"
+
+    enum PlaybackCommand: Equatable {
+        case play
+        case replay
+    }
+
     enum Event: Equatable {
         case recordingStarted
         case speechDetected

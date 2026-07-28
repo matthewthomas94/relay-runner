@@ -522,6 +522,40 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialPlayback)
     }
 
+    func testTutorialUsesExactLocalReplyAndSingleGestureReplay() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+        beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
+
+        controller.noteTutorialRecordingStarted()
+        controller.noteTutorialSpeechDetected()
+        XCTAssertEqual(
+            controller.noteTutorialRecordingSent(),
+            OnboardingSessionControlsTutorial.deterministicReply
+        )
+        controller.noteTutorialResponseReady("provider response")
+        XCTAssertNil(controller.noteTutorialPlaybackRequested())
+
+        controller.noteTutorialResponseReady(OnboardingSessionControlsTutorial.deterministicReply)
+        XCTAssertEqual(controller.noteTutorialPlaybackRequested(), .play)
+        XCTAssertNil(controller.noteTutorialPlaybackRequested())
+        controller.noteTutorialPlaybackStarted()
+        XCTAssertEqual(
+            controller.noteTutorialPlaybackFinished(),
+            OnboardingSessionControlsTutorial.deterministicReply
+        )
+
+        XCTAssertEqual(controller.noteTutorialPlaybackRequested(), .replay)
+        XCTAssertNil(controller.noteTutorialPlaybackRequested())
+        XCTAssertEqual(intro.tutorialPresentations.last?.screen, .cancellation)
+    }
+
     func testTutorialCancellationAcceptsWaitingOrPlayingReplayForBothProviders() throws {
         for provider in [GeneralConfig.AgentProvider.codex, .claude] {
             for playBeforeCancelling in [false, true] {
@@ -638,7 +672,7 @@ final class OnboardingIntroTests: XCTestCase {
         }
     }
 
-    func testTutorialRecordingWaitsForVoiceConsumerReadinessForBothProviders() throws {
+    func testTutorialRecordingUsesLocalSpeechPreparationForBothProviders() throws {
         for provider in [GeneralConfig.AgentProvider.codex, .claude] {
             OnboardingResumeState.clear()
             let directory = FileManager.default.temporaryDirectory
@@ -653,23 +687,21 @@ final class OnboardingIntroTests: XCTestCase {
                 parentPermissionsReviewed: true
             )
             let intro = CapturingIntroPresenter()
-            var sessionReady = false
+            var preparationCount = 0
             let controller = makeSessionControlsTutorialController(
                 flagURLs: flagURLs,
                 intro: intro,
-                tutorialSessionReady: { sessionReady }
+                prepareTutorialSpeech: {
+                    preparationCount += 1
+                    return true
+                }
             )
 
             controller.showIfNeeded()
 
-            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro])
-            XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialIntro)
-
-            sessionReady = true
-            waitForMainQueue(after: 0.05)
-
-            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording])
+            XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.recording])
             XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+            XCTAssertEqual(preparationCount, 1, "provider: \(provider.rawValue)")
         }
     }
 
@@ -784,7 +816,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(workspaceOpenCount, 1)
     }
 
-    func testTutorialSessionStartupFailureShowsRetryWithoutCompletingOnboarding() throws {
+    func testTutorialLocalSpeechPreparationFailureShowsRetryWithoutCompletingOnboarding() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -792,7 +824,7 @@ final class OnboardingIntroTests: XCTestCase {
 
         let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
         let intro = CapturingIntroPresenter()
-        var sessionStarts = [false, true]
+        var speechPreparations = [false, true]
         let controller = OnboardingController(
             permissions: PermissionsManager(),
             flagURLs: flagURLs,
@@ -807,8 +839,8 @@ final class OnboardingIntroTests: XCTestCase {
                 prepare { completion("/Users/example/dev") }
             },
             reduceMotion: { true },
-            startSessionForTutorial: {
-                sessionStarts.removeFirst()
+            prepareTutorialSpeech: {
+                speechPreparations.removeFirst()
             }
         )
 
@@ -2099,7 +2131,7 @@ final class OnboardingIntroTests: XCTestCase {
     private func makeSessionControlsTutorialController(
         flagURLs: OnboardingFlagURLs,
         intro: CapturingIntroPresenter,
-        tutorialSessionReady: @escaping () -> Bool = { true },
+        prepareTutorialSpeech: @escaping () -> Bool = { true },
         workspaceOpen: @escaping () -> Void = {}
     ) -> OnboardingController {
         OnboardingController(
@@ -2112,12 +2144,11 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
-            tutorialSessionReadyPollInterval: 0.01,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/dev") }
             },
             reduceMotion: { true },
-            tutorialSessionReady: tutorialSessionReady,
+            prepareTutorialSpeech: prepareTutorialSpeech,
             openWorkspaceAfterCompletion: workspaceOpen
         )
     }

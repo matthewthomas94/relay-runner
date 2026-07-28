@@ -20,6 +20,8 @@ final class STTEngine: @unchecked Sendable {
     var recordingStartedSerial = 0
     var speechDetectedSerial = 0
     var deliveredTranscriptSerial = 0
+    var tutorialTranscriptSerial = 0
+    var tutorialActive = false
 
     // MARK: - Configuration
 
@@ -251,7 +253,7 @@ final class STTEngine: @unchecked Sendable {
                 case .startRecording:
                     // Kill TTS playback immediately (but don't notify Claude yet —
                     // that waits until after settle to avoid breaking double-tap play)
-                    FIFOWriter.write("__TTS_STOP__")
+                    writeVoiceOutput("__TTS_STOP__")
                     audioBuffer.setMaxSamples(nil)
                     audioBuffer.accepting = true
                     audioBuffer.clear()
@@ -261,11 +263,14 @@ final class STTEngine: @unchecked Sendable {
                     recordingStartedSerial += 1
                     partialTranscription = "Preparing\u{2026}"
                     NSLog("[STTEngine] Settling (\(mediaSettleMs)ms for media pause)")
-                    FIFOWriter.write("__STATUS__:preparing...")
+                    writeVoiceOutput("__STATUS__:preparing...")
 
                 case .stopRecording(_):
                     if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
-                        if FIFOWriter.write(finalText) {
+                        if tutorialActive {
+                            tutorialTranscriptSerial += 1
+                            NSLog("[STTEngine] Tutorial transcript consumed locally")
+                        } else if writeVoiceOutput(finalText) {
                             deliveredTranscriptSerial += 1
                             NSLog("[STTEngine] >> \(finalText)")
                         }
@@ -277,7 +282,7 @@ final class STTEngine: @unchecked Sendable {
                     mediaSettleDeadline = nil
 
                 case .cancel:
-                    FIFOWriter.write("__CANCEL__")
+                    writeVoiceOutput("__CANCEL__")
                     NSLog("[STTEngine] Cancelled (2x Ctrl)")
                     transcript.reset()
                     resetRecordingBuffer()
@@ -288,12 +293,15 @@ final class STTEngine: @unchecked Sendable {
 
                 case .interrupt:
                     if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
-                        if FIFOWriter.write(finalText) {
+                        if tutorialActive {
+                            tutorialTranscriptSerial += 1
+                            NSLog("[STTEngine] Tutorial transcript consumed locally")
+                        } else if writeVoiceOutput(finalText) {
                             deliveredTranscriptSerial += 1
                             NSLog("[STTEngine] >> \(finalText)")
                         }
                     } else {
-                        FIFOWriter.write("__INTERRUPT__")
+                        writeVoiceOutput("__INTERRUPT__")
                         NSLog("[STTEngine] >> __INTERRUPT__")
                     }
                     transcript.reset()
@@ -304,7 +312,7 @@ final class STTEngine: @unchecked Sendable {
 
                 case .play:
                     playRequested = true
-                    FIFOWriter.write("__PLAY__")
+                    writeVoiceOutput("__PLAY__")
                     NSLog("[STTEngine] >> __PLAY__ (double-tap)")
                     continue
 
@@ -329,7 +337,7 @@ final class STTEngine: @unchecked Sendable {
                     } else {
                         NSLog("[STTEngine] Settle expired (awaiting gesture)")
                     }
-                    FIFOWriter.write("__STATUS__:recording...")
+                    writeVoiceOutput("__STATUS__:recording...")
                 }
                 continue  // Skip transcription during settle period
             }
@@ -340,7 +348,7 @@ final class STTEngine: @unchecked Sendable {
                 isRecording = nowRecording
                 if nowRecording {
                     NSLog("[STTEngine] Recording...")
-                    FIFOWriter.write("__STATUS__:recording...")
+                    writeVoiceOutput("__STATUS__:recording...")
                 }
             }
 
@@ -362,7 +370,7 @@ final class STTEngine: @unchecked Sendable {
             let renderedTranscript = transcript.transcript
             partialTranscription = renderedTranscript
             NSLog("[STTEngine] (refining) \(renderedTranscript)")
-            FIFOWriter.write("__STATUS__:(refining) \(renderedTranscript)")
+            writeVoiceOutput("__STATUS__:(refining) \(renderedTranscript)")
 
             if audio.count >= recordingChunkSamples {
                 transcript.commitLiveSegment()
@@ -390,5 +398,20 @@ final class STTEngine: @unchecked Sendable {
         guard !hallucinations.contains(lower) else { return nil }
 
         return text
+    }
+
+    @discardableResult
+    private func writeVoiceOutput(_ text: String) -> Bool {
+        Self.writeVoiceOutput(text, tutorialActive: tutorialActive)
+    }
+
+    @discardableResult
+    static func writeVoiceOutput(
+        _ text: String,
+        tutorialActive: Bool,
+        writer: (String) -> Bool = { FIFOWriter.write($0) }
+    ) -> Bool {
+        guard !tutorialActive else { return false }
+        return writer(text)
     }
 }

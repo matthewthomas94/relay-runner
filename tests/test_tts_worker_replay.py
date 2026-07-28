@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import json
 import sys
 import tempfile
 import threading
@@ -258,6 +259,79 @@ class TTSWorkerReplayTests(unittest.TestCase):
         chunks = tts_worker._sentence_chunks(" First sentence. Second? Tail without punctuation ")
 
         self.assertEqual(chunks, ["First sentence.", "Second?", "Tail without punctuation"])
+
+    def test_tutorial_state_events_are_tagged_for_app_side_isolation(self):
+        sent = []
+
+        class FakeSocket:
+            def sendto(self, data, path):
+                sent.append((json.loads(data), path))
+
+            def close(self):
+                pass
+
+        with (
+            patch.object(tts_worker, "TUTORIAL_TTS_MODE", True),
+            patch.object(tts_worker.socket, "socket", return_value=FakeSocket()),
+        ):
+            tts_worker._notify_state("message_waiting", text="Hello, how are you?")
+
+        self.assertEqual(
+            sent,
+            [(
+                {
+                    "source": "tts",
+                    "state": "message_waiting",
+                    "tutorial": True,
+                    "text": "Hello, how are you?",
+                },
+                tts_worker.VOICE_STATE_SOCK,
+            )],
+        )
+
+    def test_tutorial_voice_loading_never_downloads_a_model(self):
+        worker = TTSWorker.__new__(TTSWorker)
+        worker._kokoro = None
+
+        with (
+            patch.object(tts_worker, "TUTORIAL_TTS_MODE", True),
+            patch.object(tts_worker, "_find_kokoro_model", return_value=None),
+            patch.object(tts_worker, "_download_kokoro_model") as download,
+        ):
+            worker._load_voice()
+
+        download.assert_not_called()
+
+    def test_standalone_tutorial_controls_are_latched_in_stdin_order(self):
+        pending = queue.Queue()
+        worker = types.SimpleNamespace()
+
+        tts_worker._handle_standalone_line(worker, pending, "Hello, how are you?")
+        tts_worker._handle_standalone_line(worker, pending, "__PLAY__")
+        tts_worker._handle_standalone_line(worker, pending, "__REPLAY__")
+        tts_worker._handle_standalone_line(worker, pending, "__CANCEL__")
+
+        self.assertEqual(pending.get_nowait(), "Hello, how are you?")
+        self.assertEqual(pending.get_nowait(), {"_tutorial_control": "play"})
+        self.assertEqual(pending.get_nowait(), {"_tutorial_control": "replay"})
+        self.assertEqual(pending.get_nowait(), {"_tutorial_control": "skip"})
+
+    def test_tutorial_reply_is_collected_before_its_play_control(self):
+        worker = TTSWorker.__new__(TTSWorker)
+        events = []
+        worker._handle_collected_chunk = lambda text: events.append(("reply", text))
+        worker._handle_command = lambda command: events.append(("control", command))
+
+        worker._handle_collected_item("Hello, how are you?")
+        worker._handle_collected_item({"_tutorial_control": "play"})
+
+        self.assertEqual(
+            events,
+            [
+                ("reply", "Hello, how are you?"),
+                ("control", "play"),
+            ],
+        )
 
     def test_start_speculation_targets_first_sentence_chunk(self):
         worker = self.make_chunk_worker()

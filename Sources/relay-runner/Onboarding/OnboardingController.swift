@@ -80,14 +80,13 @@ final class OnboardingController {
     private let runtimePollInterval: TimeInterval
     private let authPollInterval: TimeInterval
     private let introAdvanceDelay: TimeInterval
-    private let tutorialSessionReadyPollInterval: TimeInterval
     private let pickWorkspaceDirectory: (
         _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
         _ completion: @escaping (String?) -> Void
     ) -> Void
     private let reduceMotion: () -> Bool
-    private let startSessionForTutorial: () -> Bool
-    private let tutorialSessionReady: () -> Bool
+    private let prepareTutorialSpeech: () -> Bool
+    private let stopTutorialSpeech: () -> Void
     private let openWorkspaceAfterCompletion: () -> Void
     private var freshPermissionState: FreshPermissionState?
     private var freshWorkspaceSelectionInFlight = false
@@ -143,7 +142,6 @@ final class OnboardingController {
          runtimePollInterval: TimeInterval = 0.5,
          authPollInterval: TimeInterval = 1.0,
          introAdvanceDelay: TimeInterval = 0.4,
-         tutorialSessionReadyPollInterval: TimeInterval = 0.2,
          pickWorkspaceDirectory: @escaping (
             _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
             _ completion: @escaping (String?) -> Void
@@ -160,8 +158,8 @@ final class OnboardingController {
             )
          },
          reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
-         startSessionForTutorial: @escaping () -> Bool = { true },
-         tutorialSessionReady: @escaping () -> Bool = { true },
+         prepareTutorialSpeech: @escaping () -> Bool = { true },
+         stopTutorialSpeech: @escaping () -> Void = {},
          openWorkspaceAfterCompletion: @escaping () -> Void = {}) {
         self.presentation = presentation
         self.flagURLs = flagURLs
@@ -187,11 +185,10 @@ final class OnboardingController {
         self.runtimePollInterval = runtimePollInterval
         self.authPollInterval = authPollInterval
         self.introAdvanceDelay = introAdvanceDelay
-        self.tutorialSessionReadyPollInterval = tutorialSessionReadyPollInterval
         self.pickWorkspaceDirectory = pickWorkspaceDirectory
         self.reduceMotion = reduceMotion
-        self.startSessionForTutorial = startSessionForTutorial
-        self.tutorialSessionReady = tutorialSessionReady
+        self.prepareTutorialSpeech = prepareTutorialSpeech
+        self.stopTutorialSpeech = stopTutorialSpeech
         self.openWorkspaceAfterCompletion = openWorkspaceAfterCompletion
     }
 
@@ -200,6 +197,7 @@ final class OnboardingController {
         stopRuntimePolling()
         stopAuthPolling()
         cancelTutorialIntroAdvance()
+        stopTutorialSpeech()
     }
 
     /// True iff the user has completed (or skipped past) onboarding before.
@@ -799,8 +797,11 @@ final class OnboardingController {
             tutorialState = TutorialState(provider: provider)
         }
 
-        guard startSessionForTutorial() else {
-            presentTutorial(screen: .sessionRetry, message: "Relay Runner could not start the configured voice session. Retry when the session launcher is available.")
+        guard prepareTutorialSpeech() else {
+            presentTutorial(
+                screen: .sessionRetry,
+                message: "Relay Runner could not prepare local tutorial speech. Retry when voice setup is available."
+            )
             return
         }
 
@@ -818,15 +819,8 @@ final class OnboardingController {
             tutorialState?.responseText = nil
         }
 
-        let presentedScreen: OnboardingTutorialScreen
-        if safeScreen == .recording && !tutorialSessionReady() {
-            presentedScreen = .intro
-        } else {
-            presentedScreen = safeScreen
-        }
-
-        presentTutorial(screen: presentedScreen)
-        if presentedScreen == .intro {
+        presentTutorial(screen: safeScreen)
+        if safeScreen == .intro {
             scheduleTutorialIntroAdvance(provider: provider)
         }
     }
@@ -865,13 +859,6 @@ final class OnboardingController {
             guard let self,
                   self.tutorialState?.provider == provider,
                   OnboardingResumeState.load()?.step == .tutorialIntro else { return }
-            guard self.tutorialSessionReady() else {
-                self.scheduleTutorialIntroAdvance(
-                    provider: provider,
-                    after: self.tutorialSessionReadyPollInterval
-                )
-                return
-            }
             self.presentTutorial(screen: .recording)
         }
         tutorialIntroAdvance = work
@@ -899,8 +886,13 @@ final class OnboardingController {
         advanceRecordingTutorial(with: .speechDetected)
     }
 
-    func noteTutorialRecordingSent() {
+    @discardableResult
+    func noteTutorialRecordingSent() -> String? {
+        let previousGate = tutorialState?.recordingGate
         advanceRecordingTutorial(with: .recordingSent)
+        guard previousGate == .waitingForSend,
+              tutorialState?.recordingGate == .waitingForResponse else { return nil }
+        return OnboardingSessionControlsTutorial.deterministicReply
     }
 
     func noteTutorialResponseReady(_ text: String?) {
@@ -908,7 +900,7 @@ final class OnboardingController {
               OnboardingResumeState.load()?.step == .tutorialPlayback,
               state.recordingGate == .waitingForResponse,
               let response = text?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !response.isEmpty else { return }
+              response == OnboardingSessionControlsTutorial.deterministicReply else { return }
         state.responseText = response
         state.recordingGate = OnboardingSessionControlsTutorial.nextRecordingGate(
             state.recordingGate,
@@ -917,13 +909,17 @@ final class OnboardingController {
         tutorialState = state
     }
 
-    func noteTutorialPlaybackRequested(playbackActive: Bool = false) {
+    @discardableResult
+    func noteTutorialPlaybackRequested(
+        playbackActive: Bool = false
+    ) -> OnboardingSessionControlsTutorial.PlaybackCommand? {
         guard var state = tutorialState,
               let step = OnboardingResumeState.load()?.step,
               step == .tutorialPlayback || step == .tutorialCancellation,
               state.recordingGate == .complete,
               state.responseText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        else { return }
+        else { return nil }
+        let previousGate = state.playbackGate
         state.playbackGate = OnboardingSessionControlsTutorial.nextPlaybackGate(
             state.playbackGate,
             event: .playbackRequested
@@ -935,6 +931,8 @@ final class OnboardingController {
             )
         }
         tutorialState = state
+        guard state.playbackGate != previousGate else { return nil }
+        return step == .tutorialPlayback ? .play : .replay
     }
 
     func noteTutorialPlaybackStarted() {
@@ -984,6 +982,7 @@ final class OnboardingController {
         )
         tutorialState = state
         if state.playbackGate == .complete {
+            stopTutorialSpeech()
             presentTutorial(screen: .workspace)
         }
     }
@@ -1020,6 +1019,7 @@ final class OnboardingController {
         stopRuntimePolling()
         stopAuthPolling()
         cancelTutorialIntroAdvance()
+        stopTutorialSpeech()
         cancelPermissionSetup(.onboarding)
         try? Data().write(to: flagURLs.onboarded)
         OnboardingResumeState.clear()
@@ -1051,6 +1051,7 @@ final class OnboardingController {
         guard presentation.isPresented else { return }
         cancelPermissionSetup(.onboarding)
         cancelTutorialIntroAdvance()
+        stopTutorialSpeech()
         presentation.clear()
         setOnboardingNotchOverrideActive(false)
     }
