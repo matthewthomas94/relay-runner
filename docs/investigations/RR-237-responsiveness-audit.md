@@ -413,8 +413,12 @@ this audit is accepted.
 relay_runner_ticket_handoff:
   version: 1
   source_ticket: RR-237
-  state: pending_pm_materialization
-  generated_ticket_ids: []
+  state: materialized
+  generated_ticket_ids:
+    cache_workspace_lane_order: RR-241
+    coalesce_project_activity_discovery: RR-242
+    protect_worker_owned_in_progress: RR-243
+    upgrade_swiftterm_1_15_guarded: RR-244
   tickets:
     - key: cache_workspace_lane_order
       order: 1
@@ -548,9 +552,7 @@ relay_runner_ticket_handoff:
         document provider-startup variance rather than changing shared input.
 ```
 
-The dependency in the final item is symbolic. During atomic materialization the
-PM/orchestrator must replace it with the generated ID for
-`cache_workspace_lane_order`, allocate all IDs with the matching
-`.orchestrator/config.toml` update, and record those IDs in this section or the
-RR-237 run log. Until then, RR-237 remains partial rather than reporting
-completion.
+The PM/orchestrator materialized this handoff atomically in `209db1a`, replacing
+the final item's symbolic dependency with `RR-241`, allocating `RR-241` through
+`RR-244` with the matching `.orchestrator/config.toml` update, and leaving all
+four generated tickets in Backlog.
