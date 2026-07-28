@@ -148,6 +148,7 @@ class SpeechCoordinatorTests(unittest.TestCase):
         self.assertTrue(coordinator.replay())
         replay = worker.input_queue.get_nowait()
         self.assertEqual(replay["_speech_intent"]["replacement_policy"], "replay")
+        self.assertEqual(worker.calls, ["play"])
 
         holder["key"] = (2, "two")
         self.assertFalse(coordinator.replay())
@@ -161,6 +162,81 @@ class SpeechCoordinatorTests(unittest.TestCase):
         coordinator.play()
         self.assertEqual(worker.calls, [])
         self.assertTrue(coordinator.replay() is False)
+
+    def test_first_play_is_retained_until_authoritative_speech_is_proposed(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.arm_waiting_playback(1, "one", kind="final")
+
+        coordinator.play()
+        coordinator.play()
+        self.assertEqual(worker.calls, [])
+
+        final = intent(kind="final", authoritative=True)
+        self.assertTrue(coordinator.submit(final))
+        payload = worker.input_queue.get_nowait()
+
+        self.assertEqual(worker.calls, ["play"])
+        self.assertTrue(worker.eligibility(payload["_speech_intent"]))
+
+        worker.observer("started", payload["_speech_intent"])
+        coordinator.play()
+        self.assertEqual(worker.calls, ["play"])
+
+    def test_authoritative_preview_does_not_play_an_older_handoff(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.submit(intent(kind="handoff", text="handoff"))
+        handoff = worker.input_queue.get_nowait()
+
+        coordinator.arm_waiting_playback(1, "one", kind="final")
+        coordinator.play()
+
+        self.assertEqual(worker.calls, [])
+        self.assertFalse(worker.eligibility(handoff["_speech_intent"]))
+
+        coordinator.submit(intent(kind="final", text="final", authoritative=True))
+        final = worker.input_queue.get_nowait()
+        self.assertEqual(worker.calls, ["skip", "play"])
+        self.assertEqual(final["_speech_intent"]["kind"], "final")
+        self.assertTrue(worker.eligibility(final["_speech_intent"]))
+
+    def test_retained_play_follows_a_newer_preview_without_playing_stale_text(self):
+        worker = FakeWorker()
+        coordinator = SpeechCoordinator(worker, is_current=lambda _seq, _command_id: True)
+        coordinator.arm_waiting_playback(1, "one", kind="final")
+        coordinator.play()
+        coordinator.arm_waiting_playback(2, "two", kind="final")
+
+        coordinator.submit(intent(seq=1, command_id="one", kind="final", text="old"))
+        old = worker.input_queue.get_nowait()
+        self.assertEqual(worker.calls, [])
+        self.assertFalse(worker.eligibility(old["_speech_intent"]))
+
+        coordinator.submit(intent(seq=2, command_id="two", kind="final", text="new"))
+        new = worker.input_queue.get_nowait()
+        self.assertEqual(worker.calls, ["skip", "play"])
+        self.assertTrue(worker.eligibility(new["_speech_intent"]))
+
+    def test_cancel_clears_a_retained_play_request(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.arm_waiting_playback(1, "one", kind="final")
+        coordinator.play()
+
+        coordinator.skip()
+        coordinator.submit(intent(kind="final", authoritative=True))
+
+        self.assertEqual(worker.calls, ["skip"])
+
+    def test_auto_play_start_consumes_waiting_preview_without_implicit_replay(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.arm_waiting_playback(1, "one", kind="final")
+        coordinator.submit(intent(kind="final", authoritative=True, replayable=True))
+        payload = worker.input_queue.get_nowait()
+
+        worker.observer("started", payload["_speech_intent"])
+        worker.observer("completed", payload["_speech_intent"])
+        coordinator.play()
+
+        self.assertEqual(worker.calls, [])
 
     def test_diagnostics_never_log_spoken_or_display_text(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1588,7 +1588,8 @@ def _handle_sidecar_final(
     disposition = command.get("work_disposition")
     if not isinstance(disposition, dict):
         disposition = None
-    _publish_authoritative_preview(reply)
+    if _arm_authoritative_playback(tts_worker, key[0], key[1]):
+        _publish_authoritative_preview(reply)
     delivered = False
     if messenger is not None:
         delivered = messenger.submit_trace({
@@ -1757,6 +1758,22 @@ def _publish_authoritative_preview(text: str) -> None:
         print(f"[voice_bridge] Could not publish authoritative preview: {exc}", file=sys.stderr)
 
 
+def _arm_authoritative_playback(
+    speech_gateway,
+    command_seq: int,
+    command_id: str,
+) -> bool:
+    arm = getattr(speech_gateway, "arm_waiting_playback", None)
+    if arm is None:
+        return True
+    try:
+        arm(command_seq, command_id, kind="final")
+        return True
+    except Exception as exc:
+        print(f"[voice_bridge] Could not arm waiting playback: {exc}", file=sys.stderr)
+        return False
+
+
 def _queue_tts_text(
     text: str,
     tts_queue: queue.Queue,
@@ -1802,11 +1819,6 @@ def _queue_tts_text(
         return False
     coordinated = hasattr(tts_queue, "submit_text")
     publisher = publish_waiting_preview if notify_waiting_preview is None else notify_waiting_preview
-    if not coordinated and publisher is not None:
-        try:
-            publisher(display_preview or text)
-        except Exception as exc:
-            print(f"[voice_bridge] Could not publish waiting preview: {exc}", file=sys.stderr)
     if coordinated:
         accepted = bool(tts_queue.submit_text(
             text,
@@ -1831,7 +1843,7 @@ def _queue_tts_text(
         accepted = True
     if not accepted:
         return False
-    if coordinated and publisher is not None:
+    if publisher is not None:
         try:
             publisher(display_preview or text)
         except Exception as exc:
@@ -2124,7 +2136,8 @@ def _deliver_missing_foreground_reply(
         "relay_command_id": key[1],
         "speech_source": "fallback",
     }
-    _publish_authoritative_preview(payload["text"])
+    if _arm_authoritative_playback(tts_worker, key[0], key[1]):
+        _publish_authoritative_preview(payload["text"])
     delivered = False
     if messenger is not None:
         delivered = messenger.submit_final(payload)
@@ -2405,7 +2418,8 @@ def _handle_orchestrator_reply_control(
         if key in command:
             payload[key] = command[key]
 
-    _publish_authoritative_preview(reply)
+    if _arm_authoritative_playback(tts_worker, command_key[0], command_key[1]):
+        _publish_authoritative_preview(reply)
     if messenger is not None and messenger.submit_final(payload):
         _mark_foreground_reply_delivered(command)
         return True

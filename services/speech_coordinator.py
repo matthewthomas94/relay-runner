@@ -186,6 +186,9 @@ class SpeechCoordinator:
         self._playing_id: str | None = None
         self._backlog: list[SpeechIntent] = []
         self._last_replayable: SpeechIntent | None = None
+        self._waiting_preview: tuple[tuple[int, str], str] | None = None
+        self._play_requested = False
+        self._play_dispatched_id: str | None = None
         self._speech_stopped = False
         self._shutdown = threading.Event()
         self._control_socket_path = control_socket_path
@@ -248,6 +251,8 @@ class SpeechCoordinator:
                 old = self._intent_for(self._committed_id)
                 self._committed_id = intent.utterance_id
                 if old is not None:
+                    if self._play_dispatched_id == old.utterance_id:
+                        self._play_dispatched_id = None
                     self._diagnostic("replaced", old, replaced_by=intent.utterance_id)
             elif commit_now:
                 self._committed_id = intent.utterance_id
@@ -255,14 +260,31 @@ class SpeechCoordinator:
         if replace_committed:
             self.worker.skip()
         self.worker.input_queue.put(intent.to_worker_payload())
+        self._dispatch_requested_play()
         self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
         return True
+
+    def arm_waiting_playback(
+        self,
+        command_seq: int,
+        command_id: str,
+        *,
+        kind: str = "final",
+    ) -> None:
+        """Bind the next play gesture to speech backing an imminent preview."""
+        target = (int(command_seq), str(command_id))
+        with self._lock:
+            self._waiting_preview = (target, kind)
+            dispatched = self._intent_for(self._play_dispatched_id)
+            if dispatched is not None and not self._matches_waiting_preview(dispatched):
+                self._play_dispatched_id = None
 
     def new_turn(self, command_seq: int, command_id: str) -> None:
         """Suppress stale speech without revoking accepted background work."""
         stale_ids: list[str] = []
         with self._lock:
             self._speech_stopped = False
+            self._clear_play_request_locked()
             for intent_id in [self._committed_id, self._playing_id]:
                 intent = self._intent_for(intent_id)
                 if (
@@ -293,6 +315,7 @@ class SpeechCoordinator:
         stale: list[SpeechIntent] = []
         with self._lock:
             self._speech_stopped = True
+            self._clear_play_request_locked()
             stale = [
                 intent
                 for intent in (
@@ -315,6 +338,7 @@ class SpeechCoordinator:
 
     def skip(self) -> None:
         with self._lock:
+            self._clear_play_request_locked()
             stale = [
                 intent
                 for intent in (
@@ -334,12 +358,11 @@ class SpeechCoordinator:
         with self._lock:
             if self._playing_id:
                 return
-            has_committed = bool(self._committed_id)
+            if not self._committed_id and self._waiting_preview is None:
+                return
             self._speech_stopped = False
-        if has_committed:
-            self.worker.play()
-        else:
-            self.replay()
+            self._play_requested = True
+        self._dispatch_requested_play()
 
     def replay(self) -> bool:
         with self._lock:
@@ -355,9 +378,15 @@ class SpeechCoordinator:
             created_at=time.time(),
             replacement_policy="replay",
         )
+        with self._lock:
+            self._waiting_preview = None
+            self._play_requested = True
         accepted = self.submit(replay)
         if accepted:
             self._diagnostic("replayed", replay, replay_of=previous.utterance_id)
+        else:
+            with self._lock:
+                self._play_requested = False
         return accepted
 
     def reload_config(self) -> None:
@@ -380,6 +409,38 @@ class SpeechCoordinator:
     def _intent_for(self, intent_id: str | None) -> SpeechIntent | None:
         return self._intents.get(intent_id) if intent_id else None
 
+    def _matches_waiting_preview(self, intent: SpeechIntent) -> bool:
+        target = self._waiting_preview
+        if target is None:
+            return True
+        command_key, kind = target
+        if intent.command_key != command_key:
+            return False
+        if kind in FINAL_KINDS:
+            return intent.kind in FINAL_KINDS
+        return intent.kind == kind
+
+    def _dispatch_requested_play(self) -> None:
+        should_play = False
+        with self._lock:
+            intent = self._intent_for(self._committed_id)
+            if (
+                self._play_requested
+                and self._playing_id is None
+                and intent is not None
+                and self._matches_waiting_preview(intent)
+                and self._play_dispatched_id != intent.utterance_id
+            ):
+                self._play_dispatched_id = intent.utterance_id
+                should_play = True
+        if should_play:
+            self.worker.play()
+
+    def _clear_play_request_locked(self) -> None:
+        self._waiting_preview = None
+        self._play_requested = False
+        self._play_dispatched_id = None
+
     def _fresh(self, intent: SpeechIntent) -> bool:
         if intent.expires_at is not None and time.time() >= intent.expires_at:
             return False
@@ -395,6 +456,7 @@ class SpeechCoordinator:
             accepted = (
                 not self._speech_stopped
                 and intent_id in {self._committed_id, self._playing_id}
+                and self._matches_waiting_preview(intent)
             )
         return bool(intent and accepted and self._fresh(intent))
 
@@ -409,7 +471,11 @@ class SpeechCoordinator:
                 self._playing_id = intent_id
                 if self._committed_id == intent_id:
                     self._committed_id = None
+                if self._matches_waiting_preview(intent):
+                    self._clear_play_request_locked()
             elif state in {"completed", "cancelled", "failed"}:
+                if self._play_dispatched_id == intent_id:
+                    self._play_dispatched_id = None
                 if self._playing_id == intent_id:
                     self._playing_id = None
                 if self._committed_id == intent_id:
