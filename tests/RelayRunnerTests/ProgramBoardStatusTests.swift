@@ -1648,6 +1648,9 @@ final class ProgramBoardStatusTests: XCTestCase {
             status: "backlog"
         )
         XCTAssertNil(model.dropRequest(for: backlog, sourceLane: .backlog, targetLane: .backlog))
+        XCTAssertNil(model.dropRequest(for: backlog, sourceLane: .backlog, targetLane: .inProgress))
+        XCTAssertNil(model.dropRequest(for: backlog, sourceLane: .ready, targetLane: .inProgress))
+        XCTAssertNil(model.dropRequest(for: backlog, sourceLane: .done, targetLane: .inProgress))
 
         let missingProject = try ticketItem(
             projectName: "Unknown",
@@ -1767,6 +1770,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         model.columnFrames = [
             .backlog: CGRect(x: 100, y: 50, width: 270, height: 633),
             .ready: CGRect(x: 390, y: 50, width: 270, height: 633),
+            .inProgress: CGRect(x: 680, y: 50, width: 270, height: 633),
             .done: CGRect(x: 970, y: 50, width: 270, height: 633),
         ]
 
@@ -1777,6 +1781,10 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(
             model.dropTarget(at: CGPoint(x: 180, y: 180), for: item, sourceLane: .backlog),
             ProgramBoardDropTarget(lane: .backlog, isValid: false)
+        )
+        XCTAssertEqual(
+            model.dropTarget(at: CGPoint(x: 720, y: 180), for: item, sourceLane: .backlog),
+            ProgramBoardDropTarget(lane: .inProgress, isValid: false)
         )
         XCTAssertNil(model.dropTarget(at: CGPoint(x: 30, y: 180), for: item, sourceLane: .backlog))
     }
@@ -1832,6 +1840,16 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertNil(ProgramBoardDropPolicy.validateResolvedDrop(
             request: request,
             ticket: ticket(id: "RR-1", status: .backlog, runId: 51),
+            allTickets: []
+        ))
+        XCTAssertNil(ProgramBoardDropPolicy.validateResolvedDrop(
+            request: ProgramBoardDropRequest(
+                ticketID: "RR-1",
+                repoPath: "/repo/relay-runner",
+                targetStatus: .inProgress,
+                shouldDispatch: false
+            ),
+            ticket: ticket(id: "RR-1", status: .backlog),
             allTickets: []
         ))
     }
