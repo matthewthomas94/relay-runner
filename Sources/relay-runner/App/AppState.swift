@@ -382,39 +382,32 @@ final class AppState {
                 ]
             }
         )
-        let workingProgressLabel = foregroundActivityLabel
-            ?? (boardIsLoading ? BoardUpdateStatus.workingLabel : hoverActivityLabel)
+        let hasActiveWork = NotchActivityLabelPlanner.hasActiveWork(
+            state: stateMachine.state,
+            foregroundActivity: foregroundActivityLabel,
+            activeRuns: notchActivityRunStates,
+            tickets: notchActivityTickets,
+            bridgeRecoveryInFlight: bridgeRecoveryInFlight,
+            bridgeStartingUp: bridgeStartingUp,
+            boardIsLoading: boardIsLoading
+        )
         notchStatusController.setPresentation(
             status: NotchSessionStatus.resolve(
                 for: stateMachine.state,
-                hasActivityLabels: !labels.isEmpty || workingProgressLabel != nil,
+                hasActivityLabels: hasActiveWork,
                 boardIsLoading: boardIsLoading
             ),
             activityLabels: labels,
-            workingProgressLabel: workingProgressLabel
+            workingProgressLabel: hoverActivityLabel
         )
     }
 
     static func setupNotchPresentation(onboardingActive: Bool,
                                        permissionState: PermissionSetupNotchState?) -> NotchPresentation? {
-        let label: String?
-        if let permissionState {
-            label = permissionState.label
-        } else if onboardingActive {
-            label = PermissionSetupNotchState.gettingStarted.label
-        } else {
-            label = nil
-        }
-        guard let label else { return nil }
-        let status: NotchSessionStatus
-        if let permissionState, case .granted = permissionState {
-            status = .working
-        } else {
-            status = .notWorking
-        }
+        guard onboardingActive || permissionState != nil else { return nil }
         return NotchPresentation(
-            status: status,
-            activityLabels: [label],
+            status: .working,
+            activityLabels: [],
             workingProgressLabel: nil
         )
     }
