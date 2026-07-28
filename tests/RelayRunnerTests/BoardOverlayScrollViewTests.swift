@@ -610,6 +610,207 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertLessThanOrEqual(cards.filter(\.isPointerInside).count, 1)
     }
 
+    func testMountedProgramWorkspaceFirstBacklogCardOwnsItsVisibleHitTarget() throws {
+        let model = ProgramBoardViewModel()
+        let backlogItems = laneTickets(
+            prefix: "RR-FIRST-HIT",
+            status: Ticket.Status.backlog.rawValue,
+            count: 8
+        )
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: backlogItems,
+            doneItems: []
+        )
+        let host = NSHostingView(rootView: AnyView(
+            programWorkColumnHost(model: model, lane: .backlog)
+        ))
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 270, height: BoardSurfaceLayout.columnHeight),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+
+        let backlogContainer = try XCTUnwrap(findScrollContainer(in: host))
+        let cards = programWorkCardViews(in: backlogContainer)
+        let orderedItems = model.ticketItems(in: .backlog)
+        let firstCard = try XCTUnwrap(cards.first {
+            $0.interactionID == "all|Backlog|\(orderedItems[0].id)"
+        })
+        let secondCard = try XCTUnwrap(cards.first {
+            $0.interactionID == "all|Backlog|\(orderedItems[1].id)"
+        })
+        XCTAssertGreaterThan(firstCard.bounds.height, 20)
+        XCTAssertGreaterThan(secondCard.bounds.height, 20)
+
+        let firstHitLocations = mountedHitLocations(for: firstCard, in: window)
+        let secondHitLocations = mountedHitLocations(for: secondCard, in: window)
+        XCTAssertGreaterThanOrEqual(firstHitLocations.count, Int(firstCard.bounds.height) - 8)
+        XCTAssertGreaterThanOrEqual(secondHitLocations.count, Int(secondCard.bounds.height) - 8)
+        XCTAssertEqual(firstCard.cursorPresentation, .openHand)
+        XCTAssertEqual(secondCard.cursorPresentation, .openHand)
+
+        for fraction in [CGFloat(0.05), 0.5, 0.95] {
+            let firstLocation = firstHitLocations[
+                min(firstHitLocations.count - 1, Int(CGFloat(firstHitLocations.count) * fraction))
+            ]
+            updateMountedPointer(firstLocation, cards: cards)
+            drainMainQueue()
+            XCTAssertTrue(firstCard.isPointerInside, "First card missed at \(fraction)")
+            XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
+
+            let secondLocation = secondHitLocations[
+                min(secondHitLocations.count - 1, Int(CGFloat(secondHitLocations.count) * fraction))
+            ]
+            updateMountedPointer(secondLocation, cards: cards)
+            drainMainQueue()
+            XCTAssertTrue(secondCard.isPointerInside, "Second card missed at \(fraction)")
+            XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
+        }
+
+        let contentView = try XCTUnwrap(window.contentView)
+        let firstContentLocation = contentView.convert(
+            try XCTUnwrap(firstHitLocations.first),
+            from: nil
+        )
+        let leadingStripLocation = CGPoint(
+            x: firstContentLocation.x,
+            y: firstContentLocation.y - 2
+        )
+        XCTAssertNil(mountedProgramWorkCardHit(at: leadingStripLocation, in: contentView))
+
+        model.dragTarget = ProgramBoardDropTarget(lane: .backlog, isValid: true)
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+        XCTAssertNil(mountedProgramWorkCardHit(at: leadingStripLocation, in: contentView))
+        model.dragTarget = nil
+
+        let views = try scrollViews(in: backlogContainer)
+        views.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 180))
+        views.scrollView.reflectScrolledClipView(views.scrollView.contentView)
+        drainMainQueue()
+        views.scrollView.contentView.scroll(to: .zero)
+        views.scrollView.reflectScrolledClipView(views.scrollView.contentView)
+        drainMainQueue()
+
+        let returnedCards = programWorkCardViews(in: backlogContainer)
+        let returnedFirst = try XCTUnwrap(returnedCards.first {
+            $0.interactionID == "all|Backlog|\(orderedItems[0].id)"
+        })
+        XCTAssertGreaterThanOrEqual(
+            mountedHitLocations(for: returnedFirst, in: window).count,
+            Int(returnedFirst.bounds.height) - 8
+        )
+
+        let replacementItems = laneTickets(
+            prefix: "RR-REPLACED-FIRST-HIT",
+            status: Ticket.Status.backlog.rawValue,
+            count: 4
+        )
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: replacementItems,
+            doneItems: []
+        )
+        host.rootView = AnyView(programWorkColumnHost(model: model, lane: .backlog))
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+
+        let replacementFirstItem = try XCTUnwrap(model.ticketItems(in: .backlog).first)
+        let replacementContainer = try XCTUnwrap(findScrollContainer(in: host))
+        let replacementCards = programWorkCardViews(in: replacementContainer)
+        let replacementFirst = try XCTUnwrap(replacementCards.first {
+            $0.interactionID == "all|Backlog|\(replacementFirstItem.id)"
+        })
+        XCTAssertGreaterThanOrEqual(
+            mountedHitLocations(for: replacementFirst, in: window).count,
+            Int(replacementFirst.bounds.height) - 8
+        )
+
+        model.selectProject(path: "/repo/relay-runner")
+        host.rootView = AnyView(programWorkColumnHost(model: model, lane: .backlog))
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+        let scopedCards = programWorkCardViews(in: try XCTUnwrap(findScrollContainer(in: host)))
+        let scopedFirst = try XCTUnwrap(scopedCards.first {
+            $0.interactionID == "/repo/relay-runner|Backlog|\(replacementFirstItem.id)"
+        })
+        XCTAssertGreaterThanOrEqual(
+            mountedHitLocations(for: scopedFirst, in: window).count,
+            Int(scopedFirst.bounds.height) - 8
+        )
+    }
+
+    func testMountedProgramWorkspaceNonDraggableFirstCardKeepsClickAndArrowCursor() throws {
+        let model = ProgramBoardViewModel()
+        let activeItem = ProgramStatusItem(
+            project: ProgramStatusProject(name: "relay-runner", path: "/repo/relay-runner"),
+            ticketID: "RR-NONDRAG-900",
+            title: "Active first ticket cannot be dragged",
+            status: Ticket.Status.backlog.rawValue,
+            priority: Ticket.Priority.high.rawValue,
+            runState: "active"
+        )
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: [
+                activeItem,
+                programWorkItem(
+                    ticketID: "RR-NONDRAG-899",
+                    title: "Draggable second ticket",
+                    status: Ticket.Status.backlog.rawValue
+                ),
+            ],
+            doneItems: []
+        )
+        let host = NSHostingView(rootView: AnyView(
+            programWorkColumnHost(model: model, lane: .backlog)
+        ))
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 270, height: BoardSurfaceLayout.columnHeight),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+
+        let container = try XCTUnwrap(findScrollContainer(in: host))
+        let cards = programWorkCardViews(in: container)
+        let firstCard = try XCTUnwrap(cards.first {
+            $0.interactionID == "all|Backlog|\(activeItem.id)"
+        })
+        XCTAssertFalse(activeItem.isProgramBoardDraggable)
+        XCTAssertEqual(firstCard.cursorPresentation, .arrow)
+        let hitLocations = mountedHitLocations(for: firstCard, in: window)
+        XCTAssertGreaterThanOrEqual(hitLocations.count, Int(firstCard.bounds.height) - 8)
+
+        let start = hitLocations[hitLocations.count / 2]
+        firstCard.windowLocationToBoardLocation = { $0 }
+        var dragChangeCount = 0
+        firstCard.onChanged = { _, _ in dragChangeCount += 1 }
+        sendMouse(.leftMouseDown, at: start, to: firstCard, in: window)
+        sendMouse(
+            .leftMouseDragged,
+            at: CGPoint(x: start.x + ProgramWorkCardDragEventView.dragThreshold + 4, y: start.y),
+            to: firstCard,
+            in: window
+        )
+        sendMouse(.leftMouseUp, at: start, to: firstCard, in: window)
+        drainMainQueue()
+
+        XCTAssertEqual(dragChangeCount, 0)
+        XCTAssertFalse(firstCard.isDragActive)
+        XCTAssertNil(model.dragItemID)
+        XCTAssertEqual(model.selectedTicketDetail?.item.id, activeItem.id)
+    }
+
     func testProgramWorkCardDragStartsThroughMountedScrollHierarchy() throws {
         let model = ProgramBoardViewModel()
         let backlogItem = programWorkItem(
@@ -672,22 +873,29 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         ]
         let backlogFrame = try XCTUnwrap(model.columnFrames[.backlog])
         let doneFrame = try XCTUnwrap(model.columnFrames[.done])
-        let boardStart = CGPoint(
-            x: backlogFrame.minX + 80,
-            y: backlogFrame.minY + ProgramBoardLayout.workCardTopOffset + 32
+        let backlogContainer = try XCTUnwrap(findScrollContainers(in: host).first)
+        let backlogCard = try XCTUnwrap(programWorkCardViews(in: backlogContainer).first {
+            $0.interactionID == "all|Backlog|\(backlogItem.id)"
+        })
+        let backlogHitLocations = mountedHitLocations(
+            for: backlogCard,
+            in: window,
+            contentX: backlogFrame.minX + 80
         )
-        let boardOverThreshold = CGPoint(x: boardStart.x + 12, y: boardStart.y)
+        let start = backlogHitLocations[backlogHitLocations.count / 2]
+        let boardStart = try XCTUnwrap(model.boardLocation(fromWindowLocation: start))
+        let overThreshold = CGPoint(x: start.x + 12, y: start.y)
         let boardDoneTarget = CGPoint(x: doneFrame.midX, y: max(doneFrame.minY + 160, boardStart.y))
-        let start = windowLocation(forBoardLocation: boardStart, windowHeight: BoardSurfaceLayout.columnHeight)
-        let overThreshold = windowLocation(
-            forBoardLocation: boardOverThreshold,
-            windowHeight: BoardSurfaceLayout.columnHeight
-        )
         let doneTarget = windowLocation(
             forBoardLocation: boardDoneTarget,
             windowHeight: BoardSurfaceLayout.columnHeight
         )
-        let eventTarget = try XCTUnwrap(window.contentView?.hitTest(start))
+        let contentView = try XCTUnwrap(window.contentView)
+        let contentStart = contentView.convert(start, from: nil)
+        let eventTarget = try XCTUnwrap(
+            mountedProgramWorkCardHit(at: contentStart, in: contentView)
+        )
+        XCTAssertTrue(eventTarget === backlogCard)
 
         sendMouse(.leftMouseDown, at: start, to: eventTarget, in: window)
         sendMouse(.leftMouseDragged, at: CGPoint(x: start.x + 3, y: start.y), to: eventTarget, in: window)
@@ -928,12 +1136,13 @@ final class BoardOverlayScrollViewTests: XCTestCase {
     ) -> [(card: ProgramWorkCardDragEventView, location: CGPoint)] {
         var matches: [(ProgramWorkCardDragEventView, CGPoint)] = []
         for y in stride(from: CGFloat(0), through: window.contentView?.bounds.height ?? 0, by: 2) {
-            let location = CGPoint(x: window.contentView?.bounds.midX ?? 0, y: y)
-            var hitView = window.contentView?.hitTest(location)
+            let contentLocation = CGPoint(x: window.contentView?.bounds.midX ?? 0, y: y)
+            var hitView = window.contentView?.hitTest(contentLocation)
             while let candidate = hitView {
                 if let card = candidate as? ProgramWorkCardDragEventView {
                     if !matches.contains(where: { $0.0 === card }) {
-                        matches.append((card, location))
+                        let windowLocation = window.contentView?.convert(contentLocation, to: nil) ?? contentLocation
+                        matches.append((card, windowLocation))
                     }
                     break
                 }
@@ -941,6 +1150,34 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             }
         }
         return matches
+    }
+
+    private func mountedHitLocations(
+        for expectedCard: ProgramWorkCardDragEventView,
+        in window: NSWindow,
+        contentX: CGFloat? = nil
+    ) -> [CGPoint] {
+        guard let contentView = window.contentView else { return [] }
+        return stride(from: CGFloat(0), through: contentView.bounds.height, by: 1).compactMap { y in
+            let contentLocation = CGPoint(x: contentX ?? contentView.bounds.midX, y: y)
+            return mountedProgramWorkCardHit(at: contentLocation, in: contentView) === expectedCard
+                ? contentView.convert(contentLocation, to: nil)
+                : nil
+        }
+    }
+
+    private func mountedProgramWorkCardHit(
+        at contentLocation: CGPoint,
+        in contentView: NSView
+    ) -> ProgramWorkCardDragEventView? {
+        var hitView = contentView.hitTest(contentLocation)
+        while let candidate = hitView {
+            if let card = candidate as? ProgramWorkCardDragEventView {
+                return card
+            }
+            hitView = candidate.superview
+        }
+        return nil
     }
 
     private func sendScrollWheel(

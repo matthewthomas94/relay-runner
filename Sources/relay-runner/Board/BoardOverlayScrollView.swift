@@ -82,6 +82,27 @@ final class BoardOverlayScrollContainer: NSView {
         updateThumbFrame()
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard window != nil else {
+            return super.hitTest(point)
+        }
+        // SwiftUI can route the leading card through a later hosted sibling.
+        // The explicit document frames remain stable because they also define
+        // this scroll view's top and bottom boundaries.
+        let fallback = super.hitTest(point)
+        let clipPoint = scrollView.contentView.convert(point, from: self)
+        let documentPoint = documentView.convert(clipPoint, from: scrollView.contentView)
+        if let card = hostingView.programWorkCard(
+            atDocumentPoint: documentPoint,
+            documentView: documentView
+        ) {
+            return card
+        }
+        return fallback?.programWorkCardAncestor == nil
+            ? fallback
+            : scrollView.contentView
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea {
@@ -372,6 +393,38 @@ final class BoardOverlayScrollHostingView: NSHostingView<AnyView> {
             }
             appendExplicitContentBoundaries(in: subview, top: &top, bottom: &bottom)
         }
+    }
+
+    fileprivate func programWorkCard(
+        atDocumentPoint point: CGPoint,
+        documentView: NSView
+    ) -> ProgramWorkCardDragEventView? {
+        func find(in view: NSView) -> ProgramWorkCardDragEventView? {
+            if let card = view as? ProgramWorkCardDragEventView,
+               card.convert(card.bounds, to: documentView).contains(point) {
+                return card
+            }
+            for subview in view.subviews {
+                if let card = find(in: subview) {
+                    return card
+                }
+            }
+            return nil
+        }
+        return find(in: self)
+    }
+}
+
+private extension NSView {
+    var programWorkCardAncestor: ProgramWorkCardDragEventView? {
+        var candidate: NSView? = self
+        while let current = candidate {
+            if let card = current as? ProgramWorkCardDragEventView {
+                return card
+            }
+            candidate = current.superview
+        }
+        return nil
     }
 }
 
