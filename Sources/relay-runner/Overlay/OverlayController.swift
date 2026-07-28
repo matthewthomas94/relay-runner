@@ -269,7 +269,7 @@ final class OverlayController {
             } else if !partial.isEmpty, config.live_transcription, partial != lastPartial {
                 // Only expand to full once transcription arrives
                 if let title = Self.fullPillTitle(for: state, actionHint: "Press Caps Lock to stop and send") {
-                    pill.showFull(title: title, body: partial, theme: .stt)
+                    pill.showFull(title: title, body: partial, theme: .stt, keycap: .capsLock)
                 }
             }
 
@@ -326,7 +326,7 @@ final class OverlayController {
             ) {
                 if preview != lastPreview || state != lastAppliedState,
                    let title = Self.fullPillTitle(for: state, actionHint: "Double tap Option to play") {
-                    pill.showFull(title: title, body: preview, theme: .tts)
+                    pill.showFull(title: title, body: preview, theme: .tts, keycap: .option)
                 }
             } else if state != lastAppliedState,
                       let title = Self.compactPillTitle(for: state, suffix: "...") {
@@ -341,7 +341,7 @@ final class OverlayController {
             ) {
                 if state != lastAppliedState || preview != lastPreview,
                    let title = Self.fullPillTitle(for: state, actionHint: "Double tap Control to cancel") {
-                    pill.showFull(title: title, body: preview, theme: .tts)
+                    pill.showFull(title: title, body: preview, theme: .tts, keycap: .control)
                 }
             } else if state != lastAppliedState,
                       let title = Self.compactPillTitle(for: state, suffix: "...") {
@@ -354,6 +354,7 @@ final class OverlayController {
                     title: "No session running",
                     body: "Double tap Option to start a new session\nPress Caps Lock to dismiss",
                     theme: .stt,
+                    keycap: .option,
                     suppressShadow: true
                 )
             }

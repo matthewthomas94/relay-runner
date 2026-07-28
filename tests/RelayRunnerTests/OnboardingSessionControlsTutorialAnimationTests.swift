@@ -162,4 +162,34 @@ final class OnboardingSessionControlsTutorialAnimationTests: XCTestCase {
         XCTAssertEqual(option.scale, 0.97, accuracy: 0.0001)
         XCTAssertFalse(option.capsLightOn)
     }
+
+    func testPillKeycapsReuseTheOnboardingAnimations() {
+        XCTAssertEqual(TranscriptionPillKeycap.capsLock.onboardingAnimation, .capsLock)
+        XCTAssertEqual(TranscriptionPillKeycap.option.onboardingAnimation, .playbackOption)
+        XCTAssertEqual(TranscriptionPillKeycap.control.onboardingAnimation, .playbackControl)
+    }
+
+    func testCommandPillsUseTrailingKeycapsWithoutAddingThemToOtherStates() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Overlay/OverlayController.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("theme: .stt, keycap: .capsLock"))
+        XCTAssertTrue(source.contains("theme: .tts, keycap: .option"))
+        XCTAssertTrue(source.contains("theme: .tts, keycap: .control"))
+        XCTAssertTrue(source.contains("theme: .stt,\n                    keycap: .option"))
+
+        let pillSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Overlay/TranscriptionPill.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(pillSource.contains("applyKeycap(nil)"))
+        XCTAssertTrue(pillSource.contains("contentWidth(for: targetBounds.width)"))
+        XCTAssertTrue(pillSource.contains("isDecorative: true"))
+    }
 }
