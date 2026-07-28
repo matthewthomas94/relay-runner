@@ -131,11 +131,16 @@ def _download_kokoro_model() -> tuple[str, str] | None:
 class TTSWorker:
     """Manages a queue of text chunks and plays them via Kokoro TTS."""
 
-    def __init__(self, input_queue: queue.Queue):
+    def __init__(self, input_queue: queue.Queue, *, start_control_socket: bool = True):
         self.input_queue = input_queue
         self._pending_text = ""
         self._pending_display_text = ""
+        self._pending_speech_intent: dict | None = None
+        self._current_speech_intent: dict | None = None
+        self._speech_eligibility = None
+        self._speech_observer = None
         self._lock = threading.Lock()
+        self._play_request_lock = threading.RLock()
         self._playing = False
         self._paused = False
         self._current_proc: subprocess.Popen | None = None
@@ -145,6 +150,7 @@ class TTSWorker:
         self._last_unheard_display_text = ""
         self._last_response_text = ""
         self._last_response_display_text = ""
+        self._chime_proc: subprocess.Popen | None = None
 
         # Speculative TTS — generation runs in parallel with the pill so the
         # first sentence chunk is already on disk by the time the user
@@ -178,9 +184,35 @@ class TTSWorker:
         self._collector = threading.Thread(target=self._collect_loop, daemon=True)
         self._collector.start()
 
-        # Control socket listener
-        self._control = threading.Thread(target=self._control_loop, daemon=True)
-        self._control.start()
+        # Relay mode gives control-socket ownership to SpeechCoordinator.
+        self._control: threading.Thread | None = None
+        if start_control_socket:
+            self._control = threading.Thread(target=self._control_loop, daemon=True)
+            self._control.start()
+
+    def set_speech_callbacks(self, *, eligibility, observer) -> None:
+        """Install coordinator-owned eligibility and lifecycle callbacks."""
+        self._speech_eligibility = eligibility
+        self._speech_observer = observer
+
+    def _speech_is_eligible(self, intent: dict | None) -> bool:
+        eligibility = getattr(self, "_speech_eligibility", None)
+        if not intent or eligibility is None:
+            return True
+        try:
+            return bool(eligibility(intent))
+        except Exception as exc:
+            print(f"[tts_worker] Speech eligibility check failed: {exc}", file=sys.stderr)
+            return False
+
+    def _observe_speech(self, state: str, intent: dict | None) -> None:
+        observer = getattr(self, "_speech_observer", None)
+        if not intent or observer is None:
+            return
+        try:
+            observer(state, intent)
+        except Exception as exc:
+            print(f"[tts_worker] Speech lifecycle callback failed: {exc}", file=sys.stderr)
 
     def _load_voice(self):
         """Load Kokoro model, downloading if needed."""
@@ -231,22 +263,33 @@ class TTSWorker:
             self._handle_collected_chunk(chunk)
 
     @staticmethod
-    def _queue_texts(chunk) -> tuple[str, str]:
+    def _queue_texts(chunk) -> tuple[str, str, dict | None]:
         if isinstance(chunk, dict):
             text = str(chunk.get("text") or "").strip()
             display_text = str(chunk.get("display_text") or "").strip()
-            return text, display_text
-        return str(chunk or "").strip(), ""
+            intent = chunk.get("_speech_intent")
+            return text, display_text, intent if isinstance(intent, dict) else None
+        return str(chunk or "").strip(), "", None
 
     def _handle_collected_chunk(self, chunk):
-        chunk_text, chunk_display_text = self._queue_texts(chunk)
+        chunk_text, chunk_display_text, speech_intent = self._queue_texts(chunk)
         if not chunk_text:
+            return
+        if not self._speech_is_eligible(speech_intent):
+            self._observe_speech("cancelled", speech_intent)
             return
         with self._lock:
             was_empty = not self._pending_text.strip()
-            if self._pending_text:
+            if speech_intent is not None:
+                replaced_intent = getattr(self, "_pending_speech_intent", None)
+                self._pending_text = chunk_text
+                self._pending_display_text = chunk_display_text
+                self._pending_speech_intent = speech_intent
+            elif self._pending_text:
+                replaced_intent = None
                 self._pending_text += " " + chunk_text
             else:
+                replaced_intent = None
                 self._pending_text = chunk_text
 
             if chunk_display_text:
@@ -262,8 +305,11 @@ class TTSWorker:
                 self._last_response_display_text = preview_text
             is_playing = self._playing
 
+        if replaced_intent and replaced_intent != speech_intent:
+            self._observe_speech("cancelled", replaced_intent)
         if not full_text:
             return
+        self._observe_speech("queued", speech_intent)
 
         if was_empty:
             self._play_chime()
@@ -322,22 +368,48 @@ class TTSWorker:
                 self.play()
 
     def play(self):
-        with self._lock:
-            text = self._pending_text.strip()
-            display_text = self._pending_display_text.strip() or text
-            self._pending_text = ""
-            self._pending_display_text = ""
-            if text:
-                self._last_unheard_text = ""
-                self._last_unheard_display_text = ""
+        with self._play_request_lock:
+            if self._playing:
+                return
+            with self._lock:
+                has_pending = bool(self._pending_text.strip())
+            if not has_pending:
+                try:
+                    queued = self.input_queue.get_nowait()
+                except queue.Empty:
+                    queued = None
+                if queued is not None:
+                    self._handle_collected_chunk(queued)
+            with self._lock:
+                text = self._pending_text.strip()
+                display_text = self._pending_display_text.strip() or text
+                speech_intent = getattr(self, "_pending_speech_intent", None)
+                self._pending_text = ""
+                self._pending_display_text = ""
+                self._pending_speech_intent = None
+                if text:
+                    self._last_unheard_text = ""
+                    self._last_unheard_display_text = ""
 
-        if not text:
-            self.replay()
-            return
+            if not text:
+                self.replay()
+                return
+            if not self._speech_is_eligible(speech_intent):
+                self._observe_speech("cancelled", speech_intent)
+                return
 
-        self._play_text(text, display_text=display_text)
+            if speech_intent is None:
+                self._play_text(text, display_text=display_text)
+            else:
+                self._play_text(text, display_text=display_text, speech_intent=speech_intent)
 
-    def _play_text(self, text: str, *, display_text: str | None = None):
+    def _play_text(
+        self,
+        text: str,
+        *,
+        display_text: str | None = None,
+        speech_intent: dict | None = None,
+    ):
         chunks = _sentence_chunks(text)
         if not chunks:
             return
@@ -346,16 +418,18 @@ class TTSWorker:
         self._last_response_text = text
         self._last_response_display_text = preview_text
         generation = self._begin_playback()
+        self._current_speech_intent = speech_intent
         _notify_state("preparing", text=preview_text[:2000])
 
         t = threading.Thread(
             target=self._speak_chunks,
-            args=(chunks, generation),
+            args=(chunks, generation, speech_intent),
             daemon=True,
         )
         t.start()
 
     def _begin_playback(self) -> int:
+        self._stop_chime()
         with self._lock:
             self._playback_generation = getattr(self, "_playback_generation", 0) + 1
             self._playing = True
@@ -383,8 +457,17 @@ class TTSWorker:
         proc = self._current_proc
         if proc and proc.poll() is None:
             proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        self._stop_chime()
         self._playing = False
         self._paused = False
+        intent = getattr(self, "_current_speech_intent", None)
+        self._current_speech_intent = None
+        self._observe_speech("cancelled", intent)
 
     def skip(self):
         """Stop playback AND discard pending text."""
@@ -392,49 +475,55 @@ class TTSWorker:
         with self._lock:
             text = self._pending_text.strip()
             display_text = self._pending_display_text.strip() or text
+            pending_intent = getattr(self, "_pending_speech_intent", None)
             self._pending_text = ""
             self._pending_display_text = ""
+            self._pending_speech_intent = None
             if text:
                 self._last_unheard_text = text
                 self._last_unheard_display_text = display_text
+        self._observe_speech("cancelled", pending_intent)
         self._cancel_speculation()
         _notify_state("idle")
 
     def replay(self):
         """Replay the last spoken audio."""
-        with self._lock:
-            text = self._pending_text.strip()
+        with self._play_request_lock:
+            if self._playing:
+                return
+            with self._lock:
+                text = self._pending_text.strip()
+                if text:
+                    display_text = self._pending_display_text.strip() or text
+                    self._pending_text = ""
+                    self._pending_display_text = ""
+                    self._last_unheard_text = ""
+                    self._last_unheard_display_text = ""
+                elif self._last_unheard_text:
+                    text = self._last_unheard_text
+                    display_text = self._last_unheard_display_text.strip() or text
+                    self._last_unheard_text = ""
+                    self._last_unheard_display_text = ""
+                else:
+                    display_text = ""
+
             if text:
-                display_text = self._pending_display_text.strip() or text
-                self._pending_text = ""
-                self._pending_display_text = ""
-                self._last_unheard_text = ""
-                self._last_unheard_display_text = ""
-            elif self._last_unheard_text:
-                text = self._last_unheard_text
-                display_text = self._last_unheard_display_text.strip() or text
-                self._last_unheard_text = ""
-                self._last_unheard_display_text = ""
-            else:
-                display_text = ""
+                self._play_text(text, display_text=display_text)
+                return
 
-        if text:
-            self._play_text(text, display_text=display_text)
-            return
-
-        wav = self._last_wav
-        if not wav or not os.path.isfile(wav):
-            print("[tts_worker] Nothing to replay", file=sys.stderr)
-            return
-        if self._last_response_display_text or self._last_response_text:
-            _notify_state(
-                "preparing",
-                text=(self._last_response_display_text or self._last_response_text)[:2000],
-            )
-        self._playing = True
-        self._paused = False
-        t = threading.Thread(target=self._play_wav, args=(wav,), daemon=True)
-        t.start()
+            wav = self._last_wav
+            if not wav or not os.path.isfile(wav):
+                print("[tts_worker] Nothing to replay", file=sys.stderr)
+                return
+            if self._last_response_display_text or self._last_response_text:
+                _notify_state(
+                    "preparing",
+                    text=(self._last_response_display_text or self._last_response_text)[:2000],
+                )
+            self._playing = True
+            self._paused = False
+            t = threading.Thread(target=self._play_wav, args=(wav,), daemon=True)
+            t.start()
 
     def _play_wav(self, wav_path: str):
         """Play a WAV file with afplay."""
@@ -586,11 +675,16 @@ class TTSWorker:
             except OSError:
                 pass
 
-    def _speak_chunks(self, chunks: list[str], generation: int):
+    def _speak_chunks(
+        self,
+        chunks: list[str],
+        generation: int,
+        speech_intent: dict | None = None,
+    ):
         """Synthesize sentence chunks and play them in order."""
         if not self._kokoro:
             print(f"[tts_worker] Kokoro not loaded, skipping: {' '.join(chunks)[:80]}", file=sys.stderr)
-            self._finish_playback(generation)
+            self._finish_playback(generation, speech_intent=speech_intent, failed=True)
             return
 
         played_wavs: list[str] = []
@@ -605,7 +699,11 @@ class TTSWorker:
                 current_wav = self._synthesize_chunk(chunks[0], generation)
 
             for index, _ in enumerate(chunks):
-                if not current_wav or not self._playback_is_current(generation):
+                if (
+                    not current_wav
+                    or not self._playback_is_current(generation)
+                    or not self._speech_is_eligible(speech_intent)
+                ):
                     break
 
                 played_wavs.append(current_wav)
@@ -624,6 +722,8 @@ class TTSWorker:
                     next_result = None
                     next_thread = None
 
+                if index == 0:
+                    self._observe_speech("started", speech_intent)
                 self._play_wav_blocking(current_wav)
 
                 if not self._playback_is_current(generation):
@@ -664,7 +764,11 @@ class TTSWorker:
                 for wav in played_wavs:
                     if wav != keep:
                         self._remove_wav(wav)
-            self._finish_playback(generation)
+            self._finish_playback(
+                generation,
+                speech_intent=speech_intent,
+                completed=completed,
+            )
 
     def _synthesize_chunk(self, text: str, generation: int) -> str | None:
         try:
@@ -685,7 +789,14 @@ class TTSWorker:
     ):
         result["wav"] = self._synthesize_chunk(text, generation)
 
-    def _finish_playback(self, generation: int):
+    def _finish_playback(
+        self,
+        generation: int,
+        *,
+        speech_intent: dict | None = None,
+        completed: bool = False,
+        failed: bool = False,
+    ):
         if getattr(self, "_playback_generation", 0) == generation:
             self._playing = False
             self._paused = False
@@ -693,6 +804,14 @@ class TTSWorker:
         elif not self._playing:
             _notify_state("idle")
         self._current_proc = None
+        if getattr(self, "_current_speech_intent", None) == speech_intent:
+            self._current_speech_intent = None
+        if failed:
+            self._observe_speech("failed", speech_intent)
+        elif completed:
+            self._observe_speech("completed", speech_intent)
+        else:
+            self._observe_speech("cancelled", speech_intent)
 
     def _set_last_wav(self, wav_path: str, preserve_old: bool = False):
         old_wav = self._last_wav
@@ -752,14 +871,26 @@ class TTSWorker:
     def _play_chime(self):
         if not os.path.exists(self._chime):
             return
+        self._stop_chime()
         try:
-            subprocess.Popen(
+            self._chime_proc = subprocess.Popen(
                 ["afplay", self._chime],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
         except FileNotFoundError:
             pass
+
+    def _stop_chime(self):
+        proc = getattr(self, "_chime_proc", None)
+        self._chime_proc = None
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
     def shutdown(self):
         self._shutdown = True

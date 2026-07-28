@@ -492,8 +492,11 @@ final class RelayVoiceCommandDelivery {
               providerReadyForNextCommand() else { return false }
         lastDeferredProviderActiveKey = nil
         guard let command = claimNextCommand() else { return false }
-        guard let events = Self.providerInputEvents(for: command.text),
-              let first = events.first else { return true }
+        guard var events = Self.providerInputEvents(for: command.text) else { return true }
+        if providerTurnActive(), Self.metadataRequestsProviderPreemption(command.metadata) {
+            events.insert([3], at: 0)
+        }
+        guard let first = events.first else { return true }
         let key = Self.relayCommandKey(from: command.metadata)
         if let key, !isCommandCurrent(key) {
             recordDeliveryEvent("stale_command_dropped", key: key)
@@ -546,6 +549,9 @@ final class RelayVoiceCommandDelivery {
 
     private func providerReadyForNextCommand() -> Bool {
         guard providerTurnActive() else { return true }
+        if pendingCommandRequestsProviderPreemption() {
+            return true
+        }
         guard let text = peekPendingCommandText() else { return false }
         if text.trimmingCharacters(in: .whitespacesAndNewlines) == "__INTERRUPT__" {
             return true
@@ -608,10 +614,31 @@ final class RelayVoiceCommandDelivery {
     private func isCommandCurrent(_ key: RelayCommandKey) -> Bool {
         let stateURL = URL(fileURLWithPath: paths.commandState)
         guard let data = try? Data(contentsOf: stateURL),
-              let stateKey = Self.relayCommandKey(from: data) else {
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return false
         }
-        return stateKey == key
+        if let stateKey = Self.relayCommandKey(from: object), stateKey == key {
+            return true
+        }
+        let deliverable = object["deliverable_commands"] as? [[String: Any]] ?? []
+        return deliverable.contains { Self.relayCommandKey(from: $0) == key }
+    }
+
+    private func pendingCommandRequestsProviderPreemption() -> Bool {
+        let metadataURL = URL(fileURLWithPath: paths.metadata)
+        return Self.metadataRequestsProviderPreemption(try? Data(contentsOf: metadataURL))
+    }
+
+    private static func metadataRequestsProviderPreemption(_ data: Data?) -> Bool {
+        guard let data,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        if object["preempt_provider"] as? Bool == true {
+            return true
+        }
+        let disposition = object["work_disposition"] as? [String: Any]
+        return disposition?["route"] as? String == "replace_current"
     }
 
     private func providerTurnActive() -> Bool {

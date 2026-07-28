@@ -324,13 +324,14 @@ def refined_ticket_title(source_text: str) -> str:
     return title
 
 
-def format_command_for_agent(action: CommandAction) -> str:
+def format_command_for_agent(action: CommandAction, disposition: dict | None = None) -> str:
     if action.kind in {"conversation", "control"}:
-        return action.source_text
+        prompt = action.source_text
+        return _append_work_disposition(prompt, disposition)
 
     if action.kind == "inline_work":
         metadata = _relay_prompt_lines(action)
-        return (
+        prompt = (
             f"{action.source_text}\n\n"
             "Relay Runner command action:\n"
             "- action: inline_work\n"
@@ -338,6 +339,7 @@ def format_command_for_agent(action: CommandAction) -> str:
             "- outcome_to_report: inline work explicitly requested\n"
             f"{metadata}"
         )
+        return _append_work_disposition(prompt, disposition)
 
     lines = [
         "Relay Runner command action:",
@@ -382,6 +384,34 @@ def format_command_for_agent(action: CommandAction) -> str:
         lines.append("- No ticket was created because no active Workspace project was found; ask the user which repo/project should own the work.")
 
     lines.extend(["", "Source command:", action.source_text])
+    return _append_work_disposition("\n".join(lines), disposition)
+
+
+def _append_work_disposition(prompt: str, disposition: dict | None) -> str:
+    if not isinstance(disposition, dict):
+        return prompt
+    route = str(disposition.get("route") or "").strip()
+    if not route:
+        return prompt
+    targets = ", ".join(str(value) for value in disposition.get("target_work_ids") or []) or "none"
+    conflicts = ", ".join(str(value) for value in disposition.get("conflicting_work_ids") or []) or "none"
+    question = str(disposition.get("clarification_question") or "").strip()
+    lines = [
+        prompt,
+        "",
+        "Relay work-intent disposition:",
+        f"- route: {route}",
+        f"- target_work_ids: {targets}",
+        f"- conflicting_work_ids: {conflicts}",
+        f"- mutation_authorization_effect: {disposition.get('authorization_effect') or 'preserve'}",
+        f"- public_reason: {disposition.get('public_reason') or 'Resolved by the bridge policy.'}",
+        "- Treat this as the provider-neutral relationship to already accepted work.",
+        "- Do not preempt accepted work unless this route is replace_current.",
+        "- queue_project_work stays on the native Relay ticket/worktree path.",
+        "- run_sidecar is read-only, bounded, independently verifiable, resource-safe, and never speaks directly.",
+    ]
+    if question:
+        lines.append(f"- clarification_question: {question}")
     return "\n".join(lines)
 
 

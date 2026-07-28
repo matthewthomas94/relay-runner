@@ -48,6 +48,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker._pending_text = ""
         worker._pending_display_text = ""
         worker._lock = threading.Lock()
+        worker._play_request_lock = threading.RLock()
         worker._playing = False
         worker._paused = False
         worker._current_proc = None
@@ -148,6 +149,66 @@ class TTSWorkerReplayTests(unittest.TestCase):
 
         self.assertEqual(worker.played_texts, ["fresh pending"])
         self.assertEqual(worker._last_unheard_text, "")
+
+    def test_play_and_replay_do_not_start_while_a_plan_is_active(self):
+        worker = self.make_worker()
+        worker._playing = True
+        worker._pending_text = "next result"
+        worker._last_wav = self.temp_wav()
+
+        worker.play()
+        worker.replay()
+
+        self.assertEqual(worker.played_texts, [])
+        self.assertEqual(worker.played_wavs, [])
+        self.assertEqual(worker._pending_text, "next result")
+
+    def test_playback_waits_for_chime_cancellation(self):
+        worker = self.make_worker()
+        order = []
+
+        class FakeChime:
+            def poll(self):
+                return None
+
+            def terminate(self):
+                order.append("chime-terminate")
+
+            def wait(self, timeout=None):
+                order.append("chime-wait")
+
+        worker._chime_proc = FakeChime()
+
+        worker._begin_playback()
+        order.append("playback-started" if worker._playing else "not-started")
+
+        self.assertEqual(order, ["chime-terminate", "chime-wait", "playback-started"])
+
+    def test_stop_observes_process_exit_before_cancellation(self):
+        worker = self.make_worker()
+        order = []
+        intent = {"utterance_id": "speech-1"}
+
+        class FakePlayer:
+            def poll(self):
+                return None
+
+            def terminate(self):
+                order.append("player-terminate")
+
+            def wait(self, timeout=None):
+                order.append("player-wait")
+
+        worker._playing = True
+        worker._current_proc = FakePlayer()
+        worker._current_speech_intent = intent
+        worker._speech_observer = lambda state, payload: order.append(state)
+        worker._speech_eligibility = None
+        worker._chime_proc = None
+
+        worker.stop_playback()
+
+        self.assertEqual(order, ["player-terminate", "player-wait", "cancelled"])
 
     def test_collected_chunks_refresh_waiting_preview_before_playback(self):
         worker = self.make_worker()

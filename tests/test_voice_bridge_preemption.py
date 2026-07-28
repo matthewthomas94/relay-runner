@@ -1850,6 +1850,9 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertIn("pm_frontstage.py", script)
         self.assertIn("messenger.py", script)
         self.assertIn("relay_authorization.py", script)
+        self.assertIn("intent_arbitration.py", script)
+        self.assertIn("intent_inbox.py", script)
+        self.assertIn("speech_coordinator.py", script)
         self.assertIn("codex_model_catalog.py", script)
         self.assertNotIn('if [ -f "$PROJECT_ROOT/services/$f" ]', script)
 
@@ -2082,6 +2085,58 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             current = json.loads(Path(state_path).read_text())
             self.assertEqual(current["source_text"], "__INTERRUPT__")
             self.assertEqual(current["relay_command_seq"], relay_command["relay_command_seq"] + 1)
+
+    def test_explicit_replace_releases_cancelled_inbox_transport_lease(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = os.path.join(temp_dir, "voice_cmd_ready.meta")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            inbox = voice_bridge.IntentInbox(os.path.join(temp_dir, "inbox.sqlite3"))
+
+            first = {
+                "relay_command_seq": 1,
+                "relay_command_id": "cmd-1",
+                "intent_id": "intent-1",
+                "action": "create_ticket",
+                "work_disposition": {"route": "queue_project_work"},
+            }
+            replacement = {
+                "relay_command_seq": 2,
+                "relay_command_id": "cmd-2",
+                "intent_id": "intent-2",
+                "action": "create_ticket",
+                "work_disposition": {"route": "replace_current"},
+            }
+
+            voice_bridge._publish_command(
+                "first",
+                first,
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+                inbox=inbox,
+            )
+            self.assertEqual(Path(command_path).read_text(), "first")
+
+            voice_bridge._publish_command(
+                "replacement",
+                replacement,
+                command_path=command_path,
+                meta_path=meta_path,
+                state_path=state_path,
+                inbox=inbox,
+            )
+
+            self.assertEqual(Path(command_path).read_text(), "replacement")
+            self.assertEqual(
+                [record["state"] for record in inbox.records()],
+                ["cancelled", "delivered"],
+            )
+            state = json.loads(Path(state_path).read_text())
+            self.assertEqual(
+                [item["relay_command_id"] for item in state["deliverable_commands"]],
+                ["cmd-2"],
+            )
 
     def test_newer_pending_project_work_does_not_create_visible_tickets(self):
         with tempfile.TemporaryDirectory() as temp_dir:

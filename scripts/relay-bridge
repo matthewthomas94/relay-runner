@@ -359,7 +359,7 @@ This blocks until the user speaks via Caps Lock. If the voice bridge is killed (
 
 ### Step 1.5: Preemption checkpoints
 
-Relay messages are live steering input, not a serial queue. Newest intent wins for future work. Before starting each new shell command, MCP call, or high-stakes/irreversible action, and again before writing TTS, check whether a newer Relay message is waiting:
+Relay messages are retained in a durable ordered intent inbox. Before starting each new shell command, MCP call, or high-stakes/irreversible action, and again before sending a final reply, check whether another classified Relay intent is waiting:
 
 ```bash
 cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
@@ -375,7 +375,7 @@ else
 fi
 ```
 
-If the checkpoint prints a normal user message, stop following the stale request and handle the new message as the active instruction. If it prints `__INTERRUPT__`, silently return to waiting. Do not start new high-stakes or irreversible actions from stale instructions after a newer message arrives. If an action already completed, report that honestly when responding to the newest message.
+If the checkpoint prints a normal user message, follow its `work_disposition` in `/tmp/voice_cmd_claimed.json`: additive/status/clarification turns continue or steer current work, project changes queue on Relay tickets, and only `replace_current` preempts accepted work. If it prints `__INTERRUPT__`, silently return to waiting. Do not start a high-stakes or irreversible action after its bounded authorization was revoked. If an action already completed, report that honestly when responding to the newest message.
 
 Already-running shell commands and MCP calls cannot be forcibly preempted by the bridge. Let them return, interrupt them only when the user explicitly canceled, then run this checkpoint before any follow-up action. Codex and Claude use the same cooperative preemption contract; no provider-specific hard cancellation is assumed.
 
@@ -677,7 +677,7 @@ fi
 
 Preemption checkpoints:
 
-Relay messages are live steering input, not a serial queue. Newest intent wins for future work. Before starting each new shell command, MCP call, or high-stakes/irreversible action, and again before writing TTS, check whether a newer Relay message is waiting:
+Relay messages are retained in a durable ordered intent inbox. Before starting each new shell command, MCP call, or high-stakes/irreversible action, and again before sending a final reply, check whether another classified Relay intent is waiting:
 
 ```bash
 cmd_tmp=$(mktemp /tmp/voice_cmd_claim.XXXXXX) || exit 1
@@ -693,7 +693,7 @@ else
 fi
 ```
 
-If the checkpoint prints a normal user message, stop following the stale request and handle the new message as the active instruction. If it prints `__INTERRUPT__`, silently return to waiting. Do not start new high-stakes or irreversible actions from stale instructions after a newer message arrives. If an action already completed, report that honestly when responding to the newest message.
+If the checkpoint prints a normal user message, follow its `work_disposition` in `/tmp/voice_cmd_claimed.json`: additive/status/clarification turns continue or steer current work, project changes queue on Relay tickets, and only `replace_current` preempts accepted work. If it prints `__INTERRUPT__`, silently return to waiting. Do not start a high-stakes or irreversible action after its bounded authorization was revoked. If an action already completed, report that honestly when responding to the newest message.
 
 Already-running shell commands and MCP calls cannot be forcibly preempted by the bridge. Let them return, interrupt them only when the user explicitly canceled, then run this checkpoint before any follow-up action. Codex and Claude use the same cooperative preemption contract; no provider-specific hard cancellation is assumed.
 

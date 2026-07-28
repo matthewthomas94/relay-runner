@@ -498,6 +498,27 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_final_replaces_queued_handoff_before_messenger_starts(self):
+        backend = FakeBackend(["The work is complete."])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        try:
+            command = {"relay_command_seq": 17, "relay_command_id": "cmd-17"}
+            self.assertTrue(runtime.submit_user("Finish the task", command))
+            self.assertTrue(runtime.submit_final({"text": "Finished.", **command}))
+
+            runtime.start()
+
+            self.assertTrue(wait_until(lambda: spoken == ["The work is complete."]))
+            self.assertEqual(len(backend.prompts), 1)
+            self.assertIn("authoritative orchestrator reply", backend.prompts[0])
+        finally:
+            runtime.shutdown()
+
     def test_silent_final_falls_back_to_authoritative_text(self):
         backend = FakeBackend(["__SILENT__", "__SILENT__"])
         spoken: list[str] = []
