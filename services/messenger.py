@@ -61,6 +61,7 @@ _UNSCOPED_LIFECYCLE_KINDS = frozenset({
     "run-merged",
     "run-succeeded",
 })
+_WORK_LIFECYCLE_KINDS = frozenset({"sidecar-outcome"})
 
 
 MESSENGER_SYSTEM_PROMPT = """You are Relay Runner's persistent voice messenger.
@@ -770,6 +771,7 @@ class _MessengerEvent:
     detail: str = ""
     work_disposition: dict | None = None
     speech_source: str = ""
+    work_lifecycle: bool = False
 
 
 class MessengerRuntime:
@@ -865,13 +867,28 @@ class MessengerRuntime:
         command_key = _command_key(command if isinstance(command, dict) else None)
         message = str(trace.get("message") or "").strip()
         kind = str(trace.get("kind") or "progress").strip().lower()
+        work_lifecycle = (
+            kind in _WORK_LIFECYCLE_KINDS
+            and trace.get("work_valid") is True
+        )
         disposition = trace.get("work_disposition")
         if not isinstance(disposition, dict):
             disposition = None
         if not message:
             return False
         with self._lock:
-            if command_key is None and kind in _UNSCOPED_LIFECYCLE_KINDS:
+            if work_lifecycle:
+                if command_key is None:
+                    return False
+                if command_key in self._final_commands:
+                    return True
+                self._final_commands.add(command_key)
+                if len(self._final_commands) > 100:
+                    for old in list(self._final_commands)[:50]:
+                        self._final_commands.discard(old)
+                generation = self._generation
+                self._context.append(f"AUTHORITATIVE WORK LIFECYCLE ({kind}): {message}")
+            elif command_key is None and kind in _UNSCOPED_LIFECYCLE_KINDS:
                 generation = self._generation
                 self._context.append(f"WORKER LIFECYCLE ({kind}): {message}")
             else:
@@ -891,6 +908,7 @@ class MessengerRuntime:
             command_id=command_key[1] if command_key is not None else None,
             generation=generation,
             work_disposition=disposition,
+            work_lifecycle=work_lifecycle,
         ))
         return True
 
@@ -983,7 +1001,11 @@ class MessengerRuntime:
             except Exception as exc:
                 print(f"[messenger] response failed: {exc}", file=sys.stderr)
                 if (
-                    (event.kind == "orchestrator_final" or self._event_is_unscoped_lifecycle(event))
+                    (
+                        event.kind == "orchestrator_final"
+                        or self._event_is_unscoped_lifecycle(event)
+                        or event.work_lifecycle
+                    )
                     and self._event_is_current(event)
                 ):
                     self._speak_safely(
@@ -1001,7 +1023,11 @@ class MessengerRuntime:
             if not self._event_is_current(event):
                 continue
             if not response or response == SILENT_RESPONSE:
-                if event.kind == "orchestrator_final" or self._event_is_unscoped_lifecycle(event):
+                if (
+                    event.kind == "orchestrator_final"
+                    or self._event_is_unscoped_lifecycle(event)
+                    or event.work_lifecycle
+                ):
                     self._speak_safely(
                         event.text,
                         event.command_seq,
@@ -1016,11 +1042,17 @@ class MessengerRuntime:
                 response,
                 event.command_seq,
                 event.command_id,
-                display_text=event.text if event.kind == "orchestrator_final" else None,
+                display_text=(
+                    event.text
+                    if event.kind == "orchestrator_final" or event.work_lifecycle
+                    else None
+                ),
                 speech_metadata=self._speech_metadata_for(event),
             )
 
     def _event_is_current(self, event: _MessengerEvent) -> bool:
+        if event.work_lifecycle:
+            return True
         if event.command_seq is None or event.command_id is None:
             return True
         with self._lock:
@@ -1070,6 +1102,12 @@ class MessengerRuntime:
                 "This is an authoritative clarification request from the orchestrator. Ask the "
                 "user the requested question directly and concisely."
             )
+        elif event.work_lifecycle:
+            instructions = (
+                "This is an authoritative completed sidecar outcome from accepted background "
+                "work. Convey its result naturally and concisely without treating its originating "
+                "conversation turn as current or adding unsupported claims."
+            )
         return (
             f"{instructions}\n\n"
             "Recent session context, oldest to newest:\n"
@@ -1089,7 +1127,11 @@ class MessengerRuntime:
             if queued is None:
                 saw_shutdown = True
                 break
-            if queued.command_seq is None or queued.command_id is None:
+            if (
+                queued.command_seq is None
+                or queued.command_id is None
+                or queued.work_lifecycle
+            ):
                 preserved.append(queued)
         for event in preserved:
             self._events.put(event)
@@ -1160,7 +1202,10 @@ class MessengerRuntime:
 
     @staticmethod
     def _speech_metadata_for(event: _MessengerEvent, *, fallback: bool = False) -> dict:
-        if fallback:
+        if event.work_lifecycle:
+            source = "lifecycle"
+            kind = "final"
+        elif fallback:
             source = "fallback"
             kind = "fallback"
         elif event.kind == "user_turn":
@@ -1178,10 +1223,22 @@ class MessengerRuntime:
         return {
             "source": source,
             "kind": kind,
-            "authoritative": event.kind == "orchestrator_final",
+            "authoritative": (
+                event.kind == "orchestrator_final"
+                or event.work_lifecycle
+            ),
             "semantic_brief": event.text,
-            "replayable": event.kind == "orchestrator_final",
+            "replayable": (
+                event.kind == "orchestrator_final"
+                or event.work_lifecycle
+            ),
             "work_disposition": event.work_disposition,
+            "freshness_scope": "work" if event.work_lifecycle else "conversation",
+            "dedup_key": (
+                f"work-outcome:{event.command_seq}:{event.command_id}:{event.detail}"
+                if event.work_lifecycle
+                else None
+            ),
         }
 
     def _speak_safely(

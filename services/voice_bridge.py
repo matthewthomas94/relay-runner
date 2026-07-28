@@ -1525,20 +1525,50 @@ def _handle_sidecar_final(
     messenger: MessengerRuntime | None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
 ) -> bool:
-    """Submit a sidecar outcome as a current authoritative lifecycle final."""
-    payload = {
-        "text": str(text or "").strip(),
-        "relay_command_seq": command.get("relay_command_seq"),
-        "relay_command_id": command.get("relay_command_id"),
-        "speech_source": "lifecycle",
-        "work_disposition": command.get("work_disposition"),
-    }
-    return _handle_orchestrator_reply_control(
-        json.dumps(payload),
-        tts_worker=tts_worker,
-        messenger=messenger,
-        state_path=state_path,
-    )
+    """Return an accepted sidecar outcome as durable work lifecycle speech."""
+    reply = str(text or "").strip()
+    key = _relay_command_key(command)
+    if not reply or key is None:
+        return False
+    if _foreground_reply_delivered(command):
+        return True
+    disposition = command.get("work_disposition")
+    if not isinstance(disposition, dict):
+        disposition = None
+    _publish_authoritative_preview(reply)
+    delivered = False
+    if messenger is not None:
+        delivered = messenger.submit_trace({
+            "kind": "sidecar-outcome",
+            "message": reply,
+            "command": command,
+            "work_disposition": disposition,
+            "work_valid": True,
+        })
+    if not delivered:
+        delivered = _queue_tts_text(
+            json.dumps({
+                "text": reply,
+                "display_text": reply,
+                "relay_command_seq": key[0],
+                "relay_command_id": key[1],
+            }),
+            tts_worker.input_queue,
+            state_path=state_path,
+            allow_pending_command=True,
+            notify_waiting_preview=lambda _text: None,
+            source="lifecycle",
+            kind="final",
+            authoritative=True,
+            semantic_brief=reply,
+            dedup_key=f"work-outcome:{key[0]}:{key[1]}:sidecar-outcome",
+            work_disposition=disposition,
+            replayable=True,
+            freshness_scope="work",
+        )
+    if delivered:
+        _mark_foreground_reply_delivered(command)
+    return delivered
 
 
 def _foreground_reply_delivered(command: dict | None) -> bool:
@@ -1689,6 +1719,7 @@ def _queue_tts_text(
     dedup_key: str | None = None,
     work_disposition: dict | None = None,
     replayable: bool | None = None,
+    freshness_scope: str = "conversation",
 ) -> bool:
     """Submit a typed speech intent unless its Relay command is stale."""
     text, display_text, command_seq, command_id = _parse_tts_payload(text)
@@ -1698,7 +1729,12 @@ def _queue_tts_text(
         text = _strip_markdown_for_tts(display_preview).strip()
     if not text:
         return False
-    if command_seq is not None or command_id:
+    work_fresh = (
+        freshness_scope == "work"
+        and source == "lifecycle"
+        and kind == "final"
+    )
+    if (command_seq is not None or command_id) and not work_fresh:
         if not _relay_command_current(command_seq, command_id, state_path=state_path):
             print(
                 "[voice_bridge] Dropping TTS because its Relay command was superseded.",
@@ -1732,6 +1768,7 @@ def _queue_tts_text(
             dedup_key=dedup_key,
             work_disposition=work_disposition,
             replayable=replayable,
+            freshness_scope="work" if work_fresh else "conversation",
         ))
     else:
         if display_preview:

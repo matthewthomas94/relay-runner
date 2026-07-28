@@ -26,6 +26,7 @@ SPEECH_KINDS = frozenset({
 })
 FINAL_KINDS = frozenset({"final", "fallback"})
 SUPERSEDING_KINDS = frozenset({"clarification", "final", "fallback"})
+FRESHNESS_SCOPES = frozenset({"conversation", "work"})
 
 
 def _stable_digest(*values: object) -> str:
@@ -48,6 +49,7 @@ class SpeechIntent:
     spoken_text: str
     created_at: float
     expires_at: float | None = None
+    freshness_scope: str = "conversation"
     replacement_policy: str = "semantic"
     work_disposition: dict[str, Any] | None = None
     replayable: bool = False
@@ -82,6 +84,7 @@ class SpeechIntent:
         utterance_id: str | None = None,
         created_at: float | None = None,
         expires_at: float | None = None,
+        freshness_scope: str = "conversation",
         replacement_policy: str = "semantic",
         work_disposition: dict[str, Any] | None = None,
         replayable: bool | None = None,
@@ -96,6 +99,12 @@ class SpeechIntent:
             if kind in FINAL_KINDS and command_seq is not None and command_id
             else f"{source}:{kind}:{command_seq}:{command_id}:{_stable_digest(brief, spoken)}"
         )
+        scope = str(freshness_scope or "conversation").strip().lower()
+        if (
+            scope not in FRESHNESS_SCOPES
+            or (scope == "work" and (source != "lifecycle" or kind != "final"))
+        ):
+            scope = "conversation"
         return cls(
             command_seq=int(command_seq) if command_seq is not None else None,
             command_id=str(command_id) if command_id else None,
@@ -110,6 +119,7 @@ class SpeechIntent:
             spoken_text=spoken,
             created_at=time.time() if created_at is None else float(created_at),
             expires_at=float(expires_at) if expires_at is not None else None,
+            freshness_scope=scope,
             replacement_policy=replacement_policy,
             work_disposition=work_disposition,
             replayable=(kind == "final") if replayable is None else bool(replayable),
@@ -255,12 +265,19 @@ class SpeechCoordinator:
             self._speech_stopped = False
             for intent_id in [self._committed_id, self._playing_id]:
                 intent = self._intent_for(intent_id)
-                if intent is not None and intent.command_key != (int(command_seq), str(command_id)):
+                if (
+                    intent is not None
+                    and intent.freshness_scope != "work"
+                    and intent.command_key != (int(command_seq), str(command_id))
+                ):
                     stale_ids.append(intent.utterance_id)
             self._backlog = [
                 intent
                 for intent in self._backlog
-                if intent.command_key == (int(command_seq), str(command_id))
+                if (
+                    intent.freshness_scope == "work"
+                    or intent.command_key == (int(command_seq), str(command_id))
+                )
             ]
             if self._committed_id in stale_ids:
                 self._committed_id = None
@@ -272,14 +289,29 @@ class SpeechCoordinator:
                     self._diagnostic("interrupted", intent, reason="newer_command")
 
     def stop(self) -> None:
-        """Barge-in stops audio only; it does not alter work authorization."""
+        """Barge-in retires speech plans only; it does not alter work authorization."""
+        stale: list[SpeechIntent] = []
         with self._lock:
             self._speech_stopped = True
+            stale = [
+                intent
+                for intent in (
+                    self._intent_for(self._committed_id),
+                    self._intent_for(self._playing_id),
+                    *self._backlog,
+                )
+                if intent is not None
+            ]
+            self._committed_id = None
+            self._playing_id = None
+            self._backlog.clear()
         self.worker.stop_playback()
-        with self._lock:
-            intent = self._intent_for(self._playing_id)
-        if intent is not None:
+        for intent in stale:
             self._diagnostic("interrupted", intent, reason="speech_only_barge_in")
+
+    def stop_playback(self) -> None:
+        """Expose the executor-compatible stop API at the coordinator boundary."""
+        self.stop()
 
     def skip(self) -> None:
         with self._lock:
@@ -351,6 +383,8 @@ class SpeechCoordinator:
     def _fresh(self, intent: SpeechIntent) -> bool:
         if intent.expires_at is not None and time.time() >= intent.expires_at:
             return False
+        if intent.freshness_scope == "work":
+            return True
         key = intent.command_key
         return key is None or self._is_current(key[0], key[1])
 
@@ -358,7 +392,10 @@ class SpeechCoordinator:
         intent_id = str(payload.get("utterance_id") or "")
         with self._lock:
             intent = self._intent_for(intent_id)
-            accepted = intent_id in {self._committed_id, self._playing_id}
+            accepted = (
+                not self._speech_stopped
+                and intent_id in {self._committed_id, self._playing_id}
+            )
         return bool(intent and accepted and self._fresh(intent))
 
     def _observe_worker(self, state: str, payload: dict[str, Any]) -> None:

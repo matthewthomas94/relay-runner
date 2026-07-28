@@ -63,6 +63,25 @@ def _relay_command_current(command: dict, *, state_path: str) -> bool:
     return _relay_command_key(current) == expected
 
 
+def _relay_command_deliverable(command: dict, *, state_path: str) -> bool:
+    """Accept the exact leased inbox command even when a newer turn is current."""
+    expected = _relay_command_key(command)
+    if expected is None:
+        return False
+    state = _read_json_file(state_path)
+    if _relay_command_key(state) == expected:
+        return True
+    deliverable = state.get("deliverable_commands")
+    if not isinstance(deliverable, list):
+        return False
+    return any(
+        isinstance(candidate, dict)
+        and _relay_command_key(candidate) == expected
+        and str(candidate.get("state") or "") in {"pending", "delivered", "claimed"}
+        for candidate in deliverable
+    )
+
+
 def _prompt_matches_claim(prompt: str, claim: dict) -> bool:
     agent_prompt = claim.get("agent_prompt")
     if isinstance(agent_prompt, str) and agent_prompt:
@@ -213,7 +232,7 @@ def _bind_prompt_submit(
     claim = _read_json_file(claim_path)
     if not claim:
         return False
-    if not _relay_command_current(claim, state_path=state_path):
+    if not _relay_command_deliverable(claim, state_path=state_path):
         return False
     if not _prompt_matches_claim(prompt, claim):
         return False

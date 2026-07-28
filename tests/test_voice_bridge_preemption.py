@@ -24,6 +24,7 @@ sys.modules.setdefault(
 
 import voice_bridge  # noqa: E402
 import relay_completion_hook  # noqa: E402
+from speech_coordinator import SpeechIntent  # noqa: E402
 
 
 def claim_ready_command(path: str) -> str:
@@ -40,6 +41,12 @@ class FakeTTSWorker:
     def __init__(self):
         self.calls: list[str] = []
         self.input_queue: queue.Queue = queue.Queue()
+        self.eligibility = None
+        self.observer = None
+
+    def set_speech_callbacks(self, *, eligibility, observer):
+        self.eligibility = eligibility
+        self.observer = observer
 
     def stop_playback(self):
         self.calls.append("stop_playback")
@@ -52,6 +59,12 @@ class FakeTTSWorker:
 
     def replay(self):
         self.calls.append("replay")
+
+    def reload_config(self):
+        self.calls.append("reload_config")
+
+    def shutdown(self):
+        self.calls.append("shutdown")
 
 
 class FakeMessenger:
@@ -105,6 +118,24 @@ class CapturingSpeechQueue:
     def submit_text(self, text: str, **metadata) -> bool:
         self.submissions.append((text, metadata))
         return True
+
+
+class ImmediateMessengerBackend:
+    def __init__(self, response: str):
+        self.response = response
+
+    def start(self):
+        pass
+
+    def ask(self, prompt: str, timeout: float = 60.0) -> str:
+        del prompt, timeout
+        return self.response
+
+    def interrupt(self):
+        pass
+
+    def shutdown(self):
+        pass
 
 
 class VoiceBridgePreemptionTests(unittest.TestCase):
@@ -1451,6 +1482,91 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual([payload.get("text") for payload in delivered], ["Current final."])
             self.assertEqual(delivered[0]["relay_command_id"], "cmd-12")
 
+    def test_provider_hook_binds_recovered_and_middle_deliverable_intents(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    state_path = os.path.join(temp_dir, "voice_command_state.json")
+                    claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                    turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                    command_path = os.path.join(temp_dir, "voice_cmd_ready")
+                    meta_path = command_path + ".meta"
+                    inbox_path = os.path.join(temp_dir, "intent_inbox.sqlite3")
+                    commands = [
+                        {
+                            "relay_command_seq": seq,
+                            "relay_command_id": f"cmd-{seq}",
+                            "intent_id": f"intent-{seq}",
+                            "agent_prompt": f"Prompt {seq}",
+                            "provider": provider,
+                        }
+                        for seq in (1, 2, 3)
+                    ]
+                    inbox = voice_bridge.IntentInbox(inbox_path)
+                    for command in commands:
+                        inbox.enqueue(command["agent_prompt"], command, "continue_current")
+                    Path(state_path).write_text(json.dumps(commands[-1]))
+                    voice_bridge.sync_deliverable_state(state_path, inbox)
+
+                    inbox.materialize_next(
+                        command_path=command_path,
+                        metadata_path=meta_path,
+                        transport="app-owned",
+                    )
+                    inbox.close()
+                    os.remove(command_path)
+                    os.remove(meta_path)
+
+                    inbox = voice_bridge.IntentInbox(inbox_path)
+                    recovered = inbox.materialize_next(
+                        command_path=command_path,
+                        metadata_path=meta_path,
+                        transport="app-owned",
+                    )
+                    voice_bridge.sync_deliverable_state(state_path, inbox)
+
+                    for index, claimed in enumerate((recovered, commands[1]), start=1):
+                        self.assertIsNotNone(claimed)
+                        Path(claim_path).write_text(json.dumps(claimed))
+                        self.assertTrue(relay_completion_hook.handle_hook_payload(
+                            {
+                                "hook_event_name": "UserPromptSubmit",
+                                "session_id": f"{provider}-rapid",
+                                "turn_id": f"turn-{index}",
+                                "prompt": claimed["agent_prompt"],
+                                "provider": provider,
+                            },
+                            claim_path=claim_path,
+                            state_path=state_path,
+                            turns_path=turns_path,
+                            now=100 + index,
+                            stderr=io.StringIO(),
+                        ))
+                        self.assertTrue(inbox.observe_claim(
+                            claimed,
+                            provider_turn_seen=voice_bridge._provider_turn_seen(
+                                claimed,
+                                turns_path=turns_path,
+                            ),
+                        ))
+                        os.remove(command_path)
+                        os.remove(meta_path)
+                        next_command = inbox.materialize_next(
+                            command_path=command_path,
+                            metadata_path=meta_path,
+                            transport="app-owned",
+                        )
+                        voice_bridge.sync_deliverable_state(state_path, inbox)
+                        if index == 1:
+                            self.assertEqual(next_command["relay_command_id"], "cmd-2")
+
+                    self.assertEqual(next_command["relay_command_id"], "cmd-3")
+                    self.assertEqual(
+                        [record["state"] for record in inbox.records()],
+                        ["acked", "acked", "delivered"],
+                    )
+                    inbox.close()
+
     def test_app_owned_stale_turn_drops_final_until_newer_claim_is_injected(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider):
@@ -2301,7 +2417,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 ["sidecar-started", "sidecar-completed"],
             )
 
-    def test_sidecar_final_uses_lifecycle_speech_metadata_and_freshness(self):
+    def test_sidecar_final_uses_work_valid_lifecycle_speech_after_newer_turn(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "voice_command_state.json")
             command = {
@@ -2343,14 +2459,110 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 "relay_command_id": "cmd-5",
             }))
             voice_bridge._reset_foreground_reply_delivery_for_tests()
-            self.assertFalse(voice_bridge._handle_sidecar_final(
-                "Stale sidecar result.",
+            self.assertTrue(voice_bridge._handle_sidecar_final(
+                "Still useful sidecar result.",
                 command,
                 tts_worker=worker,
                 messenger=None,
                 state_path=state_path,
             ))
-            self.assertEqual(len(speech_queue.submissions), 1)
+            self.assertEqual(len(speech_queue.submissions), 2)
+            spoken, speech_metadata = speech_queue.submissions[-1]
+            self.assertEqual(spoken, "Still useful sidecar result.")
+            self.assertEqual(speech_metadata["freshness_scope"], "work")
+            self.assertEqual(speech_metadata["command_seq"], 4)
+            self.assertEqual(speech_metadata["command_id"], "cmd-4")
+
+    def test_sidecar_outcome_crosses_messenger_and_coordinator_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    voice_bridge._reset_foreground_reply_delivery_for_tests()
+                    state_path = os.path.join(temp_dir, "voice_command_state.json")
+                    current = {"relay_command_seq": 8, "relay_command_id": "cmd-8"}
+                    Path(state_path).write_text(json.dumps(current))
+                    executor = FakeTTSWorker()
+                    coordinator = voice_bridge.SpeechCoordinator(
+                        executor,
+                        is_current=lambda seq, command_id: (seq, command_id) == (8, "cmd-8"),
+                    )
+
+                    def speak(text, command_seq, command_id, display_text, speech_metadata):
+                        return voice_bridge._queue_tts_text(
+                            json.dumps({
+                                "text": text,
+                                "display_text": display_text,
+                                "relay_command_seq": command_seq,
+                                "relay_command_id": command_id,
+                            }),
+                            coordinator.input_queue,
+                            state_path=state_path,
+                            allow_pending_command=True,
+                            notify_waiting_preview=lambda _text: None,
+                            **speech_metadata,
+                        )
+
+                    messenger = voice_bridge.MessengerRuntime(
+                        ImmediateMessengerBackend("Here is the completed sidecar result."),
+                        speak=speak,
+                        is_current=lambda seq, command_id: (seq, command_id) == (8, "cmd-8"),
+                    )
+                    messenger.start()
+                    self.addCleanup(messenger.shutdown)
+                    command = {
+                        "relay_command_seq": 4,
+                        "relay_command_id": "cmd-4",
+                        "provider": provider,
+                        "work_disposition": {"route": "run_sidecar"},
+                    }
+
+                    with mock.patch.object(voice_bridge, "_publish_authoritative_preview"):
+                        self.assertTrue(voice_bridge._handle_sidecar_final(
+                            "Authoritative sidecar evidence.",
+                            command,
+                            tts_worker=coordinator,
+                            messenger=messenger,
+                            state_path=state_path,
+                        ))
+
+                    queued = executor.input_queue.get(timeout=1)
+                    speech_intent = queued["_speech_intent"]
+                    self.assertEqual(speech_intent["command_seq"], 4)
+                    self.assertEqual(speech_intent["command_id"], "cmd-4")
+                    self.assertEqual(speech_intent["source"], "lifecycle")
+                    self.assertEqual(speech_intent["kind"], "final")
+                    self.assertEqual(speech_intent["freshness_scope"], "work")
+                    self.assertTrue(executor.eligibility(speech_intent))
+
+    def test_barge_in_makes_pending_coordinated_speech_ineligible(self):
+        state = {"key": (1, "cmd-1")}
+        executor = FakeTTSWorker()
+        coordinator = voice_bridge.SpeechCoordinator(
+            executor,
+            is_current=lambda seq, command_id: state["key"] == (seq, command_id),
+        )
+        pending = SpeechIntent.build(
+            spoken_text="Pending provider-neutral speech.",
+            command_seq=1,
+            command_id="cmd-1",
+            source="orchestrator",
+            kind="final",
+            authoritative=True,
+        )
+        self.assertTrue(coordinator.submit(pending))
+
+        self.assertTrue(voice_bridge._handle_relay_control_message(
+            "__TTS_STOP__",
+            coordinator,
+        ))
+
+        queued = executor.input_queue.get_nowait()["_speech_intent"]
+        self.assertFalse(executor.eligibility(queued))
+        state["key"] = (2, "cmd-2")
+        coordinator.new_turn(2, "cmd-2")
+        self.assertFalse(executor.eligibility(queued))
+        coordinator.play()
+        self.assertEqual(executor.calls, ["stop_playback"])
 
     def test_newer_pending_project_work_does_not_create_visible_tickets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
