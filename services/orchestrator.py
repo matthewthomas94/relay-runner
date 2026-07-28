@@ -119,9 +119,9 @@ CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
 GENERAL_MODEL_OPTIONS = {
     "codex": CODEX_FAMILIES,
-    "claude": {"best", "fable", "opus", "sonnet", "haiku"},
+    "claude": {"fable", "opus", "sonnet", "haiku"},
 }
-BASE_GENERAL_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
+BASE_GENERAL_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 AUTO_DISPATCH_SOURCES = frozenset({"ready-sweeper", "dependency-progression", "orchestrator-review-retry"})
 MAX_AUTO_DISPATCH_ATTEMPTS = 5
 AUTO_DISPATCH_BACKOFF_SECONDS = 30.0
@@ -475,24 +475,28 @@ def _normalized_general_model(general: dict[str, Any], agent_kind: str) -> str:
     model = str(general.get("model") or "").strip().lower()
     if agent_kind == "codex":
         return normalize_codex_family(model)
-    return model if model in GENERAL_MODEL_OPTIONS[agent_kind] else "best"
+    return model if model in GENERAL_MODEL_OPTIONS[agent_kind] else "opus"
 
 
 def _general_effort_options(agent_kind: str, model: str) -> frozenset[str]:
     if agent_kind == "codex":
         return BASE_GENERAL_EFFORTS | frozenset({"max", "ultra"})
-    if model in {"best", "fable", "opus"}:
+    if model in {"fable", "opus"}:
         return BASE_GENERAL_EFFORTS | frozenset({"max"})
     if model == "sonnet":
-        return frozenset({"default", "low", "medium", "high", "max"})
-    return frozenset({"default"})
+        return frozenset({"low", "medium", "high", "max"})
+    return frozenset({"low"})
 
 
 def _normalized_general_effort(general: dict[str, Any], agent_kind: str, model: str) -> str:
     effort = str(
         general.get("orchestrator_effort") or general.get("codex_reasoning_effort") or ""
     ).strip().lower()
-    return effort if effort in _general_effort_options(agent_kind, model) else "default"
+    if effort == "default":
+        effort = "xhigh"
+    if effort in _general_effort_options(agent_kind, model):
+        return effort
+    return "xhigh" if "xhigh" in _general_effort_options(agent_kind, model) else "low"
 
 
 def _inherited_worker_sizing(general: dict[str, Any], agent_kind: str) -> dict[str, str | None]:

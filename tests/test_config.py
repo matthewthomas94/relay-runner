@@ -43,7 +43,7 @@ class ConfigTests(unittest.TestCase):
             config = load_config(str(config_path))
 
             self.assertEqual(config["general"]["provider"], "claude")
-            self.assertEqual(config["general"]["model"], "best")
+            self.assertEqual(config["general"]["model"], "opus")
 
     def test_load_config_defaults_codex_reasoning_effort(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -53,8 +53,8 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config["tts"]["voice"], "bm_george")
         self.assertEqual(config["tts"]["rate"], 1.3)
-        self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
-        self.assertEqual(config["general"]["orchestrator_effort"], "default")
+        self.assertEqual(config["general"]["codex_reasoning_effort"], "xhigh")
+        self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
         self.assertEqual(config["general"]["subagent_sizing_policy"], "orchestrator_decides")
         self.assertNotIn("subagent_model", config["general"])
         self.assertNotIn("subagent_effort", config["general"])
@@ -64,6 +64,34 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config["general"]["prevent_sleep_while_running"])
         self.assertEqual(config["orchestrator"]["worker_health_check_seconds"], 600)
         self.assertNotIn("worker_timeout_seconds", config["orchestrator"])
+
+    def test_load_config_defaults_claude_orchestrator_to_explicit_opus_and_xhigh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text('[general]\nprovider = "claude"\n', encoding="utf-8")
+
+            config = load_config(str(path))
+
+        self.assertEqual(config["general"]["model"], "opus")
+        self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
+
+    def test_load_config_migrates_legacy_orchestrator_values_without_resetting_explicit_values(self):
+        cases = [
+            ("claude", "best", "default", "opus", "xhigh"),
+            ("codex", "sol", "high", "sol", "high"),
+        ]
+        for provider, model, effort, expected_model, expected_effort in cases:
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "config.toml"
+                path.write_text(
+                    f'[general]\nprovider = "{provider}"\nmodel = "{model}"\n'
+                    f'orchestrator_effort = "{effort}"\n',
+                    encoding="utf-8",
+                )
+                config = load_config(str(path))
+
+            self.assertEqual(config["general"]["model"], expected_model)
+            self.assertEqual(config["general"]["orchestrator_effort"], expected_effort)
 
     def test_load_config_preserves_prevent_sleep_while_running(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,8 +197,8 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(path)
 
-        self.assertEqual(config["general"]["orchestrator_effort"], "default")
-        self.assertEqual(config["general"]["codex_reasoning_effort"], "default")
+        self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
+        self.assertEqual(config["general"]["codex_reasoning_effort"], "xhigh")
 
     def test_load_config_applies_rr150_model_effort_matrix(self):
         cases = [
@@ -182,13 +210,13 @@ class ConfigTests(unittest.TestCase):
             ("codex", "gpt-5.6-terra", "max", "terra", "max"),
             ("codex", "gpt-5.3-codex-spark", "xhigh", "sol", "xhigh"),
             ("codex", "default", "low", "sol", "low"),
-            ("claude", "best", "max", "best", "max"),
+            ("claude", "best", "max", "opus", "max"),
             ("claude", "fable", "xhigh", "fable", "xhigh"),
             ("claude", "opus", "max", "opus", "max"),
             ("claude", "sonnet", "max", "sonnet", "max"),
-            ("claude", "sonnet", "xhigh", "sonnet", "default"),
-            ("claude", "haiku", "low", "haiku", "default"),
-            ("claude", "default", "low", "best", "low"),
+            ("claude", "sonnet", "xhigh", "sonnet", "high"),
+            ("claude", "haiku", "low", "haiku", "low"),
+            ("claude", "default", "low", "opus", "low"),
         ]
 
         for provider, model, effort, expected_model, expected_effort in cases:

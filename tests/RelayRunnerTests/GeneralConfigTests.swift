@@ -54,7 +54,6 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(
             GeneralConfig.claudeModelOptions,
             [
-                GeneralConfig.ModelOption(label: "Best", value: "best"),
                 GeneralConfig.ModelOption(label: "Fable", value: "fable"),
                 GeneralConfig.ModelOption(label: "Opus", value: "opus"),
                 GeneralConfig.ModelOption(label: "Sonnet", value: "sonnet"),
@@ -67,7 +66,6 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(
             GeneralConfig.codexReasoningEffortOptions,
             [
-                GeneralConfig.ReasoningEffortOption(label: "Provider managed", value: "default"),
                 GeneralConfig.ReasoningEffortOption(label: "Low", value: "low"),
                 GeneralConfig.ReasoningEffortOption(label: "Medium", value: "medium"),
                 GeneralConfig.ReasoningEffortOption(label: "High", value: "high"),
@@ -86,15 +84,15 @@ final class GeneralConfigTests: XCTestCase {
         )
         XCTAssertEqual(
             codexMatrix["sol"],
-            ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
+            ["low", "medium", "high", "xhigh", "max", "ultra"]
         )
         XCTAssertEqual(
             codexMatrix["terra"],
-            ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
+            ["low", "medium", "high", "xhigh", "max", "ultra"]
         )
         XCTAssertEqual(
             codexMatrix["luna"],
-            ["default", "low", "medium", "high", "xhigh", "max"]
+            ["low", "medium", "high", "xhigh", "max"]
         )
         XCTAssertNil(codexMatrix["default"])
 
@@ -102,11 +100,11 @@ final class GeneralConfigTests: XCTestCase {
             uniqueKeysWithValues: GeneralConfig.modelEffortMatrix(for: .claude)
                 .map { ($0.model, $0.efforts) }
         )
-        XCTAssertEqual(claudeMatrix["best"], ["default", "low", "medium", "high", "xhigh", "max"])
-        XCTAssertEqual(claudeMatrix["fable"], ["default", "low", "medium", "high", "xhigh", "max"])
-        XCTAssertEqual(claudeMatrix["opus"], ["default", "low", "medium", "high", "xhigh", "max"])
-        XCTAssertEqual(claudeMatrix["sonnet"], ["default", "low", "medium", "high", "max"])
-        XCTAssertEqual(claudeMatrix["haiku"], ["default"])
+        XCTAssertNil(claudeMatrix["best"])
+        XCTAssertEqual(claudeMatrix["fable"], ["low", "medium", "high", "xhigh", "max"])
+        XCTAssertEqual(claudeMatrix["opus"], ["low", "medium", "high", "xhigh", "max"])
+        XCTAssertEqual(claudeMatrix["sonnet"], ["low", "medium", "high", "max"])
+        XCTAssertEqual(claudeMatrix["haiku"], ["low"])
         XCTAssertNil(claudeMatrix["default"])
 
         XCTAssertEqual(
@@ -115,11 +113,11 @@ final class GeneralConfigTests: XCTestCase {
         )
         XCTAssertEqual(
             GeneralConfig.normalizedOrchestratorEffort("ultra", for: .codex, model: "luna"),
-            GeneralConfig.defaultReasoningEffort
+            GeneralConfig.defaultOrchestratorEffort
         )
         XCTAssertEqual(
             GeneralConfig.normalizedOrchestratorEffort("xhigh", for: .claude, model: "sonnet"),
-            GeneralConfig.defaultReasoningEffort
+            "high"
         )
         XCTAssertEqual(GeneralConfig.normalizedOrchestratorEffort("max", for: .claude, model: "sonnet"), "max")
     }
@@ -196,7 +194,7 @@ final class GeneralConfigTests: XCTestCase {
 
         config.normalize(providerWasExplicit: true)
 
-        XCTAssertEqual(config.codex_reasoning_effort, GeneralConfig.defaultCodexReasoningEffort)
+        XCTAssertEqual(config.codex_reasoning_effort, GeneralConfig.defaultOrchestratorEffort)
     }
 
     func testSelectingProviderUpdatesDefaultCommandAndModelScope() {
@@ -210,9 +208,29 @@ final class GeneralConfigTests: XCTestCase {
 
         XCTAssertEqual(config.provider, .claude)
         XCTAssertEqual(config.command, "claude")
-        XCTAssertEqual(config.model, "best")
+        XCTAssertEqual(config.model, "opus")
         XCTAssertEqual(config.codex_reasoning_effort, "default")
-        XCTAssertEqual(config.orchestrator_effort, "default")
+        XCTAssertEqual(config.orchestrator_effort, "xhigh")
+    }
+
+    func testOrchestratorDefaultsAndLegacyValuesBecomeExplicit() {
+        XCTAssertEqual(GeneralConfig().model, "sol")
+        XCTAssertEqual(GeneralConfig().orchestrator_effort, "xhigh")
+
+        var config = GeneralConfig()
+        config.provider = .claude
+        config.model = "best"
+        config.orchestrator_effort = "default"
+        config.normalize(providerWasExplicit: true, orchestratorEffortWasExplicit: true)
+
+        XCTAssertEqual(config.model, "opus")
+        XCTAssertEqual(config.orchestrator_effort, "xhigh")
+
+        config.model = "sonnet"
+        config.orchestrator_effort = "high"
+        config.normalize(providerWasExplicit: true, orchestratorEffortWasExplicit: true)
+        XCTAssertEqual(config.model, "sonnet")
+        XCTAssertEqual(config.orchestrator_effort, "high")
     }
 
     func testMessengerSettingsRemainProviderScoped() {
