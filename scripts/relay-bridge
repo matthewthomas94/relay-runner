@@ -200,6 +200,7 @@ install_skills() {
     local codex_bridge_md="$codex_bridge_dir/SKILL.md"
     local codex_stop_md="$codex_stop_dir/SKILL.md"
     local relay_bridge_path="$SCRIPT_DIR/relay-bridge"
+    local relay_reply_helper_path="$SERVICES_BUNDLE/relay_reply.py"
 
     mkdir -p "$cmds_dir"
     mkdir -p "$codex_bridge_dir" "$codex_stop_dir"
@@ -210,9 +211,8 @@ install_skills() {
     rm -rf "$legacy_codex_pm_sync_dir"
 
     if [ "$mode" = "force" ] || [ ! -f "$bridge_md" ]; then
-        # Quoted heredoc — no $-expansion. The single placeholder
-        # __RELAY_BRIDGE__ gets sed-substituted below so the path lands
-        # in the .md verbatim.
+        # Quoted heredoc — no $-expansion. The path placeholders get
+        # sed-substituted below so they land in the .md verbatim.
         cat > "$bridge_md" <<'BRIDGE_MD_EOF'
 Connect voice I/O to this Claude session when invoked manually. Relay Runner's menu-bar Start Session path owns a nonblocking app-managed transport instead of running this foreground loop.
 
@@ -443,34 +443,10 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
 fi
 ```
 
-Then send your authoritative user-facing response to the messenger with the claimed Relay command metadata. Include the real outcome and any relevant next step; the messenger will turn it into concise spoken language. Use a nonblocking FIFO open so a missing or recovering bridge cannot hang final-response cleanup:
+Then send your authoritative user-facing response through Relay's canonical reply helper. It binds and checks the claimed Relay command metadata, owns the `__ORCHESTRATOR_REPLY__:<json>` framing, and uses a nonblocking FIFO write. Do not write reply JSON to the voice FIFO yourself:
 
 ```bash
-python3 - <<'PY'
-import errno
-import json
-import os
-from pathlib import Path
-
-payload = {"text": "YOUR_AUTHORITATIVE_RESPONSE"}
-claim_path = Path("/tmp/voice_cmd_claimed.json")
-if claim_path.is_file():
-    try:
-        claim = json.loads(claim_path.read_text())
-        for key in ("relay_command_seq", "relay_command_id"):
-            if key in claim:
-                payload[key] = claim[key]
-    except (OSError, json.JSONDecodeError):
-        pass
-try:
-    fd = os.open("/tmp/voice_in.fifo", os.O_WRONLY | os.O_NONBLOCK)
-except OSError as exc:
-    if exc.errno in (errno.ENOENT, errno.ENXIO):
-        raise SystemExit(0)
-    raise
-with os.fdopen(fd, "w") as fifo:
-    print("__ORCHESTRATOR_REPLY__:" + json.dumps(payload), file=fifo)
-PY
+printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | /usr/bin/python3 '__RELAY_REPLY_HELPER__'
 ```
 
 Important: Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not send a stale reply; handle the newer message instead.
@@ -502,7 +478,10 @@ BRIDGE_MD_EOF
         # In-place edit via tmp file (BSD/macOS sed -i takes a backup
         # suffix arg, GNU doesn't — round-trip via mv is portable).
         local tmp="$bridge_md.tmp"
-        sed "s|__RELAY_BRIDGE__|$relay_bridge_path|g" "$bridge_md" > "$tmp" && mv "$tmp" "$bridge_md"
+        sed \
+            -e "s|__RELAY_BRIDGE__|$relay_bridge_path|g" \
+            -e "s|__RELAY_REPLY_HELPER__|$relay_reply_helper_path|g" \
+            "$bridge_md" > "$tmp" && mv "$tmp" "$bridge_md"
     fi
 
     if [ "$mode" = "force" ] || [ ! -f "$stop_md" ]; then
@@ -760,34 +739,10 @@ if ! pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
 fi
 ```
 
-Send the authoritative user-facing response to the messenger, tagged with the claimed Relay command metadata. Include the real outcome and relevant next step; the messenger will produce the concise spoken wording. Use a nonblocking FIFO open so a missing or recovering bridge cannot hang final-response cleanup:
+Send the authoritative user-facing response through Relay's canonical reply helper. It binds and checks the claimed Relay command metadata, owns the `__ORCHESTRATOR_REPLY__:<json>` framing, and uses a nonblocking FIFO write. Do not write reply JSON to the voice FIFO yourself:
 
 ```bash
-python3 - <<'PY'
-import errno
-import json
-import os
-from pathlib import Path
-
-payload = {"text": "YOUR_AUTHORITATIVE_RESPONSE"}
-claim_path = Path("/tmp/voice_cmd_claimed.json")
-if claim_path.is_file():
-    try:
-        claim = json.loads(claim_path.read_text())
-        for key in ("relay_command_seq", "relay_command_id"):
-            if key in claim:
-                payload[key] = claim[key]
-    except (OSError, json.JSONDecodeError):
-        pass
-try:
-    fd = os.open("/tmp/voice_in.fifo", os.O_WRONLY | os.O_NONBLOCK)
-except OSError as exc:
-    if exc.errno in (errno.ENOENT, errno.ENXIO):
-        raise SystemExit(0)
-    raise
-with os.fdopen(fd, "w") as fifo:
-    print("__ORCHESTRATOR_REPLY__:" + json.dumps(payload), file=fifo)
-PY
+printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | /usr/bin/python3 '__RELAY_REPLY_HELPER__'
 ```
 
 Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not send a stale reply; handle the newer message instead.
@@ -808,7 +763,10 @@ pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_br
 ```
 CODEX_BRIDGE_MD_EOF
         local tmp="$codex_bridge_md.tmp"
-        sed "s|__RELAY_BRIDGE__|$relay_bridge_path|g" "$codex_bridge_md" > "$tmp" && mv "$tmp" "$codex_bridge_md"
+        sed \
+            -e "s|__RELAY_BRIDGE__|$relay_bridge_path|g" \
+            -e "s|__RELAY_REPLY_HELPER__|$relay_reply_helper_path|g" \
+            "$codex_bridge_md" > "$tmp" && mv "$tmp" "$codex_bridge_md"
     fi
 
     if [ "$mode" = "force" ] || [ ! -f "$codex_stop_md" ]; then

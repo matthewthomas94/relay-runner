@@ -770,6 +770,11 @@ final class RelayVoiceCommandDelivery {
         if let provider = key.provider {
             payload["provider"] = provider
         }
+        return writeOrchestratorReply(payload)
+    }
+
+    @discardableResult
+    private func writeOrchestratorReply(_ payload: [String: Any]) -> Bool {
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
               let json = String(data: data, encoding: .utf8) else {
             return false

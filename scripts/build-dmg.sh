@@ -169,7 +169,7 @@ else
 fi
 
 # Python services
-for f in voice_bridge.py relay_completion_hook.py messenger.py command_actions.py relay_authorization.py intent_arbitration.py intent_inbox.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py \
+for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py relay_authorization.py intent_arbitration.py intent_inbox.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py \
          graphify_core.py graphify_ingest.py orchestrator.py orchestrator_workflow.md \
          program_status.py requirements.txt session_capture.py tickets.py; do
     cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"

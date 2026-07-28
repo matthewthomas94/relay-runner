@@ -870,6 +870,10 @@ final class ProcessManager {
         # process enumeration may not see the Relay Runner host. This marker is
         # advisory session context, not a security boundary.
         export RELAY_RUNNER_APP_SESSION=1
+        \(Self.appOwnedReplyHelperExport(
+            relayBridge: relayBridge,
+            voiceDelivery: voiceDelivery
+        ))
         \(cdLine)
         \(bridgeStartLine)
         # Interactive agent session with Relay Runner voice mode pre-fired.
@@ -985,7 +989,7 @@ final class ProcessManager {
     For a matching voice turn, treat relay_command_seq and relay_command_id as two contracts. User-visible replies, traces, and TTS must still match the newest command in /tmp/voice_command_state.json; if a newer command is present, stop stale work for output, do not answer or act on the newer command, and end this provider turn silently so Relay Runner can atomically claim and inject the newer command as the next turn from the ordered inbox. Ticket edits, dispatches, and orchestrator actions must pass the claimed seq/id to the daemon; an older bounded mutation may continue only when Relay Runner registered it and no replacement, redirect, interrupt, or cancel turn revoked it. Acknowledgement, inspection/status, and additive turns do not revoke prior authorized mutations.
     Resolve each command as non-work/control, direct action, ticket creation/refinement, ticket update, worker dispatch, or clarification. Raw Relay command captures are private metadata and must not appear in visible .orchestrator tickets. Do not implement substantial project work inline unless the user explicitly asks.
     Use mcp__relay-actions__* for screen manipulation and mcp__relay-vision__screenshot for screenshots; never use native computer-use fallbacks for those capabilities, and do not call propose_action.
-    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop; an explicit current __ORCHESTRATOR_REPLY__ with the claimed seq/id remains authoritative and deduplicates the later hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
+    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop. Do not write reply JSON or reply envelopes to /tmp/voice_in.fifo directly. If an explicit current reply is needed, pipe only the final reply text to `/usr/bin/python3 "$RELAY_REPLY_HELPER"`; that shared helper binds and checks the claimed seq/id and is the sole app-owned __ORCHESTRATOR_REPLY__ encoder. Its accepted reply remains authoritative and deduplicates the later completion hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
     Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible in this terminal.
     """
 
@@ -1053,6 +1057,23 @@ final class ProcessManager {
             .deletingLastPathComponent()
             .appendingPathComponent("services/relay_completion_hook.py")
             .path
+    }
+
+    private static func replyHelperScriptPath(relayBridge: String) -> String {
+        URL(fileURLWithPath: relayBridge)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("services/relay_reply.py")
+            .path
+    }
+
+    private static func appOwnedReplyHelperExport(
+        relayBridge: String,
+        voiceDelivery: SessionVoiceDelivery
+    ) -> String {
+        guard voiceDelivery == .appOwned else { return "" }
+        return "export RELAY_REPLY_HELPER="
+            + Self.shellQuoted(Self.replyHelperScriptPath(relayBridge: relayBridge))
     }
 
     private static func completionHookCommand(relayBridge: String) -> String {
