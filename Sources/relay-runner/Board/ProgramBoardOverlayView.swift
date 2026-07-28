@@ -1273,12 +1273,13 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     }
 
     func reconcilePointerContainment(atWindowLocation location: CGPoint? = nil) {
-        guard let window else {
+        guard let window, let contentView = window.contentView else {
             setPointerInside(false)
             return
         }
         let pointerLocation = location ?? pointerLocationOverride ?? window.mouseLocationOutsideOfEventStream
-        var hitView = window.contentView?.hitTest(pointerLocation)
+        let contentLocation = contentView.convert(pointerLocation, from: nil)
+        var hitView = contentView.hitTest(contentLocation)
         while let candidate = hitView {
             if candidate === self {
                 setPointerInside(true)
