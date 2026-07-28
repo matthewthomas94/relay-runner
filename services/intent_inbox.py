@@ -258,7 +258,19 @@ class IntentInbox:
         ]
 
     def deliverable_commands(self) -> list[dict[str, Any]]:
+        return self.state_snapshot()[1]
+
+    def state_snapshot(self) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """Return the latest durable command and deliverable queue from one snapshot."""
         with self._lock:
+            latest = self._connection.execute(
+                """
+                SELECT metadata_json
+                  FROM intents
+                 ORDER BY command_seq DESC, ordinal DESC
+                 LIMIT 1
+                """
+            ).fetchone()
             rows = self._connection.execute(
                 """
                 SELECT command_seq, command_id, intent_id, route, state
@@ -267,7 +279,8 @@ class IntentInbox:
                  ORDER BY ordinal
                 """
             ).fetchall()
-        return [
+        latest_command = json.loads(latest["metadata_json"]) if latest is not None else None
+        deliverable = [
             {
                 "relay_command_seq": int(row["command_seq"]),
                 "relay_command_id": str(row["command_id"]),
@@ -277,6 +290,7 @@ class IntentInbox:
             }
             for row in rows
         ]
+        return latest_command, deliverable
 
     def records(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -287,14 +301,22 @@ class IntentInbox:
 
 
 def sync_deliverable_state(state_path: str, inbox: IntentInbox) -> None:
+    latest_command, deliverable = inbox.state_snapshot()
     try:
         payload = json.loads(Path(state_path).read_text())
     except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
+    current_key = _key(payload)
+    latest_key = _key(latest_command)
+    if latest_key is not None:
+        if current_key is None or current_key[0] < latest_key[0]:
+            payload.update(latest_command or {})
+        elif current_key == latest_key:
+            payload = {**(latest_command or {}), **payload}
     payload["intent_inbox_version"] = SCHEMA_VERSION
-    payload["deliverable_commands"] = inbox.deliverable_commands()
+    payload["deliverable_commands"] = deliverable
     tmp = state_path + ".tmp"
     Path(tmp).write_text(json.dumps(payload, sort_keys=True))
     os.replace(tmp, state_path)

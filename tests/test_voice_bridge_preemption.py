@@ -1567,6 +1567,104 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     )
                     inbox.close()
 
+    def test_restart_restores_recovered_reply_currentness_and_monotonic_sequence(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    state_path = os.path.join(temp_dir, "voice_command_state.json")
+                    claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                    turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                    command_path = os.path.join(temp_dir, "voice_cmd_ready")
+                    meta_path = command_path + ".meta"
+                    inbox_path = os.path.join(temp_dir, "intent_inbox.sqlite3")
+                    command = {
+                        "relay_command_seq": 7,
+                        "relay_command_id": "cmd-7",
+                        "intent_id": "intent-7",
+                        "agent_prompt": "Recovered prompt",
+                        "provider": provider,
+                    }
+
+                    inbox = voice_bridge.IntentInbox(inbox_path)
+                    inbox.enqueue(command["agent_prompt"], command, "continue_current")
+                    inbox.materialize_next(
+                        command_path=command_path,
+                        metadata_path=meta_path,
+                        transport="app-owned",
+                    )
+                    inbox.close()
+                    os.remove(command_path)
+                    os.remove(meta_path)
+
+                    restarted = voice_bridge.IntentInbox(inbox_path)
+                    shutdown_event = threading.Event()
+                    pump = voice_bridge._start_intent_inbox_pump(
+                        restarted,
+                        shutdown_event,
+                        command_path=command_path,
+                        meta_path=meta_path,
+                        claimed_path=claim_path,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        transport="app-owned",
+                        poll_seconds=0.005,
+                    )
+                    try:
+                        restored = json.loads(Path(state_path).read_text())
+                        self.assertEqual(restored["relay_command_seq"], 7)
+                        self.assertEqual(restored["relay_command_id"], "cmd-7")
+
+                        for _ in range(100):
+                            if os.path.exists(command_path) and os.path.exists(meta_path):
+                                break
+                            shutdown_event.wait(0.005)
+                        self.assertTrue(os.path.exists(command_path))
+                        recovered = json.loads(Path(meta_path).read_text())
+                        Path(claim_path).write_text(json.dumps(recovered))
+
+                        self.assertTrue(relay_completion_hook.handle_hook_payload(
+                            {
+                                "hook_event_name": "UserPromptSubmit",
+                                "session_id": f"{provider}-restart",
+                                "turn_id": "turn-7",
+                                "prompt": recovered["agent_prompt"],
+                                "provider": provider,
+                            },
+                            claim_path=claim_path,
+                            state_path=state_path,
+                            turns_path=turns_path,
+                            now=70,
+                            stderr=io.StringIO(),
+                        ))
+                        delivered: list[dict] = []
+                        self.assertTrue(relay_completion_hook.handle_hook_payload(
+                            {
+                                "hook_event_name": "Stop",
+                                "session_id": f"{provider}-restart",
+                                "turn_id": "turn-7",
+                                "last_assistant_message": "Recovered reply.",
+                                "provider": provider,
+                            },
+                            claim_path=claim_path,
+                            state_path=state_path,
+                            turns_path=turns_path,
+                            write_control=lambda payload: delivered.append(payload) or True,
+                            now=71,
+                            stderr=io.StringIO(),
+                        ))
+                        self.assertEqual(delivered[0]["relay_command_id"], "cmd-7")
+
+                        next_command = voice_bridge._begin_relay_command(
+                            "Next command",
+                            state_path=state_path,
+                            event_log_path=None,
+                        )
+                        self.assertEqual(next_command["relay_command_seq"], 8)
+                    finally:
+                        shutdown_event.set()
+                        pump.join(timeout=1)
+                        restarted.close()
+
     def test_app_owned_stale_turn_drops_final_until_newer_claim_is_injected(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider):

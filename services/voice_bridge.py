@@ -1428,6 +1428,12 @@ def _start_intent_inbox_pump(
 ) -> threading.Thread:
     """Bridge app-owned and manual consumers onto one ordered inbox protocol."""
 
+    # Bridge startup removes the ephemeral state file while the inbox survives.
+    # Restore its newest-command identity before a recovered lease can reach a
+    # provider or a new turn can allocate a reset sequence.
+    with _VOICE_STATE_LOCK:
+        sync_deliverable_state(state_path, inbox)
+
     def _run() -> None:
         while not shutdown_event.is_set():
             claimed = _read_json_file(claimed_path)

@@ -244,6 +244,36 @@ class IntentInboxTests(unittest.TestCase):
                 ["one", "two"],
             )
 
+    def test_state_recovers_latest_durable_command_without_regressing_newer_turn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = IntentInbox(Path(directory) / "inbox.sqlite3")
+            state = Path(directory) / "state.json"
+            latest = {
+                **metadata(7, "seven"),
+                "agent_prompt": "Recovered prompt",
+                "provider": "codex",
+            }
+            inbox.enqueue(latest["agent_prompt"], latest, "continue_current")
+
+            sync_deliverable_state(str(state), inbox)
+
+            recovered = json.loads(state.read_text())
+            self.assertEqual(recovered["relay_command_seq"], 7)
+            self.assertEqual(recovered["relay_command_id"], "seven")
+            self.assertEqual(recovered["agent_prompt"], "Recovered prompt")
+
+            state.write_text(json.dumps({
+                "relay_command_seq": 8,
+                "relay_command_id": "eight",
+                "source_text": "new turn not enqueued yet",
+            }))
+            sync_deliverable_state(str(state), inbox)
+
+            current = json.loads(state.read_text())
+            self.assertEqual(current["relay_command_seq"], 8)
+            self.assertEqual(current["relay_command_id"], "eight")
+            self.assertEqual(current["source_text"], "new turn not enqueued yet")
+
 
 if __name__ == "__main__":
     unittest.main()
