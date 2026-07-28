@@ -151,8 +151,8 @@ final class ConfigManagerTests: XCTestCase {
 
         let loaded = manager.load()
 
-        XCTAssertEqual(loaded.general.orchestrator_effort, GeneralConfig.defaultReasoningEffort)
-        XCTAssertEqual(loaded.general.codex_reasoning_effort, GeneralConfig.defaultCodexReasoningEffort)
+        XCTAssertEqual(loaded.general.orchestrator_effort, GeneralConfig.defaultOrchestratorEffort)
+        XCTAssertEqual(loaded.general.codex_reasoning_effort, GeneralConfig.defaultOrchestratorEffort)
         XCTAssertEqual(loaded.general.subagent_sizing_policy, .orchestratorDecides)
         XCTAssertEqual(loaded.general.subagent_model, GeneralConfig.defaultSubagentModel)
         XCTAssertEqual(loaded.general.subagent_effort, GeneralConfig.defaultSubagentEffort)

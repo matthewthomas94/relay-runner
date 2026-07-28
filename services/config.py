@@ -122,7 +122,7 @@ def load_config(config_path: str | None = None) -> dict:
             "working_directory": "",
             "bypass_permissions": True,
             "model": "sol",
-            "orchestrator_effort": "default",
+            "orchestrator_effort": "xhigh",
             "codex_reasoning_effort": "default",
             "messenger_enabled": True,
             "messenger_model": "sol",
@@ -216,24 +216,44 @@ def _migrate_config(
 
     valid_models = {
         "codex": CODEX_FAMILIES,
-        "claude": {"best", "fable", "opus", "sonnet", "haiku"},
+        "claude": {"fable", "opus", "sonnet", "haiku"},
     }
-    model = str(general.get("model", "sol" if provider == "codex" else "best")).strip().lower()
+    model = str(general.get("model", "sol" if provider == "codex" else "opus")).strip().lower()
     if provider == "codex":
         general["model"] = normalize_codex_family(model)
     else:
-        general["model"] = model if model in valid_models[provider] else "best"
+        general["model"] = model if model in valid_models[provider] else "opus"
 
-    base_reasoning_efforts = {"default", "low", "medium", "high", "xhigh"}
+    explicit_reasoning_efforts = {"low", "medium", "high", "xhigh"}
 
-    def valid_session_efforts(provider_name: str, model_name: str) -> set[str]:
+    def valid_orchestrator_efforts(provider_name: str, model_name: str) -> set[str]:
         if provider_name == "codex":
-            return base_reasoning_efforts | {"max", "ultra"}
+            return explicit_reasoning_efforts | {"max", "ultra"}
+        if model_name in {"fable", "opus"}:
+            return explicit_reasoning_efforts | {"max"}
+        if model_name == "sonnet":
+            return {"low", "medium", "high", "max"}
+        if model_name == "haiku":
+            return {"low"}
+        return set()
+
+    def valid_messenger_efforts(provider_name: str, model_name: str) -> set[str]:
+        base = {"default", "low", "medium", "high", "xhigh"}
+        if provider_name == "codex":
+            return base | {"max", "ultra"}
         if model_name in {"best", "fable", "opus"}:
-            return base_reasoning_efforts | {"max"}
+            return base | {"max"}
         if model_name == "sonnet":
             return {"default", "low", "medium", "high", "max"}
         return {"default"}
+
+    def default_orchestrator_effort(provider_name: str, model_name: str) -> str:
+        valid_efforts = valid_orchestrator_efforts(provider_name, model_name)
+        if "xhigh" in valid_efforts:
+            return "xhigh"
+        if "high" in valid_efforts:
+            return "high"
+        return min(valid_efforts)
 
     codex_reasoning_effort = (
         str(general.get("codex_reasoning_effort", "default")).strip().lower()
@@ -243,12 +263,13 @@ def _migrate_config(
         if general_had_orchestrator_effort
         else codex_reasoning_effort
     )
-    orchestrator_effort = str(raw_orchestrator_effort or "default").strip().lower()
-    valid_orchestrator_efforts = valid_session_efforts(provider, general["model"])
-    if orchestrator_effort not in valid_orchestrator_efforts:
-        orchestrator_effort = "default"
+    orchestrator_effort = str(raw_orchestrator_effort or "xhigh").strip().lower()
+    if orchestrator_effort == "default":
+        orchestrator_effort = "xhigh"
+    if orchestrator_effort not in valid_orchestrator_efforts(provider, general["model"]):
+        orchestrator_effort = default_orchestrator_effort(provider, general["model"])
     general["orchestrator_effort"] = orchestrator_effort
-    codex_efforts_for_model = valid_session_efforts("codex", general["model"])
+    codex_efforts_for_model = valid_orchestrator_efforts("codex", general["model"])
     general["codex_reasoning_effort"] = (
         orchestrator_effort
         if provider == "codex" and orchestrator_effort in codex_efforts_for_model
@@ -264,15 +285,15 @@ def _migrate_config(
             if messenger_model != raw_messenger_model
             else str(general.get("messenger_effort", "default")).strip().lower()
         )
-        if messenger_effort not in valid_session_efforts(provider, messenger_model):
+        if messenger_effort not in valid_messenger_efforts(provider, messenger_model):
             messenger_effort = "default"
-    elif messenger_model not in valid_models[provider]:
+    elif messenger_model not in {"best", "fable", "opus", "sonnet", "haiku"}:
         messenger_model = "best"
         messenger_effort = "default"
     else:
         messenger_effort = str(general.get("messenger_effort", "default")).strip().lower()
         effective_messenger_model = messenger_model
-        if messenger_effort not in valid_session_efforts(provider, effective_messenger_model):
+        if messenger_effort not in valid_messenger_efforts(provider, effective_messenger_model):
             messenger_effort = "default"
     general["messenger_model"] = messenger_model
     general["messenger_effort"] = messenger_effort

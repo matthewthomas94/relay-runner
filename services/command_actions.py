@@ -543,22 +543,26 @@ def _normalized_general_model(value: object, provider: str) -> str:
         return normalize_codex_family(model)
     valid_models = {
         "codex": CODEX_FAMILIES,
-        "claude": {"best", "fable", "opus", "sonnet", "haiku"},
+        "claude": {"fable", "opus", "sonnet", "haiku"},
     }
-    return model if model in valid_models[provider] else "best"
+    return model if model in valid_models[provider] else "opus"
 
 
 def _valid_general_efforts(provider: str, model: str) -> set[str]:
-    base = {"default", "low", "medium", "high", "xhigh"}
+    base = {"low", "medium", "high", "xhigh"}
     if provider == "codex":
         return base | {"max", "ultra"}
-    if model in {"best", "fable", "opus"}:
+    if model in {"fable", "opus"}:
         return base | {"max"}
     if model == "sonnet":
-        return {"default", "low", "medium", "high", "max"}
-    return {"default"}
+        return {"low", "medium", "high", "max"}
+    return {"low"}
 
 
 def _normalized_general_effort(value: object, provider: str, model: str) -> str:
     effort = str(value or "").strip().lower()
-    return effort if effort in _valid_general_efforts(provider, model) else "default"
+    if effort == "default":
+        effort = "xhigh"
+    if effort in _valid_general_efforts(provider, model):
+        return effort
+    return "xhigh" if "xhigh" in _valid_general_efforts(provider, model) else "low"

@@ -73,9 +73,10 @@ struct GeneralConfig: Codable, Equatable {
     }
 
     static let defaultCodexModelFamily = "sol"
-    static let defaultClaudeModel = "best"
+    static let defaultClaudeModel = "opus"
     static let defaultModel = defaultCodexModelFamily
     static let defaultReasoningEffort = "default"
+    static let defaultOrchestratorEffort = "xhigh"
     static let defaultCodexReasoningEffort = defaultReasoningEffort
     static let defaultMessengerModel = defaultCodexModelFamily
     static let defaultMessengerEffort = defaultReasoningEffort
@@ -90,22 +91,14 @@ struct GeneralConfig: Codable, Equatable {
 
     static let codexPlanAccessNote = "Codex family availability and Ultra effort depend on your Codex plan."
     static let claudeFableAccessNote = "Fable requires an eligible Claude plan or usage credits and is unavailable with zero data retention."
-    static let claudeBestAccessNote = "Best selects Fable when available, otherwise the latest Opus."
-
     static let claudeModelOptions: [ModelOption] = [
-        ModelOption(label: "Best", value: "best"),
         ModelOption(label: "Fable", value: "fable"),
         ModelOption(label: "Opus", value: "opus"),
         ModelOption(label: "Sonnet", value: "sonnet"),
         ModelOption(label: "Haiku", value: "haiku"),
     ]
 
-    static let defaultReasoningEffortOptions: [ReasoningEffortOption] = [
-        ReasoningEffortOption(label: "Provider managed", value: defaultCodexReasoningEffort),
-    ]
-
     static let baseReasoningEffortOptions: [ReasoningEffortOption] = [
-        ReasoningEffortOption(label: "Provider managed", value: defaultReasoningEffort),
         ReasoningEffortOption(label: "Low", value: "low"),
         ReasoningEffortOption(label: "Medium", value: "medium"),
         ReasoningEffortOption(label: "High", value: "high"),
@@ -141,7 +134,7 @@ struct GeneralConfig: Codable, Equatable {
     var working_directory: String = ""
     var bypass_permissions: Bool = true
     var model: String = defaultModel
-    var orchestrator_effort: String = defaultReasoningEffort
+    var orchestrator_effort: String = defaultOrchestratorEffort
     /// Legacy Codex-only key. Kept for migration and older config readers.
     var codex_reasoning_effort: String = defaultCodexReasoningEffort
     var messenger_enabled: Bool = true
@@ -180,9 +173,6 @@ struct GeneralConfig: Codable, Equatable {
             if normalizedModel == "fable" {
                 return claudeFableAccessNote
             }
-            if normalizedModel == "best" {
-                return claudeBestAccessNote
-            }
         }
         return nil
     }
@@ -197,22 +187,23 @@ struct GeneralConfig: Codable, Equatable {
             case "luna":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
             default:
-                return defaultReasoningEffortOptions
+                return []
             }
         case .claude:
             switch normalizedModel {
-            case "best", "fable", "opus":
+            case "fable", "opus":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
             case "sonnet":
                 return [
-                    ReasoningEffortOption(label: "Provider managed", value: defaultReasoningEffort),
                     ReasoningEffortOption(label: "Low", value: "low"),
                     ReasoningEffortOption(label: "Medium", value: "medium"),
                     ReasoningEffortOption(label: "High", value: "high"),
                     maxReasoningEffortOption,
                 ]
+            case "haiku":
+                return [ReasoningEffortOption(label: "Low", value: "low")]
             default:
-                return defaultReasoningEffortOptions
+                return []
             }
         }
     }
@@ -235,9 +226,17 @@ struct GeneralConfig: Codable, Equatable {
         model: String = defaultModel
     ) -> String {
         let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return isEffort(normalized, validFor: provider, model: model)
-            ? normalized
-            : defaultReasoningEffort
+        if isEffort(normalized, validFor: provider, model: model) {
+            return normalized
+        }
+        let options = reasoningEffortOptions(for: provider, model: model).map(\.value)
+        if options.contains(defaultOrchestratorEffort) {
+            return defaultOrchestratorEffort
+        }
+        if options.contains("high") {
+            return "high"
+        }
+        return options.first ?? defaultOrchestratorEffort
     }
 
     static func modelEffortMatrix(for provider: AgentProvider) -> [(model: String, efforts: [String])] {
@@ -252,7 +251,7 @@ struct GeneralConfig: Codable, Equatable {
         case .codex:
             return normalizeCodexFamily(normalized)
         case .claude:
-            if normalized == Self.defaultReasoningEffort || normalized.isEmpty {
+            if normalized == "best" || normalized == Self.defaultReasoningEffort || normalized.isEmpty {
                 return Self.defaultClaudeModel
             }
             return Self.isModel(normalized, validFor: provider) ? normalized : Self.defaultClaudeModel
@@ -307,7 +306,15 @@ struct GeneralConfig: Codable, Equatable {
     }
 
     static func normalizedMessengerModel(_ model: String, for provider: AgentProvider) -> String {
-        normalizeModel(model, for: provider)
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch provider {
+        case .codex:
+            return normalizeCodexFamily(normalized)
+        case .claude:
+            return ["best", "fable", "opus", "sonnet", "haiku"].contains(normalized)
+                ? normalized
+                : "best"
+        }
     }
 
     static func normalizedMessengerEffort(
@@ -315,8 +322,20 @@ struct GeneralConfig: Codable, Equatable {
         for provider: AgentProvider,
         model: String
     ) -> String {
-        let normalizedModel = normalizeModel(model, for: provider)
-        return normalizedOrchestratorEffort(effort, for: provider, model: normalizedModel)
+        let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedModel = normalizedMessengerModel(model, for: provider)
+        let validEfforts: Set<String>
+        switch provider {
+        case .codex:
+            validEfforts = ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
+        case .claude:
+            switch normalizedModel {
+            case "best", "fable", "opus": validEfforts = ["default", "low", "medium", "high", "xhigh", "max"]
+            case "sonnet": validEfforts = ["default", "low", "medium", "high", "max"]
+            default: validEfforts = ["default"]
+            }
+        }
+        return validEfforts.contains(normalized) ? normalized : defaultMessengerEffort
     }
 
     static func inferProvider(from command: String) -> AgentProvider {
