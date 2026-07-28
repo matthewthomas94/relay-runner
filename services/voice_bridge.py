@@ -29,6 +29,14 @@ import urllib.request
 from pathlib import Path
 
 from command_actions import format_command_for_agent, resolve_command_action
+from intent_arbitration import (
+    ActiveWork,
+    IntentDisposition,
+    IntentRoute,
+    authorization_relationship_for,
+    resolve_intent_disposition,
+)
+from intent_inbox import IntentInbox, sync_deliverable_state
 from relay_authorization import (
     allowed_mutations_for_metadata,
     command_relationship,
@@ -43,7 +51,13 @@ from pm_frontstage import (
 )
 from config import load_config
 from messenger import MessengerRuntime, create_messenger_runtime
-from tts_worker import TTSWorker, publish_waiting_preview
+from sidecar_lane import (
+    SidecarLane,
+    SidecarLifecycleEvent,
+    create_sidecar_executor,
+)
+from speech_coordinator import SpeechCoordinator
+from tts_worker import TTS_CONTROL_SOCK, TTSWorker, publish_waiting_preview
 
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 BRIDGE_CONTROL_SOCK = os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock")
@@ -61,6 +75,7 @@ PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS = float(os.environ.get("PROVIDER_COMPLET
 
 _FOREGROUND_REPLY_LOCK = threading.Lock()
 _FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
+_VOICE_STATE_LOCK = threading.RLock()
 
 
 def _notify_state(state: str, **kwargs):
@@ -302,12 +317,18 @@ VOICE_CMD_FILE = "/tmp/voice_cmd_ready"
 VOICE_CMD_META_FILE = "/tmp/voice_cmd_ready.meta"
 VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
 VOICE_COMMAND_CLAIM_FILE = "/tmp/voice_cmd_claimed.json"
+VOICE_MANUAL_CLAIM_ACK_FILE = os.environ.get(
+    "VOICE_MANUAL_CLAIM_ACK_FILE",
+    "/tmp/voice_cmd_manual_ack.json",
+)
 VOICE_COMMAND_AUTHORIZATION_FILE = os.environ.get(
     "VOICE_COMMAND_AUTHORIZATION_FILE",
     "/tmp/voice_command_authorizations.json",
 )
 VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
 VOICE_COMMAND_EVENT_LOG = os.environ.get("VOICE_COMMAND_EVENT_LOG", "/tmp/relay_command_events.jsonl")
+VOICE_INTENT_INBOX = os.environ.get("VOICE_INTENT_INBOX", "/tmp/relay_intent_inbox.sqlite3")
+SPEECH_EVENT_LOG = os.environ.get("SPEECH_EVENT_LOG", "/tmp/relay_speech_events.jsonl")
 VOICE_COMMAND_EVENT_LIMIT = 200
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
 VOICE_ACKNOWLEDGEMENT = os.environ.get("VOICE_ACKNOWLEDGEMENT", "Got it. I'm on it.")
@@ -995,32 +1016,42 @@ def _begin_relay_command(
     event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
 ) -> dict:
     """Record a new newest-intent generation as soon as voice input arrives."""
-    previous = _read_json_file(state_path)
-    try:
-        seq = int(previous.get("relay_command_seq") or 0) + 1
-    except (TypeError, ValueError):
-        seq = 1
-    metadata = {
-        "relay_command_seq": seq,
-        "relay_command_id": f"{os.getpid()}-{time.time_ns()}-{seq}",
-        "source_text": source_text,
-        "received_at": time.time(),
-        "action": "received",
-    }
-    provider = os.environ.get("RELAY_RUNNER_PROVIDER", "").strip()
-    if provider:
-        metadata["provider"] = provider
-    _atomic_write_json(state_path, metadata)
+    with _VOICE_STATE_LOCK:
+        previous = _read_json_file(state_path)
+        try:
+            seq = int(previous.get("relay_command_seq") or 0) + 1
+        except (TypeError, ValueError):
+            seq = 1
+        metadata = {
+            "relay_command_seq": seq,
+            "relay_command_id": f"{os.getpid()}-{time.time_ns()}-{seq}",
+            "source_text": source_text,
+            "received_at": time.time(),
+            "action": "received",
+        }
+        provider = os.environ.get("RELAY_RUNNER_PROVIDER", "").strip()
+        if provider:
+            metadata["provider"] = provider
+        _atomic_write_json(state_path, metadata)
     _record_private_command_capture(metadata, event_log_path=event_log_path)
     return metadata
 
 
-def _metadata_for_action(action, relay_command: dict) -> dict:
+def _metadata_for_action(
+    action,
+    relay_command: dict,
+    disposition: IntentDisposition | None = None,
+) -> dict:
     metadata = dict(relay_command)
-    relationship = command_relationship(
+    fallback_relationship = command_relationship(
         getattr(action, "kind", None),
         reason=getattr(action, "reason", None),
         source_text=getattr(action, "source_text", None),
+    )
+    relationship = (
+        authorization_relationship_for(disposition, fallback=fallback_relationship)
+        if disposition is not None
+        else fallback_relationship
     )
     metadata.update({
         "action": action.kind,
@@ -1028,6 +1059,10 @@ def _metadata_for_action(action, relay_command: dict) -> dict:
         "requires_ticket": action.requires_ticket,
         "authorization_relationship": relationship,
     })
+    if disposition is not None:
+        metadata["intent_id"] = disposition.intent_id
+        metadata["work_disposition"] = disposition.to_dict()
+        metadata["preempt_provider"] = disposition.route == IntentRoute.REPLACE_CURRENT
     if action.ticket_id:
         metadata["ticket_id"] = action.ticket_id
     if action.ticket_path:
@@ -1037,6 +1072,34 @@ def _metadata_for_action(action, relay_command: dict) -> dict:
     if action.reason:
         metadata["reason"] = action.reason
     return metadata
+
+
+def _active_work(
+    *,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    repo_path: str | Path | None = None,
+) -> tuple[ActiveWork, ...]:
+    data = _read_json_file(turns_path)
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, list):
+        return ()
+    active: list[ActiveWork] = []
+    for record in records:
+        if not isinstance(record, dict) or str(record.get("state") or "") != "active":
+            continue
+        key = _relay_command_key(record)
+        if key is None:
+            continue
+        resources = record.get("resource_claims")
+        if not isinstance(resources, list):
+            resources = ["repository"] if repo_path else []
+        active.append(
+            ActiveWork(
+                work_id=f"{key[0]}:{key[1]}",
+                resources=tuple(str(resource) for resource in resources),
+            )
+        )
+    return tuple(active)
 
 
 _PRIVATE_CONTEXT_LINE_RE = re.compile(
@@ -1205,9 +1268,12 @@ def _publish_command(
     meta_path: str = VOICE_CMD_META_FILE,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     authorization_path: str | None = None,
+    inbox: IntentInbox | None = None,
+    transport: str = "shared-ready-file",
 ) -> None:
-    """Publish a Relay command and sidecar metadata as the newest intent."""
-    _discard_pending_command(command_path=command_path, meta_path=meta_path)
+    """Publish through the durable inbox, retaining ready files as transport."""
+    if inbox is None:
+        _discard_pending_command(command_path=command_path, meta_path=meta_path)
     published_metadata = dict(metadata)
     published_metadata["agent_prompt"] = text
     if not published_metadata.get("authorization_relationship"):
@@ -1216,8 +1282,8 @@ def _publish_command(
             reason=published_metadata.get("reason"),
             source_text=published_metadata.get("source_text"),
         )
-    _atomic_write_json(meta_path, published_metadata)
-    _atomic_write_json(state_path, published_metadata)
+    with _VOICE_STATE_LOCK:
+        _atomic_write_json(state_path, published_metadata)
     if authorization_path:
         try:
             record_command_authorization(
@@ -1228,7 +1294,32 @@ def _publish_command(
             )
         except (OSError, TypeError, ValueError) as e:
             print(f"[voice_bridge] Could not record Relay mutation authorization: {e}", file=sys.stderr)
-    _write_cmd_file(text, path=command_path)
+    if inbox is None:
+        _atomic_write_json(meta_path, published_metadata)
+        _write_cmd_file(text, path=command_path)
+        return
+
+    disposition = published_metadata.get("work_disposition")
+    route = str(disposition.get("route") or "") if isinstance(disposition, dict) else ""
+    if route == IntentRoute.REPLACE_CURRENT.value:
+        inbox.cancel_pending_before(
+            int(published_metadata["relay_command_seq"]),
+            reason="explicit_replace",
+        )
+        # A cancelled intent may already occupy the legacy ready-file lease.
+        # Remove that transport copy so the replacement can be materialized.
+        _discard_pending_command(command_path=command_path, meta_path=meta_path)
+    stored_metadata = inbox.enqueue(text, published_metadata, route or "continue_current")
+    with _VOICE_STATE_LOCK:
+        _atomic_write_json(state_path, stored_metadata)
+        sync_deliverable_state(state_path, inbox)
+    inbox.materialize_next(
+        command_path=command_path,
+        metadata_path=meta_path,
+        transport=transport,
+    )
+    with _VOICE_STATE_LOCK:
+        sync_deliverable_state(state_path, inbox)
 
 
 def _relay_command_current(
@@ -1238,7 +1329,8 @@ def _relay_command_current(
 ) -> bool:
     if relay_command_seq is None or not relay_command_id:
         return False
-    current = _read_json_file(state_path)
+    with _VOICE_STATE_LOCK:
+        current = _read_json_file(state_path)
     try:
         current_seq = int(current.get("relay_command_seq"))
         expected_seq = int(relay_command_seq)
@@ -1316,6 +1408,205 @@ def _command_pending_delivery(
         return False
     metadata = _read_json_file(meta_path)
     return _relay_command_key(metadata) == key
+
+
+def _provider_turn_seen(
+    command: dict | None,
+    *,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+) -> bool:
+    return _provider_turn_state(command, turns_path=turns_path) is not None
+
+
+def _manual_claim_ack_matches(
+    claimed: dict | None,
+    acknowledged: dict | None,
+) -> bool:
+    """Accept only the exact durable claim written by a manual provider loop."""
+    if _relay_command_key(claimed) != _relay_command_key(acknowledged):
+        return False
+    for field in (
+        "intent_id",
+        "intent_delivery_id",
+        "intent_claim_id",
+        "intent_ack_id",
+    ):
+        claimed_value = str((claimed or {}).get(field) or "").strip()
+        acknowledged_value = str((acknowledged or {}).get(field) or "").strip()
+        if not claimed_value or claimed_value != acknowledged_value:
+            return False
+    return True
+
+
+def _start_intent_inbox_pump(
+    inbox: IntentInbox,
+    shutdown_event: threading.Event,
+    *,
+    command_path: str = VOICE_CMD_FILE,
+    meta_path: str = VOICE_CMD_META_FILE,
+    claimed_path: str = VOICE_COMMAND_CLAIM_FILE,
+    manual_ack_path: str = VOICE_MANUAL_CLAIM_ACK_FILE,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    transport: str = "shared-ready-file",
+    poll_seconds: float = 0.05,
+) -> threading.Thread:
+    """Bridge app-owned and manual consumers onto one ordered inbox protocol."""
+
+    # Bridge startup removes the ephemeral state file while the inbox survives.
+    # Restore its newest-command identity before a recovered lease can reach a
+    # provider or a new turn can allocate a reset sequence.
+    with _VOICE_STATE_LOCK:
+        sync_deliverable_state(state_path, inbox)
+
+    def _run() -> None:
+        while not shutdown_event.is_set():
+            claimed = _read_json_file(claimed_path)
+            if claimed:
+                inbox.observe_claim(
+                    claimed,
+                    provider_turn_seen=_provider_turn_seen(claimed, turns_path=turns_path),
+                )
+            manual_ack = _read_json_file(manual_ack_path)
+            if _manual_claim_ack_matches(claimed, manual_ack):
+                if inbox.observe_claim(manual_ack, provider_turn_seen=True):
+                    try:
+                        os.unlink(manual_ack_path)
+                    except OSError:
+                        pass
+            inbox.materialize_next(
+                command_path=command_path,
+                metadata_path=meta_path,
+                transport=transport,
+            )
+            try:
+                with _VOICE_STATE_LOCK:
+                    sync_deliverable_state(state_path, inbox)
+            except OSError as exc:
+                print(f"[voice_bridge] Could not sync intent inbox state: {exc}", file=sys.stderr)
+            shutdown_event.wait(max(0.01, poll_seconds))
+
+    thread = threading.Thread(target=_run, name="intent-inbox-pump", daemon=True)
+    thread.start()
+    return thread
+
+
+def _sync_intent_inbox_state(
+    inbox: IntentInbox,
+    *,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> None:
+    try:
+        with _VOICE_STATE_LOCK:
+            sync_deliverable_state(state_path, inbox)
+    except OSError as exc:
+        print(f"[voice_bridge] Could not sync intent inbox state: {exc}", file=sys.stderr)
+
+
+def _enqueue_sidecar_intent(
+    *,
+    prompt: str,
+    source_text: str,
+    metadata: dict,
+    sidecar_lane: SidecarLane,
+    inbox: IntentInbox | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    """Route an eligible sidecar without occupying the foreground provider mailbox."""
+    stored = dict(metadata)
+    stored["agent_prompt"] = prompt
+    if inbox is not None:
+        stored = inbox.enqueue(
+            prompt,
+            stored,
+            IntentRoute.RUN_SIDECAR.value,
+        )
+    with _VOICE_STATE_LOCK:
+        _atomic_write_json(state_path, stored)
+        if inbox is not None:
+            sync_deliverable_state(state_path, inbox)
+    return sidecar_lane.submit(source_text, stored)
+
+
+def _handle_sidecar_lifecycle(
+    event: SidecarLifecycleEvent,
+    *,
+    inbox: IntentInbox | None,
+    messenger: MessengerRuntime | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    """Feed sidecar state back through the foreground speech/freshness boundary."""
+    if inbox is not None:
+        inbox.observe_claim(
+            event.command,
+            provider_turn_seen=event.phase in {"completed", "failed"},
+        )
+        _sync_intent_inbox_state(inbox, state_path=state_path)
+    if messenger is None:
+        return False
+    return messenger.submit_trace({
+        "kind": f"sidecar-{event.phase}",
+        "message": (
+            f"Sidecar state={event.phase}; "
+            f"{event.public_summary}"
+        ),
+        "command": event.command,
+        "work_disposition": event.command.get("work_disposition"),
+    })
+
+
+def _handle_sidecar_final(
+    text: str,
+    command: dict,
+    *,
+    tts_worker: TTSWorker,
+    messenger: MessengerRuntime | None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    """Return an accepted sidecar outcome as durable work lifecycle speech."""
+    reply = str(text or "").strip()
+    key = _relay_command_key(command)
+    if not reply or key is None:
+        return False
+    if _foreground_reply_delivered(command):
+        return True
+    disposition = command.get("work_disposition")
+    if not isinstance(disposition, dict):
+        disposition = None
+    _publish_authoritative_preview(reply)
+    delivered = False
+    if messenger is not None:
+        delivered = messenger.submit_trace({
+            "kind": "sidecar-outcome",
+            "message": reply,
+            "command": command,
+            "work_disposition": disposition,
+            "work_valid": True,
+        })
+    if not delivered:
+        delivered = _queue_tts_text(
+            json.dumps({
+                "text": reply,
+                "display_text": reply,
+                "relay_command_seq": key[0],
+                "relay_command_id": key[1],
+            }),
+            tts_worker.input_queue,
+            state_path=state_path,
+            allow_pending_command=True,
+            notify_waiting_preview=lambda _text: None,
+            source="lifecycle",
+            kind="final",
+            authoritative=True,
+            semantic_brief=reply,
+            dedup_key=f"work-outcome:{key[0]}:{key[1]}:sidecar-outcome",
+            work_disposition=disposition,
+            replayable=True,
+            freshness_scope="work",
+        )
+    if delivered:
+        _mark_foreground_reply_delivered(command)
+    return delivered
 
 
 def _foreground_reply_delivered(command: dict | None) -> bool:
@@ -1458,8 +1749,17 @@ def _queue_tts_text(
     state_path: str = VOICE_COMMAND_STATE_FILE,
     allow_pending_command: bool = False,
     notify_waiting_preview=None,
+    source: str = "fallback",
+    kind: str = "fallback",
+    authoritative: bool = False,
+    semantic_brief: str | None = None,
+    priority: int | None = None,
+    dedup_key: str | None = None,
+    work_disposition: dict | None = None,
+    replayable: bool | None = None,
+    freshness_scope: str = "conversation",
 ) -> bool:
-    """Queue TTS unless a newer Relay command is already waiting."""
+    """Submit a typed speech intent unless its Relay command is stale."""
     text, display_text, command_seq, command_id = _parse_tts_payload(text)
     display_preview = _normalize_display_preview(display_text)
     text = _strip_markdown_for_tts(text.strip()).strip()
@@ -1467,7 +1767,12 @@ def _queue_tts_text(
         text = _strip_markdown_for_tts(display_preview).strip()
     if not text:
         return False
-    if command_seq is not None or command_id:
+    work_fresh = (
+        freshness_scope == "work"
+        and source == "lifecycle"
+        and kind == "final"
+    )
+    if (command_seq is not None or command_id) and not work_fresh:
         if not _relay_command_current(command_seq, command_id, state_path=state_path):
             print(
                 "[voice_bridge] Dropping TTS because its Relay command was superseded.",
@@ -1480,16 +1785,42 @@ def _queue_tts_text(
             file=sys.stderr,
         )
         return False
+    coordinated = hasattr(tts_queue, "submit_text")
     publisher = publish_waiting_preview if notify_waiting_preview is None else notify_waiting_preview
-    if publisher is not None:
+    if not coordinated and publisher is not None:
         try:
             publisher(display_preview or text)
         except Exception as exc:
             print(f"[voice_bridge] Could not publish waiting preview: {exc}", file=sys.stderr)
-    if display_preview:
-        tts_queue.put({"text": text, "display_text": display_preview})
+    if coordinated:
+        accepted = bool(tts_queue.submit_text(
+            text,
+            display_text=display_preview,
+            semantic_brief=semantic_brief,
+            command_seq=command_seq,
+            command_id=command_id,
+            source=source,
+            kind=kind,
+            authoritative=authoritative,
+            priority=priority,
+            dedup_key=dedup_key,
+            work_disposition=work_disposition,
+            replayable=replayable,
+            freshness_scope="work" if work_fresh else "conversation",
+        ))
     else:
-        tts_queue.put(text)
+        if display_preview:
+            tts_queue.put({"text": text, "display_text": display_preview})
+        else:
+            tts_queue.put(text)
+        accepted = True
+    if not accepted:
+        return False
+    if coordinated and publisher is not None:
+        try:
+            publisher(display_preview or text)
+        except Exception as exc:
+            print(f"[voice_bridge] Could not publish waiting preview: {exc}", file=sys.stderr)
     return True
 
 
@@ -1502,13 +1833,15 @@ def _queue_voice_acknowledgement(
     source_text: str | None = None,
     delay_seconds: float = VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS,
     notify_state=_notify_state,
+    discard_pending_command: bool = True,
 ) -> bool:
     """Schedule a short acknowledgement for the newest command."""
     del tts_queue
     text = build_voice_acknowledgement(source_text, relay_command).strip()
     if not text:
         return False
-    _discard_pending_command(command_path=command_path, meta_path=meta_path)
+    if discard_pending_command:
+        _discard_pending_command(command_path=command_path, meta_path=meta_path)
     command_seq = relay_command.get("relay_command_seq")
     command_id = relay_command.get("relay_command_id")
     auto_dismiss = acknowledgement_auto_dismiss_seconds(text)
@@ -1553,6 +1886,7 @@ def _handle_relay_control_message(
     authorization_path: str | None = None,
     event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
     messenger: MessengerRuntime | None = None,
+    inbox: IntentInbox | None = None,
 ) -> bool:
     """Handle provider-neutral relay controls before command publication."""
     if text == "__TTS_STOP__":
@@ -1569,6 +1903,13 @@ def _handle_relay_control_message(
             state_path=state_path,
             event_log_path=event_log_path,
         )
+        disposition = resolve_intent_disposition(
+            intent_id=str(relay_command["relay_command_id"]),
+            action_kind="control",
+            action_reason="interrupt",
+            source_text=text,
+            active_work=_active_work(turns_path=VOICE_PROVIDER_TURNS_FILE),
+        )
         _publish_command(
             "__INTERRUPT__",
             {
@@ -1576,11 +1917,16 @@ def _handle_relay_control_message(
                 "action": "control",
                 "outcome": "control action interrupt",
                 "reason": "interrupt",
+                "authorization_relationship": "interrupt",
+                "intent_id": disposition.intent_id,
+                "work_disposition": disposition.to_dict(),
+                "preempt_provider": True,
             },
             command_path=command_path,
             meta_path=meta_path,
             state_path=state_path,
             authorization_path=authorization_path,
+            inbox=inbox,
         )
         return True
 
@@ -1666,6 +2012,7 @@ def _deliver_missing_foreground_reply(
         "text": _missing_foreground_reply_text_for_kind(action_kind),
         "relay_command_seq": key[0],
         "relay_command_id": key[1],
+        "speech_source": "fallback",
     }
     _publish_authoritative_preview(payload["text"])
     delivered = False
@@ -1678,6 +2025,11 @@ def _deliver_missing_foreground_reply(
             state_path=state_path,
             allow_pending_command=True,
             notify_waiting_preview=lambda _text: None,
+            source="fallback",
+            kind="fallback",
+            authoritative=True,
+            semantic_brief=payload["text"],
+            replayable=True,
         )
     if delivered:
         _mark_foreground_reply_delivered(relay_command)
@@ -1856,6 +2208,7 @@ def _handle_provider_completion_control(
             "text": reply,
             "relay_command_seq": key[0],
             "relay_command_id": key[1],
+            "speech_source": "completion",
         }
         return _handle_orchestrator_reply_control(
             json.dumps(payload),
@@ -1913,6 +2266,10 @@ def _handle_orchestrator_reply_control(
         )
         return False
     payload = {"text": reply}
+    if data.get("speech_source"):
+        payload["speech_source"] = str(data["speech_source"])
+    if isinstance(data.get("work_disposition"), dict):
+        payload["work_disposition"] = data["work_disposition"]
     for key in ("relay_command_seq", "relay_command_id"):
         if key in command:
             payload[key] = command[key]
@@ -1930,6 +2287,20 @@ def _handle_orchestrator_reply_control(
         state_path=state_path,
         allow_pending_command=True,
         notify_waiting_preview=lambda _text: None,
+        source=(
+            "lifecycle"
+            if payload.get("speech_source") == "lifecycle"
+            else "fallback"
+        ),
+        kind=(
+            "final"
+            if payload.get("speech_source") == "lifecycle"
+            else "fallback"
+        ),
+        authoritative=True,
+        semantic_brief=reply,
+        work_disposition=payload.get("work_disposition"),
+        replayable=True,
     )
     if delivered:
         _mark_foreground_reply_delivered(command)
@@ -1958,6 +2329,8 @@ def _run_relay(
     orchestrator_session: dict | None = None,
     messenger: MessengerRuntime | None = None,
     suppress_startup_greeting: bool = False,
+    inbox: IntentInbox | None = None,
+    sidecar_lane: SidecarLane | None = None,
 ):
     """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
     suppress_next_messenger_user_reply = suppress_startup_greeting
@@ -1969,6 +2342,7 @@ def _run_relay(
         VOICE_CMD_META_FILE,
         VOICE_COMMAND_STATE_FILE,
         VOICE_COMMAND_CLAIM_FILE,
+        VOICE_MANUAL_CLAIM_ACK_FILE,
         VOICE_COMMAND_AUTHORIZATION_FILE,
         VOICE_PROVIDER_TURNS_FILE,
     ]:
@@ -1979,6 +2353,21 @@ def _run_relay(
 
     if not ensure_fifo(TTS_IN_FIFO):
         return
+
+    if inbox is not None:
+        _start_intent_inbox_pump(inbox, shutdown_event)
+        if sidecar_lane is not None:
+            for pending in inbox.pending_for_route(IntentRoute.RUN_SIDECAR.value):
+                metadata = pending.get("metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                with _VOICE_STATE_LOCK:
+                    _atomic_write_json(VOICE_COMMAND_STATE_FILE, metadata)
+                    sync_deliverable_state(VOICE_COMMAND_STATE_FILE, inbox)
+                sidecar_lane.submit(
+                    str(metadata.get("source_text") or pending.get("prompt") or ""),
+                    metadata,
+                )
 
     if not suppress_startup_greeting:
         _queue_tts_text(
@@ -2051,6 +2440,7 @@ def _run_relay(
                     tts_worker,
                     authorization_path=VOICE_COMMAND_AUTHORIZATION_FILE,
                     messenger=messenger,
+                    inbox=inbox,
                 ):
                     continue
 
@@ -2059,16 +2449,29 @@ def _run_relay(
                 if slash_match:
                     text = "/" + slash_match.group(1).replace(" ", "-")
 
-                # Skip TTS for new voice input, write an explicit command
-                # action for the foreground orchestrator session.
-                tts_worker.skip()
                 relay_command = _begin_relay_command(text)
+                if hasattr(tts_worker, "new_turn"):
+                    tts_worker.new_turn(
+                        relay_command["relay_command_seq"],
+                        relay_command["relay_command_id"],
+                    )
+                else:
+                    tts_worker.skip()
                 action = resolve_command_action(
                     text,
                     repo_path=Path.cwd(),
                     relay_command=relay_command,
                 )
-                metadata = _metadata_for_action(action, relay_command)
+                disposition = resolve_intent_disposition(
+                    intent_id=str(relay_command["relay_command_id"]),
+                    action_kind=action.kind,
+                    action_reason=getattr(action, "reason", None),
+                    source_text=text,
+                    active_work=_active_work(repo_path=Path.cwd()),
+                )
+                if inbox is not None or disposition.route == IntentRoute.RUN_SIDECAR:
+                    relay_command["work_disposition"] = disposition.to_dict()
+                metadata = _metadata_for_action(action, relay_command, disposition)
                 try:
                     record_command_authorization(
                         VOICE_COMMAND_AUTHORIZATION_FILE,
@@ -2090,7 +2493,42 @@ def _run_relay(
                     relay_command,
                     tts_worker.input_queue,
                     source_text=text,
+                    discard_pending_command=inbox is None,
                 )
+                if disposition.route == IntentRoute.RUN_SIDECAR:
+                    accepted = (
+                        sidecar_lane is not None
+                        and _enqueue_sidecar_intent(
+                            prompt=format_command_for_agent(action, disposition.to_dict()),
+                            source_text=text,
+                            metadata=metadata,
+                            sidecar_lane=sidecar_lane,
+                            inbox=inbox,
+                        )
+                    )
+                    if not accepted:
+                        failure = SidecarLifecycleEvent(
+                            phase="failed",
+                            command=metadata,
+                            public_summary=disposition.public_reason,
+                        )
+                        _handle_sidecar_lifecycle(
+                            failure,
+                            inbox=inbox,
+                            messenger=messenger,
+                        )
+                        _handle_sidecar_final(
+                            "The independent read-only task could not enter its bounded sidecar lane.",
+                            metadata,
+                            tts_worker=tts_worker,
+                            messenger=messenger,
+                        )
+                    print(
+                        f"[voice_bridge] Sidecar {'accepted' if accepted else 'rejected'} "
+                        f"for intent={disposition.intent_id}",
+                        file=sys.stderr,
+                    )
+                    continue
                 if _should_fanout_raw_instruction_to_orchestrator(action):
                     _fanout_raw_instruction_to_orchestrator(
                         text,
@@ -2107,12 +2545,19 @@ def _run_relay(
                     source_text=text,
                 )
                 _publish_command(
-                    format_command_for_agent(action),
+                    format_command_for_agent(action, disposition.to_dict()),
                     metadata,
                     authorization_path=VOICE_COMMAND_AUTHORIZATION_FILE,
+                    inbox=inbox,
+                    transport=(
+                        "app-or-manual-shared-ready-file"
+                        if inbox is not None
+                        else "legacy-ready-file"
+                    ),
                 )
                 print(
-                    f"[voice_bridge] Voice command ready: {action.outcome}",
+                    f"[voice_bridge] Voice command ready: {action.outcome} "
+                    f"disposition={disposition.route.value}",
                     file=sys.stderr,
                 )
 
@@ -2130,6 +2575,7 @@ def _run_relay(
             VOICE_CMD_META_FILE,
             VOICE_COMMAND_STATE_FILE,
             VOICE_COMMAND_CLAIM_FILE,
+            VOICE_MANUAL_CLAIM_ACK_FILE,
             VOICE_COMMAND_AUTHORIZATION_FILE,
             VOICE_PROVIDER_TURNS_FILE,
         ]:
@@ -2165,7 +2611,20 @@ def main():
         sys.exit(1)
 
     tts_queue: queue.Queue = queue.Queue()
-    tts_worker = TTSWorker(tts_queue)
+    tts_executor = TTSWorker(tts_queue, start_control_socket=not relay_mode)
+    tts_worker = tts_executor
+    intent_inbox: IntentInbox | None = None
+    if relay_mode:
+        tts_worker = SpeechCoordinator(
+            tts_executor,
+            is_current=lambda command_seq, command_id: _relay_command_current(
+                command_seq,
+                command_id,
+            ),
+            event_log_path=SPEECH_EVENT_LOG,
+            control_socket_path=TTS_CONTROL_SOCK,
+        )
+        intent_inbox = IntentInbox(VOICE_INTENT_INBOX)
 
     shutdown_event = threading.Event()
 
@@ -2178,10 +2637,16 @@ def main():
     # Relay mode: daemon for the relay-bridge skill/command
     if relay_mode:
         orchestrator_session = start_persistent_orchestrator_lifecycle(cfg, shutdown_event)
-        messenger = create_messenger_runtime(
-            cfg,
-            cwd=Path.cwd(),
-            speak=lambda text, command_seq, command_id, display_text=None: _queue_tts_text(
+
+        def _submit_messenger_speech(
+            text,
+            command_seq,
+            command_id,
+            display_text=None,
+            speech_metadata=None,
+        ):
+            metadata = speech_metadata if isinstance(speech_metadata, dict) else {}
+            return _queue_tts_text(
                 json.dumps({
                     "text": text,
                     "display_text": display_text,
@@ -2190,7 +2655,13 @@ def main():
                 }),
                 tts_worker.input_queue,
                 allow_pending_command=True,
-            ),
+                **metadata,
+            )
+
+        messenger = create_messenger_runtime(
+            cfg,
+            cwd=Path.cwd(),
+            speak=_submit_messenger_speech,
             is_current=lambda command_seq, command_id: _relay_command_current(
                 command_seq,
                 command_id,
@@ -2198,6 +2669,20 @@ def main():
         )
         if messenger is not None:
             messenger.start()
+        sidecar_lane = SidecarLane(
+            create_sidecar_executor(cfg, cwd=str(Path.cwd())),
+            on_lifecycle=lambda event: _handle_sidecar_lifecycle(
+                event,
+                inbox=intent_inbox,
+                messenger=messenger,
+            ),
+            on_final=lambda text, command: _handle_sidecar_final(
+                text,
+                command,
+                tts_worker=tts_worker,
+                messenger=messenger,
+            ),
+        )
         _start_messenger_outcome_polling(
             orchestrator_session=orchestrator_session,
             messenger=messenger,
@@ -2213,9 +2698,12 @@ def main():
                     "suppress_startup_greeting",
                     False,
                 ),
+                inbox=intent_inbox,
+                sidecar_lane=sidecar_lane,
             )
         finally:
             shutdown_event.set()
+            sidecar_lane.shutdown()
             if messenger is not None:
                 messenger.shutdown()
             stop_persistent_orchestrator_lifecycle(
@@ -2223,6 +2711,8 @@ def main():
                 reason="bridge stopped",
             )
             tts_worker.shutdown()
+            if intent_inbox is not None:
+                intent_inbox.close()
             try:
                 os.unlink(BRIDGE_CONTROL_SOCK)
             except OSError:

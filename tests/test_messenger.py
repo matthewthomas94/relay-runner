@@ -498,6 +498,59 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_final_replaces_queued_handoff_before_messenger_starts(self):
+        backend = FakeBackend(["The work is complete."])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        try:
+            command = {"relay_command_seq": 17, "relay_command_id": "cmd-17"}
+            self.assertTrue(runtime.submit_user("Finish the task", command))
+            self.assertTrue(runtime.submit_final({"text": "Finished.", **command}))
+
+            runtime.start()
+
+            self.assertTrue(wait_until(lambda: spoken == ["The work is complete."]))
+            self.assertEqual(len(backend.prompts), 1)
+            self.assertIn("authoritative orchestrator reply", backend.prompts[0])
+        finally:
+            runtime.shutdown()
+
+    def test_final_interrupts_inflight_handoff_and_speaks_only_final(self):
+        backend = BlockingBackend(
+            "I picked up the task, and I’ll return with the next step.",
+            ["The work is complete."],
+        )
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 18, "relay_command_id": "cmd-18"}
+            self.assertTrue(runtime.submit_user("Finish the task", command))
+            self.assertTrue(backend.first_prompt_started.wait(1.0))
+
+            self.assertTrue(runtime.submit_final({"text": "Finished.", **command}))
+            self.assertTrue(wait_until(lambda: backend.interrupt_count == 1))
+
+            backend.release_first_response.set()
+
+            self.assertTrue(
+                wait_until(
+                    lambda: spoken == ["The work is complete."] and len(backend.prompts) == 2,
+                    timeout=2.0,
+                )
+            )
+            self.assertIn("authoritative orchestrator reply", backend.prompts[1])
+        finally:
+            runtime.shutdown()
+
     def test_silent_final_falls_back_to_authoritative_text(self):
         backend = FakeBackend(["__SILENT__", "__SILENT__"])
         spoken: list[str] = []
@@ -544,6 +597,45 @@ class MessengerRuntimeTests(unittest.TestCase):
                     "Authoritative provider result.",
                 ),
             )
+        finally:
+            runtime.shutdown()
+
+    def test_sidecar_final_preserves_lifecycle_authority_metadata(self):
+        backend = FakeBackend(["__SILENT__", "Verified sidecar result."])
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id, display_text, metadata: spoken.append(
+                (text, seq, command_id, display_text, metadata)
+            ),
+            is_current=lambda seq, command_id: True,
+        )
+        disposition = {
+            "route": "run_sidecar",
+            "public_reason": "Independent bounded public research.",
+        }
+        command = {
+            "relay_command_seq": 19,
+            "relay_command_id": "cmd-19",
+            "work_disposition": disposition,
+        }
+        runtime.start()
+        try:
+            runtime.submit_user("Compare the public APIs", command)
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+            runtime.submit_final({
+                "text": "The verified comparison is ready.",
+                "speech_source": "lifecycle",
+                "work_disposition": disposition,
+                **command,
+            })
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            metadata = spoken[0][4]
+            self.assertEqual(metadata["source"], "lifecycle")
+            self.assertEqual(metadata["kind"], "final")
+            self.assertTrue(metadata["authoritative"])
+            self.assertEqual(metadata["work_disposition"], disposition)
         finally:
             runtime.shutdown()
 

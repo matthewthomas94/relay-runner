@@ -61,6 +61,7 @@ _UNSCOPED_LIFECYCLE_KINDS = frozenset({
     "run-merged",
     "run-succeeded",
 })
+_WORK_LIFECYCLE_KINDS = frozenset({"sidecar-outcome"})
 
 
 MESSENGER_SYSTEM_PROMPT = """You are Relay Runner's persistent voice messenger.
@@ -768,6 +769,9 @@ class _MessengerEvent:
     command_id: str | None
     generation: int
     detail: str = ""
+    work_disposition: dict | None = None
+    speech_source: str = ""
+    work_lifecycle: bool = False
 
 
 class MessengerRuntime:
@@ -785,6 +789,7 @@ class MessengerRuntime:
         self.backend = backend
         self._speak = speak
         self._speak_accepts_display = self._callable_accepts_display_text(speak)
+        self._speak_accepts_metadata = self._callable_accepts_speech_metadata(speak)
         self._is_current = is_current
         self._events: queue.Queue[_MessengerEvent | None] = queue.Queue()
         self._context: deque[str] = deque(maxlen=max(4, context_limit))
@@ -794,6 +799,7 @@ class MessengerRuntime:
         self._current_command: tuple[int, str] | None = None
         self._has_trace_for_current_command = False
         self._final_commands: set[tuple[int, str]] = set()
+        self._active_event: _MessengerEvent | None = None
         self._started = False
         self._shutdown = threading.Event()
         self._worker_thread: threading.Thread | None = None
@@ -825,6 +831,9 @@ class MessengerRuntime:
         cleaned = str(text or "").strip()
         if command_key is None or not cleaned:
             return False
+        disposition = command.get("work_disposition")
+        if not isinstance(disposition, dict):
+            disposition = None
         with self._lock:
             supersedes = self._current_command is not None
             self._generation += 1
@@ -832,6 +841,11 @@ class MessengerRuntime:
             self._current_command = command_key
             self._has_trace_for_current_command = False
             self._context.append(f"USER: {cleaned}")
+            if disposition:
+                self._context.append(
+                    "PUBLIC WORK DISPOSITION: "
+                    f"{disposition.get('route')} — {disposition.get('public_reason')}"
+                )
             self._discard_pending_events_locked()
         if supersedes:
             self.backend.interrupt()
@@ -841,6 +855,8 @@ class MessengerRuntime:
             command_seq=command_key[0],
             command_id=command_key[1],
             generation=generation,
+            detail=str((disposition or {}).get("route") or ""),
+            work_disposition=disposition,
         ))
         return True
 
@@ -851,10 +867,28 @@ class MessengerRuntime:
         command_key = _command_key(command if isinstance(command, dict) else None)
         message = str(trace.get("message") or "").strip()
         kind = str(trace.get("kind") or "progress").strip().lower()
+        work_lifecycle = (
+            kind in _WORK_LIFECYCLE_KINDS
+            and trace.get("work_valid") is True
+        )
+        disposition = trace.get("work_disposition")
+        if not isinstance(disposition, dict):
+            disposition = None
         if not message:
             return False
         with self._lock:
-            if command_key is None and kind in _UNSCOPED_LIFECYCLE_KINDS:
+            if work_lifecycle:
+                if command_key is None:
+                    return False
+                if command_key in self._final_commands:
+                    return True
+                self._final_commands.add(command_key)
+                if len(self._final_commands) > 100:
+                    for old in list(self._final_commands)[:50]:
+                        self._final_commands.discard(old)
+                generation = self._generation
+                self._context.append(f"AUTHORITATIVE WORK LIFECYCLE ({kind}): {message}")
+            elif command_key is None and kind in _UNSCOPED_LIFECYCLE_KINDS:
                 generation = self._generation
                 self._context.append(f"WORKER LIFECYCLE ({kind}): {message}")
             else:
@@ -864,6 +898,8 @@ class MessengerRuntime:
                 self._has_trace_for_current_command = True
                 generation = self._generation
                 self._context.append(f"ORCHESTRATOR UPDATE ({kind}): {message}")
+                if kind == "clarification-request":
+                    self._discard_pending_kinds_locked({"orchestrator_trace"})
         self._events.put(_MessengerEvent(
             kind="orchestrator_trace",
             text=message,
@@ -871,6 +907,8 @@ class MessengerRuntime:
             command_seq=command_key[0] if command_key is not None else None,
             command_id=command_key[1] if command_key is not None else None,
             generation=generation,
+            work_disposition=disposition,
+            work_lifecycle=work_lifecycle,
         ))
         return True
 
@@ -880,8 +918,12 @@ class MessengerRuntime:
         nested = payload.get("relay_command")
         command_key = _command_key(nested if isinstance(nested, dict) else payload)
         text = str(payload.get("text") or "").strip()
+        disposition = payload.get("work_disposition")
+        if not isinstance(disposition, dict):
+            disposition = None
         if not text:
             return False
+        interrupt_handoff = False
         with self._lock:
             command_key = command_key or self._current_command
             if command_key is None or command_key != self._current_command:
@@ -892,14 +934,26 @@ class MessengerRuntime:
             if len(self._final_commands) > 100:
                 for old in list(self._final_commands)[:50]:
                     self._final_commands.discard(old)
+            active = self._active_event
+            interrupt_handoff = (
+                active is not None
+                and active.kind == "user_turn"
+                and (active.command_seq, active.command_id) == command_key
+            )
+            self._generation += 1
             generation = self._generation
             self._context.append(f"AUTHORITATIVE ORCHESTRATOR FINAL: {text}")
+            self._discard_pending_kinds_locked({"user_turn", "orchestrator_trace"})
+        if interrupt_handoff:
+            self.backend.interrupt()
         self._events.put(_MessengerEvent(
             kind="orchestrator_final",
             text=text,
             command_seq=command_key[0],
             command_id=command_key[1],
             generation=generation,
+            work_disposition=disposition,
+            speech_source=str(payload.get("speech_source") or "orchestrator"),
         ))
         return True
 
@@ -940,12 +994,18 @@ class MessengerRuntime:
             if not self._event_is_current(event):
                 continue
             prompt = self._prompt_for(event)
+            with self._lock:
+                self._active_event = event
             try:
                 response = self.backend.ask(prompt, timeout=self._response_timeout).strip()
             except Exception as exc:
                 print(f"[messenger] response failed: {exc}", file=sys.stderr)
                 if (
-                    (event.kind == "orchestrator_final" or self._event_is_unscoped_lifecycle(event))
+                    (
+                        event.kind == "orchestrator_final"
+                        or self._event_is_unscoped_lifecycle(event)
+                        or event.work_lifecycle
+                    )
                     and self._event_is_current(event)
                 ):
                     self._speak_safely(
@@ -953,17 +1013,27 @@ class MessengerRuntime:
                         event.command_seq,
                         event.command_id,
                         display_text=event.text,
+                        speech_metadata=self._speech_metadata_for(event, fallback=True),
                     )
                 continue
+            finally:
+                with self._lock:
+                    if self._active_event is event:
+                        self._active_event = None
             if not self._event_is_current(event):
                 continue
             if not response or response == SILENT_RESPONSE:
-                if event.kind == "orchestrator_final" or self._event_is_unscoped_lifecycle(event):
+                if (
+                    event.kind == "orchestrator_final"
+                    or self._event_is_unscoped_lifecycle(event)
+                    or event.work_lifecycle
+                ):
                     self._speak_safely(
                         event.text,
                         event.command_seq,
                         event.command_id,
                         display_text=event.text,
+                        speech_metadata=self._speech_metadata_for(event, fallback=True),
                     )
                 continue
             with self._lock:
@@ -972,10 +1042,17 @@ class MessengerRuntime:
                 response,
                 event.command_seq,
                 event.command_id,
-                display_text=event.text if event.kind == "orchestrator_final" else None,
+                display_text=(
+                    event.text
+                    if event.kind == "orchestrator_final" or event.work_lifecycle
+                    else None
+                ),
+                speech_metadata=self._speech_metadata_for(event),
             )
 
     def _event_is_current(self, event: _MessengerEvent) -> bool:
+        if event.work_lifecycle:
+            return True
         if event.command_seq is None or event.command_id is None:
             return True
         with self._lock:
@@ -1025,6 +1102,12 @@ class MessengerRuntime:
                 "This is an authoritative clarification request from the orchestrator. Ask the "
                 "user the requested question directly and concisely."
             )
+        elif event.work_lifecycle:
+            instructions = (
+                "This is an authoritative completed sidecar outcome from accepted background "
+                "work. Convey its result naturally and concisely without treating its originating "
+                "conversation turn as current or adding unsupported claims."
+            )
         return (
             f"{instructions}\n\n"
             "Recent session context, oldest to newest:\n"
@@ -1044,7 +1127,29 @@ class MessengerRuntime:
             if queued is None:
                 saw_shutdown = True
                 break
-            if queued.command_seq is None or queued.command_id is None:
+            if (
+                queued.command_seq is None
+                or queued.command_id is None
+                or queued.work_lifecycle
+            ):
+                preserved.append(queued)
+        for event in preserved:
+            self._events.put(event)
+        if saw_shutdown:
+            self._events.put(None)
+
+    def _discard_pending_kinds_locked(self, kinds: set[str]) -> None:
+        preserved: list[_MessengerEvent] = []
+        saw_shutdown = False
+        while True:
+            try:
+                queued = self._events.get_nowait()
+            except queue.Empty:
+                break
+            if queued is None:
+                saw_shutdown = True
+                break
+            if queued.kind not in kinds:
                 preserved.append(queued)
         for event in preserved:
             self._events.put(event)
@@ -1073,6 +1178,69 @@ class MessengerRuntime:
             or len(positional) >= 4
         )
 
+    @staticmethod
+    def _callable_accepts_speech_metadata(speak: Callable[..., object]) -> bool:
+        try:
+            signature = inspect.signature(speak)
+        except (TypeError, ValueError):
+            return False
+        positional = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        return (
+            any(
+                parameter.kind == inspect.Parameter.VAR_POSITIONAL
+                for parameter in signature.parameters.values()
+            )
+            or len(positional) >= 5
+        )
+
+    @staticmethod
+    def _speech_metadata_for(event: _MessengerEvent, *, fallback: bool = False) -> dict:
+        if event.work_lifecycle:
+            source = "lifecycle"
+            kind = "final"
+        elif fallback:
+            source = "fallback"
+            kind = "fallback"
+        elif event.kind == "user_turn":
+            source = "messenger"
+            kind = "handoff"
+        elif event.kind == "orchestrator_final":
+            source = event.speech_source or "orchestrator"
+            kind = "final"
+        elif event.detail == "clarification-request":
+            source = "messenger"
+            kind = "clarification"
+        else:
+            source = "lifecycle"
+            kind = "progress"
+        return {
+            "source": source,
+            "kind": kind,
+            "authoritative": (
+                event.kind == "orchestrator_final"
+                or event.work_lifecycle
+            ),
+            "semantic_brief": event.text,
+            "replayable": (
+                event.kind == "orchestrator_final"
+                or event.work_lifecycle
+            ),
+            "work_disposition": event.work_disposition,
+            "freshness_scope": "work" if event.work_lifecycle else "conversation",
+            "dedup_key": (
+                f"work-outcome:{event.command_seq}:{event.command_id}:{event.detail}"
+                if event.work_lifecycle
+                else None
+            ),
+        }
+
     def _speak_safely(
         self,
         text: str,
@@ -1080,9 +1248,18 @@ class MessengerRuntime:
         command_id: str | None,
         *,
         display_text: str | None = None,
+        speech_metadata: dict | None = None,
     ) -> None:
         try:
-            if self._speak_accepts_display:
+            if self._speak_accepts_metadata:
+                self._speak(
+                    text,
+                    command_seq,
+                    command_id,
+                    display_text,
+                    speech_metadata or {},
+                )
+            elif self._speak_accepts_display:
                 self._speak(text, command_seq, command_id, display_text)
             else:
                 self._speak(text, command_seq, command_id)

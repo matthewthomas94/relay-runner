@@ -77,6 +77,19 @@ class CommandActionsTests(unittest.TestCase):
         self.assertFalse(action.requires_ticket)
         self.assertEqual(action.reason, "orchestration_process_correction")
 
+    def test_negated_stop_status_request_is_not_a_cancel_control(self):
+        action = resolve_command_action(
+            "don't stop the current work; just give me status",
+            relay_command={
+                "relay_command_seq": 2,
+                "relay_command_id": "cmd-2",
+            },
+        )
+
+        self.assertEqual(action.kind, "conversation")
+        self.assertEqual(action.reason, "")
+        self.assertFalse(action.requires_ticket)
+
     def test_session_operations_stay_inline_instead_of_becoming_tickets(self):
         samples = [
             "commit everything to remote",

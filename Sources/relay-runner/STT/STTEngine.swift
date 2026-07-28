@@ -322,11 +322,10 @@ final class STTEngine: @unchecked Sendable {
                     audioBuffer.clear()
                     mediaSettleDeadline = nil
                     partialTranscription = ""
-                    // Only interrupt downstream if the user is actually recording,
-                    // not doing a double-tap play gesture.
                     if gesture.isRecording {
-                        FIFOWriter.write("__INTERRUPT__")
-                        NSLog("[STTEngine] Recording (settled, interrupted downstream)")
+                        // Recording barge-in is speech-only. The completed
+                        // transcript is classified before any provider preemption.
+                        NSLog("[STTEngine] Recording (settled, speech muted)")
                     } else {
                         NSLog("[STTEngine] Settle expired (awaiting gesture)")
                     }

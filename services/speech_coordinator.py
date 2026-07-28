@@ -1,0 +1,525 @@
+"""Single production gateway for Relay speech proposal, playback, and replay."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, replace
+import hashlib
+import json
+import os
+from pathlib import Path
+import queue
+import socket
+import threading
+import time
+import uuid
+from typing import Any, Callable
+
+
+SPEECH_SOURCES = frozenset({"messenger", "orchestrator", "lifecycle", "completion", "fallback"})
+SPEECH_KINDS = frozenset({
+    "handoff",
+    "progress",
+    "clarification",
+    "final",
+    "fallback",
+    "control",
+})
+FINAL_KINDS = frozenset({"final", "fallback"})
+SUPERSEDING_KINDS = frozenset({"clarification", "final", "fallback"})
+FRESHNESS_SCOPES = frozenset({"conversation", "work"})
+
+
+def _stable_digest(*values: object) -> str:
+    content = "\x1f".join(str(value or "") for value in values)
+    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+
+@dataclass(frozen=True)
+class SpeechIntent:
+    command_seq: int | None
+    command_id: str | None
+    utterance_id: str
+    dedup_key: str
+    source: str
+    kind: str
+    authoritative: bool
+    priority: int
+    display_text: str
+    semantic_brief: str
+    spoken_text: str
+    created_at: float
+    expires_at: float | None = None
+    freshness_scope: str = "conversation"
+    replacement_policy: str = "semantic"
+    work_disposition: dict[str, Any] | None = None
+    replayable: bool = False
+
+    @property
+    def command_key(self) -> tuple[int, str] | None:
+        if self.command_seq is None or not self.command_id:
+            return None
+        return int(self.command_seq), str(self.command_id)
+
+    def to_worker_payload(self) -> dict[str, Any]:
+        return {
+            "text": self.spoken_text,
+            "display_text": self.display_text,
+            "_speech_intent": asdict(self),
+        }
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        spoken_text: str,
+        display_text: str | None = None,
+        semantic_brief: str | None = None,
+        command_seq: int | None = None,
+        command_id: str | None = None,
+        source: str = "fallback",
+        kind: str = "fallback",
+        authoritative: bool = False,
+        priority: int | None = None,
+        dedup_key: str | None = None,
+        utterance_id: str | None = None,
+        created_at: float | None = None,
+        expires_at: float | None = None,
+        freshness_scope: str = "conversation",
+        replacement_policy: str = "semantic",
+        work_disposition: dict[str, Any] | None = None,
+        replayable: bool | None = None,
+    ) -> "SpeechIntent":
+        source = source if source in SPEECH_SOURCES else "fallback"
+        kind = kind if kind in SPEECH_KINDS else "fallback"
+        spoken = str(spoken_text or "").strip()
+        display = str(display_text or "").strip()
+        brief = str(semantic_brief or display or spoken).strip()
+        stable_key = dedup_key or (
+            f"outcome:{command_seq}:{command_id}"
+            if kind in FINAL_KINDS and command_seq is not None and command_id
+            else f"{source}:{kind}:{command_seq}:{command_id}:{_stable_digest(brief, spoken)}"
+        )
+        scope = str(freshness_scope or "conversation").strip().lower()
+        if (
+            scope not in FRESHNESS_SCOPES
+            or (scope == "work" and (source != "lifecycle" or kind != "final"))
+        ):
+            scope = "conversation"
+        return cls(
+            command_seq=int(command_seq) if command_seq is not None else None,
+            command_id=str(command_id) if command_id else None,
+            utterance_id=utterance_id or str(uuid.uuid4()),
+            dedup_key=stable_key,
+            source=source,
+            kind=kind,
+            authoritative=bool(authoritative),
+            priority=int(priority if priority is not None else _default_priority(kind, authoritative)),
+            display_text=display,
+            semantic_brief=brief,
+            spoken_text=spoken,
+            created_at=time.time() if created_at is None else float(created_at),
+            expires_at=float(expires_at) if expires_at is not None else None,
+            freshness_scope=scope,
+            replacement_policy=replacement_policy,
+            work_disposition=work_disposition,
+            replayable=(kind == "final") if replayable is None else bool(replayable),
+        )
+
+
+def _default_priority(kind: str, authoritative: bool) -> int:
+    base = {
+        "handoff": 20,
+        "progress": 10,
+        "clarification": 80,
+        "final": 70,
+        "fallback": 60,
+        "control": 100,
+    }.get(kind, 10)
+    return base + (5 if authoritative else 0)
+
+
+class CoordinatorInputQueue:
+    """Queue-shaped adapter; producers cannot reach the executor queue directly."""
+
+    def __init__(self, coordinator: "SpeechCoordinator"):
+        self._coordinator = coordinator
+
+    def put(self, item, block: bool = True, timeout: float | None = None) -> bool:
+        del block, timeout
+        if isinstance(item, SpeechIntent):
+            return self._coordinator.submit(item)
+        if isinstance(item, dict):
+            spec = item.get("_speech_intent_spec")
+            return self.submit_text(
+                str(item.get("text") or ""),
+                display_text=item.get("display_text"),
+                **(spec if isinstance(spec, dict) else {}),
+            )
+        return self.submit_text(str(item or ""))
+
+    def submit_text(self, text: str, **metadata) -> bool:
+        return self._coordinator.submit(SpeechIntent.build(spoken_text=text, **metadata))
+
+    def empty(self) -> bool:
+        return not self._coordinator.has_pending_speech
+
+
+class SpeechCoordinator:
+    """Arbitrates typed speech intents before committing one plan to TTS."""
+
+    def __init__(
+        self,
+        worker,
+        *,
+        is_current: Callable[[int, str], bool],
+        event_log_path: str | os.PathLike[str] | None = None,
+        control_socket_path: str | None = None,
+    ):
+        self.worker = worker
+        self.input_queue = CoordinatorInputQueue(self)
+        self._is_current = is_current
+        self._event_log_path = str(event_log_path) if event_log_path else None
+        self._lock = threading.RLock()
+        self._accepted_keys: set[str] = set()
+        self._intents: dict[str, SpeechIntent] = {}
+        self._committed_id: str | None = None
+        self._playing_id: str | None = None
+        self._backlog: list[SpeechIntent] = []
+        self._last_replayable: SpeechIntent | None = None
+        self._speech_stopped = False
+        self._shutdown = threading.Event()
+        self._control_socket_path = control_socket_path
+        self._control_thread: threading.Thread | None = None
+        if hasattr(worker, "set_speech_callbacks"):
+            worker.set_speech_callbacks(
+                eligibility=self._eligible_for_worker,
+                observer=self._observe_worker,
+            )
+        if control_socket_path:
+            self._control_thread = threading.Thread(
+                target=self._control_loop,
+                name="speech-coordinator-control",
+                daemon=True,
+            )
+            self._control_thread.start()
+
+    @property
+    def has_pending_speech(self) -> bool:
+        with self._lock:
+            return bool(self._committed_id or self._playing_id or self._backlog)
+
+    def submit(self, intent: SpeechIntent) -> bool:
+        started = time.perf_counter()
+        self._diagnostic("proposed", intent)
+        if not intent.spoken_text or not self._fresh(intent):
+            self._diagnostic("expired", intent, latency_ms=_elapsed_ms(started))
+            return False
+
+        replace_committed = False
+        commit_now = False
+        with self._lock:
+            if intent.dedup_key in self._accepted_keys:
+                self._diagnostic("deduplicated", intent, latency_ms=_elapsed_ms(started))
+                return False
+
+            current = self._intent_for(self._playing_id or self._committed_id)
+            if current is not None and self._newer_command(intent, current):
+                replace_committed = True
+                self._backlog.clear()
+            elif current is not None and self._supersedes(intent, current):
+                if self._playing_id:
+                    self._drop_obsolete_backlog(intent)
+                    self._backlog.append(intent)
+                    self._accept_locked(intent)
+                    self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
+                    return True
+                replace_committed = True
+            elif current is not None:
+                self._drop_obsolete_backlog(intent)
+                self._backlog.append(intent)
+                self._accept_locked(intent)
+                self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
+                return True
+            else:
+                commit_now = True
+
+            self._accept_locked(intent)
+            if replace_committed:
+                old = self._intent_for(self._committed_id)
+                self._committed_id = intent.utterance_id
+                if old is not None:
+                    self._diagnostic("replaced", old, replaced_by=intent.utterance_id)
+            elif commit_now:
+                self._committed_id = intent.utterance_id
+
+        if replace_committed:
+            self.worker.skip()
+        self.worker.input_queue.put(intent.to_worker_payload())
+        self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
+        return True
+
+    def new_turn(self, command_seq: int, command_id: str) -> None:
+        """Suppress stale speech without revoking accepted background work."""
+        stale_ids: list[str] = []
+        with self._lock:
+            self._speech_stopped = False
+            for intent_id in [self._committed_id, self._playing_id]:
+                intent = self._intent_for(intent_id)
+                if (
+                    intent is not None
+                    and intent.freshness_scope != "work"
+                    and intent.command_key != (int(command_seq), str(command_id))
+                ):
+                    stale_ids.append(intent.utterance_id)
+            self._backlog = [
+                intent
+                for intent in self._backlog
+                if (
+                    intent.freshness_scope == "work"
+                    or intent.command_key == (int(command_seq), str(command_id))
+                )
+            ]
+            if self._committed_id in stale_ids:
+                self._committed_id = None
+        if stale_ids:
+            self.worker.skip()
+            for intent_id in stale_ids:
+                intent = self._intent_for(intent_id)
+                if intent is not None:
+                    self._diagnostic("interrupted", intent, reason="newer_command")
+
+    def stop(self) -> None:
+        """Barge-in retires speech plans only; it does not alter work authorization."""
+        stale: list[SpeechIntent] = []
+        with self._lock:
+            self._speech_stopped = True
+            stale = [
+                intent
+                for intent in (
+                    self._intent_for(self._committed_id),
+                    self._intent_for(self._playing_id),
+                    *self._backlog,
+                )
+                if intent is not None
+            ]
+            self._committed_id = None
+            self._playing_id = None
+            self._backlog.clear()
+        self.worker.stop_playback()
+        for intent in stale:
+            self._diagnostic("interrupted", intent, reason="speech_only_barge_in")
+
+    def stop_playback(self) -> None:
+        """Expose the executor-compatible stop API at the coordinator boundary."""
+        self.stop()
+
+    def skip(self) -> None:
+        with self._lock:
+            stale = [
+                intent
+                for intent in (
+                    self._intent_for(self._committed_id),
+                    self._intent_for(self._playing_id),
+                    *self._backlog,
+                )
+                if intent is not None
+            ]
+            self._committed_id = None
+            self._backlog.clear()
+        self.worker.skip()
+        for intent in stale:
+            self._diagnostic("interrupted", intent, reason="skip")
+
+    def play(self) -> None:
+        with self._lock:
+            if self._playing_id:
+                return
+            has_committed = bool(self._committed_id)
+            self._speech_stopped = False
+        if has_committed:
+            self.worker.play()
+        else:
+            self.replay()
+
+    def replay(self) -> bool:
+        with self._lock:
+            previous = self._last_replayable
+        if previous is None or not self._fresh(previous):
+            return False
+        replay = replace(
+            previous,
+            utterance_id=str(uuid.uuid4()),
+            dedup_key=f"replay:{previous.utterance_id}:{uuid.uuid4()}",
+            source="fallback",
+            kind="final",
+            created_at=time.time(),
+            replacement_policy="replay",
+        )
+        accepted = self.submit(replay)
+        if accepted:
+            self._diagnostic("replayed", replay, replay_of=previous.utterance_id)
+        return accepted
+
+    def reload_config(self) -> None:
+        self.worker.reload_config()
+
+    def shutdown(self) -> None:
+        self._shutdown.set()
+        self.skip()
+        self.worker.shutdown()
+        thread = self._control_thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=1)
+
+    def _accept_locked(self, intent: SpeechIntent) -> None:
+        self._accepted_keys.add(intent.dedup_key)
+        self._intents[intent.utterance_id] = intent
+        if len(self._accepted_keys) > 512:
+            self._accepted_keys = set(list(self._accepted_keys)[-256:])
+
+    def _intent_for(self, intent_id: str | None) -> SpeechIntent | None:
+        return self._intents.get(intent_id) if intent_id else None
+
+    def _fresh(self, intent: SpeechIntent) -> bool:
+        if intent.expires_at is not None and time.time() >= intent.expires_at:
+            return False
+        if intent.freshness_scope == "work":
+            return True
+        key = intent.command_key
+        return key is None or self._is_current(key[0], key[1])
+
+    def _eligible_for_worker(self, payload: dict[str, Any]) -> bool:
+        intent_id = str(payload.get("utterance_id") or "")
+        with self._lock:
+            intent = self._intent_for(intent_id)
+            accepted = (
+                not self._speech_stopped
+                and intent_id in {self._committed_id, self._playing_id}
+            )
+        return bool(intent and accepted and self._fresh(intent))
+
+    def _observe_worker(self, state: str, payload: dict[str, Any]) -> None:
+        intent_id = str(payload.get("utterance_id") or "")
+        next_intent: SpeechIntent | None = None
+        with self._lock:
+            intent = self._intent_for(intent_id)
+            if intent is None:
+                return
+            if state == "started":
+                self._playing_id = intent_id
+                if self._committed_id == intent_id:
+                    self._committed_id = None
+            elif state in {"completed", "cancelled", "failed"}:
+                if self._playing_id == intent_id:
+                    self._playing_id = None
+                if self._committed_id == intent_id:
+                    self._committed_id = None
+                if state == "completed" and intent.replayable:
+                    self._last_replayable = intent
+                if not self._committed_id and not self._playing_id and not self._speech_stopped:
+                    next_intent = self._next_eligible_locked()
+                    if next_intent is not None:
+                        self._committed_id = next_intent.utterance_id
+        self._diagnostic(
+            "played" if state == "completed" else state,
+            intent,
+        )
+        if next_intent is not None:
+            self.worker.input_queue.put(next_intent.to_worker_payload())
+
+    def _next_eligible_locked(self) -> SpeechIntent | None:
+        while self._backlog:
+            candidate = self._backlog.pop(0)
+            if self._fresh(candidate):
+                return candidate
+            self._diagnostic("expired", candidate)
+        return None
+
+    @staticmethod
+    def _newer_command(incoming: SpeechIntent, current: SpeechIntent) -> bool:
+        if incoming.command_seq is None or current.command_seq is None:
+            return False
+        return incoming.command_seq > current.command_seq
+
+    @staticmethod
+    def _supersedes(incoming: SpeechIntent, current: SpeechIntent) -> bool:
+        if incoming.command_key != current.command_key:
+            return incoming.priority > current.priority
+        if incoming.kind in SUPERSEDING_KINDS and current.kind in {"handoff", "progress"}:
+            return True
+        return incoming.priority > current.priority and current.kind != "handoff"
+
+    def _drop_obsolete_backlog(self, incoming: SpeechIntent) -> None:
+        if incoming.kind not in SUPERSEDING_KINDS:
+            return
+        kept: list[SpeechIntent] = []
+        for queued in self._backlog:
+            obsolete = (
+                queued.command_key == incoming.command_key
+                and queued.kind in {"handoff", "progress"}
+            )
+            if obsolete:
+                self._diagnostic("replaced", queued, replaced_by=incoming.utterance_id)
+            else:
+                kept.append(queued)
+        self._backlog = kept
+
+    def _control_loop(self) -> None:
+        path = str(self._control_socket_path)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sock.bind(path)
+        sock.settimeout(0.5)
+        try:
+            while not self._shutdown.is_set():
+                try:
+                    command = sock.recvfrom(256)[0].decode("utf-8", errors="replace").strip().lower()
+                except socket.timeout:
+                    continue
+                if command == "play":
+                    self.play()
+                elif command == "replay":
+                    self.replay()
+                elif command in {"skip", "cancel"}:
+                    self.skip()
+                elif command in {"pause", "stop"}:
+                    self.stop()
+                elif command == "toggle":
+                    self.play()
+        finally:
+            sock.close()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def _diagnostic(self, event: str, intent: SpeechIntent, **fields: Any) -> None:
+        path = self._event_log_path
+        if not path:
+            return
+        record = {
+            "event": event,
+            "at": time.time(),
+            "utterance_id": intent.utterance_id,
+            "dedup_key": intent.dedup_key,
+            "relay_command_seq": intent.command_seq,
+            "relay_command_id": intent.command_id,
+            "source": intent.source,
+            "kind": intent.kind,
+            "authoritative": intent.authoritative,
+            **fields,
+        }
+        try:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+        except OSError:
+            pass
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 3)
