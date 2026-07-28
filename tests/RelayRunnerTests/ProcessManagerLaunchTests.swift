@@ -105,7 +105,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         var codexConfig = AppConfig()
         codexConfig.general.provider = .codex
         let codexScript = ProcessManager.launchScript(
-            relayBridge: "/Relay Runner/relay-bridge",
+            relayBridge: "/Relay Runner/scripts/relay-bridge",
             target: .codex,
             agentBinary: "/usr/local/bin/codex",
             config: codexConfig,
@@ -116,7 +116,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         var claudeConfig = AppConfig()
         claudeConfig.general.provider = .claude
         let claudeScript = ProcessManager.launchScript(
-            relayBridge: "/Relay Runner/relay-bridge",
+            relayBridge: "/Relay Runner/scripts/relay-bridge",
             target: .claude,
             agentBinary: "/usr/local/bin/claude",
             config: claudeConfig,
@@ -141,11 +141,19 @@ final class ProcessManagerLaunchTests: XCTestCase {
             "mcp__relay-vision__screenshot",
             "__TRACE__",
             "__ORCHESTRATOR_REPLY__",
+            "Do not write reply JSON or reply envelopes to /tmp/voice_in.fifo directly",
+            "the sole app-owned __ORCHESTRATOR_REPLY__ encoder",
             "Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible",
         ] {
             XCTAssertTrue(codexScript.contains(phrase), phrase)
             XCTAssertTrue(claudeScript.contains(phrase), phrase)
         }
+        XCTAssertTrue(codexScript.contains(
+            "export RELAY_REPLY_HELPER='/Relay Runner/services/relay_reply.py'"
+        ))
+        XCTAssertTrue(claudeScript.contains(
+            "export RELAY_REPLY_HELPER='/Relay Runner/services/relay_reply.py'"
+        ))
         XCTAssertFalse(codexScript.contains("handle the newest intent"))
         XCTAssertFalse(claudeScript.contains("handle the newest intent"))
         XCTAssertFalse(codexScript.contains("Use the relay-bridge skill now."))
@@ -211,6 +219,8 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(script.contains("developer_instructions="))
         XCTAssertFalse(script.contains("--append-system-prompt"))
         XCTAssertFalse(script.contains("relay_completion_hook.py"))
+        XCTAssertFalse(script.contains("relay_reply.py"))
+        XCTAssertFalse(script.contains("RELAY_REPLY_HELPER"))
         XCTAssertFalse(script.contains("hooks.UserPromptSubmit"))
         XCTAssertFalse(script.contains("--settings"))
         XCTAssertTrue(script.contains("Use the relay-bridge skill now."))

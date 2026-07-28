@@ -291,6 +291,79 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         publish_command.assert_called_once()
         schedule_fallback.assert_not_called()
 
+    def test_dispatch_feedback_smoke_produces_one_action_and_one_spoken_outcome(self):
+        voice_bridge._reset_foreground_reply_delivery_for_tests()
+        worker = FakeTTSWorker()
+        messenger = FakeMessenger()
+        shutdown_event = threading.Event()
+        command = {
+            "relay_command_seq": 1,
+            "relay_command_id": "cmd-1",
+            "source_text": "dispatch RR-247",
+        }
+        raw_feedback = json.dumps({
+            "type": "__ORCHESTRATOR_REPLY__",
+            **command,
+            "text": "Dispatched RR-247.",
+        })
+        completion = "__RELAY_COMPLETION__:" + json.dumps({
+            **command,
+            "text": "Dispatched RR-247.",
+        })
+
+        def read_once(_fd, _size):
+            shutdown_event.set()
+            return (
+                "dispatch RR-247\n"
+                + raw_feedback
+                + "\n"
+                + completion
+                + "\n"
+            ).encode()
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge.os, "close"),
+            mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+            mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text", return_value=True),
+            mock.patch.object(
+                voice_bridge,
+                "_begin_relay_command",
+                return_value=command,
+            ) as begin_command,
+            mock.patch.object(voice_bridge, "_relay_command_current", return_value=True),
+            mock.patch.object(voice_bridge, "record_command_authorization"),
+            mock.patch.object(voice_bridge, "_queue_voice_acknowledgement", return_value=True),
+            mock.patch.object(voice_bridge, "_start_pm_update_mode"),
+            mock.patch.object(voice_bridge, "_publish_command") as publish_command,
+            mock.patch.object(
+                voice_bridge,
+                "_schedule_foreground_reply_fallback",
+            ) as schedule_fallback,
+        ):
+            voice_bridge._run_relay(
+                worker,
+                shutdown_event,
+                messenger=messenger,
+            )
+
+        begin_command.assert_called_once_with("dispatch RR-247")
+        publish_command.assert_called_once()
+        schedule_fallback.assert_not_called()
+        self.assertEqual(len(messenger.users), 1)
+        self.assertEqual(messenger.users[0][0], "dispatch RR-247")
+        self.assertEqual(messenger.finals, [{
+            "text": "Dispatched RR-247.",
+            "relay_command_seq": 1,
+            "relay_command_id": "cmd-1",
+            "speech_source": "completion",
+        }])
+        self.assertTrue(worker.input_queue.empty())
+
     def test_run_sidecar_bypasses_active_foreground_publication_path(self):
         worker = FakeTTSWorker()
         messenger = FakeMessenger()
@@ -999,6 +1072,105 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 "relay_command_seq": command["relay_command_seq"],
                 "relay_command_id": command["relay_command_id"],
             }])
+            self.assertTrue(worker.input_queue.empty())
+
+    def test_raw_control_shaped_json_is_quarantined_without_payload_logging(self):
+        worker = FakeTTSWorker()
+        private_values = [
+            "dispatch RR-247",
+            "private prompt",
+            "secret tool output",
+        ]
+        samples = [
+            json.dumps({
+                "type": "__ORCHESTRATOR_REPLY__",
+                "text": private_values[0],
+                "prompt": private_values[1],
+                "tool_output": private_values[2],
+            }),
+            json.dumps({
+                "payload": {
+                    "type": "__ORCHESTRATOR_REPLY__",
+                    "text": private_values[0],
+                },
+            }),
+            json.dumps({
+                "type": "__UNKNOWN_RELAY_CONTROL__",
+                "text": private_values[0],
+            }),
+            '{"type":"__ORCHESTRATOR_REPLY__","text":"dispatch RR-247"',
+        ]
+
+        stderr = io.StringIO()
+        with mock.patch.object(voice_bridge.sys, "stderr", stderr):
+            for sample in samples:
+                with self.subTest(sample=sample):
+                    self.assertTrue(voice_bridge._handle_relay_control_message(
+                        sample,
+                        worker,
+                        event_log_path=None,
+                    ))
+
+        diagnostic = stderr.getvalue()
+        self.assertEqual(diagnostic.count("quarantined_relay_control"), len(samples))
+        self.assertIn("shape=nested", diagnostic)
+        self.assertIn("control_type=unknown", diagnostic)
+        self.assertIn("syntax=malformed", diagnostic)
+        for private_value in private_values:
+            self.assertNotIn(private_value, diagnostic)
+
+    def test_unknown_prefixed_control_is_quarantined_but_token_prose_is_conversation(self):
+        worker = FakeTTSWorker()
+
+        self.assertTrue(voice_bridge._handle_relay_control_message(
+            '__UNKNOWN_RELAY_CONTROL__:{"text":"dispatch RR-247"}',
+            worker,
+            event_log_path=None,
+        ))
+        self.assertFalse(voice_bridge._handle_relay_control_message(
+            "Can you explain what __ORCHESTRATOR_REPLY__ means?",
+            worker,
+            event_log_path=None,
+        ))
+
+    def test_completion_hook_recovers_after_malformed_explicit_reply(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = voice_bridge._begin_relay_command(
+                "dispatch RR-247",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+            stderr = io.StringIO()
+
+            with mock.patch.object(voice_bridge.sys, "stderr", stderr):
+                self.assertTrue(voice_bridge._handle_relay_control_message(
+                    '__ORCHESTRATOR_REPLY__:{"type":"__ORCHESTRATOR_REPLY__"',
+                    worker,
+                    messenger=messenger,
+                    state_path=state_path,
+                    event_log_path=None,
+                ))
+                self.assertTrue(voice_bridge._handle_provider_completion_control(
+                    json.dumps({
+                        **command,
+                        "text": "Recovered the valid provider final.",
+                    }),
+                    tts_worker=worker,
+                    messenger=messenger,
+                    state_path=state_path,
+                ))
+
+            self.assertEqual(messenger.finals, [{
+                "text": "Recovered the valid provider final.",
+                "relay_command_seq": command["relay_command_seq"],
+                "relay_command_id": command["relay_command_id"],
+                "speech_source": "completion",
+            }])
+            self.assertNotIn("did not send a spoken final reply", stderr.getvalue())
             self.assertTrue(worker.input_queue.empty())
 
     def test_current_orchestrator_reply_falls_back_when_messenger_rejects_it(self):
@@ -2939,11 +3111,11 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
         claude_cleanup = script[
             script.index("After generating your response, tear down the background heartbeat refresher"):
-            script.index("Then send your authoritative user-facing response to the messenger")
+            script.index("Then send your authoritative user-facing response through Relay's canonical reply helper")
         ]
         codex_cleanup = script[
             script.index("After each handled command, stop only that command's heartbeat refresher"):
-            script.index("Send the authoritative user-facing response to the messenger")
+            script.index("Send the authoritative user-facing response through Relay's canonical reply helper")
         ]
 
         for cleanup in [claude_cleanup, codex_cleanup]:
@@ -2955,9 +3127,20 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertNotIn("launchctl remove com.relay.voicebridge", cleanup)
             self.assertNotIn("VOICE_BRIDGE_LOG_REASON=restart", cleanup)
 
-        self.assertEqual(script.count("os.O_WRONLY | os.O_NONBLOCK"), 2)
+        self.assertNotIn("os.O_WRONLY | os.O_NONBLOCK", script)
         self.assertNotIn("python3 - <<'PY' > /tmp/tts_in.fifo", script)
-        self.assertEqual(script.count('print("__ORCHESTRATOR_REPLY__:" + json.dumps(payload)'), 2)
+        self.assertNotIn('print("__ORCHESTRATOR_REPLY__:" + json.dumps(payload)', script)
+        self.assertEqual(
+            script.count(
+                "printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | "
+                "/usr/bin/python3 '__RELAY_REPLY_HELPER__'"
+            ),
+            2,
+        )
+        self.assertEqual(
+            script.count('-e "s|__RELAY_REPLY_HELPER__|$relay_reply_helper_path|g"'),
+            2,
+        )
         self.assertEqual(script.count('"kind":"reasoning-summary"'), 2)
         self.assertNotIn("Voice bridge is ready. You can speak at any point.", script)
 
@@ -2967,6 +3150,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             script = f.read()
 
         self.assertIn("relay_completion_hook.py", script)
+        self.assertIn("relay_reply.py", script)
 
 
 if __name__ == "__main__":

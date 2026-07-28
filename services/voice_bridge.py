@@ -76,6 +76,21 @@ PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS = float(os.environ.get("PROVIDER_COMPLET
 _FOREGROUND_REPLY_LOCK = threading.Lock()
 _FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
 _VOICE_STATE_LOCK = threading.RLock()
+_RELAY_CONTROL_TYPE_RE = re.compile(r"^__[A-Z][A-Z0-9_]*__$")
+_RAW_RELAY_CONTROL_TYPE_RE = re.compile(
+    r'"type"\s*:\s*"(?P<type>__[A-Z][A-Z0-9_]*__)"'
+)
+_RELAY_CONTROL_TYPE_LABELS = {
+    "__TTS_STOP__": "tts_stop",
+    "__INTERRUPT__": "interrupt",
+    "__CANCEL__": "cancel",
+    "__PLAY__": "play",
+    "__REPLAY__": "replay",
+    "__TRACE__": "trace",
+    "__ORCHESTRATOR_REPLY__": "orchestrator_reply",
+    "__RELAY_COMPLETION__": "relay_completion",
+    "__STATUS__": "status",
+}
 
 
 def _notify_state(state: str, **kwargs):
@@ -1877,6 +1892,87 @@ def _queue_voice_acknowledgement(
     return True
 
 
+def _log_quarantined_relay_control(
+    *,
+    envelope: str,
+    control_type: str,
+    shape: str,
+    syntax: str,
+    reason: str,
+) -> None:
+    """Emit only fixed, bounded metadata for rejected Relay control shapes."""
+    label = _RELAY_CONTROL_TYPE_LABELS.get(control_type, "unknown")
+    print(
+        "[voice_bridge] quarantined_relay_control "
+        f"envelope={envelope} control_type={label} shape={shape} "
+        f"syntax={syntax} reason={reason}",
+        file=sys.stderr,
+    )
+
+
+def _find_control_shaped_type(value: object) -> tuple[str, str] | None:
+    """Find a bounded top-level or nested `type: __CONTROL__` marker."""
+    pending: list[tuple[object, int]] = [(value, 0)]
+    visited = 0
+    while pending and visited < 64:
+        current, depth = pending.pop()
+        visited += 1
+        if not isinstance(current, dict):
+            continue
+        raw_type = current.get("type")
+        if isinstance(raw_type, str) and _RELAY_CONTROL_TYPE_RE.fullmatch(raw_type):
+            return raw_type, "top_level" if depth == 0 else "nested"
+        if depth >= 4:
+            continue
+        for child in current.values():
+            if isinstance(child, dict):
+                pending.append((child, depth + 1))
+            elif isinstance(child, list):
+                pending.extend(
+                    (item, depth + 1)
+                    for item in child[:16]
+                    if isinstance(item, dict)
+                )
+    return None
+
+
+def _quarantine_raw_relay_control_object(text: str) -> bool:
+    """Reject noncanonical JSON control shapes before they become user intent."""
+    source = str(text or "").strip()
+    if not source.startswith("{"):
+        return False
+    try:
+        decoded = json.loads(source)
+    except (json.JSONDecodeError, RecursionError):
+        match = _RAW_RELAY_CONTROL_TYPE_RE.search(source)
+        if match is None:
+            return False
+        control_type = match.group("type")
+        shape = "unverified"
+        syntax = "malformed"
+    else:
+        if not isinstance(decoded, dict):
+            return False
+        found = _find_control_shaped_type(decoded)
+        if found is None:
+            match = _RAW_RELAY_CONTROL_TYPE_RE.search(source)
+            if match is None:
+                return False
+            control_type = match.group("type")
+            shape = "nested"
+        else:
+            control_type, shape = found
+        syntax = "valid"
+    _log_quarantined_relay_control(
+        envelope="raw_json",
+        control_type=control_type,
+        shape=shape,
+        syntax=syntax,
+        reason="noncanonical_envelope",
+    )
+    return True
+
+
 def _handle_relay_control_message(
     text: str,
     tts_worker: TTSWorker,
@@ -1972,6 +2068,20 @@ def _handle_relay_control_message(
         return True
 
     if text.startswith("__STATUS__:"):
+        return True
+
+    if _quarantine_raw_relay_control_object(text):
+        return True
+
+    unknown_control = re.match(r"^(?P<type>__[A-Z][A-Z0-9_]*__):", text)
+    if unknown_control is not None:
+        _log_quarantined_relay_control(
+            envelope="prefixed",
+            control_type=unknown_control.group("type"),
+            shape="top_level",
+            syntax="unknown",
+            reason="unknown_control_type",
+        )
         return True
 
     return False
@@ -2245,8 +2355,22 @@ def _handle_orchestrator_reply_control(
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        data = {"text": text}
+        _log_quarantined_relay_control(
+            envelope="prefixed",
+            control_type="__ORCHESTRATOR_REPLY__",
+            shape="top_level",
+            syntax="malformed",
+            reason="invalid_payload",
+        )
+        return False
     if not isinstance(data, dict):
+        _log_quarantined_relay_control(
+            envelope="prefixed",
+            control_type="__ORCHESTRATOR_REPLY__",
+            shape="top_level",
+            syntax="valid",
+            reason="invalid_payload",
+        )
         return False
     reply = str(data.get("text") or "").strip()
     if not reply:
@@ -2254,12 +2378,19 @@ def _handle_orchestrator_reply_control(
 
     nested = data.get("relay_command")
     command = nested if isinstance(nested, dict) else data
-    if not command.get("relay_command_id"):
-        command = _read_json_file(VOICE_COMMAND_CLAIM_FILE)
+    command_key = _relay_command_key(command)
+    if command_key is None:
+        _log_quarantined_relay_control(
+            envelope="prefixed",
+            control_type="__ORCHESTRATOR_REPLY__",
+            shape="top_level",
+            syntax="valid",
+            reason="missing_command_key",
+        )
+        return False
     if _foreground_reply_delivered(command):
         return True
-    command_key = _relay_command_key(command)
-    if command_key is None or not _relay_command_current(command_key[0], command_key[1], state_path=state_path):
+    if not _relay_command_current(command_key[0], command_key[1], state_path=state_path):
         print(
             "[voice_bridge] Dropping foreground reply because its Relay command was superseded.",
             file=sys.stderr,
