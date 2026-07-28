@@ -11,6 +11,8 @@ final class OverlayController {
     private let pill = TranscriptionPill(frame: .zero)
     private let mediaController = MediaController()
     private var stateObservation: Any?
+    private var globalPointerMonitor: Any?
+    private var localPointerMonitor: Any?
 
     private var config: AwarenessConfig
 
@@ -48,6 +50,8 @@ final class OverlayController {
 
         p.orderFrontRegardless()
         self.panel = p
+        panelIgnoresMouseEvents = true
+        installPointerMonitors()
 
         // Observe state machine and track display changes at 30fps.
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self, weak stateMachine] _ in
@@ -68,12 +72,14 @@ final class OverlayController {
             timer.invalidate()
         }
         stateObservation = nil
+        removePointerMonitors()
 
         pill.hide(animated: false)
         particleField.transition(to: nil)
 
         panel?.orderOut(nil)
         panel = nil
+        panelIgnoresMouseEvents = true
 
         NSLog("[OverlayController] Stopped")
     }
@@ -89,25 +95,67 @@ final class OverlayController {
     /// most ticks (the panel is click-through 99% of the time).
     private var panelIgnoresMouseEvents: Bool = true
 
-    /// Polled at 30fps from the same timer that drives state observation.
-    /// Default: panel is click-through (events pass through to underlying
-    /// apps). When the cursor enters the pill's screen-space frame, the
-    /// panel temporarily intercepts events so the pill's scrollWheel
-    /// handler can drive manual body scroll. ~33ms transition latency is
-    /// imperceptible in practice and avoids the overhead of NSEvent
-    /// global/local monitor pairs.
+    /// Pointer monitors update this immediately when the cursor moves. The
+    /// 30fps state timer also calls it so pill animation, resize, display
+    /// changes, or hiding under a stationary cursor cannot leave stale
+    /// interception behind.
     private func tickPanelClickThrough() {
+        reconcilePanelClickThrough(at: NSEvent.mouseLocation)
+    }
+
+    private func reconcilePanelClickThrough(at screenPoint: NSPoint) {
         guard let panel else { return }
-        let cursorOverPill: Bool
-        if let pillRect = pill.pillFrameOnScreen() {
-            cursorOverPill = pillRect.contains(NSEvent.mouseLocation)
-        } else {
-            cursorOverPill = false
-        }
-        let shouldIgnore = !cursorOverPill
+        let shouldIgnore = Self.shouldIgnoreMouseEvents(
+            at: screenPoint,
+            manualScrollFrame: pill.manualScrollFrameOnScreen()
+        )
         if panelIgnoresMouseEvents != shouldIgnore {
             panel.ignoresMouseEvents = shouldIgnore
             panelIgnoresMouseEvents = shouldIgnore
+        }
+    }
+
+    static func shouldIgnoreMouseEvents(
+        at screenPoint: NSPoint,
+        manualScrollFrame: NSRect?
+    ) -> Bool {
+        guard let manualScrollFrame else { return true }
+        return !manualScrollFrame.contains(screenPoint)
+    }
+
+    private func installPointerMonitors() {
+        let mask: NSEvent.EventTypeMask = [
+            .mouseMoved,
+            .leftMouseDragged,
+            .rightMouseDragged,
+            .otherMouseDragged,
+        ]
+        globalPointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.reconcilePanelClickThrough(at: Self.screenLocation(for: event))
+        }
+        localPointerMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.reconcilePanelClickThrough(at: Self.screenLocation(for: event))
+            return event
+        }
+    }
+
+    private static func screenLocation(for event: NSEvent) -> NSPoint {
+        guard let window = event.window else {
+            // Global monitor events report locationInWindow in screen space.
+            return event.locationInWindow
+        }
+        let pointRect = NSRect(origin: event.locationInWindow, size: .zero)
+        return window.convertToScreen(pointRect).origin
+    }
+
+    private func removePointerMonitors() {
+        if let globalPointerMonitor {
+            NSEvent.removeMonitor(globalPointerMonitor)
+            self.globalPointerMonitor = nil
+        }
+        if let localPointerMonitor {
+            NSEvent.removeMonitor(localPointerMonitor)
+            self.localPointerMonitor = nil
         }
     }
 
