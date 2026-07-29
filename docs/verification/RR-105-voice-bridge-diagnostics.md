@@ -16,7 +16,7 @@
 4. Let the active Relay session or app watchdog restart the bridge.
 5. Inspect `/tmp/voice_bridge.log` for the fresh restart header and launch result lines:
    - `reason=restart` or `reason=watchdog-recovery`
-   - `launchctl submit exit_status=...`
+   - `launchctl job submission accepted/failed exit_status=...` (submission only; this is not a bridge or provider exit)
    - either `launchctl produced socket...` or `launchctl print follows`
    - `direct fallback launched...` if launchctl did not produce a socket
 6. Inspect the preserved previous log at the path named by `previous_log=...`, usually:

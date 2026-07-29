@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import io
 import queue
+import stat
 import sys
 import tempfile
 import threading
@@ -959,6 +960,8 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual(payload["session_id"], 7)
             self.assertEqual(payload["action"], "create_ticket")
             self.assertEqual(payload["repo_path"], str(repo.resolve()))
+            self.assertEqual(payload["status"], "queued")
+            self.assertTrue(payload["defer_processing"])
             self.assertIn("Fix login retries", payload["context"])
             self.assertIn("Retry errors are visible", payload["context"])
             self.assertNotIn("source_text", payload["context"])
@@ -989,6 +992,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 action,
                 repo_path=temp_dir,
                 state_path=state_path,
+                event_log_path=None,
                 request_json=lambda path, payload: requests.append((path, payload)) or {},
             )
 
@@ -3097,7 +3101,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 "fix the signup bug",
             ])
 
-    def test_voice_commands_default_to_foreground_pm_without_raw_fanout(self):
+    def test_project_work_is_durably_queued_for_foreground_pm(self):
         relay_command = {"relay_command_seq": 1, "relay_command_id": "cmd-1"}
         action = voice_bridge.resolve_command_action(
             "fix the login bug",
@@ -3105,7 +3109,16 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             relay_command=relay_command,
         )
 
-        self.assertFalse(voice_bridge._should_fanout_raw_instruction_to_orchestrator(action))
+        self.assertTrue(voice_bridge._should_fanout_raw_instruction_to_orchestrator(action))
+
+        conversation = voice_bridge.resolve_command_action(
+            "why is the board not updating",
+            repo_path="/tmp/repo",
+            relay_command=relay_command,
+        )
+        self.assertFalse(
+            voice_bridge._should_fanout_raw_instruction_to_orchestrator(conversation)
+        )
 
     def test_private_command_event_log_is_bounded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3126,6 +3139,8 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
             events = [json.loads(line) for line in Path(event_path).read_text().splitlines()]
             self.assertEqual([event["relay_command_seq"] for event in events], [3, 4])
+            self.assertEqual(stat.S_IMODE(os.stat(temp_dir).st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(os.stat(event_path).st_mode), 0o600)
 
     def test_generated_provider_skills_share_preemption_contract(self):
         script_path = os.path.join(ROOT, "scripts", "relay-bridge")
