@@ -1,20 +1,5 @@
 import AppKit
 import CoreImage
-import SwiftUI
-
-enum TranscriptionPillKeycap: Equatable {
-    case capsLock
-    case option
-    case control
-
-    var onboardingAnimation: OnboardingTutorialKeycapAnimation {
-        switch self {
-        case .capsLock: return .capsLock
-        case .option: return .playbackOption
-        case .control: return .playbackControl
-        }
-    }
-}
 
 /// Bottom-center pill showing state info, live transcription, or message preview.
 /// Dark solid surface matching the board overlay styling.
@@ -52,7 +37,6 @@ final class TranscriptionPill: NSView {
 
     private let titleLabel: NSTextField
     private let bodyLabel: NSTextField
-    private var keycapView: NSHostingView<OnboardingTutorialKeycap>?
     /// Clips bodyLabel to maxBodyHeight so long TTS responses don't grow the
     /// pill into a wall of text. When the label exceeds the container, the
     /// label is animated upward inside the container (teleprompter-style).
@@ -68,15 +52,12 @@ final class TranscriptionPill: NSView {
     private let textGap: CGFloat = 12
     private let cr: CGFloat = 16
     private let bottomOffset: CGFloat = 56
-    private let keycapMaximumSize = CGSize(width: 52, height: 46)
-    private let keycapGap: CGFloat = 12
 
     private let textColor = NSColor(red: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 1)
 
     private var isCompact = true
     private var isTransitioning = false
     private var currentTheme: Theme?
-    private var currentKeycap: TranscriptionPillKeycap?
 
     /// Latest pill size requested via `transitionContent`. The deferred
     /// callback reads these instead of its captured arguments so that a
@@ -183,7 +164,6 @@ final class TranscriptionPill: NSView {
 
         applyTypography()
         applyTheme(theme)
-        applyKeycap(nil)
         titleLabel.stringValue = title
         titleLabel.alignment = .center
         isCompact = true
@@ -209,7 +189,6 @@ final class TranscriptionPill: NSView {
     func showFull(title: String,
                   body: String,
                   theme: Theme,
-                  keycap: TranscriptionPillKeycap? = nil,
                   animated: Bool = true,
                   suppressShadow: Bool = false) {
         let wasVisible = alphaValue > 0.01
@@ -231,15 +210,13 @@ final class TranscriptionPill: NSView {
         }
         bodyLabel.stringValue = body
         isCompact = false
-        applyKeycap(keycap)
 
-        let contentWidth = contentWidth(for: maxWidth)
+        let contentWidth = maxWidth - pillPadH * 2
         let titleSize = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude))
         let bodySize = bodyLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude))
         // Cap body region — long responses scroll inside the container.
         let bodyVisibleHeight = min(bodySize.height, maxBodyHeight)
-        let textHeight = pillPadV + titleSize.height + textGap + bodyVisibleHeight + pillPadV
-        let pillHeight = max(textHeight, keycapHeight + pillPadV * 2)
+        let pillHeight = pillPadV + titleSize.height + textGap + bodyVisibleHeight + pillPadV
 
         if wasVisible && animated && wasCompact {
             // Compact → Full transition: blur out → update → blur in
@@ -408,27 +385,6 @@ final class TranscriptionPill: NSView {
         bodyLabel.textColor = textColor
     }
 
-    private func applyKeycap(_ keycap: TranscriptionPillKeycap?) {
-        guard currentKeycap != keycap || (keycap != nil && keycapView == nil) else { return }
-
-        keycapView?.removeFromSuperview()
-        currentKeycap = keycap
-        guard let keycap else {
-            keycapView = nil
-            return
-        }
-
-        let view = NSHostingView(rootView: OnboardingTutorialKeycap(
-            animation: keycap.onboardingAnimation,
-            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-            maximumSize: keycapMaximumSize,
-            isDecorative: true
-        ))
-        view.setAccessibilityElement(false)
-        addSubview(view)
-        keycapView = view
-    }
-
     private func applyLayout(width: CGFloat, height: CGFloat, animated: Bool, duration: CFTimeInterval = 0.4) {
         guard let superview = superview else { return }
 
@@ -474,7 +430,7 @@ final class TranscriptionPill: NSView {
     }
 
     private func layoutLabels(targetBounds: NSRect, animated: Bool, duration: CFTimeInterval = 0.4) {
-        let contentWidth = contentWidth(for: targetBounds.width)
+        let contentWidth = targetBounds.width - currentPadH * 2
         let titleHeight = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude)).height
 
         if isCompact {
@@ -578,20 +534,6 @@ final class TranscriptionPill: NSView {
             }
         }
 
-        if let keycapView {
-            let keycapSize = keycapDisplaySize
-            let keycapFrame = NSRect(
-                x: targetBounds.maxX - currentPadH - keycapSize.width,
-                y: (targetBounds.height - keycapSize.height) / 2,
-                width: keycapSize.width,
-                height: keycapSize.height
-            )
-            if animated {
-                keycapView.animator().frame = keycapFrame
-            } else {
-                keycapView.frame = keycapFrame
-            }
-        }
     }
 
     // MARK: - Body scroll (teleprompter)
@@ -705,9 +647,9 @@ final class TranscriptionPill: NSView {
         return deviceDelta * (hasPreciseScrollingDeltas ? 1 : lineHeight)
     }
 
-    /// Scroll events can land on the title, clipped body label, or SwiftUI
-    /// keycap. Claim the hit at the pill boundary while manual scrolling is
-    /// available so every visible region follows the same responder path.
+    /// Scroll events can land on the title or clipped body label. Claim the
+    /// hit at the pill boundary while manual scrolling is available so every
+    /// visible region follows the same responder path.
     override func hitTest(_ point: NSPoint) -> NSView? {
         // AppKit supplies this point in the superview's coordinate space.
         guard acceptsManualScroll, frame.contains(point) else {
@@ -749,21 +691,6 @@ final class TranscriptionPill: NSView {
 
     private var currentPadH: CGFloat {
         pillPadH
-    }
-
-    private func contentWidth(for pillWidth: CGFloat) -> CGFloat {
-        pillWidth - currentPadH * 2 - (currentKeycap == nil ? 0 : keycapDisplaySize.width + keycapGap)
-    }
-
-    private var keycapDisplaySize: CGSize {
-        guard let currentKeycap else { return .zero }
-        let kind = currentKeycap.onboardingAnimation.kind
-        let scale = min(keycapMaximumSize.width / kind.width, keycapMaximumSize.height / kind.height)
-        return CGSize(width: kind.width * scale, height: kind.height * scale)
-    }
-
-    private var keycapHeight: CGFloat {
-        currentKeycap == nil ? 0 : keycapDisplaySize.height
     }
 
     private var currentPadV: CGFloat {

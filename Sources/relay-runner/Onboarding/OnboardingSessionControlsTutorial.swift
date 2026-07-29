@@ -318,7 +318,7 @@ enum OnboardingTutorialKeycapKind {
     }
 }
 
-enum OnboardingTutorialKeycapAnimation: Equatable {
+enum OnboardingTutorialKeycapAnimation {
     case capsLock
     case playbackOption
     case playbackControl
@@ -377,11 +377,9 @@ private struct OnboardingTutorialInstructionText: View {
     }
 }
 
-struct OnboardingTutorialKeycap: View {
+private struct OnboardingTutorialKeycap: View {
     let animation: OnboardingTutorialKeycapAnimation
     let reduceMotion: Bool
-    var maximumSize: CGSize?
-    var isDecorative = false
 
     private var kind: OnboardingTutorialKeycapKind {
         animation.kind
@@ -397,8 +395,7 @@ struct OnboardingTutorialKeycap: View {
                 )
             )
         }
-        .frame(width: displaySize.width, height: displaySize.height)
-        .accessibilityHidden(isDecorative)
+        .frame(width: kind.width, height: kind.height)
         .accessibilityLabel(kind.accessibilityLabel)
     }
 
@@ -406,19 +403,10 @@ struct OnboardingTutorialKeycap: View {
         Image(kind.assetName(capsLightOn: phase.capsLightOn), bundle: RelayRunnerResources.bundle)
                 .resizable()
                 .renderingMode(.original)
-                .frame(width: displaySize.width, height: displaySize.height)
+                .frame(width: kind.width, height: kind.height)
                 .accessibilityHidden(true)
         .scaleEffect(phase.scale)
         .animation(nil, value: phase.scale)
-    }
-
-    private var displaySize: CGSize {
-        guard let maximumSize else {
-            return CGSize(width: kind.width, height: kind.height)
-        }
-
-        let scale = min(maximumSize.width / kind.width, maximumSize.height / kind.height)
-        return CGSize(width: kind.width * scale, height: kind.height * scale)
     }
 }
 

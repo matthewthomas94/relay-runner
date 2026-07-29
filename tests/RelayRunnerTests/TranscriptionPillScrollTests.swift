@@ -9,8 +9,27 @@ final class TranscriptionPillScrollTests: XCTestCase {
         count: 20
     ).joined(separator: "\n")
 
-    func testMountedOverlayHitTestingRoutesTitleBodyAndKeycapScrollToPill() throws {
-        let mounted = mountLongPill(keycap: .control)
+    func testCommandPillsRemainTextOnly() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let controllerSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Overlay/OverlayController.swift"),
+            encoding: .utf8
+        )
+        let pillSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Overlay/TranscriptionPill.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(controllerSource.contains("keycap:"))
+        XCTAssertFalse(pillSource.contains("TranscriptionPillKeycap"))
+        XCTAssertFalse(pillSource.contains("NSHostingView"))
+    }
+
+    func testMountedOverlayHitTestingRoutesTitleBodyAndTrailingEdgeScrollToPill() throws {
+        let mounted = mountLongPill()
         defer { mounted.close() }
 
         mounted.panel.ignoresMouseEvents = false
@@ -115,7 +134,6 @@ final class TranscriptionPillScrollTests: XCTestCase {
             title: "Playing…",
             body: longBody,
             theme: .tts,
-            keycap: .control,
             animated: false
         )
         XCTAssertEqual(bodyLabel.frame.minY, selectedY, accuracy: 0.01)
@@ -174,9 +192,7 @@ final class TranscriptionPillScrollTests: XCTestCase {
         mounted.close()
     }
 
-    private func mountLongPill(
-        keycap: TranscriptionPillKeycap? = nil
-    ) -> (panel: OverlayPanel, root: NSView, pill: TranscriptionPill, close: () -> Void) {
+    private func mountLongPill() -> (panel: OverlayPanel, root: NSView, pill: TranscriptionPill, close: () -> Void) {
         _ = NSApplication.shared
         let panel = OverlayPanel()
         panel.setFrame(NSRect(x: 100, y: 100, width: 800, height: 500), display: false)
@@ -188,7 +204,6 @@ final class TranscriptionPillScrollTests: XCTestCase {
             title: "Response ready…",
             body: longBody,
             theme: .tts,
-            keycap: keycap,
             animated: false
         )
         panel.orderFrontRegardless()
