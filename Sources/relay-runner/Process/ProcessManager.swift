@@ -610,7 +610,11 @@ final class ProcessManager {
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
         launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
         submit_status=$?
-        echo "[relay-runner] app watchdog launchctl submit exit_status=$submit_status provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
+        if [ "$submit_status" -eq 0 ]; then
+            echo "[relay-runner] app watchdog launchctl job submission accepted exit_status=0 (submission only; bridge/provider outcome pending) provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
+        else
+            echo "[relay-runner] app watchdog launchctl job submission failed exit_status=$submit_status provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
+        fi
         for _ in $(seq 1 20); do
             if [ -S /tmp/voice_bridge.sock ]; then
                 echo "[relay-runner] app watchdog launchctl produced socket provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
@@ -743,6 +747,25 @@ final class ProcessManager {
         let workingDirectory: String
         let target: AgentTarget
         let voiceDelivery: SessionVoiceDelivery
+        let sessionEventPath: String?
+
+        init(
+            executable: String,
+            arguments: [String],
+            launcherPath: String,
+            workingDirectory: String,
+            target: AgentTarget,
+            voiceDelivery: SessionVoiceDelivery,
+            sessionEventPath: String? = nil
+        ) {
+            self.executable = executable
+            self.arguments = arguments
+            self.launcherPath = launcherPath
+            self.workingDirectory = workingDirectory
+            self.target = target
+            self.voiceDelivery = voiceDelivery
+            self.sessionEventPath = sessionEventPath
+        }
     }
 
     enum SessionLaunchPreparationError: LocalizedError {
@@ -777,7 +800,8 @@ final class ProcessManager {
     func prepareNewSession(
         config: AppConfig,
         voiceDelivery: SessionVoiceDelivery = .agentSkill,
-        suppressStartupGreeting: Bool = false
+        suppressStartupGreeting: Bool = false,
+        sessionEventPath: String? = nil
     ) throws -> PreparedSessionLaunch {
         Self.clearBridgeStopRequested()
 
@@ -832,6 +856,7 @@ final class ProcessManager {
             config: config,
             voiceDelivery: voiceDelivery,
             suppressStartupGreeting: suppressStartupGreeting,
+            sessionEventPath: sessionEventPath,
             resolvedCodexModel: codexSelection?.resolvedModel,
             resolvedCodexEffort: codexSelection?.resolvedEffort
         )
@@ -857,7 +882,8 @@ final class ProcessManager {
             launcherPath: launcher,
             workingDirectory: workingDirectory,
             target: target,
-            voiceDelivery: voiceDelivery
+            voiceDelivery: voiceDelivery,
+            sessionEventPath: sessionEventPath
         )
     }
 
@@ -899,6 +925,7 @@ final class ProcessManager {
         voiceDelivery: SessionVoiceDelivery = .agentSkill,
         suppressStartupGreeting: Bool = false,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        sessionEventPath: String? = nil,
         resolvedCodexModel: String? = nil,
         resolvedCodexEffort: String? = nil
     ) -> String {
@@ -936,6 +963,7 @@ final class ProcessManager {
         return """
         #!/bin/bash
         \(Self.shellProfileSource())
+        \(Self.sessionLifecyclePreamble(eventPath: sessionEventPath))
         # Ensure venv + deps + speech-model + relay skills are installed. In
         # embedded sessions, also start the bridge daemon before the provider so
         # voice turns can be injected without a blocking bootstrap prompt.
@@ -954,11 +982,29 @@ final class ProcessManager {
             voiceDelivery: voiceDelivery
         ))
         \(cdLine)
+        relay_record_session_event launcher_start started
         \(bridgeStartLine)
+        \(voiceDelivery == .appOwned ? "relay_record_session_event bridge_socket_readiness ready" : "")
+        relay_record_session_event provider_spawn started
         # Interactive agent session with Relay Runner voice mode pre-fired.
         # Replacing this launcher process keeps the PTY child PID aligned with
         # the agent, so End Session terminates the interactive process cleanly.
         exec \(launchLine)
+        """
+    }
+
+    private static func sessionLifecyclePreamble(eventPath: String?) -> String {
+        guard let eventPath, !eventPath.isEmpty else {
+            return "relay_record_session_event() { :; }"
+        }
+        return """
+        export RELAY_SESSION_EVENTS=\(shellQuoted(eventPath))
+        relay_record_session_event() {
+            printf '{"outcome":"%s","stage":"%s","timestamp":"%s"}\\n' \
+                "$2" "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+                >> "$RELAY_SESSION_EVENTS" 2>/dev/null || true
+            chmod 600 "$RELAY_SESSION_EVENTS" 2>/dev/null || true
+        }
         """
     }
 

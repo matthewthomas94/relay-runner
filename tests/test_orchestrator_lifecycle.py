@@ -223,6 +223,23 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             voice_bridge.ORCHESTRATOR_HEARTBEAT_SECONDS = 0.01
             os.environ["RELAY_RUNNER_PROVIDER"] = "claude"
             shutdown_event = threading.Event()
+            event_log = Path(tmp) / "command-actions.jsonl"
+            event_log.write_text(
+                json.dumps({
+                    "relay_command_seq": 6,
+                    "relay_command_id": "failed-before-restart",
+                    "source_text": "private failed request",
+                    "repo_path": tmp,
+                    "state": "queued",
+                })
+                + "\n"
+                + json.dumps({
+                    "relay_command_seq": 6,
+                    "relay_command_id": "failed-before-restart",
+                    "state": "delivery_failed",
+                })
+                + "\n"
+            )
             try:
                 session = voice_bridge.start_persistent_orchestrator_lifecycle(
                     {
@@ -234,6 +251,7 @@ class OrchestratorLifecycleTests(unittest.TestCase):
                     },
                     shutdown_event,
                     cwd=tmp,
+                    event_log_path=str(event_log),
                     request_json=fake_request,
                 )
                 time.sleep(0.04)
@@ -253,6 +271,14 @@ class OrchestratorLifecycleTests(unittest.TestCase):
         self.assertEqual(requests[0][0], "/v1/orchestrator-session/ensure")
         self.assertEqual(requests[0][1]["provider"], "claude")
         self.assertEqual(requests[0][1]["state"], "idle")
+        self.assertEqual(
+            requests[0][1]["command_action_states"][0]["state"],
+            "delivery_failed",
+        )
+        self.assertEqual(
+            requests[0][1]["command_action_states"][0]["source_text"],
+            "private failed request",
+        )
         self.assertTrue(any(path == "/v1/orchestrator-session/heartbeat" for path, _ in requests))
         self.assertEqual(requests[-1][0], "/v1/orchestrator-session/stop")
         self.assertEqual(requests[-1][1]["reason"], "bridge stopped")
@@ -356,6 +382,202 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             self.assertNotIn("context", public)
             private = store.get_private("cmd-4")
             self.assertIn("Fix review follow-through", private["context"])
+
+    def test_orchestrator_command_store_recovers_only_unfinished_actions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = OrchestratorCommandStore(Path(tmp) / "commands.db")
+            for seq, status in enumerate(
+                ("queued", "claimed", "mutation_authorized", "delivery_failed", "created"),
+                start=1,
+            ):
+                command_id = f"cmd-{seq}"
+                store.record(
+                    repo_path=tmp,
+                    source_text=f"private command {seq}",
+                    relay_command_seq=seq,
+                    relay_command_id=command_id,
+                    action="create_ticket",
+                    status=status,
+                )
+
+            recoverable = store.recoverable(repo_path=tmp)
+
+            self.assertEqual(
+                [command["status"] for command in recoverable],
+                ["queued", "claimed", "mutation_authorized", "delivery_failed"],
+            )
+            self.assertTrue(all("source_text" not in command for command in recoverable))
+
+    def test_deferred_workspace_command_requests_project_without_parent_ticket(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                workspace = root / "workspace"
+                workspace.mkdir()
+                child = workspace / "child-repo"
+                self.make_git_repo(child)
+                state_path = root / "voice_command_state.json"
+                command_id = f"{provider}-workspace"
+                state_path.write_text(json.dumps({
+                    "relay_command_seq": 11,
+                    "relay_command_id": command_id,
+                }))
+                original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+                orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+                daemon = self.make_daemon(root, provider=provider)
+                try:
+                    result = daemon.record_orchestrator_command(
+                        repo_path=str(workspace),
+                        source_text="fix the login flow",
+                        relay_command_seq=11,
+                        relay_command_id=command_id,
+                        provider=provider,
+                        action="create_ticket",
+                        status="queued",
+                        defer_processing=True,
+                    )
+                finally:
+                    orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+                command = result["orchestrator_command"]
+                self.assertEqual(command["status"], "clarification_required")
+                self.assertEqual(command["outcome"], "waiting-for-project-choice")
+                self.assertIn("target project", command["status_message"])
+                self.assertFalse((workspace / ".orchestrator").exists())
+                self.assertFalse((child / ".orchestrator" / "RR-1.md").exists())
+
+    def test_deferred_project_command_survives_session_restart_without_ticket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            state_path = root / "voice_command_state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 12,
+                "relay_command_id": "queued-project",
+            }))
+            original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+            orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+            daemon = self.make_daemon(root, provider="codex")
+            try:
+                result = daemon.record_orchestrator_command(
+                    repo_path=str(repo),
+                    source_text="fix the login flow",
+                    relay_command_seq=12,
+                    relay_command_id="queued-project",
+                    provider="codex",
+                    action="create_ticket",
+                    status="queued",
+                    defer_processing=True,
+                )
+                restarted = daemon.ensure_orchestrator_session(
+                    repo_path=str(repo),
+                    provider="codex",
+                    source="test-restart",
+                )
+            finally:
+                orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+            self.assertEqual(result["orchestrator_command"]["status"], "queued")
+            self.assertFalse((repo / ".orchestrator" / "RR-1.md").exists())
+            self.assertEqual(
+                [command["relay_command_id"] for command in restarted["recoverable_commands"]],
+                ["queued-project"],
+            )
+            self.assertNotIn("source_text", restarted["recoverable_commands"][0])
+
+    def test_delivery_failed_journal_record_is_recovered_next_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            daemon = self.make_daemon(root, provider="claude")
+            event_log = root / "command-actions.jsonl"
+            event_log.write_text(
+                json.dumps({
+                    "relay_command_seq": 14,
+                    "relay_command_id": "delivery-failed",
+                    "repo_path": str(repo),
+                    "provider": "claude",
+                    "source_text": "fix the private delivery issue",
+                    "action": "create_ticket",
+                    "state": "queued",
+                })
+                + "\n"
+                + json.dumps({
+                    "relay_command_seq": 14,
+                    "relay_command_id": "delivery-failed",
+                    "state": "delivery_failed",
+                })
+                + "\n"
+            )
+
+            restarted = daemon.ensure_orchestrator_session(
+                repo_path=str(repo),
+                provider="claude",
+                source="test-restart",
+                command_action_states=voice_bridge._command_action_journal_snapshot(
+                    event_log_path=str(event_log),
+                    repo_path=repo,
+                ),
+            )
+
+            self.assertEqual(
+                [command["status"] for command in restarted["recoverable_commands"]],
+                ["delivery_failed"],
+            )
+            recovered = restarted["recoverable_commands"][0]
+            self.assertEqual(recovered["relay_command_id"], "delivery-failed")
+            self.assertIn("Delivery failed", recovered["status_message"])
+            self.assertNotIn("source_text", recovered)
+
+    def test_superseded_journal_record_removes_queued_daemon_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.orchestrator_commands.record(
+                repo_path=str(repo),
+                source_text="fix the command that was replaced",
+                relay_command_seq=15,
+                relay_command_id="superseded-locally",
+                provider_key="codex",
+                action="create_ticket",
+                status="queued",
+            )
+            event_log = root / "command-actions.jsonl"
+            event_log.write_text(
+                json.dumps({
+                    "relay_command_seq": 15,
+                    "relay_command_id": "superseded-locally",
+                    "repo_path": str(repo),
+                    "provider": "codex",
+                    "state": "queued",
+                })
+                + "\n"
+                + json.dumps({
+                    "relay_command_seq": 15,
+                    "relay_command_id": "superseded-locally",
+                    "state": "superseded",
+                })
+                + "\n"
+            )
+
+            restarted = daemon.ensure_orchestrator_session(
+                repo_path=str(repo),
+                provider="codex",
+                source="test-restart",
+                command_action_states=voice_bridge._command_action_journal_snapshot(
+                    event_log_path=str(event_log),
+                    repo_path=repo,
+                ),
+            )
+
+            self.assertEqual(restarted["recoverable_commands"], [])
+            reconciled = daemon.orchestrator_commands.get_public("superseded-locally")
+            self.assertEqual(reconciled["status"], "superseded")
+            self.assertIn("will not be recovered", reconciled["status_message"])
 
     def test_daemon_rejects_stale_orchestrator_command_before_recording(self):
         with tempfile.TemporaryDirectory() as tmp:

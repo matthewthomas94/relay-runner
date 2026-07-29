@@ -128,6 +128,21 @@ voice_bridge_log_path() {
     echo "${VOICE_BRIDGE_LOG_PATH:-/tmp/voice_bridge.log}"
 }
 
+record_embedded_session_event() {
+    local event_path="${RELAY_SESSION_EVENTS:-}"
+    [ -n "$event_path" ] || return 0
+    if [ -n "${3:-}" ]; then
+        printf '{"exit_status":%s,"outcome":"%s","stage":"%s","timestamp":"%s"}\n' \
+            "$3" "$2" "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            >> "$event_path" 2>/dev/null || true
+    else
+        printf '{"outcome":"%s","stage":"%s","timestamp":"%s"}\n' \
+            "$2" "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            >> "$event_path" 2>/dev/null || true
+    fi
+    chmod 600 "$event_path" 2>/dev/null || true
+}
+
 voice_bridge_log_stamp() {
     if [ -n "${VOICE_BRIDGE_LOG_TIMESTAMP:-}" ]; then
         echo "$VOICE_BRIDGE_LOG_TIMESTAMP"
@@ -244,7 +259,11 @@ launch_relay_bridge() {
     echo "[relay-bridge] launching via launchctl provider=$RELAY_PROVIDER cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
     launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
     submit_status=$?
-    echo "[relay-bridge] launchctl submit exit_status=$submit_status provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    if [ "$submit_status" -eq 0 ]; then
+        echo "[relay-bridge] launchctl job submission accepted exit_status=0 (submission only; bridge/provider outcome pending) provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    else
+        echo "[relay-bridge] launchctl job submission failed exit_status=$submit_status provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    fi
     for i in $(seq 1 20); do
         if [ -S /tmp/voice_bridge.sock ]; then
             echo "[relay-bridge] launchctl produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
@@ -554,7 +573,11 @@ launch_relay_bridge() {
     echo "[relay-bridge] launching via launchctl provider=$RELAY_PROVIDER cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
     launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; export RELAY_RUNNER_PROVIDER="$3"; "$2" --relay >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=$3" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
     submit_status=$?
-    echo "[relay-bridge] launchctl submit exit_status=$submit_status provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    if [ "$submit_status" -eq 0 ]; then
+        echo "[relay-bridge] launchctl job submission accepted exit_status=0 (submission only; bridge/provider outcome pending) provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    else
+        echo "[relay-bridge] launchctl job submission failed exit_status=$submit_status provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
+    fi
     for i in $(seq 1 20); do
         if [ -S /tmp/voice_bridge.sock ]; then
             echo "[relay-bridge] launchctl produced socket after ${i} checks provider=$RELAY_PROVIDER" >> "$VOICE_BRIDGE_LOG"
@@ -907,10 +930,17 @@ start_voice_bridge_daemon() {
     launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" >> "$voice_bridge_log" 2>&1
     local submit_status=$?
     set -e
-    echo "[relay-bridge] launchctl submit exit_status=$submit_status provider=${relay_provider:-none}" >> "$voice_bridge_log"
+    if [ "$submit_status" -eq 0 ]; then
+        echo "[relay-bridge] launchctl job submission accepted exit_status=0 (submission only; bridge/provider outcome pending) provider=${relay_provider:-none}" >> "$voice_bridge_log"
+        record_embedded_session_event launchd_bridge_submission accepted "$submit_status"
+    else
+        echo "[relay-bridge] launchctl job submission failed exit_status=$submit_status provider=${relay_provider:-none}" >> "$voice_bridge_log"
+        record_embedded_session_event launchd_bridge_submission failed "$submit_status"
+    fi
     for i in $(seq 1 20); do
         if [ -S "$BRIDGE_SOCK" ]; then
             echo "[relay-bridge] launchctl produced socket after ${i} checks provider=${relay_provider:-none}" >> "$voice_bridge_log"
+            record_embedded_session_event bridge_socket_readiness ready
             return 0
         fi
         launchctl print "gui/$(id -u)/com.relay.voicebridge" >/dev/null 2>&1 || break
@@ -918,6 +948,7 @@ start_voice_bridge_daemon() {
     done
     if [ -S "$BRIDGE_SOCK" ]; then
         echo "[relay-bridge] launchctl produced socket provider=${relay_provider:-none}" >> "$voice_bridge_log"
+        record_embedded_session_event bridge_socket_readiness ready
         return 0
     fi
 
@@ -935,11 +966,13 @@ start_voice_bridge_daemon() {
     for i in $(seq 1 20); do
         if [ -S "$BRIDGE_SOCK" ]; then
             echo "[relay-bridge] direct fallback produced socket after ${i} checks provider=${relay_provider:-none}" >> "$voice_bridge_log"
+            record_embedded_session_event bridge_socket_readiness ready
             return 0
         fi
         sleep 0.5
     done
     echo "[relay-bridge] direct fallback did not produce a socket provider=${relay_provider:-none}" >> "$voice_bridge_log"
+    record_embedded_session_event bridge_socket_readiness timeout
     return 1
 }
 

@@ -274,7 +274,7 @@ final class BridgeRecoveryTests: XCTestCase {
             )
         )
 
-        XCTAssertFalse(
+        XCTAssertTrue(
             AppState.shouldSurfaceSessionReady(
                 menuSessionActive: true,
                 sessionBridgeSeen: true,
@@ -339,6 +339,18 @@ final class BridgeRecoveryTests: XCTestCase {
                 daemonAlive: true,
                 consumerAlive: true,
                 suppressesStartupGreeting: true
+            )
+        )
+
+        XCTAssertFalse(
+            AppState.shouldSurfaceSessionReady(
+                menuSessionActive: true,
+                sessionBridgeSeen: false,
+                sessionReadyShownForCurrentBridgeSession: false,
+                bridgeRecoveryInFlight: false,
+                daemonAlive: true,
+                consumerAlive: true,
+                providerInteractiveReady: false
             )
         )
     }

@@ -456,6 +456,7 @@ final class AppState {
             installerContext: nil,
             bundleURL: bundleURL
         )
+        EmbeddedAgentDiagnostics.finalizeInterruptedSessionIfNeeded()
         self.config = ConfigManager.shared.load()
         programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
             guard let self else { return nil }
@@ -476,8 +477,8 @@ final class AppState {
         programBoardOverlay.setProjectScopeProvider { [weak self] in
             self?.workspaceActivitySnapshot.projects.map(\.repoPath.path) ?? []
         }
-        embeddedTerminal.setExitHandler { [weak self] _ in
-            self?.embeddedTerminalDidExit()
+        embeddedTerminal.setExitHandler { [weak self] exitCode in
+            self?.embeddedTerminalDidExit(exitCode: exitCode)
         }
         notchStatusController.setGlyphClickHandler { [weak self] in
             self?.toggleBoard()
@@ -713,8 +714,23 @@ final class AppState {
         resetActiveSessionState()
     }
 
-    private func embeddedTerminalDidExit() {
+    private func embeddedTerminalDidExit(exitCode: Int32?) {
+        let earlyFailureMessage: String?
+        if case .failed(let message) = embeddedTerminal.phase {
+            earlyFailureMessage = message
+        } else {
+            earlyFailureMessage = nil
+        }
         resetActiveSessionState()
+        if let earlyFailureMessage {
+            statusText = "Session failed before provider readiness"
+            stateMachine.showProgramStatus(
+                title: "Session failed before provider readiness",
+                body: earlyFailureMessage
+            )
+            syncNotchActivitySurface()
+            NSLog("[AppState] Embedded provider exited before readiness code=\(exitCode.map(String.init) ?? "unknown")")
+        }
     }
 
     private func resetActiveSessionState() {
@@ -937,14 +953,17 @@ final class AppState {
         do {
             try embeddedTerminal.beginPreparing(
                 providerName: launchConfig.general.provider.displayName,
-                workingDirectory: sessionDirectory
+                providerKey: launchConfig.general.provider.rawValue,
+                workingDirectory: sessionDirectory,
+                recordDiagnostics: request.destination == .embedded
             )
             let voiceDelivery: ProcessManager.SessionVoiceDelivery =
                 (request.destination == .embedded) ? .appOwned : .agentSkill
             let prepared = try processManager.prepareNewSession(
                 config: launchConfig,
                 voiceDelivery: voiceDelivery,
-                suppressStartupGreeting: suppressesStartupGreeting
+                suppressStartupGreeting: suppressesStartupGreeting,
+                sessionEventPath: embeddedTerminal.diagnosticEventPath
             )
             switch request.destination {
             case .embedded:
@@ -960,6 +979,7 @@ final class AppState {
             }
         } catch {
             embeddedTerminal.markFailed(error)
+            processManager.killBridge(stopRequested: true)
             menuSessionActive = false
             activeSessionLaunchConfig = nil
             bridgeAliveCache = false
@@ -973,7 +993,7 @@ final class AppState {
         }
         isRunning = true
         if menuSessionActive {
-            statusText = "Session"
+            statusText = activeProviderInteractiveReady ? "Session" : "Starting session"
         }
 
         // Ensure overlay is running
@@ -1253,8 +1273,10 @@ final class AppState {
             // Keep that session alive so TTS, the board, and queued voice
             // input can recover.
             bridgeAliveCache = true
-            if statusText != "Session" {
+            if !menuSessionActive || activeProviderInteractiveReady {
                 statusText = "Session"
+            } else {
+                statusText = "Starting session"
             }
             return
         case .voiceCommandQueued:
@@ -1291,6 +1313,9 @@ final class AppState {
             bridgeAliveCache = false
         case .alive:
             bridgeAliveCache = true
+            if menuSessionActive {
+                statusText = activeProviderInteractiveReady ? "Session" : "Starting session"
+            }
         }
 
         // Track externally-started bridges (e.g. /relay-bridge)
@@ -1344,6 +1369,7 @@ final class AppState {
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
             daemonAlive: daemonAlive,
             consumerAlive: consumerAlive,
+            providerInteractiveReady: activeProviderInteractiveReady,
             sessionControlsTutorialActive: onboarding.isSessionControlsTutorialActive,
             suppressesStartupGreeting: activeSessionSuppressesStartupGreeting
         ) else {
@@ -1356,22 +1382,32 @@ final class AppState {
 
     static func shouldSurfaceSessionReady(
         menuSessionActive: Bool,
-        sessionBridgeSeen: Bool,
+        sessionBridgeSeen _: Bool,
         sessionReadyShownForCurrentBridgeSession: Bool,
         bridgeRecoveryInFlight: Bool,
         daemonAlive: Bool,
         consumerAlive: Bool,
+        providerInteractiveReady: Bool = true,
         sessionControlsTutorialActive: Bool = false,
         suppressesStartupGreeting: Bool = false
     ) -> Bool {
         menuSessionActive
-            && !sessionBridgeSeen
             && !sessionReadyShownForCurrentBridgeSession
             && !bridgeRecoveryInFlight
             && daemonAlive
             && consumerAlive
+            && providerInteractiveReady
             && !sessionControlsTutorialActive
             && !suppressesStartupGreeting
+    }
+
+    private var activeProviderInteractiveReady: Bool {
+        switch embeddedTerminal.phase {
+        case .running, .external:
+            return true
+        default:
+            return false
+        }
     }
 
     enum BridgeWatchdogAction: Equatable {

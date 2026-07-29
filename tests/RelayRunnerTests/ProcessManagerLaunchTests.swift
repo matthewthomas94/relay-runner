@@ -439,6 +439,32 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertEqual(launch.workingDirectory, "/Users/example/dev")
         XCTAssertEqual(launch.target, .codex)
         XCTAssertEqual(launch.voiceDelivery, .appOwned)
+        XCTAssertNil(launch.sessionEventPath)
+    }
+
+    func testEmbeddedLaunchScriptRecordsProviderNeutralLifecycleStages() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            var config = AppConfig()
+            config.general.provider = provider
+            let target: ProcessManager.AgentTarget = provider == .codex ? .codex : .claude
+            let binary = provider == .codex ? "/usr/local/bin/codex" : "/usr/local/bin/claude"
+            let script = ProcessManager.launchScript(
+                relayBridge: "/Relay Runner/scripts/relay-bridge",
+                target: target,
+                agentBinary: binary,
+                config: config,
+                voiceDelivery: .appOwned,
+                homeDirectory: home,
+                sessionEventPath: "/tmp/session-events.jsonl"
+            )
+
+            XCTAssertTrue(script.contains("RELAY_SESSION_EVENTS='/tmp/session-events.jsonl'"))
+            XCTAssertTrue(script.contains("relay_record_session_event launcher_start started"))
+            XCTAssertTrue(script.contains("relay_record_session_event bridge_socket_readiness ready"))
+            XCTAssertTrue(script.contains("relay_record_session_event provider_spawn started"))
+        }
     }
 
     func testCodexBinaryResolutionPrefersCurrentChatGPTAppThenLegacyCodexApp() {

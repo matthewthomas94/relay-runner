@@ -8,7 +8,9 @@ protocol EmbeddedTerminalProcess: AnyObject {
     var view: NSView { get }
     var isRunning: Bool { get }
     var hasFocus: Bool { get }
+    var childPID: Int? { get }
     var onExit: ((Int32?) -> Void)? { get set }
+    var onReady: (() -> Void)? { get set }
     var onTitle: ((String) -> Void)? { get set }
 
     func start(_ launch: ProcessManager.PreparedSessionLaunch) throws
@@ -37,6 +39,7 @@ final class EmbeddedTerminalSession {
     enum Phase: Equatable {
         case idle
         case preparing
+        case starting
         case running
         case external
         case ended
@@ -45,7 +48,7 @@ final class EmbeddedTerminalSession {
 
         var isActive: Bool {
             switch self {
-            case .preparing, .running, .external: return true
+            case .preparing, .starting, .running, .external: return true
             case .idle, .ended, .exited, .failed: return false
             }
         }
@@ -62,6 +65,7 @@ final class EmbeddedTerminalSession {
     @ObservationIgnored private let processFactory: ProcessFactory
     @ObservationIgnored private var process: EmbeddedTerminalProcess?
     @ObservationIgnored private var exitHandler: ((Int32?) -> Void)?
+    @ObservationIgnored private var diagnostics: EmbeddedAgentDiagnostics?
 
     init(processFactory: @escaping ProcessFactory = { SwiftTermEmbeddedProcess() }) {
         self.processFactory = processFactory
@@ -69,17 +73,31 @@ final class EmbeddedTerminalSession {
 
     var hostedView: NSView? { process?.view }
     var hasTerminalFocus: Bool { process?.hasFocus == true }
-    var isEmbeddedProcessRunning: Bool { phase == .running && process?.isRunning == true }
+    var isEmbeddedProcessRunning: Bool {
+        (phase == .starting || phase == .running) && process?.isRunning == true
+    }
+    var diagnosticEventPath: String? { diagnostics?.eventsURL.path }
 
     func setExitHandler(_ handler: @escaping (Int32?) -> Void) {
         exitHandler = handler
     }
 
-    func beginPreparing(providerName: String, workingDirectory: String) throws {
+    func beginPreparing(
+        providerName: String,
+        providerKey: String? = nil,
+        workingDirectory: String,
+        recordDiagnostics: Bool = false
+    ) throws {
         guard !phase.isActive else { throw EmbeddedTerminalProcessError.alreadyRunning }
         self.providerName = providerName
         self.workingDirectory = workingDirectory
         terminalTitle = ""
+        diagnostics = recordDiagnostics
+            ? EmbeddedAgentDiagnostics.start(
+                provider: providerKey ?? providerName.lowercased(),
+                workingDirectory: workingDirectory
+            )
+            : nil
         phase = .preparing
     }
 
@@ -91,35 +109,84 @@ final class EmbeddedTerminalSession {
             guard let self, let next, self.process === next else { return }
             self.terminalTitle = title
         }
+        next.onReady = { [weak self, weak next] in
+            let applyReady = { [weak self, weak next] in
+                guard let self,
+                      let next,
+                      self.process === next,
+                      self.phase == .starting else { return }
+                self.diagnostics?.markInteractiveReady()
+                self.phase = .running
+            }
+            if Thread.isMainThread {
+                applyReady()
+            } else {
+                DispatchQueue.main.async(execute: applyReady)
+            }
+        }
         next.onExit = { [weak self, weak next] rawStatus in
             guard let self, let next else { return }
             DispatchQueue.main.async { [weak self, weak next] in
                 guard let self,
                       let next,
-                      self.process === next,
-                      self.phase == .running else { return }
+                      self.process === next else { return }
+                let exitedBeforeReadiness = self.phase == .starting
+                guard exitedBeforeReadiness || self.phase == .running else { return }
                 let exitCode = Self.decodeWaitStatus(rawStatus)
-                self.phase = .exited(exitCode)
+                let providerSpawned = self.diagnostics.map {
+                    $0.recordedOutcome(for: "provider_spawn") != nil
+                } ?? true
+                if exitedBeforeReadiness && !providerSpawned {
+                    let bridgeOutcome = self.diagnostics?.recordedOutcome(
+                        for: "bridge_socket_readiness"
+                    )
+                    self.diagnostics?.markLaunchFailed(rawStatus: rawStatus)
+                    self.phase = .failed(Self.launchFailureMessage(
+                        providerName: self.providerName,
+                        rawStatus: rawStatus,
+                        bridgeSocketOutcome: bridgeOutcome
+                    ))
+                } else if exitedBeforeReadiness {
+                    self.diagnostics?.markExited(
+                        rawStatus: rawStatus,
+                        beforeInteractiveReadiness: true
+                    )
+                    self.phase = .failed(Self.earlyExitMessage(
+                        providerName: self.providerName,
+                        rawStatus: rawStatus
+                    ))
+                } else {
+                    self.diagnostics?.markExited(
+                        rawStatus: rawStatus,
+                        beforeInteractiveReadiness: false
+                    )
+                    self.phase = .exited(exitCode)
+                }
                 self.exitHandler?(exitCode)
             }
         }
 
         process?.onExit = nil
+        process?.onReady = nil
         process?.onTitle = nil
         if process?.isRunning == true {
             process?.terminate()
         }
         process = next
         presentationRevision += 1
+        diagnostics?.markLauncherPrepared(path: launch.launcherPath)
+        phase = .starting
 
         do {
             try next.start(launch)
             guard next.isRunning else { throw EmbeddedTerminalProcessError.couldNotStart }
-            phase = .running
+            diagnostics?.markLauncherStarted(childPID: next.childPID)
         } catch {
             next.onExit = nil
+            next.onReady = nil
             next.onTitle = nil
             next.terminate()
+            diagnostics?.markSetupFailed(message: error.localizedDescription)
             phase = .failed(error.localizedDescription)
             throw error
         }
@@ -133,13 +200,17 @@ final class EmbeddedTerminalSession {
     }
 
     func markFailed(_ error: Error) {
+        if case .failed = phase { return }
+        diagnostics?.markSetupFailed(message: error.localizedDescription)
         phase = .failed(error.localizedDescription)
     }
 
     func end() {
         process?.onExit = nil
+        process?.onReady = nil
         process?.onTitle = nil
         if process?.isRunning == true {
+            diagnostics?.markAppRequestedStop()
             process?.terminate()
         }
         phase = .ended
@@ -147,8 +218,10 @@ final class EmbeddedTerminalSession {
 
     func shutdown() {
         process?.onExit = nil
+        process?.onReady = nil
         process?.onTitle = nil
         if process?.isRunning == true {
+            diagnostics?.markAppRequestedStop()
             process?.terminate()
         }
         process = nil
@@ -169,6 +242,36 @@ final class EmbeddedTerminalSession {
         let signalBits = rawStatus & 0x7f
         guard signalBits == 0 else { return nil }
         return (rawStatus >> 8) & 0xff
+    }
+
+    static func terminationSignal(_ rawStatus: Int32?) -> Int32? {
+        guard let rawStatus else { return nil }
+        let signal = rawStatus & 0x7f
+        return signal == 0 ? nil : signal
+    }
+
+    static func earlyExitMessage(providerName: String, rawStatus: Int32?) -> String {
+        let outcome: String
+        if let exitCode = decodeWaitStatus(rawStatus) {
+            outcome = "exited with code \(exitCode)"
+        } else if let signal = terminationSignal(rawStatus) {
+            outcome = "terminated by signal \(signal)"
+        } else {
+            outcome = "exited"
+        }
+        return "\(providerName) \(outcome) before interactive readiness. Relay Runner stopped the orphaned voice bridge; start a new session to retry."
+    }
+
+    static func launchFailureMessage(
+        providerName: String,
+        rawStatus: Int32?,
+        bridgeSocketOutcome: String?
+    ) -> String {
+        if bridgeSocketOutcome == "timeout" {
+            return "The voice bridge socket timed out before \(providerName) started. Relay Runner cleaned up the partial session; start a new session to retry."
+        }
+        let outcome = decodeWaitStatus(rawStatus).map { " with code \($0)" } ?? ""
+        return "The session launcher exited\(outcome) before \(providerName) started. Relay Runner cleaned up the partial session; start a new session to retry."
     }
 }
 
@@ -387,6 +490,11 @@ final class RelayVoiceCommandDelivery {
         var commandState = "/tmp/voice_command_state.json"
         var providerTurns = "/tmp/voice_provider_turns.json"
         var deliveryEvents = "/tmp/relay_terminal_delivery_events.jsonl"
+        var actionJournal = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("relay-runner/command-actions/events.jsonl")
+            .path
         var voiceInput = "/tmp/voice_in.fifo"
         var heartbeat = "/tmp/voice_bridge_heartbeat"
     }
@@ -870,6 +978,21 @@ final class RelayVoiceCommandDelivery {
             return
         }
         appendBoundedLine(line, to: URL(fileURLWithPath: paths.deliveryEvents), limit: 128)
+        let durableState: String?
+        switch event {
+        case "claimed", "claim_published", "provider_acknowledged":
+            durableState = "claimed"
+        case "stale_command_dropped", "stale_prompt_cleared":
+            durableState = "superseded"
+        case "submit_ack_failed", "submit_aborted_not_running",
+             "delivery_failure_published", "delivery_failure_publish_failed":
+            durableState = "delivery_failed"
+        default:
+            durableState = nil
+        }
+        if let durableState, let key {
+            recordDurableActionState(durableState, key: key)
+        }
     }
 
     private func appendBoundedLine(_ line: String, to url: URL, limit: Int) {
@@ -881,6 +1004,36 @@ final class RelayVoiceCommandDelivery {
         lines = Array(lines.suffix(max(1, limit)))
         let contents = lines.joined(separator: "\n") + "\n"
         try? contents.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func recordDurableActionState(_ state: String, key: RelayCommandKey) {
+        let url = URL(fileURLWithPath: paths.actionJournal)
+        let directory = url.deletingLastPathComponent()
+        try? fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        try? fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o700))],
+            ofItemAtPath: directory.path
+        )
+        var payload: [String: Any] = [
+            "timestamp": Date().timeIntervalSince1970,
+            "relay_command_seq": key.seq,
+            "relay_command_id": key.id,
+            "state": state,
+        ]
+        if let provider = key.provider {
+            payload["provider"] = provider
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else { return }
+        appendBoundedLine(line, to: url, limit: 200)
+        try? fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: url.path
+        )
     }
 
     private func touchHeartbeat() {
@@ -896,13 +1049,10 @@ final class RelayVoiceCommandDelivery {
 }
 
 final class EmbeddedAgentDiagnostics {
-    static let markerFilename = ".embedded-agent-diagnostics"
     static let diagnosticsDirectoryName = "embedded-agent-diagnostics"
     static let manifestFilename = "current-session.json"
-    static let transcriptFilename = "current-transcript.log"
-    static let schemaVersion = 1
-    /// Keep only the newest 1 MiB of PTY output for the current embedded session.
-    static let defaultMaxTranscriptBytes = 1024 * 1024
+    static let schemaVersion = 2
+    static let retainedAttemptLimit = 20
 
     private static var defaultBaseDirectory: URL {
         FileManager.default
@@ -912,19 +1062,22 @@ final class EmbeddedAgentDiagnostics {
     }
 
     private let directoryURL: URL
-    private let manifestURL: URL
-    private let transcriptURL: URL
+    private let currentManifestURL: URL
+    private let attemptManifestURL: URL
+    let eventsURL: URL
+    private let attemptID: String
     private let provider: String
-    private let childPID: Int
     private let workingDirectory: String
+    private let routeKind: String
+    private let projectIdentity: String?
     private let startedAt: Date
-    private let maxTranscriptBytes: Int
     private let now: () -> Date
     private let queue = DispatchQueue(label: "relay-runner.embedded-agent-diagnostics")
-
-    static func markerURL(baseDirectory: URL = defaultBaseDirectory) -> URL {
-        baseDirectory.appendingPathComponent(markerFilename, isDirectory: false)
-    }
+    private var childPID: Int?
+    private var state = "starting"
+    private var currentStage = "launch_request"
+    private var endedAt: Date?
+    private var rawStatus: Int32?
 
     static func diagnosticsDirectoryURL(baseDirectory: URL = defaultBaseDirectory) -> URL {
         baseDirectory.appendingPathComponent(diagnosticsDirectoryName, isDirectory: true)
@@ -935,70 +1088,179 @@ final class EmbeddedAgentDiagnostics {
             .appendingPathComponent(manifestFilename, isDirectory: false)
     }
 
-    static func transcriptURL(baseDirectory: URL = defaultBaseDirectory) -> URL {
-        diagnosticsDirectoryURL(baseDirectory: baseDirectory)
-            .appendingPathComponent(transcriptFilename, isDirectory: false)
-    }
-
-    static func startIfEnabled(
+    static func start(
         provider: String,
-        childPID: Int,
         workingDirectory: String,
         baseDirectory: URL = defaultBaseDirectory,
-        now: @escaping () -> Date = Date.init,
-        maxTranscriptBytes: Int = defaultMaxTranscriptBytes
+        routeKind: String? = nil,
+        projectIdentity: String? = nil,
+        now: @escaping () -> Date = Date.init
     ) -> EmbeddedAgentDiagnostics? {
-        let markerURL = markerURL(baseDirectory: baseDirectory)
-        guard FileManager.default.fileExists(atPath: markerURL.path) else { return nil }
-
+        finalizeInterruptedSessionIfNeeded(baseDirectory: baseDirectory, now: now())
+        let resolvedRoute = routeKind.map { ($0, projectIdentity) }
+            ?? routeContext(for: workingDirectory)
         let diagnostics = EmbeddedAgentDiagnostics(
             baseDirectory: baseDirectory,
             provider: provider,
-            childPID: childPID,
             workingDirectory: workingDirectory,
+            routeKind: resolvedRoute.0,
+            projectIdentity: resolvedRoute.1,
             now: now,
-            maxTranscriptBytes: maxTranscriptBytes
         )
         return diagnostics.prepare() ? diagnostics : nil
+    }
+
+    static func finalizeInterruptedSessionIfNeeded(
+        baseDirectory: URL = defaultBaseDirectory,
+        now: Date = Date()
+    ) {
+        let currentURL = manifestURL(baseDirectory: baseDirectory)
+        guard let data = try? Data(contentsOf: currentURL),
+              var payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let state = payload["state"] as? String,
+              !["exited", "provider_early_exit", "setup_failed", "app_requested_stop", "app_relaunch"].contains(state)
+        else { return }
+
+        payload["state"] = "app_relaunch"
+        payload["current_stage"] = "session_failure"
+        payload["ended_at"] = format(now)
+        payload["failure_kind"] = "app_relaunch"
+        guard let updated = try? JSONSerialization.data(
+            withJSONObject: payload,
+            options: [.prettyPrinted, .sortedKeys]
+        ) else { return }
+        try? updated.write(to: currentURL, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: currentURL.path
+        )
+        if let attemptPath = payload["attempt_manifest_path"] as? String {
+            let attemptURL = URL(fileURLWithPath: attemptPath)
+            try? updated.write(to: attemptURL, options: .atomic)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o600))],
+                ofItemAtPath: attemptURL.path
+            )
+        }
     }
 
     private init(
         baseDirectory: URL,
         provider: String,
-        childPID: Int,
         workingDirectory: String,
+        routeKind: String,
+        projectIdentity: String?,
         now: @escaping () -> Date,
-        maxTranscriptBytes: Int
     ) {
+        attemptID = UUID().uuidString.lowercased()
         directoryURL = Self.diagnosticsDirectoryURL(baseDirectory: baseDirectory)
-        manifestURL = Self.manifestURL(baseDirectory: baseDirectory)
-        transcriptURL = Self.transcriptURL(baseDirectory: baseDirectory)
+        currentManifestURL = Self.manifestURL(baseDirectory: baseDirectory)
+        attemptManifestURL = directoryURL
+            .appendingPathComponent("\(attemptID).json", isDirectory: false)
+        eventsURL = directoryURL
+            .appendingPathComponent("\(attemptID).events.jsonl", isDirectory: false)
         self.provider = provider
-        self.childPID = childPID
         self.workingDirectory = workingDirectory
+        self.routeKind = routeKind
+        self.projectIdentity = projectIdentity
         self.now = now
         self.startedAt = now()
-        self.maxTranscriptBytes = max(1, maxTranscriptBytes)
     }
 
-    func recordPTYOutput(_ bytes: ArraySlice<UInt8>) {
-        let data = Data(bytes)
-        guard !data.isEmpty else { return }
+    func markLauncherPrepared(path: String) {
         queue.async { [self] in
-            appendTranscript(data)
+            currentStage = "launcher_prepared"
+            appendEvent(stage: currentStage, outcome: "success", fields: ["launcher_path": path])
+            try? writeManifest()
         }
     }
 
-    func markExited(rawStatus: Int32?) {
-        updateLifecycle(state: "exited", rawStatus: rawStatus)
+    func markLauncherStarted(childPID: Int?) {
+        queue.async { [self] in
+            self.childPID = childPID
+            currentStage = "launcher_start"
+            appendEvent(stage: currentStage, outcome: "started")
+            try? writeManifest()
+        }
     }
 
-    func markTerminated() {
-        updateLifecycle(state: "terminated", rawStatus: nil)
+    func markInteractiveReady() {
+        queue.async { [self] in
+            state = "ready"
+            currentStage = "interactive_provider_readiness"
+            appendEvent(stage: currentStage, outcome: "ready")
+            try? writeManifest()
+        }
+    }
+
+    func markExited(rawStatus: Int32?, beforeInteractiveReadiness: Bool) {
+        queue.async { [self] in
+            self.rawStatus = rawStatus
+            endedAt = now()
+            state = beforeInteractiveReadiness ? "provider_early_exit" : "exited"
+            currentStage = beforeInteractiveReadiness ? "session_failure" : "session_end"
+            appendEvent(
+                stage: currentStage,
+                outcome: state,
+                fields: Self.terminationFields(rawStatus)
+            )
+            try? writeManifest()
+        }
+    }
+
+    func markLaunchFailed(rawStatus: Int32?) {
+        queue.async { [self] in
+            self.rawStatus = rawStatus
+            endedAt = now()
+            state = "setup_failed"
+            currentStage = "session_failure"
+            appendEvent(
+                stage: currentStage,
+                outcome: "launcher_exit_before_provider_spawn",
+                fields: Self.terminationFields(rawStatus)
+            )
+            try? writeManifest()
+        }
+    }
+
+    func markSetupFailed(message: String) {
+        queue.async { [self] in
+            _ = message
+            endedAt = now()
+            state = "setup_failed"
+            currentStage = "session_failure"
+            appendEvent(stage: currentStage, outcome: "setup_failed")
+            try? writeManifest()
+        }
+    }
+
+    func markAppRequestedStop() {
+        queue.async { [self] in
+            endedAt = now()
+            state = "app_requested_stop"
+            currentStage = "session_end"
+            appendEvent(stage: currentStage, outcome: "app_requested_stop")
+            try? writeManifest()
+        }
     }
 
     func flushForTesting() {
         queue.sync {}
+    }
+
+    func recordedOutcome(for stage: String) -> String? {
+        queue.sync {
+            guard let contents = try? String(contentsOf: eventsURL, encoding: .utf8) else {
+                return nil
+            }
+            return contents
+                .split(separator: "\n")
+                .compactMap { line -> [String: Any]? in
+                    guard let data = String(line).data(using: .utf8) else { return nil }
+                    return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                }
+                .last { $0["stage"] as? String == stage }?["outcome"] as? String
+        }
     }
 
     private func prepare() -> Bool {
@@ -1009,68 +1271,126 @@ final class EmbeddedAgentDiagnostics {
                 attributes: ownerOnlyDirectoryAttributes
             )
             try setOwnerOnlyPermissions(at: directoryURL, permissions: 0o700)
-            try Data().write(to: transcriptURL, options: .atomic)
-            try setOwnerOnlyPermissions(at: transcriptURL, permissions: 0o600)
-            try writeManifest(state: "running", endedAt: nil, rawStatus: nil)
+            try Data().write(to: eventsURL, options: .atomic)
+            try setOwnerOnlyPermissions(at: eventsURL, permissions: 0o600)
+            appendEvent(stage: currentStage, outcome: "requested")
+            try writeManifest()
+            pruneOldAttempts()
             return true
         } catch {
             return false
         }
     }
 
-    private func updateLifecycle(state: String, rawStatus: Int32?) {
-        queue.async { [self] in
-            try? writeManifest(state: state, endedAt: now(), rawStatus: rawStatus)
+    private func appendEvent(
+        stage: String,
+        outcome: String,
+        fields: [String: Any] = [:]
+    ) {
+        var payload: [String: Any] = [
+            "timestamp": Self.format(now()),
+            "stage": stage,
+            "outcome": outcome,
+        ]
+        for (key, value) in fields {
+            payload[key] = value
         }
-    }
-
-    private func appendTranscript(_ data: Data) {
-        do {
-            var transcript = (try? Data(contentsOf: transcriptURL)) ?? Data()
-            transcript.append(data)
-            if transcript.count > maxTranscriptBytes {
-                transcript = transcript.suffix(maxTranscriptBytes)
-            }
-            try transcript.write(to: transcriptURL, options: .atomic)
-            try setOwnerOnlyPermissions(at: transcriptURL, permissions: 0o600)
-        } catch {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
             return
         }
+        var existing = (try? Data(contentsOf: eventsURL)) ?? Data()
+        existing.append(data)
+        existing.append(0x0a)
+        try? existing.write(to: eventsURL, options: .atomic)
+        try? setOwnerOnlyPermissions(at: eventsURL, permissions: 0o600)
     }
 
-    private func writeManifest(state: String, endedAt: Date?, rawStatus: Int32?) throws {
+    private func writeManifest() throws {
         var payload: [String: Any] = [
             "schema_version": Self.schemaVersion,
+            "attempt_id": attemptID,
             "provider": provider,
-            "child_pid": childPID,
-            "working_directory": workingDirectory,
+            "configured_workspace_folder": workingDirectory,
+            "route_kind": routeKind,
             "started_at": Self.format(startedAt),
             "state": state,
-            "transcript_path": transcriptURL.path,
+            "current_stage": currentStage,
+            "events_path": eventsURL.path,
+            "attempt_manifest_path": attemptManifestURL.path,
         ]
+        if let childPID {
+            payload["child_pid"] = childPID
+        }
+        if let projectIdentity {
+            payload["project_identity"] = projectIdentity
+        }
         if let endedAt {
             payload["ended_at"] = Self.format(endedAt)
         }
         if let rawStatus {
             payload["raw_exit_status"] = rawStatus
-            if let exitCode = Self.decodeWaitStatus(rawStatus) {
-                payload["exit_code"] = exitCode
+            for (key, value) in Self.terminationFields(rawStatus) {
+                payload[key] = value
             }
         }
 
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: manifestURL, options: .atomic)
-        try setOwnerOnlyPermissions(at: manifestURL, permissions: 0o600)
+        for url in [currentManifestURL, attemptManifestURL] {
+            try data.write(to: url, options: .atomic)
+            try setOwnerOnlyPermissions(at: url, permissions: 0o600)
+        }
     }
 
     private static func format(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
     }
 
-    private static func decodeWaitStatus(_ rawStatus: Int32) -> Int32? {
+    private static func terminationFields(_ rawStatus: Int32?) -> [String: Any] {
+        guard let rawStatus else { return [:] }
         let signalBits = rawStatus & 0x7f
-        guard signalBits == 0 else { return nil }
-        return (rawStatus >> 8) & 0xff
+        if signalBits == 0 {
+            return ["exit_code": (rawStatus >> 8) & 0xff]
+        }
+        return ["termination_signal": signalBits]
+    }
+
+    private static func routeContext(for workingDirectory: String) -> (String, String?) {
+        do {
+            switch try ProjectRegistry().classifyDiscoveryRoot(
+                at: URL(fileURLWithPath: workingDirectory, isDirectory: true)
+            ) {
+            case .workspaceRoot(let rootPath, _):
+                return ("workspace_root", rootPath.path)
+            case .singleProject(let repoPath):
+                return ("project", repoPath.path)
+            }
+        } catch {
+            return ("unavailable", nil)
+        }
+    }
+
+    private func pruneOldAttempts() {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let manifests = files
+            .filter { $0.pathExtension == "json" && $0.lastPathComponent != Self.manifestFilename }
+            .sorted {
+                let lhs = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                    ?? .distantPast
+                let rhs = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                    ?? .distantPast
+                return lhs > rhs
+            }
+        for manifest in manifests.dropFirst(Self.retainedAttemptLimit) {
+            let eventName = manifest.deletingPathExtension().lastPathComponent + ".events.jsonl"
+            try? FileManager.default.removeItem(
+                at: directoryURL.appendingPathComponent(eventName)
+            )
+            try? FileManager.default.removeItem(at: manifest)
+        }
     }
 
     private var ownerOnlyDirectoryAttributes: [FileAttributeKey: Any] {
@@ -1089,9 +1409,11 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     let terminalView: RelayTerminalView
     lazy var localProcess = LocalProcess(delegate: self)
     var onExit: ((Int32?) -> Void)?
+    var onReady: (() -> Void)?
     var onTitle: ((String) -> Void)?
     private var voiceDelivery: RelayVoiceCommandDelivery?
-    private var diagnostics: EmbeddedAgentDiagnostics?
+    private var sessionEventPath: String?
+    private var readinessScheduled = false
 
     init() {
         terminalView = RelayTerminalView(frame: .zero)
@@ -1110,10 +1432,16 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     var view: NSView { terminalView }
     var isRunning: Bool { localProcess.running }
     var hasFocus: Bool { terminalView.hasFocus }
+    var childPID: Int? {
+        let pid = Int(localProcess.shellPid)
+        return pid > 0 ? pid : nil
+    }
 
     func start(_ launch: ProcessManager.PreparedSessionLaunch) throws {
         voiceDelivery?.stop()
         voiceDelivery = nil
+        readinessScheduled = false
+        sessionEventPath = launch.sessionEventPath
         localProcess.startProcess(
             executable: launch.executable,
             args: launch.arguments,
@@ -1121,11 +1449,6 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
             currentDirectory: launch.workingDirectory
         )
         guard localProcess.running else { throw EmbeddedTerminalProcessError.couldNotStart }
-        diagnostics = EmbeddedAgentDiagnostics.startIfEnabled(
-            provider: launch.target.providerMetadataValue,
-            childPID: Int(localProcess.shellPid),
-            workingDirectory: launch.workingDirectory
-        )
         if launch.voiceDelivery == .appOwned {
             let delivery = RelayVoiceCommandDelivery(
                 send: { [weak self] data in
@@ -1150,8 +1473,6 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     func terminate() {
         voiceDelivery?.stop()
         voiceDelivery = nil
-        diagnostics?.markTerminated()
-        diagnostics = nil
         localProcess.terminate()
     }
 
@@ -1183,7 +1504,7 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
 
     func dataReceived(slice: ArraySlice<UInt8>) {
         terminalView.feed(byteArray: slice)
-        diagnostics?.recordPTYOutput(slice)
+        considerInteractiveReadiness(after: slice)
     }
 
     func getWindowSize() -> winsize {
@@ -1198,9 +1519,24 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
         voiceDelivery?.stop()
         voiceDelivery = nil
-        diagnostics?.markExited(rawStatus: exitCode)
-        diagnostics = nil
         onExit?(exitCode)
+    }
+
+    private func considerInteractiveReadiness(after output: ArraySlice<UInt8>) {
+        guard !output.isEmpty,
+              !readinessScheduled,
+              localProcess.running,
+              let sessionEventPath,
+              let events = try? String(contentsOfFile: sessionEventPath, encoding: .utf8),
+              events.contains(#""stage": "provider_spawn""#)
+                || events.contains(#""stage":"provider_spawn""#)
+        else { return }
+
+        readinessScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, self.localProcess.running else { return }
+            self.onReady?()
+        }
     }
 
     private static func terminalEnvironment() -> [String] {
@@ -1343,6 +1679,7 @@ struct EmbeddedTerminalTab: View {
         switch session.phase {
         case .idle: return "Ready for \(providerName)"
         case .preparing: return "Preparing \(session.providerName)"
+        case .starting: return "Starting \(session.providerName)"
         case .running: return session.terminalTitle.isEmpty ? "\(session.providerName) session" : session.terminalTitle
         case .external: return "\(session.providerName) in Terminal.app"
         case .ended: return "Session ended"

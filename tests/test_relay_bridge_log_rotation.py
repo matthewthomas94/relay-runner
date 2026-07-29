@@ -11,6 +11,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RelayBridgeLogRotationTests(unittest.TestCase):
+    def test_launchctl_logging_distinguishes_submission_from_provider_outcome(self):
+        script = (ROOT / "scripts" / "relay-bridge").read_text()
+
+        self.assertIn("launchctl job submission accepted exit_status=0", script)
+        self.assertIn("submission only; bridge/provider outcome pending", script)
+        self.assertIn("record_embedded_session_event launchd_bridge_submission", script)
+        self.assertIn("record_embedded_session_event bridge_socket_readiness", script)
+        self.assertNotIn("launchctl submit exit_status=0", script)
+
     def test_rotate_log_preserves_existing_log_and_records_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

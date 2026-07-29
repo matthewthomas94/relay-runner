@@ -341,10 +341,22 @@ VOICE_COMMAND_AUTHORIZATION_FILE = os.environ.get(
     "/tmp/voice_command_authorizations.json",
 )
 VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
-VOICE_COMMAND_EVENT_LOG = os.environ.get("VOICE_COMMAND_EVENT_LOG", "/tmp/relay_command_events.jsonl")
+VOICE_COMMAND_EVENT_LOG = os.environ.get(
+    "VOICE_COMMAND_EVENT_LOG",
+    str(
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / "relay-runner"
+        / "command-actions"
+        / "events.jsonl"
+    ),
+)
 VOICE_INTENT_INBOX = os.environ.get("VOICE_INTENT_INBOX", "/tmp/relay_intent_inbox.sqlite3")
 SPEECH_EVENT_LOG = os.environ.get("SPEECH_EVENT_LOG", "/tmp/relay_speech_events.jsonl")
 VOICE_COMMAND_EVENT_LIMIT = 200
+COMMAND_ACTION_RECOVERY_STATES = frozenset({"claimed", "delivery_failed", "superseded"})
+COMMAND_ACTION_TERMINAL_STATES = frozenset({"delivery_failed", "superseded"})
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
 VOICE_ACKNOWLEDGEMENT = os.environ.get("VOICE_ACKNOWLEDGEMENT", "Got it. I'm on it.")
 VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS = 0.0
@@ -416,6 +428,89 @@ def _atomic_write_json(path: str, payload: dict) -> None:
     os.rename(tmp, path)
 
 
+def _command_action_journal_snapshot(
+    *,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
+    repo_path: str | Path | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Return latest recovery-relevant command states from the private journal."""
+    if not event_log_path:
+        return []
+    try:
+        with open(event_log_path) as f:
+            lines = [line for line in f if line.strip()]
+    except OSError:
+        return []
+
+    by_id: dict[str, dict] = {}
+    order: list[str] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        command_id = str(event.get("relay_command_id") or "").strip()
+        try:
+            command_seq = int(event.get("relay_command_seq"))
+        except (TypeError, ValueError):
+            continue
+        state = str(event.get("state") or "").strip().lower()
+        if not command_id or not state:
+            continue
+
+        current = by_id.get(command_id, {
+            "relay_command_id": command_id,
+            "relay_command_seq": command_seq,
+        })
+        for name in (
+            "source_text",
+            "provider",
+            "repo_path",
+            "action",
+            "outcome",
+            "received_at",
+        ):
+            value = event.get(name)
+            if value is not None and value != "":
+                current[name] = value
+        current["relay_command_seq"] = command_seq
+        current_state = str(current.get("state") or "")
+        if (
+            state in COMMAND_ACTION_TERMINAL_STATES
+            or current_state not in COMMAND_ACTION_TERMINAL_STATES
+        ):
+            current["state"] = state
+        if command_id in order:
+            order.remove(command_id)
+        order.append(command_id)
+        by_id[command_id] = current
+
+    resolved_repo = (
+        str(Path(repo_path).expanduser().resolve())
+        if repo_path is not None
+        else None
+    )
+    snapshot: list[dict] = []
+    for command_id in order:
+        event = by_id[command_id]
+        if event.get("state") not in COMMAND_ACTION_RECOVERY_STATES:
+            continue
+        event_repo = event.get("repo_path")
+        if event_repo and resolved_repo:
+            try:
+                if str(Path(str(event_repo)).expanduser().resolve()) != resolved_repo:
+                    continue
+            except (OSError, RuntimeError):
+                continue
+        elif resolved_repo:
+            event["repo_path"] = resolved_repo
+        snapshot.append(event)
+    return snapshot[-max(1, int(limit)):]
+
+
 def _orchestrator_port(port_file: str = ORCHESTRATOR_PORT_FILE) -> int:
     try:
         raw = Path(port_file).read_text().strip()
@@ -484,6 +579,7 @@ def start_persistent_orchestrator_lifecycle(
     shutdown_event: threading.Event,
     *,
     cwd: str | None = None,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
     request_json=_post_orchestrator_json,
 ) -> dict | None:
     """Register this bridge as the durable foreground orchestrator session.
@@ -501,6 +597,10 @@ def start_persistent_orchestrator_lifecycle(
         "source": "relay-bridge",
         "pid": os.getpid(),
         "state": "idle",
+        "command_action_states": _command_action_journal_snapshot(
+            event_log_path=event_log_path,
+            repo_path=repo_path,
+        ),
     }
     try:
         response = request_json("/v1/orchestrator-session/ensure", payload)
@@ -514,6 +614,11 @@ def start_persistent_orchestrator_lifecycle(
         return None
 
     session_id = int(session["id"])
+    recoverable_commands = response.get("recoverable_commands")
+    if isinstance(recoverable_commands, list):
+        session["recoverable_commands"] = [
+            command for command in recoverable_commands if isinstance(command, dict)
+        ]
     session_state = {"value": "idle"}
     session_lock = threading.Lock()
 
@@ -557,6 +662,7 @@ def start_persistent_orchestrator_lifecycle(
         "shutdown_event": shutdown_event,
         "state": session_state,
         "state_lock": session_lock,
+        "recoverable_commands": session.get("recoverable_commands", []),
     }
 
 
@@ -585,6 +691,52 @@ def stop_persistent_orchestrator_lifecycle(
         request_json("/v1/orchestrator-session/stop", payload)
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
         print(f"[voice_bridge] Persistent orchestrator stop failed: {e}", file=sys.stderr)
+
+
+def _surface_recoverable_command_status(
+    orchestrator_session: dict | None,
+    *,
+    messenger: MessengerRuntime | None,
+    notify_state=_notify_state,
+) -> str | None:
+    commands = (orchestrator_session or {}).get("recoverable_commands")
+    if not isinstance(commands, list) or not commands:
+        return None
+    clarification_count = sum(
+        1 for command in commands
+        if isinstance(command, dict) and command.get("status") == "clarification_required"
+    )
+    delivery_failed_count = sum(
+        1 for command in commands
+        if isinstance(command, dict) and command.get("status") == "delivery_failed"
+    )
+    if clarification_count:
+        message = (
+            "A previous project-work request is waiting for a target project. "
+            "Choose a child project in Workspace, then repeat the request; no parent workspace ticket was created."
+        )
+    elif delivery_failed_count:
+        noun = "request" if delivery_failed_count == 1 else "requests"
+        message = (
+            f"Delivery failed for {delivery_failed_count} previous project-work {noun} "
+            "before a ticket action was confirmed. Repeat the request in this recovered session; "
+            "completed mutations will not be replayed."
+        )
+    else:
+        count = len(commands)
+        noun = "request" if count == 1 else "requests"
+        message = (
+            f"{count} previous project-work {noun} did not reach a confirmed ticket action. "
+            "Repeat the request in this recovered session; completed mutations will not be replayed."
+        )
+    notify_state("working", text=message)
+    if messenger is not None:
+        messenger.submit_trace({
+            "kind": "command-recovery",
+            "message": message,
+            "source": "orchestrator",
+        })
+    return message
 
 
 def _set_orchestrator_session_state(session: dict | None, state: str) -> None:
@@ -1003,7 +1155,11 @@ def _record_private_command_capture(
         "received_at": metadata.get("received_at"),
         "source_text": metadata.get("source_text"),
         "action": metadata.get("action", "received"),
+        "state": metadata.get("state", "received"),
     }
+    for name in ("outcome", "repo_path", "ticket_id"):
+        if metadata.get(name):
+            event[name] = metadata[name]
     if metadata.get("provider"):
         event["provider"] = metadata["provider"]
     try:
@@ -1016,10 +1172,12 @@ def _record_private_command_capture(
         parent = os.path.dirname(event_log_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
+            os.chmod(parent, 0o700)
         with open(tmp, "w") as f:
             for line in existing:
                 f.write(line + "\n")
             f.write(json.dumps(event, sort_keys=True) + "\n")
+        os.chmod(tmp, 0o600)
         os.replace(tmp, event_log_path)
     except (OSError, TypeError, ValueError) as e:
         print(f"[voice_bridge] Could not record private command event: {e}", file=sys.stderr)
@@ -1087,6 +1245,17 @@ def _metadata_for_action(
     if action.reason:
         metadata["reason"] = action.reason
     return metadata
+
+
+def _record_command_action_state(
+    metadata: dict,
+    state: str,
+    *,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
+) -> None:
+    event = dict(metadata)
+    event["state"] = state
+    _record_private_command_capture(event, event_log_path=event_log_path)
 
 
 def _active_work(
@@ -1166,6 +1335,8 @@ def _raw_instruction_payload(
         "received_at": metadata.get("received_at"),
         "action": metadata.get("action"),
         "outcome": metadata.get("outcome"),
+        "status": "queued",
+        "defer_processing": True,
     }
     context = _sanitized_command_context(relay_command)
     if context:
@@ -1183,11 +1354,17 @@ def _deliver_raw_instruction_to_orchestrator(
     repo_path: str | Path | None = None,
     orchestrator_session: dict | None = None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
     request_json=_post_orchestrator_json,
 ) -> bool:
     command_seq = relay_command.get("relay_command_seq")
     command_id = relay_command.get("relay_command_id")
     if not _relay_command_current(command_seq, command_id, state_path=state_path):
+        _record_command_action_state(
+            relay_command,
+            "superseded",
+            event_log_path=event_log_path,
+        )
         print(
             "[voice_bridge] Dropping raw orchestrator command because its Relay command was superseded.",
             file=sys.stderr,
@@ -1203,6 +1380,14 @@ def _deliver_raw_instruction_to_orchestrator(
     try:
         request_json("/v1/orchestrator-session/command", payload)
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+        failed = dict(relay_command)
+        failed["action"] = getattr(action, "kind", None)
+        failed["outcome"] = "delivery failed"
+        _record_command_action_state(
+            failed,
+            "delivery_failed",
+            event_log_path=event_log_path,
+        )
         print(f"[voice_bridge] Could not fan out raw command to orchestrator: {e}", file=sys.stderr)
         return False
     return True
@@ -1216,6 +1401,7 @@ def _fanout_raw_instruction_to_orchestrator(
     repo_path: str | Path | None = None,
     orchestrator_session: dict | None = None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
     request_json=_post_orchestrator_json,
 ) -> threading.Thread:
     thread = threading.Thread(
@@ -1227,6 +1413,7 @@ def _fanout_raw_instruction_to_orchestrator(
             "repo_path": repo_path,
             "orchestrator_session": orchestrator_session,
             "state_path": state_path,
+            "event_log_path": event_log_path,
             "request_json": request_json,
         },
         name="orchestrator-raw-command-fanout",
@@ -1237,9 +1424,12 @@ def _fanout_raw_instruction_to_orchestrator(
 
 
 def _should_fanout_raw_instruction_to_orchestrator(action) -> bool:
-    """Keep the default voice path two-layer: foreground PM first, workers next."""
-    del action
-    return False
+    """Durably queue project work without bypassing the foreground PM."""
+    return getattr(action, "kind", None) in {
+        "create_ticket",
+        "update_ticket",
+        "dispatch_ticket",
+    }
 
 
 def _discard_pending_command(
@@ -2617,6 +2807,7 @@ def _run_relay(
                 if inbox is not None or disposition.route == IntentRoute.RUN_SIDECAR:
                     relay_command["work_disposition"] = disposition.to_dict()
                 metadata = _metadata_for_action(action, relay_command, disposition)
+                _record_command_action_state(metadata, "classified")
                 try:
                     record_command_authorization(
                         VOICE_COMMAND_AUTHORIZATION_FILE,
@@ -2700,6 +2891,7 @@ def _run_relay(
                         else "legacy-ready-file"
                     ),
                 )
+                _record_command_action_state(metadata, "queued")
                 print(
                     f"[voice_bridge] Voice command ready: {action.outcome} "
                     f"disposition={disposition.route.value}",
@@ -2814,6 +3006,10 @@ def main():
         )
         if messenger is not None:
             messenger.start()
+        _surface_recoverable_command_status(
+            orchestrator_session,
+            messenger=messenger,
+        )
         sidecar_lane = SidecarLane(
             create_sidecar_executor(cfg, cwd=str(Path.cwd())),
             on_lifecycle=lambda event: _handle_sidecar_lifecycle(

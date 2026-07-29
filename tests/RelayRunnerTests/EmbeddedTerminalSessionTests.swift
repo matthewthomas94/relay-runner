@@ -111,6 +111,49 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         XCTAssertEqual(succeeding.startCount, 1)
     }
 
+    func testProviderExitZeroBeforeReadinessIsFailureForCodexAndClaude() throws {
+        for (providerName, providerKey) in [("Codex", "codex"), ("Claude", "claude")] {
+            let process = FakeEmbeddedTerminalProcess()
+            process.autoReady = false
+            let session = EmbeddedTerminalSession(processFactory: { process })
+            let exited = expectation(description: "\(providerName) early exit")
+            session.setExitHandler { code in
+                XCTAssertEqual(code, 0)
+                exited.fulfill()
+            }
+
+            try session.beginPreparing(
+                providerName: providerName,
+                providerKey: providerKey,
+                workingDirectory: "/repo"
+            )
+            try session.start(launch())
+            XCTAssertEqual(session.phase, .starting)
+
+            process.emitExit(rawStatus: 0)
+            wait(for: [exited], timeout: 1)
+
+            guard case .failed(let message) = session.phase else {
+                return XCTFail("Expected \(providerName) early exit to fail the session")
+            }
+            XCTAssertTrue(message.contains("\(providerName) exited with code 0"))
+            XCTAssertTrue(message.contains("before interactive readiness"))
+            XCTAssertTrue(message.contains("orphaned voice bridge"))
+        }
+    }
+
+    func testBridgeTimeoutMessageDoesNotClaimProviderExited() {
+        let message = EmbeddedTerminalSession.launchFailureMessage(
+            providerName: "Codex",
+            rawStatus: 256,
+            bridgeSocketOutcome: "timeout"
+        )
+
+        XCTAssertTrue(message.contains("voice bridge socket timed out"))
+        XCTAssertTrue(message.contains("before Codex started"))
+        XCTAssertFalse(message.contains("Codex exited"))
+    }
+
     func testPresentationDetachLeavesEmbeddedProcessRunning() throws {
         let process = FakeEmbeddedTerminalProcess()
         let session = EmbeddedTerminalSession(processFactory: { process })
@@ -152,30 +195,16 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
 }
 
 final class EmbeddedAgentDiagnosticsTests: XCTestCase {
-    func testMarkerAbsentDisablesDiagnosticsWithoutCreatingFiles() throws {
+    func testEveryAttemptWritesPrivateManifestWithoutMarkerOrTranscript() throws {
         let root = try makeRoot()
-
-        let diagnostics = EmbeddedAgentDiagnostics.startIfEnabled(
-            provider: "codex",
-            childPID: 123,
-            workingDirectory: "/repo",
-            baseDirectory: root
-        )
-
-        XCTAssertNil(diagnostics)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: EmbeddedAgentDiagnostics.manifestURL(baseDirectory: root).path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: EmbeddedAgentDiagnostics.transcriptURL(baseDirectory: root).path))
-    }
-
-    func testMarkerPresentWritesPrivateCurrentSessionManifest() throws {
-        let root = try makeEnabledRoot()
         let now = Date(timeIntervalSince1970: 1_800_000_000)
 
-        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
+        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.start(
             provider: "codex",
-            childPID: 123,
             workingDirectory: "/repo",
             baseDirectory: root,
+            routeKind: "project",
+            projectIdentity: "/repo",
             now: { now }
         ))
         diagnostics.flushForTesting()
@@ -183,90 +212,120 @@ final class EmbeddedAgentDiagnosticsTests: XCTestCase {
         let manifest = try readManifest(root)
         XCTAssertEqual(manifest["schema_version"] as? Int, EmbeddedAgentDiagnostics.schemaVersion)
         XCTAssertEqual(manifest["provider"] as? String, "codex")
-        XCTAssertEqual(manifest["child_pid"] as? Int, 123)
-        XCTAssertEqual(manifest["working_directory"] as? String, "/repo")
-        XCTAssertEqual(manifest["state"] as? String, "running")
+        XCTAssertEqual(manifest["configured_workspace_folder"] as? String, "/repo")
+        XCTAssertEqual(manifest["route_kind"] as? String, "project")
+        XCTAssertEqual(manifest["project_identity"] as? String, "/repo")
+        XCTAssertEqual(manifest["state"] as? String, "starting")
+        XCTAssertEqual(manifest["current_stage"] as? String, "launch_request")
         XCTAssertEqual(manifest["started_at"] as? String, "2027-01-15T08:00:00Z")
-        XCTAssertEqual(
-            manifest["transcript_path"] as? String,
-            EmbeddedAgentDiagnostics.transcriptURL(baseDirectory: root).path
-        )
+        XCTAssertNil(manifest["transcript_path"])
+        XCTAssertNil(manifest["source_text"])
+        XCTAssertNil(manifest["prompt"])
 
         XCTAssertEqual(try permissions(at: EmbeddedAgentDiagnostics.diagnosticsDirectoryURL(baseDirectory: root)), 0o700)
         XCTAssertEqual(try permissions(at: EmbeddedAgentDiagnostics.manifestURL(baseDirectory: root)), 0o600)
-        XCTAssertEqual(try permissions(at: EmbeddedAgentDiagnostics.transcriptURL(baseDirectory: root)), 0o600)
+        XCTAssertEqual(try permissions(at: diagnostics.eventsURL), 0o600)
     }
 
-    func testTranscriptWritesAreBoundedToNewestBytes() throws {
-        let root = try makeEnabledRoot()
-        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
+    func testLifecycleStagesRecordOnlyBoundedSafeEvidence() throws {
+        let root = try makeRoot()
+        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.start(
             provider: "codex",
-            childPID: 123,
             workingDirectory: "/repo",
             baseDirectory: root,
-            maxTranscriptBytes: 8
+            routeKind: "project",
+            projectIdentity: "/repo"
         ))
 
-        diagnostics.recordPTYOutput(ArraySlice(Array("hello".utf8)))
-        diagnostics.recordPTYOutput(ArraySlice(Array(" world".utf8)))
+        diagnostics.markLauncherPrepared(path: "/tmp/voice_bridge_launch.command")
+        diagnostics.markLauncherStarted(childPID: 123)
+        diagnostics.markInteractiveReady()
         diagnostics.flushForTesting()
 
-        let transcript = try String(contentsOf: EmbeddedAgentDiagnostics.transcriptURL(baseDirectory: root), encoding: .utf8)
-        XCTAssertEqual(transcript, "lo world")
+        let manifest = try readManifest(root)
+        XCTAssertEqual(manifest["child_pid"] as? Int, 123)
+        XCTAssertEqual(manifest["state"] as? String, "ready")
+        XCTAssertEqual(manifest["current_stage"] as? String, "interactive_provider_readiness")
+        let events = try String(contentsOf: diagnostics.eventsURL, encoding: .utf8)
+        for stage in [
+            "launch_request",
+            "launcher_prepared",
+            "launcher_start",
+            "interactive_provider_readiness",
+        ] {
+            XCTAssertTrue(events.contains(#""stage":"\#(stage)""#), stage)
+        }
+        XCTAssertFalse(events.contains("hello"))
+        XCTAssertFalse(events.contains("source_text"))
     }
 
-    func testExitLifecycleAddsExitInformation() throws {
-        let root = try makeEnabledRoot()
-        let started = Date(timeIntervalSince1970: 1_800_000_000)
-        let ended = Date(timeIntervalSince1970: 1_800_000_010)
-        var dates = [started, ended]
-        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
+    func testLaunchdFailureAndBridgeTimeoutRemainDistinctFromProviderExit() throws {
+        let root = try makeRoot()
+        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.start(
             provider: "claude",
-            childPID: 456,
             workingDirectory: "/repo",
             baseDirectory: root,
-            now: { dates.removeFirst() }
+            routeKind: "project",
+            projectIdentity: "/repo"
         ))
+        let bridgeEvents = """
+        {"stage":"launchd_bridge_submission","outcome":"failed","exit_status":1}
+        {"stage":"bridge_socket_readiness","outcome":"timeout"}
+        """
+        try bridgeEvents.write(to: diagnostics.eventsURL, atomically: true, encoding: .utf8)
 
-        diagnostics.markExited(rawStatus: 256)
+        XCTAssertEqual(diagnostics.recordedOutcome(for: "launchd_bridge_submission"), "failed")
+        XCTAssertEqual(diagnostics.recordedOutcome(for: "bridge_socket_readiness"), "timeout")
+        XCTAssertNil(diagnostics.recordedOutcome(for: "provider_spawn"))
+
+        diagnostics.markLaunchFailed(rawStatus: 256)
         diagnostics.flushForTesting()
 
         let manifest = try readManifest(root)
         XCTAssertEqual(manifest["provider"] as? String, "claude")
-        XCTAssertEqual(manifest["state"] as? String, "exited")
-        XCTAssertEqual(manifest["ended_at"] as? String, "2027-01-15T08:00:10Z")
-        XCTAssertEqual(manifest["raw_exit_status"] as? Int, 256)
+        XCTAssertEqual(manifest["state"] as? String, "setup_failed")
         XCTAssertEqual(manifest["exit_code"] as? Int, 1)
+        let events = try String(contentsOf: diagnostics.eventsURL, encoding: .utf8)
+        XCTAssertTrue(events.contains("launcher_exit_before_provider_spawn"))
+        XCTAssertFalse(events.contains("provider_early_exit"))
     }
 
-    func testExplicitTerminationUpdatesLifecycleWithoutExitCode() throws {
-        let root = try makeEnabledRoot()
-        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
-            provider: "codex",
-            childPID: 123,
-            workingDirectory: "/repo",
-            baseDirectory: root
-        ))
+    func testEarlyExitAndSignalTerminationAreDecodedForBothProviders() throws {
+        for (provider, rawStatus, expectedField, expectedValue) in [
+            ("codex", Int32(0), "exit_code", 0),
+            ("claude", Int32(9), "termination_signal", 9),
+        ] {
+            let root = try makeRoot()
+            let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.start(
+                provider: provider,
+                workingDirectory: "/repo",
+                baseDirectory: root,
+                routeKind: "project",
+                projectIdentity: "/repo"
+            ))
 
-        diagnostics.markTerminated()
-        diagnostics.flushForTesting()
+            diagnostics.markExited(rawStatus: rawStatus, beforeInteractiveReadiness: true)
+            diagnostics.flushForTesting()
 
-        let manifest = try readManifest(root)
-        XCTAssertEqual(manifest["state"] as? String, "terminated")
-        XCTAssertNil(manifest["exit_code"])
-        XCTAssertNil(manifest["raw_exit_status"])
+            let manifest = try readManifest(root)
+            XCTAssertEqual(manifest["provider"] as? String, provider)
+            XCTAssertEqual(manifest["state"] as? String, "provider_early_exit")
+            XCTAssertEqual(manifest["raw_exit_status"] as? Int, Int(rawStatus))
+            XCTAssertEqual(manifest[expectedField] as? Int, expectedValue)
+        }
     }
 
     func testDiagnosticsSetupFailureIsNonFatal() throws {
-        let root = try makeEnabledRoot()
+        let root = try makeRoot()
         let diagnosticsDirectory = EmbeddedAgentDiagnostics.diagnosticsDirectoryURL(baseDirectory: root)
         try Data("not a directory".utf8).write(to: diagnosticsDirectory)
 
-        let diagnostics = EmbeddedAgentDiagnostics.startIfEnabled(
+        let diagnostics = EmbeddedAgentDiagnostics.start(
             provider: "codex",
-            childPID: 123,
             workingDirectory: "/repo",
-            baseDirectory: root
+            baseDirectory: root,
+            routeKind: "project",
+            projectIdentity: "/repo"
         )
 
         XCTAssertNil(diagnostics)
@@ -274,12 +333,13 @@ final class EmbeddedAgentDiagnosticsTests: XCTestCase {
 
     func testProviderLabelsCoverCodexAndClaude() throws {
         for provider in ["codex", "claude"] {
-            let root = try makeEnabledRoot()
-            let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.startIfEnabled(
+            let root = try makeRoot()
+            let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.start(
                 provider: provider,
-                childPID: 123,
                 workingDirectory: "/repo",
-                baseDirectory: root
+                baseDirectory: root,
+                routeKind: "project",
+                projectIdentity: "/repo"
             ))
             diagnostics.flushForTesting()
 
@@ -288,17 +348,34 @@ final class EmbeddedAgentDiagnosticsTests: XCTestCase {
         }
     }
 
+    func testAppRelaunchFinalizesUnfinishedAttempt() throws {
+        let root = try makeRoot()
+        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.start(
+            provider: "codex",
+            workingDirectory: "/repo",
+            baseDirectory: root,
+            routeKind: "project",
+            projectIdentity: "/repo"
+        ))
+        diagnostics.markLauncherStarted(childPID: 321)
+        diagnostics.flushForTesting()
+
+        EmbeddedAgentDiagnostics.finalizeInterruptedSessionIfNeeded(
+            baseDirectory: root,
+            now: Date(timeIntervalSince1970: 1_800_000_010)
+        )
+
+        let manifest = try readManifest(root)
+        XCTAssertEqual(manifest["state"] as? String, "app_relaunch")
+        XCTAssertEqual(manifest["failure_kind"] as? String, "app_relaunch")
+        XCTAssertEqual(manifest["ended_at"] as? String, "2027-01-15T08:00:10Z")
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("EmbeddedAgentDiagnosticsTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        return root
-    }
-
-    private func makeEnabledRoot() throws -> URL {
-        let root = try makeRoot()
-        try Data().write(to: EmbeddedAgentDiagnostics.markerURL(baseDirectory: root))
         return root
     }
 
@@ -488,6 +565,9 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertTrue(events.contains(#""provider":"codex""#))
         XCTAssertTrue(events.contains(#""relay_command_id":"cmd-1""#))
         XCTAssertFalse(events.contains("Fix the bridge"))
+        let journal = try String(contentsOf: fixture.actionJournal)
+        XCTAssertTrue(journal.contains(#""state":"claimed""#))
+        XCTAssertFalse(journal.contains("Fix the bridge"))
     }
 
     func testMissingProviderAcknowledgementRetriesReturnWithoutRewritingPrompt() throws {
@@ -585,6 +665,10 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertTrue(control.contains("__ORCHESTRATOR_REPLY__:"))
         XCTAssertTrue(control.contains(#""relay_command_id":"cmd-1""#))
         XCTAssertFalse(control.contains("Fix the bridge"))
+        XCTAssertTrue(
+            try String(contentsOf: fixture.actionJournal)
+                .contains(#""state":"delivery_failed""#)
+        )
     }
 
     func testProviderExitDuringAcknowledgementPublishesFailureWithoutReplay() throws {
@@ -984,6 +1068,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         commandState: URL,
         providerTurns: URL,
         deliveryEvents: URL,
+        actionJournal: URL,
         voiceInput: URL,
         heartbeat: URL,
         paths: RelayVoiceCommandDelivery.Paths
@@ -998,6 +1083,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         let commandState = root.appendingPathComponent("voice_command_state.json")
         let providerTurns = root.appendingPathComponent("voice_provider_turns.json")
         let deliveryEvents = root.appendingPathComponent("relay_terminal_delivery_events.jsonl")
+        let actionJournal = root.appendingPathComponent("command-actions.jsonl")
         let voiceInput = root.appendingPathComponent("voice_in.fifo")
         let heartbeat = root.appendingPathComponent("voice_bridge_heartbeat")
         return (
@@ -1008,6 +1094,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             commandState: commandState,
             providerTurns: providerTurns,
             deliveryEvents: deliveryEvents,
+            actionJournal: actionJournal,
             voiceInput: voiceInput,
             heartbeat: heartbeat,
             paths: RelayVoiceCommandDelivery.Paths(
@@ -1017,6 +1104,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
                 commandState: commandState.path,
                 providerTurns: providerTurns.path,
                 deliveryEvents: deliveryEvents.path,
+                actionJournal: actionJournal.path,
                 voiceInput: voiceInput.path,
                 heartbeat: heartbeat.path
             )
@@ -1100,9 +1188,12 @@ private final class FakeEmbeddedTerminalProcess: EmbeddedTerminalProcess {
     let view = NSView()
     var isRunning = false
     var hasFocus = false
+    var childPID: Int? = 123
     var onExit: ((Int32?) -> Void)?
+    var onReady: (() -> Void)?
     var onTitle: ((String) -> Void)?
     var startError: Error?
+    var autoReady = true
     var startCount = 0
     var terminateCount = 0
 
@@ -1110,6 +1201,9 @@ private final class FakeEmbeddedTerminalProcess: EmbeddedTerminalProcess {
         startCount += 1
         if let startError { throw startError }
         isRunning = true
+        if autoReady {
+            onReady?()
+        }
     }
 
     func focus() {
