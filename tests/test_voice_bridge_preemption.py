@@ -802,6 +802,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 {"general": {"provider": "codex"}},
                 shutdown_event,
                 cwd="/tmp/repo",
+                event_log_path=None,
                 request_json=fake_request,
             )
             voice_bridge._set_orchestrator_session_state(session, "awaiting_workers")
@@ -3141,6 +3142,25 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual([event["relay_command_seq"] for event in events], [3, 4])
             self.assertEqual(stat.S_IMODE(os.stat(temp_dir).st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(os.stat(event_path).st_mode), 0o600)
+
+    def test_delivery_failed_recovery_names_the_actual_outcome(self):
+        notifications: list[tuple[str, dict]] = []
+
+        message = voice_bridge._surface_recoverable_command_status(
+            {
+                "recoverable_commands": [{
+                    "relay_command_seq": 8,
+                    "relay_command_id": "delivery-failed",
+                    "status": "delivery_failed",
+                }],
+            },
+            messenger=None,
+            notify_state=lambda state, **payload: notifications.append((state, payload)),
+        )
+
+        self.assertIn("Delivery failed", message)
+        self.assertIn("before a ticket action was confirmed", message)
+        self.assertEqual(notifications, [("working", {"text": message})])
 
     def test_generated_provider_skills_share_preemption_contract(self):
         script_path = os.path.join(ROOT, "scripts", "relay-bridge")

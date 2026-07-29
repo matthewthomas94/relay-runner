@@ -4426,6 +4426,7 @@ class Daemon:
         log_path = workspace_path / ".relay" / "run.log"
         base_branch = self._resolve_default_branch(str(repo))
         target_branch = _git_text(str(repo), "branch", "--show-current") or base_branch
+        command_store = getattr(self, "orchestrator_commands", None)
 
         with self._dispatch_lock:
             worker_provider, worker_bin, general_config = self._effective_worker_agent()
@@ -4448,8 +4449,8 @@ class Daemon:
                     trigger=f"dispatch-{source}-already-active",
                     drive_reviews=False,
                 )
-                if relay_command_id and self.orchestrator_commands.get_private(str(relay_command_id)):
-                    self.orchestrator_commands.update_status(
+                if relay_command_id and command_store and command_store.get_private(str(relay_command_id)):
+                    command_store.update_status(
                         str(relay_command_id),
                         status="dispatched",
                         outcome="dispatch-already-active",
@@ -4474,8 +4475,8 @@ class Daemon:
                     trigger=f"dispatch-{source}-awaiting-merge",
                     drive_reviews=True,
                 )
-                if relay_command_id and self.orchestrator_commands.get_private(str(relay_command_id)):
-                    self.orchestrator_commands.update_status(
+                if relay_command_id and command_store and command_store.get_private(str(relay_command_id)):
+                    command_store.update_status(
                         str(relay_command_id),
                         status="dispatched",
                         outcome="dispatch-awaiting-merge",
@@ -4668,8 +4669,8 @@ class Daemon:
             trigger=f"dispatch-{source}-claimed",
             drive_reviews=False,
         )
-        if relay_command_id and self.orchestrator_commands.get_private(str(relay_command_id)):
-            self.orchestrator_commands.update_status(
+        if relay_command_id and command_store and command_store.get_private(str(relay_command_id)):
+            command_store.update_status(
                 str(relay_command_id),
                 status="dispatched",
                 outcome="ticket-dispatched",
@@ -5293,6 +5294,100 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         )
         return result
 
+    def reconcile_orchestrator_command_states(
+        self,
+        *,
+        repo_path: str,
+        command_states: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Reconcile private bridge/app journal outcomes into daemon recovery state."""
+        repo = str(Path(repo_path).expanduser().resolve())
+        reconciled: list[dict[str, Any]] = []
+        ignored: list[str] = []
+        protected_terminal_statuses = (
+            ORCHESTRATOR_COMMAND_TERMINAL_STATUSES
+            - {"delivery_failed", "superseded", "clarification_required"}
+        )
+        for raw in (command_states or [])[-200:]:
+            if not isinstance(raw, dict):
+                continue
+            command_id = str(raw.get("relay_command_id") or "").strip()
+            state = str(raw.get("state") or raw.get("status") or "").strip().lower()
+            try:
+                command_seq = int(raw.get("relay_command_seq"))
+            except (TypeError, ValueError):
+                continue
+            if not command_id or state not in {"claimed", "delivery_failed", "superseded"}:
+                continue
+            event_repo = str(Path(str(raw.get("repo_path") or repo)).expanduser().resolve())
+            if event_repo != repo:
+                ignored.append(command_id)
+                continue
+
+            existing = self.orchestrator_commands.get_private(command_id)
+            if existing is None:
+                if state != "delivery_failed":
+                    ignored.append(command_id)
+                    continue
+                source_text = str(raw.get("source_text") or "").strip()
+                if not source_text:
+                    source_text = "Relay command delivery failed before provider readiness."
+                self.orchestrator_commands.record(
+                    repo_path=repo,
+                    source_text=source_text,
+                    relay_command_seq=command_seq,
+                    relay_command_id=command_id,
+                    provider_key=raw.get("provider"),
+                    action=raw.get("action"),
+                    outcome="delivery-failed",
+                    received_at=raw.get("received_at"),
+                    status="delivery_failed",
+                )
+                updated = self.orchestrator_commands.update_status(
+                    command_id,
+                    status="delivery_failed",
+                    outcome="delivery-failed",
+                    status_message="Delivery failed before the embedded provider confirmed a ticket action.",
+                )
+                if updated:
+                    reconciled.append(updated)
+                continue
+
+            existing_status = str(existing.get("status") or "")
+            if existing_status in protected_terminal_statuses:
+                ignored.append(command_id)
+                continue
+            if state == "claimed" and existing_status not in {
+                "received",
+                "classified",
+                "queued",
+                "planning",
+            }:
+                ignored.append(command_id)
+                continue
+            if state == "delivery_failed" and existing_status == "superseded":
+                ignored.append(command_id)
+                continue
+
+            if state == "delivery_failed":
+                outcome = "delivery-failed"
+                message = "Delivery failed before the embedded provider confirmed a ticket action."
+            elif state == "superseded":
+                outcome = "superseded"
+                message = "The command was superseded locally and will not be recovered or replayed."
+            else:
+                outcome = "provider-claimed"
+                message = "The embedded provider claimed the command before the previous session ended."
+            updated = self.orchestrator_commands.update_status(
+                command_id,
+                status=state,
+                outcome=outcome,
+                status_message=message,
+            )
+            if updated:
+                reconciled.append(updated)
+        return {"reconciled": reconciled, "ignored": ignored}
+
     def ensure_orchestrator_session(
         self,
         *,
@@ -5303,6 +5398,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         source: str | None = None,
         pid: int | None = None,
         state: str = "idle",
+        command_action_states: list[dict[str, Any]] | None = None,
     ) -> dict:
         if not repo_path:
             raise ValueError("repo_path is required")
@@ -5320,12 +5416,17 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             pid=pid,
             state=state,
         )
+        reconciliation = self.reconcile_orchestrator_command_states(
+            repo_path=str(repo),
+            command_states=command_action_states,
+        )
         try:
             self.process_orchestrator_commands(repo_path=str(repo), limit=10)
         except Exception as e:  # noqa: BLE001 - activation must still succeed.
             print(f"[orchestrator] command resume failed for {repo}: {e}", file=sys.stderr)
         return {
             "orchestrator_session": result,
+            "command_action_reconciliation": reconciliation,
             "recoverable_commands": self.orchestrator_commands.recoverable(
                 repo_path=str(repo),
                 limit=10,
@@ -5755,8 +5856,9 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             skipped: list[dict[str, Any]] = []
             canceled: list[dict[str, Any]] = []
             command_id = str(relay_command_id or "").strip()
-            if command_id and self.orchestrator_commands.get_private(command_id):
-                self.orchestrator_commands.update_status(
+            command_store = getattr(self, "orchestrator_commands", None)
+            if command_id and command_store and command_store.get_private(command_id):
+                command_store.update_status(
                     command_id,
                     status="mutation_authorized",
                     outcome="mutation-authorized",
@@ -5796,8 +5898,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 )
                 if action_request_id:
                     seen_request_ids.add(action_request_id)
-                if command_id and self.orchestrator_commands.get_private(command_id):
-                    self.orchestrator_commands.update_status(
+                if command_id and command_store and command_store.get_private(command_id):
+                    command_store.update_status(
                         command_id,
                         status="superseded",
                         outcome="superseded",
@@ -5951,7 +6053,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             if action_request_id:
                 seen_request_ids.add(action_request_id)
 
-            if command_id and self.orchestrator_commands.get_private(command_id):
+            if command_id and command_store and command_store.get_private(command_id):
                 action_kinds = {
                     str(action.get("kind") or "").strip().lower()
                     for action in actions
@@ -5978,7 +6080,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     command_status = "rejected"
                     command_outcome = "mutation-rejected"
                     message = "No requested ticket mutation was applied."
-                self.orchestrator_commands.update_status(
+                command_store.update_status(
                     command_id,
                     status=command_status,
                     outcome=command_outcome,
@@ -6349,6 +6451,11 @@ class Handler(BaseHTTPRequestHandler):
                     source=body.get("source"),
                     pid=body.get("pid"),
                     state=body.get("state") or "idle",
+                    command_action_states=(
+                        body.get("command_action_states")
+                        if isinstance(body.get("command_action_states"), list)
+                        else None
+                    ),
                 )
                 session = result.get("orchestrator_session") or {}
                 return (201 if session.get("created") else 200), result

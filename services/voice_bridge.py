@@ -355,6 +355,8 @@ VOICE_COMMAND_EVENT_LOG = os.environ.get(
 VOICE_INTENT_INBOX = os.environ.get("VOICE_INTENT_INBOX", "/tmp/relay_intent_inbox.sqlite3")
 SPEECH_EVENT_LOG = os.environ.get("SPEECH_EVENT_LOG", "/tmp/relay_speech_events.jsonl")
 VOICE_COMMAND_EVENT_LIMIT = 200
+COMMAND_ACTION_RECOVERY_STATES = frozenset({"claimed", "delivery_failed", "superseded"})
+COMMAND_ACTION_TERMINAL_STATES = frozenset({"delivery_failed", "superseded"})
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
 VOICE_ACKNOWLEDGEMENT = os.environ.get("VOICE_ACKNOWLEDGEMENT", "Got it. I'm on it.")
 VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS = 0.0
@@ -426,6 +428,89 @@ def _atomic_write_json(path: str, payload: dict) -> None:
     os.rename(tmp, path)
 
 
+def _command_action_journal_snapshot(
+    *,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
+    repo_path: str | Path | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Return latest recovery-relevant command states from the private journal."""
+    if not event_log_path:
+        return []
+    try:
+        with open(event_log_path) as f:
+            lines = [line for line in f if line.strip()]
+    except OSError:
+        return []
+
+    by_id: dict[str, dict] = {}
+    order: list[str] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        command_id = str(event.get("relay_command_id") or "").strip()
+        try:
+            command_seq = int(event.get("relay_command_seq"))
+        except (TypeError, ValueError):
+            continue
+        state = str(event.get("state") or "").strip().lower()
+        if not command_id or not state:
+            continue
+
+        current = by_id.get(command_id, {
+            "relay_command_id": command_id,
+            "relay_command_seq": command_seq,
+        })
+        for name in (
+            "source_text",
+            "provider",
+            "repo_path",
+            "action",
+            "outcome",
+            "received_at",
+        ):
+            value = event.get(name)
+            if value is not None and value != "":
+                current[name] = value
+        current["relay_command_seq"] = command_seq
+        current_state = str(current.get("state") or "")
+        if (
+            state in COMMAND_ACTION_TERMINAL_STATES
+            or current_state not in COMMAND_ACTION_TERMINAL_STATES
+        ):
+            current["state"] = state
+        if command_id in order:
+            order.remove(command_id)
+        order.append(command_id)
+        by_id[command_id] = current
+
+    resolved_repo = (
+        str(Path(repo_path).expanduser().resolve())
+        if repo_path is not None
+        else None
+    )
+    snapshot: list[dict] = []
+    for command_id in order:
+        event = by_id[command_id]
+        if event.get("state") not in COMMAND_ACTION_RECOVERY_STATES:
+            continue
+        event_repo = event.get("repo_path")
+        if event_repo and resolved_repo:
+            try:
+                if str(Path(str(event_repo)).expanduser().resolve()) != resolved_repo:
+                    continue
+            except (OSError, RuntimeError):
+                continue
+        elif resolved_repo:
+            event["repo_path"] = resolved_repo
+        snapshot.append(event)
+    return snapshot[-max(1, int(limit)):]
+
+
 def _orchestrator_port(port_file: str = ORCHESTRATOR_PORT_FILE) -> int:
     try:
         raw = Path(port_file).read_text().strip()
@@ -494,6 +579,7 @@ def start_persistent_orchestrator_lifecycle(
     shutdown_event: threading.Event,
     *,
     cwd: str | None = None,
+    event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
     request_json=_post_orchestrator_json,
 ) -> dict | None:
     """Register this bridge as the durable foreground orchestrator session.
@@ -511,6 +597,10 @@ def start_persistent_orchestrator_lifecycle(
         "source": "relay-bridge",
         "pid": os.getpid(),
         "state": "idle",
+        "command_action_states": _command_action_journal_snapshot(
+            event_log_path=event_log_path,
+            repo_path=repo_path,
+        ),
     }
     try:
         response = request_json("/v1/orchestrator-session/ensure", payload)
@@ -616,10 +706,21 @@ def _surface_recoverable_command_status(
         1 for command in commands
         if isinstance(command, dict) and command.get("status") == "clarification_required"
     )
+    delivery_failed_count = sum(
+        1 for command in commands
+        if isinstance(command, dict) and command.get("status") == "delivery_failed"
+    )
     if clarification_count:
         message = (
             "A previous project-work request is waiting for a target project. "
             "Choose a child project in Workspace, then repeat the request; no parent workspace ticket was created."
+        )
+    elif delivery_failed_count:
+        noun = "request" if delivery_failed_count == 1 else "requests"
+        message = (
+            f"Delivery failed for {delivery_failed_count} previous project-work {noun} "
+            "before a ticket action was confirmed. Repeat the request in this recovered session; "
+            "completed mutations will not be replayed."
         )
     else:
         count = len(commands)
