@@ -10,6 +10,15 @@ import Foundation
 ///   - Double-tap Control: cancel recording / dismiss TTS
 ///   - Double-tap Shift: toggle the routed board surface
 final class CapsLockGesture {
+    typealias GlobalMonitorInstaller = (
+        NSEvent.EventTypeMask,
+        @escaping (NSEvent) -> Void
+    ) -> Any?
+    typealias LocalMonitorInstaller = (
+        NSEvent.EventTypeMask,
+        @escaping (NSEvent) -> NSEvent?
+    ) -> Any?
+    typealias MonitorRemover = (Any) -> Void
 
     enum Event {
         case startRecording
@@ -33,8 +42,16 @@ final class CapsLockGesture {
     private let useCapsLock: Bool
     private let targetKeyCode: UInt16
     private let targetModifiers: NSEvent.ModifierFlags
+    private let globalMonitorInstaller: GlobalMonitorInstaller
+    private let localMonitorInstaller: LocalMonitorInstaller
+    private let monitorRemover: MonitorRemover
     private var customKeyDown = false
     private var keyMonitors: [Any] = []
+    private var modifierGlobalMonitor: Any?
+    private var customKeyGlobalMonitor: Any?
+    private var globalMonitorRetryWorkItem: DispatchWorkItem?
+    private var loggedGlobalMonitorFailure = false
+    private var stoppingMonitors = false
 
     // Menu-driven activation override (nil = use hardware state)
     private var manualKeyDown: Bool?
@@ -63,7 +80,18 @@ final class CapsLockGesture {
     weak var stateMachine: StateMachine?
     var confirmationResolver: ((Bool) -> Void)?
 
-    init(activationKey: String = "") {
+    init(
+        activationKey: String = "",
+        globalMonitorInstaller: @escaping GlobalMonitorInstaller = { mask, handler in
+            NSEvent.addGlobalMonitorForEvents(matching: mask, handler: handler)
+        },
+        localMonitorInstaller: @escaping LocalMonitorInstaller = { mask, handler in
+            NSEvent.addLocalMonitorForEvents(matching: mask, handler: handler)
+        },
+        monitorRemover: @escaping MonitorRemover = { monitor in
+            NSEvent.removeMonitor(monitor)
+        }
+    ) {
         let isCapsLock = activationKey.isEmpty
             || activationKey.lowercased() == "caps lock"
             || activationKey.lowercased() == "capslock"
@@ -78,12 +106,15 @@ final class CapsLockGesture {
             targetModifiers = mods
         }
 
+        self.globalMonitorInstaller = globalMonitorInstaller
+        self.localMonitorInstaller = localMonitorInstaller
+        self.monitorRemover = monitorRemover
         prevKeyOn = useCapsLock ? Self.isCapsLockOn() : false
 
+        startModifierMonitor()
         if !useCapsLock {
             startKeyMonitor()
         }
-        startModifierMonitor()
     }
 
     static func isCapsLockOn() -> Bool {
@@ -189,16 +220,24 @@ final class CapsLockGesture {
 
     private func startModifierMonitor() {
         let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown]
-        let global = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            self?.handleModifierMonitorEvent(event)
-        }
-        if let global { keyMonitors.append(global) }
+        installModifierGlobalMonitor()
 
-        let local = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+        let local = localMonitorInstaller(mask) { [weak self] event in
             self?.handleModifierMonitorEvent(event)
             return event
         }
         if let local { keyMonitors.append(local) }
+        updateGlobalMonitorRetry()
+    }
+
+    private func installModifierGlobalMonitor() {
+        guard modifierGlobalMonitor == nil else { return }
+        let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown]
+        guard let monitor = globalMonitorInstaller(mask, { [weak self] event in
+            self?.handleModifierMonitorEvent(event)
+        }) else { return }
+        modifierGlobalMonitor = monitor
+        keyMonitors.append(monitor)
     }
 
     private func handleModifierMonitorEvent(_ event: NSEvent) {
@@ -256,16 +295,64 @@ final class CapsLockGesture {
     // MARK: - Custom key monitoring
 
     private func startKeyMonitor() {
-        let global = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
-            self?.handleKeyEvent(event)
-        }
-        if let global { keyMonitors.append(global) }
+        let mask: NSEvent.EventTypeMask = [.keyDown, .keyUp, .flagsChanged]
+        installCustomKeyGlobalMonitor()
 
-        let local = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
+        let local = localMonitorInstaller(mask) { [weak self] event in
             self?.handleKeyEvent(event)
             return event
         }
         if let local { keyMonitors.append(local) }
+        updateGlobalMonitorRetry()
+    }
+
+    private func installCustomKeyGlobalMonitor() {
+        guard customKeyGlobalMonitor == nil else { return }
+        let mask: NSEvent.EventTypeMask = [.keyDown, .keyUp, .flagsChanged]
+        guard let monitor = globalMonitorInstaller(mask, { [weak self] event in
+            self?.handleKeyEvent(event)
+        }) else { return }
+        customKeyGlobalMonitor = monitor
+        keyMonitors.append(monitor)
+    }
+
+    func retryMissingGlobalMonitors() {
+        guard !stoppingMonitors else { return }
+        installModifierGlobalMonitor()
+        if !useCapsLock {
+            installCustomKeyGlobalMonitor()
+        }
+        updateGlobalMonitorRetry()
+    }
+
+    private var hasAllGlobalMonitors: Bool {
+        modifierGlobalMonitor != nil
+            && (useCapsLock || customKeyGlobalMonitor != nil)
+    }
+
+    private func updateGlobalMonitorRetry() {
+        if hasAllGlobalMonitors {
+            globalMonitorRetryWorkItem?.cancel()
+            globalMonitorRetryWorkItem = nil
+            if loggedGlobalMonitorFailure {
+                NSLog("[CapsLockGesture] Global key monitor recovered")
+                loggedGlobalMonitorFailure = false
+            }
+            return
+        }
+
+        if !loggedGlobalMonitorFailure {
+            NSLog("[CapsLockGesture] Global key monitor unavailable; retrying")
+            loggedGlobalMonitorFailure = true
+        }
+        guard globalMonitorRetryWorkItem == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.globalMonitorRetryWorkItem = nil
+            self.retryMissingGlobalMonitors()
+        }
+        globalMonitorRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: workItem)
     }
 
     private func handleKeyEvent(_ event: NSEvent) {
@@ -293,10 +380,15 @@ final class CapsLockGesture {
     }
 
     private func stopKeyMonitor() {
+        stoppingMonitors = true
+        globalMonitorRetryWorkItem?.cancel()
+        globalMonitorRetryWorkItem = nil
         for monitor in keyMonitors {
-            NSEvent.removeMonitor(monitor)
+            monitorRemover(monitor)
         }
         keyMonitors.removeAll()
+        modifierGlobalMonitor = nil
+        customKeyGlobalMonitor = nil
     }
 
     // MARK: - Key string parsing

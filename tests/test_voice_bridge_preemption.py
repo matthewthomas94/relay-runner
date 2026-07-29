@@ -139,6 +139,13 @@ class ImmediateMessengerBackend:
 
 
 class VoiceBridgePreemptionTests(unittest.TestCase):
+    def setUp(self):
+        # Unit tests may run while Relay Runner is live. Never let fixture
+        # previews escape to the shared /tmp/voice_state.sock.
+        patcher = mock.patch.object(voice_bridge, "publish_waiting_preview")
+        self.publish_waiting_preview = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_relay_startup_queues_greeting_once(self):
         worker = FakeTTSWorker()
         shutdown_event = threading.Event()
@@ -482,6 +489,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
             self.assertTrue(queued)
             self.assertEqual(tts_queue.get_nowait(), "fresh response")
+            self.publish_waiting_preview.assert_called_once_with("fresh response")
 
     def test_tts_queue_publishes_waiting_preview_after_enqueue(self):
         with tempfile.TemporaryDirectory() as temp_dir:
