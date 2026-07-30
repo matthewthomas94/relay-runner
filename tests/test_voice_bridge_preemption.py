@@ -1087,6 +1087,16 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             }])
             self.assertTrue(worker.input_queue.empty())
 
+    def test_option_play_control_uses_play_or_replay_boundary(self):
+        worker = FakeTTSWorker()
+        worker.play_or_replay = mock.Mock(return_value=True)
+
+        handled = voice_bridge._handle_relay_control_message("__PLAY__", worker)
+
+        self.assertTrue(handled)
+        worker.play_or_replay.assert_called_once_with()
+        self.assertNotIn("play", worker.calls)
+
     def test_first_play_during_authoritative_preview_waits_for_messenger_proposal(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:

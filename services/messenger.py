@@ -1229,7 +1229,7 @@ class MessengerRuntime:
             ),
             "semantic_brief": event.text,
             "replayable": (
-                event.kind == "orchestrator_final"
+                event.kind in {"user_turn", "orchestrator_final"}
                 or event.work_lifecycle
             ),
             "work_disposition": event.work_disposition,

@@ -170,6 +170,15 @@ class TTSWorkerReplayTests(unittest.TestCase):
 
         self.assertEqual(worker.played_wavs, [])
 
+    def test_play_or_replay_without_pending_text_replays_last_audio(self):
+        worker = self.make_worker()
+        worker._last_wav = self.temp_wav()
+
+        with patch.object(tts_worker.threading, "Thread", ImmediateThread):
+            self.assertTrue(worker.play_or_replay())
+
+        self.assertEqual(worker.played_wavs, [worker._last_wav])
+
     def test_play_drains_ineligible_items_until_it_claims_current_speech(self):
         worker = self.make_worker()
         events = []

@@ -153,6 +153,20 @@ class SpeechCoordinatorTests(unittest.TestCase):
         holder["key"] = (2, "two")
         self.assertFalse(coordinator.replay())
 
+    def test_play_or_replay_replays_last_completed_replayable_handoff(self):
+        worker, coordinator, _ = self.make_coordinator()
+        handoff = intent(kind="handoff", replayable=True)
+        coordinator.submit(handoff)
+        payload = worker.input_queue.get_nowait()
+        worker.observer("started", payload["_speech_intent"])
+        worker.observer("completed", payload["_speech_intent"])
+
+        self.assertTrue(coordinator.play_or_replay())
+        replay = worker.input_queue.get_nowait()
+        self.assertEqual(replay["_speech_intent"]["replacement_policy"], "replay")
+        self.assertEqual(replay["_speech_intent"]["spoken_text"], handoff.spoken_text)
+        self.assertEqual(worker.calls, ["play"])
+
     def test_play_and_replay_do_not_start_a_second_active_plan(self):
         worker, coordinator, _ = self.make_coordinator()
         coordinator.submit(intent(kind="final", authoritative=True))
@@ -162,6 +176,8 @@ class SpeechCoordinatorTests(unittest.TestCase):
         coordinator.play()
         self.assertEqual(worker.calls, [])
         self.assertTrue(coordinator.replay() is False)
+        self.assertTrue(coordinator.play_or_replay())
+        self.assertEqual(worker.calls, [])
 
     def test_first_play_is_retained_until_authoritative_speech_is_proposed(self):
         worker, coordinator, _ = self.make_coordinator()

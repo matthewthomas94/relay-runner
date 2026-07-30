@@ -418,6 +418,17 @@ class TTSWorker:
             else:
                 self._play_text(text, display_text=display_text, speech_intent=speech_intent)
 
+    def play_or_replay(self) -> bool:
+        """Play pending text, otherwise replay the last completed audio."""
+        with self._play_request_lock:
+            if self._playing:
+                return True
+            self.play()
+            if self._playing:
+                return True
+            self.replay()
+            return self._playing
+
     def _play_text(
         self,
         text: str,

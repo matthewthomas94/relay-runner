@@ -364,6 +364,17 @@ class SpeechCoordinator:
             self._play_requested = True
         self._dispatch_requested_play()
 
+    def play_or_replay(self) -> bool:
+        """Play pending speech, or replay the last completed current message."""
+        with self._lock:
+            if self._playing_id:
+                return True
+            should_replay = not self._committed_id and self._waiting_preview is None
+        if should_replay:
+            return self.replay()
+        self.play()
+        return True
+
     def replay(self) -> bool:
         with self._lock:
             previous = self._last_replayable

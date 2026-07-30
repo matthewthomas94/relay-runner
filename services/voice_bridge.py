@@ -2175,6 +2175,14 @@ def _quarantine_raw_relay_control_object(text: str) -> bool:
     return True
 
 
+def _play_or_replay(tts_worker: TTSWorker) -> bool:
+    handler = getattr(tts_worker, "play_or_replay", None)
+    if callable(handler):
+        return bool(handler())
+    tts_worker.play()
+    return True
+
+
 def _handle_relay_control_message(
     text: str,
     tts_worker: TTSWorker,
@@ -2236,7 +2244,7 @@ def _handle_relay_control_message(
         return True
 
     if text == "__PLAY__":
-        tts_worker.play()
+        _play_or_replay(tts_worker)
         return True
 
     if text == "__REPLAY__":
@@ -3143,7 +3151,7 @@ def main():
                     continue
 
                 if text == "__PLAY__":
-                    tts_worker.play()
+                    _play_or_replay(tts_worker)
                     continue
 
                 if text == "__REPLAY__":
