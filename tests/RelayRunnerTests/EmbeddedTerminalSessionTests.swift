@@ -137,7 +137,7 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
                 return XCTFail("Expected \(providerName) early exit to fail the session")
             }
             XCTAssertTrue(message.contains("\(providerName) exited with code 0"))
-            XCTAssertTrue(message.contains("before interactive readiness"))
+            XCTAssertTrue(message.contains("during interactive provider readiness"))
             XCTAssertTrue(message.contains("orphaned voice bridge"))
         }
     }
@@ -152,6 +152,139 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         XCTAssertTrue(message.contains("voice bridge socket timed out"))
         XCTAssertTrue(message.contains("before Codex started"))
         XCTAssertFalse(message.contains("Codex exited"))
+    }
+
+    func testRealPTYCleanExitAfterFormerReadinessThresholdRemainsStartupFailure() throws {
+        for (providerName, target) in [
+            ("Codex", ProcessManager.AgentTarget.codex),
+            ("Claude", ProcessManager.AgentTarget.claude),
+        ] {
+            let fixture = try makeRealPTYFixture()
+            let session = EmbeddedTerminalSession()
+            let exited = expectation(description: "\(providerName) post-threshold clean exit")
+            session.setExitHandler { code in
+                XCTAssertEqual(code, 0)
+                exited.fulfill()
+            }
+
+            try session.beginPreparing(
+                providerName: providerName,
+                providerKey: providerName.lowercased(),
+                workingDirectory: fixture.directory.path
+            )
+            try session.start(realPTYLaunch(
+                command: """
+                stty -icanon -echo
+                printf 'interactive provider output\r\n'
+                sleep 0.65
+                exit 0
+                """,
+                target: target,
+                fixture: fixture
+            ))
+
+            let crossedFormerThreshold = expectation(
+                description: "\(providerName) crossed former readiness threshold"
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                crossedFormerThreshold.fulfill()
+            }
+            wait(for: [crossedFormerThreshold], timeout: 1)
+            XCTAssertEqual(
+                session.phase,
+                .starting,
+                "\(providerName) output must not establish stable readiness"
+            )
+
+            wait(for: [exited], timeout: 2)
+            guard case .failed(let message) = session.phase else {
+                return XCTFail("Expected \(providerName) clean startup exit to fail")
+            }
+            XCTAssertTrue(message.contains("\(providerName) exited with code 0"))
+            XCTAssertTrue(message.contains("interactive provider readiness"))
+        }
+    }
+
+    func testAppOwnedDeliveryWaitsForStableProviderPTYForBothProviders() throws {
+        for (providerName, target) in [
+            ("Codex", ProcessManager.AgentTarget.codex),
+            ("Claude", ProcessManager.AgentTarget.claude),
+        ] {
+            let fixture = try makeRealPTYFixture()
+            let paths = deliveryPaths(in: fixture.directory)
+            try "ping\n".write(
+                toFile: paths.command,
+                atomically: true,
+                encoding: .utf8
+            )
+            let metadata = """
+            {"provider":"\(providerName.lowercased())","relay_command_id":"cmd-1","relay_command_seq":1}
+            """
+            try metadata.write(
+                toFile: paths.metadata,
+                atomically: true,
+                encoding: .utf8
+            )
+            try metadata.write(
+                toFile: paths.commandState,
+                atomically: true,
+                encoding: .utf8
+            )
+
+            let process = SwiftTermEmbeddedProcess(
+                readinessStabilityInterval: 0.2,
+                readinessPollInterval: 0.02,
+                voiceDeliveryPaths: paths
+            )
+            let session = EmbeddedTerminalSession(processFactory: { process })
+            try session.beginPreparing(
+                providerName: providerName,
+                providerKey: providerName.lowercased(),
+                workingDirectory: fixture.directory.path
+            )
+            try session.start(ProcessManager.PreparedSessionLaunch(
+                executable: "/bin/bash",
+                arguments: ["-c", """
+                    sleep 0.35
+                    stty -icanon -echo
+                    printf 'interactive provider output\r\n'
+                    IFS= read -r line
+                    [ "$line" = "ping" ] || exit 3
+                    printf 'input accepted\r\n'
+                    sleep 5
+                    """],
+                launcherPath: "/bin/bash",
+                workingDirectory: fixture.directory.path,
+                target: target,
+                voiceDelivery: .appOwned,
+                sessionEventPath: fixture.events.path
+            ))
+
+            let bootstrapWindow = expectation(
+                description: "\(providerName) bootstrap retains queued command"
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                bootstrapWindow.fulfill()
+            }
+            wait(for: [bootstrapWindow], timeout: 1)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: paths.command))
+            XCTAssertEqual(session.phase, .starting)
+
+            let accepted = expectation(description: "\(providerName) accepted gated input")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                accepted.fulfill()
+            }
+            wait(for: [accepted], timeout: 1.5)
+
+            XCTAssertEqual(session.phase, .running)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.command))
+            let terminalText = String(
+                data: process.terminalView.getTerminal().getBufferAsData(),
+                encoding: .utf8
+            )
+            XCTAssertTrue(terminalText?.contains("input accepted") == true)
+            session.end()
+        }
     }
 
     func testPresentationDetachLeavesEmbeddedProcessRunning() throws {
@@ -180,6 +313,55 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         firstHost.detach()
 
         XCTAssertTrue(terminalView.superview === secondHost)
+    }
+
+    private func makeRealPTYFixture() throws -> (directory: URL, events: URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RR258-PTY-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let events = directory.appendingPathComponent("events.jsonl")
+        try #"{"stage":"provider_spawn","outcome":"started"}"#.write(
+            to: events,
+            atomically: true,
+            encoding: .utf8
+        )
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        return (directory, events)
+    }
+
+    private func realPTYLaunch(
+        command: String,
+        target: ProcessManager.AgentTarget,
+        fixture: (directory: URL, events: URL)
+    ) -> ProcessManager.PreparedSessionLaunch {
+        ProcessManager.PreparedSessionLaunch(
+            executable: "/bin/bash",
+            arguments: ["-c", command],
+            launcherPath: "/bin/bash",
+            workingDirectory: fixture.directory.path,
+            target: target,
+            voiceDelivery: .agentSkill,
+            sessionEventPath: fixture.events.path
+        )
+    }
+
+    private func deliveryPaths(in directory: URL) -> RelayVoiceCommandDelivery.Paths {
+        RelayVoiceCommandDelivery.Paths(
+            command: directory.appendingPathComponent("command").path,
+            metadata: directory.appendingPathComponent("metadata").path,
+            claimed: directory.appendingPathComponent("claimed").path,
+            commandState: directory.appendingPathComponent("command-state").path,
+            providerTurns: directory.appendingPathComponent("provider-turns").path,
+            deliveryEvents: directory.appendingPathComponent("delivery-events").path,
+            actionJournal: directory.appendingPathComponent("action-journal").path,
+            voiceInput: directory.appendingPathComponent("voice-input").path,
+            heartbeat: directory.appendingPathComponent("heartbeat").path
+        )
     }
 
     private func launch() -> ProcessManager.PreparedSessionLaunch {
@@ -238,7 +420,7 @@ final class EmbeddedAgentDiagnosticsTests: XCTestCase {
         ))
 
         diagnostics.markLauncherPrepared(path: "/tmp/voice_bridge_launch.command")
-        diagnostics.markLauncherStarted(childPID: 123)
+        diagnostics.recordChildPID(123)
         diagnostics.markInteractiveReady()
         diagnostics.flushForTesting()
 
@@ -247,16 +429,21 @@ final class EmbeddedAgentDiagnosticsTests: XCTestCase {
         XCTAssertEqual(manifest["state"] as? String, "ready")
         XCTAssertEqual(manifest["current_stage"] as? String, "interactive_provider_readiness")
         let events = try String(contentsOf: diagnostics.eventsURL, encoding: .utf8)
-        for stage in [
+        let stages = try events.split(separator: "\n").map { line in
+            let data = try XCTUnwrap(String(line).data(using: .utf8))
+            let event = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: data) as? [String: Any]
+            )
+            return try XCTUnwrap(event["stage"] as? String)
+        }
+        XCTAssertEqual(stages, [
             "launch_request",
             "launcher_prepared",
-            "launcher_start",
             "interactive_provider_readiness",
-        ] {
-            XCTAssertTrue(events.contains(#""stage":"\#(stage)""#), stage)
-        }
+        ])
         XCTAssertFalse(events.contains("hello"))
         XCTAssertFalse(events.contains("source_text"))
+        XCTAssertTrue(events.contains(#""controlling_pty":"stable""#))
     }
 
     func testLaunchdFailureAndBridgeTimeoutRemainDistinctFromProviderExit() throws {
@@ -312,6 +499,12 @@ final class EmbeddedAgentDiagnosticsTests: XCTestCase {
             XCTAssertEqual(manifest["state"] as? String, "provider_early_exit")
             XCTAssertEqual(manifest["raw_exit_status"] as? Int, Int(rawStatus))
             XCTAssertEqual(manifest[expectedField] as? Int, expectedValue)
+            XCTAssertEqual(
+                manifest["failed_stage"] as? String,
+                "interactive_provider_readiness"
+            )
+            let events = try String(contentsOf: diagnostics.eventsURL, encoding: .utf8)
+            XCTAssertTrue(events.contains(#""failed_stage":"interactive_provider_readiness""#))
         }
     }
 
@@ -357,7 +550,7 @@ final class EmbeddedAgentDiagnosticsTests: XCTestCase {
             routeKind: "project",
             projectIdentity: "/repo"
         ))
-        diagnostics.markLauncherStarted(childPID: 321)
+        diagnostics.recordChildPID(321)
         diagnostics.flushForTesting()
 
         EmbeddedAgentDiagnostics.finalizeInterruptedSessionIfNeeded(

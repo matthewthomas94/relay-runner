@@ -442,7 +442,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertNil(launch.sessionEventPath)
     }
 
-    func testEmbeddedLaunchScriptRecordsProviderNeutralLifecycleStages() {
+    func testEmbeddedLaunchScriptRecordsSingleSourceLifecycleStages() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
 
         for provider in [GeneralConfig.AgentProvider.codex, .claude] {
@@ -462,7 +462,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
 
             XCTAssertTrue(script.contains("RELAY_SESSION_EVENTS='/tmp/session-events.jsonl'"))
             XCTAssertTrue(script.contains("relay_record_session_event launcher_start started"))
-            XCTAssertTrue(script.contains("relay_record_session_event bridge_socket_readiness ready"))
+            XCTAssertFalse(script.contains("relay_record_session_event bridge_socket_readiness ready"))
             XCTAssertTrue(script.contains("relay_record_session_event provider_spawn started"))
         }
     }
