@@ -61,6 +61,7 @@ final class BoardOverlayPanel: NSPanel {
                 return
             }
         case .leftMouseDown:
+            cancelCapturedWorkCard()
             if let workCard = programWorkCard(atWindowLocation: event.locationInWindow) {
                 capturedWorkCard = workCard
                 workCard.mouseDown(with: event)
@@ -73,8 +74,8 @@ final class BoardOverlayPanel: NSPanel {
             }
         case .leftMouseUp:
             if let capturedWorkCard {
-                capturedWorkCard.mouseUp(with: event)
                 self.capturedWorkCard = nil
+                capturedWorkCard.mouseUp(with: event)
                 return
             }
         default:
@@ -83,8 +84,26 @@ final class BoardOverlayPanel: NSPanel {
         super.sendEvent(event)
     }
 
+    override func orderOut(_ sender: Any?) {
+        let capturedWorkCard = capturedWorkCard
+        let hoveredWorkCard = hoveredWorkCard
+        self.capturedWorkCard = nil
+        self.hoveredWorkCard = nil
+        capturedWorkCard?.cancelOperation(nil)
+        if hoveredWorkCard !== capturedWorkCard {
+            hoveredWorkCard?.cancelOperation(nil)
+        }
+        super.orderOut(sender)
+    }
+
     func reframe(to screen: NSScreen) {
         setFrame(screen.frame, display: true)
+    }
+
+    private func cancelCapturedWorkCard() {
+        let capturedWorkCard = capturedWorkCard
+        self.capturedWorkCard = nil
+        capturedWorkCard?.cancelOperation(nil)
     }
 
     private func programWorkCard(
