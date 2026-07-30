@@ -180,7 +180,7 @@ final class EmbeddedTerminalSession {
         do {
             try next.start(launch)
             guard next.isRunning else { throw EmbeddedTerminalProcessError.couldNotStart }
-            diagnostics?.markLauncherStarted(childPID: next.childPID)
+            diagnostics?.recordChildPID(next.childPID)
         } catch {
             next.onExit = nil
             next.onReady = nil
@@ -259,7 +259,7 @@ final class EmbeddedTerminalSession {
         } else {
             outcome = "exited"
         }
-        return "\(providerName) \(outcome) before interactive readiness. Relay Runner stopped the orphaned voice bridge; start a new session to retry."
+        return "\(providerName) \(outcome) during interactive provider readiness. Relay Runner stopped the orphaned voice bridge; start a new session to retry."
     }
 
     static func launchFailureMessage(
@@ -1051,7 +1051,7 @@ final class RelayVoiceCommandDelivery {
 final class EmbeddedAgentDiagnostics {
     static let diagnosticsDirectoryName = "embedded-agent-diagnostics"
     static let manifestFilename = "current-session.json"
-    static let schemaVersion = 2
+    static let schemaVersion = 4
     static let retainedAttemptLimit = 20
 
     private static var defaultBaseDirectory: URL {
@@ -1076,6 +1076,7 @@ final class EmbeddedAgentDiagnostics {
     private var childPID: Int?
     private var state = "starting"
     private var currentStage = "launch_request"
+    private var failedStage: String?
     private var endedAt: Date?
     private var rawStatus: Int32?
 
@@ -1168,18 +1169,16 @@ final class EmbeddedAgentDiagnostics {
     }
 
     func markLauncherPrepared(path: String) {
-        queue.async { [self] in
+        queue.sync { [self] in
             currentStage = "launcher_prepared"
             appendEvent(stage: currentStage, outcome: "success", fields: ["launcher_path": path])
             try? writeManifest()
         }
     }
 
-    func markLauncherStarted(childPID: Int?) {
+    func recordChildPID(_ childPID: Int?) {
         queue.async { [self] in
             self.childPID = childPID
-            currentStage = "launcher_start"
-            appendEvent(stage: currentStage, outcome: "started")
             try? writeManifest()
         }
     }
@@ -1188,7 +1187,11 @@ final class EmbeddedAgentDiagnostics {
         queue.async { [self] in
             state = "ready"
             currentStage = "interactive_provider_readiness"
-            appendEvent(stage: currentStage, outcome: "ready")
+            appendEvent(
+                stage: currentStage,
+                outcome: "ready",
+                fields: ["controlling_pty": "stable"]
+            )
             try? writeManifest()
         }
     }
@@ -1198,11 +1201,18 @@ final class EmbeddedAgentDiagnostics {
             self.rawStatus = rawStatus
             endedAt = now()
             state = beforeInteractiveReadiness ? "provider_early_exit" : "exited"
+            failedStage = beforeInteractiveReadiness
+                ? "interactive_provider_readiness"
+                : nil
             currentStage = beforeInteractiveReadiness ? "session_failure" : "session_end"
+            var fields = Self.terminationFields(rawStatus)
+            if let failedStage {
+                fields["failed_stage"] = failedStage
+            }
             appendEvent(
                 stage: currentStage,
                 outcome: state,
-                fields: Self.terminationFields(rawStatus)
+                fields: fields
             )
             try? writeManifest()
         }
@@ -1333,6 +1343,9 @@ final class EmbeddedAgentDiagnostics {
                 payload[key] = value
             }
         }
+        if let failedStage {
+            payload["failed_stage"] = failedStage
+        }
 
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
         for url in [currentManifestURL, attemptManifestURL] {
@@ -1405,7 +1418,10 @@ final class EmbeddedAgentDiagnostics {
     }
 }
 
-private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDelegate, LocalProcessDelegate {
+final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDelegate, LocalProcessDelegate {
+    static let defaultReadinessStabilityInterval: TimeInterval = 1.0
+    static let defaultReadinessPollInterval: TimeInterval = 0.05
+
     let terminalView: RelayTerminalView
     lazy var localProcess = LocalProcess(delegate: self)
     var onExit: ((Int32?) -> Void)?
@@ -1414,8 +1430,22 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     private var voiceDelivery: RelayVoiceCommandDelivery?
     private var sessionEventPath: String?
     private var readinessScheduled = false
+    private var interactiveReady = false
+    private var stableTerminalSince: UInt64?
+    private let readinessStabilityInterval: TimeInterval
+    private let readinessPollInterval: TimeInterval
+    private let voiceDeliveryPaths: RelayVoiceCommandDelivery.Paths
 
-    init() {
+    init(
+        readinessStabilityInterval: TimeInterval =
+            SwiftTermEmbeddedProcess.defaultReadinessStabilityInterval,
+        readinessPollInterval: TimeInterval =
+            SwiftTermEmbeddedProcess.defaultReadinessPollInterval,
+        voiceDeliveryPaths: RelayVoiceCommandDelivery.Paths = .init()
+    ) {
+        self.readinessStabilityInterval = max(0, readinessStabilityInterval)
+        self.readinessPollInterval = max(0.01, readinessPollInterval)
+        self.voiceDeliveryPaths = voiceDeliveryPaths
         terminalView = RelayTerminalView(frame: .zero)
         terminalView.terminalDelegate = self
         terminalView.wantsLayer = true
@@ -1431,6 +1461,29 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
 
     var view: NSView { terminalView }
     var isRunning: Bool { localProcess.running }
+    var hasStableInteractiveTerminal: Bool {
+        let descriptor = localProcess.childfd
+        let pid = localProcess.shellPid
+        guard localProcess.running,
+              descriptor >= 0,
+              pid > 0,
+              isatty(descriptor) == 1,
+              Darwin.kill(pid, 0) == 0 || errno == EPERM else {
+            return false
+        }
+
+        let foregroundProcessGroup = tcgetpgrp(descriptor)
+        let providerProcessGroup = getpgid(pid)
+        guard foregroundProcessGroup > 0,
+              providerProcessGroup > 0,
+              providerProcessGroup == foregroundProcessGroup else {
+            return false
+        }
+
+        var attributes = termios()
+        guard tcgetattr(descriptor, &attributes) == 0 else { return false }
+        return attributes.c_lflag & tcflag_t(ICANON) == 0
+    }
     var hasFocus: Bool { terminalView.hasFocus }
     var childPID: Int? {
         let pid = Int(localProcess.shellPid)
@@ -1441,6 +1494,8 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
         voiceDelivery?.stop()
         voiceDelivery = nil
         readinessScheduled = false
+        interactiveReady = false
+        stableTerminalSince = nil
         sessionEventPath = launch.sessionEventPath
         localProcess.startProcess(
             executable: launch.executable,
@@ -1451,6 +1506,7 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
         guard localProcess.running else { throw EmbeddedTerminalProcessError.couldNotStart }
         if launch.voiceDelivery == .appOwned {
             let delivery = RelayVoiceCommandDelivery(
+                paths: voiceDeliveryPaths,
                 send: { [weak self] data in
                     let bytes = Array(data)
                     DispatchQueue.main.async { [weak self] in
@@ -1462,7 +1518,6 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
                 }
             )
             voiceDelivery = delivery
-            delivery.start()
         }
     }
 
@@ -1471,6 +1526,8 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     }
 
     func terminate() {
+        readinessScheduled = false
+        stableTerminalSince = nil
         voiceDelivery?.stop()
         voiceDelivery = nil
         localProcess.terminate()
@@ -1517,6 +1574,8 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     }
 
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
+        readinessScheduled = false
+        stableTerminalSince = nil
         voiceDelivery?.stop()
         voiceDelivery = nil
         onExit?(exitCode)
@@ -1525,6 +1584,7 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
     private func considerInteractiveReadiness(after output: ArraySlice<UInt8>) {
         guard !output.isEmpty,
               !readinessScheduled,
+              !interactiveReady,
               localProcess.running,
               let sessionEventPath,
               let events = try? String(contentsOfFile: sessionEventPath, encoding: .utf8),
@@ -1533,9 +1593,35 @@ private final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalV
         else { return }
 
         readinessScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            guard let self, self.localProcess.running else { return }
-            self.onReady?()
+        observeInteractiveReadiness()
+    }
+
+    private func observeInteractiveReadiness() {
+        guard readinessScheduled,
+              !interactiveReady,
+              localProcess.running else { return }
+
+        let now = DispatchTime.now().uptimeNanoseconds
+        if hasStableInteractiveTerminal {
+            let stableSince = stableTerminalSince ?? now
+            self.stableTerminalSince = stableSince
+            let stableDuration = Double(now - stableSince) / 1_000_000_000
+            if stableDuration >= readinessStabilityInterval {
+                readinessScheduled = false
+                interactiveReady = true
+                // App-owned commands must not enter the PTY while its child is
+                // still the bridge/bootstrap launcher. The foreground raw TTY
+                // is the provider-owned handoff boundary.
+                voiceDelivery?.start()
+                onReady?()
+                return
+            }
+        } else {
+            stableTerminalSince = nil
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + readinessPollInterval) { [weak self] in
+            self?.observeInteractiveReadiness()
         }
     }
 

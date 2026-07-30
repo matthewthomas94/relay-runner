@@ -983,8 +983,8 @@ final class ProcessManager {
         ))
         \(cdLine)
         relay_record_session_event launcher_start started
+        # relay-bridge records bridge_socket_readiness at the socket check.
         \(bridgeStartLine)
-        \(voiceDelivery == .appOwned ? "relay_record_session_event bridge_socket_readiness ready" : "")
         relay_record_session_event provider_spawn started
         # Interactive agent session with Relay Runner voice mode pre-fired.
         # Replacing this launcher process keeps the PTY child PID aligned with
