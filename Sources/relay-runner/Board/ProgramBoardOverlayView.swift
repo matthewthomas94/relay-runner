@@ -1152,6 +1152,10 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
         bounds.contains(point) ? self : nil
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverTrackingArea {
