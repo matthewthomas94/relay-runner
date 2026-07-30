@@ -419,8 +419,10 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         eventView.windowLocationToBoardLocation = { $0 }
         var changeCount = 0
         var endCount = 0
+        var cancelCount = 0
         eventView.onChanged = { _, _ in changeCount += 1 }
         eventView.onEnded = { endCount += 1 }
+        eventView.onCancelled = { cancelCount += 1 }
         let start = CGPoint(x: 40, y: 40)
 
         sendMouse(.leftMouseDown, at: start, to: eventView, in: window)
@@ -438,7 +440,8 @@ final class BoardOverlayScrollViewTests: XCTestCase {
 
         XCTAssertFalse(eventView.isDragActive)
         XCTAssertFalse(eventView.isPointerInside)
-        XCTAssertEqual(endCount, 1)
+        XCTAssertEqual(endCount, 0)
+        XCTAssertEqual(cancelCount, 1)
     }
 
     func testCardDragLayerKeepsClickSelectionBelowDragThreshold() {
@@ -744,6 +747,156 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertEqual(dragChangeCount, 1)
         XCTAssertEqual(dragEndCount, 1)
         XCTAssertFalse(firstCard.isDragActive)
+    }
+
+    func testMountedBoardPanelCancelsStaleValidDragBeforeNewGestureAndOrderOut() throws {
+        let model = ProgramBoardViewModel()
+        let staleItem = programWorkItem(
+            ticketID: "VQ-1",
+            title: "Stale captured ticket",
+            status: Ticket.Status.backlog.rawValue
+        )
+        let intendedItem = programWorkItem(
+            ticketID: "RR-176",
+            title: "Intended dragged ticket",
+            status: Ticket.Status.backlog.rawValue
+        )
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: [staleItem, intendedItem],
+            doneItems: []
+        )
+        let workspace = WorkspaceViewModel()
+        workspace.configure(
+            showsWorkTab: true,
+            showsTerminalTab: false,
+            showsSettingsTab: false,
+            initialTab: .work
+        )
+        var drops: [(ProgramStatusItem, ProgramBoardLane, ProgramBoardLane)] = []
+        let host = NSHostingView(rootView: ProgramBoardOverlayView(
+            model: model,
+            workspace: workspace,
+            settingsContent: nil,
+            terminalContent: { _ in nil },
+            onDismiss: {},
+            onWorkspaceTabChange: { _ in },
+            onRefresh: {},
+            onStartSession: {},
+            onEndSession: {},
+            onCreateStart: { _ in },
+            onCreateCommit: { _ in },
+            onCreateCancel: {},
+            onEditStart: { _ in },
+            onEditCommit: { _ in },
+            onEditCancel: {},
+            onDelete: { _ in },
+            onDrop: { drops.append(($0, $1, $2)) }
+        ))
+        let panelFrame = CGRect(x: 0, y: 0, width: 1_512, height: 800)
+        let panel = BoardOverlayPanel()
+        panel.setFrame(panelFrame, display: false)
+        host.frame = CGRect(origin: .zero, size: panelFrame.size)
+        let revealContainer = BoardRevealContainerView(
+            frame: CGRect(origin: .zero, size: panelFrame.size),
+            contentView: host,
+            displayGeometry: NotchStatusDisplayGeometry(screenFrame: panelFrame),
+            startsLoading: false
+        )
+        panel.contentView = revealContainer
+        panel.orderFrontRegardless()
+        defer { panel.orderOut(nil) }
+        revealContainer.layoutSubtreeIfNeeded()
+        host.layoutSubtreeIfNeeded()
+        let revealed = expectation(description: "Workspace content revealed")
+        revealContainer.animateReveal {
+            revealed.fulfill()
+        }
+        wait(for: [revealed], timeout: 2)
+        drainMainQueue()
+
+        let cards = programWorkCardViews(in: host)
+        let staleCard = try XCTUnwrap(cards.first {
+            $0.interactionID == "all|Backlog|\(staleItem.id)"
+        })
+        let intendedCard = try XCTUnwrap(cards.first {
+            $0.interactionID == "all|Backlog|\(intendedItem.id)"
+        })
+        let staleStart = staleCard.convert(
+            CGPoint(x: staleCard.bounds.midX, y: staleCard.bounds.midY),
+            to: nil
+        )
+        let intendedStart = intendedCard.convert(
+            CGPoint(x: intendedCard.bounds.midX, y: intendedCard.bounds.midY),
+            to: nil
+        )
+        let boardFrame = try XCTUnwrap(model.boardFrameInWindow)
+        let queuedFrame = try XCTUnwrap(model.columnFrames[.ready])
+        let queuedBoardTarget = CGPoint(
+            x: queuedFrame.midX,
+            y: queuedFrame.minY + min(160, queuedFrame.height / 2)
+        )
+        let queuedWindowTarget = CGPoint(
+            x: boardFrame.minX + queuedBoardTarget.x,
+            y: boardFrame.maxY - queuedBoardTarget.y
+        )
+
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.mouseMoved, at: staleStart, in: panel)))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDown, at: staleStart, in: panel)))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(
+            .leftMouseDragged,
+            at: CGPoint(x: staleStart.x + ProgramWorkCardDragEventView.dragThreshold + 1, y: staleStart.y),
+            in: panel
+        )))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDragged, at: queuedWindowTarget, in: panel)))
+        drainMainQueue()
+
+        XCTAssertEqual(model.dragItemID, staleItem.id)
+        XCTAssertEqual(model.dragTarget, ProgramBoardDropTarget(lane: .ready, isValid: true))
+
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.mouseMoved, at: intendedStart, in: panel)))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDown, at: intendedStart, in: panel)))
+        drainMainQueue()
+
+        XCTAssertTrue(drops.isEmpty)
+        XCTAssertNil(model.dragItemID)
+
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(
+            .leftMouseDragged,
+            at: CGPoint(x: intendedStart.x + ProgramWorkCardDragEventView.dragThreshold + 1, y: intendedStart.y),
+            in: panel
+        )))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDragged, at: queuedWindowTarget, in: panel)))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseUp, at: queuedWindowTarget, in: panel)))
+        drainMainQueue()
+
+        XCTAssertEqual(
+            drops.map { [$0.0.id, $0.1.id, $0.2.id] },
+            [[intendedItem.id, "Backlog", "Queued"]]
+        )
+        XCTAssertNil(model.dragItemID)
+
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.mouseMoved, at: staleStart, in: panel)))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDown, at: staleStart, in: panel)))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(
+            .leftMouseDragged,
+            at: CGPoint(x: staleStart.x + ProgramWorkCardDragEventView.dragThreshold + 1, y: staleStart.y),
+            in: panel
+        )))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDragged, at: queuedWindowTarget, in: panel)))
+        drainMainQueue()
+        XCTAssertEqual(model.dragItemID, staleItem.id)
+        XCTAssertEqual(model.dragTarget, ProgramBoardDropTarget(lane: .ready, isValid: true))
+
+        panel.orderOut(nil)
+        drainMainQueue()
+
+        XCTAssertEqual(
+            drops.map { [$0.0.id, $0.1.id, $0.2.id] },
+            [[intendedItem.id, "Backlog", "Queued"]]
+        )
+        XCTAssertNil(model.dragItemID)
+        XCTAssertFalse(staleCard.isDragActive)
+        XCTAssertFalse(staleCard.isPointerInside)
     }
 
     func testMountedProgramWorkspaceFirstBacklogCardOwnsItsVisibleHitTarget() throws {
