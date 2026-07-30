@@ -268,34 +268,35 @@ enum NotchStatusPlacementPlanner {
         for geometry: NotchStatusDisplayGeometry,
         activityLabelWidth: CGFloat = 0
     ) -> NotchStatusPlacement? {
-        let labelWidth = max(0, min(activityLabelWidth, maximumActivityLabelWidth))
+        let requestedLabelWidth = max(0, min(activityLabelWidth, maximumActivityLabelWidth))
         let notchFrame = notchFrame(for: geometry)
         let trailingLeadOutWidth = Self.compactNotchLeadOutWidth
         let leadingSpacerWidth = compactNotchLeadInWidth
         let notchSpacerWidth = notchFrame?.width ?? fallbackNotchSpacerWidth
-        let surfaceWidth: CGFloat
-        let preferredX: CGFloat
-        let notchedGlyphScreenX: CGFloat?
+        let compactSurfaceWidth =
+            leadingSpacerWidth + notchSpacerWidth + glyphSize.width + trailingLeadOutWidth
+        let desiredTrailingEdge = notchFrame.map {
+            $0.maxX + glyphSize.width + trailingLeadOutWidth
+        } ?? geometry.frame.midX + compactSurfaceWidth / 2
+        let trailingEdge = min(
+            desiredTrailingEdge,
+            geometry.frame.maxX - screenEdgeGap
+        )
+        let availableSurfaceWidth = trailingEdge - geometry.frame.minX - screenEdgeGap
 
-        if let notchFrame {
-            surfaceWidth = labelWidth + leadingSpacerWidth + notchSpacerWidth + glyphSize.width + trailingLeadOutWidth
-            preferredX = notchFrame.minX - labelWidth - leadingSpacerWidth
-            notchedGlyphScreenX = notchFrame.maxX
-        } else {
-            surfaceWidth = labelWidth + leadingSpacerWidth + notchSpacerWidth + glyphSize.width + trailingLeadOutWidth
-            preferredX = geometry.frame.midX - surfaceWidth / 2
-            notchedGlyphScreenX = nil
-        }
-
-        guard surfaceWidth <= geometry.frame.width - screenEdgeGap * 2 else {
+        guard compactSurfaceWidth <= availableSurfaceWidth else {
             return nil
         }
 
-        let maximumX = geometry.frame.maxX - surfaceWidth - screenEdgeGap
-        let x = max(
-            geometry.frame.minX + screenEdgeGap,
-            min(preferredX, maximumX)
+        // Keep the compact surface's trailing edge as the stable screen-space
+        // anchor. If a label would cross the opposite screen edge, truncate
+        // its allocation instead of allowing the glyph and right edge to move.
+        let labelWidth = min(
+            requestedLabelWidth,
+            availableSurfaceWidth - compactSurfaceWidth
         )
+        let surfaceWidth = compactSurfaceWidth + labelWidth
+        let x = trailingEdge - surfaceWidth
 
         let surfaceTop = geometry.frame.maxY
         let preferredY = surfaceTop - glyphSize.height
@@ -311,7 +312,7 @@ enum NotchStatusPlacementPlanner {
             width: surfaceWidth,
             height: glyphSize.height
         )
-        let glyphScreenX = notchedGlyphScreenX ?? visibleFrame.maxX - glyphSize.width - trailingLeadOutWidth
+        let glyphScreenX = trailingEdge - glyphSize.width - trailingLeadOutWidth
         let retractedFrame = CGRect(
             x: x,
             y: min(y + 2, maximumY),
@@ -844,6 +845,57 @@ enum NotchStatusAnimationPolicy {
     }
 }
 
+struct NotchStatusPanelFrameTransition {
+    let startFrame: CGRect
+    let targetFrame: CGRect
+
+    func frame(at progress: CGFloat) -> CGRect {
+        let progress = min(max(progress, 0), 1)
+        let minX = interpolate(startFrame.minX, targetFrame.minX, progress: progress)
+        let maxX = interpolate(startFrame.maxX, targetFrame.maxX, progress: progress)
+        let minY = interpolate(startFrame.minY, targetFrame.minY, progress: progress)
+        let maxY = interpolate(startFrame.maxY, targetFrame.maxY, progress: progress)
+        return CGRect(
+            x: minX,
+            y: minY,
+            width: max(0, maxX - minX),
+            height: max(0, maxY - minY)
+        )
+    }
+
+    private func interpolate(_ start: CGFloat, _ end: CGFloat, progress: CGFloat) -> CGFloat {
+        start + (end - start) * progress
+    }
+}
+
+enum NotchStatusPanelFrameAnimationTiming {
+    static func easedProgress(_ progress: CGFloat) -> CGFloat {
+        let progress = min(max(progress, 0), 1)
+        guard progress > 0, progress < 1 else { return progress }
+
+        // Match the existing (0.16, 1.0, 0.28, 1.0) frame timing while
+        // interpolating the panel's screen-space edges as one geometry.
+        var lower: CGFloat = 0
+        var upper: CGFloat = 1
+        for _ in 0..<12 {
+            let candidate = (lower + upper) / 2
+            if cubicBezier(candidate, first: 0.16, second: 0.28) < progress {
+                lower = candidate
+            } else {
+                upper = candidate
+            }
+        }
+        return cubicBezier((lower + upper) / 2, first: 1, second: 1)
+    }
+
+    private static func cubicBezier(_ t: CGFloat, first: CGFloat, second: CGFloat) -> CGFloat {
+        let inverse = 1 - t
+        return 3 * inverse * inverse * t * first
+            + 3 * inverse * t * t * second
+            + t * t * t
+    }
+}
+
 enum NotchActivityLabelRenderPolicy {
     static let workingStatusRevealDuration: TimeInterval = 2.0
     static let hoverScrollDelay: TimeInterval = 1.0
@@ -1181,6 +1233,7 @@ final class NotchStatusController {
                 NSLog("[RelayRunner] Notch status surface hidden: no display exposes an auxiliary top-right notch area.")
                 loggedMissingNotch = true
             }
+            panel?.stopFrameAnimation()
             panel?.orderOut(nil)
             return
         }
@@ -1193,36 +1246,47 @@ final class NotchStatusController {
             self.panel = panel
         }
 
+        panel.stopFrameAnimation()
         panel.setFrame(placement.retractedFrame, display: false)
         updateStatusContent()
         panel.alphaValue = 0
         panel.orderFrontRegardless()
 
+        let duration = animationDuration(0.34)
+        pillView.redrawDuringFrameAnimation(duration: duration)
+        panel.animateFrame(to: placement.visibleFrame, duration: duration)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = animationDuration(0.34)
+            context.duration = duration
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.28, 1.0)
-            panel.animator().setFrame(placement.visibleFrame, display: true)
             panel.animator().alphaValue = 1
         }
     }
 
     private func hide() {
         placementAnimationGeneration &+= 1
+        let animationGeneration = placementAnimationGeneration
         removeScreenParametersObserver()
         stopCarousel()
 
         guard let panel else { return }
         let targetFrame = currentPlacement()?.retractedFrame
             ?? lastPlacement?.retractedFrame
-            ?? panel.frame.offsetBy(dx: -10, dy: 2)
+            ?? panel.frame.offsetBy(dx: 0, dy: 2)
+        let duration = animationDuration(0.24)
 
+        pillView.redrawDuringFrameAnimation(duration: duration)
+        panel.animateFrame(to: targetFrame, duration: duration) { [weak self, weak panel] in
+            guard let self,
+                  self.placementAnimationGeneration == animationGeneration,
+                  !self.active else {
+                return
+            }
+            panel?.orderOut(nil)
+        }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = animationDuration(0.24)
+            context.duration = duration
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.42, 0.0, 1.0, 1.0)
-            panel.animator().setFrame(targetFrame, display: true)
             panel.animator().alphaValue = 0
-        } completionHandler: {
-            panel.orderOut(nil)
         }
     }
 
@@ -1230,6 +1294,7 @@ final class NotchStatusController {
         let previousPlacement = lastPlacement
         guard let placement = currentPlacement() else {
             placementAnimationGeneration &+= 1
+            panel?.stopFrameAnimation()
             panel?.orderOut(nil)
             return
         }
@@ -1252,11 +1317,7 @@ final class NotchStatusController {
             }
             let duration = animationDuration(0.36)
             pillView.redrawDuringFrameAnimation(duration: duration)
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = duration
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.28, 1.0)
-                panel.animator().setFrame(placement.visibleFrame, display: true)
-            } completionHandler: { [weak self] in
+            panel.animateFrame(to: placement.visibleFrame, duration: duration) { [weak self] in
                 guard shouldDeferContentUpdate,
                       let self,
                       NotchActivityLabelRenderPolicy.shouldApplyDeferredContentUpdate(
@@ -1268,6 +1329,7 @@ final class NotchStatusController {
                 self.updateStatusContent()
             }
         } else {
+            panel.stopFrameAnimation()
             panel.setFrame(placement.visibleFrame, display: true)
             updateStatusContent()
         }
@@ -1488,7 +1550,14 @@ final class NotchStatusController {
     }
 }
 
-private final class NotchStatusPanel: NSPanel {
+final class NotchStatusPanel: NSPanel {
+    private var frameAnimationTimer: Timer?
+    private var frameAnimationCompletion: (() -> Void)?
+
+    var isFrameAnimationRunning: Bool {
+        frameAnimationTimer != nil
+    }
+
     init() {
         super.init(
             contentRect: .zero,
@@ -1511,9 +1580,59 @@ private final class NotchStatusPanel: NSPanel {
         hidesOnDeactivate = false
         animationBehavior = .none
     }
+
+    deinit {
+        stopFrameAnimation()
+    }
+
+    func animateFrame(
+        to targetFrame: CGRect,
+        duration: TimeInterval,
+        completion: (() -> Void)? = nil
+    ) {
+        stopFrameAnimation()
+
+        let transition = NotchStatusPanelFrameTransition(
+            startFrame: frame,
+            targetFrame: targetFrame
+        )
+        guard duration > 0 else {
+            setFrame(targetFrame, display: true)
+            completion?()
+            return
+        }
+
+        let startTime = CACurrentMediaTime()
+        frameAnimationCompletion = completion
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            let elapsed = CACurrentMediaTime() - startTime
+            let linearProgress = min(1, CGFloat(elapsed / duration))
+            let easedProgress = NotchStatusPanelFrameAnimationTiming.easedProgress(linearProgress)
+            self.setFrame(transition.frame(at: easedProgress), display: true)
+
+            guard linearProgress >= 1 else { return }
+            timer.invalidate()
+            self.frameAnimationTimer = nil
+            let completion = self.frameAnimationCompletion
+            self.frameAnimationCompletion = nil
+            completion?()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        frameAnimationTimer = timer
+    }
+
+    func stopFrameAnimation() {
+        frameAnimationTimer?.invalidate()
+        frameAnimationTimer = nil
+        frameAnimationCompletion = nil
+    }
 }
 
-private final class NotchStatusPillContentView: NSView {
+final class NotchStatusPillContentView: NSView {
     private var status: NotchSessionStatus = .notWorking
     private var label: String?
     private var activityLabelWidth: CGFloat = 0
@@ -1913,6 +2032,16 @@ private final class NotchStatusPillContentView: NSView {
         let glyphX = min(max(0, anchoredGlyphX), max(0, bounds.width - glyphSize.width))
         let glyphY = max(0, (bounds.height - glyphSize.height) / 2)
         return NSRect(origin: CGPoint(x: glyphX, y: glyphY), size: glyphSize)
+    }
+
+    func glyphFrameInScreenCoordinates() -> NSRect? {
+        guard let window else { return nil }
+        return window.convertToScreen(convert(currentGlyphFrame(), to: nil))
+    }
+
+    func glyphHoverFrameInScreenCoordinates() -> NSRect? {
+        guard let window else { return nil }
+        return window.convertToScreen(convert(glyphHoverFrame(), to: nil))
     }
 
     private func glyphHoverFrame() -> NSRect {

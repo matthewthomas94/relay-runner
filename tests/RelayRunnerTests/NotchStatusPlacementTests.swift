@@ -205,12 +205,15 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
-    func testCentersFallbackPillWithActivityLabelsWhenDisplayDoesNotReportNotchArea() throws {
+    func testFallbackPillExpandsLeftFromCenteredCompactTrailingEdge() throws {
         let geometry = NotchStatusDisplayGeometry(
             frame: CGRect(x: 0, y: 0, width: 1728, height: 1117),
             visibleFrame: CGRect(x: 0, y: 0, width: 1728, height: 1080)
         )
         let labelWidth: CGFloat = 72
+        let compactPlacement = try XCTUnwrap(
+            NotchStatusPlacementPlanner.placement(for: geometry)
+        )
 
         let placement = try XCTUnwrap(
             NotchStatusPlacementPlanner.placement(for: geometry, activityLabelWidth: labelWidth)
@@ -223,14 +226,184 @@ final class NotchStatusPlacementTests: XCTestCase {
             placement.visibleFrame.width,
             labelWidth + NotchStatusPlacementPlanner.fallbackSurfaceWidth
         )
-        XCTAssertEqual(placement.visibleFrame.midX, geometry.frame.midX)
-        XCTAssertEqual(
-            placement.glyphScreenX,
-            placement.visibleFrame.maxX
-                - NotchStatusPlacementPlanner.glyphSize.width
-                - NotchStatusPlacementPlanner.compactNotchLeadOutWidth
-        )
+        XCTAssertEqual(placement.visibleFrame.minX, compactPlacement.visibleFrame.minX - labelWidth)
+        XCTAssertEqual(placement.visibleFrame.maxX, compactPlacement.visibleFrame.maxX)
+        XCTAssertEqual(placement.glyphScreenX, compactPlacement.glyphScreenX)
         XCTAssertEqual(placement.visibleFrame.maxY, geometry.frame.maxY)
+    }
+
+    func testOversizedNotchedLabelTruncatesBeforeMovingTrailingAnchor() throws {
+        let geometry = NotchStatusDisplayGeometry(
+            frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 944),
+            auxiliaryTopLeftArea: CGRect(x: 0, y: 950, width: 663, height: 32),
+            auxiliaryTopRightArea: CGRect(x: 848, y: 950, width: 664, height: 32)
+        )
+        let compactPlacement = try XCTUnwrap(
+            NotchStatusPlacementPlanner.placement(for: geometry)
+        )
+        let placement = try XCTUnwrap(
+            NotchStatusPlacementPlanner.placement(
+                for: geometry,
+                activityLabelWidth: NotchStatusPlacementPlanner.maximumActivityLabelWidth
+            )
+        )
+
+        XCTAssertLessThan(
+            placement.activityLabelWidth,
+            NotchStatusPlacementPlanner.maximumActivityLabelWidth
+        )
+        XCTAssertEqual(placement.visibleFrame.minX, 8)
+        XCTAssertEqual(placement.visibleFrame.maxX, compactPlacement.visibleFrame.maxX)
+        XCTAssertEqual(placement.glyphScreenX, compactPlacement.glyphScreenX)
+    }
+
+    @MainActor
+    func testMountedPanelFrameAnimationKeepsGlyphAndHitTargetFixedOnScreen() throws {
+        _ = NSApplication.shared
+        let geometry = NotchStatusDisplayGeometry(
+            frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 944),
+            auxiliaryTopLeftArea: CGRect(x: 0, y: 950, width: 663, height: 32),
+            auxiliaryTopRightArea: CGRect(x: 848, y: 950, width: 664, height: 32)
+        )
+        let compactPlacement = try XCTUnwrap(
+            NotchStatusPlacementPlanner.placement(for: geometry)
+        )
+        let expandedPlacement = try XCTUnwrap(
+            NotchStatusPlacementPlanner.placement(for: geometry, activityLabelWidth: 180)
+        )
+        let changedPlacement = try XCTUnwrap(
+            NotchStatusPlacementPlanner.placement(for: geometry, activityLabelWidth: 96)
+        )
+
+        let panel = NotchStatusPanel()
+        panel.setFrame(compactPlacement.visibleFrame, display: false)
+        let pillView = NotchStatusPillContentView(
+            frame: CGRect(origin: .zero, size: panel.frame.size)
+        )
+        pillView.autoresizingMask = [.width, .height]
+        panel.contentView = pillView
+        panel.orderFrontRegardless()
+        defer {
+            panel.stopFrameAnimation()
+            panel.orderOut(nil)
+        }
+
+        var glyphClicked = false
+        pillView.onGlyphClicked = {
+            glyphClicked = true
+        }
+        apply(
+            expandedPlacement,
+            label: "Reading worker activity",
+            to: pillView
+        )
+
+        panel.animateFrame(to: expandedPlacement.visibleFrame, duration: 0.12)
+        let expansionSamples = try frameAnimationSamples(panel: panel, pillView: pillView)
+        XCTAssertGreaterThan(expansionSamples.count, 2)
+        assertAnchored(
+            expansionSamples,
+            expectedTrailingEdge: compactPlacement.visibleFrame.maxX,
+            expectedGlyphX: compactPlacement.glyphScreenX
+        )
+
+        panel.animateFrame(to: compactPlacement.visibleFrame, duration: 0.16)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+        let interruptedFrame = panel.frame
+        apply(
+            changedPlacement,
+            label: "Worker active",
+            to: pillView
+        )
+        panel.animateFrame(to: changedPlacement.visibleFrame, duration: 0.1)
+        XCTAssertEqual(panel.frame, interruptedFrame)
+        let retargetedSamples = try frameAnimationSamples(panel: panel, pillView: pillView)
+        assertAnchored(
+            retargetedSamples,
+            expectedTrailingEdge: compactPlacement.visibleFrame.maxX,
+            expectedGlyphX: compactPlacement.glyphScreenX
+        )
+
+        apply(compactPlacement, label: nil, to: pillView)
+        panel.animateFrame(to: compactPlacement.visibleFrame, duration: 0)
+        XCTAssertEqual(panel.frame, compactPlacement.visibleFrame)
+        let compactGlyphFrame = try XCTUnwrap(pillView.glyphFrameInScreenCoordinates())
+        XCTAssertEqual(compactGlyphFrame.minX, compactPlacement.glyphScreenX, accuracy: 0.001)
+
+        let windowPoint = panel.convertPoint(
+            fromScreen: CGPoint(x: compactGlyphFrame.midX, y: compactGlyphFrame.midY)
+        )
+        let click = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: windowPoint,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: panel.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+        pillView.mouseDown(with: click)
+        XCTAssertTrue(glyphClicked)
+    }
+
+    private struct MountedFrameSample {
+        let panelFrame: CGRect
+        let glyphFrame: CGRect
+        let hoverFrame: CGRect
+    }
+
+    @MainActor
+    private func apply(
+        _ placement: NotchStatusPlacement,
+        label: String?,
+        to pillView: NotchStatusPillContentView
+    ) {
+        pillView.apply(
+            status: .playing,
+            label: label,
+            activityLabelWidth: placement.activityLabelWidth,
+            leadingSpacerWidth: placement.leadingSpacerWidth,
+            notchSpacerWidth: placement.notchSpacerWidth,
+            glyphScreenX: placement.glyphScreenX
+        )
+    }
+
+    @MainActor
+    private func frameAnimationSamples(
+        panel: NotchStatusPanel,
+        pillView: NotchStatusPillContentView
+    ) throws -> [MountedFrameSample] {
+        var samples: [MountedFrameSample] = []
+        let deadline = Date().addingTimeInterval(1)
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+            samples.append(MountedFrameSample(
+                panelFrame: panel.frame,
+                glyphFrame: try XCTUnwrap(pillView.glyphFrameInScreenCoordinates()),
+                hoverFrame: try XCTUnwrap(pillView.glyphHoverFrameInScreenCoordinates())
+            ))
+        } while panel.isFrameAnimationRunning && Date() < deadline
+
+        XCTAssertFalse(panel.isFrameAnimationRunning)
+        return samples
+    }
+
+    private func assertAnchored(
+        _ samples: [MountedFrameSample],
+        expectedTrailingEdge: CGFloat,
+        expectedGlyphX: CGFloat
+    ) {
+        for sample in samples {
+            XCTAssertEqual(sample.panelFrame.maxX, expectedTrailingEdge, accuracy: 0.001)
+            XCTAssertEqual(sample.glyphFrame.minX, expectedGlyphX, accuracy: 0.001)
+            XCTAssertTrue(sample.hoverFrame.contains(
+                CGPoint(x: sample.glyphFrame.midX, y: sample.glyphFrame.midY)
+            ))
+        }
     }
 
     func testActivityLabelWidthMatchesUpdatedDesignScale() {
