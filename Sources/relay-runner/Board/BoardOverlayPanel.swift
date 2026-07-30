@@ -21,6 +21,7 @@ final class BoardOverlayPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         ignoresMouseEvents = false
+        acceptsMouseMovedEvents = true
         hasShadow = false
         isMovableByWindowBackground = false
         hidesOnDeactivate = false

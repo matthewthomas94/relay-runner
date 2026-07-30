@@ -610,6 +610,111 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertLessThanOrEqual(cards.filter(\.isPointerInside).count, 1)
     }
 
+    func testMountedBoardPanelDeliversRealPointerEventsToFirstBacklogCard() throws {
+        let model = ProgramBoardViewModel()
+        let backlogItems = laneTickets(
+            prefix: "RR-PANEL-POINTER",
+            status: Ticket.Status.backlog.rawValue,
+            count: 4
+        )
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: backlogItems,
+            doneItems: []
+        )
+        let workspace = WorkspaceViewModel()
+        workspace.configure(
+            showsWorkTab: true,
+            showsTerminalTab: false,
+            showsSettingsTab: false,
+            initialTab: .work
+        )
+        let host = NSHostingView(rootView: ProgramBoardOverlayView(
+            model: model,
+            workspace: workspace,
+            settingsContent: nil,
+            terminalContent: { _ in nil },
+            onDismiss: {},
+            onWorkspaceTabChange: { _ in },
+            onRefresh: {},
+            onStartSession: {},
+            onEndSession: {},
+            onCreateStart: { _ in },
+            onCreateCommit: { _ in },
+            onCreateCancel: {},
+            onEditStart: { _ in },
+            onEditCommit: { _ in },
+            onEditCancel: {},
+            onDelete: { _ in },
+            onDrop: { _, _, _ in }
+        ))
+        let panelFrame = CGRect(x: 0, y: 0, width: 1_512, height: 800)
+        let panel = BoardOverlayPanel()
+        panel.setFrame(panelFrame, display: false)
+        host.frame = CGRect(origin: .zero, size: panelFrame.size)
+        let revealContainer = BoardRevealContainerView(
+            frame: CGRect(origin: .zero, size: panelFrame.size),
+            contentView: host,
+            displayGeometry: NotchStatusDisplayGeometry(screenFrame: panelFrame),
+            startsLoading: false
+        )
+        panel.contentView = revealContainer
+        panel.orderFrontRegardless()
+        defer { panel.orderOut(nil) }
+        revealContainer.layoutSubtreeIfNeeded()
+        host.layoutSubtreeIfNeeded()
+        let revealed = expectation(description: "Workspace content revealed")
+        revealContainer.animateReveal {
+            revealed.fulfill()
+        }
+        wait(for: [revealed], timeout: 2)
+        drainMainQueue()
+
+        let cards = programWorkCardViews(in: host)
+        let firstItem = try XCTUnwrap(model.ticketItems(in: .backlog).first)
+        let firstCard = try XCTUnwrap(cards.first {
+            $0.interactionID == "all|Backlog|\(firstItem.id)"
+        })
+        let container = try XCTUnwrap(scrollContainer(owning: firstCard))
+        let center = firstCard.convert(
+            CGPoint(x: firstCard.bounds.midX, y: firstCard.bounds.midY),
+            to: nil
+        )
+        let contentView = try XCTUnwrap(panel.contentView)
+        let contentPoint = contentView.convert(center, from: nil)
+        let views = try scrollViews(in: container)
+        let containerPoint = container.convert(contentPoint, from: contentView)
+        let clipPoint = views.scrollView.contentView.convert(containerPoint, from: container)
+        let documentPoint = views.documentView.convert(clipPoint, from: views.scrollView.contentView)
+        let screenPoint = panel.convertPoint(toScreen: center)
+
+        XCTAssertTrue(panel.acceptsMouseMovedEvents)
+        XCTAssertTrue(mountedProgramWorkCardHit(at: contentPoint, in: contentView) === firstCard)
+        XCTAssertEqual(panel.convertPoint(fromScreen: screenPoint).x, center.x, accuracy: 0.5)
+        XCTAssertEqual(panel.convertPoint(fromScreen: screenPoint).y, center.y, accuracy: 0.5)
+        XCTAssertTrue(firstCard.convert(firstCard.bounds, to: views.documentView).contains(documentPoint))
+        XCTAssertEqual(firstCard.cursorPresentation, .openHand)
+
+        let mouseMoved = try XCTUnwrap(mouseEvent(.mouseMoved, at: center, in: panel))
+        let mouseDown = try XCTUnwrap(mouseEvent(.leftMouseDown, at: center, in: panel))
+        let mouseUp = try XCTUnwrap(mouseEvent(.leftMouseUp, at: center, in: panel))
+        XCTAssertTrue(firstCard.acceptsFirstMouse(for: mouseDown))
+
+        var selectionCount = 0
+        firstCard.onSelect = {
+            selectionCount += 1
+            model.selectTicket(firstItem)
+        }
+        let eventTarget = try XCTUnwrap(mountedProgramWorkCardHit(at: contentPoint, in: contentView))
+        eventTarget.mouseMoved(with: mouseMoved)
+        XCTAssertTrue(firstCard.isPointerInside)
+        eventTarget.mouseDown(with: mouseDown)
+        eventTarget.mouseUp(with: mouseUp)
+        drainMainQueue()
+
+        XCTAssertEqual(selectionCount, 1)
+        XCTAssertEqual(model.selectedTicketDetail?.item.id, firstItem.id)
+    }
+
     func testMountedProgramWorkspaceFirstBacklogCardOwnsItsVisibleHitTarget() throws {
         let model = ProgramBoardViewModel()
         let backlogItems = laneTickets(
@@ -1121,6 +1226,17 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         return currentValue + view.subviews.flatMap(programWorkCardViews(in:))
     }
 
+    private func scrollContainer(owning view: NSView) -> BoardOverlayScrollContainer? {
+        var ancestor = view.superview
+        while let candidate = ancestor {
+            if let container = candidate as? BoardOverlayScrollContainer {
+                return container
+            }
+            ancestor = candidate.superview
+        }
+        return nil
+    }
+
     private func updateMountedPointer(
         _ location: CGPoint,
         cards: [ProgramWorkCardDragEventView]
@@ -1259,6 +1375,24 @@ final class BoardOverlayScrollViewTests: XCTestCase {
                 break
             }
         }
+    }
+
+    private func mouseEvent(
+        _ type: NSEvent.EventType,
+        at location: CGPoint,
+        in window: NSWindow
+    ) -> NSEvent? {
+        NSEvent.mouseEvent(
+            with: type,
+            location: location,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: type == .leftMouseDown ? 1 : 0,
+            pressure: type == .leftMouseUp ? 0 : 1
+        )
     }
 
     private func windowLocation(forBoardLocation location: CGPoint, windowHeight: CGFloat) -> CGPoint {
