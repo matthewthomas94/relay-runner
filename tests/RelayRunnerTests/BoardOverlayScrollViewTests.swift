@@ -674,9 +674,17 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         let firstCard = try XCTUnwrap(cards.first {
             $0.interactionID == "all|Backlog|\(firstItem.id)"
         })
+        let secondItem = model.ticketItems(in: .backlog)[1]
+        let secondCard = try XCTUnwrap(cards.first {
+            $0.interactionID == "all|Backlog|\(secondItem.id)"
+        })
         let container = try XCTUnwrap(scrollContainer(owning: firstCard))
         let center = firstCard.convert(
             CGPoint(x: firstCard.bounds.midX, y: firstCard.bounds.midY),
+            to: nil
+        )
+        let secondCenter = secondCard.convert(
+            CGPoint(x: secondCard.bounds.midX, y: secondCard.bounds.midY),
             to: nil
         )
         let contentView = try XCTUnwrap(panel.contentView)
@@ -704,15 +712,38 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             selectionCount += 1
             model.selectTicket(firstItem)
         }
-        let eventTarget = try XCTUnwrap(mountedProgramWorkCardHit(at: contentPoint, in: contentView))
-        eventTarget.mouseMoved(with: mouseMoved)
+        NSApp.sendEvent(mouseMoved)
         XCTAssertTrue(firstCard.isPointerInside)
-        eventTarget.mouseDown(with: mouseDown)
-        eventTarget.mouseUp(with: mouseUp)
+        NSApp.sendEvent(mouseDown)
+        NSApp.sendEvent(mouseUp)
         drainMainQueue()
 
         XCTAssertEqual(selectionCount, 1)
         XCTAssertEqual(model.selectedTicketDetail?.item.id, firstItem.id)
+
+        let secondMouseMoved = try XCTUnwrap(mouseEvent(.mouseMoved, at: secondCenter, in: panel))
+        NSApp.sendEvent(secondMouseMoved)
+        XCTAssertFalse(firstCard.isPointerInside)
+        XCTAssertTrue(secondCard.isPointerInside)
+
+        var dragChangeCount = 0
+        var dragEndCount = 0
+        firstCard.windowLocationToBoardLocation = { $0 }
+        firstCard.onChanged = { _, _ in dragChangeCount += 1 }
+        firstCard.onEnded = { dragEndCount += 1 }
+        let dragPoint = CGPoint(
+            x: center.x + firstCard.bounds.width,
+            y: center.y
+        )
+        let dragContentPoint = contentView.convert(dragPoint, from: nil)
+        XCTAssertNil(mountedProgramWorkCardHit(at: dragContentPoint, in: contentView))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDown, at: center, in: panel)))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDragged, at: dragPoint, in: panel)))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseUp, at: dragPoint, in: panel)))
+
+        XCTAssertEqual(dragChangeCount, 1)
+        XCTAssertEqual(dragEndCount, 1)
+        XCTAssertFalse(firstCard.isDragActive)
     }
 
     func testMountedProgramWorkspaceFirstBacklogCardOwnsItsVisibleHitTarget() throws {
