@@ -39,6 +39,13 @@ class SkillCleanupTests(unittest.TestCase):
         self.assertIn("Create or edit visible `.orchestrator/` tickets only as PM management work", script)
         self.assertNotIn("PM frontstage → persistent orchestrator → worker", script)
 
+    def test_relay_orchestrator_health_wait_covers_cold_launch(self):
+        script = (ROOT / "scripts" / "relay-orchestrator").read_text()
+
+        self.assertIn('HEALTH_WAIT_ATTEMPTS=100', script)
+        self.assertIn('for _ in $(seq 1 "$HEALTH_WAIT_ATTEMPTS"); do', script)
+        self.assertIn('sleep 0.2', script)
+
     def test_provider_bridge_skills_accept_app_managed_sessions(self):
         script = (ROOT / "scripts" / "relay-bridge").read_text()
         preflight = (

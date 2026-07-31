@@ -116,20 +116,51 @@ enum OrchestratorClient {
         limit: Int = 0,
         repoPaths: [String] = []
     ) async throws -> ProgramDashboardSnapshot {
-        try await fetchProgramDashboardRetryingTransientConnection {
-            try await fetchProgramDashboardRefreshingStaleDaemon(
-                limit: limit,
-                fetchDashboard: { limit in
-                    try await fetchProgramDashboardSnapshot(
-                        limit: limit,
-                        trigger: "program-board-refresh",
-                        repoPaths: repoPaths
-                    )
-                },
-                refreshDaemon: {
-                    await restartOrchestratorDaemonIfIdle()
-                }
+        try await fetchProgramDashboardEnsuringDaemon(
+            fetchDashboard: {
+                try await fetchProgramDashboardRefreshingStaleDaemon(
+                    limit: limit,
+                    fetchDashboard: { limit in
+                        try await fetchProgramDashboardSnapshot(
+                            limit: limit,
+                            trigger: "program-board-refresh",
+                            repoPaths: repoPaths
+                        )
+                    },
+                    refreshDaemon: {
+                        await restartOrchestratorDaemonIfIdle()
+                    }
+                )
+            },
+            ensureDaemon: {
+                await ensureOrchestratorDaemonInstalled()
+            }
+        )
+    }
+
+    static func fetchProgramDashboardEnsuringDaemon(
+        retryDelaysNanoseconds: [UInt64] = programDashboardConnectionRetryDelaysNanoseconds,
+        fetchDashboard: @escaping () async throws -> ProgramDashboardSnapshot,
+        ensureDaemon: @escaping () async -> OrchestratorDaemonEnsureResult,
+        sleep: @escaping (UInt64) async throws -> Void = { delay in
+            try await Task.sleep(nanoseconds: delay)
+        }
+    ) async throws -> ProgramDashboardSnapshot {
+        do {
+            return try await fetchDashboard()
+        } catch {
+            guard isTransientDaemonConnectionError(error) else { throw error }
+        }
+
+        switch await ensureDaemon() {
+        case .ready:
+            return try await fetchProgramDashboardRetryingTransientConnection(
+                retryDelaysNanoseconds: retryDelaysNanoseconds,
+                fetchDashboard: fetchDashboard,
+                sleep: sleep
             )
+        case .failed(let message):
+            throw OrchestratorClientError.daemonRefreshFailed(message)
         }
     }
 
@@ -419,6 +450,37 @@ enum OrchestratorClient {
         }.value
     }
 
+    private static func ensureOrchestratorDaemonInstalled() async -> OrchestratorDaemonEnsureResult {
+        guard !orchestratorLaunchAgentInstalled() else { return .ready }
+
+        return await Task.detached {
+            let script = relayOrchestratorScript()
+            guard FileManager.default.isExecutableFile(atPath: script.path) else {
+                return .failed("Relay Runner could not find the bundled relay-orchestrator launcher.")
+            }
+
+            let proc = Process()
+            proc.executableURL = script
+            proc.arguments = ["--install"]
+            proc.standardInput = FileHandle.nullDevice
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+            } catch {
+                return .failed("Relay Runner could not install the orchestrator: \(error.localizedDescription)")
+            }
+
+            guard proc.terminationStatus == 0 else {
+                return .failed(
+                    "relay-orchestrator --install failed with exit code \(proc.terminationStatus)."
+                )
+            }
+            return .ready
+        }.value
+    }
+
     private static func relayOrchestratorScript() -> URL {
         let bundled = Bundle.main.bundleURL
             .appendingPathComponent("Contents/SharedSupport/scripts/relay-orchestrator")
@@ -433,6 +495,10 @@ enum OrchestratorClient {
         if FileManager.default.fileExists(atPath: portFile) {
             return true
         }
+        return orchestratorLaunchAgentInstalled()
+    }
+
+    private static func orchestratorLaunchAgentInstalled() -> Bool {
         let plist = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/com.relay.orchestrator.plist")
         return FileManager.default.fileExists(atPath: plist.path)
@@ -452,6 +518,11 @@ enum OrchestratorDaemonRefreshResult: Equatable {
     case restarted
     case deferredActiveRuns
     case notInstalled
+    case failed(String)
+}
+
+enum OrchestratorDaemonEnsureResult: Equatable {
+    case ready
     case failed(String)
 }
 

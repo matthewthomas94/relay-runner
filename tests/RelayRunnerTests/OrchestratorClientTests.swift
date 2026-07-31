@@ -143,6 +143,87 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(snapshot.summary.query, "summary")
     }
 
+    func testProgramDashboardInstallsMissingDaemonAndRetries() async throws {
+        let fetchRecorder = FetchAttemptRecorder()
+        let ensureRecorder = DaemonEnsureRecorder(result: .ready)
+
+        let snapshot = try await OrchestratorClient.fetchProgramDashboardEnsuringDaemon(
+            retryDelaysNanoseconds: [0, 0, 0],
+            fetchDashboard: {
+                let attempt = await fetchRecorder.nextAttempt()
+                if attempt < 4 {
+                    throw URLError(.cannotConnectToHost)
+                }
+                return self.dashboardSnapshot()
+            },
+            ensureDaemon: {
+                await ensureRecorder.ensure()
+            },
+            sleep: { _ in }
+        )
+
+        let fetchCount = await fetchRecorder.count()
+        let ensureCount = await ensureRecorder.count()
+        XCTAssertEqual(fetchCount, 4)
+        XCTAssertEqual(ensureCount, 1)
+        XCTAssertEqual(snapshot.summary.query, "summary")
+    }
+
+    func testProgramDashboardDoesNotEnsureDaemonForPermanentFailure() async throws {
+        let ensureRecorder = DaemonEnsureRecorder(result: .ready)
+
+        do {
+            _ = try await OrchestratorClient.fetchProgramDashboardEnsuringDaemon(
+                retryDelaysNanoseconds: [0],
+                fetchDashboard: {
+                    throw OrchestratorClientError.badStatus(500, "daemon failed")
+                },
+                ensureDaemon: {
+                    await ensureRecorder.ensure()
+                },
+                sleep: { _ in }
+            )
+            XCTFail("Expected dashboard fetch to fail")
+        } catch OrchestratorClientError.badStatus(let status, let body) {
+            XCTAssertEqual(status, 500)
+            XCTAssertEqual(body, "daemon failed")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let ensureCount = await ensureRecorder.count()
+        XCTAssertEqual(ensureCount, 0)
+    }
+
+    func testProgramDashboardSurfacesDaemonInstallFailure() async throws {
+        let fetchRecorder = FetchAttemptRecorder()
+        let ensureRecorder = DaemonEnsureRecorder(result: .failed("install failed"))
+
+        do {
+            _ = try await OrchestratorClient.fetchProgramDashboardEnsuringDaemon(
+                retryDelaysNanoseconds: [0],
+                fetchDashboard: {
+                    _ = await fetchRecorder.nextAttempt()
+                    throw URLError(.cannotConnectToHost)
+                },
+                ensureDaemon: {
+                    await ensureRecorder.ensure()
+                },
+                sleep: { _ in }
+            )
+            XCTFail("Expected dashboard fetch to fail")
+        } catch OrchestratorClientError.daemonRefreshFailed(let message) {
+            XCTAssertEqual(message, "install failed")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let fetchCount = await fetchRecorder.count()
+        let ensureCount = await ensureRecorder.count()
+        XCTAssertEqual(fetchCount, 1)
+        XCTAssertEqual(ensureCount, 1)
+    }
+
     func testProgramDashboardRetriesDelayedServiceReadinessBeyondInitialWindow() async throws {
         let recorder = FetchAttemptRecorder()
 
@@ -415,5 +496,23 @@ private actor FetchAttemptRecorder {
 
     func count() -> Int {
         attempts
+    }
+}
+
+private actor DaemonEnsureRecorder {
+    private var calls = 0
+    private let result: OrchestratorDaemonEnsureResult
+
+    init(result: OrchestratorDaemonEnsureResult) {
+        self.result = result
+    }
+
+    func ensure() -> OrchestratorDaemonEnsureResult {
+        calls += 1
+        return result
+    }
+
+    func count() -> Int {
+        calls
     }
 }

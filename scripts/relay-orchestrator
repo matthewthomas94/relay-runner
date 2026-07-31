@@ -29,6 +29,7 @@ ORCH_DIR="$USER_DATA_DIR/orchestrator"
 LOG_FILE="/tmp/relay_orchestrator.log"
 ERR_FILE="/tmp/relay_orchestrator.err"
 PORT_FILE="/tmp/relay_orchestrator.port"
+HEALTH_WAIT_ATTEMPTS=100
 
 PLIST_LABEL="com.relay.orchestrator"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
@@ -446,7 +447,10 @@ PY
 
 wait_for_health() {
     local port
-    for _ in $(seq 1 30); do
+    # A cold launch repeats the venv integrity check before binding the port.
+    # Keep this bounded, but allow the same roughly 20-second readiness window
+    # used by Program Workspace before reporting a false install failure.
+    for _ in $(seq 1 "$HEALTH_WAIT_ATTEMPTS"); do
         if [ -f "$PORT_FILE" ]; then
             port="$(cat "$PORT_FILE" 2>/dev/null || true)"
         else
