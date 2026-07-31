@@ -487,6 +487,7 @@ final class RelayVoiceCommandDelivery {
         var command = "/tmp/voice_cmd_ready"
         var metadata = "/tmp/voice_cmd_ready.meta"
         var claimed = "/tmp/voice_cmd_claimed.json"
+        var consumerAcknowledgement = "/tmp/voice_cmd_manual_ack.json"
         var commandState = "/tmp/voice_command_state.json"
         var providerTurns = "/tmp/voice_provider_turns.json"
         var deliveryEvents = "/tmp/relay_terminal_delivery_events.jsonl"
@@ -617,6 +618,9 @@ final class RelayVoiceCommandDelivery {
         recordDeliveryEvent("prompt_write", key: key)
         guard events.count > 1 else {
             writeClaimedMetadata(command.metadata)
+            // One-event controls do not produce a provider hook turn, so the
+            // terminal consumer must acknowledge them to release the inbox.
+            writeConsumerAcknowledgement(command.metadata)
             recordDeliveryEvent("claim_published", key: key)
             return true
         }
@@ -719,6 +723,12 @@ final class RelayVoiceCommandDelivery {
         guard let metadata else { return }
         let claimedURL = URL(fileURLWithPath: paths.claimed)
         try? metadata.write(to: claimedURL, options: .atomic)
+    }
+
+    private func writeConsumerAcknowledgement(_ metadata: Data?) {
+        guard let metadata else { return }
+        let acknowledgementURL = URL(fileURLWithPath: paths.consumerAcknowledgement)
+        try? metadata.write(to: acknowledgementURL, options: .atomic)
     }
 
     private func isCommandCurrent(_ key: RelayCommandKey) -> Bool {

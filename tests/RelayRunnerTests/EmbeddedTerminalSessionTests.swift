@@ -738,6 +738,9 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertEqual(sent, ["Fix the bridge", "\r"])
         XCTAssertEqual(claimBeforeEnter, metadata)
         XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.consumerAcknowledgement.path)
+        )
         let eventsBeforeAck = try String(contentsOf: fixture.deliveryEvents)
         XCTAssertTrue(eventsBeforeAck.contains(#""event":"submit_attempt""#))
         XCTAssertFalse(eventsBeforeAck.contains(#""event":"submit""#))
@@ -1203,6 +1206,11 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             XCTAssertEqual(sent, [[3]], provider)
             XCTAssertEqual(scheduled.count, 0, provider)
             XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata, provider)
+            XCTAssertEqual(
+                try String(contentsOf: fixture.consumerAcknowledgement),
+                metadata,
+                provider
+            )
         }
     }
 
@@ -1258,6 +1266,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         command: URL,
         metadata: URL,
         claimed: URL,
+        consumerAcknowledgement: URL,
         commandState: URL,
         providerTurns: URL,
         deliveryEvents: URL,
@@ -1273,6 +1282,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         let command = root.appendingPathComponent("voice_cmd_ready")
         let metadata = root.appendingPathComponent("voice_cmd_ready.meta")
         let claimed = root.appendingPathComponent("voice_cmd_claimed.json")
+        let consumerAcknowledgement = root.appendingPathComponent("voice_cmd_manual_ack.json")
         let commandState = root.appendingPathComponent("voice_command_state.json")
         let providerTurns = root.appendingPathComponent("voice_provider_turns.json")
         let deliveryEvents = root.appendingPathComponent("relay_terminal_delivery_events.jsonl")
@@ -1284,6 +1294,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             command: command,
             metadata: metadata,
             claimed: claimed,
+            consumerAcknowledgement: consumerAcknowledgement,
             commandState: commandState,
             providerTurns: providerTurns,
             deliveryEvents: deliveryEvents,
@@ -1294,6 +1305,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
                 command: command.path,
                 metadata: metadata.path,
                 claimed: claimed.path,
+                consumerAcknowledgement: consumerAcknowledgement.path,
                 commandState: commandState.path,
                 providerTurns: providerTurns.path,
                 deliveryEvents: deliveryEvents.path,
