@@ -614,6 +614,13 @@ final class RelayVoiceCommandDelivery {
             return true
         }
         recordDeliveryEvent("claimed", key: key)
+        if command.text.trimmingCharacters(in: .whitespacesAndNewlines) == "__INTERRUPT__",
+           !providerTurnActive() {
+            writeClaimedMetadata(command.metadata)
+            writeConsumerAcknowledgement(command.metadata)
+            recordDeliveryEvent("claim_published", key: key)
+            return true
+        }
         send(ArraySlice(first))
         recordDeliveryEvent("prompt_write", key: key)
         guard events.count > 1 else {
