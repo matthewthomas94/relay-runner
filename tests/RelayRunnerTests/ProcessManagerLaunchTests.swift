@@ -189,6 +189,9 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(codexScript.contains("--dangerously-bypass-hook-trust"))
         XCTAssertTrue(codexScript.contains("hooks.UserPromptSubmit="))
         XCTAssertTrue(codexScript.contains("hooks.Stop="))
+        XCTAssertFalse(codexScript.contains("hooks.StopFailure="))
+        XCTAssertTrue(codexScript.contains("hooks.PreCompact="))
+        XCTAssertTrue(codexScript.contains("hooks.PostCompact="))
         XCTAssertTrue(codexScript.contains("Relay voice prompt binding"))
         XCTAssertTrue(codexScript.contains("Relay voice completion"))
         XCTAssertTrue(codexScript.contains("/Relay Runner/services/relay_completion_hook.py"))
@@ -198,8 +201,87 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(claudeScript.contains("\"UserPromptSubmit\""))
         XCTAssertTrue(claudeScript.contains("\"Stop\""))
         XCTAssertTrue(claudeScript.contains("\"StopFailure\""))
+        XCTAssertTrue(claudeScript.contains("\"PreCompact\""))
+        XCTAssertTrue(claudeScript.contains("\"PostCompact\""))
         XCTAssertTrue(claudeScript.contains("/Relay Runner/services/relay_completion_hook.py"))
         XCTAssertFalse(claudeScript.contains("--dangerously-bypass-hook-trust"))
+    }
+
+    func testEmbeddedLaunchUsesProviderNative150KAutomaticCompaction() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+        var config = AppConfig()
+
+        let codexScript = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/scripts/relay-bridge",
+            target: .codex,
+            agentBinary: "/usr/local/bin/codex",
+            config: config,
+            voiceDelivery: .appOwned,
+            homeDirectory: home,
+            sessionEventPath: "/private/session.events.jsonl"
+        )
+        XCTAssertEqual(ProcessManager.embeddedAutoCompactTokenThreshold, 150_000)
+        XCTAssertTrue(codexScript.contains("export RELAY_AUTO_COMPACT_THRESHOLD_TOKENS=150000"))
+        XCTAssertTrue(codexScript.contains("model_auto_compact_token_limit=150000"))
+        XCTAssertTrue(codexScript.contains("model_auto_compact_token_limit_scope=\"total\""))
+        XCTAssertTrue(codexScript.contains("RELAY_CONTEXT_COMPACTION_EVENTS='/private/session.events.jsonl.context-compaction.jsonl'"))
+        XCTAssertFalse(codexScript.contains("hooks.StopFailure"))
+        XCTAssertFalse(codexScript.contains("CLAUDE_CODE_AUTO_COMPACT_WINDOW"))
+        XCTAssertFalse(codexScript.contains("/compact\\r"))
+
+        let nativeContextWindows = [
+            "fable": 1_000_000,
+            "opus": 1_000_000,
+            "sonnet": 1_000_000,
+            "haiku": 200_000,
+        ]
+        XCTAssertEqual(
+            Set(nativeContextWindows.keys),
+            Set(GeneralConfig.claudeModelOptions.map(\.value))
+        )
+
+        for (alias, nativeContextWindow) in nativeContextWindows {
+            config.general.provider = .claude
+            config.general.model = alias
+            config.general.orchestrator_effort = "low"
+            let claudeScript = ProcessManager.launchScript(
+                relayBridge: "/Relay Runner/scripts/relay-bridge",
+                target: .claude,
+                agentBinary: "/usr/local/bin/claude",
+                config: config,
+                voiceDelivery: .appOwned,
+                homeDirectory: home,
+                sessionEventPath: "/private/session.events.jsonl"
+            )
+            XCTAssertTrue(claudeScript.contains("export RELAY_AUTO_COMPACT_THRESHOLD_TOKENS=150000"), alias)
+            XCTAssertTrue(claudeScript.contains("unset DISABLE_AUTO_COMPACT DISABLE_COMPACT"), alias)
+            XCTAssertTrue(claudeScript.contains("export CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000"), alias)
+            XCTAssertTrue(claudeScript.contains(
+                "export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=\(ProcessManager.claudeAutoCompactPercentage)"
+            ), alias)
+            XCTAssertFalse(claudeScript.contains("autoCompactEnabled"), alias)
+            XCTAssertTrue(claudeScript.contains("StopFailure"), alias)
+            XCTAssertFalse(claudeScript.contains("model_auto_compact_token_limit"), alias)
+            XCTAssertFalse(claudeScript.contains("/compact\\r"), alias)
+
+            // Runtime-equivalent to Claude Code 2.1.220: cap the configured
+            // window, subtract the output reserve, then floor the percentage.
+            let cappedWindow = min(
+                nativeContextWindow,
+                ProcessManager.claudeAutoCompactWindow
+            )
+            let usableContext = cappedWindow
+                - min(cappedWindow, ProcessManager.claudeAutoCompactOutputReserve)
+            let percentageBoundary = Int(floor(
+                Double(usableContext)
+                    * (ProcessManager.claudeAutoCompactPercentage / 100)
+            ))
+            let effectiveBoundary = min(
+                percentageBoundary,
+                usableContext - 13_000
+            )
+            XCTAssertEqual(effectiveBoundary, 150_000, alias)
+        }
     }
 
     func testExternalLaunchScriptDoesNotInjectAppOwnedHiddenInstructions() {
@@ -223,6 +305,9 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(script.contains("RELAY_REPLY_HELPER"))
         XCTAssertFalse(script.contains("hooks.UserPromptSubmit"))
         XCTAssertFalse(script.contains("--settings"))
+        XCTAssertFalse(script.contains("RELAY_AUTO_COMPACT_THRESHOLD_TOKENS"))
+        XCTAssertFalse(script.contains("model_auto_compact_token_limit"))
+        XCTAssertFalse(script.contains("CLAUDE_CODE_AUTO_COMPACT_WINDOW"))
         XCTAssertTrue(script.contains("Use the relay-bridge skill now."))
     }
 
