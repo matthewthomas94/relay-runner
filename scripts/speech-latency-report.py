@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Report privacy-safe Option-to-audio timing from Relay speech diagnostics."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_LOG = os.environ.get("SPEECH_EVENT_LOG", "/tmp/relay_speech_events.jsonl")
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, math.ceil((percentile / 100) * len(ordered)) - 1)
+    return round(ordered[index], 3)
+
+
+def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
+    by_command: dict[tuple[int, str], dict[str, float]] = {}
+    by_play_request: dict[str, dict[str, float]] = {}
+    by_utterance: dict[str, dict[str, Any]] = {}
+    for record in records:
+        event = str(record.get("event") or "")
+        at = record.get("at")
+        try:
+            at = float(at)
+        except (TypeError, ValueError):
+            continue
+        command_key = None
+        try:
+            command_key = (
+                int(record["relay_command_seq"]),
+                str(record["relay_command_id"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+        if command_key is not None:
+            by_command.setdefault(command_key, {})[event] = at
+        play_request_id = str(record.get("play_request_id") or "")
+        if play_request_id:
+            by_play_request.setdefault(play_request_id, {})[event] = at
+        utterance_id = str(record.get("utterance_id") or "")
+        if utterance_id:
+            sample = by_utterance.setdefault(utterance_id, {"utterance_id": utterance_id})
+            sample[event] = at
+            if command_key is not None:
+                sample["command_key"] = command_key
+            if play_request_id:
+                sample["play_request_id"] = play_request_id
+
+    samples: list[dict[str, Any]] = []
+    stages = (
+        "option_detected",
+        "visual_play_acknowledged",
+        "fifo_play_received",
+        "retained_play_latched",
+        "intent_committed",
+        "tts_preparing",
+        "first_wav_ready",
+        "afplay_started",
+    )
+    for sample in by_utterance.values():
+        command = by_command.get(sample.get("command_key"), {})
+        request = by_play_request.get(sample.get("play_request_id"), {})
+        timeline = {
+            stage: sample.get(stage, request.get(stage, command.get(stage)))
+            for stage in stages
+        }
+        if timeline["option_detected"] is None or timeline["afplay_started"] is None:
+            continue
+        durations = {
+            "option_to_ack_ms": _delta(timeline, "option_detected", "visual_play_acknowledged"),
+            "option_to_fifo_ms": _delta(timeline, "option_detected", "fifo_play_received"),
+            "fifo_to_latch_ms": _delta(timeline, "fifo_play_received", "retained_play_latched"),
+            "intent_wait_ms": max(
+                0.0,
+                _delta(timeline, "retained_play_latched", "intent_committed") or 0.0,
+            ),
+            "commit_to_preparing_ms": _delta(timeline, "intent_committed", "tts_preparing"),
+            "preparing_to_wav_ms": _delta(timeline, "tts_preparing", "first_wav_ready"),
+            "wav_to_afplay_ms": _delta(timeline, "first_wav_ready", "afplay_started"),
+            "option_to_first_audio_ms": _delta(timeline, "option_detected", "afplay_started"),
+        }
+        samples.append({**sample, **durations})
+
+    audio = [sample["option_to_first_audio_ms"] for sample in samples]
+    acknowledgements = [
+        sample["option_to_ack_ms"]
+        for sample in samples
+        if sample["option_to_ack_ms"] is not None
+    ]
+    return {
+        "sample_count": len(samples),
+        "option_to_first_audio_p95_ms": _percentile(audio, 95),
+        "option_to_ack_p95_ms": _percentile(acknowledgements, 95),
+        "samples": samples,
+    }
+
+
+def _delta(timeline: dict[str, float | None], start: str, end: str) -> float | None:
+    if timeline[start] is None or timeline[end] is None:
+        return None
+    return round((timeline[end] - timeline[start]) * 1000, 3)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("log", nargs="?", default=DEFAULT_LOG)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    path = Path(args.log)
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    report = build_report(records)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"samples: {report['sample_count']}")
+        print(f"Option to acknowledgement p95: {report['option_to_ack_p95_ms']} ms")
+        print(f"Option to first audio p95: {report['option_to_first_audio_p95_ms']} ms")
+        for sample in report["samples"]:
+            print(json.dumps(sample, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

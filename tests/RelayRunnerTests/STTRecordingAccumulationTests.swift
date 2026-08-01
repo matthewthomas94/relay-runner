@@ -91,4 +91,21 @@ final class STTRecordingAccumulationTests: XCTestCase {
         XCTAssertTrue(ordinaryResult)
         XCTAssertEqual(published, ["ordinary command"])
     }
+
+    func testPlaybackControlsCarryDetectionAndVisualAcknowledgementTiming() {
+        let detected = Date(timeIntervalSince1970: 1_000.125)
+        let acknowledged = Date(timeIntervalSince1970: 1_000.175)
+
+        XCTAssertEqual(
+            STTEngine.playControl(detectedAt: detected),
+            "__PLAY__:1000.125000"
+        )
+        XCTAssertEqual(
+            STTEngine.playAcknowledgementControl(
+                detectedAt: detected,
+                acknowledgedAt: acknowledged
+            ),
+            "__PLAY_ACK__:1000.125000:1000.175000"
+        )
+    }
 }

@@ -277,7 +277,7 @@ final class OverlayController {
         _ = messagePreviewEnabled
         guard let messagePreview else { return nil }
         switch state {
-        case .messageWaiting, .preparing, .speaking, .cancelled(.tts):
+        case .messageWaiting, .preparing, .speaking, .speechFailed, .cancelled(.tts):
             return messagePreview
         default:
             return nil
@@ -337,6 +337,19 @@ final class OverlayController {
                     pill.showFull(title: title, body: preview, theme: .tts)
                 } else if let title = Self.compactPillTitle(for: state) {
                     pill.showCompact(title: title, theme: source == .stt ? .stt : .tts)
+                }
+            }
+
+        case .speechFailed:
+            if state != lastAppliedState || preview != lastPreview {
+                if let preview = Self.previewBody(
+                    for: state,
+                    messagePreview: preview,
+                    messagePreviewEnabled: config.message_preview
+                ), let title = Self.fullPillTitle(for: state, actionHint: "Speech unavailable") {
+                    pill.showFull(title: title, body: preview, theme: .tts)
+                } else if let title = Self.compactPillTitle(for: state) {
+                    pill.showCompact(title: title, theme: .tts)
                 }
             }
 

@@ -30,6 +30,9 @@ final class StateMachineAcknowledgementTests: XCTestCase {
 
         XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.speaking), "Playing")
         XCTAssertEqual(OverlayState.speaking.particleTheme, .tts)
+
+        XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.speechFailed), "Speech unavailable")
+        XCTAssertNil(OverlayState.speechFailed.particleTheme)
     }
 
     func testBottomPillStatusTitlesReuseNotchStatusLanguage() {
@@ -44,6 +47,7 @@ final class StateMachineAcknowledgementTests: XCTestCase {
             (.messageWaiting(preview: "Done."), "Response ready"),
             (.preparing, "Preparing speech"),
             (.speaking, "Playing"),
+            (.speechFailed, "Speech unavailable"),
         ]
 
         for (state, title) in states {
@@ -131,6 +135,64 @@ final class StateMachineAcknowledgementTests: XCTestCase {
                 messagePreview: "Ready response.",
                 messagePreviewEnabled: true
             )
+        )
+    }
+
+    func testOptionAcknowledgementDoesNotRegressWhileRetainedSpeechCommits() {
+        let stateMachine = StateMachine()
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Authoritative result.",
+            autoDismiss: nil
+        )
+
+        stateMachine.setPlaybackRequested()
+        XCTAssertEqual(stateMachine.state, .preparing)
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Authoritative result.",
+            autoDismiss: nil
+        )
+        XCTAssertEqual(stateMachine.state, .preparing)
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "speaking",
+            text: nil,
+            autoDismiss: nil
+        )
+        XCTAssertEqual(stateMachine.state, .speaking)
+    }
+
+    func testSpeechFailureIsExplicitAndKeepsAuthoritativePreview() {
+        let stateMachine = StateMachine()
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Authoritative result.",
+            autoDismiss: nil
+        )
+        stateMachine.setPlaybackRequested()
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "failed",
+            text: nil,
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .speechFailed)
+        XCTAssertEqual(stateMachine.messagePreview, "Authoritative result.")
+        XCTAssertEqual(
+            OverlayController.previewBody(
+                for: stateMachine.state,
+                messagePreview: stateMachine.messagePreview,
+                messagePreviewEnabled: true
+            ),
+            "Authoritative result."
         )
     }
 

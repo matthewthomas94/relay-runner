@@ -994,7 +994,7 @@ class MessengerRuntime:
             self._discard_pending_kinds_locked({"user_turn", "orchestrator_trace"})
         if interrupt_handoff:
             self.backend.interrupt()
-        self._events.put(_MessengerEvent(
+        event = _MessengerEvent(
             kind="orchestrator_final",
             text=text,
             command_seq=command_key[0],
@@ -1003,7 +1003,28 @@ class MessengerRuntime:
             work_disposition=disposition,
             speech_source=str(payload.get("speech_source") or "orchestrator"),
             action_kind=self._action_kinds.get(command_key, ""),
-        ))
+        )
+        if not self._event_is_current(event):
+            return False
+        realization = _SpeechRealization(
+            "full",
+            text,
+            self._lifecycle_role_for(event),
+            (text,),
+            "authoritative_final_direct",
+        )
+        self._observe_realization(event, realization)
+        self._speak_safely(
+            text,
+            event.command_seq,
+            event.command_id,
+            display_text=text,
+            speech_metadata=self._speech_metadata_for(
+                event,
+                realization=realization,
+                spoken_text=text,
+            ),
+        )
         return True
 
     def interrupt(self) -> None:

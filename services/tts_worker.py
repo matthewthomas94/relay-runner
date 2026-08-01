@@ -169,6 +169,7 @@ class TTSWorker:
         self._spec_cond = threading.Condition(self._spec_lock)
         self._spec_text: str = ""
         self._spec_wav: str | None = None
+        self._spec_ready_at: float | None = None
         self._spec_done: bool = False
         # Serializes Kokoro calls so a fallback _speak doesn't race a still-
         # running speculation thread inside the same in-process model.
@@ -446,6 +447,7 @@ class TTSWorker:
         generation = self._begin_playback()
         self._current_speech_intent = speech_intent
         _notify_state("preparing", text=preview_text[:2000])
+        self._observe_speech("preparing", speech_intent)
 
         t = threading.Thread(
             target=self._speak_chunks,
@@ -575,6 +577,7 @@ class TTSWorker:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        self._observe_speech("afplay_started", self._current_speech_intent)
         try:
             self._current_proc.wait()
         finally:
@@ -631,6 +634,7 @@ class TTSWorker:
             old_wav = self._spec_wav
             self._spec_text = text
             self._spec_wav = None
+            self._spec_ready_at = None
             self._spec_done = False
             self._spec_cond.notify_all()
         if old_wav:
@@ -661,30 +665,37 @@ class TTSWorker:
                             pass
                     return
                 self._spec_wav = wav
+                self._spec_ready_at = time.time() if wav else None
                 self._spec_done = True
                 self._spec_cond.notify_all()
 
         threading.Thread(target=_gen, daemon=True).start()
 
-    def _claim_speculation(self, text: str, timeout: float = 0.0) -> str | None:
-        """Return the speculative WAV for `text` if ready, optionally waiting
+    def _claim_speculation(
+        self,
+        text: str,
+        timeout: float = 0.0,
+    ) -> tuple[str | None, float | None]:
+        """Return the speculative WAV and ready time, optionally waiting
         up to `timeout` seconds for an in-flight gen. Caller takes ownership
         of the returned path (the slot is cleared)."""
         deadline = time.monotonic() + max(0.0, timeout)
         with self._spec_cond:
             while True:
                 if self._spec_text != text:
-                    return None
+                    return None, None
                 if self._spec_done:
                     wav = self._spec_wav
+                    ready_at = getattr(self, "_spec_ready_at", None)
                     self._spec_wav = None
+                    self._spec_ready_at = None
                     self._spec_text = ""
                     self._spec_done = False
                     self._spec_cond.notify_all()
-                    return wav
+                    return wav, ready_at
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    return None
+                    return None, None
                 self._spec_cond.wait(timeout=remaining)
 
     def _cancel_speculation(self):
@@ -695,6 +706,7 @@ class TTSWorker:
             old_wav = self._spec_wav
             self._spec_text = ""
             self._spec_wav = None
+            self._spec_ready_at = None
             self._spec_done = False
             self._spec_cond.notify_all()
         if old_wav:
@@ -720,11 +732,21 @@ class TTSWorker:
         next_thread: threading.Thread | None = None
         next_result: dict[str, str | None] | None = None
         completed = False
+        failed = False
 
         try:
-            current_wav = self._claim_speculation(chunks[0], timeout=30.0)
+            current_wav, first_wav_ready_at = self._claim_speculation(
+                chunks[0], timeout=30.0
+            )
             if not current_wav:
                 current_wav = self._synthesize_chunk(chunks[0], generation)
+                first_wav_ready_at = time.time() if current_wav else None
+
+            if current_wav:
+                observed_intent = dict(speech_intent or {})
+                if first_wav_ready_at is not None:
+                    observed_intent["_event_at"] = first_wav_ready_at
+                self._observe_speech("wav_ready", observed_intent)
 
             for index, _ in enumerate(chunks):
                 if (
@@ -769,6 +791,12 @@ class TTSWorker:
                 self._playback_is_current(generation)
                 and len(played_wavs) == len(chunks)
             )
+            if (
+                not completed
+                and self._playback_is_current(generation)
+                and self._speech_is_eligible(speech_intent)
+            ):
+                failed = True
             if completed and len(played_wavs) > 1:
                 combined = self._combine_wavs(played_wavs)
                 if combined:
@@ -782,6 +810,7 @@ class TTSWorker:
                             self._remove_wav(wav)
         except Exception as e:
             print(f"[tts_worker] TTS error: {e}", file=sys.stderr)
+            failed = True
         finally:
             if next_result and next_result.get("wav"):
                 self._remove_wav(next_result["wav"])
@@ -796,6 +825,7 @@ class TTSWorker:
                 generation,
                 speech_intent=speech_intent,
                 completed=completed,
+                failed=failed,
             )
 
     def _synthesize_chunk(self, text: str, generation: int) -> str | None:
@@ -828,9 +858,17 @@ class TTSWorker:
         if getattr(self, "_playback_generation", 0) == generation:
             self._playing = False
             self._paused = False
-            _notify_state("idle")
+            if failed:
+                preview = self._last_response_display_text or self._last_response_text
+                _notify_state("failed", text=preview[:2000])
+            else:
+                _notify_state("idle")
         elif not self._playing:
-            _notify_state("idle")
+            if failed:
+                preview = self._last_response_display_text or self._last_response_text
+                _notify_state("failed", text=preview[:2000])
+            else:
+                _notify_state("idle")
         self._current_proc = None
         if getattr(self, "_current_speech_intent", None) == speech_intent:
             self._current_speech_intent = None
