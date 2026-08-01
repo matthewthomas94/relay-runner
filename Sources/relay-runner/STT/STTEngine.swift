@@ -13,6 +13,8 @@ final class STTEngine: @unchecked Sendable {
     var isRecording = false
     var wasCancelled = false
     var playRequested = false
+    var playRequestedAt: CFTimeInterval?
+    var playDetectedAt: Date?
     var boardToggleRequested = false
     var boardToggleRequestedAt: CFTimeInterval?
     var partialTranscription = ""
@@ -311,8 +313,11 @@ final class STTEngine: @unchecked Sendable {
                     mediaSettleDeadline = nil
 
                 case .play:
+                    let detectedAt = Date()
                     playRequested = true
-                    writeVoiceOutput("__PLAY__")
+                    playRequestedAt = CACurrentMediaTime()
+                    playDetectedAt = detectedAt
+                    writeVoiceOutput(Self.playControl(detectedAt: detectedAt))
                     NSLog("[STTEngine] >> __PLAY__ (double-tap)")
                     continue
 
@@ -413,5 +418,27 @@ final class STTEngine: @unchecked Sendable {
     ) -> Bool {
         guard !tutorialActive else { return false }
         return writer(text)
+    }
+
+    static func playControl(detectedAt: Date) -> String {
+        String(format: "__PLAY__:%.6f", detectedAt.timeIntervalSince1970)
+    }
+
+    func recordPlaybackAcknowledgement(detectedAt: Date, acknowledgedAt: Date) {
+        writeVoiceOutput(Self.playAcknowledgementControl(
+            detectedAt: detectedAt,
+            acknowledgedAt: acknowledgedAt
+        ))
+    }
+
+    static func playAcknowledgementControl(
+        detectedAt: Date,
+        acknowledgedAt: Date
+    ) -> String {
+        String(
+            format: "__PLAY_ACK__:%.6f:%.6f",
+            detectedAt.timeIntervalSince1970,
+            acknowledgedAt.timeIntervalSince1970
+        )
     }
 }

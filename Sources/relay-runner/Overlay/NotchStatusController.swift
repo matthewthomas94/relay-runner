@@ -521,6 +521,8 @@ enum NotchVisualLabelAllowlist {
             label = "Preparing speech"
         case .speaking:
             label = "Playing"
+        case .speechFailed:
+            label = "Speech unavailable"
         case .actionGlow(awaitingConfirmation: nil):
             label = "Using screen"
         case .idle, .paused, .processing, .sessionPrompt, .sessionReady,
@@ -615,6 +617,8 @@ enum NotchActivityLabelPlanner {
             return "Preparing speech"
         case .speaking:
             return "Playing"
+        case .speechFailed:
+            return "Speech unavailable"
         case .sessionPrompt:
             return "Waiting session"
         case .sessionReady:

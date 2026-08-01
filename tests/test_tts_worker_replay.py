@@ -558,6 +558,63 @@ class TTSWorkerReplayTests(unittest.TestCase):
             ["afplay", "/tmp/test.wav", "-r", "1.3"],
         )
 
+    def test_preparing_and_afplay_start_are_observed_for_correlated_speech(self):
+        worker = self.make_worker()
+        del worker._play_text
+        intent = {"utterance_id": "speech-1"}
+        events = []
+        worker._speech_observer = lambda state, payload: events.append(
+            (state, payload["utterance_id"])
+        )
+
+        with (
+            patch.object(tts_worker.threading, "Thread", IdleThread),
+            patch.object(tts_worker, "_notify_state"),
+        ):
+            worker._play_text("Ready.", speech_intent=intent)
+
+        class FakeProc:
+            def wait(self):
+                return 0
+
+        with (
+            patch.object(tts_worker, "_notify_state"),
+            patch.object(tts_worker.subprocess, "Popen", return_value=FakeProc()),
+        ):
+            worker._play_wav_blocking("/tmp/test.wav")
+
+        self.assertEqual(events, [("preparing", "speech-1"), ("afplay_started", "speech-1")])
+
+    def test_missing_voice_model_surfaces_explicit_failure_state(self):
+        worker = self.make_chunk_worker()
+        worker._kokoro = None
+        intent = {"utterance_id": "speech-1"}
+        worker._current_speech_intent = intent
+        worker._last_response_display_text = "Visible result."
+        events = []
+        worker._speech_observer = lambda state, payload: events.append(state)
+
+        with patch.object(tts_worker, "_notify_state") as notify_state:
+            worker._speak_chunks(["Visible result."], 1, intent)
+
+        notify_state.assert_called_with("failed", text="Visible result.")
+        self.assertEqual(events, ["failed"])
+
+    def test_failed_first_wav_synthesis_surfaces_explicit_failure_state(self):
+        worker = self.make_chunk_worker()
+        intent = {"utterance_id": "speech-1"}
+        worker._current_speech_intent = intent
+        worker._last_response_display_text = "Visible result."
+        worker._synthesize_to_wav = lambda _text: None
+        events = []
+        worker._speech_observer = lambda state, payload: events.append(state)
+
+        with patch.object(tts_worker, "_notify_state") as notify_state:
+            worker._speak_chunks(["Visible result."], 1, intent)
+
+        notify_state.assert_called_with("failed", text="Visible result.")
+        self.assertEqual(events, ["failed"])
+
     def test_worker_init_defaults_rate_to_one_point_three_when_missing(self):
         with (
             patch.object(tts_worker, "load_config", return_value={"tts": {"voice": "bf_emma"}}),

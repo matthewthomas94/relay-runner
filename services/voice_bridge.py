@@ -2183,7 +2183,47 @@ def _quarantine_raw_relay_control_object(text: str) -> bool:
     return True
 
 
-def _play_or_replay(tts_worker: TTSWorker) -> bool:
+def _play_control_detected_at(text: str) -> float | None:
+    if text == "__PLAY__":
+        return None
+    prefix = "__PLAY__:"
+    if not text.startswith(prefix):
+        return None
+    try:
+        detected_at = float(text[len(prefix):])
+    except ValueError:
+        return None
+    return detected_at if detected_at > 0 else None
+
+
+def _play_ack_timestamps(text: str) -> tuple[float, float] | None:
+    prefix = "__PLAY_ACK__:"
+    if not text.startswith(prefix):
+        return None
+    parts = text[len(prefix):].split(":", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        detected_at, acknowledged_at = (float(value) for value in parts)
+    except ValueError:
+        return None
+    if detected_at <= 0 or acknowledged_at <= 0:
+        return None
+    return detected_at, acknowledged_at
+
+
+def _play_or_replay(
+    tts_worker: TTSWorker,
+    *,
+    option_detected_at: float | None = None,
+) -> bool:
+    received_at = time.time()
+    note_control = getattr(tts_worker, "note_play_control", None)
+    if callable(note_control):
+        note_control(
+            option_detected_at=option_detected_at,
+            fifo_received_at=received_at,
+        )
     handler = getattr(tts_worker, "play_or_replay", None)
     if callable(handler):
         return bool(handler())
@@ -2251,8 +2291,21 @@ def _handle_relay_control_message(
         tts_worker.skip()
         return True
 
-    if text == "__PLAY__":
-        _play_or_replay(tts_worker)
+    if text == "__PLAY__" or text.startswith("__PLAY__:"):
+        _play_or_replay(
+            tts_worker,
+            option_detected_at=_play_control_detected_at(text),
+        )
+        return True
+
+    if text.startswith("__PLAY_ACK__:"):
+        timestamps = _play_ack_timestamps(text)
+        note_ack = getattr(tts_worker, "note_visual_acknowledgement", None)
+        if timestamps is not None and callable(note_ack):
+            note_ack(
+                option_detected_at=timestamps[0],
+                acknowledged_at=timestamps[1],
+            )
         return True
 
     if text == "__REPLAY__":
@@ -3160,8 +3213,14 @@ def main():
                     tts_worker.skip()  # Clear pending text so next message gets fresh notification
                     continue
 
-                if text == "__PLAY__":
-                    _play_or_replay(tts_worker)
+                if text == "__PLAY__" or text.startswith("__PLAY__:"):
+                    _play_or_replay(
+                        tts_worker,
+                        option_detected_at=_play_control_detected_at(text),
+                    )
+                    continue
+
+                if text.startswith("__PLAY_ACK__:"):
                     continue
 
                 if text == "__REPLAY__":

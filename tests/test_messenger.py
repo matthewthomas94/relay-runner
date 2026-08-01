@@ -384,9 +384,9 @@ class MessengerRuntimeTests(unittest.TestCase):
                 "I picked up the messenger work, and I’ll return with the next step.",
             )
             self.assertEqual(spoken[1][0], "I’m checking the bridge wiring now.")
-            self.assertEqual(spoken[2][0], "The messenger architecture is implemented and verified.")
+            self.assertEqual(spoken[2][0], "Implemented and verified.")
             self.assertIn("Checking the voice bridge wiring", backend.prompts[1])
-            self.assertIn("Implemented and verified.", backend.prompts[2])
+            self.assertEqual(len(backend.prompts), 2)
             self.assertEqual(backend.interrupt_count, 0)
             self.assertLessEqual(runtime.context_size, 6)
         finally:
@@ -517,8 +517,8 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertTrue(runtime.submit_final({"text": "Finished.", **command}))
             self.assertTrue(runtime.submit_final({"text": "Finished again.", **command}))
 
-            self.assertTrue(wait_until(lambda: spoken == ["The work is done."]))
-            self.assertEqual(len(backend.prompts), 2)
+            self.assertTrue(wait_until(lambda: spoken == ["Finished."]))
+            self.assertEqual(len(backend.prompts), 1)
         finally:
             runtime.shutdown()
 
@@ -537,9 +537,8 @@ class MessengerRuntimeTests(unittest.TestCase):
 
             runtime.start()
 
-            self.assertTrue(wait_until(lambda: spoken == ["The work is complete."]))
-            self.assertEqual(len(backend.prompts), 1)
-            self.assertIn("authoritative orchestrator reply", backend.prompts[0])
+            self.assertTrue(wait_until(lambda: spoken == ["Finished."]))
+            self.assertEqual(len(backend.prompts), 0)
         finally:
             runtime.shutdown()
 
@@ -567,11 +566,11 @@ class MessengerRuntimeTests(unittest.TestCase):
 
             self.assertTrue(
                 wait_until(
-                    lambda: spoken == ["The work is complete."] and len(backend.prompts) == 2,
+                    lambda: spoken == ["Finished."] and len(backend.prompts) == 1,
                     timeout=2.0,
                 )
             )
-            self.assertIn("authoritative orchestrator reply", backend.prompts[1])
+            self.assertNotIn("authoritative orchestrator reply", backend.prompts[0])
         finally:
             runtime.shutdown()
 
@@ -615,7 +614,7 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertEqual(
                 spoken[0],
                 (
-                    "Short spoken result.",
+                    "Authoritative provider result.",
                     16,
                     "cmd-16",
                     "Authoritative provider result.",
@@ -782,15 +781,13 @@ class MessengerRuntimeTests(unittest.TestCase):
             runtime.submit_final({"text": "RR-263 is implemented and verified.", **command})
 
             self.assertTrue(wait_until(lambda: len(spoken) == 2))
-            self.assertEqual(
-                spoken[1][0],
-                "RR-263 is implemented and verified; the focused tests pass.",
-            )
+            self.assertEqual(spoken[1][0], "RR-263 is implemented and verified.")
             self.assertEqual(spoken[1][4]["lifecycle_role"], "result")
-            self.assertEqual(spoken[1][4]["realization_decision"], "delta")
+            self.assertEqual(spoken[1][4]["realization_decision"], "full")
             self.assertEqual(spoken[1][4]["covered_facts"], (spoken[1][0],))
-            self.assertIn("Speech that actually finished playing", backend.prompts[1])
-            self.assertEqual(observed[0][1]["decision"], "delta")
+            self.assertEqual(len(backend.prompts), 1)
+            self.assertEqual(observed[0][1]["decision"], "full")
+            self.assertEqual(observed[0][1]["reason"], "authoritative_final_direct")
         finally:
             runtime.shutdown()
 
@@ -897,7 +894,7 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
-    def test_conversational_duplicate_is_suppressed_but_provider_text_remains_context(self):
+    def test_conversational_final_uses_authoritative_text_without_model_round_trip(self):
         backend = FakeBackend([
             "You’re welcome.",
             json.dumps({
@@ -929,9 +926,9 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertTrue(wait_until(lambda: len(spoken) == 1))
             runtime.submit_final({"text": "You are welcome.", **command})
 
-            self.assertTrue(wait_until(lambda: len(backend.prompts) == 2))
-            self.assertEqual(len(spoken), 1)
-            self.assertIn("AUTHORITATIVE ORCHESTRATOR FINAL: You are welcome.", backend.prompts[1])
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+            self.assertEqual(spoken[1][0], "You are welcome.")
+            self.assertEqual(len(backend.prompts), 1)
         finally:
             runtime.shutdown()
 
@@ -977,7 +974,7 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertEqual(observed, [{
                 "lifecycle_role": "result",
                 "decision": "full",
-                "reason": "protected_lifecycle",
+                "reason": "authoritative_final_direct",
             }])
         finally:
             runtime.shutdown()
@@ -1023,7 +1020,7 @@ class MessengerRuntimeTests(unittest.TestCase):
                     self.assertEqual(spoken[1][4]["realization_decision"], "full")
                     self.assertEqual(
                         spoken[1][4]["suppression_reason"],
-                        "lossy_delta" if index == 1 else "malformed_arbitration",
+                        "authoritative_final_direct",
                     )
                 finally:
                     runtime.shutdown()
@@ -1062,7 +1059,10 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertTrue(wait_until(lambda: len(spoken) == 2))
             self.assertEqual(spoken[1][0], final)
             self.assertEqual(spoken[1][4]["realization_decision"], "full")
-            self.assertEqual(spoken[1][4]["suppression_reason"], "lossy_full")
+            self.assertEqual(
+                spoken[1][4]["suppression_reason"],
+                "authoritative_final_direct",
+            )
         finally:
             runtime.shutdown()
 
@@ -1102,7 +1102,10 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertTrue(wait_until(lambda: len(spoken) == 2))
             self.assertEqual(spoken[1][0], final)
             self.assertEqual(spoken[1][4]["realization_decision"], "full")
-            self.assertEqual(spoken[1][4]["suppression_reason"], "lossy_delta")
+            self.assertEqual(
+                spoken[1][4]["suppression_reason"],
+                "authoritative_final_direct",
+            )
         finally:
             runtime.shutdown()
 
@@ -1164,7 +1167,10 @@ class MessengerRuntimeTests(unittest.TestCase):
                     self.assertTrue(wait_until(lambda: len(spoken) == 2))
                     self.assertEqual(spoken[1][0], authoritative)
                     self.assertEqual(spoken[1][4]["realization_decision"], "full")
-                    self.assertEqual(spoken[1][4]["suppression_reason"], reason)
+                    self.assertEqual(
+                        spoken[1][4]["suppression_reason"],
+                        "authoritative_final_direct",
+                    )
                 finally:
                     runtime.shutdown()
 

@@ -235,6 +235,9 @@ class SpeechCoordinator:
         self._waiting_preview: tuple[tuple[int, str], str] | None = None
         self._play_requested = False
         self._play_dispatched_id: str | None = None
+        self._play_timing: dict[str, Any] | None = None
+        self._utterance_timings: dict[str, dict[str, Any]] = {}
+        self._intent_committed_at: dict[str, float] = {}
         self._speech_stopped = False
         self._shutdown = threading.Event()
         self._control_socket_path = control_socket_path
@@ -319,6 +322,10 @@ class SpeechCoordinator:
                 commit_now = True
 
             self._accept_locked(intent)
+            self._intent_committed_at[intent.utterance_id] = time.time()
+            if len(self._intent_committed_at) > 512:
+                oldest = next(iter(self._intent_committed_at))
+                self._intent_committed_at.pop(oldest, None)
             if replace_committed:
                 old = self._intent_for(self._committed_id)
                 self._committed_id = intent.utterance_id
@@ -346,10 +353,76 @@ class SpeechCoordinator:
         """Bind the next play gesture to speech backing an imminent preview."""
         target = (int(command_seq), str(command_id))
         with self._lock:
+            previous = self._waiting_preview
             self._waiting_preview = (target, kind)
+            if self._play_timing is not None and previous != self._waiting_preview:
+                self._play_timing["relay_command_seq"] = target[0]
+                self._play_timing["relay_command_id"] = target[1]
+                self._play_timing["kind"] = kind
             dispatched = self._intent_for(self._play_dispatched_id)
             if dispatched is not None and not self._matches_waiting_preview(dispatched):
                 self._play_dispatched_id = None
+
+    def note_play_control(
+        self,
+        *,
+        option_detected_at: float | None = None,
+        fifo_received_at: float | None = None,
+    ) -> None:
+        """Capture privacy-safe shortcut timing before play mutates coordinator state."""
+        received_at = float(fifo_received_at or time.time())
+        detected_at = float(option_detected_at or received_at)
+        with self._lock:
+            if self._play_requested and self._play_timing is not None:
+                self._write_diagnostic({
+                    "event": "duplicate_play_control",
+                    "at": received_at,
+                    "play_request_id": self._play_timing.get("play_request_id"),
+                    "relay_command_seq": self._play_timing.get("relay_command_seq"),
+                    "relay_command_id": self._play_timing.get("relay_command_id"),
+                    "option_to_fifo_ms": _duration_ms(detected_at, received_at),
+                })
+                return
+            target = self._waiting_preview
+            intent = self._intent_for(self._committed_id)
+            command_key = target[0] if target is not None else (intent.command_key if intent else None)
+            self._play_timing = {
+                "play_request_id": str(uuid.uuid4()),
+                "option_detected_at": detected_at,
+                "fifo_received_at": received_at,
+                "relay_command_seq": command_key[0] if command_key else None,
+                "relay_command_id": command_key[1] if command_key else None,
+                "kind": target[1] if target is not None else (intent.kind if intent else None),
+            }
+            fields = {
+                "play_request_id": self._play_timing["play_request_id"],
+                "relay_command_seq": self._play_timing["relay_command_seq"],
+                "relay_command_id": self._play_timing["relay_command_id"],
+            }
+            self._write_diagnostic({"event": "option_detected", "at": detected_at, **fields})
+            self._write_diagnostic({
+                "event": "fifo_play_received",
+                "at": received_at,
+                "option_to_fifo_ms": _duration_ms(detected_at, received_at),
+                **fields,
+            })
+
+    def note_visual_acknowledgement(
+        self,
+        *,
+        option_detected_at: float,
+        acknowledged_at: float,
+    ) -> None:
+        with self._lock:
+            timing = self._play_timing
+            self._write_diagnostic({
+                "event": "visual_play_acknowledged",
+                "at": acknowledged_at,
+                "play_request_id": timing.get("play_request_id") if timing else None,
+                "relay_command_seq": timing.get("relay_command_seq") if timing else None,
+                "relay_command_id": timing.get("relay_command_id") if timing else None,
+                "option_to_ack_ms": _duration_ms(option_detected_at, acknowledged_at),
+            })
 
     def new_turn(self, command_seq: int, command_id: str) -> None:
         """Suppress stale speech without revoking accepted background work."""
@@ -434,6 +507,19 @@ class SpeechCoordinator:
                 return
             self._speech_stopped = False
             self._play_requested = True
+            timing = self._play_timing
+            if timing is not None and "latched_at" not in timing:
+                timing["latched_at"] = time.time()
+                self._write_diagnostic({
+                    "event": "retained_play_latched",
+                    "at": timing["latched_at"],
+                    "play_request_id": timing.get("play_request_id"),
+                    "relay_command_seq": timing.get("relay_command_seq"),
+                    "relay_command_id": timing.get("relay_command_id"),
+                    "option_to_latch_ms": _duration_ms(
+                        timing.get("option_detected_at"), timing["latched_at"]
+                    ),
+                })
         self._dispatch_requested_play()
 
     def play_or_replay(self) -> bool:
@@ -515,14 +601,38 @@ class SpeechCoordinator:
                 and self._play_dispatched_id != intent.utterance_id
             ):
                 self._play_dispatched_id = intent.utterance_id
+                if self._play_timing is not None:
+                    timing = dict(self._play_timing)
+                    timing["relay_command_seq"] = intent.command_seq
+                    timing["relay_command_id"] = intent.command_id
+                    timing["utterance_id"] = intent.utterance_id
+                    committed_at = self._intent_committed_at.get(intent.utterance_id, time.time())
+                    timing["intent_committed_at"] = committed_at
+                    self._utterance_timings[intent.utterance_id] = timing
+                    self._write_diagnostic({
+                        "event": "intent_committed",
+                        "at": committed_at,
+                        "play_request_id": timing.get("play_request_id"),
+                        "utterance_id": intent.utterance_id,
+                        "relay_command_seq": intent.command_seq,
+                        "relay_command_id": intent.command_id,
+                        "option_to_intent_commit_ms": _duration_ms(
+                            timing.get("option_detected_at"), committed_at
+                        ),
+                    })
+                    if len(self._utterance_timings) > 64:
+                        oldest = next(iter(self._utterance_timings))
+                        self._utterance_timings.pop(oldest, None)
                 should_play = True
         if should_play:
             self.worker.play()
 
-    def _clear_play_request_locked(self) -> None:
+    def _clear_play_request_locked(self, *, preserve_timing: bool = False) -> None:
         self._waiting_preview = None
         self._play_requested = False
         self._play_dispatched_id = None
+        if not preserve_timing:
+            self._play_timing = None
 
     def _fresh(self, intent: SpeechIntent) -> bool:
         if intent.expires_at is not None and time.time() >= intent.expires_at:
@@ -545,6 +655,7 @@ class SpeechCoordinator:
 
     def _observe_worker(self, state: str, payload: dict[str, Any]) -> None:
         intent_id = str(payload.get("utterance_id") or "")
+        observed_at = float(payload.get("_event_at") or time.time())
         next_intent: SpeechIntent | None = None
         with self._lock:
             intent = self._intent_for(intent_id)
@@ -555,7 +666,7 @@ class SpeechCoordinator:
                 if self._committed_id == intent_id:
                     self._committed_id = None
                 if self._matches_waiting_preview(intent):
-                    self._clear_play_request_locked()
+                    self._clear_play_request_locked(preserve_timing=True)
             elif state in {"completed", "cancelled", "failed"}:
                 if self._play_dispatched_id == intent_id:
                     self._play_dispatched_id = None
@@ -571,10 +682,32 @@ class SpeechCoordinator:
                     next_intent = self._next_eligible_locked()
                     if next_intent is not None:
                         self._committed_id = next_intent.utterance_id
-        self._diagnostic(
-            "played" if state == "completed" else state,
-            intent,
-        )
+        stage_event = {
+            "preparing": "tts_preparing",
+            "wav_ready": "first_wav_ready",
+            "afplay_started": "afplay_started",
+        }.get(state)
+        timing = self._utterance_timings.get(intent_id)
+        if stage_event is not None:
+            self._diagnostic(
+                stage_event,
+                intent,
+                at=observed_at,
+                play_request_id=timing.get("play_request_id") if timing else None,
+                option_to_stage_ms=_duration_ms(
+                    timing.get("option_detected_at") if timing else None,
+                    observed_at,
+                ),
+            )
+        else:
+            self._diagnostic(
+                "played" if state == "completed" else state,
+                intent,
+                at=observed_at,
+            )
+        if state in {"completed", "cancelled", "failed"}:
+            self._utterance_timings.pop(intent_id, None)
+            self._intent_committed_at.pop(intent_id, None)
         if next_intent is not None:
             self.worker.input_queue.put(next_intent.to_worker_payload())
 
@@ -706,3 +839,10 @@ class SpeechCoordinator:
 
 def _elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000, 3)
+
+
+def _duration_ms(started: object, ended: object) -> float | None:
+    try:
+        return round((float(ended) - float(started)) * 1000, 3)
+    except (TypeError, ValueError):
+        return None

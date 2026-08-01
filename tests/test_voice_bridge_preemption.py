@@ -1097,7 +1097,33 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         worker.play_or_replay.assert_called_once_with()
         self.assertNotIn("play", worker.calls)
 
-    def test_first_play_during_authoritative_preview_waits_for_messenger_proposal(self):
+    def test_timestamped_option_and_visual_ack_controls_preserve_timing(self):
+        worker = FakeTTSWorker()
+        worker.play_or_replay = mock.Mock(return_value=True)
+        worker.note_play_control = mock.Mock()
+        worker.note_visual_acknowledgement = mock.Mock()
+
+        with mock.patch.object(voice_bridge.time, "time", return_value=1_000.02):
+            self.assertTrue(voice_bridge._handle_relay_control_message(
+                "__PLAY__:1000.000000",
+                worker,
+            ))
+        self.assertTrue(voice_bridge._handle_relay_control_message(
+            "__PLAY_ACK__:1000.000000:1000.050000",
+            worker,
+        ))
+
+        worker.note_play_control.assert_called_once_with(
+            option_detected_at=1_000.0,
+            fifo_received_at=1_000.02,
+        )
+        worker.note_visual_acknowledgement.assert_called_once_with(
+            option_detected_at=1_000.0,
+            acknowledged_at=1_000.05,
+        )
+        worker.play_or_replay.assert_called_once_with()
+
+    def test_first_play_during_authoritative_preview_waits_for_matching_final_intent(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
                 voice_bridge._reset_foreground_reply_delivery_for_tests()

@@ -1813,6 +1813,8 @@ final class AppState {
                 if engine.playRequested {
                     // Double-tap Alt → start new session
                     engine.playRequested = false
+                    engine.playRequestedAt = nil
+                    engine.playDetectedAt = nil
                     self.onboarding.noteTutorialPlaybackRequested()
                     self.stateMachine.dismissSessionPrompt()
                     self.newSession()
@@ -1900,6 +1902,21 @@ final class AppState {
             // Clear stale play requests
             if engine.playRequested {
                 engine.playRequested = false
+                let recognizedAt = engine.playRequestedAt
+                let detectedAt = engine.playDetectedAt
+                engine.playRequestedAt = nil
+                engine.playDetectedAt = nil
+                self.stateMachine.setPlaybackRequested()
+                if let detectedAt {
+                    engine.recordPlaybackAcknowledgement(
+                        detectedAt: detectedAt,
+                        acknowledgedAt: Date()
+                    )
+                }
+                if let recognizedAt {
+                    let acknowledgementMs = (CACurrentMediaTime() - recognizedAt) * 1_000
+                    NSLog("[AppState] Option playback acknowledged in %.1fms", acknowledgementMs)
+                }
                 let playbackActive: Bool
                 switch self.stateMachine.state {
                 case .preparing, .speaking:

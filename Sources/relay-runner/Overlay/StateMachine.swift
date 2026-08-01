@@ -31,6 +31,7 @@ enum OverlayState: Equatable {
     case messageWaiting(preview: String?)
     case preparing
     case speaking
+    case speechFailed
     case paused
     case sessionPrompt   // No session running — prompt user to start one
     case sessionReady
@@ -47,7 +48,8 @@ enum OverlayState: Equatable {
     /// around the screen edges by PerimeterOverlay, not at the bottom.
     var particleTheme: ParticleFieldRenderer.Theme? {
         switch self {
-        case .idle, .paused, .sent, .cancelled(_), .acknowledgement, .sessionPrompt, .actionGlow:
+        case .idle, .paused, .sent, .cancelled(_), .acknowledgement, .speechFailed,
+             .sessionPrompt, .actionGlow:
             return nil
         case .listening, .recording:
             return .stt
@@ -63,7 +65,8 @@ enum OverlayState: Equatable {
             return .stt
         case .cancelled(.tts):
             return .tts
-        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking, .sessionReady, .programStatus, .actionGlow:
+        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking,
+             .speechFailed, .sessionReady, .programStatus, .actionGlow:
             return .tts
         default:
             return .tts
@@ -124,7 +127,12 @@ final class StateMachine: @unchecked Sendable {
             let preview = normalizedMessagePreview(text) ?? messagePreview
             guard preview != nil else { break }
             messagePreview = preview
-            state = .messageWaiting(preview: preview)
+            switch state {
+            case .preparing, .speaking:
+                break
+            default:
+                state = .messageWaiting(preview: preview)
+            }
 
         case ("tts", "preparing"):
             pendingAcknowledgement = nil
@@ -141,6 +149,14 @@ final class StateMachine: @unchecked Sendable {
                 messagePreview = preview
             }
             state = .speaking
+
+        case ("tts", "failed"):
+            pendingAcknowledgement = nil
+            clearWorkingProgress()
+            if let preview = normalizedMessagePreview(text) {
+                messagePreview = preview
+            }
+            state = .speechFailed
 
         case ("tts", "idle"):
             switch state {
@@ -240,6 +256,13 @@ final class StateMachine: @unchecked Sendable {
         }
     }
 
+    /// Immediately acknowledge a valid Option gesture while speech is retained.
+    func setPlaybackRequested() {
+        if case .messageWaiting = state {
+            state = .preparing
+        }
+    }
+
     func promotePendingAcknowledgementIfReady() {
         guard let pendingAcknowledgement,
               now() >= pendingAcknowledgement.presentAt else { return }
@@ -272,7 +295,8 @@ final class StateMachine: @unchecked Sendable {
         switch referenceState {
         case .recording:
             source = .stt
-        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking:
+        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking,
+             .speechFailed:
             source = .tts
         default:
             source = .stt

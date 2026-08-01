@@ -276,6 +276,48 @@ class SpeechCoordinatorTests(unittest.TestCase):
             self.assertEqual(records[-1]["suppression_reason"], "covered_by_played_speech")
             self.assertNotIn("private words", log.read_text())
 
+    def test_retained_play_diagnostics_correlate_every_audio_stage_without_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "speech.jsonl"
+            worker, coordinator, _ = self.make_coordinator(log=log)
+            coordinator.arm_waiting_playback(1, "one", kind="final")
+            coordinator.note_play_control(
+                option_detected_at=1_000.0,
+                fifo_received_at=1_000.02,
+            )
+            coordinator.play()
+            coordinator.note_visual_acknowledgement(
+                option_detected_at=1_000.0,
+                acknowledged_at=1_000.05,
+            )
+
+            final = intent(kind="final", text="private final", authoritative=True)
+            self.assertTrue(coordinator.submit(final))
+            payload = worker.input_queue.get_nowait()["_speech_intent"]
+            worker.observer("preparing", {**payload, "_event_at": 1_000.10})
+            worker.observer("wav_ready", {**payload, "_event_at": 1_000.70})
+            worker.observer("started", payload)
+            worker.observer("afplay_started", {**payload, "_event_at": 1_000.90})
+            worker.observer("completed", payload)
+
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            events = [record["event"] for record in records]
+            for event in (
+                "option_detected",
+                "fifo_play_received",
+                "retained_play_latched",
+                "visual_play_acknowledged",
+                "intent_committed",
+                "tts_preparing",
+                "first_wav_ready",
+                "afplay_started",
+            ):
+                self.assertIn(event, events)
+            self.assertNotIn("private final", log.read_text())
+            afplay = next(record for record in records if record["event"] == "afplay_started")
+            self.assertEqual(afplay["utterance_id"], final.utterance_id)
+            self.assertEqual(afplay["option_to_stage_ms"], 900.0)
+
     def test_only_completed_speech_becomes_command_scoped_coverage(self):
         worker, coordinator, _ = self.make_coordinator()
         played = intent(kind="handoff", text="I picked up RR-263.", replayable=True)
