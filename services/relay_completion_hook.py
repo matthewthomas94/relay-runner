@@ -2,8 +2,9 @@
 """Relay Runner provider lifecycle hook transport.
 
 The hook observes provider lifecycle JSON on stdin and publishes only Relay
-voice-correlated final replies back to the bridge. It intentionally avoids
-logging prompt text, final response text, transcript paths, or raw payloads.
+voice-correlated final replies back to the bridge. It also records bounded
+automatic-compaction lifecycle diagnostics. It intentionally avoids logging
+prompt text, final response text, transcript paths, summaries, or raw payloads.
 """
 
 from __future__ import annotations
@@ -22,6 +23,17 @@ VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/vo
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 PROVIDER_TURN_TTL_SECONDS = float(os.environ.get("VOICE_PROVIDER_TURN_TTL_SECONDS", "3600"))
 PROVIDER_TURN_LIMIT = int(os.environ.get("VOICE_PROVIDER_TURN_LIMIT", "32"))
+SESSION_EVENTS_FILE = os.environ.get("RELAY_SESSION_EVENTS", "")
+CONTEXT_COMPACTION_EVENTS_FILE = os.environ.get(
+    "RELAY_CONTEXT_COMPACTION_EVENTS", SESSION_EVENTS_FILE
+)
+try:
+    AUTO_COMPACT_THRESHOLD_TOKENS = max(
+        1, int(os.environ.get("RELAY_AUTO_COMPACT_THRESHOLD_TOKENS", "150000"))
+    )
+except ValueError:
+    AUTO_COMPACT_THRESHOLD_TOKENS = 150000
+TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
 
 RELAY_COMPLETION_PREFIX = "__RELAY_COMPLETION__:"
 
@@ -40,6 +52,249 @@ def _atomic_write_json(path: str, payload: dict) -> None:
     with open(tmp, "w") as f:
         json.dump(payload, f, sort_keys=True)
     os.replace(tmp, path)
+
+
+def _recent_jsonl_objects(path: str, *, max_bytes: int = TRANSCRIPT_TAIL_BYTES):
+    """Yield recent transcript objects newest-first without retaining content."""
+    if not path:
+        return
+    path = os.path.expanduser(path)
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as transcript:
+            offset = max(0, size - max_bytes)
+            transcript.seek(offset)
+            raw = transcript.read(max_bytes)
+    except OSError:
+        return
+    lines = raw.splitlines()
+    if offset > 0 and lines:
+        lines = lines[1:]
+    for line in reversed(lines):
+        try:
+            value = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(value, dict):
+            yield value
+
+
+def _nonnegative_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _codex_active_context_tokens(transcript_path: str) -> int | None:
+    for record in _recent_jsonl_objects(transcript_path):
+        payload = record.get("payload") if record.get("type") == "event_msg" else record
+        if not isinstance(payload, dict) or payload.get("type") != "token_count":
+            continue
+        info = payload.get("info")
+        active_usage = info.get("last_token_usage") if isinstance(info, dict) else None
+        if isinstance(active_usage, dict):
+            return _nonnegative_int(active_usage.get("total_tokens"))
+    return None
+
+
+def _claude_active_context_tokens(transcript_path: str) -> int | None:
+    for record in _recent_jsonl_objects(transcript_path):
+        if record.get("type") == "system" and record.get("subtype") == "compact_boundary":
+            metadata = record.get("compactMetadata")
+            post_tokens = (
+                _nonnegative_int(metadata.get("postTokens"))
+                if isinstance(metadata, dict)
+                else None
+            )
+            if post_tokens is not None:
+                return post_tokens
+        if record.get("type") != "assistant" or record.get("isSidechain") is True:
+            continue
+        message = record.get("message")
+        usage = message.get("usage") if isinstance(message, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        components = [
+            _nonnegative_int(usage.get("input_tokens")),
+            _nonnegative_int(usage.get("cache_creation_input_tokens")),
+            _nonnegative_int(usage.get("cache_read_input_tokens")),
+        ]
+        if any(component is not None for component in components):
+            return sum(component or 0 for component in components)
+    return None
+
+
+def _native_active_context_tokens(payload: dict, provider: str | None) -> int | None:
+    transcript_path = str(payload.get("transcript_path") or "").strip()
+    if provider == "codex":
+        return _codex_active_context_tokens(transcript_path)
+    if provider == "claude":
+        return _claude_active_context_tokens(transcript_path)
+    return None
+
+
+def _append_session_event(event: dict, *, path: str = SESSION_EVENTS_FILE) -> None:
+    if not path:
+        return
+    data = (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(descriptor, data)
+        finally:
+            os.close(descriptor)
+        os.chmod(path, 0o600)
+    except OSError:
+        return
+
+
+def _compaction_attempt_number(
+    path: str,
+    *,
+    provider: str | None,
+    session_id: str,
+    advance: bool,
+) -> int:
+    latest = 0
+    for record in _recent_jsonl_objects(path, max_bytes=256 * 1024):
+        if (
+            record.get("stage") != "compaction_attempt"
+            or record.get("provider") != (provider or "unknown")
+            or record.get("session_id") != session_id
+        ):
+            continue
+        latest = _nonnegative_int(record.get("attempt")) or 0
+        break
+    return latest + 1 if advance else max(1, latest)
+
+
+def _pending_unconfirmed_attempt(
+    path: str,
+    *,
+    provider: str | None,
+    session_id: str,
+) -> int | None:
+    for record in _recent_jsonl_objects(path, max_bytes=256 * 1024):
+        if (
+            record.get("provider") != (provider or "unknown")
+            or record.get("session_id") != session_id
+        ):
+            continue
+        stage = record.get("stage")
+        if stage == "compaction_unconfirmed":
+            return _nonnegative_int(record.get("attempt"))
+        if stage in {"compaction_attempt", "compaction_confirmed"}:
+            return None
+    return None
+
+
+def _record_compaction_diagnostic(
+    payload: dict,
+    *,
+    now: float,
+    events_path: str = CONTEXT_COMPACTION_EVENTS_FILE,
+) -> None:
+    event_name = _hook_event_name(payload)
+    if event_name not in {
+        "UserPromptSubmit",
+        "Stop",
+        "StopFailure",
+        "PreCompact",
+        "PostCompact",
+    }:
+        return
+    provider = _provider_name(payload)
+    active_tokens = _native_active_context_tokens(payload, provider)
+    if active_tokens is None:
+        threshold_state = "unknown"
+    elif active_tokens < AUTO_COMPACT_THRESHOLD_TOKENS:
+        threshold_state = "below"
+    elif active_tokens == AUTO_COMPACT_THRESHOLD_TOKENS:
+        threshold_state = "exact"
+    else:
+        threshold_state = "above"
+
+    trigger = str(payload.get("trigger") or "").strip().lower() or None
+    session_id = _session_id(payload)
+    attempt = None
+    if event_name in {"PreCompact", "PostCompact", "StopFailure"}:
+        attempt = _compaction_attempt_number(
+            events_path,
+            provider=provider,
+            session_id=session_id,
+            advance=event_name == "PreCompact",
+        )
+    post_compact_confirmed = (
+        event_name == "PostCompact"
+        and active_tokens is not None
+        and active_tokens < AUTO_COMPACT_THRESHOLD_TOKENS
+    )
+    delayed_confirmation_attempt = None
+    if (
+        event_name in {"UserPromptSubmit", "Stop"}
+        and active_tokens is not None
+        and active_tokens < AUTO_COMPACT_THRESHOLD_TOKENS
+    ):
+        delayed_confirmation_attempt = _pending_unconfirmed_attempt(
+            events_path,
+            provider=provider,
+            session_id=session_id,
+        )
+    compaction_confirmed = post_compact_confirmed or delayed_confirmation_attempt is not None
+    if delayed_confirmation_attempt is not None:
+        attempt = delayed_confirmation_attempt
+    stage_by_event = {
+        "UserPromptSubmit": (
+            "compaction_confirmed" if delayed_confirmation_attempt is not None
+            else "active_context_observed"
+        ),
+        "Stop": (
+            "compaction_confirmed" if delayed_confirmation_attempt is not None
+            else "active_context_observed"
+        ),
+        "StopFailure": "provider_turn_failed",
+        "PreCompact": "compaction_attempt",
+        "PostCompact": (
+            "compaction_confirmed" if post_compact_confirmed else "compaction_unconfirmed"
+        ),
+    }
+    outcome_by_event = {
+        "UserPromptSubmit": "confirmed" if delayed_confirmation_attempt is not None else "busy",
+        "Stop": "confirmed" if delayed_confirmation_attempt is not None else "idle",
+        "StopFailure": "failed",
+        "PreCompact": "started",
+        "PostCompact": "confirmed" if post_compact_confirmed else "unconfirmed",
+    }
+    raw_failure_reason = payload.get("error")
+    failure_reason = (
+        raw_failure_reason[:80]
+        if isinstance(raw_failure_reason, str) and raw_failure_reason
+        else None
+    )
+    event = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "stage": stage_by_event[event_name],
+        "outcome": outcome_by_event[event_name],
+        "provider": provider or "unknown",
+        "session_id": session_id,
+        "native_active_context_tokens": active_tokens,
+        "threshold_tokens": AUTO_COMPACT_THRESHOLD_TOKENS,
+        "threshold_state": threshold_state,
+        "idle_boundary": "busy" if event_name == "UserPromptSubmit" else "provider_native",
+        "attempt": attempt,
+        "trigger": trigger,
+        "confirmation": compaction_confirmed,
+        "failure_reason": (
+            "native_context_not_reduced"
+            if event_name == "PostCompact" and not post_compact_confirmed
+            else failure_reason
+        ),
+    }
+    _append_session_event(event, path=events_path)
 
 
 def _relay_command_key(command: dict | None) -> tuple[int, str] | None:
@@ -332,6 +587,7 @@ def handle_hook_payload(
 ) -> bool:
     now = time.time() if now is None else now
     event = _hook_event_name(payload)
+    _record_compaction_diagnostic(payload, now=now)
     if event == "UserPromptSubmit":
         return _bind_prompt_submit(
             payload,
@@ -351,6 +607,8 @@ def handle_hook_payload(
             now=now,
             stderr=stderr,
         )
+    if event in {"PreCompact", "PostCompact"}:
+        return False
     return False
 
 

@@ -3,6 +3,16 @@ import Foundation
 
 final class ProcessManager {
 
+    static let embeddedAutoCompactTokenThreshold = 150_000
+    static let claudeAutoCompactWindow = 200_000
+    static let claudeAutoCompactOutputReserve = 20_000
+    // Claude caps the configured window to the model's native window, removes
+    // its output reserve, then applies this percentage. Using Haiku's 200K
+    // window for every alias makes 150K / (200K - 20K) the shared boundary.
+    static let claudeAutoCompactPercentage =
+        Double(embeddedAutoCompactTokenThreshold) * 100
+        / Double(claudeAutoCompactWindow - claudeAutoCompactOutputReserve)
+
     private var bridgeProcess: Process?
     private var tutorialTTSProcess: Process?
     private var tutorialTTSInput: Pipe?
@@ -948,6 +958,10 @@ final class ProcessManager {
             target: target,
             modelFlag: modelFlag,
             reasoningEffortFlag: reasoningEffortFlag,
+            automaticCompactionFlag: Self.appOwnedAutomaticCompactionFlag(
+                target: target,
+                voiceDelivery: voiceDelivery
+            ),
             bypassFlag: bypassFlag,
             appOwnedInstructionFlag: Self.appOwnedInstructionFlag(
                 target: target,
@@ -977,6 +991,11 @@ final class ProcessManager {
         # process enumeration may not see the Relay Runner host. This marker is
         # advisory session context, not a security boundary.
         export RELAY_RUNNER_APP_SESSION=1
+        \(Self.appOwnedAutomaticCompactionEnvironment(
+            target: target,
+            voiceDelivery: voiceDelivery,
+            sessionEventPath: sessionEventPath
+        ))
         \(Self.appOwnedReplyHelperExport(
             relayBridge: relayBridge,
             voiceDelivery: voiceDelivery
@@ -1201,6 +1220,36 @@ final class ProcessManager {
             + Self.shellQuoted(Self.replyHelperScriptPath(relayBridge: relayBridge))
     }
 
+    private static func appOwnedAutomaticCompactionFlag(
+        target: AgentTarget,
+        voiceDelivery: SessionVoiceDelivery
+    ) -> String {
+        guard voiceDelivery == .appOwned, target == .codex else { return "" }
+        let threshold = embeddedAutoCompactTokenThreshold
+        return "-c \(Self.shellQuoted("model_auto_compact_token_limit=\(threshold)")) "
+            + "-c \(Self.shellQuoted("model_auto_compact_token_limit_scope=\"total\"")) "
+    }
+
+    private static func appOwnedAutomaticCompactionEnvironment(
+        target: AgentTarget,
+        voiceDelivery: SessionVoiceDelivery,
+        sessionEventPath: String?
+    ) -> String {
+        guard voiceDelivery == .appOwned else { return "" }
+        var common = "export RELAY_AUTO_COMPACT_THRESHOLD_TOKENS=\(embeddedAutoCompactTokenThreshold)"
+        if let sessionEventPath, !sessionEventPath.isEmpty {
+            common += "\nexport RELAY_CONTEXT_COMPACTION_EVENTS="
+                + shellQuoted(sessionEventPath + ".context-compaction.jsonl")
+        }
+        guard target == .claude else { return common }
+        return """
+        \(common)
+        unset DISABLE_AUTO_COMPACT DISABLE_COMPACT
+        export CLAUDE_CODE_AUTO_COMPACT_WINDOW=\(claudeAutoCompactWindow)
+        export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=\(claudeAutoCompactPercentage)
+        """
+    }
+
     private static func completionHookCommand(relayBridge: String) -> String {
         "/usr/bin/python3 \(Self.shellQuoted(Self.completionHookScriptPath(relayBridge: relayBridge)))"
     }
@@ -1212,7 +1261,7 @@ final class ProcessManager {
 
     private static func claudeCompletionHookSettings(command: String) -> String {
         let handler = "[{\"hooks\":[{\"type\":\"command\",\"command\":\(Self.jsonStringLiteral(command)),\"timeout\":2}]}]"
-        return "{\"hooks\":{\"UserPromptSubmit\":\(handler),\"Stop\":\(handler),\"StopFailure\":\(handler)}}"
+        return "{\"hooks\":{\"UserPromptSubmit\":\(handler),\"Stop\":\(handler),\"StopFailure\":\(handler),\"PreCompact\":\(handler),\"PostCompact\":\(handler)}}"
     }
 
     private static func appOwnedCompletionHookFlag(
@@ -1235,6 +1284,16 @@ final class ProcessManager {
                     command: command,
                     statusMessage: "Relay voice completion"
                 )
+                + Self.codexCompletionHookFlag(
+                    event: "PreCompact",
+                    command: command,
+                    statusMessage: "Relay compaction started"
+                )
+                + Self.codexCompletionHookFlag(
+                    event: "PostCompact",
+                    command: command,
+                    statusMessage: "Relay compaction completed"
+                )
         case .claude:
             return "--settings \(Self.shellQuoted(Self.claudeCompletionHookSettings(command: command))) "
         }
@@ -1245,12 +1304,13 @@ final class ProcessManager {
         target: AgentTarget,
         modelFlag: String,
         reasoningEffortFlag: String,
+        automaticCompactionFlag: String,
         bypassFlag: String,
         appOwnedInstructionFlag: String,
         completionHookFlag: String,
         voiceDelivery: SessionVoiceDelivery
     ) -> String {
-        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(appOwnedInstructionFlag)\(completionHookFlag)\(bypassFlag)"
+        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(automaticCompactionFlag)\(appOwnedInstructionFlag)\(completionHookFlag)\(bypassFlag)"
             .trimmingCharacters(in: .whitespaces)
         guard voiceDelivery == .agentSkill else {
             return prefix

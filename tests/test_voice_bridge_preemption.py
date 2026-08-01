@@ -1650,6 +1650,184 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertNotIn("raw voice text", stored)
             self.assertNotIn("Improve documentation", stored)
 
+    def test_completion_hook_reads_provider_native_active_context_fields(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            codex_transcript = os.path.join(temp_dir, "codex.jsonl")
+            Path(codex_transcript).write_text(json.dumps({
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {"total_tokens": 9_999_999},
+                        "last_token_usage": {"total_tokens": 150000},
+                    },
+                },
+            }) + "\n")
+            self.assertEqual(
+                relay_completion_hook._codex_active_context_tokens(codex_transcript),
+                150000,
+            )
+
+            claude_transcript = os.path.join(temp_dir, "claude.jsonl")
+            Path(claude_transcript).write_text(json.dumps({
+                "type": "assistant",
+                "isSidechain": False,
+                "message": {
+                    "usage": {
+                        "input_tokens": 120000,
+                        "cache_creation_input_tokens": 10000,
+                        "cache_read_input_tokens": 20000,
+                        "output_tokens": 50000,
+                    }
+                },
+            }) + "\n")
+            self.assertEqual(
+                relay_completion_hook._claude_active_context_tokens(claude_transcript),
+                150000,
+            )
+            with open(claude_transcript, "a") as transcript:
+                transcript.write(json.dumps({
+                    "type": "system",
+                    "subtype": "compact_boundary",
+                    "compactMetadata": {"preTokens": 150000, "postTokens": 32000},
+                }) + "\n")
+            self.assertEqual(
+                relay_completion_hook._claude_active_context_tokens(claude_transcript),
+                32000,
+            )
+
+    def test_compaction_diagnostics_are_bounded_and_distinguish_lifecycle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            transcript = os.path.join(temp_dir, "provider.jsonl")
+            events = os.path.join(temp_dir, "events.jsonl")
+            Path(transcript).write_text(json.dumps({
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {"total_tokens": 9_999_999},
+                        "last_token_usage": {"total_tokens": 150000},
+                    },
+                },
+            }) + "\n")
+            base = {
+                "session_id": "session-compact",
+                "transcript_path": transcript,
+            }
+            with mock.patch.dict(os.environ, {"RELAY_RUNNER_PROVIDER": "codex"}):
+                relay_completion_hook._record_compaction_diagnostic(
+                    {**base, "hook_event_name": "Stop"},
+                    now=100,
+                    events_path=events,
+                )
+                relay_completion_hook._record_compaction_diagnostic(
+                    {**base, "hook_event_name": "PreCompact", "trigger": "auto"},
+                    now=101,
+                    events_path=events,
+                )
+                Path(transcript).write_text(json.dumps({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": {"total_tokens": 9_999_999},
+                            "last_token_usage": {"total_tokens": 32000},
+                        },
+                    },
+                }) + "\n")
+                relay_completion_hook._record_compaction_diagnostic(
+                    {
+                        **base,
+                        "hook_event_name": "PostCompact",
+                        "trigger": "auto",
+                        "compact_summary": "private summary",
+                    },
+                    now=102,
+                    events_path=events,
+                )
+                relay_completion_hook._record_compaction_diagnostic(
+                    {**base, "hook_event_name": "StopFailure", "error": "server_error"},
+                    now=103,
+                    events_path=events,
+                )
+
+            records = [json.loads(line) for line in Path(events).read_text().splitlines()]
+            self.assertEqual([record["stage"] for record in records], [
+                "active_context_observed",
+                "compaction_attempt",
+                "compaction_confirmed",
+                "provider_turn_failed",
+            ])
+            self.assertEqual(records[0]["threshold_state"], "exact")
+            self.assertEqual(records[0]["outcome"], "idle")
+            self.assertEqual(records[1]["attempt"], 1)
+            self.assertEqual(records[1]["trigger"], "auto")
+            self.assertTrue(records[2]["confirmation"])
+            self.assertEqual(records[2]["attempt"], 1)
+            self.assertEqual(records[2]["native_active_context_tokens"], 32000)
+            self.assertEqual(records[2]["threshold_state"], "below")
+            self.assertEqual(records[3]["failure_reason"], "server_error")
+            self.assertTrue(all(record["provider"] == "codex" for record in records))
+            rendered = Path(events).read_text()
+            self.assertNotIn(transcript, rendered)
+            self.assertNotIn("private summary", rendered)
+            self.assertEqual(Path(events).stat().st_mode & 0o777, 0o600)
+
+    def test_unconfirmed_compaction_remains_retryable_per_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            transcript = os.path.join(temp_dir, "codex.jsonl")
+            events = os.path.join(temp_dir, "events.jsonl")
+            Path(transcript).write_text(json.dumps({
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {"last_token_usage": {"total_tokens": 150001}},
+                },
+            }) + "\n")
+            base = {
+                "session_id": "session-retry",
+                "transcript_path": transcript,
+                "provider": "codex",
+                "trigger": "auto",
+            }
+
+            relay_completion_hook._record_compaction_diagnostic(
+                {**base, "hook_event_name": "PreCompact"},
+                now=200,
+                events_path=events,
+            )
+            relay_completion_hook._record_compaction_diagnostic(
+                {**base, "hook_event_name": "PostCompact"},
+                now=201,
+                events_path=events,
+            )
+            Path(transcript).write_text(json.dumps({
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {"last_token_usage": {"total_tokens": 32000}},
+                },
+            }) + "\n")
+            relay_completion_hook._record_compaction_diagnostic(
+                {**base, "hook_event_name": "Stop"},
+                now=202,
+                events_path=events,
+            )
+            relay_completion_hook._record_compaction_diagnostic(
+                {**base, "hook_event_name": "PreCompact"},
+                now=203,
+                events_path=events,
+            )
+
+            records = [json.loads(line) for line in Path(events).read_text().splitlines()]
+            self.assertEqual(records[1]["stage"], "compaction_unconfirmed")
+            self.assertFalse(records[1]["confirmation"])
+            self.assertEqual(records[1]["failure_reason"], "native_context_not_reduced")
+            self.assertEqual(records[2]["stage"], "compaction_confirmed")
+            self.assertTrue(records[2]["confirmation"])
+            self.assertEqual(records[2]["attempt"], 1)
+            self.assertEqual([records[0]["attempt"], records[3]["attempt"]], [1, 2])
+
     def test_completion_hook_rapid_turns_deliver_only_current_final(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "voice_command_state.json")
