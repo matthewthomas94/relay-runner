@@ -705,13 +705,24 @@ final class RelayVoiceCommandDelivery {
         }
     }
 
-    func recordUserInput(_ data: ArraySlice<UInt8>) {
+    @discardableResult
+    func recordUserInput(_ data: ArraySlice<UInt8>) -> Bool {
         let bytes = Array(data)
         let recordedAt = now()
-        queue.async { [weak self] in
-            guard let self else { return }
+        return queue.sync {
+            if case .promptWritten(let pending) = deliveryState {
+                recordDeliveryEvent(
+                    "manual_input_quarantined",
+                    key: pending.key,
+                    fields: [
+                        "deferral_reason": "voice_submit_delay",
+                        "pending_byte_count": bytes.count,
+                    ]
+                )
+                return false
+            }
             let transition = self.inputTracker.record(data: ArraySlice(bytes))
-            guard !self.hasSubmittedVoicePrompt else { return }
+            guard !self.hasSubmittedVoicePrompt else { return true }
             switch transition {
             case .submitted(let pendingByteCount) where pendingByteCount > 0:
                 let boundary = ManualBoundary(
@@ -744,6 +755,7 @@ final class RelayVoiceCommandDelivery {
             default:
                 break
             }
+            return true
         }
     }
 
@@ -2036,8 +2048,9 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         if !terminalView.isSendingTerminalResponse,
-           !terminalView.isSendingNavigationShortcut {
-            voiceDelivery?.recordUserInput(data)
+           !terminalView.isSendingNavigationShortcut,
+           voiceDelivery?.recordUserInput(data) == false {
+            return
         }
         localProcess.send(data: data)
     }

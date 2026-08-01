@@ -787,6 +787,55 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(journal.contains("Fix the bridge"))
     }
 
+    func testPromptWrittenWindowQuarantinesManualInputForCodexAndClaude() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let command = "Voice-owned prompt"
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-1\",\"relay_command_seq\":1}"
+            try "\(command)\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            var ptyWrites: [[UInt8]] = []
+            var scheduled: [() -> Void] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in ptyWrites.append(Array(data)) },
+                schedule: { _, _, work in scheduled.append(work) },
+                isRunning: { true }
+            )
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(ptyWrites, [Array(command.utf8)], provider)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.claimed.path), provider)
+
+            let manualInputs: [[UInt8]] = [
+                Array("typed draft".utf8),
+                Array(" pasted 🧪".utf8),
+                [13],
+            ]
+            for input in manualInputs {
+                if delivery.recordUserInput(ArraySlice(input)) {
+                    ptyWrites.append(input)
+                }
+            }
+
+            XCTAssertEqual(ptyWrites, [Array(command.utf8)], provider)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.claimed.path), provider)
+
+            XCTAssertEqual(scheduled.count, 1, provider)
+            scheduled[0]()
+
+            XCTAssertEqual(ptyWrites, [Array(command.utf8), [13]], provider)
+            XCTAssertEqual(ptyWrites.filter { $0 == [13] }.count, 1, provider)
+            XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata, provider)
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertEqual(countEvent("manual_input_quarantined", in: events), 3, provider)
+            XCTAssertTrue(events.contains(#""deferral_reason":"voice_submit_delay""#), provider)
+            XCTAssertFalse(events.contains("typed draft"), provider)
+            XCTAssertFalse(events.contains("pasted"), provider)
+        }
+    }
+
     func testMissingProviderAcknowledgementRecoversWithoutRetryingReturn() throws {
         let fixture = try makeFixture()
         try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
