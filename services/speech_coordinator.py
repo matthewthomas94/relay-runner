@@ -27,6 +27,17 @@ SPEECH_KINDS = frozenset({
 FINAL_KINDS = frozenset({"final", "fallback"})
 SUPERSEDING_KINDS = frozenset({"clarification", "final", "fallback"})
 FRESHNESS_SCOPES = frozenset({"conversation", "work"})
+LIFECYCLE_ROLES = frozenset({
+    "acknowledgement",
+    "progress",
+    "result",
+    "failure",
+    "blocker",
+    "decision",
+    "conversation",
+    "control",
+})
+REALIZATION_DECISIONS = frozenset({"full", "delta", "suppress"})
 
 
 def _stable_digest(*values: object) -> str:
@@ -53,6 +64,10 @@ class SpeechIntent:
     replacement_policy: str = "semantic"
     work_disposition: dict[str, Any] | None = None
     replayable: bool = False
+    lifecycle_role: str = "conversation"
+    covered_facts: tuple[str, ...] = ()
+    realization_decision: str = "full"
+    suppression_reason: str = ""
 
     @property
     def command_key(self) -> tuple[int, str] | None:
@@ -88,6 +103,10 @@ class SpeechIntent:
         replacement_policy: str = "semantic",
         work_disposition: dict[str, Any] | None = None,
         replayable: bool | None = None,
+        lifecycle_role: str | None = None,
+        covered_facts: list[str] | tuple[str, ...] | None = None,
+        realization_decision: str = "full",
+        suppression_reason: str | None = None,
     ) -> "SpeechIntent":
         source = source if source in SPEECH_SOURCES else "fallback"
         kind = kind if kind in SPEECH_KINDS else "fallback"
@@ -105,6 +124,17 @@ class SpeechIntent:
             or (scope == "work" and (source != "lifecycle" or kind != "final"))
         ):
             scope = "conversation"
+        role = str(lifecycle_role or _default_lifecycle_role(kind)).strip().lower()
+        if role not in LIFECYCLE_ROLES:
+            role = _default_lifecycle_role(kind)
+        decision = str(realization_decision or "full").strip().lower()
+        if decision not in REALIZATION_DECISIONS:
+            decision = "full"
+        facts = tuple(
+            fact
+            for fact in (str(value or "").strip() for value in (covered_facts or ()))
+            if fact
+        )
         return cls(
             command_seq=int(command_seq) if command_seq is not None else None,
             command_id=str(command_id) if command_id else None,
@@ -123,6 +153,10 @@ class SpeechIntent:
             replacement_policy=replacement_policy,
             work_disposition=work_disposition,
             replayable=(kind == "final") if replayable is None else bool(replayable),
+            lifecycle_role=role,
+            covered_facts=facts,
+            realization_decision=decision,
+            suppression_reason=str(suppression_reason or "").strip(),
         )
 
 
@@ -136,6 +170,17 @@ def _default_priority(kind: str, authoritative: bool) -> int:
         "control": 100,
     }.get(kind, 10)
     return base + (5 if authoritative else 0)
+
+
+def _default_lifecycle_role(kind: str) -> str:
+    return {
+        "handoff": "acknowledgement",
+        "progress": "progress",
+        "clarification": "decision",
+        "final": "result",
+        "fallback": "result",
+        "control": "control",
+    }.get(kind, "conversation")
 
 
 class CoordinatorInputQueue:
@@ -186,6 +231,7 @@ class SpeechCoordinator:
         self._playing_id: str | None = None
         self._backlog: list[SpeechIntent] = []
         self._last_replayable: SpeechIntent | None = None
+        self._played_coverage: dict[tuple[int, str], list[dict[str, Any]]] = {}
         self._waiting_preview: tuple[tuple[int, str], str] | None = None
         self._play_requested = False
         self._play_dispatched_id: str | None = None
@@ -210,6 +256,32 @@ class SpeechCoordinator:
     def has_pending_speech(self) -> bool:
         with self._lock:
             return bool(self._committed_id or self._playing_id or self._backlog)
+
+    def played_coverage(self, command_seq: int, command_id: str) -> tuple[dict[str, Any], ...]:
+        """Return bounded semantic coverage from speech that finished playing."""
+        key = (int(command_seq), str(command_id))
+        with self._lock:
+            return tuple(dict(item) for item in self._played_coverage.get(key, ()))
+
+    def record_realization(
+        self,
+        command_seq: int,
+        command_id: str,
+        *,
+        lifecycle_role: str,
+        decision: str,
+        reason: str,
+    ) -> None:
+        """Record a synthesis decision without retaining reply text."""
+        self._write_diagnostic({
+            "event": "realization",
+            "at": time.time(),
+            "relay_command_seq": int(command_seq),
+            "relay_command_id": str(command_id),
+            "lifecycle_role": lifecycle_role,
+            "realization_decision": decision,
+            "suppression_reason": reason,
+        })
 
     def submit(self, intent: SpeechIntent) -> bool:
         started = time.perf_counter()
@@ -493,6 +565,8 @@ class SpeechCoordinator:
                     self._committed_id = None
                 if state == "completed" and intent.replayable:
                     self._last_replayable = intent
+                if state == "completed":
+                    self._record_played_coverage_locked(intent)
                 if not self._committed_id and not self._playing_id and not self._speech_stopped:
                     next_intent = self._next_eligible_locked()
                     if next_intent is not None:
@@ -511,6 +585,30 @@ class SpeechCoordinator:
                 return candidate
             self._diagnostic("expired", candidate)
         return None
+
+    def _record_played_coverage_locked(self, intent: SpeechIntent) -> None:
+        key = intent.command_key
+        if key is None or intent.replacement_policy == "replay":
+            return
+        facts = intent.covered_facts or (intent.semantic_brief or intent.spoken_text,)
+        entry = {
+            "utterance_id": intent.utterance_id,
+            "lifecycle_role": intent.lifecycle_role,
+            "covered_facts": tuple(facts),
+            "spoken_text": intent.spoken_text,
+        }
+        coverage = self._played_coverage.setdefault(key, [])
+        signature = (entry["lifecycle_role"], entry["covered_facts"], entry["spoken_text"])
+        if not any(
+            (item["lifecycle_role"], item["covered_facts"], item["spoken_text"]) == signature
+            for item in coverage
+        ):
+            coverage.append(entry)
+        if len(coverage) > 8:
+            del coverage[:-8]
+        if len(self._played_coverage) > 64:
+            for old_key in list(self._played_coverage)[:-32]:
+                self._played_coverage.pop(old_key, None)
 
     @staticmethod
     def _newer_command(incoming: SpeechIntent, current: SpeechIntent) -> bool:
@@ -587,10 +685,18 @@ class SpeechCoordinator:
             "source": intent.source,
             "kind": intent.kind,
             "authoritative": intent.authoritative,
+            "lifecycle_role": intent.lifecycle_role,
+            "realization_decision": intent.realization_decision,
+            "suppression_reason": intent.suppression_reason,
             **fields,
         }
+        self._write_diagnostic(record)
+
+    def _write_diagnostic(self, record: dict[str, Any]) -> None:
+        if not self._event_log_path:
+            return
         try:
-            target = Path(path)
+            target = Path(self._event_log_path)
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("a") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")

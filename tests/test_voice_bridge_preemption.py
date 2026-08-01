@@ -3165,6 +3165,8 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                         ImmediateMessengerBackend("Here is the completed sidecar result."),
                         speak=speak,
                         is_current=lambda seq, command_id: (seq, command_id) == (8, "cmd-8"),
+                        coverage_provider=coordinator.played_coverage,
+                        realization_observer=coordinator.record_realization,
                     )
                     messenger.start()
                     self.addCleanup(messenger.shutdown)
@@ -3191,6 +3193,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     self.assertEqual(speech_intent["source"], "lifecycle")
                     self.assertEqual(speech_intent["kind"], "final")
                     self.assertEqual(speech_intent["freshness_scope"], "work")
+                    self.assertEqual(speech_intent["realization_decision"], "full")
                     self.assertTrue(executor.eligibility(speech_intent))
 
     def test_barge_in_makes_pending_coordinated_speech_ineligible(self):

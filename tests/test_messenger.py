@@ -747,6 +747,427 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_final_synthesis_preserves_result_after_played_acknowledgement(self):
+        backend = FakeBackend([
+            "I picked up RR-263 and will return with the result.",
+            json.dumps({
+                "decision": "delta",
+                "spoken_text": "RR-263 is implemented and verified; the focused tests pass.",
+                "lifecycle_role": "conversation",
+                "covered_facts": ["a model claim that must not become played coverage"],
+            }),
+        ])
+        spoken = []
+        observed = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda *args: spoken.append(args),
+            is_current=lambda seq, command_id: True,
+            coverage_provider=lambda seq, command_id: ({
+                "lifecycle_role": "acknowledgement",
+                "covered_facts": ("RR-263 was accepted",),
+                "spoken_text": "I picked up RR-263 and will return with the result.",
+            },),
+            realization_observer=lambda *args, **kwargs: observed.append((args, kwargs)),
+        )
+        runtime.start()
+        try:
+            command = {
+                "relay_command_seq": 31,
+                "relay_command_id": "cmd-31",
+                "work_disposition": {"route": "queue_project_work"},
+            }
+            runtime.submit_user("Implement RR-263", command)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            runtime.submit_final({"text": "RR-263 is implemented and verified.", **command})
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+            self.assertEqual(
+                spoken[1][0],
+                "RR-263 is implemented and verified; the focused tests pass.",
+            )
+            self.assertEqual(spoken[1][4]["lifecycle_role"], "result")
+            self.assertEqual(spoken[1][4]["realization_decision"], "delta")
+            self.assertEqual(spoken[1][4]["covered_facts"], (spoken[1][0],))
+            self.assertIn("Speech that actually finished playing", backend.prompts[1])
+            self.assertEqual(observed[0][1]["decision"], "delta")
+        finally:
+            runtime.shutdown()
+
+    def test_redundant_plan_restatement_is_suppressed_after_played_handoff(self):
+        backend = FakeBackend([
+            "I picked up the bridge review and will check the wiring next.",
+            json.dumps({
+                "decision": "suppress",
+                "spoken_text": "",
+                "lifecycle_role": "progress",
+                "covered_facts": [],
+            }),
+        ])
+        spoken = []
+        observed = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda *args: spoken.append(args),
+            is_current=lambda seq, command_id: True,
+            coverage_provider=lambda seq, command_id: ({
+                "lifecycle_role": "acknowledgement",
+                "covered_facts": ("bridge wiring will be checked next",),
+                "spoken_text": "I will check the bridge wiring next.",
+            },),
+            realization_observer=lambda *args, **kwargs: observed.append(kwargs),
+        )
+        runtime.start()
+        try:
+            command = {
+                "relay_command_seq": 32,
+                "relay_command_id": "cmd-32",
+                "work_disposition": {"route": "queue_project_work"},
+            }
+            runtime.submit_user("Review the bridge", command)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            runtime.submit_trace({
+                "kind": "reasoning-summary",
+                "message": "I will check the bridge wiring next.",
+                "command": command,
+            })
+
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 2))
+            self.assertTrue(wait_until(lambda: observed == [{
+                "lifecycle_role": "progress",
+                "decision": "suppress",
+                "reason": "covered_by_played_speech",
+            }]))
+            self.assertEqual(len(spoken), 1)
+        finally:
+            runtime.shutdown()
+
+    def test_redundant_progress_is_suppressed_but_clarification_fails_open(self):
+        backend = FakeBackend([
+            "I picked up the bridge review and will inspect the wiring.",
+            json.dumps({
+                "decision": "suppress",
+                "spoken_text": "",
+                "lifecycle_role": "progress",
+                "covered_facts": [],
+            }),
+            json.dumps({
+                "decision": "suppress",
+                "spoken_text": "",
+                "lifecycle_role": "decision",
+                "covered_facts": [],
+            }),
+        ])
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda *args: spoken.append(args),
+            is_current=lambda seq, command_id: True,
+            coverage_provider=lambda seq, command_id: ({
+                "lifecycle_role": "acknowledgement",
+                "covered_facts": ("bridge wiring will be inspected",),
+                "spoken_text": "I will inspect the bridge wiring.",
+            },),
+        )
+        runtime.start()
+        try:
+            command = {
+                "relay_command_seq": 35,
+                "relay_command_id": "cmd-35",
+                "work_disposition": {"route": "queue_project_work"},
+            }
+            runtime.submit_user("Review the bridge", command)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            runtime.submit_trace({
+                "kind": "reasoning-summary",
+                "message": "I will inspect the bridge wiring.",
+                "command": command,
+            })
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 2))
+            self.assertEqual(len(spoken), 1)
+
+            runtime.submit_trace({
+                "kind": "clarification-request",
+                "message": "Which bridge implementation should I inspect?",
+                "command": command,
+            })
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+            self.assertEqual(spoken[1][0], "Which bridge implementation should I inspect?")
+            self.assertEqual(spoken[1][4]["lifecycle_role"], "decision")
+        finally:
+            runtime.shutdown()
+
+    def test_conversational_duplicate_is_suppressed_but_provider_text_remains_context(self):
+        backend = FakeBackend([
+            "You’re welcome.",
+            json.dumps({
+                "decision": "suppress",
+                "spoken_text": "",
+                "lifecycle_role": "conversation",
+                "covered_facts": [],
+            }),
+        ])
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda *args: spoken.append(args),
+            is_current=lambda seq, command_id: True,
+            coverage_provider=lambda seq, command_id: ({
+                "lifecycle_role": "conversation",
+                "covered_facts": ("acknowledged thanks",),
+                "spoken_text": "You’re welcome.",
+            },),
+        )
+        runtime.start()
+        try:
+            command = {
+                "relay_command_seq": 33,
+                "relay_command_id": "cmd-33",
+                "work_disposition": {"route": "continue_current"},
+            }
+            runtime.submit_user("Thanks", command)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            runtime.submit_final({"text": "You are welcome.", **command})
+
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 2))
+            self.assertEqual(len(spoken), 1)
+            self.assertIn("AUTHORITATIVE ORCHESTRATOR FINAL: You are welcome.", backend.prompts[1])
+        finally:
+            runtime.shutdown()
+
+    def test_actionable_final_ignores_model_lifecycle_role_and_fails_open(self):
+        backend = FakeBackend([
+            "I picked it up.",
+            json.dumps({
+                "decision": "suppress",
+                "spoken_text": "",
+                "lifecycle_role": "conversation",
+                "covered_facts": ["RR-263 completed"],
+            }),
+        ])
+        spoken = []
+        observed = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda *args: spoken.append(args),
+            is_current=lambda seq, command_id: True,
+            coverage_provider=lambda seq, command_id: ({
+                "lifecycle_role": "acknowledgement",
+                "covered_facts": ("request accepted",),
+                "spoken_text": "I picked it up.",
+            },),
+            realization_observer=lambda *args, **kwargs: observed.append(kwargs),
+        )
+        runtime.start()
+        try:
+            command = {
+                "relay_command_seq": 41,
+                "relay_command_id": "cmd-41",
+                "work_disposition": {"route": "queue_project_work"},
+            }
+            runtime.submit_user("Handle RR-263", command)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            final = "RR-263 completed and run 35 passed."
+            runtime.submit_final({"text": final, **command})
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+            self.assertEqual(spoken[1][0], final)
+            self.assertEqual(spoken[1][4]["lifecycle_role"], "result")
+            self.assertEqual(spoken[1][4]["realization_decision"], "full")
+            self.assertEqual(observed, [{
+                "lifecycle_role": "result",
+                "decision": "full",
+                "reason": "protected_lifecycle",
+            }])
+        finally:
+            runtime.shutdown()
+
+    def test_lossy_delta_and_malformed_arbitration_fail_open(self):
+        responses = [
+            json.dumps({
+                "decision": "delta",
+                "spoken_text": "RR-263 completed.",
+                "lifecycle_role": "result",
+                "covered_facts": ["run 42 failed", "deployment is blocked"],
+            }),
+            "not-json",
+        ]
+        for index, response in enumerate(responses, start=1):
+            with self.subTest(response=response):
+                backend = FakeBackend(["I picked it up.", response])
+                spoken = []
+                runtime = MessengerRuntime(
+                    backend,
+                    speak=lambda *args: spoken.append(args),
+                    is_current=lambda seq, command_id: True,
+                    coverage_provider=lambda seq, command_id: ({
+                        "lifecycle_role": "acknowledgement",
+                        "covered_facts": ("request accepted",),
+                        "spoken_text": "I picked it up.",
+                    },),
+                )
+                runtime.start()
+                try:
+                    command = {
+                        "relay_command_seq": 40 + index,
+                        "relay_command_id": f"cmd-{40 + index}",
+                        "work_disposition": {"route": "queue_project_work"},
+                    }
+                    runtime.submit_user("Handle this", command)
+                    self.assertTrue(wait_until(lambda: len(spoken) == 1))
+                    final = "RR-263 completed, but run 42 failed and deployment is blocked."
+                    runtime.submit_final({"text": final, **command})
+
+                    self.assertTrue(wait_until(lambda: len(spoken) == 2))
+                    self.assertEqual(spoken[1][0], final)
+                    self.assertEqual(spoken[1][4]["realization_decision"], "full")
+                    self.assertEqual(
+                        spoken[1][4]["suppression_reason"],
+                        "lossy_delta" if index == 1 else "malformed_arbitration",
+                    )
+                finally:
+                    runtime.shutdown()
+
+    def test_lossy_full_rewrite_fails_open_to_authoritative_text(self):
+        backend = FakeBackend([
+            "I picked it up.",
+            json.dumps({"decision": "full", "spoken_text": "Done."}),
+        ])
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda *args: spoken.append(args),
+            is_current=lambda seq, command_id: True,
+            coverage_provider=lambda seq, command_id: ({
+                "lifecycle_role": "acknowledgement",
+                "covered_facts": ("request accepted",),
+                "spoken_text": "I picked it up.",
+            },),
+        )
+        runtime.start()
+        try:
+            command = {
+                "relay_command_seq": 43,
+                "relay_command_id": "cmd-43",
+                "work_disposition": {"route": "queue_project_work"},
+            }
+            runtime.submit_user("Handle RR-263", command)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            final = (
+                "RR-263 failed in run 42 because deployment is blocked. Decide whether to "
+                "retry, then inspect the logs and review the report."
+            )
+            runtime.submit_final({"text": final, **command})
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+            self.assertEqual(spoken[1][0], final)
+            self.assertEqual(spoken[1][4]["realization_decision"], "full")
+            self.assertEqual(spoken[1][4]["suppression_reason"], "lossy_full")
+        finally:
+            runtime.shutdown()
+
+    def test_delta_that_omits_next_action_verbs_fails_open(self):
+        backend = FakeBackend([
+            "I picked it up.",
+            json.dumps({
+                "decision": "delta",
+                "spoken_text": "RR-263 passed run 39. The logs and deployment report are next.",
+            }),
+        ])
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda *args: spoken.append(args),
+            is_current=lambda seq, command_id: True,
+            coverage_provider=lambda seq, command_id: ({
+                "lifecycle_role": "acknowledgement",
+                "covered_facts": ("request accepted",),
+                "spoken_text": "I picked it up.",
+            },),
+        )
+        runtime.start()
+        try:
+            command = {
+                "relay_command_seq": 44,
+                "relay_command_id": "cmd-44",
+                "work_disposition": {"route": "queue_project_work"},
+            }
+            runtime.submit_user("Handle RR-263", command)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            final = (
+                "RR-263 passed run 39. Inspect the logs and review the deployment report next."
+            )
+            runtime.submit_final({"text": final, **command})
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+            self.assertEqual(spoken[1][0], final)
+            self.assertEqual(spoken[1][4]["realization_decision"], "full")
+            self.assertEqual(spoken[1][4]["suppression_reason"], "lossy_delta")
+        finally:
+            runtime.shutdown()
+
+    def test_full_and_delta_relation_reversals_fail_open(self):
+        cases = (
+            (
+                "full",
+                "The unit test passed and the integration test failed.",
+                "The unit test failed and the integration test passed.",
+                "lossy_full",
+            ),
+            (
+                "delta",
+                "The unit test passed and the integration test failed.",
+                "The unit test failed and the integration test passed.",
+                "lossy_delta",
+            ),
+            (
+                "full",
+                "The deployment check passed.",
+                "The deployment check did not pass.",
+                "lossy_full",
+            ),
+            (
+                "delta",
+                "The deployment check passed.",
+                "The deployment check did not pass.",
+                "lossy_delta",
+            ),
+        )
+        for index, (decision, authoritative, rewrite, reason) in enumerate(cases):
+            with self.subTest(decision=decision, rewrite=rewrite):
+                backend = FakeBackend([
+                    "I picked it up.",
+                    json.dumps({"decision": decision, "spoken_text": rewrite}),
+                ])
+                spoken = []
+                runtime = MessengerRuntime(
+                    backend,
+                    speak=lambda *args: spoken.append(args),
+                    is_current=lambda seq, command_id: True,
+                    coverage_provider=lambda seq, command_id: ({
+                        "lifecycle_role": "acknowledgement",
+                        "covered_facts": ("request accepted",),
+                        "spoken_text": "I picked it up.",
+                    },),
+                )
+                runtime.start()
+                try:
+                    command = {
+                        "relay_command_seq": 45 + index,
+                        "relay_command_id": f"cmd-{45 + index}",
+                        "work_disposition": {"route": "queue_project_work"},
+                    }
+                    runtime.submit_user("Check the results", command)
+                    self.assertTrue(wait_until(lambda: len(spoken) == 1))
+                    runtime.submit_final({"text": authoritative, **command})
+
+                    self.assertTrue(wait_until(lambda: len(spoken) == 2))
+                    self.assertEqual(spoken[1][0], authoritative)
+                    self.assertEqual(spoken[1][4]["realization_decision"], "full")
+                    self.assertEqual(spoken[1][4]["suppression_reason"], reason)
+                finally:
+                    runtime.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

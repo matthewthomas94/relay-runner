@@ -259,9 +259,61 @@ class SpeechCoordinatorTests(unittest.TestCase):
             log = Path(directory) / "speech.jsonl"
             worker, coordinator, _ = self.make_coordinator(log=log)
             coordinator.submit(intent(text="private words"))
+            coordinator.record_realization(
+                1,
+                "one",
+                lifecycle_role="progress",
+                decision="suppress",
+                reason="covered_by_played_speech",
+            )
             records = [json.loads(line) for line in log.read_text().splitlines()]
-            self.assertEqual([record["event"] for record in records], ["proposed", "accepted"])
+            self.assertEqual(
+                [record["event"] for record in records],
+                ["proposed", "accepted", "realization"],
+            )
+            self.assertEqual(records[-1]["lifecycle_role"], "progress")
+            self.assertEqual(records[-1]["realization_decision"], "suppress")
+            self.assertEqual(records[-1]["suppression_reason"], "covered_by_played_speech")
             self.assertNotIn("private words", log.read_text())
+
+    def test_only_completed_speech_becomes_command_scoped_coverage(self):
+        worker, coordinator, _ = self.make_coordinator()
+        played = intent(kind="handoff", text="I picked up RR-263.", replayable=True)
+        cancelled = intent(kind="progress", text="I am checking it now.")
+
+        coordinator.submit(played)
+        played_payload = worker.input_queue.get_nowait()
+        worker.observer("started", played_payload["_speech_intent"])
+        worker.observer("completed", played_payload["_speech_intent"])
+        coordinator.submit(cancelled)
+        cancelled_payload = worker.input_queue.get_nowait()
+        worker.observer("started", cancelled_payload["_speech_intent"])
+        worker.observer("cancelled", cancelled_payload["_speech_intent"])
+
+        coverage = coordinator.played_coverage(1, "one")
+        self.assertEqual(len(coverage), 1)
+        self.assertEqual(coverage[0]["lifecycle_role"], "acknowledgement")
+        self.assertIn("brief I picked up RR-263.", coverage[0]["covered_facts"])
+        self.assertEqual(coordinator.played_coverage(2, "two"), ())
+
+    def test_coverage_does_not_leak_across_rapid_turns_or_barge_in(self):
+        worker, coordinator, holder = self.make_coordinator()
+        first = intent(kind="handoff", text="First acknowledgement")
+        coordinator.submit(first)
+        first_payload = worker.input_queue.get_nowait()
+        worker.observer("started", first_payload["_speech_intent"])
+        worker.observer("completed", first_payload["_speech_intent"])
+
+        holder["key"] = (2, "two")
+        coordinator.new_turn(2, "two")
+        second = intent(seq=2, command_id="two", kind="handoff", text="Interrupted")
+        coordinator.submit(second)
+        second_payload = worker.input_queue.get_nowait()
+        worker.observer("started", second_payload["_speech_intent"])
+        coordinator.stop()
+
+        self.assertEqual(len(coordinator.played_coverage(1, "one")), 1)
+        self.assertEqual(coordinator.played_coverage(2, "two"), ())
 
     def test_decision_latency_is_below_ten_milliseconds_p95(self):
         worker, coordinator, _ = self.make_coordinator()
