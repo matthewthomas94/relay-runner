@@ -596,6 +596,16 @@ final class RelayVoiceCommandDelivery {
         let submittedAt: Date
     }
 
+    private struct BufferedManualInput: Equatable {
+        let key: RelayCommandKey
+        var events: [[UInt8]] = []
+        var voiceBoundaryReached = false
+
+        var pendingByteCount: Int {
+            events.reduce(0) { $0 + $1.count }
+        }
+    }
+
     private enum SafeBoundaryReason: String, Equatable {
         case manualSubmission = "manual_submission"
         case manualDraftCleared = "manual_draft_cleared"
@@ -657,6 +667,7 @@ final class RelayVoiceCommandDelivery {
     private var inputTracker = RelayTerminalInputTracker()
     private var deliveryState: DeliveryState = .idle
     private var manualBoundary: ManualBoundary?
+    private var bufferedManualInput: BufferedManualInput?
     private var deliveryOrder = 0
 
     init(
@@ -708,65 +719,71 @@ final class RelayVoiceCommandDelivery {
     @discardableResult
     func recordUserInput(_ data: ArraySlice<UInt8>) -> Bool {
         let bytes = Array(data)
+        guard !bytes.isEmpty else { return true }
         let recordedAt = now()
         return queue.sync {
-            if case .promptWritten(let pending) = deliveryState {
-                recordDeliveryEvent(
-                    "manual_input_quarantined",
-                    key: pending.key,
-                    fields: [
-                        "deferral_reason": "voice_submit_delay",
-                        "pending_byte_count": bytes.count,
-                    ]
-                )
+            if let key = manualInputBufferKey {
+                bufferManualInput(bytes, key: key)
                 return false
             }
             let transition = self.inputTracker.record(data: ArraySlice(bytes))
-            guard !self.hasSubmittedVoicePrompt else { return true }
-            switch transition {
-            case .submitted(let pendingByteCount) where pendingByteCount > 0:
-                let boundary = ManualBoundary(
-                    startedAt: recordedAt,
-                    reason: .manualSubmission
-                )
-                self.manualBoundary = boundary
-                if let key = self.pendingCommandKey() {
-                    self.recordDeliveryEvent(
-                        "manual_submit_barrier_started",
-                        key: key,
-                        fields: ["pending_byte_count": pendingByteCount]
-                    )
-                    self.deferForSafeBoundary(key: key, boundary: boundary)
-                }
-            case .cleared(let pendingByteCount) where pendingByteCount > 0:
-                let boundary = ManualBoundary(
-                    startedAt: recordedAt,
-                    reason: .manualDraftCleared
-                )
-                self.manualBoundary = boundary
-                if let key = self.pendingCommandKey() {
-                    self.recordDeliveryEvent(
-                        "manual_clear_barrier_started",
-                        key: key,
-                        fields: ["pending_byte_count": pendingByteCount]
-                    )
-                    self.deferForSafeBoundary(key: key, boundary: boundary)
-                }
-            default:
-                break
-            }
+            self.recordUserInputTransition(transition, recordedAt: recordedAt)
             return true
+        }
+    }
+
+    private func recordUserInputTransition(
+        _ transition: RelayTerminalInputTracker.Transition,
+        recordedAt: Date
+    ) {
+        guard !hasSubmittedVoicePrompt else { return }
+        switch transition {
+        case .submitted(let pendingByteCount) where pendingByteCount > 0:
+            let boundary = ManualBoundary(
+                startedAt: recordedAt,
+                reason: .manualSubmission
+            )
+            manualBoundary = boundary
+            if let key = pendingCommandKey() {
+                recordDeliveryEvent(
+                    "manual_submit_barrier_started",
+                    key: key,
+                    fields: ["pending_byte_count": pendingByteCount]
+                )
+                deferForSafeBoundary(key: key, boundary: boundary)
+            }
+        case .cleared(let pendingByteCount) where pendingByteCount > 0:
+            let boundary = ManualBoundary(
+                startedAt: recordedAt,
+                reason: .manualDraftCleared
+            )
+            manualBoundary = boundary
+            if let key = pendingCommandKey() {
+                recordDeliveryEvent(
+                    "manual_clear_barrier_started",
+                    key: key,
+                    fields: ["pending_byte_count": pendingByteCount]
+                )
+                deferForSafeBoundary(key: key, boundary: boundary)
+            }
+        default:
+            break
         }
     }
 
     @discardableResult
     func claimAndSendIfPossible() -> Bool {
         touchHeartbeat()
-        if completePendingSubmissionIfAcknowledged() {
-            return true
-        }
+        let completedSubmission = completePendingSubmissionIfAcknowledged()
         if let pending = openSubmission, !isRunning() {
             failPendingSubmission(pending, event: "provider_process_terminated")
+            return true
+        }
+        let replayedManualInput = replayBufferedManualInputIfPossible()
+        if bufferedManualInput != nil {
+            return completedSubmission || replayedManualInput
+        }
+        if completedSubmission || replayedManualInput {
             return true
         }
         guard isRunning(), openSubmission == nil else { return false }
@@ -883,6 +900,7 @@ final class RelayVoiceCommandDelivery {
                 self.send(ArraySlice([21]))
                 self.deliveryState = .superseded(key)
                 self.recordDeliveryEvent("stale_prompt_cleared", key: key)
+                _ = self.replayBufferedManualInputIfPossible()
                 return
             }
             self.writeClaimedMetadata(command.metadata)
@@ -892,6 +910,7 @@ final class RelayVoiceCommandDelivery {
                 self.send(ArraySlice(event))
                 self.recordDeliveryEvent("submit_attempt", key: key, fields: ["attempt": 1])
             }
+            self.restoreBufferedManualDraft()
             self.schedule(self.acknowledgementTimeout, self.queue) { [weak self] in
                 self?.handleAcknowledgementTimeout(for: key)
             }
@@ -912,6 +931,130 @@ final class RelayVoiceCommandDelivery {
 
     private var hasSubmittedVoicePrompt: Bool {
         openSubmission != nil
+    }
+
+    private var manualInputBufferKey: RelayCommandKey? {
+        if let bufferedManualInput {
+            return bufferedManualInput.key
+        }
+        if case .promptWritten(let pending) = deliveryState {
+            return pending.key
+        }
+        return nil
+    }
+
+    private func bufferManualInput(_ bytes: [UInt8], key: RelayCommandKey) {
+        var buffered = bufferedManualInput ?? BufferedManualInput(key: key)
+        buffered.events.append(contentsOf: Self.manualInputSegments(bytes))
+        bufferedManualInput = buffered
+        recordDeliveryEvent(
+            "manual_input_quarantined",
+            key: buffered.key,
+            fields: [
+                "deferral_reason": "voice_submit_delay",
+                "pending_byte_count": buffered.pendingByteCount,
+            ]
+        )
+    }
+
+    private static func manualInputSegments(_ bytes: [UInt8]) -> [[UInt8]] {
+        guard bytes.contains(where: { $0 == 10 || $0 == 13 }) else {
+            return [bytes]
+        }
+        var segments: [[UInt8]] = []
+        var current: [UInt8] = []
+        for byte in bytes {
+            if byte == 10 || byte == 13 {
+                if !current.isEmpty {
+                    segments.append(current)
+                    current.removeAll(keepingCapacity: true)
+                }
+                segments.append([byte])
+            } else {
+                current.append(byte)
+            }
+        }
+        if !current.isEmpty {
+            segments.append(current)
+        }
+        return segments
+    }
+
+    private func eventSubmitsManualInput(_ event: [UInt8]) -> Bool {
+        var preview = inputTracker
+        if case .submitted = preview.record(data: ArraySlice(event)) {
+            return true
+        }
+        return false
+    }
+
+    private func restoreBufferedManualDraft() {
+        guard var buffered = bufferedManualInput else { return }
+        var replayedByteCount = 0
+        var replayedEventCount = 0
+        while let event = buffered.events.first,
+              !eventSubmitsManualInput(event) {
+            buffered.events.removeFirst()
+            let transition = inputTracker.record(data: ArraySlice(event))
+            recordUserInputTransition(transition, recordedAt: now())
+            send(ArraySlice(event))
+            replayedByteCount += event.count
+            replayedEventCount += 1
+        }
+        bufferedManualInput = buffered.events.isEmpty ? nil : buffered
+        guard replayedEventCount > 0 else { return }
+        recordDeliveryEvent(
+            "manual_draft_restored",
+            key: buffered.key,
+            fields: [
+                "input_event_count": replayedEventCount,
+                "pending_byte_count": bufferedManualInput?.pendingByteCount ?? 0,
+                "replayed_byte_count": replayedByteCount,
+            ]
+        )
+    }
+
+    @discardableResult
+    private func replayBufferedManualInputIfPossible() -> Bool {
+        guard isRunning(), var buffered = bufferedManualInput else { return false }
+        if !buffered.voiceBoundaryReached {
+            let voiceBoundaryReached: Bool
+            switch deliveryState {
+            case .acknowledged(let key), .superseded(let key):
+                voiceBoundaryReached = key == buffered.key && !providerTurnActive()
+            default:
+                voiceBoundaryReached = false
+            }
+            guard voiceBoundaryReached else { return false }
+            buffered.voiceBoundaryReached = true
+            bufferedManualInput = buffered
+        }
+        if let boundary = manualBoundary {
+            guard safeBoundaryReached(boundary) else { return false }
+            manualBoundary = nil
+        }
+
+        restoreBufferedManualDraft()
+        guard var pending = bufferedManualInput,
+              let submitEvent = pending.events.first,
+              eventSubmitsManualInput(submitEvent) else {
+            return true
+        }
+        pending.events.removeFirst()
+        bufferedManualInput = pending.events.isEmpty ? nil : pending
+        let transition = inputTracker.record(data: ArraySlice(submitEvent))
+        recordUserInputTransition(transition, recordedAt: now())
+        send(ArraySlice(submitEvent))
+        recordDeliveryEvent(
+            "manual_submit_replayed",
+            key: pending.key,
+            fields: [
+                "pending_byte_count": bufferedManualInput?.pendingByteCount ?? 0,
+                "replayed_byte_count": submitEvent.count,
+            ]
+        )
+        restoreBufferedManualDraft()
+        return true
     }
 
     private func observeQueuedCommand(_ key: RelayCommandKey) {

@@ -787,7 +787,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(journal.contains("Fix the bridge"))
     }
 
-    func testPromptWrittenWindowQuarantinesManualInputForCodexAndClaude() throws {
+    func testPromptWrittenWindowPreservesManualInputForCodexAndClaude() throws {
         for provider in ["codex", "claude"] {
             let fixture = try makeFixture()
             let command = "Voice-owned prompt"
@@ -825,11 +825,30 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             XCTAssertEqual(scheduled.count, 1, provider)
             scheduled[0]()
 
-            XCTAssertEqual(ptyWrites, [Array(command.utf8), [13]], provider)
+            XCTAssertEqual(
+                ptyWrites,
+                [Array(command.utf8), [13], manualInputs[0], manualInputs[1]],
+                provider
+            )
             XCTAssertEqual(ptyWrites.filter { $0 == [13] }.count, 1, provider)
             XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata, provider)
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "active"),
+            ], to: fixture.providerTurns)
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(ptyWrites.filter { $0 == [13] }.count, 1, provider)
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "completed_final"),
+            ], to: fixture.providerTurns)
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(Array(ptyWrites.dropFirst(2)), manualInputs, provider)
+            XCTAssertEqual(ptyWrites.filter { $0 == [13] }.count, 2, provider)
             let events = try String(contentsOf: fixture.deliveryEvents)
             XCTAssertEqual(countEvent("manual_input_quarantined", in: events), 3, provider)
+            XCTAssertEqual(countEvent("manual_draft_restored", in: events), 1, provider)
+            XCTAssertEqual(countEvent("manual_submit_replayed", in: events), 1, provider)
             XCTAssertTrue(events.contains(#""deferral_reason":"voice_submit_delay""#), provider)
             XCTAssertFalse(events.contains("typed draft"), provider)
             XCTAssertFalse(events.contains("pasted"), provider)
