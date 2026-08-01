@@ -287,6 +287,107 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         }
     }
 
+    func testMountedLifecycleProviderExitFinalizesOpenDeliveryForBothProviders() throws {
+        for (providerName, target) in [
+            ("Codex", ProcessManager.AgentTarget.codex),
+            ("Claude", ProcessManager.AgentTarget.claude),
+        ] {
+            let fixture = try makeRealPTYFixture()
+            let paths = deliveryPaths(in: fixture.directory)
+            let provider = providerName.lowercased()
+            let commandID = "termination-\(provider)"
+            let command = "lifecycle voice request"
+            let metadata = """
+            {"provider":"\(provider)","relay_command_id":"\(commandID)","relay_command_seq":57}
+            """
+            try Data().write(to: URL(fileURLWithPath: paths.voiceInput))
+            try "\(command)\n".write(toFile: paths.command, atomically: true, encoding: .utf8)
+            try metadata.write(toFile: paths.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(toFile: paths.commandState, atomically: true, encoding: .utf8)
+
+            let process = SwiftTermEmbeddedProcess(
+                readinessStabilityInterval: 0.05,
+                readinessPollInterval: 0.01,
+                voiceDeliveryPaths: paths,
+                voiceDeliveryAcknowledgementTimeout: 0.05
+            )
+            let session = EmbeddedTerminalSession(processFactory: { process })
+            let exited = expectation(description: "\(providerName) real provider exit")
+            session.setExitHandler { code in
+                XCTAssertEqual(code, 0, providerName)
+                exited.fulfill()
+            }
+            try session.beginPreparing(
+                providerName: providerName,
+                providerKey: provider,
+                workingDirectory: fixture.directory.path
+            )
+            try session.start(ProcessManager.PreparedSessionLaunch(
+                executable: "/bin/bash",
+                arguments: ["-c", """
+                    stty -icanon -echo
+                    printf 'interactive provider output\r\n'
+                    IFS= read -r line
+                    [ "$line" = "\(command)" ] || exit 3
+                    printf 'voice input accepted\r\n'
+                    sleep 0.2
+                    exit 0
+                    """],
+                launcherPath: "/bin/bash",
+                workingDirectory: fixture.directory.path,
+                target: target,
+                voiceDelivery: .appOwned,
+                sessionEventPath: fixture.events.path
+            ))
+            let host = EmbeddedTerminalHostNSView()
+            host.install(session.hostedView)
+            XCTAssertTrue(process.terminalView.superview === host, providerName)
+
+            wait(for: [exited], timeout: 2)
+            XCTAssertEqual(session.phase, .exited(0), providerName)
+
+            let releasedCallbacks = expectation(
+                description: "\(providerName) released delivery callbacks drained"
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                releasedCallbacks.fulfill()
+            }
+            wait(for: [releasedCallbacks], timeout: 1)
+
+            let events = try String(contentsOfFile: paths.deliveryEvents, encoding: .utf8)
+            XCTAssertEqual(countEvent("provider_process_terminated", in: events), 1, providerName)
+            XCTAssertEqual(countEvent("delivery_failure_published", in: events), 1, providerName)
+            XCTAssertEqual(countEvent("delivery_failure_publish_failed", in: events), 0, providerName)
+            XCTAssertEqual(countEvent("delivery_acknowledged", in: events), 0, providerName)
+            XCTAssertEqual(countEvent("prompt_write", in: events), 1, providerName)
+            XCTAssertFalse(events.contains(command), providerName)
+
+            let publicOutput = try String(contentsOfFile: paths.voiceInput, encoding: .utf8)
+            XCTAssertEqual(
+                publicOutput.components(separatedBy: "__ORCHESTRATOR_REPLY__:").count - 1,
+                1,
+                providerName
+            )
+            XCTAssertTrue(publicOutput.contains(#""relay_command_seq":57"#), providerName)
+            XCTAssertTrue(publicOutput.contains("\"relay_command_id\":\"\(commandID)\""), providerName)
+            XCTAssertFalse(publicOutput.contains(command), providerName)
+
+            let journal = try String(contentsOfFile: paths.actionJournal, encoding: .utf8)
+            let terminalOutcomes = journal
+                .split(separator: "\n")
+                .compactMap { line -> [String: Any]? in
+                    guard let data = String(line).data(using: .utf8) else { return nil }
+                    return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                }
+                .filter { ($0["state"] as? String) == "delivery_failed" }
+            XCTAssertEqual(terminalOutcomes.count, 1, providerName)
+            XCTAssertEqual(terminalOutcomes.first?["relay_command_seq"] as? Int, 57, providerName)
+            XCTAssertEqual(terminalOutcomes.first?["relay_command_id"] as? String, commandID, providerName)
+            XCTAssertEqual(terminalOutcomes.first?["provider"] as? String, provider, providerName)
+            XCTAssertFalse(journal.contains(command), providerName)
+        }
+    }
+
     func testPresentationDetachLeavesEmbeddedProcessRunning() throws {
         let process = FakeEmbeddedTerminalProcess()
         let session = EmbeddedTerminalSession(processFactory: { process })
@@ -362,6 +463,10 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
             voiceInput: directory.appendingPathComponent("voice-input").path,
             heartbeat: directory.appendingPathComponent("heartbeat").path
         )
+    }
+
+    private func countEvent(_ event: String, in events: String) -> Int {
+        events.components(separatedBy: "\"event\":\"\(event)\"").count - 1
     }
 
     private func launch() -> ProcessManager.PreparedSessionLaunch {

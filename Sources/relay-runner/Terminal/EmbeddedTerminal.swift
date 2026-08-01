@@ -726,6 +726,18 @@ final class RelayVoiceCommandDelivery {
         }
     }
 
+    func providerProcessTerminated() {
+        performOnDeliveryQueue {
+            timer?.cancel()
+            timer = nil
+            if completePendingSubmissionIfAcknowledged() {
+                return
+            }
+            guard let pending = openSubmission else { return }
+            finalizePendingSubmission(pending, event: "provider_process_terminated")
+        }
+    }
+
     @discardableResult
     func recordUserInput(_ data: ArraySlice<UInt8>) -> Bool {
         let bytes = Array(data)
@@ -1509,6 +1521,11 @@ final class RelayVoiceCommandDelivery {
             deliveryState = .recovering(pending, since: now())
             return
         }
+        finalizePendingSubmission(pending, event: event)
+    }
+
+    private func finalizePendingSubmission(_ pending: PendingSubmission, event: String) {
+        guard openSubmission?.key == pending.key else { return }
         recordDeliveryEvent(event, key: pending.key, fields: ["attempt": 1])
         let published = publishDeliveryFailure(for: pending.key)
         deliveryState = .terminalFailure(pending.key)
@@ -1650,8 +1667,8 @@ final class RelayVoiceCommandDelivery {
             durableState = "claimed"
         case "stale_command_dropped", "stale_prompt_cleared":
             durableState = "superseded"
-        case "terminal_failure", "provider_process_terminated",
-             "delivery_failure_published", "delivery_failure_publish_failed":
+        case "terminal_failure", "delivery_failure_published",
+             "delivery_failure_publish_failed":
             durableState = "delivery_failed"
         default:
             durableState = nil
@@ -2140,17 +2157,20 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     private let readinessStabilityInterval: TimeInterval
     private let readinessPollInterval: TimeInterval
     private let voiceDeliveryPaths: RelayVoiceCommandDelivery.Paths
+    private let voiceDeliveryAcknowledgementTimeout: TimeInterval
 
     init(
         readinessStabilityInterval: TimeInterval =
             SwiftTermEmbeddedProcess.defaultReadinessStabilityInterval,
         readinessPollInterval: TimeInterval =
             SwiftTermEmbeddedProcess.defaultReadinessPollInterval,
-        voiceDeliveryPaths: RelayVoiceCommandDelivery.Paths = .init()
+        voiceDeliveryPaths: RelayVoiceCommandDelivery.Paths = .init(),
+        voiceDeliveryAcknowledgementTimeout: TimeInterval = 2.0
     ) {
         self.readinessStabilityInterval = max(0, readinessStabilityInterval)
         self.readinessPollInterval = max(0.01, readinessPollInterval)
         self.voiceDeliveryPaths = voiceDeliveryPaths
+        self.voiceDeliveryAcknowledgementTimeout = max(0.01, voiceDeliveryAcknowledgementTimeout)
         terminalView = RelayTerminalView(frame: .zero)
         terminalView.terminalDelegate = self
         terminalView.wantsLayer = true
@@ -2223,6 +2243,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
                     transportSend(data) {}
                 },
                 transportSend: transportSend,
+                acknowledgementTimeout: voiceDeliveryAcknowledgementTimeout,
                 isRunning: { [weak self] in
                     self?.localProcess.running == true
                 }
@@ -2287,7 +2308,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
         readinessScheduled = false
         stableTerminalSince = nil
-        voiceDelivery?.stop()
+        voiceDelivery?.providerProcessTerminated()
         voiceDelivery = nil
         onExit?(exitCode)
     }
