@@ -13,6 +13,7 @@ import json
 import inspect
 import os
 import queue
+import re
 import shlex
 import shutil
 import subprocess
@@ -40,6 +41,25 @@ CODEX_DEFAULT_EFFORT = CODEX_PROVIDER_DEFAULT_EFFORT
 CLAUDE_DEFAULT_MODEL = "best"
 CLAUDE_DEFAULT_EFFORT = "default"
 SILENT_RESPONSE = "__SILENT__"
+_REALIZATION_DECISIONS = frozenset({"full", "delta", "suppress"})
+_PROTECTED_LIFECYCLE_ROLES = frozenset({"result", "failure", "blocker", "decision"})
+_LIFECYCLE_ROLES_BY_DETAIL = {
+    "clarification-request": "decision",
+    "run-canceled": "failure",
+    "run-failed": "failure",
+    "run-health-warning": "blocker",
+    "run-review-needed": "blocker",
+    "run-merged": "result",
+    "run-succeeded": "result",
+    "sidecar-outcome": "result",
+}
+_SEMANTIC_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[-_.:/][a-z0-9]+)*", re.IGNORECASE)
+_SEMANTIC_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "for",
+    "from", "i", "in", "is", "it", "me", "my", "of", "on", "or", "our",
+    "so", "that", "the", "their", "them", "they", "this", "to", "was", "we",
+    "were", "with", "you", "your", "youre",
+})
 CODEX_CLI_CANDIDATES = (
     "/Applications/ChatGPT.app/Contents/Resources/codex",
     "/Applications/Codex.app/Contents/Resources/codex",
@@ -90,9 +110,10 @@ as the worker or workers instead of folding their actions into "I".
 
 For a new work request or substantive question that should be handed off, give a
 brief contextual acknowledgement that reflects the request, says you received
-or picked it up, and says you will return with a plan or next step. Keep that
-handoff to one or two short spoken sentences. Do not claim that a ticket, worker,
-or implementation exists unless a later authoritative event says so. The notch
+or picked it up, confirms the immediate next step, and says you will return with
+the result or a decision request. Keep that handoff to one or two short spoken
+sentences. Do not claim that a ticket, worker, or implementation exists unless a
+later authoritative event says so. The notch
 already provides deterministic visual receipt, so do not add a canned spoken
 acknowledgement that ignores the user's actual request.
 You may answer lightweight social conversation when no orchestration is needed.
@@ -772,6 +793,16 @@ class _MessengerEvent:
     work_disposition: dict | None = None
     speech_source: str = ""
     work_lifecycle: bool = False
+    action_kind: str = ""
+
+
+@dataclass(frozen=True)
+class _SpeechRealization:
+    decision: str
+    spoken_text: str
+    lifecycle_role: str
+    covered_facts: tuple[str, ...]
+    reason: str
 
 
 class MessengerRuntime:
@@ -785,6 +816,8 @@ class MessengerRuntime:
         is_current: Callable[[int, str], bool],
         context_limit: int = 16,
         response_timeout: float = 60.0,
+        coverage_provider: Callable[[int, str], object] | None = None,
+        realization_observer: Callable[..., object] | None = None,
     ):
         self.backend = backend
         self._speak = speak
@@ -794,12 +827,16 @@ class MessengerRuntime:
         self._events: queue.Queue[_MessengerEvent | None] = queue.Queue()
         self._context: deque[str] = deque(maxlen=max(4, context_limit))
         self._response_timeout = response_timeout
+        self._coverage_provider = coverage_provider
+        self._realization_observer = realization_observer
+        self._coverage_error_events: set[tuple[int, int, str]] = set()
         self._lock = threading.Lock()
         self._generation = 0
         self._current_command: tuple[int, str] | None = None
         self._has_trace_for_current_command = False
         self._final_commands: set[tuple[int, str]] = set()
         self._active_event: _MessengerEvent | None = None
+        self._action_kinds: dict[tuple[int, str], str] = {}
         self._started = False
         self._shutdown = threading.Event()
         self._worker_thread: threading.Thread | None = None
@@ -839,6 +876,16 @@ class MessengerRuntime:
             self._generation += 1
             generation = self._generation
             self._current_command = command_key
+            route = str((disposition or {}).get("route") or "").strip().lower()
+            action_kind = (
+                "conversation"
+                if route in {"continue_current", "control_only"}
+                else "work"
+            )
+            self._action_kinds[command_key] = action_kind
+            if len(self._action_kinds) > 100:
+                for old in list(self._action_kinds)[:50]:
+                    self._action_kinds.pop(old, None)
             self._has_trace_for_current_command = False
             self._context.append(f"USER: {cleaned}")
             if disposition:
@@ -857,6 +904,7 @@ class MessengerRuntime:
             generation=generation,
             detail=str((disposition or {}).get("route") or ""),
             work_disposition=disposition,
+            action_kind=action_kind,
         ))
         return True
 
@@ -954,6 +1002,7 @@ class MessengerRuntime:
             generation=generation,
             work_disposition=disposition,
             speech_source=str(payload.get("speech_source") or "orchestrator"),
+            action_kind=self._action_kinds.get(command_key, ""),
         ))
         return True
 
@@ -1000,20 +1049,19 @@ class MessengerRuntime:
                 response = self.backend.ask(prompt, timeout=self._response_timeout).strip()
             except Exception as exc:
                 print(f"[messenger] response failed: {exc}", file=sys.stderr)
-                if (
-                    (
-                        event.kind == "orchestrator_final"
-                        or self._event_is_unscoped_lifecycle(event)
-                        or event.work_lifecycle
-                    )
-                    and self._event_is_current(event)
-                ):
+                if self._must_fail_open(event) and self._event_is_current(event):
+                    realization = self._fallback_realization(event, "arbitration_error")
+                    self._observe_realization(event, realization)
                     self._speak_safely(
-                        event.text,
+                        realization.spoken_text,
                         event.command_seq,
                         event.command_id,
                         display_text=event.text,
-                        speech_metadata=self._speech_metadata_for(event, fallback=True),
+                        speech_metadata=self._speech_metadata_for(
+                            event,
+                            fallback=True,
+                            realization=realization,
+                        ),
                     )
                 continue
             finally:
@@ -1023,19 +1071,27 @@ class MessengerRuntime:
             if not self._event_is_current(event):
                 continue
             if not response or response == SILENT_RESPONSE:
-                if (
-                    event.kind == "orchestrator_final"
-                    or self._event_is_unscoped_lifecycle(event)
-                    or event.work_lifecycle
-                ):
+                if self._must_fail_open(event):
+                    realization = self._fallback_realization(event, "arbitration_unavailable")
+                    self._observe_realization(event, realization)
                     self._speak_safely(
-                        event.text,
+                        realization.spoken_text,
                         event.command_seq,
                         event.command_id,
                         display_text=event.text,
-                        speech_metadata=self._speech_metadata_for(event, fallback=True),
+                        speech_metadata=self._speech_metadata_for(
+                            event,
+                            fallback=True,
+                            realization=realization,
+                        ),
                     )
                 continue
+            realization = self._realization_for(event, response)
+            if realization is not None:
+                self._observe_realization(event, realization)
+                if realization.decision == "suppress":
+                    continue
+                response = realization.spoken_text
             with self._lock:
                 self._context.append(f"MESSENGER: {response}")
             self._speak_safely(
@@ -1047,7 +1103,11 @@ class MessengerRuntime:
                     if event.kind == "orchestrator_final" or event.work_lifecycle
                     else None
                 ),
-                speech_metadata=self._speech_metadata_for(event),
+                speech_metadata=self._speech_metadata_for(
+                    event,
+                    realization=realization,
+                    spoken_text=response,
+                ),
             )
 
     def _event_is_current(self, event: _MessengerEvent) -> bool:
@@ -1070,6 +1130,14 @@ class MessengerRuntime:
             and (event.command_seq is None or event.command_id is None)
         )
 
+    def _must_fail_open(self, event: _MessengerEvent) -> bool:
+        return (
+            event.kind == "orchestrator_final"
+            or event.detail == "clarification-request"
+            or self._event_is_unscoped_lifecycle(event)
+            or event.work_lifecycle
+        )
+
     def _prompt_for(self, event: _MessengerEvent) -> str:
         with self._lock:
             context = "\n".join(self._context)
@@ -1080,8 +1148,9 @@ class MessengerRuntime:
                 "orchestration, reply naturally. If it is a work request or substantive "
                 "question that should be handed off, give a brief contextual acknowledgement "
                 "that reflects the request, uses first-person singular language such as I or "
-                "me, says you received or picked it up, and says you will return with a plan "
-                "or next step. Do not call yourself the orchestrator in the spoken response. "
+                "me, confirms the accepted action, states the immediate next step, and promises "
+                "to return with the result or a decision request. Do not claim unperformed work. "
+                "Do not call yourself the orchestrator in the spoken response. "
                 "If authoritative context names workers, refer to the workers directly. Do not "
                 "invent scope or "
                 "claim that a ticket, worker, or implementation already exists."
@@ -1108,13 +1177,204 @@ class MessengerRuntime:
                 "work. Convey its result naturally and concisely without treating its originating "
                 "conversation turn as current or adding unsupported claims."
             )
+        realization_instructions = ""
+        if self._uses_coverage_arbitration(event):
+            coverage = self._coverage_for(event)
+            lifecycle_role = self._lifecycle_role_for(event)
+            realization_instructions = (
+                "\n\nSpeech that actually finished playing for this exact Relay command:\n"
+                f"{json.dumps(coverage, separators=(',', ':'), ensure_ascii=True)}\n\n"
+                f"The authoritative lifecycle role is {lifecycle_role}; do not classify or change it. "
+                "Return one JSON object with exactly these fields: decision (full, delta, or "
+                "suppress) and spoken_text. Suppress only when the current "
+                "event adds no lifecycle advance or user-relevant fact. Use delta when only part is "
+                "novel. A result, failure, blocker, or critical decision must remain speakable; "
+                "remove overlap but never its novel identifiers, outcomes, errors, decisions, or "
+                "next steps. An acknowledgement never covers a later result."
+            )
         return (
             f"{instructions}\n\n"
             "Recent session context, oldest to newest:\n"
             f"{context}\n\n"
-            f"Current event: {event.kind}\n"
-            "Return only the exact words to speak, or __SILENT__."
+            f"Current event: {event.kind}"
+            f"{realization_instructions}\n"
+            + (
+                "Return only the JSON object."
+                if realization_instructions
+                else "Return only the exact words to speak, or __SILENT__."
+            )
         )
+
+    def _uses_coverage_arbitration(self, event: _MessengerEvent) -> bool:
+        return (
+            self._coverage_provider is not None
+            and event.command_seq is not None
+            and event.command_id is not None
+            and event.kind != "user_turn"
+        )
+
+    def _coverage_for(self, event: _MessengerEvent) -> list[dict]:
+        provider = self._coverage_provider
+        if provider is None or event.command_seq is None or event.command_id is None:
+            return []
+        try:
+            raw = provider(event.command_seq, event.command_id)
+        except Exception as exc:
+            self._coverage_error_events.add(
+                (event.generation, event.command_seq, event.command_id)
+            )
+            if len(self._coverage_error_events) > 100:
+                self._coverage_error_events = set(list(self._coverage_error_events)[-50:])
+            print(f"[messenger] speech coverage unavailable: {exc}", file=sys.stderr)
+            return []
+        coverage: list[dict] = []
+        for item in raw if isinstance(raw, (list, tuple)) else ():
+            if not isinstance(item, dict):
+                continue
+            facts = [
+                str(fact or "").strip()[:240]
+                for fact in item.get("covered_facts", ())
+                if str(fact or "").strip()
+            ][:8]
+            coverage.append({
+                "lifecycle_role": str(item.get("lifecycle_role") or "conversation"),
+                "covered_facts": facts,
+                "spoken_text": str(item.get("spoken_text") or "").strip()[:800],
+            })
+        return coverage[-8:]
+
+    def _realization_for(
+        self,
+        event: _MessengerEvent,
+        response: str,
+    ) -> _SpeechRealization | None:
+        if not self._uses_coverage_arbitration(event):
+            return None
+        event_key = (event.generation, event.command_seq, event.command_id)
+        if event_key in self._coverage_error_events:
+            return self._fallback_realization(event, "coverage_unavailable")
+        try:
+            payload = json.loads(response)
+            if not isinstance(payload, dict):
+                raise ValueError("realization is not an object")
+            decision = str(payload.get("decision") or "").strip().lower()
+            spoken = str(payload.get("spoken_text") or "").strip()
+            if decision not in _REALIZATION_DECISIONS:
+                raise ValueError("unsupported realization value")
+            if decision != "suppress" and not spoken:
+                raise ValueError("speakable realization is empty")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return self._fallback_realization(event, "malformed_arbitration")
+
+        coverage = self._coverage_for(event)
+        role = self._lifecycle_role_for(event)
+        if decision == "suppress" and not coverage:
+            return self._fallback_realization(event, "no_played_coverage")
+        if decision == "suppress" and role in _PROTECTED_LIFECYCLE_ROLES:
+            return self._fallback_realization(event, "protected_lifecycle")
+        retained_coverage = coverage if decision in {"delta", "suppress"} else []
+        if not self._preserves_authoritative_content(
+            event.text,
+            retained_coverage,
+            spoken if decision != "suppress" else "",
+        ):
+            return self._fallback_realization(
+                event,
+                {
+                    "full": "lossy_full",
+                    "delta": "lossy_delta",
+                    "suppress": "uncovered_content",
+                }[decision],
+            )
+        reason = {
+            "full": "no_usable_coverage",
+            "delta": "novel_delta",
+            "suppress": "covered_by_played_speech",
+        }[decision]
+        facts = (spoken,) if spoken else ()
+        return _SpeechRealization(decision, spoken, role, facts, reason)
+
+    @staticmethod
+    def _lifecycle_role_for(event: _MessengerEvent) -> str:
+        if event.work_lifecycle:
+            return "result"
+        if event.kind == "user_turn":
+            return "conversation" if event.action_kind == "conversation" else "acknowledgement"
+        if event.kind == "orchestrator_final":
+            return "conversation" if event.action_kind == "conversation" else "result"
+        return _LIFECYCLE_ROLES_BY_DETAIL.get(event.detail, "progress")
+
+    @classmethod
+    def _preserves_authoritative_content(
+        cls,
+        authoritative: str,
+        coverage: list[dict],
+        spoken: str,
+    ) -> bool:
+        required = cls._semantic_anchors(authoritative)
+        retained = cls._semantic_anchors(spoken)
+        required_relations = cls._semantic_relations(authoritative)
+        retained_relations = cls._semantic_relations(spoken)
+        for item in coverage:
+            covered = str(item.get("spoken_text") or "")
+            retained.update(cls._semantic_anchors(covered))
+            retained_relations.update(cls._semantic_relations(covered))
+        return required.issubset(retained) and required_relations.issubset(
+            retained_relations
+        )
+
+    @classmethod
+    def _semantic_anchors(cls, text: str) -> set[str]:
+        return set(cls._semantic_tokens(text))
+
+    @classmethod
+    def _semantic_relations(cls, text: str) -> set[tuple[str, ...]]:
+        tokens = cls._semantic_tokens(text)
+        # Pairs and triples retain which nearby subject owns an outcome or negation.
+        return {
+            tuple(tokens[index:index + width])
+            for width in (2, 3)
+            for index in range(len(tokens) - width + 1)
+        }
+
+    @staticmethod
+    def _semantic_tokens(text: str) -> list[str]:
+        normalized = str(text or "").lower().replace("’", "'")
+        return [
+            token
+            for token in _SEMANTIC_TOKEN_RE.findall(normalized.replace("'", ""))
+            if token not in _SEMANTIC_STOPWORDS and token not in {"will", "going"}
+        ]
+
+    @staticmethod
+    def _fallback_realization(event: _MessengerEvent, reason: str) -> _SpeechRealization:
+        role = MessengerRuntime._lifecycle_role_for(event)
+        return _SpeechRealization(
+            "full",
+            event.text,
+            role,
+            (event.text,),
+            reason,
+        )
+
+    def _observe_realization(
+        self,
+        event: _MessengerEvent,
+        realization: _SpeechRealization,
+    ) -> None:
+        observer = self._realization_observer
+        if observer is None or event.command_seq is None or event.command_id is None:
+            return
+        try:
+            observer(
+                event.command_seq,
+                event.command_id,
+                lifecycle_role=realization.lifecycle_role,
+                decision=realization.decision,
+                reason=realization.reason,
+            )
+        except Exception as exc:
+            print(f"[messenger] could not record realization: {exc}", file=sys.stderr)
 
     def _discard_pending_events_locked(self) -> None:
         preserved: list[_MessengerEvent] = []
@@ -1201,7 +1461,13 @@ class MessengerRuntime:
         )
 
     @staticmethod
-    def _speech_metadata_for(event: _MessengerEvent, *, fallback: bool = False) -> dict:
+    def _speech_metadata_for(
+        event: _MessengerEvent,
+        *,
+        fallback: bool = False,
+        realization: _SpeechRealization | None = None,
+        spoken_text: str | None = None,
+    ) -> dict:
         if event.work_lifecycle:
             source = "lifecycle"
             kind = "final"
@@ -1227,7 +1493,27 @@ class MessengerRuntime:
                 event.kind == "orchestrator_final"
                 or event.work_lifecycle
             ),
-            "semantic_brief": event.text,
+            "semantic_brief": (
+                realization.spoken_text
+                if realization is not None
+                else (spoken_text or event.text)
+            ),
+            "lifecycle_role": (
+                realization.lifecycle_role
+                if realization is not None
+                else MessengerRuntime._lifecycle_role_for(event)
+            ),
+            "covered_facts": (
+                realization.covered_facts
+                if realization is not None
+                else ((spoken_text,) if spoken_text else None)
+            ),
+            "realization_decision": (
+                realization.decision if realization is not None else "full"
+            ),
+            "suppression_reason": (
+                realization.reason if realization is not None else ""
+            ),
             "replayable": (
                 event.kind in {"user_turn", "orchestrator_final"}
                 or event.work_lifecycle
@@ -1284,6 +1570,8 @@ def create_messenger_runtime(
     speak: Callable[..., object],
     is_current: Callable[[int, str], bool],
     cwd: str | os.PathLike[str] | None = None,
+    coverage_provider: Callable[[int, str], object] | None = None,
+    realization_observer: Callable[..., object] | None = None,
 ) -> MessengerRuntime | None:
     config = MessengerConfig.from_app_config(app_config, cwd=cwd)
     if not config.enabled:
@@ -1305,4 +1593,10 @@ def create_messenger_runtime(
         backend = ClaudeMessengerBackend(config)
     else:
         backend = CodexMessengerBackend(config)
-    return MessengerRuntime(backend, speak=speak, is_current=is_current)
+    return MessengerRuntime(
+        backend,
+        speak=speak,
+        is_current=is_current,
+        coverage_provider=coverage_provider,
+        realization_observer=realization_observer,
+    )

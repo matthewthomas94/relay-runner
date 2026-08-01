@@ -1980,6 +1980,10 @@ def _queue_tts_text(
     work_disposition: dict | None = None,
     replayable: bool | None = None,
     freshness_scope: str = "conversation",
+    lifecycle_role: str | None = None,
+    covered_facts: list[str] | tuple[str, ...] | None = None,
+    realization_decision: str = "full",
+    suppression_reason: str | None = None,
 ) -> bool:
     """Submit a typed speech intent unless its Relay command is stale."""
     text, display_text, command_seq, command_id = _parse_tts_payload(text)
@@ -2024,6 +2028,10 @@ def _queue_tts_text(
             work_disposition=work_disposition,
             replayable=replayable,
             freshness_scope="work" if work_fresh else "conversation",
+            lifecycle_role=lifecycle_role,
+            covered_facts=covered_facts,
+            realization_decision=realization_decision,
+            suppression_reason=suppression_reason,
         ))
     else:
         if display_preview:
@@ -3011,6 +3019,8 @@ def main():
                 command_seq,
                 command_id,
             ),
+            coverage_provider=tts_worker.played_coverage,
+            realization_observer=tts_worker.record_realization,
         )
         if messenger is not None:
             messenger.start()
