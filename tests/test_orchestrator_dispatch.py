@@ -1024,6 +1024,8 @@ class OrchestratorDispatchTests(unittest.TestCase):
             repo = root / "repo"
             self.make_git_repo(repo)
             (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            self.git(repo, "add", ".orchestrator/config.toml")
+            self.git(repo, "commit", "-m", "add config")
             daemon = self.make_daemon(root, provider="codex")
 
             daemon.apply_orchestrator_actions(repo_path=str(repo), actions=[{
@@ -1113,6 +1115,8 @@ class OrchestratorDispatchTests(unittest.TestCase):
             repo = root / "repo"
             self.make_git_repo(repo)
             (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            self.git(repo, "add", ".orchestrator/config.toml")
+            self.git(repo, "commit", "-m", "add config")
             daemon = self.make_daemon(root, provider="codex")
             actions = [{
                 "kind": "create_ticket",
@@ -1132,6 +1136,125 @@ class OrchestratorDispatchTests(unittest.TestCase):
 
             self.assertTrue((repo / ".orchestrator/RR-1.md").exists())
             self.assertFalse((repo / ".orchestrator/RR-2.md").exists())
+
+    def test_orchestrator_actions_commit_authored_ticket_and_preserve_unrelated_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            self.git(repo, "add", ".orchestrator/config.toml")
+            self.git(repo, "commit", "-m", "add config")
+            (repo / "notes.txt").write_text("leave this alone\n")
+            daemon = self.make_daemon(root, provider="codex")
+
+            result = daemon.apply_orchestrator_actions(repo_path=str(repo), actions=[{
+                "kind": "create_ticket",
+                "title": "Commit authored ticket",
+                "description": "Keep ticket authorship in git history.",
+                "acceptance_criteria": ["The authored ticket is committed before completion."],
+                "worker_model": "fast",
+                "worker_effort": "low",
+                "worker_sizing_rationale": "A focused workflow contract change.",
+                "worker_provider_notes": "Codex and Claude share the daemon authoring path.",
+            }])
+
+            self.assertEqual(result["tickets_written"], [{"ticket_id": "RR-1", "action": "create_ticket"}])
+            self.assertEqual(read_ticket(repo / ".orchestrator/RR-1.md")["status"], "backlog")
+            self.assertEqual((repo / ".orchestrator/config.toml").read_text(), 'prefix = "RR"\nnext_id = 2\n')
+            self.assertEqual(
+                self.git(repo, "show", "--format=", "--name-only", "HEAD").stdout.splitlines(),
+                [".orchestrator/RR-1.md", ".orchestrator/config.toml"],
+            )
+            self.assertEqual(self.git(repo, "status", "--porcelain").stdout, "?? notes.txt\n")
+
+    def test_orchestrator_actions_commit_ticket_edits_from_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "author-ticket"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 2\n')
+            self.write_ticket(repo, "RR-1", status="backlog", run_id=None)
+            self.git(repo, "add", ".orchestrator/config.toml", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            self.git(repo, "worktree", "add", "-b", "relay/author-ticket", str(workspace), "HEAD")
+            (workspace / "notes.txt").write_text("leave this alone\n")
+            daemon = self.make_daemon(root, provider="claude")
+
+            result = daemon.apply_orchestrator_actions(repo_path=str(workspace), actions=[{
+                "kind": "edit_ticket",
+                "ticket_id": "RR-1",
+                "description": "Refined in an isolated worktree.",
+                "acceptance_criteria": ["The refined ticket is committed from the worktree."],
+            }])
+
+            self.assertEqual(result["tickets_written"], [{"ticket_id": "RR-1", "action": "edit_ticket"}])
+            self.assertIn("Refined in an isolated worktree.", read_ticket(workspace / ".orchestrator/RR-1.md")["body"])
+            self.assertEqual(
+                self.git(workspace, "show", "--format=", "--name-only", "HEAD").stdout.splitlines(),
+                [".orchestrator/RR-1.md"],
+            )
+            self.assertEqual(self.git(workspace, "status", "--porcelain").stdout, "?? notes.txt\n")
+
+    def test_orchestrator_actions_block_dirty_ticket_authoring_overlap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            self.git(repo, "add", ".orchestrator/config.toml")
+            self.git(repo, "commit", "-m", "add config")
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 9\n')
+            daemon = self.make_daemon(root, provider="claude")
+
+            with self.assertRaisesRegex(ValueError, "existing changes to .orchestrator/config.toml"):
+                daemon.apply_orchestrator_actions(repo_path=str(repo), actions=[{
+                    "kind": "create_ticket",
+                    "title": "Blocked ticket",
+                    "description": "This must not overwrite a counter edit.",
+                    "acceptance_criteria": ["The dirty counter stays untouched."],
+                    "worker_model": "fast",
+                    "worker_effort": "low",
+                    "worker_sizing_rationale": "A focused workflow contract change.",
+                    "worker_provider_notes": "Codex and Claude share the daemon authoring path.",
+                }])
+
+            self.assertFalse((repo / ".orchestrator/RR-1.md").exists())
+            self.assertEqual((repo / ".orchestrator/config.toml").read_text(), 'prefix = "RR"\nnext_id = 9\n')
+
+    def test_orchestrator_actions_report_and_revert_failed_ticket_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+            self.git(repo, "add", ".orchestrator/config.toml")
+            self.git(repo, "commit", "-m", "add config")
+            daemon = self.make_daemon(root, provider="codex")
+            real_git = orchestrator._git
+
+            def reject_commit(repo_path, *args, check=True):
+                if args[0] == "commit":
+                    return subprocess.CompletedProcess(args, 1, "", "commit hook rejected")
+                return real_git(repo_path, *args, check=check)
+
+            with patch("orchestrator._git", side_effect=reject_commit), \
+                    self.assertRaisesRegex(ValueError, "ticket authoring commit failed: commit hook rejected"):
+                daemon.apply_orchestrator_actions(repo_path=str(repo), actions=[{
+                    "kind": "create_ticket",
+                    "title": "Rejected ticket",
+                    "description": "This must not survive a rejected commit.",
+                    "acceptance_criteria": ["The failed authorship stays unreported."],
+                    "worker_model": "fast",
+                    "worker_effort": "low",
+                    "worker_sizing_rationale": "A focused workflow contract change.",
+                    "worker_provider_notes": "Codex and Claude share the daemon authoring path.",
+                }])
+
+            self.assertFalse((repo / ".orchestrator/RR-1.md").exists())
+            self.assertEqual((repo / ".orchestrator/config.toml").read_text(), 'prefix = "RR"\nnext_id = 1\n')
+            self.assertEqual(self.git(repo, "status", "--porcelain").stdout, "")
 
     def test_orchestrator_actions_reject_stale_relay_command_before_ticket_write(self):
         with tempfile.TemporaryDirectory() as tmp:
