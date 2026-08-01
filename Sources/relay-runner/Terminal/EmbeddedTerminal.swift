@@ -509,9 +509,14 @@ final class RelayVoiceCommandDelivery {
         let seq: Int
         let id: String
         let provider: String?
+        let intentID: String?
 
         static func == (lhs: RelayCommandKey, rhs: RelayCommandKey) -> Bool {
-            lhs.seq == rhs.seq && lhs.id == rhs.id
+            guard lhs.seq == rhs.seq && lhs.id == rhs.id else { return false }
+            if lhs.intentID != nil || rhs.intentID != nil {
+                return lhs.intentID == rhs.intentID
+            }
+            return true
         }
     }
 
@@ -603,7 +608,7 @@ final class RelayVoiceCommandDelivery {
         guard let command = claimNextCommand() else { return false }
         guard var events = Self.providerInputEvents(for: command.text) else { return true }
         if providerTurnActive(),
-           Self.metadataRequestsProviderPreemption(command.metadata),
+           metadataRequestsProviderPreemption(command.metadata),
            events.first != [3] {
             events.insert([3], at: 0)
         }
@@ -753,10 +758,10 @@ final class RelayVoiceCommandDelivery {
 
     private func pendingCommandRequestsProviderPreemption() -> Bool {
         let metadataURL = URL(fileURLWithPath: paths.metadata)
-        return Self.metadataRequestsProviderPreemption(try? Data(contentsOf: metadataURL))
+        return metadataRequestsProviderPreemption(try? Data(contentsOf: metadataURL))
     }
 
-    private static func metadataRequestsProviderPreemption(_ data: Data?) -> Bool {
+    private func metadataRequestsProviderPreemption(_ data: Data?) -> Bool {
         guard let data,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return false
@@ -765,7 +770,26 @@ final class RelayVoiceCommandDelivery {
             return true
         }
         let disposition = object["work_disposition"] as? [String: Any]
-        return disposition?["route"] as? String == "replace_current"
+        let scope = (object["cancellation_scope"] as? String)
+            ?? (disposition?["cancellation_scope"] as? String)
+        if scope == "all_work" {
+            return true
+        }
+        let targetIDs = Set(object["provider_preempt_intent_ids"] as? [String] ?? [])
+        guard !targetIDs.isEmpty else { return false }
+        let turnsURL = URL(fileURLWithPath: paths.providerTurns)
+        guard let turnsData = try? Data(contentsOf: turnsURL),
+              let turns = try? JSONSerialization.jsonObject(with: turnsData) as? [String: Any],
+              let records = turns["records"] as? [[String: Any]] else {
+            return false
+        }
+        let active = records.filter { ($0["state"] as? String) == "active" }
+        let current = active.max { lhs, rhs in
+            let lhsUpdated = (lhs["updated_at"] as? NSNumber)?.doubleValue ?? 0
+            let rhsUpdated = (rhs["updated_at"] as? NSNumber)?.doubleValue ?? 0
+            return lhsUpdated < rhsUpdated
+        }
+        return targetIDs.contains(current?["intent_id"] as? String ?? "")
     }
 
     private func providerTurnActive() -> Bool {
@@ -895,6 +919,9 @@ final class RelayVoiceCommandDelivery {
         if let provider = key.provider {
             payload["provider"] = provider
         }
+        if let intentID = key.intentID {
+            payload["intent_id"] = intentID
+        }
         return writeOrchestratorReply(payload)
     }
 
@@ -956,7 +983,14 @@ final class RelayVoiceCommandDelivery {
         }
         let provider = (object["provider"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return RelayCommandKey(seq: seq, id: id, provider: provider?.isEmpty == false ? provider : nil)
+        let intentID = (object["intent_id"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return RelayCommandKey(
+            seq: seq,
+            id: id,
+            provider: provider?.isEmpty == false ? provider : nil,
+            intentID: intentID?.isEmpty == false ? intentID : nil
+        )
     }
 
     private static func relayCommandSeq(_ value: Any?) -> Int? {
@@ -983,6 +1017,9 @@ final class RelayVoiceCommandDelivery {
         if let key {
             payload["relay_command_seq"] = key.seq
             payload["relay_command_id"] = key.id
+            if let intentID = key.intentID {
+                payload["intent_id"] = intentID
+            }
         }
         let provider = key?.provider
             ?? ProcessInfo.processInfo.environment["RELAY_RUNNER_PROVIDER"]

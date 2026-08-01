@@ -247,15 +247,15 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 suppress_startup_greeting=True,
             )
 
+        self.assertEqual(len(messenger.users), 1)
+        submitted_text, submitted_metadata = messenger.users[0]
+        self.assertEqual(submitted_text, "What is next?")
+        self.assertEqual(submitted_metadata["relay_command_seq"], 2)
+        self.assertEqual(submitted_metadata["relay_command_id"], "normal-2")
+        self.assertEqual(len(submitted_metadata["voice_work_items"]), 1)
         self.assertEqual(
-            messenger.users,
-            [(
-                "What is next?",
-                {
-                    "relay_command_seq": 2,
-                    "relay_command_id": "normal-2",
-                },
-            )],
+            submitted_metadata["voice_work_items"][0]["source_text"],
+            "What is next?",
         )
         self.assertEqual(publish_command.call_count, 2)
 
@@ -2325,6 +2325,81 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertFalse(handled)
             self.assertEqual(delivered, [])
 
+    def test_completion_hook_drops_only_cancelled_item_from_shared_source_turn(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                Path(state_path).write_text(json.dumps({
+                    "relay_command_seq": 1,
+                    "relay_command_id": "multi",
+                    "intent_id": "multi:item:2",
+                    "cancelled_intent_ids": ["multi:item:1"],
+                }))
+                Path(turns_path).write_text(json.dumps({
+                    "version": 1,
+                    "records": [
+                        {
+                            "state": "active",
+                            "session_id": f"{provider}-session",
+                            "turn_id": "turn-1",
+                            "relay_command_seq": 1,
+                            "relay_command_id": "multi",
+                            "intent_id": "multi:item:1",
+                            "within_turn_order": 1,
+                            "provider": provider,
+                            "created_at": 1.0,
+                            "updated_at": 1.0,
+                        },
+                        {
+                            "state": "active",
+                            "session_id": f"{provider}-session",
+                            "turn_id": "turn-2",
+                            "relay_command_seq": 1,
+                            "relay_command_id": "multi",
+                            "intent_id": "multi:item:2",
+                            "within_turn_order": 2,
+                            "provider": provider,
+                            "created_at": 2.0,
+                            "updated_at": 2.0,
+                        },
+                    ],
+                }))
+                completions: list[dict] = []
+
+                cancelled = relay_completion_hook.handle_hook_payload(
+                    {
+                        "hook_event_name": "Stop",
+                        "session_id": f"{provider}-session",
+                        "turn_id": "turn-1",
+                        "provider": provider,
+                        "last_assistant_message": "cancelled output",
+                    },
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    write_control=lambda payload: completions.append(payload) or True,
+                    now=3.0,
+                    stderr=io.StringIO(),
+                )
+                surviving = relay_completion_hook.handle_hook_payload(
+                    {
+                        "hook_event_name": "Stop",
+                        "session_id": f"{provider}-session",
+                        "turn_id": "turn-2",
+                        "provider": provider,
+                        "last_assistant_message": "surviving output",
+                    },
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    write_control=lambda payload: completions.append(payload) or True,
+                    now=4.0,
+                    stderr=io.StringIO(),
+                )
+
+                self.assertFalse(cancelled)
+                self.assertTrue(surviving)
+                self.assertEqual([item["intent_id"] for item in completions], ["multi:item:2"])
+
     def test_completion_hook_stop_delivers_only_correlated_provider_final(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "voice_command_state.json")
@@ -2825,6 +2900,167 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 self.assertEqual(metadata["authorization_relationship"], "conversation")
                 self.assertFalse(metadata["preempt_provider"])
                 self.assertEqual(metadata["provider"], provider)
+
+    def test_real_same_turn_work_resolves_to_two_provider_neutral_deliveries(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                command = {
+                    "provider": provider,
+                    "relay_command_seq": 11,
+                    "relay_command_id": f"{provider}-11",
+                    "source_text": "Fix login and add search",
+                }
+
+                resolved = voice_bridge._resolve_voice_work_items(
+                    command["source_text"],
+                    command,
+                    repo_path="/tmp/repo",
+                )
+
+                self.assertEqual(
+                    [entry["item"].source_text for entry in resolved],
+                    ["Fix login", "add search"],
+                )
+                self.assertEqual(
+                    [entry["action"].kind for entry in resolved],
+                    ["create_ticket", "create_ticket"],
+                )
+                self.assertEqual(
+                    [entry["metadata"]["within_turn_order"] for entry in resolved],
+                    [1, 2],
+                )
+                self.assertEqual(
+                    [entry["metadata"]["provider"] for entry in resolved],
+                    [provider, provider],
+                )
+
+    def test_partial_leased_cancellation_requeues_survivor_for_codex_and_claude(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                command_path = os.path.join(temp_dir, "voice_cmd_ready")
+                meta_path = command_path + ".meta"
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                inbox = voice_bridge.IntentInbox(os.path.join(temp_dir, "inbox.sqlite3"))
+                command = {
+                    "provider": provider,
+                    "relay_command_seq": 1,
+                    "relay_command_id": f"{provider}-1",
+                    "source_text": "Fix login and add search",
+                }
+                resolved = voice_bridge._resolve_voice_work_items(
+                    command["source_text"],
+                    command,
+                    repo_path=temp_dir,
+                )
+                for entry in resolved:
+                    voice_bridge._publish_command(
+                        entry["prompt"],
+                        entry["metadata"],
+                        command_path=command_path,
+                        meta_path=meta_path,
+                        state_path=state_path,
+                        inbox=inbox,
+                    )
+                self.assertEqual(json.loads(Path(meta_path).read_text())["target"], "login")
+
+                cancellation = {
+                    "provider": provider,
+                    "relay_command_seq": 2,
+                    "relay_command_id": f"{provider}-2",
+                    "source_text": "Cancel login",
+                }
+                cancelled = voice_bridge._resolve_voice_work_items(
+                    cancellation["source_text"],
+                    cancellation,
+                    repo_path=temp_dir,
+                )[0]
+                voice_bridge._publish_command(
+                    cancelled["prompt"],
+                    cancelled["metadata"],
+                    command_path=command_path,
+                    meta_path=meta_path,
+                    state_path=state_path,
+                    inbox=inbox,
+                )
+
+                leased = json.loads(Path(meta_path).read_text())
+                self.assertEqual(leased["target"], "search")
+                self.assertEqual(leased["relay_command_seq"], 1)
+                self.assertFalse(cancelled["metadata"]["preempt_provider"])
+                records = inbox.records()
+                self.assertEqual(records[0]["state"], "cancelled")
+                self.assertEqual(records[1]["state"], "delivered")
+                self.assertEqual(records[2]["state"], "pending")
+
+    def test_replacement_language_revokes_only_resolved_item_for_both_providers(self):
+        active_work = (
+            voice_bridge.ActiveWork("login-item", ("repository",), "login"),
+            voice_bridge.ActiveWork("search-item", ("repository",), "search"),
+        )
+
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                auth_path = os.path.join(temp_dir, "voice_command_authorizations.json")
+                for order, work in enumerate(active_work, start=1):
+                    voice_bridge.record_command_authorization(
+                        auth_path,
+                        {
+                            "relay_command_seq": order,
+                            "relay_command_id": f"{provider}-accepted-{order}",
+                            "intent_id": work.work_id,
+                            "target": work.target,
+                        },
+                        relationship="additive",
+                        allowed_mutations=[{"kind": "orchestrator_command"}],
+                    )
+
+                command = {
+                    "provider": provider,
+                    "relay_command_seq": 3,
+                    "relay_command_id": f"{provider}-replace",
+                    "source_text": "Replace that with export",
+                }
+                replacement = voice_bridge._resolve_voice_work_items(
+                    command["source_text"],
+                    command,
+                    repo_path=temp_dir,
+                    active_work=active_work,
+                )[0]
+                disposition = replacement["disposition"]
+                metadata = replacement["metadata"]
+
+                self.assertEqual(
+                    disposition.cancellation_scope,
+                    voice_bridge.CancellationScope.ITEM,
+                )
+                self.assertEqual(disposition.target_work_ids, ("search-item",))
+                self.assertEqual(metadata["cancellation_scope"], "item")
+                self.assertEqual(metadata["target_intent_ids"], ["search-item"])
+                self.assertEqual(
+                    metadata["voice_work_item"]["cancellation_scope"],
+                    "item",
+                )
+                self.assertEqual(
+                    metadata["voice_work_item"]["target_intent_ids"],
+                    ["search-item"],
+                )
+                self.assertEqual(
+                    metadata["provider_preempt_intent_ids"],
+                    ["search-item"],
+                )
+
+                voice_bridge.record_command_authorization(
+                    auth_path,
+                    metadata,
+                    relationship=metadata["authorization_relationship"],
+                    allowed_mutations=voice_bridge.allowed_mutations_for_metadata(metadata),
+                )
+                records = {
+                    record["intent_id"]: record
+                    for record in json.loads(Path(auth_path).read_text())["authorizations"]
+                }
+                self.assertEqual(records["login-item"]["status"], "active")
+                self.assertEqual(records["search-item"]["status"], "revoked")
 
     def test_redirect_revokes_dispatch_authorization(self):
         with tempfile.TemporaryDirectory() as temp_dir:

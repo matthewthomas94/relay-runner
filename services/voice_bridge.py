@@ -31,9 +31,12 @@ from pathlib import Path
 from command_actions import format_command_for_agent, resolve_command_action
 from intent_arbitration import (
     ActiveWork,
+    CancellationScope,
     IntentDisposition,
     IntentRoute,
+    VoiceWorkItem,
     authorization_relationship_for,
+    normalize_voice_work_items,
     resolve_intent_disposition,
 )
 from intent_inbox import IntentInbox, sync_deliverable_state
@@ -453,6 +456,8 @@ def _command_action_journal_snapshot(
         if not isinstance(event, dict):
             continue
         command_id = str(event.get("relay_command_id") or "").strip()
+        intent_id = str(event.get("intent_id") or "").strip()
+        event_id = intent_id or command_id
         try:
             command_seq = int(event.get("relay_command_seq"))
         except (TypeError, ValueError):
@@ -461,10 +466,12 @@ def _command_action_journal_snapshot(
         if not command_id or not state:
             continue
 
-        current = by_id.get(command_id, {
+        current = by_id.get(event_id, {
             "relay_command_id": command_id,
             "relay_command_seq": command_seq,
         })
+        if intent_id:
+            current["intent_id"] = intent_id
         for name in (
             "source_text",
             "provider",
@@ -472,6 +479,11 @@ def _command_action_journal_snapshot(
             "action",
             "outcome",
             "received_at",
+            "within_turn_order",
+            "target",
+            "disposition",
+            "cancellation_scope",
+            "lifecycle_state",
         ):
             value = event.get(name)
             if value is not None and value != "":
@@ -483,10 +495,10 @@ def _command_action_journal_snapshot(
             or current_state not in COMMAND_ACTION_TERMINAL_STATES
         ):
             current["state"] = state
-        if command_id in order:
-            order.remove(command_id)
-        order.append(command_id)
-        by_id[command_id] = current
+        if event_id in order:
+            order.remove(event_id)
+        order.append(event_id)
+        by_id[event_id] = current
 
     resolved_repo = (
         str(Path(repo_path).expanduser().resolve())
@@ -494,8 +506,8 @@ def _command_action_journal_snapshot(
         else None
     )
     snapshot: list[dict] = []
-    for command_id in order:
-        event = by_id[command_id]
+    for event_id in order:
+        event = by_id[event_id]
         if event.get("state") not in COMMAND_ACTION_RECOVERY_STATES:
             continue
         event_repo = event.get("repo_path")
@@ -1157,7 +1169,17 @@ def _record_private_command_capture(
         "action": metadata.get("action", "received"),
         "state": metadata.get("state", "received"),
     }
-    for name in ("outcome", "repo_path", "ticket_id"):
+    for name in (
+        "outcome",
+        "repo_path",
+        "ticket_id",
+        "intent_id",
+        "within_turn_order",
+        "target",
+        "disposition",
+        "cancellation_scope",
+        "lifecycle_state",
+    ):
         if metadata.get(name):
             event[name] = metadata[name]
     if metadata.get("provider"):
@@ -1214,6 +1236,7 @@ def _metadata_for_action(
     action,
     relay_command: dict,
     disposition: IntentDisposition | None = None,
+    work_item: VoiceWorkItem | None = None,
 ) -> dict:
     metadata = dict(relay_command)
     fallback_relationship = command_relationship(
@@ -1235,7 +1258,43 @@ def _metadata_for_action(
     if disposition is not None:
         metadata["intent_id"] = disposition.intent_id
         metadata["work_disposition"] = disposition.to_dict()
-        metadata["preempt_provider"] = disposition.route == IntentRoute.REPLACE_CURRENT
+        metadata["preempt_provider"] = (
+            disposition.route == IntentRoute.REPLACE_CURRENT
+            and disposition.cancellation_scope == CancellationScope.ALL_WORK
+        )
+    if work_item is not None:
+        cancellation_scope = work_item.cancellation_scope
+        target_intent_ids = work_item.target_intent_ids
+        if (
+            disposition is not None
+            and disposition.cancellation_scope != CancellationScope.NONE
+        ):
+            cancellation_scope = disposition.cancellation_scope
+            target_intent_ids = disposition.target_work_ids
+        voice_work_item = work_item.to_dict()
+        voice_work_item.update({
+            "cancellation_scope": cancellation_scope.value,
+            "target_intent_ids": list(target_intent_ids),
+        })
+        metadata.update({
+            "intent_id": work_item.intent_id,
+            "within_turn_order": work_item.within_turn_order,
+            "target": work_item.target,
+            "disposition": work_item.disposition,
+            "cancellation_scope": cancellation_scope.value,
+            "lifecycle_state": work_item.lifecycle_state,
+            "target_intent_ids": list(target_intent_ids),
+            "voice_work_item": voice_work_item,
+        })
+        if (
+            disposition is not None
+            and disposition.route == IntentRoute.REPLACE_CURRENT
+            and disposition.cancellation_scope in {
+                CancellationScope.ITEM,
+                CancellationScope.TICKET,
+            }
+        ):
+            metadata["provider_preempt_intent_ids"] = list(target_intent_ids)
     if action.ticket_id:
         metadata["ticket_id"] = action.ticket_id
     if action.ticket_path:
@@ -1279,11 +1338,71 @@ def _active_work(
             resources = ["repository"] if repo_path else []
         active.append(
             ActiveWork(
-                work_id=f"{key[0]}:{key[1]}",
+                work_id=str(record.get("intent_id") or f"{key[0]}:{key[1]}"),
                 resources=tuple(str(resource) for resource in resources),
+                target=str(record.get("target") or "") or None,
             )
         )
     return tuple(active)
+
+
+def _resolve_voice_work_items(
+    source_text: str,
+    relay_command: dict,
+    *,
+    repo_path: str | Path,
+    active_work: tuple[ActiveWork, ...] = (),
+) -> list[dict]:
+    """Normalize one real turn into provider-neutral ordered item deliveries."""
+    items = normalize_voice_work_items(
+        source_text,
+        relay_command_seq=int(relay_command["relay_command_seq"]),
+        relay_command_id=str(relay_command["relay_command_id"]),
+    )
+    resolved: list[dict] = []
+    known_work = list(active_work)
+    for item in items:
+        item_command = {
+            **relay_command,
+            "source_text": item.source_text,
+            "intent_id": item.intent_id,
+            "within_turn_order": item.within_turn_order,
+            "voice_work_item": item.to_dict(),
+        }
+        action = resolve_command_action(
+            item.source_text,
+            repo_path=repo_path,
+            relay_command=item_command,
+        )
+        disposition = resolve_intent_disposition(
+            intent_id=item.intent_id,
+            action_kind=action.kind,
+            action_reason=getattr(action, "reason", None),
+            source_text=item.source_text,
+            active_work=tuple(known_work),
+            cancellation_scope=item.cancellation_scope,
+            target_work_ids=item.target_intent_ids,
+        )
+        metadata = _metadata_for_action(action, item_command, disposition, item)
+        prompt = format_command_for_agent(action, disposition.to_dict())
+        resolved.append({
+            "item": item,
+            "action": action,
+            "disposition": disposition,
+            "metadata": metadata,
+            "prompt": prompt,
+        })
+        if (
+            item.lifecycle_state != "cancelled"
+            and item.disposition == "accepted"
+            and action.kind != "control"
+        ):
+            known_work.append(ActiveWork(
+                item.intent_id,
+                tuple(getattr(disposition, "resource_claims", ())),
+                item.target,
+            ))
+    return resolved
 
 
 _PRIVATE_CONTEXT_LINE_RE = re.compile(
@@ -1338,6 +1457,16 @@ def _raw_instruction_payload(
         "status": "queued",
         "defer_processing": True,
     }
+    for name in (
+        "intent_id",
+        "within_turn_order",
+        "target",
+        "disposition",
+        "cancellation_scope",
+        "lifecycle_state",
+    ):
+        if metadata.get(name) is not None:
+            payload[name] = metadata[name]
     context = _sanitized_command_context(relay_command)
     if context:
         payload["context"] = context
@@ -1487,6 +1616,34 @@ def _publish_command(
             reason=published_metadata.get("reason"),
             source_text=published_metadata.get("source_text"),
         )
+    disposition = published_metadata.get("work_disposition")
+    route = str(disposition.get("route") or "") if isinstance(disposition, dict) else ""
+    if inbox is not None and route == IntentRoute.REPLACE_CURRENT.value:
+        if not published_metadata.get("cancellation_scope") and not (
+            isinstance(disposition, dict) and disposition.get("cancellation_scope")
+        ):
+            # Durable records created before item scoping used replace_current
+            # only for whole-turn replacement. Preserve that recovery meaning.
+            published_metadata["cancellation_scope"] = CancellationScope.ALL_WORK.value
+        cancelled_ids = inbox.cancel_scoped(
+            published_metadata,
+            command_path=command_path,
+            metadata_path=meta_path,
+        )
+        if cancelled_ids:
+            published_metadata["target_intent_ids"] = cancelled_ids
+            item = published_metadata.get("voice_work_item")
+            if isinstance(item, dict):
+                item = dict(item)
+                item["target_intent_ids"] = cancelled_ids
+                published_metadata["voice_work_item"] = item
+            if isinstance(disposition, dict):
+                disposition = dict(disposition)
+                disposition["target_work_ids"] = cancelled_ids
+                disposition["conflicting_work_ids"] = cancelled_ids
+                published_metadata["work_disposition"] = disposition
+            if published_metadata.get("cancellation_scope") in {"item", "ticket"}:
+                published_metadata["provider_preempt_intent_ids"] = cancelled_ids
     with _VOICE_STATE_LOCK:
         _atomic_write_json(state_path, published_metadata)
     if authorization_path:
@@ -1495,7 +1652,11 @@ def _publish_command(
                 authorization_path,
                 published_metadata,
                 relationship=str(published_metadata.get("authorization_relationship") or ""),
-                allowed_mutations=allowed_mutations_for_metadata(published_metadata),
+                allowed_mutations=(
+                    []
+                    if published_metadata.get("lifecycle_state") == "cancelled"
+                    else allowed_mutations_for_metadata(published_metadata)
+                ),
             )
         except (OSError, TypeError, ValueError) as e:
             print(f"[voice_bridge] Could not record Relay mutation authorization: {e}", file=sys.stderr)
@@ -1504,16 +1665,6 @@ def _publish_command(
         _write_cmd_file(text, path=command_path)
         return
 
-    disposition = published_metadata.get("work_disposition")
-    route = str(disposition.get("route") or "") if isinstance(disposition, dict) else ""
-    if route == IntentRoute.REPLACE_CURRENT.value:
-        inbox.cancel_pending_before(
-            int(published_metadata["relay_command_seq"]),
-            reason="explicit_replace",
-        )
-        # A cancelled intent may already occupy the legacy ready-file lease.
-        # Remove that transport copy so the replacement can be materialized.
-        _discard_pending_command(command_path=command_path, meta_path=meta_path)
     stored_metadata = inbox.enqueue(text, published_metadata, route or "continue_current")
     with _VOICE_STATE_LOCK:
         _atomic_write_json(state_path, stored_metadata)
@@ -1560,6 +1711,16 @@ def _relay_command_key(command: dict | None) -> tuple[int, str] | None:
     return command_seq, command_id
 
 
+def _relay_intent_matches(left: dict | None, right: dict | None) -> bool:
+    if _relay_command_key(left) != _relay_command_key(right):
+        return False
+    left_intent = str((left or {}).get("intent_id") or "").strip()
+    right_intent = str((right or {}).get("intent_id") or "").strip()
+    if left_intent or right_intent:
+        return bool(left_intent) and left_intent == right_intent
+    return True
+
+
 def _provider_turn_state(
     relay_command: dict | None,
     *,
@@ -1573,7 +1734,7 @@ def _provider_turn_state(
     if not isinstance(records, list):
         return None
     for record in reversed(records):
-        if isinstance(record, dict) and _relay_command_key(record) == key:
+        if isinstance(record, dict) and _relay_intent_matches(record, relay_command):
             state = str(record.get("state") or "").strip()
             return state or None
     return None
@@ -1612,7 +1773,7 @@ def _command_pending_delivery(
     if key is None or not os.path.exists(command_path):
         return False
     metadata = _read_json_file(meta_path)
-    return _relay_command_key(metadata) == key
+    return _relay_intent_matches(metadata, relay_command)
 
 
 def _provider_turn_seen(
@@ -2808,31 +2969,19 @@ def _run_relay(
                     )
                 else:
                     tts_worker.skip()
-                action = resolve_command_action(
+                resolved_items = _resolve_voice_work_items(
                     text,
+                    relay_command,
                     repo_path=Path.cwd(),
-                    relay_command=relay_command,
-                )
-                disposition = resolve_intent_disposition(
-                    intent_id=str(relay_command["relay_command_id"]),
-                    action_kind=action.kind,
-                    action_reason=getattr(action, "reason", None),
-                    source_text=text,
                     active_work=_active_work(repo_path=Path.cwd()),
                 )
-                if inbox is not None or disposition.route == IntentRoute.RUN_SIDECAR:
-                    relay_command["work_disposition"] = disposition.to_dict()
-                metadata = _metadata_for_action(action, relay_command, disposition)
-                _record_command_action_state(metadata, "classified")
-                try:
-                    record_command_authorization(
-                        VOICE_COMMAND_AUTHORIZATION_FILE,
-                        metadata,
-                        relationship=str(metadata.get("authorization_relationship") or ""),
-                        allowed_mutations=allowed_mutations_for_metadata(metadata),
-                    )
-                except (OSError, TypeError, ValueError) as e:
-                    print(f"[voice_bridge] Could not record Relay mutation authorization: {e}", file=sys.stderr)
+                relay_command["voice_work_items"] = [
+                    resolved["item"].to_dict() for resolved in resolved_items
+                ]
+                if resolved_items:
+                    relay_command["work_disposition"] = resolved_items[-1][
+                        "disposition"
+                    ].to_dict()
                 # Tutorial sessions need one authoritative reply to exercise
                 # play, replay, and cancel. A fast social reply here would race
                 # the foreground provider and leave its second greeting queued
@@ -2847,72 +2996,105 @@ def _run_relay(
                     source_text=text,
                     discard_pending_command=inbox is None,
                 )
-                if disposition.route == IntentRoute.RUN_SIDECAR:
-                    accepted = (
-                        sidecar_lane is not None
-                        and _enqueue_sidecar_intent(
-                            prompt=format_command_for_agent(action, disposition.to_dict()),
-                            source_text=text,
-                            metadata=metadata,
-                            sidecar_lane=sidecar_lane,
-                            inbox=inbox,
-                        )
-                    )
-                    if not accepted:
-                        failure = SidecarLifecycleEvent(
-                            phase="failed",
-                            command=metadata,
-                            public_summary=disposition.public_reason,
-                        )
-                        _handle_sidecar_lifecycle(
-                            failure,
-                            inbox=inbox,
-                            messenger=messenger,
-                        )
-                        _handle_sidecar_final(
-                            "The independent read-only task could not enter its bounded sidecar lane.",
+                for resolved in resolved_items:
+                    item = resolved["item"]
+                    action = resolved["action"]
+                    disposition = resolved["disposition"]
+                    metadata = resolved["metadata"]
+                    prompt = resolved["prompt"]
+                    _record_command_action_state(metadata, "classified")
+                    try:
+                        record_command_authorization(
+                            VOICE_COMMAND_AUTHORIZATION_FILE,
                             metadata,
-                            tts_worker=tts_worker,
-                            messenger=messenger,
+                            relationship=str(metadata.get("authorization_relationship") or ""),
+                            allowed_mutations=(
+                                []
+                                if item.lifecycle_state == "cancelled"
+                                else allowed_mutations_for_metadata(metadata)
+                            ),
                         )
+                    except (OSError, TypeError, ValueError) as e:
+                        print(
+                            f"[voice_bridge] Could not record Relay mutation authorization: {e}",
+                            file=sys.stderr,
+                        )
+                    if item.lifecycle_state == "cancelled" and inbox is None:
+                        _record_command_action_state(metadata, "cancelled")
+                        continue
+                    if disposition.route == IntentRoute.RUN_SIDECAR:
+                        accepted = (
+                            item.lifecycle_state != "cancelled"
+                            and sidecar_lane is not None
+                            and _enqueue_sidecar_intent(
+                                prompt=prompt,
+                                source_text=item.source_text,
+                                metadata=metadata,
+                                sidecar_lane=sidecar_lane,
+                                inbox=inbox,
+                            )
+                        )
+                        if not accepted and item.lifecycle_state != "cancelled":
+                            failure = SidecarLifecycleEvent(
+                                phase="failed",
+                                command=metadata,
+                                public_summary=disposition.public_reason,
+                            )
+                            _handle_sidecar_lifecycle(
+                                failure,
+                                inbox=inbox,
+                                messenger=messenger,
+                            )
+                            _handle_sidecar_final(
+                                "The independent read-only task could not enter its bounded sidecar lane.",
+                                metadata,
+                                tts_worker=tts_worker,
+                                messenger=messenger,
+                            )
+                        print(
+                            f"[voice_bridge] Sidecar {'accepted' if accepted else 'rejected'} "
+                            f"for intent={disposition.intent_id}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    if (
+                        item.lifecycle_state != "cancelled"
+                        and _should_fanout_raw_instruction_to_orchestrator(action)
+                    ):
+                        _fanout_raw_instruction_to_orchestrator(
+                            item.source_text,
+                            metadata,
+                            action,
+                            repo_path=Path.cwd(),
+                            orchestrator_session=orchestrator_session,
+                        )
+                    if item.lifecycle_state != "cancelled":
+                        _start_pm_update_mode(
+                            metadata,
+                            action,
+                            orchestrator_session=orchestrator_session,
+                            messenger=messenger,
+                            source_text=item.source_text,
+                        )
+                    _publish_command(
+                        prompt,
+                        metadata,
+                        authorization_path=VOICE_COMMAND_AUTHORIZATION_FILE,
+                        inbox=inbox,
+                        transport=(
+                            "app-or-manual-shared-ready-file"
+                            if inbox is not None
+                            else "legacy-ready-file"
+                        ),
+                    )
+                    state = "cancelled" if item.lifecycle_state == "cancelled" else "queued"
+                    _record_command_action_state(metadata, state)
                     print(
-                        f"[voice_bridge] Sidecar {'accepted' if accepted else 'rejected'} "
-                        f"for intent={disposition.intent_id}",
+                        f"[voice_bridge] Voice item ready: {action.outcome} "
+                        f"intent={item.intent_id} order={item.within_turn_order} "
+                        f"disposition={disposition.route.value} state={state}",
                         file=sys.stderr,
                     )
-                    continue
-                if _should_fanout_raw_instruction_to_orchestrator(action):
-                    _fanout_raw_instruction_to_orchestrator(
-                        text,
-                        relay_command,
-                        action,
-                        repo_path=Path.cwd(),
-                        orchestrator_session=orchestrator_session,
-                    )
-                _start_pm_update_mode(
-                    relay_command,
-                    action,
-                    orchestrator_session=orchestrator_session,
-                    messenger=messenger,
-                    source_text=text,
-                )
-                _publish_command(
-                    format_command_for_agent(action, disposition.to_dict()),
-                    metadata,
-                    authorization_path=VOICE_COMMAND_AUTHORIZATION_FILE,
-                    inbox=inbox,
-                    transport=(
-                        "app-or-manual-shared-ready-file"
-                        if inbox is not None
-                        else "legacy-ready-file"
-                    ),
-                )
-                _record_command_action_state(metadata, "queued")
-                print(
-                    f"[voice_bridge] Voice command ready: {action.outcome} "
-                    f"disposition={disposition.route.value}",
-                    file=sys.stderr,
-                )
 
     except KeyboardInterrupt:
         pass

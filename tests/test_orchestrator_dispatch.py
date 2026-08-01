@@ -1428,6 +1428,67 @@ class OrchestratorDispatchTests(unittest.TestCase):
             )
             self.assertEqual(record["started_mutations"][0]["mutation"]["ticket_id"], "RR-2")
 
+    def test_item_scoped_replacement_preserves_unrelated_turn_authorization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_path = Path(tmp) / "voice_command_authorizations.json"
+            for order, target in ((1, "login"), (2, "search")):
+                item = {
+                    "relay_command_seq": 1,
+                    "relay_command_id": "multi-item",
+                    "intent_id": f"multi-item:item:{order}",
+                    "within_turn_order": order,
+                    "target": target,
+                    "action": "create_ticket",
+                    "source_text": f"fix {target}",
+                }
+                record_command_authorization(
+                    auth_path,
+                    item,
+                    relationship="additive",
+                    allowed_mutations=allowed_mutations_for_metadata(item),
+                    now=float(order),
+                )
+
+            record_command_authorization(
+                auth_path,
+                {
+                    "relay_command_seq": 2,
+                    "relay_command_id": "cancel-login",
+                    "intent_id": "cancel-login:item:1",
+                    "cancellation_scope": "item",
+                    "target_intent_ids": ["multi-item:item:1"],
+                    "authorization_relationship": "redirect",
+                },
+                relationship="redirect",
+                allowed_mutations=[],
+                now=3,
+            )
+
+            records = {
+                item.get("intent_id"): item
+                for item in json.loads(auth_path.read_text())["authorizations"]
+            }
+            self.assertEqual(records["multi-item:item:1"]["status"], "revoked")
+            self.assertEqual(records["multi-item:item:2"]["status"], "active")
+            with self.assertRaisesRegex(ValueError, "revoked"):
+                validate_and_mark_mutation(
+                    auth_path,
+                    1,
+                    "multi-item",
+                    {"kind": "orchestrator_command", "request_id": "login"},
+                    relay_intent_id="multi-item:item:1",
+                    now=4,
+                )
+            survivor = validate_and_mark_mutation(
+                auth_path,
+                1,
+                "multi-item",
+                {"kind": "orchestrator_command", "request_id": "search"},
+                relay_intent_id="multi-item:item:2",
+                now=5,
+            )
+            self.assertEqual(survivor["intent_id"], "multi-item:item:2")
+
     def test_redirect_revokes_authorized_dispatch_before_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
