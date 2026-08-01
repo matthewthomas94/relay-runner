@@ -395,7 +395,12 @@ def _turn_id(payload: dict) -> str | None:
 def _record_key(record: dict) -> str:
     session_id = str(record.get("session_id") or "unknown")
     turn_id = str(record.get("turn_id") or "").strip()
-    return f"{session_id}:{turn_id}" if turn_id else session_id
+    if turn_id:
+        return f"{session_id}:{turn_id}"
+    local_turn_seq = _nonnegative_int(record.get("local_turn_seq"))
+    if local_turn_seq is not None:
+        return f"{session_id}:local:{local_turn_seq}"
+    return session_id
 
 
 def _load_turn_state(path: str, *, now: float | None = None) -> dict:
@@ -449,6 +454,7 @@ def _find_turn_record(path: str, payload: dict, *, now: float | None = None) -> 
         for record in reversed(records):
             if str(record.get("turn_id") or "") == turn_id:
                 return record
+        return None
     active = [r for r in records if str(r.get("state") or "") == "active"]
     if len(active) == 1:
         return sorted(
@@ -460,17 +466,43 @@ def _find_turn_record(path: str, payload: dict, *, now: float | None = None) -> 
     return records[-1] if records else None
 
 
-def _command_has_turn_record(path: str, command: dict, *, now: float | None = None) -> bool:
+def _command_turn_records(path: str, command: dict, *, now: float | None = None) -> list[dict]:
     key = _relay_command_key(command)
     if key is None:
-        return False
+        return []
     state = _load_turn_state(path, now=now)
-    return any(
-        isinstance(record, dict)
-        and _relay_intent_matches(record, command)
-        and str(record.get("state") or "") != "stale"
+    return [
+        record
         for record in state["records"]
-    )
+        if (
+            isinstance(record, dict)
+            and _relay_intent_matches(record, command)
+            and str(record.get("state") or "") != "stale"
+        )
+    ]
+
+
+def _command_bound_to_provider_turn(records: list[dict], payload: dict) -> bool:
+    session_id = _session_id(payload)
+    turn_id = _turn_id(payload)
+    matching_session = [
+        record
+        for record in records
+        if str(record.get("session_id") or "") == session_id
+    ]
+    if turn_id:
+        return any(str(record.get("turn_id") or "") == turn_id for record in matching_session)
+    return any(str(record.get("state") or "") == "active" for record in matching_session)
+
+
+def _next_local_turn_seq(path: str, *, session_id: str, now: float) -> int:
+    state = _load_turn_state(path, now=now)
+    sequences = [
+        _nonnegative_int(record.get("local_turn_seq")) or 0
+        for record in state["records"]
+        if str(record.get("session_id") or "") == session_id
+    ]
+    return max(sequences, default=0) + 1
 
 
 def _write_bridge_control(payload: dict, *, fifo_path: str = VOICE_FIFO) -> bool:
@@ -506,16 +538,31 @@ def _bind_prompt_submit(
         and _prompt_matches_claim(prompt, claim)
     )
 
+    command_records = _command_turn_records(turns_path, claim, now=now) if correlated else []
+    if correlated and _command_bound_to_provider_turn(command_records, payload):
+        return False
+    # Matching text is not a provider-turn identity. Once the Relay command has
+    # owned another turn, the same text in a new turn is ordinary manual input.
+    if command_records:
+        correlated = False
+
     if not correlated:
+        session_id = _session_id(payload)
         record = {
             "state": "active",
             "origin": "manual",
-            "session_id": _session_id(payload),
+            "session_id": session_id,
             "created_at": now,
         }
         turn_id = _turn_id(payload)
         if turn_id:
             record["turn_id"] = turn_id
+        else:
+            record["local_turn_seq"] = _next_local_turn_seq(
+                turns_path,
+                session_id=session_id,
+                now=now,
+            )
         provider = _provider_name(payload)
         if provider:
             record["provider"] = provider
@@ -524,8 +571,6 @@ def _bind_prompt_submit(
 
     key = _relay_command_key(claim)
     if key is None:
-        return False
-    if _command_has_turn_record(turns_path, claim, now=now):
         return False
     record = {
         "state": "active",
@@ -563,6 +608,9 @@ def _complete_turn(
     record = _find_turn_record(turns_path, payload, now=now)
     if not record:
         print("[relay_completion_hook] ignored provider completion without Relay voice correlation", file=stderr)
+        return False
+    if str(record.get("state") or "") != "active":
+        print("[relay_completion_hook] ignored duplicate provider completion", file=stderr)
         return False
     if _relay_command_key(record) is None:
         event = _hook_event_name(payload)
