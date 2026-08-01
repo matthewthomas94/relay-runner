@@ -2668,6 +2668,54 @@ def _git(repo_path: str, *args: str, check: bool = True) -> subprocess.Completed
     )
 
 
+def _ticket_authoring_pathspecs(repo: Path, paths: list[Path]) -> list[str]:
+    root = repo.resolve()
+    return list(dict.fromkeys(str(path.resolve().relative_to(root)) for path in paths))
+
+
+def _ensure_ticket_authoring_paths_clean(repo: Path, paths: list[Path]) -> None:
+    pathspecs = _ticket_authoring_pathspecs(repo, paths)
+    status = _git(
+        str(repo), "status", "--porcelain", "--untracked-files=all", "--", *pathspecs,
+        check=False,
+    )
+    if status.returncode != 0:
+        raise ValueError(f"could not check ticket-authoring state: {status.stderr.strip()}")
+    if status.stdout.strip():
+        raise ValueError(
+            "ticket authoring blocked by existing changes to "
+            + ", ".join(pathspecs)
+        )
+
+
+def _commit_ticket_authorship(repo: Path, paths: list[Path], ticket_ids: list[str]) -> None:
+    pathspecs = _ticket_authoring_pathspecs(repo, paths)
+    status = _git(str(repo), "status", "--porcelain", "--untracked-files=all", check=False)
+    if status.returncode != 0:
+        raise ValueError(f"could not check repository status before ticket commit: {status.stderr.strip()}")
+
+    staged = _git(str(repo), "diff", "--cached", "--name-only", check=False)
+    if staged.returncode != 0:
+        raise ValueError(f"could not inspect staged changes before ticket commit: {staged.stderr.strip()}")
+    if staged.stdout.strip():
+        raise ValueError("ticket authoring blocked by already-staged changes")
+
+    add = _git(str(repo), "add", "--", *pathspecs, check=False)
+    if add.returncode != 0:
+        raise ValueError(f"could not stage ticket authorship: {(add.stderr or add.stdout).strip()}")
+
+    commit = _git(
+        str(repo),
+        "commit",
+        "-m",
+        f"chore: author {', '.join(ticket_ids)} ticket{'s' if len(ticket_ids) != 1 else ''}",
+        check=False,
+    )
+    if commit.returncode != 0:
+        _git(str(repo), "restore", "--staged", "--worktree", "--", *pathspecs, check=False)
+        raise ValueError(f"ticket authoring commit failed: {(commit.stderr or commit.stdout).strip()}")
+
+
 def create_worktree(*, repo_path: str, workspace_path: Path, branch: str, base_branch: str) -> None:
     """Add a worktree for `branch` at `workspace_path`. Reuses if already a worktree on `branch`."""
     workspace_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5851,6 +5899,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 raise ValueError(f"duplicate orchestrator action request: {action_request_id}")
 
             tickets_written: list[dict[str, Any]] = []
+            authored_paths: list[Path] = []
+            authored_ticket_ids: list[str] = []
             dispatch_requests: list[dict[str, Any]] = []
             dispatches: list[dict[str, Any]] = []
             skipped: list[dict[str, Any]] = []
@@ -5946,8 +5996,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                             if isinstance(action, dict)
                         ]
                         return _cancel_and_return(remaining, str(e))
+                    config_path = orch_dir / "config.toml"
+                    if config_path not in authored_paths:
+                        _ensure_ticket_authoring_paths_clean(repo, [config_path])
                     ticket_id = self._create_orchestrator_ticket(repo, raw_action)
                     tickets_written.append({"ticket_id": ticket_id, "action": kind})
+                    authored_paths.extend([config_path, orch_dir / f"{ticket_id}.md"])
+                    authored_ticket_ids.append(ticket_id)
                 elif kind in {"edit_ticket", "update_dependencies"}:
                     mutation = _orchestrator_action_mutation(
                         raw_action,
@@ -5969,12 +6024,21 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                             if isinstance(action, dict)
                         ]
                         return _cancel_and_return(remaining, str(e))
+                    ticket_id = _clean_required_text(raw_action.get("ticket_id"), "ticket_id").upper()
+                    ticket_path = orch_dir / f"{ticket_id}.md"
+                    if ticket_path not in authored_paths:
+                        _ensure_ticket_authoring_paths_clean(repo, [ticket_path])
                     ticket_id = self._edit_orchestrator_ticket(repo, raw_action, dependencies_only=(kind == "update_dependencies"))
                     tickets_written.append({"ticket_id": ticket_id, "action": kind})
+                    authored_paths.append(ticket_path)
+                    authored_ticket_ids.append(ticket_id)
                 elif kind == "request_worker":
                     request = self._worker_creation_request(repo, raw_action)
                     request["_relay_action_index"] = action_index
                     dispatch_requests.append(request)
+
+            if authored_paths:
+                _commit_ticket_authorship(repo, authored_paths, authored_ticket_ids)
 
             all_tickets = scan_repo(repo)
             for request_index, request in enumerate(dispatch_requests):
