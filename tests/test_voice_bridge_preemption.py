@@ -1629,7 +1629,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 now=10,
                 stderr=io.StringIO(),
             ))
-            self.assertFalse(relay_completion_hook.handle_hook_payload(
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
                 {
                     "hook_event_name": "UserPromptSubmit",
                     "session_id": "session-2",
@@ -1655,7 +1655,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 now=12,
                 stderr=io.StringIO(),
             ))
-            self.assertFalse(relay_completion_hook.handle_hook_payload(
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
                 {
                     "hook_event_name": "UserPromptSubmit",
                     "session_id": "session-4",
@@ -1672,9 +1672,56 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             stored = Path(turns_path).read_text()
             self.assertIn('"state": "active"', stored)
             self.assertIn('"prompt_sha256"', stored)
+            self.assertIn('"origin": "manual"', stored)
             self.assertNotIn("Refined private agent prompt", stored)
             self.assertNotIn("raw voice text", stored)
             self.assertNotIn("Improve documentation", stored)
+
+    def test_completion_hook_tracks_manual_turn_boundaries_for_both_app_providers(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                delivered: list[dict] = []
+
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    {
+                        "hook_event_name": "UserPromptSubmit",
+                        "session_id": f"{provider}-manual-session",
+                        "turn_id": "manual-turn",
+                        "provider": provider,
+                        "prompt": "private typed terminal text",
+                    },
+                    claim_path=os.path.join(temp_dir, "missing-claim.json"),
+                    state_path=os.path.join(temp_dir, "missing-state.json"),
+                    turns_path=turns_path,
+                    now=20,
+                    stderr=io.StringIO(),
+                ))
+                active = json.loads(Path(turns_path).read_text())["records"][0]
+                self.assertEqual(active["state"], "active")
+                self.assertEqual(active["origin"], "manual")
+                self.assertEqual(active["provider"], provider)
+
+                self.assertFalse(relay_completion_hook.handle_hook_payload(
+                    {
+                        "hook_event_name": "Stop",
+                        "session_id": f"{provider}-manual-session",
+                        "turn_id": "manual-turn",
+                        "provider": provider,
+                        "last_assistant_message": "private manual response",
+                    },
+                    state_path=os.path.join(temp_dir, "missing-state.json"),
+                    turns_path=turns_path,
+                    write_control=lambda payload: delivered.append(payload) or True,
+                    now=21,
+                    stderr=io.StringIO(),
+                ))
+                stored = Path(turns_path).read_text()
+                completed = json.loads(stored)["records"][0]
+                self.assertEqual(completed["state"], "completed_manual")
+                self.assertEqual(delivered, [])
+                self.assertNotIn("private typed terminal text", stored)
+                self.assertNotIn("private manual response", stored)
 
     def test_completion_hook_reads_provider_native_active_context_fields(self):
         with tempfile.TemporaryDirectory() as temp_dir:

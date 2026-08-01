@@ -500,12 +500,27 @@ def _bind_prompt_submit(
     if payload.get("parent_tool_use_id") or payload.get("parentToolUseId"):
         return False
     claim = _read_json_file(claim_path)
-    if not claim:
-        return False
-    if not _relay_command_deliverable(claim, state_path=state_path):
-        return False
-    if not _prompt_matches_claim(prompt, claim):
-        return False
+    correlated = bool(
+        claim
+        and _relay_command_deliverable(claim, state_path=state_path)
+        and _prompt_matches_claim(prompt, claim)
+    )
+
+    if not correlated:
+        record = {
+            "state": "active",
+            "origin": "manual",
+            "session_id": _session_id(payload),
+            "created_at": now,
+        }
+        turn_id = _turn_id(payload)
+        if turn_id:
+            record["turn_id"] = turn_id
+        provider = _provider_name(payload)
+        if provider:
+            record["provider"] = provider
+        _upsert_turn_record(turns_path, record, now=now)
+        return True
 
     key = _relay_command_key(claim)
     if key is None:
@@ -548,6 +563,12 @@ def _complete_turn(
     record = _find_turn_record(turns_path, payload, now=now)
     if not record:
         print("[relay_completion_hook] ignored provider completion without Relay voice correlation", file=stderr)
+        return False
+    if _relay_command_key(record) is None:
+        event = _hook_event_name(payload)
+        completed = dict(record)
+        completed["state"] = "failed_manual" if event == "StopFailure" else "completed_manual"
+        _upsert_turn_record(turns_path, completed, now=now)
         return False
     if not _relay_command_current(record, state_path=state_path):
         stale_record = dict(record)

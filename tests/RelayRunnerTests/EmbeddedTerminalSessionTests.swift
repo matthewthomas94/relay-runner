@@ -594,10 +594,16 @@ final class RelayTerminalInputTrackerTests: XCTestCase {
         tracker.record(data: ArraySlice([127, 127, 127, 127, 127, 127, 127]))
         XCTAssertFalse(tracker.hasUnsubmittedInput)
 
-        tracker.record(data: ArraySlice(Array("next".utf8)))
+        XCTAssertEqual(
+            tracker.record(data: ArraySlice(Array("next".utf8))),
+            .draftChanged
+        )
         XCTAssertTrue(tracker.hasUnsubmittedInput)
 
-        tracker.record(data: ArraySlice([13]))
+        XCTAssertEqual(
+            tracker.record(data: ArraySlice([13])),
+            .submitted(pendingByteCount: 4)
+        )
         XCTAssertFalse(tracker.hasUnsubmittedInput)
     }
 
@@ -627,6 +633,21 @@ final class RelayTerminalInputTrackerTests: XCTestCase {
         tracker.record(data: ArraySlice([5]))
 
         XCTAssertFalse(tracker.hasUnsubmittedInput)
+    }
+
+    func testTrackerCountsUnicodePasteBytesButDeletesOneInputUnit() {
+        var tracker = RelayTerminalInputTracker()
+
+        XCTAssertEqual(
+            tracker.record(data: ArraySlice(Array("é".utf8))),
+            .draftChanged
+        )
+        XCTAssertEqual(tracker.pendingByteCount, 2)
+
+        tracker.record(data: ArraySlice([127]))
+
+        XCTAssertFalse(tracker.hasUnsubmittedInput)
+        XCTAssertEqual(tracker.pendingByteCount, 0)
     }
 }
 
@@ -766,7 +787,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(journal.contains("Fix the bridge"))
     }
 
-    func testMissingProviderAcknowledgementRetriesReturnWithoutRewritingPrompt() throws {
+    func testMissingProviderAcknowledgementRecoversWithoutRetryingReturn() throws {
         let fixture = try makeFixture()
         try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
         let metadata = #"{"provider":"codex","relay_command_id":"cmd-1","relay_command_seq":1}"#
@@ -786,16 +807,17 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         scheduled[0].work()
         scheduled[1].work()
 
-        XCTAssertEqual(sent, ["Fix the bridge", "\r", "\r"])
+        XCTAssertEqual(sent, ["Fix the bridge", "\r"])
         XCTAssertEqual(sent.filter { $0 == "Fix the bridge" }.count, 1)
         let events = try String(contentsOf: fixture.deliveryEvents)
-        XCTAssertTrue(events.contains(#""event":"submit_ack_timeout""#))
-        XCTAssertTrue(events.contains(#""event":"submit_retry""#))
-        XCTAssertTrue(events.contains(#""attempt":2"#))
+        XCTAssertTrue(events.contains(#""event":"acknowledgement_timeout""#))
+        XCTAssertTrue(events.contains(#""event":"recovery_started""#))
+        XCTAssertFalse(events.contains(#""event":"submit_retry""#))
+        XCTAssertFalse(events.contains(#""event":"delivery_failure_published""#))
         XCTAssertFalse(events.contains("Fix the bridge"))
     }
 
-    func testDelayedProviderAcknowledgementAfterRetryPreventsFailure() throws {
+    func testDelayedProviderAcknowledgementDuringRecoveryPreventsFailure() throws {
         let fixture = try makeFixture()
         try Data().write(to: fixture.voiceInput)
         try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
@@ -820,14 +842,15 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         ], to: fixture.providerTurns)
         scheduled[2].work()
 
-        XCTAssertEqual(sent, ["Fix the bridge", "\r", "\r"])
+        XCTAssertEqual(sent, ["Fix the bridge", "\r"])
         let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"late_ack_reconciled""#))
         XCTAssertTrue(events.contains(#""event":"provider_acknowledged""#))
-        XCTAssertFalse(events.contains(#""event":"submit_ack_failed""#))
-        XCTAssertTrue((try String(contentsOf: fixture.voiceInput)).isEmpty)
+        XCTAssertFalse(events.contains(#""event":"delivery_failure_published""#))
+        XCTAssertTrue((try String(contentsOf: fixture.voiceInput)).contains("__TRACE__:"))
     }
 
-    func testSubmitFailureClearsComposerAndPublishesVisibleFailure() throws {
+    func testRecoveryPublishesFailureOnlyAfterProviderProcessTerminates() throws {
         let fixture = try makeFixture()
         try Data().write(to: fixture.voiceInput)
         try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
@@ -836,24 +859,25 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
         var sent: [String] = []
         var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
+        var running = true
         let delivery = RelayVoiceCommandDelivery(
             paths: fixture.paths,
             send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
             acknowledgementTimeout: 0.5,
-            maxSubmitAttempts: 2,
             schedule: { delay, _, work in scheduled.append((delay, work)) },
-            isRunning: { true }
+            isRunning: { running }
         )
 
         XCTAssertTrue(delivery.claimAndSendIfPossible())
         scheduled[0].work()
         scheduled[1].work()
+        running = false
         scheduled[2].work()
 
-        XCTAssertEqual(sent, ["Fix the bridge", "\r", "\r", "\u{15}"])
+        XCTAssertEqual(sent, ["Fix the bridge", "\r"])
         let events = try String(contentsOf: fixture.deliveryEvents)
-        XCTAssertTrue(events.contains(#""event":"submit_ack_failed""#))
-        XCTAssertTrue(events.contains(#""event":"submit_recovery_clear""#))
+        XCTAssertTrue(events.contains(#""event":"recovery_started""#))
+        XCTAssertTrue(events.contains(#""event":"provider_process_terminated""#))
         XCTAssertTrue(events.contains(#""event":"delivery_failure_published""#))
         XCTAssertTrue(events.contains(#""provider":"claude""#))
         XCTAssertFalse(events.contains("Fix the bridge"))
@@ -893,7 +917,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertEqual(sent, ["Fix the bridge", "\r"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path))
         let events = try String(contentsOf: fixture.deliveryEvents)
-        XCTAssertTrue(events.contains(#""event":"submit_aborted_not_running""#))
+        XCTAssertTrue(events.contains(#""event":"provider_process_terminated""#))
         XCTAssertTrue(events.contains(#""event":"delivery_failure_published""#))
         XCTAssertFalse(events.contains("Fix the bridge"))
         let control = try String(contentsOf: fixture.voiceInput)
@@ -962,16 +986,21 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(delivery.claimAndSendIfPossible())
         scheduled[1].work()
 
-        XCTAssertEqual(sent, ["Second request", "\r", "\r"])
+        XCTAssertEqual(sent, ["Second request", "\r"])
         let events = try String(contentsOf: fixture.deliveryEvents)
         XCTAssertFalse(events.contains(#""event":"provider_acknowledged""#))
-        XCTAssertTrue(events.contains(#""event":"submit_retry""#))
+        XCTAssertTrue(events.contains(#""event":"recovery_started""#))
+        XCTAssertFalse(events.contains(#""event":"submit_retry""#))
         XCTAssertTrue(events.contains(#""provider":"claude""#))
     }
 
     func testDeliveryDefersWhenTypedInputIsPending() throws {
         let fixture = try makeFixture()
         try "Do the work\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        let metadata = #"{"provider":"codex","relay_command_id":"cmd-1","relay_command_seq":1}"#
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        try Data().write(to: fixture.voiceInput)
         var sent: [String] = []
         let delivery = RelayVoiceCommandDelivery(
             paths: fixture.paths,
@@ -989,6 +1018,82 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(delivery.claimAndSendIfPossible())
         XCTAssertEqual(sent, [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path))
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"deferred_terminal_draft""#))
+        XCTAssertTrue(events.contains(#""pending_byte_count":6"#))
+        XCTAssertFalse(events.contains("manual"))
+        let feedback = try String(contentsOf: fixture.voiceInput)
+        XCTAssertTrue(feedback.contains("__TRACE__:"))
+        XCTAssertTrue(feedback.contains("queued until terminal input"))
+        XCTAssertFalse(feedback.contains("manual"))
+    }
+
+    func testManualReturnBarrierAndLateAcknowledgementHaveOneOutcome() throws {
+        let fixture = try makeFixture()
+        try Data().write(to: fixture.voiceInput)
+        try "Do the queued work\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        let metadata = #"{"provider":"codex","relay_command_id":"cmd-7","relay_command_seq":7}"#
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var currentTime = Date(timeIntervalSince1970: 100)
+        var sent: [String] = []
+        var scheduled: [() -> Void] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+            acknowledgementTimeout: 0.5,
+            schedule: { _, _, work in scheduled.append(work) },
+            isRunning: { true },
+            now: { currentTime }
+        )
+
+        delivery.recordUserInput(ArraySlice(Array("typed provider turn".utf8)))
+        waitForDeliveryQueue()
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+
+        delivery.recordUserInput(ArraySlice([13]))
+        waitForDeliveryQueue()
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        XCTAssertEqual(sent, [])
+
+        try writeProviderTurnRecords([[
+            "state": "active",
+            "origin": "manual",
+            "session_id": "codex-session",
+            "provider": "codex",
+            "created_at": 100.1,
+            "updated_at": 100.1,
+        ]], to: fixture.providerTurns)
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+
+        currentTime = Date(timeIntervalSince1970: 101)
+        try writeProviderTurnRecords([[
+            "state": "completed_manual",
+            "origin": "manual",
+            "session_id": "codex-session",
+            "provider": "codex",
+            "created_at": 100.1,
+            "updated_at": 101.0,
+        ]], to: fixture.providerTurns)
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        XCTAssertEqual(sent, ["Do the queued work"])
+        scheduled[0]()
+        XCTAssertEqual(sent, ["Do the queued work", "\r"])
+
+        scheduled[1]()
+        try writeProviderTurns([
+            providerTurn(seq: 7, id: "cmd-7", provider: "codex", state: "active"),
+        ], to: fixture.providerTurns)
+        scheduled[2]()
+
+        XCTAssertEqual(sent.filter { $0 == "\r" }.count, 1)
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"manual_submit_barrier_started""#))
+        XCTAssertTrue(events.contains(#""event":"safe_boundary_verified""#))
+        XCTAssertTrue(events.contains(#""event":"acknowledgement_timeout""#))
+        XCTAssertTrue(events.contains(#""event":"late_ack_reconciled""#))
+        XCTAssertEqual(countEvent("delivery_acknowledged", in: events), 1)
+        XCTAssertFalse(events.contains(#""event":"delivery_failure_published""#))
     }
 
     func testRapidCommandPreemptsBeforeFirstSubmitWithoutStaleEnter() throws {
@@ -1098,7 +1203,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         let modified = try XCTUnwrap(attrs[.modificationDate] as? Date)
         XCTAssertGreaterThan(modified, oldDate)
         let events = try String(contentsOf: fixture.deliveryEvents)
-        XCTAssertTrue(events.contains(#""event":"deferred_provider_active""#))
+        XCTAssertTrue(events.contains(#""event":"safe_boundary_wait""#))
         XCTAssertFalse(events.contains("Second request"))
     }
 
@@ -1150,7 +1255,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             XCTAssertEqual(sent, ["Second request", "\r"], provider)
 
             let events = try String(contentsOf: fixture.deliveryEvents)
-            XCTAssertEqual(countEvent("deferred_provider_active", in: events), 1, provider)
+            XCTAssertEqual(countEvent("safe_boundary_wait", in: events), 1, provider)
             XCTAssertEqual(countEvent("claimed", in: events), 1, provider)
             XCTAssertEqual(countEvent("prompt_write", in: events), 1, provider)
             XCTAssertEqual(countEvent("claim_published", in: events), 1, provider)
@@ -1265,10 +1370,15 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
                 isRunning: { true }
             )
 
-            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
             XCTAssertEqual(sent, [[3]], provider)
-            XCTAssertEqual(scheduled.count, 1, provider)
+            XCTAssertEqual(scheduled.count, 0, provider)
 
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "stale"),
+            ], to: fixture.providerTurns)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(scheduled.count, 1, provider)
             scheduled[0]()
 
             XCTAssertEqual(
@@ -1410,12 +1520,24 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
     }
 
     private func writeProviderTurns(_ records: [[String: Any]], to url: URL) throws {
+        try writeProviderTurnRecords(records, to: url)
+    }
+
+    private func writeProviderTurnRecords(_ records: [[String: Any]], to url: URL) throws {
         let payload: [String: Any] = [
             "version": 1,
             "records": records,
         ]
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         try data.write(to: url, options: .atomic)
+    }
+
+    private func waitForDeliveryQueue() {
+        let queued = expectation(description: "delivery queue updated")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            queued.fulfill()
+        }
+        wait(for: [queued], timeout: 1)
     }
 
     private func countEvent(_ event: String, in events: String) -> Int {
