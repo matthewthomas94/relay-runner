@@ -983,14 +983,15 @@ private struct DraggableProgramWorkCard: View {
                     scrollBoundary: scrollBoundary,
                     onHoverChange: { isHovered = $0 },
                     onSelect: onSelect,
-                    onFrameChange: { frame in
-                        model.updateCardFrame(id: item.id, windowFrame: frame)
-                    },
                     windowLocationToBoardLocation: { location in
                         model.boardLocation(fromWindowLocation: location)
                     },
-                    onChanged: { location, startLocation in
-                        updateDrag(location: location, startLocation: startLocation)
+                    onChanged: { location, startLocation, cardCenterOffset in
+                        updateDrag(
+                            location: location,
+                            startLocation: startLocation,
+                            cardCenterOffset: cardCenterOffset
+                        )
                     },
                     onEnded: endDrag,
                     onCancelled: cancelDrag
@@ -1011,7 +1012,11 @@ private struct DraggableProgramWorkCard: View {
         )
     }
 
-    private func updateDrag(location: CGPoint, startLocation: CGPoint) {
+    private func updateDrag(
+        location: CGPoint,
+        startLocation: CGPoint,
+        cardCenterOffset: CGSize
+    ) {
         guard canDrag else { return }
         let target = model.dropTarget(
             at: location,
@@ -1026,7 +1031,7 @@ private struct DraggableProgramWorkCard: View {
                     item: item,
                     sourceLane: lane,
                     location: location,
-                    cardCenterOffset: cardCenterOffset(startLocation: startLocation),
+                    cardCenterOffset: cardCenterOffset,
                     target: target
                 )
             } else {
@@ -1056,12 +1061,6 @@ private struct DraggableProgramWorkCard: View {
         }
     }
 
-    private func cardCenterOffset(startLocation: CGPoint) -> CGSize {
-        ProgramBoardDragState.cardCenterOffset(
-            cardFrame: model.cardFrames[item.id],
-            startLocation: startLocation
-        )
-    }
 }
 
 private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
@@ -1070,9 +1069,12 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     let scrollBoundary: BoardOverlayScrollBoundary?
     let onHoverChange: (Bool) -> Void
     let onSelect: () -> Void
-    let onFrameChange: (CGRect) -> Void
     let windowLocationToBoardLocation: (CGPoint) -> CGPoint?
-    let onChanged: (_ location: CGPoint, _ startLocation: CGPoint) -> Void
+    let onChanged: (
+        _ location: CGPoint,
+        _ startLocation: CGPoint,
+        _ cardCenterOffset: CGSize
+    ) -> Void
     let onEnded: () -> Void
     let onCancelled: () -> Void
 
@@ -1085,13 +1087,12 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
         nsView.boardOverlayScrollBoundary = scrollBoundary
         nsView.onHoverChange = onHoverChange
         nsView.onSelect = onSelect
-        nsView.onFrameChange = onFrameChange
         nsView.windowLocationToBoardLocation = windowLocationToBoardLocation
         nsView.onChanged = onChanged
         nsView.onEnded = onEnded
         nsView.onCancelled = onCancelled
         nsView.canDrag = canDrag
-        nsView.reportFrame()
+        nsView.refreshMountedWorkCardRegistration()
         nsView.schedulePointerReconciliation()
     }
 }
@@ -1139,9 +1140,12 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     var boardOverlayScrollBoundary: BoardOverlayScrollBoundary?
     var onHoverChange: (Bool) -> Void = { _ in }
     var onSelect: () -> Void = {}
-    var onFrameChange: (CGRect) -> Void = { _ in }
     var windowLocationToBoardLocation: (CGPoint) -> CGPoint? = { _ in nil }
-    var onChanged: (_ location: CGPoint, _ startLocation: CGPoint) -> Void = { _, _ in }
+    var onChanged: (
+        _ location: CGPoint,
+        _ startLocation: CGPoint,
+        _ cardCenterOffset: CGSize
+    ) -> Void = { _, _, _ in }
     var onEnded: () -> Void = {}
     var onCancelled: () -> Void = {}
 
@@ -1150,15 +1154,14 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     var pointerLocationOverride: CGPoint?
 
     private var mouseDownLocation: CGPoint?
-    private var lastFrame: CGRect = .null
-    private var hoverTrackingArea: NSTrackingArea?
-    private weak var observedClipView: NSClipView?
+    private var mouseDownCardCenterOffset: CGSize?
+    private weak var registeredScrollContainer: BoardOverlayScrollContainer?
     private var pointerReconciliationScheduled = false
 
     override var isFlipped: Bool { true }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        registeredScrollContainer?.unregisterMountedWorkCard(self)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -1167,29 +1170,6 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let hoverTrackingArea {
-            removeTrackingArea(hoverTrackingArea)
-        }
-        let area = NSTrackingArea(
-            rect: .zero,
-            options: [
-                .activeAlways,
-                .inVisibleRect,
-                .mouseEnteredAndExited,
-                .mouseMoved,
-                .cursorUpdate,
-                .enabledDuringMouseDrag,
-            ],
-            owner: self,
-            userInfo: nil
-        )
-        hoverTrackingArea = area
-        addTrackingArea(area)
-        schedulePointerReconciliation()
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -1201,6 +1181,13 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     }
 
     override func mouseMoved(with event: NSEvent) {
+        if let registeredScrollContainer {
+            registeredScrollContainer.routeMountedPointer(
+                to: self,
+                atWindowLocation: event.locationInWindow
+            )
+            return
+        }
         reconcilePointerContainment(atWindowLocation: event.locationInWindow)
     }
 
@@ -1214,39 +1201,55 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
 
     override func layout() {
         super.layout()
-        reportFrame()
+        refreshMountedWorkCardRegistration()
         schedulePointerReconciliation()
     }
 
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
-        observeEnclosingClipView()
         if superview == nil {
+            registeredScrollContainer?.unregisterMountedWorkCard(self)
+            registeredScrollContainer = nil
             cancelPointerInteraction()
         } else {
+            refreshMountedWorkCardRegistration()
             schedulePointerReconciliation()
         }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        observeEnclosingClipView()
         if window == nil {
+            registeredScrollContainer?.unregisterMountedWorkCard(self)
+            registeredScrollContainer = nil
             cancelPointerInteraction()
         } else {
+            refreshMountedWorkCardRegistration()
             schedulePointerReconciliation()
         }
-        reportFrame()
     }
 
     override func mouseDown(with event: NSEvent) {
         mouseDownLocation = boardLocation(for: event)
+        mouseDownCardCenterOffset = mouseDownLocation.flatMap { startLocation in
+            let centerInWindow = convert(
+                CGPoint(x: bounds.midX, y: bounds.midY),
+                to: nil
+            )
+            return windowLocationToBoardLocation(centerInWindow).map { center in
+                CGSize(
+                    width: center.x - startLocation.x,
+                    height: center.y - startLocation.y
+                )
+            }
+        }
         isDragActive = false
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard canDrag,
               let startLocation = mouseDownLocation,
+              let cardCenterOffset = mouseDownCardCenterOffset,
               let location = boardLocation(for: event) else {
             return
         }
@@ -1258,7 +1261,7 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
             refreshCursorPresentation()
         }
         NSCursor.closedHand.set()
-        onChanged(location, startLocation)
+        onChanged(location, startLocation, cardCenterOffset)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -1267,29 +1270,21 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
         } else {
             onSelect()
             mouseDownLocation = nil
+            mouseDownCardCenterOffset = nil
         }
-        reconcilePointerContainment(atWindowLocation: event.locationInWindow)
     }
 
     override func cancelOperation(_ sender: Any?) {
         cancelPointerInteraction()
     }
 
-    func reportFrame() {
-        guard window != nil else { return }
-        let frame = convert(bounds, to: nil)
-        guard frame.width > 0,
-              frame.height > 0,
-              frame != lastFrame else {
+    func reconcilePointerContainment(atWindowLocation location: CGPoint? = nil) {
+        if let registeredScrollContainer {
+            registeredScrollContainer.reconcileMountedPointer(
+                atWindowLocation: location ?? pointerLocationOverride
+            )
             return
         }
-        lastFrame = frame
-        DispatchQueue.main.async { [weak self] in
-            self?.onFrameChange(frame)
-        }
-    }
-
-    func reconcilePointerContainment(atWindowLocation location: CGPoint? = nil) {
         guard let window, let contentView = window.contentView else {
             setPointerInside(false)
             return
@@ -1308,6 +1303,10 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     }
 
     func schedulePointerReconciliation() {
+        if let registeredScrollContainer {
+            registeredScrollContainer.schedulePointerReconciliation()
+            return
+        }
         guard !pointerReconciliationScheduled else { return }
         pointerReconciliationScheduled = true
         DispatchQueue.main.async { [weak self] in
@@ -1322,29 +1321,6 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
             canDrag: canDrag,
             isDragging: isDragActive
         )
-    }
-
-    private func observeEnclosingClipView() {
-        if let observedClipView {
-            NotificationCenter.default.removeObserver(
-                self,
-                name: NSView.boundsDidChangeNotification,
-                object: observedClipView
-            )
-        }
-        observedClipView = enclosingScrollView?.contentView
-        guard let observedClipView else { return }
-        observedClipView.postsBoundsChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(geometryDidChange),
-            name: NSView.boundsDidChangeNotification,
-            object: observedClipView
-        )
-    }
-
-    @objc private func geometryDidChange() {
-        schedulePointerReconciliation()
     }
 
     private func setPointerInside(_ isInside: Bool) {
@@ -1383,6 +1359,7 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
 
     private func resetDragState() {
         mouseDownLocation = nil
+        mouseDownCardCenterOffset = nil
         isDragActive = false
         if isPointerInside {
             refreshCursorPresentation()
@@ -1395,6 +1372,7 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
         let ownedCursor = isPointerInside || isDragActive
         cancelDrag()
         mouseDownLocation = nil
+        mouseDownCardCenterOffset = nil
         setPointerInside(false)
         window?.invalidateCursorRects(for: self)
         if ownedCursor {
@@ -1404,6 +1382,19 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
 
     private func boardLocation(for event: NSEvent) -> CGPoint? {
         windowLocationToBoardLocation(event.locationInWindow)
+    }
+
+    func setMountedPointerInside(_ isInside: Bool) {
+        setPointerInside(isInside)
+    }
+
+    func refreshMountedWorkCardRegistration() {
+        let container = boardOverlayScrollContainerAncestor
+        if registeredScrollContainer !== container {
+            registeredScrollContainer?.unregisterMountedWorkCard(self)
+            registeredScrollContainer = container
+        }
+        container?.registerMountedWorkCard(self)
     }
 }
 

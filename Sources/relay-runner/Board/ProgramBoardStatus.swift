@@ -1287,7 +1287,6 @@ final class ProgramBoardViewModel {
     var dragPreview: ProgramBoardDragState?
     var boardFrameInWindow: CGRect?
     var columnFrames: [ProgramBoardLane: CGRect] = [:]
-    var cardFrames: [String: CGRect] = [:]
     var isLoading: Bool { reloadState.isLoading }
 
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
@@ -1558,20 +1557,6 @@ final class ProgramBoardViewModel {
         return CGPoint(
             x: location.x - boardFrameInWindow.minX,
             y: boardFrameInWindow.maxY - location.y
-        )
-    }
-
-    func updateCardFrame(id: String, windowFrame: CGRect) {
-        guard let boardFrameInWindow,
-              windowFrame.width > 0,
-              windowFrame.height > 0 else {
-            return
-        }
-        cardFrames[id] = CGRect(
-            x: windowFrame.minX - boardFrameInWindow.minX,
-            y: boardFrameInWindow.maxY - windowFrame.maxY,
-            width: windowFrame.width,
-            height: windowFrame.height
         )
     }
 

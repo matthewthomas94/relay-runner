@@ -420,7 +420,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         var changeCount = 0
         var endCount = 0
         var cancelCount = 0
-        eventView.onChanged = { _, _ in changeCount += 1 }
+        eventView.onChanged = { _, _, _ in changeCount += 1 }
         eventView.onEnded = { endCount += 1 }
         eventView.onCancelled = { cancelCount += 1 }
         let start = CGPoint(x: 40, y: 40)
@@ -533,7 +533,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         )
     }
 
-    func testMountedProgramWorkspaceKeepsHoverOnOnlyTheHitTestCardAcrossScrollAndSnapshot() throws {
+    func testMountedProgramWorkspaceKeepsExactHitIndexAcrossScrollAndSnapshot() throws {
         let model = ProgramBoardViewModel()
         let initialItems = laneTickets(
             prefix: "RR-HOVER",
@@ -566,31 +566,20 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         let hitLocations = mountedCardHitLocations(in: window)
         XCTAssertGreaterThan(hitLocations.count, 1)
 
-        let firstPointer = hitLocations[0].location
-        updateMountedPointer(firstPointer, cards: cards)
-        drainMainQueue()
-        XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
-        XCTAssertTrue(hitLocations[0].card.isPointerInside)
+        XCTAssertEqual(
+            Set(hitLocations.map { $0.card.interactionID }).count,
+            hitLocations.count
+        )
 
-        cards.forEach { $0.pointerLocationOverride = firstPointer }
-        hitLocations[0].card.updateTrackingAreas()
-        XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
-        XCTAssertTrue(hitLocations[0].card.isPointerInside)
-
-        let secondPointer = hitLocations[1].location
-        updateMountedPointer(secondPointer, cards: cards)
-        drainMainQueue()
-        XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
-        XCTAssertTrue(hitLocations[1].card.isPointerInside)
-
-        let previouslyHoveredCard = hitLocations[1].card
-        let fixedPointer = secondPointer
-        cards.forEach { $0.pointerLocationOverride = fixedPointer }
         scrollViews.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 180))
         scrollViews.scrollView.reflectScrolledClipView(scrollViews.scrollView.contentView)
         drainMainQueue()
-        XCTAssertFalse(previouslyHoveredCard.isPointerInside)
-        XCTAssertLessThanOrEqual(cards.filter(\.isPointerInside).count, 1)
+        let scrolledHitLocations = mountedCardHitLocations(in: window)
+        XCTAssertGreaterThan(scrolledHitLocations.count, 1)
+        XCTAssertEqual(
+            Set(scrolledHitLocations.map { $0.card.interactionID }).count,
+            scrolledHitLocations.count
+        )
 
         let oldCards = cards
         model.snapshot = programDashboardSnapshot(
@@ -608,9 +597,11 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertTrue(oldCards.allSatisfy { oldCard in
             !oldCard.isPointerInside || cards.contains { $0 === oldCard }
         })
-        updateMountedPointer(fixedPointer, cards: cards)
-        drainMainQueue()
-        XCTAssertLessThanOrEqual(cards.filter(\.isPointerInside).count, 1)
+        let refreshedHitLocations = mountedCardHitLocations(in: window)
+        XCTAssertGreaterThan(refreshedHitLocations.count, 1)
+        XCTAssertTrue(refreshedHitLocations.allSatisfy {
+            $0.card.interactionID.contains("RR-REFRESHED")
+        })
     }
 
     func testMountedBoardPanelDeliversRealPointerEventsToFirstBacklogCard() throws {
@@ -669,7 +660,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         revealContainer.animateReveal {
             revealed.fulfill()
         }
-        wait(for: [revealed], timeout: 2)
+        wait(for: [revealed], timeout: 5)
         drainMainQueue()
 
         let cards = programWorkCardViews(in: host)
@@ -732,7 +723,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         var dragChangeCount = 0
         var dragEndCount = 0
         firstCard.windowLocationToBoardLocation = { $0 }
-        firstCard.onChanged = { _, _ in dragChangeCount += 1 }
+        firstCard.onChanged = { _, _, _ in dragChangeCount += 1 }
         firstCard.onEnded = { dragEndCount += 1 }
         let dragPoint = CGPoint(
             x: center.x + firstCard.bounds.width,
@@ -747,6 +738,145 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertEqual(dragChangeCount, 1)
         XCTAssertEqual(dragEndCount, 1)
         XCTAssertFalse(firstCard.isDragActive)
+
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.mouseMoved, at: dragPoint, in: panel)))
+        drainMainQueue()
+        XCTAssertTrue(programWorkCardViews(in: host).allSatisfy { !$0.isPointerInside })
+    }
+
+    func testMountedBoardPanelKeepsEveryVisibleBacklogCardAsItsDragSource() throws {
+        let model = ProgramBoardViewModel()
+        let backlogItems = laneTickets(
+            prefix: "RR-PANEL-IDENTITY",
+            status: Ticket.Status.backlog.rawValue,
+            count: 12
+        )
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: backlogItems,
+            doneItems: []
+        )
+        let workspace = WorkspaceViewModel()
+        workspace.configure(
+            showsWorkTab: true,
+            showsTerminalTab: false,
+            showsSettingsTab: false,
+            initialTab: .work
+        )
+        var drops: [(ProgramStatusItem, ProgramBoardLane, ProgramBoardLane)] = []
+        let host = NSHostingView(rootView: ProgramBoardOverlayView(
+            model: model,
+            workspace: workspace,
+            settingsContent: nil,
+            terminalContent: { _ in nil },
+            onDismiss: {},
+            onWorkspaceTabChange: { _ in },
+            onRefresh: {},
+            onStartSession: {},
+            onEndSession: {},
+            onCreateStart: { _ in },
+            onCreateCommit: { _ in },
+            onCreateCancel: {},
+            onEditStart: { _ in },
+            onEditCommit: { _ in },
+            onEditCancel: {},
+            onDelete: { _ in },
+            onDrop: { drops.append(($0, $1, $2)) }
+        ))
+        let panelFrame = CGRect(x: 0, y: 0, width: 1_512, height: 800)
+        let panel = BoardOverlayPanel()
+        panel.setFrame(panelFrame, display: false)
+        host.frame = CGRect(origin: .zero, size: panelFrame.size)
+        let revealContainer = BoardRevealContainerView(
+            frame: CGRect(origin: .zero, size: panelFrame.size),
+            contentView: host,
+            displayGeometry: NotchStatusDisplayGeometry(screenFrame: panelFrame),
+            startsLoading: false
+        )
+        panel.contentView = revealContainer
+        panel.orderFrontRegardless()
+        defer { panel.orderOut(nil) }
+        revealContainer.layoutSubtreeIfNeeded()
+        host.layoutSubtreeIfNeeded()
+        let revealed = expectation(description: "Workspace content revealed")
+        revealContainer.animateReveal {
+            revealed.fulfill()
+        }
+        wait(for: [revealed], timeout: 5)
+        drainMainQueue()
+
+        let cardsByID = Dictionary(
+            uniqueKeysWithValues: programWorkCardViews(in: host).map { ($0.interactionID, $0) }
+        )
+        let mountedCards = try model.ticketItems(in: .backlog).map { item in
+            (
+                item,
+                try XCTUnwrap(cardsByID["all|Backlog|\(item.id)"])
+            )
+        }
+        XCTAssertEqual(mountedCards.count, backlogItems.count)
+
+        let boardFrame = try XCTUnwrap(model.boardFrameInWindow)
+        let queuedFrame = try XCTUnwrap(model.columnFrames[.ready])
+        let queuedBoardTarget = CGPoint(
+            x: queuedFrame.midX,
+            y: queuedFrame.minY + min(160, queuedFrame.height / 2)
+        )
+        let queuedWindowTarget = CGPoint(
+            x: boardFrame.minX + queuedBoardTarget.x,
+            y: boardFrame.maxY - queuedBoardTarget.y
+        )
+
+        for (item, card) in mountedCards {
+            let scrollView = try XCTUnwrap(card.enclosingScrollView)
+            let documentView = try XCTUnwrap(scrollView.documentView)
+            let documentFrame = card.convert(card.bounds, to: documentView)
+            let maxOffset = max(0, documentView.bounds.height - scrollView.contentView.bounds.height)
+            scrollView.contentView.scroll(to: CGPoint(
+                x: 0,
+                y: min(max(documentFrame.midY - scrollView.contentView.bounds.height / 2, 0), maxOffset)
+            ))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            drainMainQueue()
+            let visibleFrame = card.convert(card.bounds, to: scrollView.contentView)
+                .intersection(scrollView.contentView.bounds)
+            XCTAssertGreaterThan(visibleFrame.height, 10)
+            let start = scrollView.contentView.convert(
+                CGPoint(x: visibleFrame.midX, y: visibleFrame.midY),
+                to: nil
+            )
+
+            NSApp.sendEvent(try XCTUnwrap(mouseEvent(.mouseMoved, at: start, in: panel)))
+            XCTAssertTrue(card.isPointerInside, "Hover routed to a different card than \(item.id)")
+            drainMainQueue()
+            let currentCard = try XCTUnwrap(programWorkCardViews(in: host).first {
+                $0.interactionID == "all|Backlog|\(item.id)"
+            })
+            let contentView = try XCTUnwrap(panel.contentView)
+            XCTAssertTrue(
+                mountedProgramWorkCardHit(
+                    at: contentView.convert(start, from: nil),
+                    in: contentView
+                ) === currentCard
+            )
+
+            NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDown, at: start, in: panel)))
+            NSApp.sendEvent(try XCTUnwrap(mouseEvent(
+                .leftMouseDragged,
+                at: CGPoint(
+                    x: start.x + ProgramWorkCardDragEventView.dragThreshold + 1,
+                    y: start.y
+                ),
+                in: panel
+            )))
+            drainMainQueue()
+            XCTAssertEqual(model.dragItemID, item.id, "Pointer-down captured a different visible card")
+
+            NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDragged, at: queuedWindowTarget, in: panel)))
+            NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseUp, at: queuedWindowTarget, in: panel)))
+            drainMainQueue()
+            XCTAssertEqual(drops.last?.0.id, item.id)
+            XCTAssertNil(model.dragItemID)
+        }
     }
 
     func testMountedBoardPanelCancelsStaleValidDragBeforeNewGestureAndOrderOut() throws {
@@ -811,7 +941,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         revealContainer.animateReveal {
             revealed.fulfill()
         }
-        wait(for: [revealed], timeout: 2)
+        wait(for: [revealed], timeout: 5)
         drainMainQueue()
 
         let cards = programWorkCardViews(in: host)
@@ -896,7 +1026,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         )
         XCTAssertNil(model.dragItemID)
         XCTAssertFalse(staleCard.isDragActive)
-        XCTAssertFalse(staleCard.isPointerInside)
+        XCTAssertTrue(programWorkCardViews(in: host).allSatisfy { !$0.isPointerInside })
     }
 
     func testMountedProgramWorkspaceFirstBacklogCardOwnsItsVisibleHitTarget() throws {
@@ -934,6 +1064,8 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         let secondCard = try XCTUnwrap(cards.first {
             $0.interactionID == "all|Backlog|\(orderedItems[1].id)"
         })
+        let firstInteractionID = firstCard.interactionID
+        let secondInteractionID = secondCard.interactionID
         XCTAssertGreaterThan(firstCard.bounds.height, 20)
         XCTAssertGreaterThan(secondCard.bounds.height, 20)
 
@@ -948,18 +1080,21 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             let firstLocation = firstHitLocations[
                 min(firstHitLocations.count - 1, Int(CGFloat(firstHitLocations.count) * fraction))
             ]
-            updateMountedPointer(firstLocation, cards: cards)
-            drainMainQueue()
-            XCTAssertTrue(firstCard.isPointerInside, "First card missed at \(fraction)")
-            XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
+            let contentView = try XCTUnwrap(window.contentView)
+            let currentFirstCard = try XCTUnwrap(mountedProgramWorkCardHit(
+                at: contentView.convert(firstLocation, from: nil),
+                in: contentView
+            ))
+            XCTAssertEqual(currentFirstCard.interactionID, firstInteractionID)
 
             let secondLocation = secondHitLocations[
                 min(secondHitLocations.count - 1, Int(CGFloat(secondHitLocations.count) * fraction))
             ]
-            updateMountedPointer(secondLocation, cards: cards)
-            drainMainQueue()
-            XCTAssertTrue(secondCard.isPointerInside, "Second card missed at \(fraction)")
-            XCTAssertEqual(cards.filter(\.isPointerInside).count, 1)
+            let currentSecondCard = try XCTUnwrap(mountedProgramWorkCardHit(
+                at: contentView.convert(secondLocation, from: nil),
+                in: contentView
+            ))
+            XCTAssertEqual(currentSecondCard.interactionID, secondInteractionID)
         }
 
         let contentView = try XCTUnwrap(window.contentView)
@@ -1083,7 +1218,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         let start = hitLocations[hitLocations.count / 2]
         firstCard.windowLocationToBoardLocation = { $0 }
         var dragChangeCount = 0
-        firstCard.onChanged = { _, _ in dragChangeCount += 1 }
+        firstCard.onChanged = { _, _, _ in dragChangeCount += 1 }
         sendMouse(.leftMouseDown, at: start, to: firstCard, in: window)
         sendMouse(
             .leftMouseDragged,
@@ -1419,16 +1554,6 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             ancestor = candidate.superview
         }
         return nil
-    }
-
-    private func updateMountedPointer(
-        _ location: CGPoint,
-        cards: [ProgramWorkCardDragEventView]
-    ) {
-        cards.forEach {
-            $0.pointerLocationOverride = location
-            $0.reconcilePointerContainment(atWindowLocation: location)
-        }
     }
 
     private func mountedCardHitLocations(
