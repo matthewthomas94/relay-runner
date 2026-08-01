@@ -45,6 +45,16 @@ struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
 }
 
 final class BoardOverlayScrollContainer: NSView {
+    private final class WorkCardHitEntry {
+        weak var card: ProgramWorkCardDragEventView?
+        var documentFrame: CGRect
+
+        init(card: ProgramWorkCardDragEventView, documentFrame: CGRect) {
+            self.card = card
+            self.documentFrame = documentFrame
+        }
+    }
+
     private let scrollView = BoardOverlayKeyboardScrollView()
     private let documentView = BoardOverlayScrollDocumentView()
     private let contentView = BoardOverlayScrollContentView()
@@ -58,6 +68,12 @@ final class BoardOverlayScrollContainer: NSView {
     private var lastContentHeight: CGFloat = 0
     private var lastContentMinY: CGFloat = 0
     private var isPerformingLayout = false
+    private var workCardsByView: [ObjectIdentifier: WorkCardHitEntry] = [:]
+    private var workCardHitIndex: [WorkCardHitEntry] = []
+    private var workCardHitIndexNeedsSort = false
+    private weak var hoveredWorkCard: ProgramWorkCardDragEventView?
+    private var pointerReconciliationScheduled = false
+    private var lastPointerWindowLocation: CGPoint?
     private var resetID: AnyHashable?
 
     init(rootView: AnyView, resetID: AnyHashable? = nil) {
@@ -86,18 +102,13 @@ final class BoardOverlayScrollContainer: NSView {
         guard window != nil else {
             return super.hitTest(point)
         }
-        // SwiftUI can route the leading card through a later hosted sibling.
-        // The explicit document frames remain stable because they also define
-        // this scroll view's top and bottom boundaries.
-        let fallback = super.hitTest(point)
-        let clipPoint = scrollView.contentView.convert(point, from: self)
-        let documentPoint = documentView.convert(clipPoint, from: scrollView.contentView)
-        if let card = hostingView.programWorkCard(
-            atDocumentPoint: documentPoint,
-            documentView: documentView
-        ) {
+        // SwiftUI can route a visible card through a later hosted sibling. Card
+        // event views register their document-space frames during layout so
+        // hit testing never has to recurse through the hosted hierarchy.
+        if let card = programWorkCard(atContainerPoint: point) {
             return card
         }
+        let fallback = super.hitTest(point)
         return fallback?.programWorkCardAncestor == nil
             ? fallback
             : scrollView.contentView
@@ -222,6 +233,8 @@ final class BoardOverlayScrollContainer: NSView {
            abs(viewport.height - lastViewportHeight) < 0.5,
            abs(contentHeight - lastContentHeight) < 0.5,
            abs(contentMinY - lastContentMinY) < 0.5 {
+            refreshMountedWorkCardFrames()
+            schedulePointerReconciliation()
             return
         }
         let documentHeight = max(viewport.height, contentHeight)
@@ -251,6 +264,8 @@ final class BoardOverlayScrollContainer: NSView {
         lastViewportHeight = viewport.height
         lastContentHeight = contentHeight
         lastContentMinY = contentMinY
+        refreshMountedWorkCardFrames()
+        schedulePointerReconciliation()
     }
 
     private func clampScrollOffset(documentHeight: CGFloat, viewportHeight: CGFloat) {
@@ -275,6 +290,7 @@ final class BoardOverlayScrollContainer: NSView {
 
     @objc private func contentBoundsDidChange() {
         updateThumbFrame()
+        schedulePointerReconciliation()
         guard isScrollable else {
             hideThumb(immediate: true)
             return
@@ -349,6 +365,142 @@ final class BoardOverlayScrollContainer: NSView {
         }
     }
 
+    func registerMountedWorkCard(_ card: ProgramWorkCardDragEventView) {
+        let documentFrame = card.convert(card.bounds, to: documentView)
+        guard documentFrame.width > 0, documentFrame.height > 0 else { return }
+        let identifier = ObjectIdentifier(card)
+        if let existing = workCardsByView[identifier], existing.card === card {
+            guard existing.documentFrame != documentFrame else { return }
+            existing.documentFrame = documentFrame
+        } else {
+            workCardsByView[identifier] = WorkCardHitEntry(
+                card: card,
+                documentFrame: documentFrame
+            )
+        }
+        workCardHitIndexNeedsSort = true
+    }
+
+    func unregisterMountedWorkCard(_ card: ProgramWorkCardDragEventView) {
+        let identifier = ObjectIdentifier(card)
+        guard workCardsByView.removeValue(forKey: identifier) != nil else { return }
+        workCardHitIndexNeedsSort = true
+        if hoveredWorkCard === card {
+            updateHoveredWorkCard(nil)
+        }
+    }
+
+    @discardableResult
+    func reconcileMountedPointer(
+        atWindowLocation location: CGPoint? = nil
+    ) -> ProgramWorkCardDragEventView? {
+        guard let window, window.isVisible else {
+            updateHoveredWorkCard(nil)
+            return nil
+        }
+        if let location {
+            lastPointerWindowLocation = location
+        }
+        let windowLocation = lastPointerWindowLocation
+            ?? window.mouseLocationOutsideOfEventStream
+        let containerPoint = convert(windowLocation, from: nil)
+        guard bounds.contains(containerPoint) else {
+            updateHoveredWorkCard(nil)
+            return nil
+        }
+        let workCard = hitTest(containerPoint)?.programWorkCardAncestor
+        updateHoveredWorkCard(workCard)
+        return workCard
+    }
+
+    func routeMountedPointer(
+        to card: ProgramWorkCardDragEventView,
+        atWindowLocation location: CGPoint
+    ) {
+        lastPointerWindowLocation = location
+        updateHoveredWorkCard(card)
+    }
+
+    func clearMountedPointer(atWindowLocation location: CGPoint) {
+        lastPointerWindowLocation = location
+        updateHoveredWorkCard(nil)
+    }
+
+    func schedulePointerReconciliation() {
+        guard !pointerReconciliationScheduled else { return }
+        pointerReconciliationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pointerReconciliationScheduled = false
+            self.reconcileMountedPointer()
+        }
+    }
+
+    private func refreshMountedWorkCardFrames() {
+        for (identifier, entry) in Array(workCardsByView) {
+            guard let card = entry.card else {
+                workCardsByView.removeValue(forKey: identifier)
+                workCardHitIndexNeedsSort = true
+                continue
+            }
+            guard card.boardOverlayScrollContainerAncestor === self else {
+                unregisterMountedWorkCard(card)
+                continue
+            }
+            registerMountedWorkCard(card)
+        }
+    }
+
+    private func prepareWorkCardHitIndex() {
+        // SwiftUI can reposition representable views without issuing a child
+        // `layout()` callback first. Refresh the flat registration table so a
+        // pointer event never observes the previous document frame.
+        refreshMountedWorkCardFrames()
+        guard workCardHitIndexNeedsSort else { return }
+        workCardHitIndex = workCardsByView.values.filter { $0.card != nil }.sorted { lhs, rhs in
+            if abs(lhs.documentFrame.minY - rhs.documentFrame.minY) > 0.5 {
+                return lhs.documentFrame.minY < rhs.documentFrame.minY
+            }
+            if abs(lhs.documentFrame.minX - rhs.documentFrame.minX) > 0.5 {
+                return lhs.documentFrame.minX < rhs.documentFrame.minX
+            }
+            return (lhs.card?.interactionID ?? "") < (rhs.card?.interactionID ?? "")
+        }
+        workCardHitIndexNeedsSort = false
+    }
+
+    private func programWorkCard(
+        atDocumentPoint point: CGPoint
+    ) -> ProgramWorkCardDragEventView? {
+        prepareWorkCardHitIndex()
+        return workCardHitIndex.first {
+            $0.card != nil && $0.documentFrame.contains(point)
+        }?.card
+    }
+
+    private func programWorkCard(
+        atContainerPoint point: CGPoint
+    ) -> ProgramWorkCardDragEventView? {
+        let clipPoint = scrollView.contentView.convert(point, from: self)
+        guard scrollView.contentView.bounds.contains(clipPoint) else { return nil }
+        return programWorkCard(
+            atDocumentPoint: documentView.convert(
+                clipPoint,
+                from: scrollView.contentView
+            )
+        )
+    }
+
+    private func updateHoveredWorkCard(_ card: ProgramWorkCardDragEventView?) {
+        guard hoveredWorkCard !== card else {
+            card?.setMountedPointerInside(true)
+            return
+        }
+        hoveredWorkCard?.setMountedPointerInside(false)
+        hoveredWorkCard = card
+        card?.setMountedPointerInside(true)
+    }
+
     deinit {
         hideWorkItem?.cancel()
         NotificationCenter.default.removeObserver(self)
@@ -395,27 +547,9 @@ final class BoardOverlayScrollHostingView: NSHostingView<AnyView> {
         }
     }
 
-    fileprivate func programWorkCard(
-        atDocumentPoint point: CGPoint,
-        documentView: NSView
-    ) -> ProgramWorkCardDragEventView? {
-        func find(in view: NSView) -> ProgramWorkCardDragEventView? {
-            if let card = view as? ProgramWorkCardDragEventView,
-               card.convert(card.bounds, to: documentView).contains(point) {
-                return card
-            }
-            for subview in view.subviews {
-                if let card = find(in: subview) {
-                    return card
-                }
-            }
-            return nil
-        }
-        return find(in: self)
-    }
 }
 
-private extension NSView {
+extension NSView {
     var programWorkCardAncestor: ProgramWorkCardDragEventView? {
         var candidate: NSView? = self
         while let current = candidate {
@@ -425,6 +559,22 @@ private extension NSView {
             candidate = current.superview
         }
         return nil
+    }
+
+    var boardOverlayScrollContainerAncestor: BoardOverlayScrollContainer? {
+        var candidate: NSView? = self
+        while let current = candidate {
+            if let container = current as? BoardOverlayScrollContainer {
+                return container
+            }
+            candidate = current.superview
+        }
+        return nil
+    }
+
+    func cancelProgramWorkCardInteractions() {
+        (self as? ProgramWorkCardDragEventView)?.cancelOperation(nil)
+        subviews.forEach { $0.cancelProgramWorkCardInteractions() }
     }
 }
 

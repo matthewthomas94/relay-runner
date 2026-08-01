@@ -50,12 +50,10 @@ final class BoardOverlayPanel: NSPanel {
         switch event.type {
         case .mouseMoved:
             let workCard = programWorkCard(atWindowLocation: event.locationInWindow)
-            if hoveredWorkCard !== workCard {
-                hoveredWorkCard?.reconcilePointerContainment(
-                    atWindowLocation: event.locationInWindow
-                )
-                hoveredWorkCard = workCard
-            }
+            updateHoveredWorkCard(
+                workCard,
+                atWindowLocation: event.locationInWindow
+            )
             if let workCard {
                 workCard.mouseMoved(with: event)
                 return
@@ -63,10 +61,15 @@ final class BoardOverlayPanel: NSPanel {
         case .leftMouseDown:
             cancelCapturedWorkCard()
             if let workCard = programWorkCard(atWindowLocation: event.locationInWindow) {
+                updateHoveredWorkCard(
+                    workCard,
+                    atWindowLocation: event.locationInWindow
+                )
                 capturedWorkCard = workCard
                 workCard.mouseDown(with: event)
                 return
             }
+            updateHoveredWorkCard(nil, atWindowLocation: event.locationInWindow)
         case .leftMouseDragged:
             if let capturedWorkCard {
                 capturedWorkCard.mouseDragged(with: event)
@@ -76,6 +79,10 @@ final class BoardOverlayPanel: NSPanel {
             if let capturedWorkCard {
                 self.capturedWorkCard = nil
                 capturedWorkCard.mouseUp(with: event)
+                updateHoveredWorkCard(
+                    programWorkCard(atWindowLocation: event.locationInWindow),
+                    atWindowLocation: event.locationInWindow
+                )
                 return
             }
         default:
@@ -93,6 +100,7 @@ final class BoardOverlayPanel: NSPanel {
         if hoveredWorkCard !== capturedWorkCard {
             hoveredWorkCard?.cancelOperation(nil)
         }
+        contentView?.cancelProgramWorkCardInteractions()
         super.orderOut(sender)
     }
 
@@ -104,6 +112,22 @@ final class BoardOverlayPanel: NSPanel {
         let capturedWorkCard = capturedWorkCard
         self.capturedWorkCard = nil
         capturedWorkCard?.cancelOperation(nil)
+    }
+
+    private func updateHoveredWorkCard(
+        _ card: ProgramWorkCardDragEventView?,
+        atWindowLocation location: CGPoint
+    ) {
+        guard hoveredWorkCard !== card else {
+            card?.setMountedPointerInside(true)
+            return
+        }
+        hoveredWorkCard?.boardOverlayScrollContainerAncestor?.clearMountedPointer(
+            atWindowLocation: location
+        )
+        hoveredWorkCard?.setMountedPointerInside(false)
+        hoveredWorkCard = card
+        card?.setMountedPointerInside(true)
     }
 
     private func programWorkCard(

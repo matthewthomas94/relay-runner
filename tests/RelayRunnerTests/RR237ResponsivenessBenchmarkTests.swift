@@ -54,12 +54,13 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
                 benchmarkColumn(model: model, lane: .backlog)
                 benchmarkColumn(model: model, lane: .ready)
                 benchmarkColumn(model: model, lane: .inProgress)
+                benchmarkColumn(model: model, lane: .done)
             }
-            .frame(width: 850, height: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
+            .frame(width: 1_140, height: BoardSurfaceLayout.columnHeight, alignment: .topLeading)
             .coordinateSpace(name: "programBoard")
         )
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 850, height: BoardSurfaceLayout.columnHeight),
+            contentRect: CGRect(x: 0, y: 0, width: 1_140, height: BoardSurfaceLayout.columnHeight),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -71,7 +72,7 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
         drainMainQueue()
 
-        let columnWidth = (CGFloat(850) - BoardSurfaceLayout.columnSpacing * 2) / 3
+        let columnWidth = (CGFloat(1_140) - BoardSurfaceLayout.columnSpacing * 3) / 4
         model.boardFrameInWindow = window.contentView!.bounds
         model.columnFrames = [
             .backlog: CGRect(x: 0, y: 0, width: columnWidth, height: BoardSurfaceLayout.columnHeight),
@@ -87,9 +88,34 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
                 width: columnWidth,
                 height: BoardSurfaceLayout.columnHeight
             ),
+            .done: CGRect(
+                x: (columnWidth + BoardSurfaceLayout.columnSpacing) * 3,
+                y: 0,
+                width: columnWidth,
+                height: BoardSurfaceLayout.columnHeight
+            ),
         ]
 
         let eventView = try XCTUnwrap(findDragEventView(in: host))
+        let doneEventViews = findDragEventViews(in: host).filter {
+            $0.interactionID.contains("|Done|")
+        }
+        XCTAssertEqual(doneEventViews.count, items.count)
+        let doneContainer = try XCTUnwrap(scrollContainer(owning: doneEventViews[0]))
+        let visibleDoneEventView = try XCTUnwrap(doneEventViews.first {
+            doneContainer.bounds.intersects($0.convert($0.bounds, to: doneContainer))
+        })
+        let doneHitPoint = visibleDoneEventView.convert(
+            CGPoint(x: visibleDoneEventView.bounds.midX, y: visibleDoneEventView.bounds.midY),
+            to: doneContainer
+        )
+        var doneHitRoutingSamples: [Double] = []
+        for _ in 0..<200 {
+            let start = DispatchTime.now().uptimeNanoseconds
+            let routedCard = doneContainer.hitTest(doneHitPoint)?.programWorkCardAncestor
+            doneHitRoutingSamples.append(milliseconds(since: start))
+            XCTAssertEqual(routedCard?.interactionID, visibleDoneEventView.interactionID)
+        }
         var hoverSamples: [Double] = []
         var hoverStart: UInt64 = 0
         eventView.onHoverChange = { hovering in
@@ -162,6 +188,7 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
         XCTAssertLessThan(percentileValue(orderingSamples, 0.95), 16.7)
         XCTAssertLessThan(percentileValue(queuedHoverSamples, 0.95), 16.7)
         XCTAssertLessThan(percentileValue(queuedDragSamples, 0.95), 25)
+        XCTAssertLessThan(percentileValue(doneHitRoutingSamples, 0.95), 16.7)
         print(
             "RR237_BOARD tickets=\(items.count) "
                 + "sort_p50_ms=\(percentile(orderingSamples, 0.50)) "
@@ -171,6 +198,7 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
                 + "drag_to_ready_ms=\(dragMilliseconds) "
                 + "queued_hover_p95_ms=\(percentile(queuedHoverSamples, 0.95)) "
                 + "queued_drag_p95_ms=\(percentile(queuedDragSamples, 0.95)) "
+                + "done_hit_route_p95_ms=\(percentile(doneHitRoutingSamples, 0.95)) "
                 + "manual_in_progress_rejected=\(!manualInProgress)"
         )
     }
@@ -295,6 +323,22 @@ final class RR237ResponsivenessBenchmarkTests: XCTestCase {
     private func findDragEventView(in view: NSView) -> ProgramWorkCardDragEventView? {
         if let eventView = view as? ProgramWorkCardDragEventView { return eventView }
         return view.subviews.lazy.compactMap(findDragEventView).first
+    }
+
+    private func findDragEventViews(in view: NSView) -> [ProgramWorkCardDragEventView] {
+        let current = (view as? ProgramWorkCardDragEventView).map { [$0] } ?? []
+        return current + view.subviews.flatMap(findDragEventViews(in:))
+    }
+
+    private func scrollContainer(owning view: NSView) -> BoardOverlayScrollContainer? {
+        var candidate = view.superview
+        while let current = candidate {
+            if let container = current as? BoardOverlayScrollContainer {
+                return container
+            }
+            candidate = current.superview
+        }
+        return nil
     }
 
     private func mouseEvent(_ type: NSEvent.EventType, at point: CGPoint, window: NSWindow) -> NSEvent? {
