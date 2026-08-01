@@ -363,7 +363,34 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             self.assertIn("ticket_id", private)
             self.assertIsNone(private["ticket_id"])
             with sqlite3.connect(db_path) as conn:
-                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
+
+    def test_orchestrator_command_store_preserves_two_items_from_one_turn(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                store = OrchestratorCommandStore(Path(tmp) / "commands.db")
+                for order, target in ((2, "search"), (1, "login")):
+                    store.record(
+                        repo_path=tmp,
+                        source_text=f"fix {target}",
+                        relay_command_seq=7,
+                        relay_command_id=f"{provider}-7",
+                        intent_id=f"{provider}-7:item:{order}",
+                        within_turn_order=order,
+                        provider_key=provider,
+                        target=target,
+                        disposition="accepted",
+                        status="queued",
+                    )
+
+                pending = store.recoverable(repo_path=tmp)
+
+                self.assertEqual([item["target"] for item in pending], ["login", "search"])
+                self.assertEqual([item["within_turn_order"] for item in pending], [1, 2])
+                self.assertEqual(
+                    {item["relay_command_id"] for item in pending},
+                    {f"{provider}-7"},
+                )
 
     def test_orchestrator_command_store_keeps_refined_context_private(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -819,6 +846,9 @@ class OrchestratorLifecycleTests(unittest.TestCase):
         self.git(repo, "init")
         self.git(repo, "config", "user.email", "relay@example.test")
         self.git(repo, "config", "user.name", "Relay Test")
+        (repo / ".orchestrator" / "config.toml").write_text('prefix = "RR"\nnext_id = 1\n')
+        self.git(repo, "add", ".orchestrator/config.toml")
+        self.git(repo, "commit", "-m", "add board config")
 
     def make_daemon(self, root: Path, *, provider: str) -> Daemon:
         daemon = object.__new__(Daemon)

@@ -161,10 +161,18 @@ def _load_ledger(path: str | Path) -> dict[str, Any]:
     }
 
 
-def _find_record(records: list[dict[str, Any]], key: tuple[int, str]) -> dict[str, Any] | None:
+def _find_record(
+    records: list[dict[str, Any]],
+    key: tuple[int, str],
+    *,
+    intent_id: str | None = None,
+) -> dict[str, Any] | None:
     for record in reversed(records):
-        if relay_command_key(record) == key:
-            return record
+        if relay_command_key(record) != key:
+            continue
+        if intent_id is not None and str(record.get("intent_id") or "") != intent_id:
+            continue
+        return record
     return None
 
 
@@ -196,22 +204,40 @@ def record_command_authorization(
 
     ledger = _load_ledger(path)
     records = list(ledger["authorizations"])
+    intent_id = str(metadata.get("intent_id") or "").strip() or None
     if relationship in SUPERSEDING_RELATIONSHIPS:
+        scope = str(metadata.get("cancellation_scope") or "").strip()
+        target_ids = {
+            str(value)
+            for value in metadata.get("target_intent_ids") or []
+            if str(value)
+        }
+        target_ticket = str(metadata.get("target") or metadata.get("ticket_id") or "").upper()
         for record in records:
-            if relay_command_key(record) == key:
+            if relay_command_key(record) == key and str(record.get("intent_id") or "") == (intent_id or ""):
                 continue
             if str(record.get("status") or "") != "active":
                 continue
+            if scope in {"item", "ticket"}:
+                record_intent = str(record.get("intent_id") or "")
+                record_ticket = str(record.get("target") or record.get("ticket_id") or "").upper()
+                if target_ids and record_intent not in target_ids:
+                    continue
+                if not target_ids and target_ticket and record_ticket != target_ticket:
+                    continue
+                if not target_ids and not target_ticket:
+                    continue
             record["status"] = "revoked"
             record["revoked_at"] = now
             record["revoked_by"] = {
                 "relay_command_seq": key[0],
                 "relay_command_id": key[1],
                 "relationship": relationship,
+                "intent_id": intent_id,
             }
 
     if allowed_mutations:
-        record = _find_record(records, key)
+        record = _find_record(records, key, intent_id=intent_id)
         if record is None:
             record = {
                 "relay_command_seq": key[0],
@@ -227,6 +253,9 @@ def record_command_authorization(
             "allowed_mutations": allowed_mutations,
             "updated_at": now,
         })
+        for field in ("intent_id", "within_turn_order", "target", "disposition", "cancellation_scope"):
+            if metadata.get(field) is not None:
+                record[field] = metadata[field]
 
     ledger["authorizations"] = _prune_records(records)
     ledger["updated_at"] = now
@@ -293,6 +322,7 @@ def validate_and_mark_mutation(
     relay_command_id: Any,
     mutation: dict[str, Any],
     *,
+    relay_intent_id: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Validate an active authorization and mark one bounded mutation started."""
@@ -305,7 +335,24 @@ def validate_and_mark_mutation(
 
     now = time.time() if now is None else now
     ledger = _load_ledger(path)
-    record = _find_record(ledger["authorizations"], key)
+    matching_records = [
+        record
+        for record in reversed(ledger["authorizations"])
+        if relay_command_key(record) == key
+        and (
+            not relay_intent_id
+            or str(record.get("intent_id") or "") == str(relay_intent_id)
+        )
+    ]
+    record = next(
+        (
+            candidate
+            for candidate in matching_records
+            if str(candidate.get("status") or "") == "active"
+            and mutation_allowed(candidate, mutation)
+        ),
+        matching_records[0] if matching_records else None,
+    )
     if record is None:
         raise ValueError("stale Relay command: no mutation authorization was registered")
     if str(record.get("status") or "") != "active":

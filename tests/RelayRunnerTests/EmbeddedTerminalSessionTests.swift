@@ -1280,6 +1280,49 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         }
     }
 
+    func testItemScopedReplacementDoesNotInterruptUnrelatedAcknowledgedWork() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-3\",\"relay_command_seq\":3,\"intent_id\":\"cancel-item\",\"preempt_provider\":false,\"provider_preempt_intent_ids\":[\"login-item\"],\"cancellation_scope\":\"item\",\"work_disposition\":{\"route\":\"replace_current\",\"cancellation_scope\":\"item\"}}"
+            try "Cancel login\n".write(
+                to: fixture.command,
+                atomically: true,
+                encoding: .utf8
+            )
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            try writeProviderTurns([
+                providerTurn(
+                    seq: 1,
+                    id: "cmd-1",
+                    provider: provider,
+                    state: "active",
+                    intentID: "login-item",
+                    updatedAt: 1
+                ),
+                providerTurn(
+                    seq: 2,
+                    id: "cmd-2",
+                    provider: provider,
+                    state: "active",
+                    intentID: "search-item",
+                    updatedAt: 2
+                ),
+            ], to: fixture.providerTurns)
+            var sent: [[UInt8]] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in sent.append(Array(data)) },
+                isRunning: { true }
+            )
+
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent, [], provider)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path), provider)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.claimed.path), provider)
+        }
+    }
+
     func testInterruptPayloadUsesControlCWithoutPromptText() {
         XCTAssertEqual(
             RelayVoiceCommandDelivery.providerInputEvents(for: "Fix the bridge\n"),
@@ -1348,16 +1391,22 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         seq: Int,
         id: String,
         provider: String,
-        state: String
+        state: String,
+        intentID: String? = nil,
+        updatedAt: TimeInterval = Date().timeIntervalSince1970
     ) -> [String: Any] {
-        [
+        var record: [String: Any] = [
             "relay_command_seq": seq,
             "relay_command_id": id,
             "provider": provider,
             "state": state,
             "session_id": "session-\(provider)",
-            "updated_at": Date().timeIntervalSince1970,
+            "updated_at": updatedAt,
         ]
+        if let intentID {
+            record["intent_id"] = intentID
+        }
+        return record
     }
 
     private func writeProviderTurns(_ records: [[String: Any]], to url: URL) throws {

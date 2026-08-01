@@ -310,11 +310,26 @@ def _relay_command_key(command: dict | None) -> tuple[int, str] | None:
     return command_seq, command_id
 
 
+def _relay_intent_matches(left: dict | None, right: dict | None) -> bool:
+    if _relay_command_key(left) != _relay_command_key(right):
+        return False
+    left_intent = str((left or {}).get("intent_id") or "").strip()
+    right_intent = str((right or {}).get("intent_id") or "").strip()
+    if left_intent or right_intent:
+        return bool(left_intent) and left_intent == right_intent
+    return True
+
+
 def _relay_command_current(command: dict, *, state_path: str) -> bool:
     expected = _relay_command_key(command)
     if expected is None:
         return False
     current = _read_json_file(state_path)
+    cancelled = current.get("cancelled_intent_ids")
+    if isinstance(cancelled, list) and str(command.get("intent_id") or "") in {
+        str(value) for value in cancelled
+    }:
+        return False
     return _relay_command_key(current) == expected
 
 
@@ -331,7 +346,7 @@ def _relay_command_deliverable(command: dict, *, state_path: str) -> bool:
         return False
     return any(
         isinstance(candidate, dict)
-        and _relay_command_key(candidate) == expected
+        and _relay_intent_matches(candidate, command)
         and str(candidate.get("state") or "") in {"pending", "delivered", "claimed"}
         for candidate in deliverable
     )
@@ -452,7 +467,7 @@ def _command_has_turn_record(path: str, command: dict, *, now: float | None = No
     state = _load_turn_state(path, now=now)
     return any(
         isinstance(record, dict)
-        and _relay_command_key(record) == key
+        and _relay_intent_matches(record, command)
         and str(record.get("state") or "") != "stale"
         for record in state["records"]
     )
@@ -505,6 +520,9 @@ def _bind_prompt_submit(
         "relay_command_id": key[1],
         "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
     }
+    for field in ("intent_id", "within_turn_order", "target", "disposition", "cancellation_scope"):
+        if claim.get(field) is not None:
+            record[field] = claim[field]
     turn_id = _turn_id(payload)
     if turn_id:
         record["turn_id"] = turn_id
@@ -548,6 +566,9 @@ def _complete_turn(
         "relay_command_id": record["relay_command_id"],
         "session_id": record.get("session_id"),
     }
+    for field in ("intent_id", "within_turn_order", "target", "disposition", "cancellation_scope"):
+        if record.get(field) is not None:
+            completion[field] = record[field]
     if record.get("turn_id"):
         completion["turn_id"] = record["turn_id"]
     if record.get("provider"):

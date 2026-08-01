@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _key(payload: dict[str, Any] | None) -> tuple[int, str] | None:
@@ -46,6 +46,7 @@ class IntentInbox:
                     intent_id TEXT NOT NULL UNIQUE,
                     command_seq INTEGER NOT NULL,
                     command_id TEXT NOT NULL,
+                    within_turn_order INTEGER NOT NULL DEFAULT 1,
                     prompt TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
                     route TEXT NOT NULL,
@@ -62,8 +63,6 @@ class IntentInbox:
                     lease_attempts INTEGER NOT NULL DEFAULT 0,
                     recovered_at REAL
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS intents_command_key
-                    ON intents(command_seq, command_id);
                 """
             )
             columns = {
@@ -78,6 +77,15 @@ class IntentInbox:
                 )
             if "recovered_at" not in columns:
                 self._connection.execute("ALTER TABLE intents ADD COLUMN recovered_at REAL")
+            if "within_turn_order" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE intents ADD COLUMN within_turn_order INTEGER NOT NULL DEFAULT 1"
+                )
+            self._connection.execute("DROP INDEX IF EXISTS intents_command_key")
+            self._connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS intents_command_item_key "
+                "ON intents(command_seq, command_id, within_turn_order)"
+            )
             self._connection.execute(
                 "INSERT OR REPLACE INTO inbox_meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -109,22 +117,39 @@ class IntentInbox:
         stored["intent_claim_id"] = claim_id
         stored["intent_ack_id"] = ack_id
         stored["intent_inbox_version"] = SCHEMA_VERSION
+        work_item = stored.get("voice_work_item")
+        if not isinstance(work_item, dict):
+            work_item = {}
+        try:
+            within_turn_order = max(
+                1,
+                int(stored.get("within_turn_order") or work_item.get("within_turn_order") or 1),
+            )
+        except (TypeError, ValueError):
+            within_turn_order = 1
+        stored["within_turn_order"] = within_turn_order
+        lifecycle_state = str(
+            stored.get("lifecycle_state") or work_item.get("lifecycle_state") or "recognized"
+        )
+        initial_state = "cancelled" if lifecycle_state in {"cancelled", "abandoned"} else "pending"
         now = time.time()
         with self._lock, self._connection:
             self._connection.execute(
                 """
                 INSERT OR IGNORE INTO intents(
-                    intent_id, command_seq, command_id, prompt, metadata_json,
+                    intent_id, command_seq, command_id, within_turn_order, prompt, metadata_json,
                     route, state, delivery_id, claim_id, ack_id, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     intent_id,
                     key[0],
                     key[1],
+                    within_turn_order,
                     prompt,
                     json.dumps(stored, sort_keys=True),
                     route,
+                    initial_state,
                     delivery_id,
                     claim_id,
                     ack_id,
@@ -149,6 +174,102 @@ class IntentInbox:
             )
             return int(cursor.rowcount)
 
+    @staticmethod
+    def _cancellation_fields(metadata: dict[str, Any]) -> tuple[str, list[str], str | None]:
+        item = metadata.get("voice_work_item")
+        if not isinstance(item, dict):
+            item = {}
+        disposition = metadata.get("work_disposition")
+        if not isinstance(disposition, dict):
+            disposition = {}
+        scope = str(
+            metadata.get("cancellation_scope")
+            or item.get("cancellation_scope")
+            or disposition.get("cancellation_scope")
+            or "none"
+        )
+        target_ids = metadata.get("target_intent_ids") or item.get("target_intent_ids") or []
+        if not isinstance(target_ids, list):
+            target_ids = []
+        target = metadata.get("target") or item.get("target") or metadata.get("ticket_id")
+        return scope, [str(value) for value in target_ids if str(value)], str(target) if target else None
+
+    @staticmethod
+    def _row_matches_target(row: sqlite3.Row, target: str | None) -> bool:
+        if not target:
+            return False
+        target_text = target.strip().lower()
+        if not target_text:
+            return False
+        try:
+            metadata = json.loads(row["metadata_json"])
+        except (json.JSONDecodeError, TypeError):
+            return False
+        item = metadata.get("voice_work_item")
+        if not isinstance(item, dict):
+            item = {}
+        candidates = {
+            str(metadata.get("ticket_id") or "").strip().lower(),
+            str(metadata.get("target") or "").strip().lower(),
+            str(item.get("target") or "").strip().lower(),
+        }
+        if target_text in candidates:
+            return True
+        source = str(item.get("source_text") or metadata.get("source_text") or "").lower()
+        return target_text in source
+
+    def cancel_scoped(
+        self,
+        metadata: dict[str, Any],
+        *,
+        command_path: str | None = None,
+        metadata_path: str | None = None,
+    ) -> list[str]:
+        """Cancel only the resolved item/ticket and release its ready-file lease."""
+        scope, target_ids, target = self._cancellation_fields(metadata)
+        if scope not in {"item", "ticket", "all_work"}:
+            return []
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM intents
+                 WHERE state IN ('pending', 'delivered', 'claimed', 'acked')
+                 ORDER BY command_seq DESC, within_turn_order DESC, ordinal DESC
+                """
+            ).fetchall()
+            if scope == "all_work":
+                matched = list(rows)
+            elif target_ids:
+                wanted = set(target_ids)
+                matched = [row for row in rows if str(row["intent_id"]) in wanted]
+            else:
+                matched = [row for row in rows if self._row_matches_target(row, target)]
+                if scope == "item":
+                    matched = matched[:1]
+            if not matched:
+                return []
+            matched_ids = [str(row["intent_id"]) for row in matched]
+            placeholders = ",".join("?" for _ in matched_ids)
+            self._connection.execute(
+                f"UPDATE intents SET state='cancelled', cancelled_at=? "
+                f"WHERE intent_id IN ({placeholders})",
+                (time.time(), *matched_ids),
+            )
+
+        if command_path and metadata_path and os.path.exists(metadata_path):
+            leased = {}
+            try:
+                leased = json.loads(Path(metadata_path).read_text())
+            except (OSError, json.JSONDecodeError, TypeError):
+                pass
+            if str(leased.get("intent_id") or "") in set(matched_ids):
+                for path in (command_path, metadata_path):
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+        return matched_ids
+
     def materialize_next(
         self,
         *,
@@ -166,7 +287,7 @@ class IntentInbox:
                   FROM intents
                  WHERE route != 'run_sidecar'
                    AND state IN ('delivered', 'claimed')
-                 ORDER BY ordinal
+                 ORDER BY command_seq, within_turn_order, ordinal
                  LIMIT 1
                 """
             ).fetchone()
@@ -177,7 +298,7 @@ class IntentInbox:
                 SELECT *
                   FROM intents
                  WHERE state='pending' AND route != 'run_sidecar'
-                 ORDER BY ordinal
+                 ORDER BY command_seq, within_turn_order, ordinal
                  LIMIT 1
                 """
             ).fetchone()
@@ -206,15 +327,25 @@ class IntentInbox:
         key = _key(claimed)
         if key is None:
             return False
+        intent_id = str(claimed.get("intent_id") or "").strip()
         now = time.time()
         with self._lock, self._connection:
-            row = self._connection.execute(
-                "SELECT state, claim_id, ack_id FROM intents WHERE command_seq=? AND command_id=?",
-                key,
-            ).fetchone()
+            if intent_id:
+                row = self._connection.execute(
+                    "SELECT state, claim_id, ack_id, intent_id FROM intents WHERE intent_id=?",
+                    (intent_id,),
+                ).fetchone()
+            else:
+                row = self._connection.execute(
+                    "SELECT state, claim_id, ack_id, intent_id FROM intents "
+                    "WHERE command_seq=? AND command_id=? "
+                    "ORDER BY within_turn_order, ordinal LIMIT 1",
+                    key,
+                ).fetchone()
             if row is None:
                 return False
             state = str(row["state"])
+            resolved_intent_id = str(row["intent_id"])
             claim_id = str(claimed.get("intent_claim_id") or row["claim_id"] or f"claim:{key[0]}:{key[1]}")
             ack_id = str(claimed.get("intent_ack_id") or row["ack_id"] or f"ack:{key[0]}:{key[1]}")
             if state in {"delivered", "pending"}:
@@ -222,18 +353,18 @@ class IntentInbox:
                     """
                     UPDATE intents
                        SET state='claimed', claim_id=?, ack_id=?, claimed_at=?
-                     WHERE command_seq=? AND command_id=?
+                     WHERE intent_id=?
                     """,
-                    (claim_id, ack_id, now, key[0], key[1]),
+                    (claim_id, ack_id, now, resolved_intent_id),
                 )
                 state = "claimed"
             if provider_turn_seen and state == "claimed":
                 self._connection.execute(
                     """
                     UPDATE intents SET state='acked', ack_id=?, acked_at=?
-                     WHERE command_seq=? AND command_id=?
+                     WHERE intent_id=?
                     """,
-                    (ack_id, now, key[0], key[1]),
+                    (ack_id, now, resolved_intent_id),
                 )
             return True
 
@@ -245,7 +376,7 @@ class IntentInbox:
                 SELECT prompt, metadata_json
                   FROM intents
                  WHERE state='pending' AND route=?
-                 ORDER BY ordinal
+                 ORDER BY command_seq, within_turn_order, ordinal
                 """,
                 (str(route),),
             ).fetchall()
@@ -267,16 +398,16 @@ class IntentInbox:
                 """
                 SELECT metadata_json
                   FROM intents
-                 ORDER BY command_seq DESC, ordinal DESC
+                 ORDER BY command_seq DESC, within_turn_order DESC, ordinal DESC
                  LIMIT 1
                 """
             ).fetchone()
             rows = self._connection.execute(
                 """
-                SELECT command_seq, command_id, intent_id, route, state
+                SELECT command_seq, command_id, within_turn_order, intent_id, route, state
                   FROM intents
                  WHERE state IN ('pending', 'delivered', 'claimed')
-                 ORDER BY ordinal
+                 ORDER BY command_seq, within_turn_order, ordinal
                 """
             ).fetchall()
         latest_command = json.loads(latest["metadata_json"]) if latest is not None else None
@@ -284,6 +415,7 @@ class IntentInbox:
             {
                 "relay_command_seq": int(row["command_seq"]),
                 "relay_command_id": str(row["command_id"]),
+                "within_turn_order": int(row["within_turn_order"]),
                 "intent_id": str(row["intent_id"]),
                 "route": str(row["route"]),
                 "state": str(row["state"]),
@@ -295,9 +427,17 @@ class IntentInbox:
     def records(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT * FROM intents ORDER BY ordinal"
+                "SELECT * FROM intents ORDER BY command_seq, within_turn_order, ordinal"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def cancelled_intent_ids(self) -> list[str]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT intent_id FROM intents WHERE state='cancelled' "
+                "ORDER BY command_seq, within_turn_order, ordinal"
+            ).fetchall()
+        return [str(row["intent_id"]) for row in rows]
 
 
 def sync_deliverable_state(state_path: str, inbox: IntentInbox) -> None:
@@ -317,6 +457,7 @@ def sync_deliverable_state(state_path: str, inbox: IntentInbox) -> None:
             payload = {**(latest_command or {}), **payload}
     payload["intent_inbox_version"] = SCHEMA_VERSION
     payload["deliverable_commands"] = deliverable
+    payload["cancelled_intent_ids"] = inbox.cancelled_intent_ids()
     tmp = state_path + ".tmp"
     Path(tmp).write_text(json.dumps(payload, sort_keys=True))
     os.replace(tmp, state_path)

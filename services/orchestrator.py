@@ -860,6 +860,7 @@ def _validate_relay_command(
     relay_command_seq: Any,
     relay_command_id: Any,
     *,
+    relay_intent_id: str | None = None,
     mutation: dict[str, Any] | None = None,
 ) -> None:
     if relay_command_seq is None and not relay_command_id:
@@ -876,6 +877,7 @@ def _validate_relay_command(
                 relay_command_seq,
                 relay_command_id,
                 mutation,
+                relay_intent_id=relay_intent_id,
             )
         return
     if mutation is not None:
@@ -884,6 +886,7 @@ def _validate_relay_command(
             relay_command_seq,
             relay_command_id,
             mutation,
+            relay_intent_id=relay_intent_id,
         )
         return
     raise ValueError("stale Relay command: a newer voice command has superseded this action")
@@ -2188,13 +2191,15 @@ class OrchestratorSessionStore:
 class OrchestratorCommandStore:
     """Private raw-command inbox for the persistent orchestrator."""
 
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS orchestrator_commands (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        relay_command_id TEXT NOT NULL UNIQUE,
+        intent_id TEXT NOT NULL UNIQUE,
+        relay_command_id TEXT NOT NULL,
         relay_command_seq INTEGER NOT NULL,
+        within_turn_order INTEGER NOT NULL DEFAULT 1,
         session_id INTEGER,
         repo_path TEXT NOT NULL,
         provider_key TEXT,
@@ -2203,6 +2208,10 @@ class OrchestratorCommandStore:
         action TEXT,
         outcome TEXT,
         ticket_id TEXT,
+        target TEXT,
+        disposition TEXT,
+        cancellation_scope TEXT NOT NULL DEFAULT 'none',
+        lifecycle_state TEXT NOT NULL DEFAULT 'recognized',
         status TEXT NOT NULL,
         status_message TEXT,
         error TEXT,
@@ -2213,6 +2222,8 @@ class OrchestratorCommandStore:
     );
     CREATE INDEX IF NOT EXISTS idx_orchestrator_commands_repo ON orchestrator_commands(repo_path);
     CREATE INDEX IF NOT EXISTS idx_orchestrator_commands_status ON orchestrator_commands(status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_orchestrator_commands_turn_order
+        ON orchestrator_commands(relay_command_id, within_turn_order);
     """
 
     def __init__(self, path: Path):
@@ -2238,7 +2249,7 @@ class OrchestratorCommandStore:
                 c.executescript(self.SCHEMA)
                 c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 return
-            if current in {1, 2}:
+            if current in {1, 2, 3}:
                 existing_columns = {
                     str(row["name"])
                     for row in c.execute("PRAGMA table_info(orchestrator_commands)").fetchall()
@@ -2253,6 +2264,21 @@ class OrchestratorCommandStore:
                 for name, declaration in migrations.items():
                     if name not in existing_columns:
                         c.execute(f"ALTER TABLE orchestrator_commands ADD COLUMN {name} {declaration}")
+                c.execute("ALTER TABLE orchestrator_commands RENAME TO orchestrator_commands_legacy")
+                c.executescript(self.SCHEMA)
+                c.execute(
+                    "INSERT INTO orchestrator_commands("
+                    "intent_id, relay_command_id, relay_command_seq, within_turn_order, "
+                    "session_id, repo_path, provider_key, source_text, context, action, outcome, "
+                    "ticket_id, target, disposition, cancellation_scope, lifecycle_state, status, "
+                    "status_message, error, received_at, processed_at, created_at, updated_at"
+                    ") SELECT relay_command_id, relay_command_id, relay_command_seq, 1, "
+                    "session_id, repo_path, provider_key, source_text, context, action, outcome, "
+                    "ticket_id, NULL, NULL, 'none', 'recognized', status, status_message, error, "
+                    "received_at, processed_at, created_at, updated_at "
+                    "FROM orchestrator_commands_legacy"
+                )
+                c.execute("DROP TABLE orchestrator_commands_legacy")
                 c.executescript(self.SCHEMA)
                 c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 return
@@ -2278,11 +2304,17 @@ class OrchestratorCommandStore:
         source_text: str,
         relay_command_seq: int | str,
         relay_command_id: str,
+        intent_id: str | None = None,
+        within_turn_order: int | str | None = None,
         session_id: int | None = None,
         provider_key: str | None = None,
         context: str | None = None,
         action: str | None = None,
         outcome: str | None = None,
+        target: str | None = None,
+        disposition: str | None = None,
+        cancellation_scope: str | None = None,
+        lifecycle_state: str | None = None,
         received_at: float | None = None,
         status: str = "received",
     ) -> dict[str, Any]:
@@ -2291,6 +2323,9 @@ class OrchestratorCommandStore:
         command_id = str(relay_command_id or "").strip()
         if not command_id:
             raise ValueError("relay_command_id is required")
+        item_id = str(intent_id or command_id).strip()
+        if not item_id:
+            raise ValueError("intent_id is required")
         try:
             command_seq = int(relay_command_seq)
         except (TypeError, ValueError) as exc:
@@ -2305,22 +2340,28 @@ class OrchestratorCommandStore:
         now = time.time()
         provider = OrchestratorSessionStore._normalize_provider(provider_key) if provider_key else None
         refined_context = _clean_optional_multiline_text(context)
+        try:
+            item_order = max(1, int(within_turn_order or 1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid within_turn_order: {within_turn_order!r}") from exc
         with self._conn() as c:
             existing = c.execute(
-                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
-                (command_id,),
+                "SELECT * FROM orchestrator_commands WHERE intent_id = ?",
+                (item_id,),
             ).fetchone()
             if existing is not None and existing["status"] in ORCHESTRATOR_COMMAND_TERMINAL_STATUSES:
                 return self._public_row(existing)
 
             c.execute(
                 "INSERT INTO orchestrator_commands("
-                "relay_command_id, relay_command_seq, session_id, repo_path, provider_key, "
-                "source_text, context, action, outcome, ticket_id, status, status_message, error, "
-                "received_at, processed_at, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(relay_command_id) DO UPDATE SET "
+                "intent_id, relay_command_id, relay_command_seq, within_turn_order, session_id, "
+                "repo_path, provider_key, source_text, context, action, outcome, ticket_id, "
+                "target, disposition, cancellation_scope, lifecycle_state, status, status_message, "
+                "error, received_at, processed_at, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(intent_id) DO UPDATE SET "
                 "relay_command_seq = excluded.relay_command_seq, "
+                "within_turn_order = excluded.within_turn_order, "
                 "session_id = excluded.session_id, "
                 "repo_path = excluded.repo_path, "
                 "provider_key = excluded.provider_key, "
@@ -2329,6 +2370,10 @@ class OrchestratorCommandStore:
                 "action = excluded.action, "
                 "outcome = excluded.outcome, "
                 "ticket_id = excluded.ticket_id, "
+                "target = excluded.target, "
+                "disposition = excluded.disposition, "
+                "cancellation_scope = excluded.cancellation_scope, "
+                "lifecycle_state = excluded.lifecycle_state, "
                 "status = excluded.status, "
                 "status_message = excluded.status_message, "
                 "error = excluded.error, "
@@ -2336,8 +2381,10 @@ class OrchestratorCommandStore:
                 "processed_at = excluded.processed_at, "
                 "updated_at = excluded.updated_at",
                 (
+                    item_id,
                     command_id,
                     command_seq,
+                    item_order,
                     session_id,
                     repo,
                     provider,
@@ -2346,6 +2393,10 @@ class OrchestratorCommandStore:
                     action,
                     outcome,
                     None,
+                    target,
+                    disposition,
+                    str(cancellation_scope or "none"),
+                    str(lifecycle_state or "recognized"),
                     command_status,
                     None,
                     None,
@@ -2356,8 +2407,8 @@ class OrchestratorCommandStore:
                 ),
             )
             row = c.execute(
-                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
-                (command_id,),
+                "SELECT * FROM orchestrator_commands WHERE intent_id = ?",
+                (item_id,),
             ).fetchone()
             return self._public_row(row)
 
@@ -2365,6 +2416,7 @@ class OrchestratorCommandStore:
         self,
         command_id: str,
         *,
+        intent_id: str | None = None,
         status: str,
         action: str | None = None,
         outcome: str | None = None,
@@ -2400,31 +2452,40 @@ class OrchestratorCommandStore:
         if error is not None:
             fields.append("error = ?")
             values.append(error)
-        values.append(command_id)
+        identity_column = "intent_id" if intent_id else "relay_command_id"
+        identity_value = str(intent_id or command_id)
+        values.append(identity_value)
         with self._conn() as c:
             c.execute(
-                f"UPDATE orchestrator_commands SET {', '.join(fields)} WHERE relay_command_id = ?",
+                f"UPDATE orchestrator_commands SET {', '.join(fields)} WHERE {identity_column} = ?",
                 values,
             )
             row = c.execute(
-                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
-                (command_id,),
+                f"SELECT * FROM orchestrator_commands WHERE {identity_column} = ? "
+                "ORDER BY within_turn_order DESC, id DESC LIMIT 1",
+                (identity_value,),
             ).fetchone()
             return self._public_row(row) if row else None
 
-    def get_private(self, command_id: str) -> dict[str, Any] | None:
+    def get_private(self, command_id: str, *, intent_id: str | None = None) -> dict[str, Any] | None:
+        identity_column = "intent_id" if intent_id else "relay_command_id"
+        identity_value = str(intent_id or command_id)
         with self._conn() as c:
             row = c.execute(
-                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
-                (command_id,),
+                f"SELECT * FROM orchestrator_commands WHERE {identity_column} = ? "
+                "ORDER BY within_turn_order DESC, id DESC LIMIT 1",
+                (identity_value,),
             ).fetchone()
             return dict(row) if row else None
 
-    def get_public(self, command_id: str) -> dict[str, Any] | None:
+    def get_public(self, command_id: str, *, intent_id: str | None = None) -> dict[str, Any] | None:
+        identity_column = "intent_id" if intent_id else "relay_command_id"
+        identity_value = str(intent_id or command_id)
         with self._conn() as c:
             row = c.execute(
-                "SELECT * FROM orchestrator_commands WHERE relay_command_id = ?",
-                (command_id,),
+                f"SELECT * FROM orchestrator_commands WHERE {identity_column} = ? "
+                "ORDER BY within_turn_order DESC, id DESC LIMIT 1",
+                (identity_value,),
             ).fetchone()
             return self._public_row(row) if row else None
 
@@ -2439,7 +2500,7 @@ class OrchestratorCommandStore:
             rows = c.execute(
                 "SELECT * FROM orchestrator_commands WHERE status = ? "
                 f"{repo_clause}"
-                "ORDER BY relay_command_seq ASC, id ASC LIMIT ?",
+                "ORDER BY relay_command_seq ASC, within_turn_order ASC, id ASC LIMIT ?",
                 params,
             ).fetchall()
             return [dict(row) for row in rows]
@@ -2462,7 +2523,7 @@ class OrchestratorCommandStore:
             rows = c.execute(
                 f"SELECT * FROM orchestrator_commands WHERE status IN ({placeholders}) "
                 f"{repo_clause}"
-                "ORDER BY relay_command_seq ASC, id ASC LIMIT ?",
+                "ORDER BY relay_command_seq ASC, within_turn_order ASC, id ASC LIMIT ?",
                 params,
             ).fetchall()
             return [self._public_row(row) for row in rows]
@@ -4440,6 +4501,7 @@ class Daemon:
         source: str = "direct",
         relay_command_seq: int | str | None = None,
         relay_command_id: str | None = None,
+        relay_intent_id: str | None = None,
     ) -> dict:
         if not ticket_id:
             raise ValueError("ticket_id is required")
@@ -4448,6 +4510,7 @@ class Daemon:
         _validate_relay_command(
             relay_command_seq,
             relay_command_id,
+            relay_intent_id=relay_intent_id,
             mutation=_relay_mutation_metadata("dispatch_ticket", ticket_id=ticket_id),
         )
 
@@ -4497,9 +4560,13 @@ class Daemon:
                     trigger=f"dispatch-{source}-already-active",
                     drive_reviews=False,
                 )
-                if relay_command_id and command_store and command_store.get_private(str(relay_command_id)):
+                if relay_command_id and command_store and command_store.get_private(
+                    str(relay_command_id),
+                    intent_id=relay_intent_id,
+                ):
                     command_store.update_status(
                         str(relay_command_id),
+                        intent_id=relay_intent_id,
                         status="dispatched",
                         outcome="dispatch-already-active",
                         ticket_id=ticket_id,
@@ -4523,9 +4590,13 @@ class Daemon:
                     trigger=f"dispatch-{source}-awaiting-merge",
                     drive_reviews=True,
                 )
-                if relay_command_id and command_store and command_store.get_private(str(relay_command_id)):
+                if relay_command_id and command_store and command_store.get_private(
+                    str(relay_command_id),
+                    intent_id=relay_intent_id,
+                ):
                     command_store.update_status(
                         str(relay_command_id),
+                        intent_id=relay_intent_id,
                         status="dispatched",
                         outcome="dispatch-awaiting-merge",
                         ticket_id=ticket_id,
@@ -4717,9 +4788,13 @@ class Daemon:
             trigger=f"dispatch-{source}-claimed",
             drive_reviews=False,
         )
-        if relay_command_id and command_store and command_store.get_private(str(relay_command_id)):
+        if relay_command_id and command_store and command_store.get_private(
+            str(relay_command_id),
+            intent_id=relay_intent_id,
+        ):
             command_store.update_status(
                 str(relay_command_id),
+                intent_id=relay_intent_id,
                 status="dispatched",
                 outcome="ticket-dispatched",
                 ticket_id=ticket_id,
@@ -5360,6 +5435,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             if not isinstance(raw, dict):
                 continue
             command_id = str(raw.get("relay_command_id") or "").strip()
+            intent_id = str(raw.get("intent_id") or "").strip() or None
             state = str(raw.get("state") or raw.get("status") or "").strip().lower()
             try:
                 command_seq = int(raw.get("relay_command_seq"))
@@ -5372,7 +5448,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 ignored.append(command_id)
                 continue
 
-            existing = self.orchestrator_commands.get_private(command_id)
+            existing = self.orchestrator_commands.get_private(command_id, intent_id=intent_id)
             if existing is None:
                 if state != "delivery_failed":
                     ignored.append(command_id)
@@ -5385,14 +5461,21 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     source_text=source_text,
                     relay_command_seq=command_seq,
                     relay_command_id=command_id,
+                    intent_id=intent_id,
+                    within_turn_order=raw.get("within_turn_order"),
                     provider_key=raw.get("provider"),
                     action=raw.get("action"),
                     outcome="delivery-failed",
+                    target=raw.get("target"),
+                    disposition=raw.get("disposition"),
+                    cancellation_scope=raw.get("cancellation_scope"),
+                    lifecycle_state=raw.get("lifecycle_state"),
                     received_at=raw.get("received_at"),
                     status="delivery_failed",
                 )
                 updated = self.orchestrator_commands.update_status(
                     command_id,
+                    intent_id=intent_id,
                     status="delivery_failed",
                     outcome="delivery-failed",
                     status_message="Delivery failed before the embedded provider confirmed a ticket action.",
@@ -5428,6 +5511,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 message = "The embedded provider claimed the command before the previous session ended."
             updated = self.orchestrator_commands.update_status(
                 command_id,
+                intent_id=intent_id,
                 status=state,
                 outcome=outcome,
                 status_message=message,
@@ -5522,11 +5606,17 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         source_text: str,
         relay_command_seq: int | str,
         relay_command_id: str,
+        intent_id: str | None = None,
+        within_turn_order: int | str | None = None,
         session_id: int | None = None,
         provider: str | None = None,
         context: str | None = None,
         action: str | None = None,
         outcome: str | None = None,
+        target: str | None = None,
+        disposition: str | None = None,
+        cancellation_scope: str | None = None,
+        lifecycle_state: str | None = None,
         received_at: float | None = None,
         status: str = "received",
         defer_processing: bool = False,
@@ -5536,7 +5626,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         _validate_relay_command(
             relay_command_seq,
             relay_command_id,
-            mutation=_relay_mutation_metadata("orchestrator_command"),
+            relay_intent_id=intent_id,
+            mutation=_relay_mutation_metadata(
+                "orchestrator_command",
+                request_id=str(intent_id or relay_command_id),
+            ),
         )
         requested_status = str(status or "received").strip().lower()
         repo = Path(repo_path).expanduser().resolve()
@@ -5571,17 +5665,24 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             source_text=source_text,
             relay_command_seq=relay_command_seq,
             relay_command_id=relay_command_id,
+            intent_id=intent_id,
+            within_turn_order=within_turn_order,
             session_id=session_id,
             provider_key=provider,
             context=context,
             action=action,
             outcome=outcome,
+            target=target,
+            disposition=disposition,
+            cancellation_scope=cancellation_scope,
+            lifecycle_state=lifecycle_state,
             received_at=received_at,
             status=requested_status,
         )
         if status_message:
             result = self.orchestrator_commands.update_status(
                 str(relay_command_id),
+                intent_id=intent_id,
                 status=requested_status,
                 outcome=outcome,
                 status_message=status_message,
@@ -5592,7 +5693,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 "processing": {"processed": []},
             }
         processing = self.process_orchestrator_commands(repo_path=repo_path, limit=10)
-        latest = self.orchestrator_commands.get_public(str(relay_command_id or "")) or result
+        latest = self.orchestrator_commands.get_public(
+            str(relay_command_id or ""),
+            intent_id=intent_id,
+        ) or result
         return {"orchestrator_command": latest, "processing": processing}
 
     def process_orchestrator_commands(
@@ -5609,6 +5713,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
 
     def _process_orchestrator_command(self, command: dict[str, Any]) -> dict[str, Any]:
         command_id = str(command.get("relay_command_id") or "")
+        intent_id = str(command.get("intent_id") or command_id)
         if not command_id:
             return {"status": "failed", "error": "missing relay_command_id"}
         repo_path = str(command.get("repo_path") or "")
@@ -5617,6 +5722,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         relay_metadata = {
             "relay_command_seq": relay_command_seq,
             "relay_command_id": relay_command_id,
+            "intent_id": intent_id,
+            "within_turn_order": command.get("within_turn_order"),
         }
         if command.get("provider_key"):
             relay_metadata["provider"] = command.get("provider_key")
@@ -5632,13 +5739,18 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             message = "Skipped stale Relay command because a newer command superseded it."
             updated = self.orchestrator_commands.update_status(
                 command_id,
+                intent_id=intent_id,
                 status="stale",
                 outcome="stale-command",
                 status_message=message,
             )
             return updated or {"relay_command_id": command_id, "status": "stale"}
 
-        self.orchestrator_commands.update_status(command_id, status="planning")
+        self.orchestrator_commands.update_status(
+            command_id,
+            intent_id=intent_id,
+            status="planning",
+        )
         self._heartbeat_command_session(command, state="planning")
 
         try:
@@ -5658,6 +5770,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     source="orchestrator-command",
                     relay_command_seq=relay_command_seq,
                     relay_command_id=str(relay_command_id or ""),
+                    relay_intent_id=intent_id,
                 )
                 run = result.get("run") or {}
                 message = (
@@ -5667,6 +5780,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 )
                 updated = self.orchestrator_commands.update_status(
                     command_id,
+                    intent_id=intent_id,
                     status="authored",
                     action=action.kind,
                     outcome="dispatch-started",
@@ -5688,6 +5802,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 )
                 updated = self.orchestrator_commands.update_status(
                     command_id,
+                    intent_id=intent_id,
                     status="blocked",
                     action=action.kind,
                     outcome="clarification-needed",
@@ -5702,6 +5817,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 message = "No backstage ticket action is needed for this Relay command."
                 updated = self.orchestrator_commands.update_status(
                     command_id,
+                    intent_id=intent_id,
                     status="handled",
                     action=action.kind,
                     outcome="non-work-command",
@@ -5713,6 +5829,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             message = "Clarification needed before creating or dispatching a ticket."
             updated = self.orchestrator_commands.update_status(
                 command_id,
+                intent_id=intent_id,
                 status="blocked",
                 action=action.kind,
                 outcome="clarification-needed",
@@ -5727,6 +5844,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             message = str(e) if status == "stale" else "Blocked while authoring a ticket."
             updated = self.orchestrator_commands.update_status(
                 command_id,
+                intent_id=intent_id,
                 status=status,
                 outcome=outcome,
                 status_message=message,
@@ -5740,6 +5858,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             message = "Failed while authoring a ticket."
             updated = self.orchestrator_commands.update_status(
                 command_id,
+                intent_id=intent_id,
                 status="failed",
                 outcome="failed",
                 status_message=message,
@@ -5752,6 +5871,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
 
     def _author_ticket_for_command(self, command: dict[str, Any], relay_metadata: dict[str, Any]) -> dict[str, Any]:
         command_id = str(command.get("relay_command_id") or "")
+        intent_id = str(command.get("intent_id") or command_id)
         repo = Path(str(command.get("repo_path") or "")).expanduser().resolve()
         if not repo.is_dir() or not (repo / ".git").exists():
             raise ValueError(f"repo_path {repo} is not a git repository")
@@ -5766,9 +5886,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         result = self.apply_orchestrator_actions(
             repo_path=str(repo),
             actions=actions,
-            request_id=f"relay-command:{command_id}",
+            request_id=f"relay-command:{intent_id}",
             relay_command_seq=relay_metadata.get("relay_command_seq"),
             relay_command_id=str(relay_metadata.get("relay_command_id") or ""),
+            relay_intent_id=intent_id,
         )
         ticket_id = None
         if result.get("tickets_written"):
@@ -5776,6 +5897,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         message = f"Created ticket {ticket_id}." if ticket_id else "Created a refined ticket."
         updated = self.orchestrator_commands.update_status(
             command_id,
+            intent_id=intent_id,
             status="authored",
             action="create_ticket",
             outcome="ticket-created",
@@ -5879,6 +6001,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         request_id: str | None = None,
         relay_command_seq: int | str | None = None,
         relay_command_id: str | None = None,
+        relay_intent_id: str | None = None,
     ) -> dict:
         if not repo_path:
             raise ValueError("repo_path is required")
@@ -5906,10 +6029,19 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             skipped: list[dict[str, Any]] = []
             canceled: list[dict[str, Any]] = []
             command_id = str(relay_command_id or "").strip()
+            command_intent_id = (
+                action_request_id[len("relay-command:"):]
+                if action_request_id and action_request_id.startswith("relay-command:")
+                else None
+            )
             command_store = getattr(self, "orchestrator_commands", None)
-            if command_id and command_store and command_store.get_private(command_id):
+            if command_id and command_store and command_store.get_private(
+                command_id,
+                intent_id=command_intent_id,
+            ):
                 command_store.update_status(
                     command_id,
+                    intent_id=command_intent_id,
                     status="mutation_authorized",
                     outcome="mutation-authorized",
                 )
@@ -5931,6 +6063,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 _validate_relay_command(
                     relay_command_seq,
                     relay_command_id,
+                    relay_intent_id=relay_intent_id or command_intent_id,
                     mutation=mutation,
                 )
 
@@ -5948,9 +6081,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 )
                 if action_request_id:
                     seen_request_ids.add(action_request_id)
-                if command_id and command_store and command_store.get_private(command_id):
+                if command_id and command_store and command_store.get_private(
+                    command_id,
+                    intent_id=command_intent_id,
+                ):
                     command_store.update_status(
                         command_id,
+                        intent_id=command_intent_id,
                         status="superseded",
                         outcome="superseded",
                         status_message="The authorized action was superseded before all mutations completed.",
@@ -6094,6 +6231,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                         source="orchestrator-action",
                         relay_command_seq=relay_command_seq,
                         relay_command_id=relay_command_id,
+                        relay_intent_id=command_intent_id,
                     )
                 except ValueError as e:
                     if not _started_anything():
@@ -6117,7 +6255,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             if action_request_id:
                 seen_request_ids.add(action_request_id)
 
-            if command_id and command_store and command_store.get_private(command_id):
+            if command_id and command_store and command_store.get_private(
+                command_id,
+                intent_id=command_intent_id,
+            ):
                 action_kinds = {
                     str(action.get("kind") or "").strip().lower()
                     for action in actions
@@ -6146,6 +6287,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     message = "No requested ticket mutation was applied."
                 command_store.update_status(
                     command_id,
+                    intent_id=command_intent_id,
                     status=command_status,
                     outcome=command_outcome,
                     ticket_id=ticket_id,
@@ -6550,11 +6692,17 @@ class Handler(BaseHTTPRequestHandler):
                     source_text=body.get("source_text", ""),
                     relay_command_seq=body.get("relay_command_seq"),
                     relay_command_id=body.get("relay_command_id", ""),
+                    intent_id=body.get("intent_id"),
+                    within_turn_order=body.get("within_turn_order"),
                     session_id=body.get("session_id"),
                     provider=body.get("provider"),
                     context=body.get("context"),
                     action=body.get("action"),
                     outcome=body.get("outcome"),
+                    target=body.get("target"),
+                    disposition=body.get("disposition"),
+                    cancellation_scope=body.get("cancellation_scope"),
+                    lifecycle_state=body.get("lifecycle_state"),
                     received_at=body.get("received_at"),
                     status=body.get("status") or "received",
                     defer_processing=bool(body.get("defer_processing")),
@@ -6583,6 +6731,7 @@ class Handler(BaseHTTPRequestHandler):
                     request_id=body.get("request_id"),
                     relay_command_seq=body.get("relay_command_seq"),
                     relay_command_id=body.get("relay_command_id"),
+                    relay_intent_id=body.get("relay_intent_id"),
                 )
                 return 202, result
 
@@ -6598,6 +6747,8 @@ class Handler(BaseHTTPRequestHandler):
                     dispatch_args["relay_command_seq"] = body.get("relay_command_seq")
                 if body.get("relay_command_id"):
                     dispatch_args["relay_command_id"] = body.get("relay_command_id")
+                if body.get("relay_intent_id"):
+                    dispatch_args["relay_intent_id"] = body.get("relay_intent_id")
                 result = self.daemon.dispatch(**dispatch_args)
                 return (200 if result["already_active"] else 202), result
 

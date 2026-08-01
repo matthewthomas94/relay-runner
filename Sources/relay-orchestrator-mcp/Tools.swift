@@ -25,7 +25,7 @@ private func optionalInt(_ value: Any?) -> Int? {
     return nil
 }
 
-private func claimedRelayCommand() -> (seq: Int, id: String)? {
+private func claimedRelayCommand() -> (seq: Int, id: String, intentID: String?)? {
     let url = URL(fileURLWithPath: "/tmp/voice_cmd_claimed.json")
     guard FileManager.default.fileExists(atPath: "/tmp/voice_command_state.json"),
           let data = try? Data(contentsOf: url),
@@ -35,7 +35,9 @@ private func claimedRelayCommand() -> (seq: Int, id: String)? {
           !id.isEmpty else {
         return nil
     }
-    return (seq, id)
+    let intentID = (raw["intent_id"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return (seq, id, intentID?.isEmpty == false ? intentID : nil)
 }
 
 private func proxy(method: String, path: String, body: [String: Any]? = nil) async throws -> [[String: Any]] {
@@ -83,6 +85,10 @@ struct DispatchTicketTool: MCPTool {
                     "type": "string",
                     "description": "Optional Relay voice command id paired with relay_command_seq.",
                 ],
+                "relay_intent_id": [
+                    "type": "string",
+                    "description": "Optional stable Relay work-item id within the source voice turn.",
+                ],
             ],
             "required": ["ticket_id", "repo_path"],
         ]
@@ -101,9 +107,15 @@ struct DispatchTicketTool: MCPTool {
            !id.isEmpty {
             body["relay_command_seq"] = seq
             body["relay_command_id"] = id
+            if let intentID = arguments["relay_intent_id"] as? String, !intentID.isEmpty {
+                body["relay_intent_id"] = intentID
+            }
         } else if let claimed = claimedRelayCommand() {
             body["relay_command_seq"] = claimed.seq
             body["relay_command_id"] = claimed.id
+            if let intentID = claimed.intentID {
+                body["relay_intent_id"] = intentID
+            }
         }
         return try await proxy(method: "POST", path: "/v1/runs", body: body)
     }

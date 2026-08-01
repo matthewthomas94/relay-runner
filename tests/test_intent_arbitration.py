@@ -10,7 +10,9 @@ sys.path.insert(0, os.path.join(ROOT, "services"))
 from intent_arbitration import (  # noqa: E402
     ActiveWork,
     AuthorizationEffect,
+    CancellationScope,
     IntentRoute,
+    normalize_voice_work_items,
     resolve_intent_disposition,
     sidecar_eligible,
 )
@@ -118,6 +120,36 @@ class IntentArbitrationTests(unittest.TestCase):
         speech_stop = self.resolve("Stop speaking", kind="control", reason="cancel")
         self.assertEqual(speech_stop.route, IntentRoute.CONTROL_ONLY)
         self.assertEqual(speech_stop.authorization_effect, AuthorizationEffect.PRESERVE)
+
+    def test_real_same_turn_work_is_normalized_into_ordered_items_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                items = normalize_voice_work_items(
+                    "Fix login and add search",
+                    relay_command_seq=7,
+                    relay_command_id=f"{provider}-7",
+                )
+
+                self.assertEqual([item.source_text for item in items], ["Fix login", "add search"])
+                self.assertEqual([item.within_turn_order for item in items], [1, 2])
+                self.assertEqual(
+                    [item.intent_id for item in items],
+                    [f"{provider}-7:item:1", f"{provider}-7:item:2"],
+                )
+
+    def test_same_turn_abandonment_cancels_only_the_named_item(self):
+        items = normalize_voice_work_items(
+            "Dispatch RR-263 and add automatic compaction and fix export but never mind export",
+            relay_command_seq=9,
+            relay_command_id="cmd-9",
+        )
+
+        self.assertEqual(len(items), 4)
+        self.assertEqual(items[0].lifecycle_state, "recognized")
+        self.assertEqual(items[1].lifecycle_state, "recognized")
+        self.assertEqual(items[2].lifecycle_state, "cancelled")
+        self.assertEqual(items[3].cancellation_scope, CancellationScope.ITEM)
+        self.assertEqual(items[3].target_intent_ids, (items[2].intent_id,))
 
 
 if __name__ == "__main__":

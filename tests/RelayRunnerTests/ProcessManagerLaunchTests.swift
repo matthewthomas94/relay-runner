@@ -135,7 +135,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             "normal typed turn and do not use claimed metadata",
             "if a newer command is present, stop stale work",
             "do not answer or act on the newer command",
-            "atomically claim and inject the newer command as the next turn",
+            "atomically claim and inject the ordered next item from the inbox",
             "Raw Relay command captures are private metadata",
             "mcp__relay-actions__*",
             "mcp__relay-vision__screenshot",

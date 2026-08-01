@@ -23,6 +23,37 @@ def metadata(seq: int, command_id: str, route: str = "continue_current") -> dict
     }
 
 
+def item_metadata(
+    seq: int,
+    command_id: str,
+    order: int,
+    *,
+    target: str,
+    route: str = "queue_project_work",
+) -> dict:
+    intent_id = f"{command_id}:item:{order}"
+    return {
+        "relay_command_seq": seq,
+        "relay_command_id": command_id,
+        "intent_id": intent_id,
+        "within_turn_order": order,
+        "target": target,
+        "voice_work_item": {
+            "intent_id": intent_id,
+            "source_command_seq": seq,
+            "source_command_id": command_id,
+            "within_turn_order": order,
+            "source_text": f"fix {target}",
+            "target": target,
+            "disposition": "accepted",
+            "cancellation_scope": "none",
+            "lifecycle_state": "recognized",
+            "target_intent_ids": [],
+        },
+        "work_disposition": {"route": route},
+    }
+
+
 class IntentInboxTests(unittest.TestCase):
     def test_existing_v1_database_adds_stable_ack_identity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -273,6 +304,69 @@ class IntentInboxTests(unittest.TestCase):
             self.assertEqual(current["relay_command_seq"], 8)
             self.assertEqual(current["relay_command_id"], "eight")
             self.assertEqual(current["source_text"], "new turn not enqueued yet")
+
+    def test_materialize_orders_by_command_sequence_then_within_turn_order(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                inbox = IntentInbox(Path(directory) / "inbox.sqlite3")
+                command = str(Path(directory) / "ready")
+                meta = command + ".meta"
+                queued = [
+                    ("seq two", item_metadata(2, "two", 1, target="later")),
+                    ("seq one second", item_metadata(1, "one", 2, target="second")),
+                    ("seq one first", item_metadata(1, "one", 1, target="first")),
+                ]
+                for prompt, item in queued:
+                    item["provider"] = provider
+                    inbox.enqueue(prompt, item, "queue_project_work")
+
+                first = inbox.materialize_next(
+                    command_path=command,
+                    metadata_path=meta,
+                    transport="app-owned",
+                )
+
+                self.assertEqual(Path(command).read_text(), "seq one first")
+                self.assertEqual(first["relay_command_seq"], 1)
+                self.assertEqual(first["within_turn_order"], 1)
+                self.assertEqual(first["provider"], provider)
+
+    def test_partial_cancellation_releases_leased_item_and_requeues_survivor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = IntentInbox(Path(directory) / "inbox.sqlite3")
+            command = str(Path(directory) / "ready")
+            meta = command + ".meta"
+            login = item_metadata(1, "one", 1, target="login")
+            search = item_metadata(1, "one", 2, target="search")
+            inbox.enqueue("fix login", login, "queue_project_work")
+            inbox.enqueue("add search", search, "queue_project_work")
+            inbox.materialize_next(
+                command_path=command,
+                metadata_path=meta,
+                transport="app-owned",
+            )
+
+            cancelled = inbox.cancel_scoped(
+                {
+                    "cancellation_scope": "item",
+                    "target_intent_ids": [login["intent_id"]],
+                },
+                command_path=command,
+                metadata_path=meta,
+            )
+            survivor = inbox.materialize_next(
+                command_path=command,
+                metadata_path=meta,
+                transport="app-owned",
+            )
+
+            self.assertEqual(cancelled, [login["intent_id"]])
+            self.assertEqual(Path(command).read_text(), "add search")
+            self.assertEqual(survivor["intent_id"], search["intent_id"])
+            self.assertEqual(
+                [(record["intent_id"], record["state"]) for record in inbox.records()],
+                [(login["intent_id"], "cancelled"), (search["intent_id"], "delivered")],
+            )
 
 
 if __name__ == "__main__":
