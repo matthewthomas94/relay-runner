@@ -650,10 +650,12 @@ final class RelayVoiceCommandDelivery {
     }
 
     typealias Send = (ArraySlice<UInt8>) -> Void
+    typealias TransportSend = (ArraySlice<UInt8>, @escaping () -> Void) -> Void
     typealias Schedule = (TimeInterval, DispatchQueue, @escaping () -> Void) -> Void
 
     private let paths: Paths
     private let send: Send
+    private let transportSend: TransportSend
     private let schedule: Schedule
     private let submitDelay: TimeInterval
     private let acknowledgementTimeout: TimeInterval
@@ -663,6 +665,8 @@ final class RelayVoiceCommandDelivery {
     private let fileManager: FileManager
     private let now: () -> Date
     private let queue = DispatchQueue(label: "relay-runner.voice-command-delivery")
+    private let queueKey = DispatchSpecificKey<UUID>()
+    private let queueIdentity = UUID()
     private var timer: DispatchSourceTimer?
     private var inputTracker = RelayTerminalInputTracker()
     private var deliveryState: DeliveryState = .idle
@@ -673,6 +677,7 @@ final class RelayVoiceCommandDelivery {
     init(
         paths: Paths = Paths(),
         send: @escaping Send,
+        transportSend: TransportSend? = nil,
         submitDelay: TimeInterval = 0.12,
         acknowledgementTimeout: TimeInterval = 2.0,
         clearedDraftSafetyDelay: TimeInterval = 0.25,
@@ -686,6 +691,10 @@ final class RelayVoiceCommandDelivery {
     ) {
         self.paths = paths
         self.send = send
+        self.transportSend = transportSend ?? { data, confirmation in
+            send(data)
+            confirmation()
+        }
         self.submitDelay = submitDelay
         self.acknowledgementTimeout = acknowledgementTimeout
         self.clearedDraftSafetyDelay = max(0, clearedDraftSafetyDelay)
@@ -694,6 +703,7 @@ final class RelayVoiceCommandDelivery {
         self.isRunning = isRunning
         self.fileManager = fileManager
         self.now = now
+        queue.setSpecific(key: queueKey, value: queueIdentity)
     }
 
     func start() {
@@ -870,9 +880,9 @@ final class RelayVoiceCommandDelivery {
             deliveryState = .acknowledged(key)
             return true
         }
-        send(ArraySlice(first))
-        recordDeliveryEvent("prompt_write", key: key)
         guard events.count > 1 else {
+            send(ArraySlice(first))
+            recordDeliveryEvent("prompt_write", key: key)
             writeClaimedMetadata(command.metadata)
             // One-event controls do not produce a provider hook turn, so the
             // terminal consumer must acknowledge them to release the inbox.
@@ -887,6 +897,8 @@ final class RelayVoiceCommandDelivery {
             submittedAt: now()
         )
         deliveryState = .promptWritten(pending)
+        send(ArraySlice(first))
+        recordDeliveryEvent("prompt_write", key: key)
         schedule(submitDelay, queue) { [weak self] in
             guard let self else { return }
             guard case .promptWritten(let current) = self.deliveryState,
@@ -905,17 +917,54 @@ final class RelayVoiceCommandDelivery {
             }
             self.writeClaimedMetadata(command.metadata)
             self.recordDeliveryEvent("claim_published", key: key)
-            self.deliveryState = .awaitingAcknowledgement(current)
-            for event in current.events {
-                self.send(ArraySlice(event))
-                self.recordDeliveryEvent("submit_attempt", key: key, fields: ["attempt": 1])
-            }
-            self.restoreBufferedManualDraft()
-            self.schedule(self.acknowledgementTimeout, self.queue) { [weak self] in
-                self?.handleAcknowledgementTimeout(for: key)
-            }
+            self.sendPendingSubmissionEvents(current)
         }
         return true
+    }
+
+    private func sendPendingSubmissionEvents(_ pending: PendingSubmission, index: Int = 0) {
+        guard case .promptWritten(let current) = deliveryState,
+              current.key == pending.key,
+              current.events.indices.contains(index) else { return }
+        let event = current.events[index]
+        recordDeliveryEvent(
+            "submit_attempt",
+            key: current.key,
+            fields: ["attempt": 1, "transport_event_index": index]
+        )
+        transportSend(ArraySlice(event)) { [weak self] in
+            guard let self else { return }
+            self.performOnDeliveryQueue {
+                guard case .promptWritten(let confirmed) = self.deliveryState,
+                      confirmed.key == pending.key,
+                      confirmed.events.indices.contains(index) else { return }
+                self.recordDeliveryEvent(
+                    "submit_transport_confirmed",
+                    key: confirmed.key,
+                    fields: ["attempt": 1, "transport_event_index": index]
+                )
+                let nextIndex = index + 1
+                if confirmed.events.indices.contains(nextIndex) {
+                    self.sendPendingSubmissionEvents(confirmed, index: nextIndex)
+                    return
+                }
+                self.deliveryState = .awaitingAcknowledgement(confirmed)
+                self.restoreBufferedManualDraft()
+                self.schedule(self.acknowledgementTimeout, self.queue) { [weak self] in
+                    self?.handleAcknowledgementTimeout(for: confirmed.key)
+                }
+            }
+        }
+    }
+
+    private func performOnDeliveryQueue(_ work: () -> Void) {
+        if DispatchQueue.getSpecific(key: queueKey) == queueIdentity {
+            work()
+        } else {
+            queue.sync {
+                work()
+            }
+        }
     }
 
     private var openSubmission: PendingSubmission? {
@@ -2161,14 +2210,19 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         )
         guard localProcess.running else { throw EmbeddedTerminalProcessError.couldNotStart }
         if launch.voiceDelivery == .appOwned {
+            let transportSend: RelayVoiceCommandDelivery.TransportSend = { [weak self] data, confirmation in
+                let bytes = Array(data)
+                DispatchQueue.main.async { [weak self] in
+                    self?.localProcess.send(data: ArraySlice(bytes))
+                    confirmation()
+                }
+            }
             let delivery = RelayVoiceCommandDelivery(
                 paths: voiceDeliveryPaths,
-                send: { [weak self] data in
-                    let bytes = Array(data)
-                    DispatchQueue.main.async { [weak self] in
-                        self?.localProcess.send(data: ArraySlice(bytes))
-                    }
+                send: { data in
+                    transportSend(data) {}
                 },
+                transportSend: transportSend,
                 isRunning: { [weak self] in
                     self?.localProcess.running == true
                 }

@@ -855,6 +855,113 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         }
     }
 
+    func testTransportConfirmationOwnsComposerUntilVoiceReturnWritesForCodexAndClaude() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let command = "Voice-owned prompt"
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-1\",\"relay_command_seq\":1}"
+            try "\(command)\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            var ptyWrites: [[UInt8]] = []
+            var transportQueue: [(bytes: [UInt8], confirmation: () -> Void)] = []
+            var scheduled: [() -> Void] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in
+                    transportQueue.append((Array(data), {}))
+                },
+                transportSend: { data, confirmation in
+                    transportQueue.append((Array(data), confirmation))
+                },
+                schedule: { _, _, work in scheduled.append(work) },
+                isRunning: { true }
+            )
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(transportQueue.map(\.bytes), [Array(command.utf8)], provider)
+            let promptWrite = transportQueue.removeFirst()
+            ptyWrites.append(promptWrite.bytes)
+            promptWrite.confirmation()
+
+            XCTAssertEqual(scheduled.count, 1, provider)
+            scheduled[0]()
+            XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata, provider)
+            XCTAssertEqual(transportQueue.map(\.bytes), [[13]], provider)
+
+            let manualInputs: [[UInt8]] = [
+                Array("typed draft".utf8),
+                Array(" pasted 🧪".utf8),
+                [13],
+            ]
+            for input in manualInputs {
+                XCTAssertFalse(delivery.recordUserInput(ArraySlice(input)), provider)
+            }
+
+            XCTAssertEqual(ptyWrites, [Array(command.utf8)], provider)
+            XCTAssertEqual(transportQueue.map(\.bytes), [[13]], provider)
+            let eventsBeforeTransportConfirmation = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertEqual(countEvent("submit_attempt", in: eventsBeforeTransportConfirmation), 1, provider)
+            XCTAssertEqual(
+                countEvent("submit_transport_confirmed", in: eventsBeforeTransportConfirmation),
+                0,
+                provider
+            )
+            XCTAssertEqual(
+                countEvent("manual_draft_restored", in: eventsBeforeTransportConfirmation),
+                0,
+                provider
+            )
+            let voiceReturn = transportQueue.removeFirst()
+            ptyWrites.append(voiceReturn.bytes)
+            voiceReturn.confirmation()
+
+            XCTAssertEqual(ptyWrites, [Array(command.utf8), [13]], provider)
+            XCTAssertEqual(ptyWrites.filter { $0 == [13] }.count, 1, provider)
+            XCTAssertEqual(transportQueue.map(\.bytes), Array(manualInputs.dropLast()), provider)
+            while !transportQueue.isEmpty {
+                let draftWrite = transportQueue.removeFirst()
+                ptyWrites.append(draftWrite.bytes)
+                draftWrite.confirmation()
+            }
+            XCTAssertEqual(
+                ptyWrites,
+                [Array(command.utf8), [13], manualInputs[0], manualInputs[1]],
+                provider
+            )
+
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "active"),
+            ], to: fixture.providerTurns)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertTrue(transportQueue.isEmpty, provider)
+
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "completed_final"),
+            ], to: fixture.providerTurns)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(transportQueue.map(\.bytes), [[13]], provider)
+            let manualReturn = transportQueue.removeFirst()
+            ptyWrites.append(manualReturn.bytes)
+            manualReturn.confirmation()
+
+            XCTAssertEqual(
+                ptyWrites,
+                [Array(command.utf8), [13], manualInputs[0], manualInputs[1], manualInputs[2]],
+                provider
+            )
+            XCTAssertEqual(ptyWrites.filter { $0 == [13] }.count, 2, provider)
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertEqual(countEvent("submit_attempt", in: events), 1, provider)
+            XCTAssertEqual(countEvent("submit_transport_confirmed", in: events), 1, provider)
+            XCTAssertEqual(countEvent("manual_input_quarantined", in: events), 3, provider)
+            XCTAssertEqual(countEvent("manual_draft_restored", in: events), 1, provider)
+            XCTAssertEqual(countEvent("manual_submit_replayed", in: events), 1, provider)
+            XCTAssertFalse(events.contains(command), provider)
+            XCTAssertFalse(events.contains("typed draft"), provider)
+        }
+    }
+
     func testMissingProviderAcknowledgementRecoversWithoutRetryingReturn() throws {
         let fixture = try makeFixture()
         try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)
