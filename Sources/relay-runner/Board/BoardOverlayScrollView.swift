@@ -417,8 +417,15 @@ final class BoardOverlayScrollContainer: NSView {
         to card: ProgramWorkCardDragEventView,
         atWindowLocation location: CGPoint
     ) {
-        lastPointerWindowLocation = location
-        updateHoveredWorkCard(card)
+        reconcileMountedPointer(atWindowLocation: location)
+    }
+
+    func mountedWorkCard(
+        atWindowLocation location: CGPoint
+    ) -> ProgramWorkCardDragEventView? {
+        let containerPoint = convert(location, from: nil)
+        guard bounds.contains(containerPoint) else { return nil }
+        return programWorkCard(atContainerPoint: containerPoint)
     }
 
     func clearMountedPointer(atWindowLocation location: CGPoint) {
@@ -570,6 +577,11 @@ extension NSView {
             candidate = current.superview
         }
         return nil
+    }
+
+    var boardOverlayScrollContainers: [BoardOverlayScrollContainer] {
+        let current = (self as? BoardOverlayScrollContainer).map { [$0] } ?? []
+        return current + subviews.flatMap(\.boardOverlayScrollContainers)
     }
 
     func cancelProgramWorkCardInteractions() {

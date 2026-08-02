@@ -571,6 +571,23 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             hitLocations.count
         )
 
+        let expectedCard = try XCTUnwrap(cards.first)
+        let visibleCardLocation = expectedCard.convert(
+            CGPoint(x: expectedCard.bounds.midX, y: expectedCard.bounds.midY),
+            to: nil
+        )
+        XCTAssertTrue(
+            backlogContainer.mountedWorkCard(atWindowLocation: visibleCardLocation) === expectedCard
+        )
+        let unrelatedCard = try XCTUnwrap(cards.first { $0 !== expectedCard })
+        backlogContainer.routeMountedPointer(
+            to: unrelatedCard,
+            atWindowLocation: visibleCardLocation
+        )
+        drainMainQueue()
+        XCTAssertTrue(expectedCard.isPointerInside)
+        XCTAssertFalse(unrelatedCard.isPointerInside)
+
         scrollViews.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 180))
         scrollViews.scrollView.reflectScrolledClipView(scrollViews.scrollView.contentView)
         drainMainQueue()

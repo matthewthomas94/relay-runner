@@ -981,6 +981,7 @@ private struct DraggableProgramWorkCard: View {
                     interactionID: "\(model.selectedProjectPath ?? "all")|\(lane.id)|\(item.id)",
                     canDrag: canDrag,
                     scrollBoundary: scrollBoundary,
+                    toolTip: ProgramWorkCard.toolTip(for: item),
                     onHoverChange: { isHovered = $0 },
                     onSelect: onSelect,
                     windowLocationToBoardLocation: { location in
@@ -1067,6 +1068,7 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     let interactionID: String
     let canDrag: Bool
     let scrollBoundary: BoardOverlayScrollBoundary?
+    let toolTip: String
     let onHoverChange: (Bool) -> Void
     let onSelect: () -> Void
     let windowLocationToBoardLocation: (CGPoint) -> CGPoint?
@@ -1085,6 +1087,7 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     func updateNSView(_ nsView: ProgramWorkCardDragEventView, context: Context) {
         nsView.interactionID = interactionID
         nsView.boardOverlayScrollBoundary = scrollBoundary
+        nsView.toolTip = toolTip
         nsView.onHoverChange = onHoverChange
         nsView.onSelect = onSelect
         nsView.windowLocationToBoardLocation = windowLocationToBoardLocation
@@ -1173,10 +1176,22 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     }
 
     override func mouseEntered(with event: NSEvent) {
+        if let registeredScrollContainer {
+            registeredScrollContainer.reconcileMountedPointer(
+                atWindowLocation: event.locationInWindow
+            )
+            return
+        }
         setPointerInside(true)
     }
 
     override func mouseExited(with event: NSEvent) {
+        if let registeredScrollContainer {
+            registeredScrollContainer.reconcileMountedPointer(
+                atWindowLocation: event.locationInWindow
+            )
+            return
+        }
         setPointerInside(false)
     }
 
@@ -1488,7 +1503,21 @@ private struct ProgramWorkCard: View {
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
-        .help(cardHelp)
+    }
+
+    static func toolTip(for item: ProgramStatusItem) -> String {
+        let cleaned: (String?) -> String? = { value in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        let projectName = cleaned(item.project?.name) ?? "Unknown project"
+        let ticketID = cleaned(item.ticketID) ?? "No ticket"
+        let title = cleaned(item.title) ?? "Untitled work"
+        var parts = [projectName, ticketID, title]
+        if let path = cleaned(item.project?.path) {
+            parts.append(path)
+        }
+        return parts.joined(separator: " - ")
     }
 
     private var projectName: String {
@@ -1531,14 +1560,6 @@ private struct ProgramWorkCard: View {
 
     private var activityLine: String? {
         item.programAgentActivityLine
-    }
-
-    private var cardHelp: String {
-        var parts = [projectName, ticketID, title]
-        if let path = cleaned(item.project?.path) {
-            parts.append(path)
-        }
-        return parts.joined(separator: " - ")
     }
 
     private func cleaned(_ value: String?) -> String? {

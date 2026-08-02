@@ -134,14 +134,10 @@ final class BoardOverlayPanel: NSPanel {
         atWindowLocation location: CGPoint
     ) -> ProgramWorkCardDragEventView? {
         guard let contentView else { return nil }
-        var candidate: NSView? = contentView.hitTest(
-            contentView.convert(location, from: nil)
-        )
-        while let view = candidate {
-            if let workCard = view as? ProgramWorkCardDragEventView {
-                return workCard
+        for container in contentView.boardOverlayScrollContainers {
+            if let card = container.mountedWorkCard(atWindowLocation: location) {
+                return card
             }
-            candidate = view.superview
         }
         return nil
     }
