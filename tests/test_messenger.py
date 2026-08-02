@@ -350,6 +350,38 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_progress_update_is_replayable_after_first_play(self):
+        backend = FakeBackend([
+            "I picked up the replay request.",
+            "I’m checking the replay path now.",
+        ])
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id, display_text, metadata: spoken.append(
+                (text, seq, command_id, display_text, metadata)
+            ),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 6, "relay_command_id": "cmd-6"}
+            runtime.submit_user("Fix replay", command)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+
+            runtime.submit_trace({
+                "kind": "reasoning-summary",
+                "message": "Checking the replay path",
+                "command": command,
+            })
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+
+            metadata = spoken[1][4]
+            self.assertEqual(metadata["kind"], "progress")
+            self.assertTrue(metadata["replayable"])
+        finally:
+            runtime.shutdown()
+
     def test_trace_and_final_share_bounded_context_and_only_current_reply_speaks(self):
         backend = FakeBackend([
             "I picked up the messenger work, and I’ll return with the next step.",

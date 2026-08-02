@@ -1538,6 +1538,11 @@ class MessengerRuntime:
             "replayable": (
                 event.kind in {"user_turn", "orchestrator_final"}
                 or event.work_lifecycle
+                or (
+                    event.kind == "orchestrator_trace"
+                    and event.command_seq is not None
+                    and event.command_id is not None
+                )
             ),
             "work_disposition": event.work_disposition,
             "freshness_scope": "work" if event.work_lifecycle else "conversation",
