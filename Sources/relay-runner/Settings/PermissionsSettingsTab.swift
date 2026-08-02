@@ -8,7 +8,7 @@ enum PermissionActionIntent: Equatable {
 /// indicator and an action button where one makes sense. Designed to be the
 /// single place a user (or support request) can look to answer "what's
 /// wrong with my install?" without digging through logs.
-struct StatusSettingsTab: View {
+struct PermissionsSettingsTab: View {
     static let privacyPermissionOrder: [PermissionKind] = [
         .microphone,
         .accessibility,
@@ -273,7 +273,7 @@ struct StatusSettingsTab: View {
             return RowAction(title: title, systemImage: "mic.badge.plus") {
                 appState.requestPermissionSetup(
                     kind,
-                    source: .settingsStatus,
+                    source: .settingsPermissions,
                     purpose: Self.permissionDetailText(kind: kind, status: status, restricted: false)
                 )
             }
@@ -281,7 +281,7 @@ struct StatusSettingsTab: View {
         return RowAction(title: title, systemImage: "gearshape") {
             appState.requestPermissionSetup(
                 kind,
-                source: .settingsStatus,
+                source: .settingsPermissions,
                 purpose: Self.permissionDetailText(kind: kind, status: status, restricted: false)
             )
         }

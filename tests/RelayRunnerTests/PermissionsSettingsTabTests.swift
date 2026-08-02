@@ -1,24 +1,24 @@
 import XCTest
 @testable import relay_runner
 
-final class StatusSettingsTabTests: XCTestCase {
+final class PermissionsSettingsTabTests: XCTestCase {
 
     func testOnboardingSectionCopyMatchesRedoFlow() {
-        XCTAssertEqual(StatusSettingsTab.onboardingSectionTitle, "Onboarding")
-        XCTAssertEqual(StatusSettingsTab.onboardingRowTitle, "Intro walkthrough")
+        XCTAssertEqual(PermissionsSettingsTab.onboardingSectionTitle, "Onboarding")
+        XCTAssertEqual(PermissionsSettingsTab.onboardingRowTitle, "Intro walkthrough")
         XCTAssertEqual(
-            StatusSettingsTab.onboardingRowDescription,
+            PermissionsSettingsTab.onboardingRowDescription,
             "Run the intro again to revisit permissions, coding agent setup, sign-in, and workspace selection."
         )
-        XCTAssertEqual(StatusSettingsTab.onboardingActionTitle, "Redo Onboarding…")
+        XCTAssertEqual(PermissionsSettingsTab.onboardingActionTitle, "Redo Onboarding…")
     }
 
-    func testStatusSourcePromotesSingleOnboardingSectionAheadOfPermissionsAndRuntime() throws {
+    func testPermissionsSourcePromotesSingleOnboardingSectionAheadOfPermissionsAndRuntime() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let source = root.appendingPathComponent("Sources/relay-runner/Settings/StatusSettingsTab.swift")
+        let source = root.appendingPathComponent("Sources/relay-runner/Settings/PermissionsSettingsTab.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         let onboardingIndex = try XCTUnwrap(contents.range(of: "SettingsSection(Self.onboardingSectionTitle)")?.lowerBound)
@@ -35,28 +35,28 @@ final class StatusSettingsTabTests: XCTestCase {
 
     func testPrivacyPermissionsExcludeInputMonitoring() {
         XCTAssertEqual(
-            StatusSettingsTab.privacyPermissionOrder,
+            PermissionsSettingsTab.privacyPermissionOrder,
             [.microphone, .accessibility, .screenRecording]
         )
         XCTAssertEqual(
-            StatusSettingsTab.privacyPermissionOrder.map(\.displayName),
+            PermissionsSettingsTab.privacyPermissionOrder.map(\.displayName),
             ["Microphone", "Accessibility", "Screen Recording"]
         )
     }
 
     func testHiddenInputMonitoringResetDoesNotSurfaceInSettings() {
         XCTAssertEqual(
-            StatusSettingsTab.visibleResetPermissions([.inputMonitoring]),
+            PermissionsSettingsTab.visibleResetPermissions([.inputMonitoring]),
             []
         )
         XCTAssertEqual(
-            StatusSettingsTab.visibleResetPermissions([.inputMonitoring, .accessibility]),
+            PermissionsSettingsTab.visibleResetPermissions([.inputMonitoring, .accessibility]),
             [.accessibility]
         )
     }
 
     func testAccessibilityDetailNamesRelayActionsRatherThanHotkeys() {
-        let detail = StatusSettingsTab.permissionDetailText(
+        let detail = PermissionsSettingsTab.permissionDetailText(
             kind: .accessibility,
             status: .notDetermined,
             restricted: false
@@ -68,12 +68,12 @@ final class StatusSettingsTabTests: XCTestCase {
     }
 
     func testScreenRecordingDetailAndActionIntentNameRelayVisionRecovery() {
-        let denied = StatusSettingsTab.permissionDetailText(
+        let denied = PermissionsSettingsTab.permissionDetailText(
             kind: .screenRecording,
             status: .denied,
             restricted: false
         )
-        let notDetermined = StatusSettingsTab.permissionDetailText(
+        let notDetermined = PermissionsSettingsTab.permissionDetailText(
             kind: .screenRecording,
             status: .notDetermined,
             restricted: false
@@ -82,27 +82,27 @@ final class StatusSettingsTabTests: XCTestCase {
         XCTAssertTrue(denied.contains("Relay Vision screenshots"))
         XCTAssertTrue(notDetermined.contains("Relay Vision screenshots"))
         XCTAssertEqual(
-            StatusSettingsTab.permissionActionTitle(kind: .screenRecording, status: .denied),
+            PermissionsSettingsTab.permissionActionTitle(kind: .screenRecording, status: .denied),
             "Open Settings"
         )
         XCTAssertEqual(
-            StatusSettingsTab.permissionActionIntent(kind: .screenRecording, status: .denied),
+            PermissionsSettingsTab.permissionActionIntent(kind: .screenRecording, status: .denied),
             .requestSetup(.screenRecording)
         )
-        XCTAssertNil(StatusSettingsTab.permissionActionIntent(kind: .screenRecording, status: .granted))
+        XCTAssertNil(PermissionsSettingsTab.permissionActionIntent(kind: .screenRecording, status: .granted))
     }
 
     func testListPermissionsUseSharedSetupIntent() {
         XCTAssertEqual(
-            StatusSettingsTab.permissionActionIntent(kind: .microphone, status: .notDetermined),
+            PermissionsSettingsTab.permissionActionIntent(kind: .microphone, status: .notDetermined),
             .requestSetup(.microphone)
         )
         XCTAssertEqual(
-            StatusSettingsTab.permissionActionIntent(kind: .accessibility, status: .denied),
+            PermissionsSettingsTab.permissionActionIntent(kind: .accessibility, status: .denied),
             .requestSetup(.accessibility)
         )
         XCTAssertEqual(
-            StatusSettingsTab.permissionActionIntent(kind: .screenRecording, status: .notDetermined),
+            PermissionsSettingsTab.permissionActionIntent(kind: .screenRecording, status: .notDetermined),
             .requestSetup(.screenRecording)
         )
     }

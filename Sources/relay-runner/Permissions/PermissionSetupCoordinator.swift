@@ -5,7 +5,7 @@ import SwiftUI
 
 enum PermissionSetupSource: Equatable {
     case onboarding
-    case settingsStatus
+    case settingsPermissions
     case hostedTool
     case permissionRecovery
 
@@ -13,7 +13,7 @@ enum PermissionSetupSource: Equatable {
         switch self {
         case .onboarding:
             return 12
-        case .settingsStatus, .permissionRecovery:
+        case .settingsPermissions, .permissionRecovery:
             return 10
         case .hostedTool:
             return 8

@@ -7,7 +7,7 @@ final class SettingsWindowTests: XCTestCase {
     func testSettingsCategoriesExposeExpectedNavigationOrder() {
         XCTAssertEqual(
             SettingsCategory.allCases.map(\.title),
-            ["Status", "Speech-to-Text", "Text-to-Speech", "General", "Awareness"]
+            ["Permissions", "Speech-to-Text", "Text-to-Speech", "General", "Awareness"]
         )
     }
 
@@ -20,16 +20,16 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testSettingsCategoryKeyboardMovementClampsAtEnds() {
-        XCTAssertEqual(SettingsCategory.category(after: .status), .speechToText)
-        XCTAssertEqual(SettingsCategory.category(before: .speechToText), .status)
-        XCTAssertEqual(SettingsCategory.category(before: .status), .status)
+        XCTAssertEqual(SettingsCategory.category(after: .permissions), .speechToText)
+        XCTAssertEqual(SettingsCategory.category(before: .speechToText), .permissions)
+        XCTAssertEqual(SettingsCategory.category(before: .permissions), .permissions)
         XCTAssertEqual(SettingsCategory.category(after: .awareness), .awareness)
     }
 
     func testSettingsHeaderPresentationUsesSelectedCategory() {
-        let category = SettingsDetailHeaderPresentation(category: .status)
-        XCTAssertEqual(category.title, "Status")
-        XCTAssertEqual(category.subtitle, "Permissions and runtime")
+        let category = SettingsDetailHeaderPresentation(category: .permissions)
+        XCTAssertEqual(category.title, "Permissions")
+        XCTAssertEqual(category.subtitle, "Access and runtime")
         XCTAssertNil(category.trailingText)
     }
 

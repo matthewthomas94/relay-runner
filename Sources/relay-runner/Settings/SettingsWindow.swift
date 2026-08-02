@@ -97,7 +97,7 @@ enum SettingsContentStyle {
 }
 
 enum SettingsCategory: String, CaseIterable, Identifiable {
-    case status
+    case permissions
     case speechToText
     case textToSpeech
     case general
@@ -107,7 +107,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .status: return "Status"
+        case .permissions: return "Permissions"
         case .speechToText: return "Speech-to-Text"
         case .textToSpeech: return "Text-to-Speech"
         case .general: return "General"
@@ -117,7 +117,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .status: return "Permissions and runtime"
+        case .permissions: return "Access and runtime"
         case .speechToText: return "Input model and trigger"
         case .textToSpeech: return "Voice and playback"
         case .general: return "Provider and workspace"
@@ -129,7 +129,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .status: return "checkmark.shield"
+        case .permissions: return "checkmark.shield"
         case .speechToText: return "mic"
         case .textToSpeech: return "speaker.wave.2"
         case .general: return "gearshape"
@@ -162,8 +162,8 @@ private struct SettingsContent: View {
 
     @State private var draft: AppConfig
     @State private var saving = false
-    @State private var selectedCategory: SettingsCategory = .status
-    @State private var scrollTarget: SettingsCategory = .status
+    @State private var selectedCategory: SettingsCategory = .permissions
+    @State private var scrollTarget: SettingsCategory = .permissions
 
     init(
         appState: AppState,
@@ -241,8 +241,8 @@ private struct SettingsContent: View {
     @ViewBuilder
     private var selectedDetail: some View {
         switch selectedCategory {
-        case .status:
-            StatusSettingsTab(appState: appState)
+        case .permissions:
+            PermissionsSettingsTab(appState: appState)
         case .speechToText:
             STTSettingsTab(config: $draft.stt)
         case .textToSpeech:
