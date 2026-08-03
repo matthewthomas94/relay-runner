@@ -70,6 +70,38 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertIn("RR-2", message)
         self.assertIn("waiting on RR-1", message)
 
+    def test_verification_blocked_ticket_and_run_agree_across_board_views(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        ticket = _ticket(
+            store,
+            project,
+            "RR-274",
+            "Verify physical replay",
+            "verification_blocked",
+        )
+        _run(
+            store,
+            project,
+            ticket,
+            274,
+            "verification_blocked",
+            "codex",
+            model="sol",
+        )
+
+        blocked = build_program_status(store, query="blocked_work", now=2000.0)
+        in_progress = build_program_status(store, query="in_progress_lane", now=2000.0)
+        ready = build_program_status(store, query="ready_lane", now=2000.0)
+        done = build_program_status(store, query="done_lane", now=2000.0)
+
+        self.assertEqual([item["ticket_id"] for item in blocked["items"]], ["RR-274"])
+        self.assertEqual([item["ticket_id"] for item in in_progress["items"]], ["RR-274"])
+        self.assertEqual(in_progress["items"][0]["ticket_state"], "verification_blocked")
+        self.assertEqual(in_progress["items"][0]["run_state"], "verification_blocked")
+        self.assertEqual(ready["items"], [])
+        self.assertEqual(done["items"], [])
+
     def test_queued_work_includes_dependency_waiting_and_excludes_awaiting_merge_tickets(self):
         store = self.make_store()
         project = _project(store, "/tmp/relay-runner", "Relay Runner")

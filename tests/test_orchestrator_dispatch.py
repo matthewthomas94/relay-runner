@@ -16,7 +16,15 @@ SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
 import orchestrator  # noqa: E402
-from orchestrator import Daemon, MessengerOutcomeStore, ReviewWorker, RunsStore, Worker, validate_worker_completion  # noqa: E402
+from orchestrator import (  # noqa: E402
+    Daemon,
+    MessengerOutcomeStore,
+    ReviewWorker,
+    RunsStore,
+    Worker,
+    validate_worker_completion,
+    validate_worker_outcome,
+)
 from relay_authorization import (  # noqa: E402
     allowed_mutations_for_metadata,
     record_command_authorization,
@@ -1716,6 +1724,83 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("ticket completion is not committed", reason)
 
+    def test_verification_blocked_ticket_is_a_declared_worker_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="in_progress", run_id=42)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "claim ticket")
+            start_head = self.git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            ticket_path = repo / ".orchestrator/RR-1.md"
+            ticket_path.write_text(
+                ticket_path.read_text().replace(
+                    "status: in_progress\n",
+                    "status: verification_blocked\n"
+                    "verification_blocker: Physical modifier-only input is unavailable.\n"
+                    "verification_resume: Connect physical HID input and rerun the mounted replay smoke.\n",
+                ).replace(
+                    "## Description\n\nTest ticket.\n",
+                    "## Run log\n\n- **Run 42** (attempt 1) - branch `relay/rr-1`\n",
+                )
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "docs(RR-1): run 42 log")
+
+            outcome, reason = validate_worker_outcome(
+                workspace_path=str(repo),
+                ticket_id="RR-1",
+                run_id=42,
+                start_head=start_head,
+            )
+
+            self.assertEqual(outcome, "verification_blocked")
+            self.assertIn("Physical modifier-only input is unavailable", reason)
+            self.assertIn("Connect physical HID input", reason)
+
+    def test_exit_zero_declared_verification_blocker_is_not_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            agent = root / "agent.sh"
+            agent.write_text("#!/bin/sh\nexit 0\n")
+            os.chmod(agent, 0o755)
+            store = RunsStore(root / "runs.db")
+            run_id = store.insert(
+                ticket_id="RR-1",
+                repo_path=str(workspace),
+                workspace_path=str(workspace),
+                branch="relay/rr-1",
+                state="Claimed",
+            )
+            run = store.get(run_id) or {}
+            worker = Worker(
+                run_id=run_id,
+                run=run,
+                prompt="prompt",
+                agent_bin=str(agent),
+                agent_kind="codex",
+                store=store,
+                log_path=root / "run.log",
+            )
+
+            with patch.object(worker, "_command", return_value=[str(agent)]), \
+                    patch(
+                        "orchestrator.validate_worker_outcome",
+                        return_value=(
+                            "verification_blocked",
+                            "verification blocked: physical input unavailable; resume: connect HID",
+                        ),
+                    ):
+                worker._run()
+
+            updated = store.get(run_id) or {}
+            self.assertEqual(updated["state"], "AwaitingReview")
+            self.assertEqual(updated["exit_code"], 0)
+            self.assertIn("physical input unavailable", updated["last_error"])
+
     def test_inspect_run_for_review_returns_branch_logs_and_diff_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1964,6 +2049,51 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertEqual(updated["activity"], "Reviewing worker branch")
             self.assertIsNotNone(updated["activity_at"])
 
+    def test_review_worker_does_not_overwrite_accepted_verification_blocker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "rr-1"
+            self.make_git_repo(repo)
+            workspace.mkdir(parents=True)
+            agent = root / "fake-agent.sh"
+            agent.write_text("#!/bin/sh\nsleep 0.2\nexit 0\n")
+            os.chmod(agent, 0o755)
+            store = RunsStore(root / "runs.db")
+            run_id = store.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(workspace),
+                branch="relay/rr-1",
+                state="AwaitingReview",
+                log_path=str(workspace / ".relay" / "run.log"),
+                provider_key="codex",
+                model_alias="sol",
+                worker_effort="high",
+            )
+            review = ReviewWorker(
+                run_id=run_id,
+                run=store.get(run_id) or {},
+                prompt="review prompt",
+                agent_bin=str(agent),
+                agent_kind="codex",
+                store=store,
+                log_path=workspace / ".relay" / "run.log",
+            )
+
+            with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
+                review.start()
+                for _ in range(100):
+                    if (store.get(run_id) or {}).get("state") == "Reviewing":
+                        break
+                    threading.Event().wait(0.01)
+                self.assertEqual((store.get(run_id) or {}).get("state"), "Reviewing")
+                store.update(run_id, state="VerificationBlocked")
+                review.thread.join(timeout=2)
+
+            self.assertFalse(review.thread.is_alive())
+            self.assertEqual((store.get(run_id) or {}).get("state"), "VerificationBlocked")
+
     def test_accept_worker_run_merges_prunes_and_progresses_dependents(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2014,6 +2144,242 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 "repo_path": str(repo.resolve()),
                 "source": "dependency-progression",
             }])
+
+    def test_accept_verification_blocked_run_merges_without_closing_or_progressing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "rr-1"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.write_ticket(
+                repo,
+                "RR-2",
+                status="backlog",
+                run_id=None,
+                depends_on=["RR-1"],
+                sizing=True,
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md", ".orchestrator/RR-2.md")
+            self.git(repo, "commit", "-m", "add tickets")
+            self.git(repo, "worktree", "add", "-b", "relay/rr-1", str(workspace), "HEAD")
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(workspace),
+                branch="relay/rr-1",
+                state="AwaitingReview",
+                provider_key="codex",
+                model_alias="gpt-5.5",
+            )
+            ticket_path = workspace / ".orchestrator/RR-1.md"
+            ticket_path.write_text(
+                ticket_path.read_text().replace(
+                    "status: ready\n",
+                    "status: verification_blocked\n"
+                    "verification_blocker: Screen Recording and physical Option input are unavailable.\n"
+                    "verification_resume: Grant Screen Recording and provide foreground/background physical Option input.\n",
+                ).replace("run_id: null", f"run_id: {run_id}").replace(
+                    "## Description\n\nTest ticket.\n",
+                    f"## Run log\n\n- **Run {run_id}** (attempt 1) - branch `relay/rr-1`\n",
+                )
+            )
+            (workspace / "code.txt").write_text("reviewed partial implementation\n")
+            self.git(workspace, "add", ".orchestrator/RR-1.md", "code.txt")
+            self.git(workspace, "commit", "-m", "feat: implement RR-1 pending physical verification")
+            dispatches: list[dict] = []
+            daemon.dispatch = lambda **kwargs: dispatches.append(kwargs)
+
+            result = daemon.accept_worker_run(run_id)
+
+            self.assertTrue(result["accepted"])
+            self.assertEqual(result["run"]["state"], "VerificationBlocked")
+            self.assertFalse(workspace.exists())
+            blocked = read_ticket(repo / ".orchestrator/RR-1.md")
+            self.assertEqual(blocked["status"], "verification_blocked")
+            self.assertIn("Screen Recording", blocked["verification_blocker"])
+            self.assertEqual(read_ticket(repo / ".orchestrator/RR-2.md")["status"], "backlog")
+            self.assertEqual(dispatches, [])
+
+    def test_explicit_resume_commits_ticket_transition_before_requeue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "old-workspace"),
+                branch="relay/rr-1",
+                state="VerificationBlocked",
+                provider_key="codex",
+                model_alias="gpt-5.5",
+            )
+            ticket = repo / ".orchestrator/RR-1.md"
+            ticket.write_text(
+                f"""---
+id: RR-1
+title: RR-1
+status: verification_blocked
+priority: medium
+depends_on: []
+run_id: {run_id}
+canceled: false
+verification_blocker: Physical input unavailable.
+verification_resume: Connect physical input and resume.
+---
+
+## Run log
+
+- **Run {run_id}** reviewed and blocked.
+"""
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "record verification blocker")
+
+            result = daemon.resume_verification_blocked(
+                run_id,
+                reason="A physical HID route is now connected.",
+                redispatch=False,
+            )
+
+            resumed = read_ticket(ticket)
+            self.assertTrue(result["resumed"])
+            self.assertEqual(resumed["status"], "ready")
+            self.assertIsNone(resumed["run_id"])
+            self.assertIsNone(resumed["verification_blocker"])
+            self.assertIsNone(resumed["verification_resume"])
+            self.assertIn(
+                "Verification resumed after run 1** — A physical HID route is now connected.",
+                resumed["body"],
+            )
+            self.assertEqual(self.git(repo, "status", "--porcelain").stdout.strip(), "")
+            self.assertEqual(daemon.runs.get(run_id)["state"], "VerificationBlocked")
+
+    def test_reconcile_missing_verification_blocked_run_restores_resume_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            daemon = self.make_daemon(root, provider="codex")
+            ticket = repo / ".orchestrator/RR-1.md"
+            ticket.write_text(
+                """---
+id: RR-1
+title: RR-1
+status: verification_blocked
+priority: medium
+depends_on: []
+run_id: 7
+canceled: false
+verification_blocker: Physical input unavailable.
+verification_resume: Connect physical input and resume.
+---
+
+## Run log
+
+- **Run 7** (attempt 2) reviewed and blocked.
+"""
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "record preserved verification blocker")
+
+            reconciled = daemon.reconcile_preserved_run(
+                repo_path=str(repo),
+                ticket_id="RR-1",
+            )
+
+            self.assertTrue(reconciled["reconciled"])
+            self.assertEqual(reconciled["run"]["id"], 7)
+            self.assertEqual(reconciled["run"]["state"], "VerificationBlocked")
+            self.assertEqual(reconciled["run"]["attempt"], 2)
+            self.assertEqual(daemon.runs.next_attempt("RR-1", str(repo.resolve())), 3)
+            self.assertEqual(reconciled["run"]["exit_code"], 0)
+            self.assertEqual(reconciled["run"]["workspace_path"], "")
+            self.assertIn("Physical input unavailable", reconciled["run"]["last_error"])
+            self.assertFalse(
+                daemon.reconcile_preserved_run(
+                    repo_path=str(repo),
+                    ticket_id="RR-1",
+                )["reconciled"]
+            )
+
+            resumed = daemon.resume_verification_blocked(
+                7,
+                reason="A physical HID route is now connected.",
+                redispatch=False,
+            )
+
+            self.assertTrue(resumed["resumed"])
+            self.assertEqual(read_ticket(ticket)["status"], "ready")
+
+    def test_reconcile_missing_done_run_does_not_progress_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="done",
+                run_id=9,
+                sizing=True,
+                body="## Run log\n\n- **Run 9** (attempt 2) reviewed and merged.\n",
+            )
+            self.write_ticket(
+                repo,
+                "RR-2",
+                status="backlog",
+                run_id=None,
+                depends_on=["RR-1"],
+                sizing=True,
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md", ".orchestrator/RR-2.md")
+            self.git(repo, "commit", "-m", "record preserved completed run")
+            daemon = self.make_daemon(root, provider="codex")
+            dispatches: list[dict] = []
+            daemon.dispatch = lambda **kwargs: dispatches.append(kwargs)
+
+            result = daemon.reconcile_preserved_run(
+                repo_path=str(repo),
+                ticket_id="RR-1",
+            )
+
+            self.assertTrue(result["reconciled"])
+            self.assertEqual(result["run"]["id"], 9)
+            self.assertEqual(result["run"]["state"], "Merged")
+            self.assertEqual(result["run"]["attempt"], 2)
+            self.assertEqual(read_ticket(repo / ".orchestrator/RR-2.md")["status"], "backlog")
+            self.assertEqual(dispatches, [])
+
+    def test_reconcile_preserved_run_rejects_dirty_ticket_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(
+                repo,
+                "RR-1",
+                status="done",
+                run_id=9,
+                sizing=True,
+                body="## Run log\n\n- **Run 9** reviewed and merged.\n",
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "record completed run")
+            ticket = repo / ".orchestrator/RR-1.md"
+            ticket.write_text(ticket.read_text() + "\nUncommitted claim.\n")
+            daemon = self.make_daemon(root, provider="codex")
+
+            with self.assertRaisesRegex(ValueError, "existing changes"):
+                daemon.reconcile_preserved_run(
+                    repo_path=str(repo),
+                    ticket_id="RR-1",
+                )
+
+            self.assertIsNone(daemon.runs.get(9))
 
     def test_accept_worker_run_records_merge_conflict_without_publishing_done(self):
         with tempfile.TemporaryDirectory() as tmp:

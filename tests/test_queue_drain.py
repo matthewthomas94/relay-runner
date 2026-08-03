@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -26,6 +27,88 @@ from orchestrator import (  # noqa: E402
 
 
 class QueueDrainTests(unittest.TestCase):
+    def test_verification_blocked_run_remains_in_board_index_after_retention_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_path = root / "runs-index.json"
+            store = RunsStore(root / "runs.db", index_path=index_path)
+            with patch("orchestrator.time.time", return_value=1000.0):
+                run_id = store.insert(
+                    ticket_id="RR-1",
+                    repo_path=str(root / "repo"),
+                    workspace_path=str(root / "workspace"),
+                    branch="relay/rr-1",
+                    state="Running",
+                )
+                store.update(run_id, state="VerificationBlocked", ended=True)
+
+            with patch("orchestrator.time.time", return_value=2000.0):
+                store.write_index()
+
+            runs = json.loads(index_path.read_text())["runs"]
+            self.assertEqual([(run["run_id"], run["state"]) for run in runs], [
+                (run_id, "VerificationBlocked"),
+            ])
+
+    def test_verification_blocked_ticket_is_durable_and_never_redispatched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "reviewed-workspace"),
+                branch="relay/rr-1",
+                state="VerificationBlocked",
+                provider_key="codex",
+                model_alias="gpt-5.5",
+            )
+            ticket = repo / ".orchestrator/RR-1.md"
+            ticket.write_text(
+                f"""---
+id: RR-1
+title: RR-1
+status: verification_blocked
+priority: high
+depends_on: []
+run_id: {run_id}
+canceled: false
+verification_blocker: Screen Recording and modifier-only physical input are unavailable.
+verification_resume: Grant Screen Recording and connect physical Option input, then explicitly resume.
+worker_model: strong
+worker_effort: high
+worker_sizing_rationale: Verification-blocked lifecycle needs daemon coverage.
+worker_provider_notes: Codex and Claude share the same lifecycle.
+---
+
+## Run log
+
+- **Run {run_id}** reviewed and verification blocked.
+"""
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "record blocked ticket")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                first = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+                second = daemon.reconcile_queue_drain(repo_path=str(repo), trigger="test-again")
+                with self.assertRaisesRegex(ValueError, "explicit resume action"):
+                    daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            self.assertEqual(len(daemon.runs.list()), 1)
+            self.assertEqual(first["drain"]["state"], "blocked")
+            self.assertEqual(second["drain"]["state"], "blocked")
+            item = second["drain"]["items"][0]
+            self.assertEqual(item["state"], "blocked")
+            self.assertEqual(item["blocker_owner"], "external_verification")
+            self.assertIn("modifier-only physical input", item["reason"])
+            self.assertIn("explicitly resume", item["blocker_next_step"])
+
     def test_ready_tickets_create_and_join_one_active_drain(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

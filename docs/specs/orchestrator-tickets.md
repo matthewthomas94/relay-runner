@@ -81,7 +81,7 @@ Free-form prose explaining the work.
 |---------------|----------------|----------|---------------------------------------------------------------------------------------------|
 | `id`          | string         | yes      | Must match the filename (without `.md`). Format: `<PREFIX>-<N>`.                            |
 | `title`       | string         | yes      | One-line human-readable summary.                                                            |
-| `status`      | enum           | yes      | `backlog` \| `ready` \| `in_progress` \| `done`.                                            |
+| `status`      | enum           | yes      | `backlog` \| `ready` \| `in_progress` \| `verification_blocked` \| `done`.                   |
 | `priority`    | enum           | yes      | `urgent` \| `high` \| `medium` \| `low`. Default `medium`.                                  |
 | `depends_on`  | list of `id`s  | yes      | May be `[]`. Cycles are invalid (validated at parse time).                                  |
 | `run_id`      | integer / null | yes      | Set by the daemon when dispatched. Persists after completion as an audit-trail back-link.   |
@@ -91,6 +91,8 @@ Free-form prose explaining the work.
 | `worker_effort` | enum        | for `ready` | Reasoning-effort decision. Shared values: `low`, `medium`, `high`, `xhigh`. `max` is valid only for an explicitly Claude-scoped ticket with `worker_provider_notes` documenting the Codex limitation. |
 | `worker_sizing_rationale` | string | for `ready` | Short non-empty explanation of why the ticket needs the selected model/tier and effort. |
 | `worker_provider_notes` | string | for `ready` | Provider-parity note. Use `none` only when the selected model/tier and effort are intentionally provider-neutral with no caveats. Otherwise name the Codex/Claude difference or limitation. |
+| `verification_blocker` | string | for `verification_blocked` | Exact external condition that prevented required verification. |
+| `verification_resume` | string | for `verification_blocked` | Explicit condition/action that permits the daemon to resume the ticket. |
 
 Anything else under `---` is ignored, leaving room for future fields without breaking old parsers.
 
@@ -144,6 +146,7 @@ Backlog → Queued → In Progress → Done
 | `backlog`     | Idea captured. Not yet refined or estimated. Often no acceptance criteria.                  |
 | `ready`       | Refined queued work. The on-disk value stays `ready`; board UI labels this lane "Queued".   |
 | `in_progress` | Daemon has dispatched it; a `relay/<id>` worktree exists; `run_id` is stamped.              |
+| `verification_blocked` | Implementation has been reviewed, but a named external condition prevents required verification. Rendered in the In Progress lane. |
 | `done`        | Sub-agent's branch was merged into the working branch.                                      |
 
 ### Who flips status
@@ -153,6 +156,8 @@ Backlog → Queued → In Progress → Done
 | `backlog → ready`             | Human via board drag/edit, OR daemon auto-progression | Promoting a card into the Queued lane writes `status: ready`. The board asks the daemon to sweep queued work; dependency-gated queued tickets remain visible and waiting until all predecessors are `done`. The daemon also flips `backlog → ready` on dependents when a predecessor reaches `done` (then dispatches eligible queued tickets in turn). |
 | `ready → in_progress`         | Sub-agent                   | Worker's first step after `dispatch_ticket` claims the run; the worker stamps `run_id` and commits the frontmatter change. |
 | `in_progress → done`          | Sub-agent                   | Worker flips status and appends `## Run log` before exiting; commit lands on the worker's branch and reaches the board when the branch is merged. |
+| `in_progress → verification_blocked` | Sub-agent + reviewer | Worker commits the exact external blocker and resume condition; review merges useful work without closing the ticket or progressing dependents. |
+| `verification_blocked → ready` | Daemon via explicit resume action | `resume_verification_blocked` appends what changed to the run log, commits the canonical transition, clears blocker fields, and optionally dispatches a fresh attempt. |
 | any → `canceled: true`        | Daemon or human             | `cancel_run` called, or manual cancel.      |
 
 Cancellation does **not** move the ticket to a new column. It flips `canceled: true` and the card renders with a strikethrough or muted treatment in whatever column it sat in. Re-opening clears the flag.
@@ -165,6 +170,8 @@ The daemon refuses to dispatch a ticket that:
 - Has `draft: true` because the board editor has not saved it yet.
 - Has unsatisfied `depends_on` (any predecessor not `done`).
 - Already has a non-null `run_id` whose run is `Claimed | Running`.
+- Is `verification_blocked`; use the explicit resume action rather than dispatching it directly.
+- Declares a historical terminal `run_id` whose local ledger row was lost; use `reconcile_preserved_run` against the clean, committed canonical ticket before review or resume. Reconciliation restores only the `Merged` or `VerificationBlocked` record and never edits the ticket, progresses dependencies, or dispatches work.
 
 ## Validation rules
 
@@ -176,7 +183,8 @@ A ticket file is valid iff:
 4. `depends_on` references resolve to existing ticket files (no dangling pointers).
 5. No dependency cycles in the project-wide graph.
 6. If `status == in_progress`, `run_id` is non-null and points to a known orchestrator run.
-7. If `status == done`, the file has at least one commit on the working branch referencing the `id` (audit hint, not strictly enforced).
+7. If `status == verification_blocked`, `run_id`, `verification_blocker`, and `verification_resume` are present and the run is retained as a non-failure lifecycle record.
+8. If `status == done`, the file has at least one commit on the working branch referencing the `id` (audit hint, not strictly enforced).
 
 Validation is a one-shot pass over `.orchestrator/`; the daemon runs it on startup and after every write.
 

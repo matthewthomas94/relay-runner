@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-VALID_STATUSES = ("backlog", "ready", "in_progress", "done")
+VALID_STATUSES = ("backlog", "ready", "in_progress", "verification_blocked", "done")
 VALID_PRIORITIES = ("urgent", "high", "medium", "low")
 
 
@@ -109,6 +109,16 @@ def parse(contents: str) -> dict[str, Any]:
         except ValueError as e:
             raise TicketParseError(f"invalid run_id: {run_id_raw!r}") from e
 
+    verification_blocker = raw.get("verification_blocker", "").strip() or None
+    verification_resume = raw.get("verification_resume", "").strip() or None
+    if status == "verification_blocked":
+        if run_id is None:
+            raise TicketParseError("verification_blocked ticket requires run_id")
+        if verification_blocker is None:
+            raise TicketParseError("missing required field: verification_blocker")
+        if verification_resume is None:
+            raise TicketParseError("missing required field: verification_resume")
+
     return {
         "id": require("id"),
         "title": require("title"),
@@ -118,6 +128,8 @@ def parse(contents: str) -> dict[str, Any]:
         "run_id": run_id,
         "canceled": canceled,
         "draft": draft,
+        "verification_blocker": verification_blocker,
+        "verification_resume": verification_resume,
         "order": int(raw.get("order", "0") or "0"),
         "body": body,
         "_raw_fields": raw,  # preserves any extra fields on round-trip
@@ -130,7 +142,18 @@ def read(path: Path) -> dict[str, Any]:
 
 # Field order matches the Swift writer (Sources/relay-runner/Board/TicketWriter.swift)
 # so files round-trip without unnecessary diff churn.
-_FIELD_ORDER = ("id", "title", "status", "priority", "depends_on", "run_id", "canceled", "order")
+_FIELD_ORDER = (
+    "id",
+    "title",
+    "status",
+    "priority",
+    "depends_on",
+    "run_id",
+    "canceled",
+    "verification_blocker",
+    "verification_resume",
+    "order",
+)
 
 
 def _format_value(key: str, value: Any) -> str:
@@ -149,7 +172,7 @@ def write(path: Path, ticket: dict[str, Any]) -> None:
     """Write a ticket dict back to disk, preserving the body verbatim."""
     lines = ["---"]
     for key in _FIELD_ORDER:
-        if key in ticket:
+        if key in ticket and (ticket[key] is not None or key == "run_id"):
             lines.append(f"{key}: {_format_value(key, ticket[key])}")
     # Allow callers to round-trip unknown fields by stashing them in _raw_fields.
     extras = ticket.get("_raw_fields", {})

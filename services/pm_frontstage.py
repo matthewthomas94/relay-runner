@@ -39,6 +39,9 @@ TRACE_KINDS = frozenset({
     "run-review-needed",
     "run-merging",
     "run-merged",
+    "run-reconciled",
+    "run-verification-blocked",
+    "run-verification-resumed",
     "run-succeeded",
     "run-failed",
     "run-canceled",
@@ -239,6 +242,9 @@ def default_orchestration_trace_message(
         "run-review-needed": f"{ticket}{run_suffix} awaiting review",
         "run-merging": f"Merging {ticket}{run_suffix}",
         "run-merged": f"{ticket}{run_suffix} merged",
+        "run-reconciled": f"{ticket}{run_suffix} history reconciled",
+        "run-verification-blocked": f"{ticket}{run_suffix} waiting on external verification",
+        "run-verification-resumed": f"{ticket}{run_suffix} verification resumed",
         "run-succeeded": f"{ticket}{run_suffix} succeeded",
         "run-failed": f"{ticket}{run_suffix} failed",
         "run-canceled": f"{ticket}{run_suffix} canceled",
@@ -252,7 +258,14 @@ def default_orchestration_trace_message(
 
 
 def orchestration_trace_status_phase(kind: str) -> str:
-    return "outcome" if kind in {"run-succeeded", "run-failed", "run-canceled", "run-merged"} else "planning"
+    return "outcome" if kind in {
+        "run-succeeded",
+        "run-failed",
+        "run-canceled",
+        "run-merged",
+        "run-reconciled",
+        "run-verification-blocked",
+    } else "planning"
 
 
 @dataclass(frozen=True)

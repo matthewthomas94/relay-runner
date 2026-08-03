@@ -127,7 +127,7 @@ struct ListRunsTool: MCPTool {
     let name = "list_runs"
     let description = """
         List orchestrator runs, newest first. Pass `state` to filter by lifecycle state \
-        (Claimed, Running, AwaitingReview, Reviewing, MergeConflict, Merged, Failed, Stalled, Canceled). Default limit: 100.
+        (Claimed, Running, AwaitingReview, Reviewing, MergeConflict, VerificationBlocked, Merged, Failed, Stalled, Canceled). Default limit: 100.
         """
 
     var inputSchema: [String: Any] {
@@ -136,7 +136,7 @@ struct ListRunsTool: MCPTool {
             "properties": [
                 "state": [
                     "type": "string",
-                    "enum": ["Claimed", "Running", "AwaitingReview", "Reviewing", "MergeConflict", "Merged", "Succeeded", "Failed", "Stalled", "Canceled"],
+                    "enum": ["Claimed", "Running", "AwaitingReview", "Reviewing", "MergeConflict", "VerificationBlocked", "Merged", "Succeeded", "Failed", "Stalled", "Canceled"],
                 ],
                 "limit": ["type": "integer", "description": "Max rows to return. Default: 100."],
             ],
@@ -319,6 +319,80 @@ struct CancelRunTool: MCPTool {
         let id = try requireInt(arguments, "run_id")
         let prune = (arguments["prune_worktree"] as? Bool) ?? true
         return try await proxy(method: "POST", path: "/v1/runs/\(id)/cancel", body: ["prune_worktree": prune])
+    }
+}
+
+// MARK: - reconcile_preserved_run
+
+struct ReconcilePreservedRunTool: MCPTool {
+    let name = "reconcile_preserved_run"
+    let description = """
+        Restore a missing terminal run-ledger row from a clean, committed canonical done or verification-blocked ticket. This recovery action does not edit the ticket, resume or dispatch work, or progress dependencies.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "repo_path": [
+                    "type": "string",
+                    "description": "Absolute path to the git repo containing the committed canonical ticket.",
+                ],
+                "ticket_id": [
+                    "type": "string",
+                    "description": "Canonical ticket id whose declared run_id should be restored.",
+                ],
+            ],
+            "required": ["repo_path", "ticket_id"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let repoPath = try requireString(arguments, "repo_path")
+        let ticketID = try requireString(arguments, "ticket_id")
+        return try await proxy(
+            method: "POST",
+            path: "/v1/runs/reconcile-preserved",
+            body: ["repo_path": repoPath, "ticket_id": ticketID]
+        )
+    }
+}
+
+// MARK: - resume_verification_blocked
+
+struct ResumeVerificationBlockedTool: MCPTool {
+    let name = "resume_verification_blocked"
+    let description = """
+        Explicitly resume a reviewed verification-blocked run after its external condition changes. The daemon commits the canonical ticket transition back to queued work, clears the old blocker fields, and dispatches a fresh attempt by default.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "run_id": ["type": "integer"],
+                "reason": [
+                    "type": "string",
+                    "description": "What changed in the external environment, or why a deliberate retry is now appropriate.",
+                ],
+                "redispatch": [
+                    "type": "boolean",
+                    "description": "Dispatch a fresh worker attempt immediately. Default: true.",
+                ],
+            ],
+            "required": ["run_id", "reason"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let id = try requireInt(arguments, "run_id")
+        let reason = try requireString(arguments, "reason")
+        let redispatch = (arguments["redispatch"] as? Bool) ?? true
+        return try await proxy(
+            method: "POST",
+            path: "/v1/runs/\(id)/resume-verification",
+            body: ["reason": reason, "redispatch": redispatch]
+        )
     }
 }
 

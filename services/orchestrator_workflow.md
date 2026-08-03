@@ -46,7 +46,10 @@ The persistent orchestrator may have attached extra context for this ticket. Tre
    Stage explicit paths — never `git add -A` or `git add .`. Don't push (the orchestrator-managed branch `{{branch}}` is local-only by design).
 
 9. **Update the ticket file and commit it.**
-   - Edit the YAML frontmatter: `status: done` on success, or leave `status: in_progress` if you're stopping partial.
+   - Edit the YAML frontmatter: `status: done` on success.
+   - If implementation is complete but a genuinely external condition prevents required verification, use `status: verification_blocked` and add both `verification_blocker: <exact unavailable condition>` and `verification_resume: <explicit condition/action that permits retry>`. Do not use this for ambiguity, failed tests, incomplete implementation, or ordinary follow-up work; leave those `in_progress`.
+   - If a clean, committed `done` or `verification_blocked` ticket survives but its declared historical run row does not, use `reconcile_preserved_run` to restore the terminal ledger identity. This is evidence reconciliation only: it must not resume, dispatch, progress dependencies, or rewrite the ticket. A verification-blocked ticket still requires `resume_verification_blocked` after its named external condition changes.
+   - Otherwise leave `status: in_progress` if you're stopping partial.
    - Append a `## Run log` section at the end of the body (create if missing) with:
      - **Run {{run_id}}** (attempt {{attempt}}) — branch `{{branch}}`
      - 1-3 concrete bullets of what you changed
@@ -66,6 +69,6 @@ The persistent orchestrator may have attached extra context for this ticket. Tre
 Abort early (exit non-zero, or just stop) if any of these are true:
 - The ticket file is missing or has malformed YAML frontmatter — the human needs to fix it.
 - The ticket's `status` is already `done` or has a different active `run_id` — say so in the run log, leave the frontmatter untouched, and stop.
-- The ticket is too ambiguous to commit code against without a human decision — append a `## Run log` entry explaining what's blocking, leave `status: in_progress`, and stop.
+- The ticket is too ambiguous to commit code against without a human decision — append a `## Run log` entry explaining what's blocking, leave `status: in_progress`, and stop. Ambiguity is not a verification blocker.
 
 Be terse. The orchestrator captures everything you write to stdout in a per-run log; brevity makes that log skimmable.

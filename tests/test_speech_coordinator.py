@@ -51,6 +51,8 @@ def intent(
     text: str = "spoken",
     authoritative: bool = False,
     replayable: bool | None = None,
+    source: str | None = None,
+    freshness_scope: str = "conversation",
 ) -> SpeechIntent:
     return SpeechIntent.build(
         spoken_text=text,
@@ -58,10 +60,11 @@ def intent(
         semantic_brief=f"brief {text}",
         command_seq=seq,
         command_id=command_id,
-        source="orchestrator" if authoritative else "messenger",
+        source=source or ("orchestrator" if authoritative else "messenger"),
         kind=kind,
         authoritative=authoritative,
         replayable=replayable,
+        freshness_scope=freshness_scope,
     )
 
 
@@ -167,6 +170,40 @@ class SpeechCoordinatorTests(unittest.TestCase):
         self.assertEqual(replay["_speech_intent"]["spoken_text"], handoff.spoken_text)
         self.assertEqual(worker.calls, ["play"])
 
+    def test_replay_selects_latest_fresh_completed_target(self):
+        worker, coordinator, holder = self.make_coordinator()
+        work_result = intent(
+            seq=0,
+            command_id="old-work",
+            kind="final",
+            text="durable work result",
+            authoritative=True,
+            replayable=True,
+            source="lifecycle",
+            freshness_scope="work",
+        )
+        coordinator.submit(work_result)
+        work_payload = worker.input_queue.get_nowait()
+        worker.observer("started", work_payload["_speech_intent"])
+        worker.observer("completed", work_payload["_speech_intent"])
+
+        conversation_final = intent(
+            kind="final",
+            text="newer conversation final",
+            authoritative=True,
+            replayable=True,
+        )
+        coordinator.submit(conversation_final)
+        conversation_payload = worker.input_queue.get_nowait()
+        worker.observer("started", conversation_payload["_speech_intent"])
+        worker.observer("completed", conversation_payload["_speech_intent"])
+        holder["key"] = (2, "two")
+
+        self.assertTrue(coordinator.play_or_replay())
+        replay = worker.input_queue.get_nowait()
+        self.assertEqual(replay["_speech_intent"]["spoken_text"], work_result.spoken_text)
+        self.assertEqual(replay["_speech_intent"]["replacement_policy"], "replay")
+
     def test_play_and_replay_do_not_start_a_second_active_plan(self):
         worker, coordinator, _ = self.make_coordinator()
         coordinator.submit(intent(kind="final", authoritative=True))
@@ -178,6 +215,17 @@ class SpeechCoordinatorTests(unittest.TestCase):
         self.assertTrue(coordinator.replay() is False)
         self.assertTrue(coordinator.play_or_replay())
         self.assertEqual(worker.calls, [])
+
+    def test_cancelled_replayable_speech_is_never_retained_for_replay(self):
+        worker, coordinator, _ = self.make_coordinator()
+        final = intent(kind="final", authoritative=True, replayable=True)
+        coordinator.submit(final)
+        payload = worker.input_queue.get_nowait()
+        worker.observer("started", payload["_speech_intent"])
+        worker.observer("cancelled", payload["_speech_intent"])
+
+        self.assertFalse(coordinator.play_or_replay())
+        self.assertTrue(worker.input_queue.empty())
 
     def test_first_play_is_retained_until_authoritative_speech_is_proposed(self):
         worker, coordinator, _ = self.make_coordinator()
@@ -275,6 +323,27 @@ class SpeechCoordinatorTests(unittest.TestCase):
             self.assertEqual(records[-1]["realization_decision"], "suppress")
             self.assertEqual(records[-1]["suppression_reason"], "covered_by_played_speech")
             self.assertNotIn("private words", log.read_text())
+
+    def test_replay_rejection_reports_selection_boundary_without_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "speech.jsonl"
+            _, coordinator, _ = self.make_coordinator(log=log)
+            coordinator.note_play_control(
+                option_detected_at=1_000.0,
+                fifo_received_at=1_000.02,
+            )
+
+            self.assertFalse(coordinator.play_or_replay())
+
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(records[-1]["event"], "replay_rejected")
+            self.assertEqual(records[-1]["reason"], "no_completed_target")
+            self.assertEqual(
+                records[-1]["play_request_id"],
+                records[0]["play_request_id"],
+            )
+            self.assertNotIn("spoken_text", records[-1])
+            self.assertNotIn("display_text", records[-1])
 
     def test_retained_play_diagnostics_correlate_every_audio_stage_without_text(self):
         with tempfile.TemporaryDirectory() as directory:

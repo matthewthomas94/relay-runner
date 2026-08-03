@@ -122,6 +122,8 @@ def ingest_registered_projects(
                     "worker_effort": _ticket_field(ticket, "worker_effort"),
                     "worker_sizing_rationale": _ticket_field(ticket, "worker_sizing_rationale"),
                     "worker_provider_notes": _ticket_field(ticket, "worker_provider_notes"),
+                    "verification_blocker": ticket.get("verification_blocker"),
+                    "verification_resume": ticket.get("verification_resume"),
                     "source_path": str(ticket.get("_path", "")),
                     "markdown": ticket["body"],
                 },
@@ -708,6 +710,8 @@ def _run_state(raw_state: Any) -> str:
         return "merged"
     if state in {"succeeded", "success", "done"}:
         return "succeeded"
+    if state in {"verification_blocked", "verificationblocked"}:
+        return "verification_blocked"
     if state in {"failed", "failure", "timed_out", "timeout"}:
         return "failed"
     if state == "stalled":

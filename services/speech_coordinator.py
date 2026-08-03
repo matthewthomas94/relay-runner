@@ -38,6 +38,7 @@ LIFECYCLE_ROLES = frozenset({
     "control",
 })
 REALIZATION_DECISIONS = frozenset({"full", "delta", "suppress"})
+REPLAY_HISTORY_LIMIT = 32
 
 
 def _stable_digest(*values: object) -> str:
@@ -230,7 +231,7 @@ class SpeechCoordinator:
         self._committed_id: str | None = None
         self._playing_id: str | None = None
         self._backlog: list[SpeechIntent] = []
-        self._last_replayable: SpeechIntent | None = None
+        self._replayable_history: list[SpeechIntent] = []
         self._played_coverage: dict[tuple[int, str], list[dict[str, Any]]] = {}
         self._waiting_preview: tuple[tuple[int, str], str] | None = None
         self._play_requested = False
@@ -535,8 +536,20 @@ class SpeechCoordinator:
 
     def replay(self) -> bool:
         with self._lock:
-            previous = self._last_replayable
-        if previous is None or not self._fresh(previous):
+            history = tuple(self._replayable_history)
+            timing = dict(self._play_timing) if self._play_timing is not None else None
+        previous = next((intent for intent in reversed(history) if self._fresh(intent)), None)
+        if previous is None:
+            latest = history[-1] if history else None
+            self._write_diagnostic({
+                "event": "replay_rejected",
+                "at": time.time(),
+                "reason": "no_fresh_target" if history else "no_completed_target",
+                "play_request_id": timing.get("play_request_id") if timing else None,
+                "utterance_id": latest.utterance_id if latest else None,
+                "relay_command_seq": latest.command_seq if latest else None,
+                "relay_command_id": latest.command_id if latest else None,
+            })
             return False
         replay = replace(
             previous,
@@ -675,7 +688,9 @@ class SpeechCoordinator:
                 if self._committed_id == intent_id:
                     self._committed_id = None
                 if state == "completed" and intent.replayable:
-                    self._last_replayable = intent
+                    self._replayable_history.append(intent)
+                    if len(self._replayable_history) > REPLAY_HISTORY_LIMIT:
+                        del self._replayable_history[:-REPLAY_HISTORY_LIMIT]
                 if state == "completed":
                     self._record_played_coverage_locked(intent)
                 if not self._committed_id and not self._playing_id and not self._speech_stopped:
@@ -818,6 +833,9 @@ class SpeechCoordinator:
             "source": intent.source,
             "kind": intent.kind,
             "authoritative": intent.authoritative,
+            "replayable": intent.replayable,
+            "freshness_scope": intent.freshness_scope,
+            "replacement_policy": intent.replacement_policy,
             "lifecycle_role": intent.lifecycle_role,
             "realization_decision": intent.realization_decision,
             "suppression_reason": intent.suppression_reason,

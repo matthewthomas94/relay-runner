@@ -81,6 +81,8 @@ enum TicketImageStore {
             workerEffort: ticket.workerEffort,
             workerSizingRationale: ticket.workerSizingRationale,
             workerProviderNotes: ticket.workerProviderNotes,
+            verificationBlocker: ticket.verificationBlocker,
+            verificationResume: ticket.verificationResume,
             draft: ticket.draft,
             order: ticket.order,
             modifiedAt: ticket.modifiedAt,

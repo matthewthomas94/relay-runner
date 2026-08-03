@@ -12,6 +12,12 @@ struct Ticket: Identifiable, Equatable {
     let workerEffort: String?
     let workerSizingRationale: String?
     let workerProviderNotes: String?
+    /// Exact external condition that prevented final verification. Present
+    /// only while `status == .verificationBlocked`.
+    let verificationBlocker: String?
+    /// Explicit condition/action that makes a blocked ticket eligible to
+    /// resume. The daemon owns the transition back to `ready`.
+    let verificationResume: String?
     /// Board-created tickets are written before the editor opens so they get a
     /// real id immediately. While `draft` is true, the daemon must not sweep a
     /// ready ticket into a worker; saving the editor clears the flag.
@@ -44,6 +50,8 @@ struct Ticket: Identifiable, Equatable {
         workerEffort: String? = nil,
         workerSizingRationale: String? = nil,
         workerProviderNotes: String? = nil,
+        verificationBlocker: String? = nil,
+        verificationResume: String? = nil,
         draft: Bool = false,
         order: Int,
         modifiedAt: Date? = nil,
@@ -61,6 +69,8 @@ struct Ticket: Identifiable, Equatable {
         self.workerEffort = workerEffort
         self.workerSizingRationale = workerSizingRationale
         self.workerProviderNotes = workerProviderNotes
+        self.verificationBlocker = verificationBlocker
+        self.verificationResume = verificationResume
         self.draft = draft
         self.order = order
         self.modifiedAt = modifiedAt
@@ -72,7 +82,10 @@ struct Ticket: Identifiable, Equatable {
         case backlog
         case ready
         case inProgress = "in_progress"
+        case verificationBlocked = "verification_blocked"
         case done
+
+        static let userSelectable: [Status] = [.backlog, .ready, .inProgress, .done]
     }
 
     enum Priority: String, CaseIterable, Equatable, Hashable {
@@ -179,18 +192,35 @@ enum TicketParser {
             throw TicketParseError.invalidEnum(field: "priority", value: priRaw)
         }
 
+        let verificationBlocker = optionalString(fields["verification_blocker"])
+        let verificationResume = optionalString(fields["verification_resume"])
+        let runId = parseOptionalInt(runIdRaw)
+        if status == .verificationBlocked {
+            guard runId != nil else {
+                throw TicketParseError.invalidType(field: "run_id", value: runIdRaw)
+            }
+            guard verificationBlocker != nil else {
+                throw TicketParseError.missingField("verification_blocker")
+            }
+            guard verificationResume != nil else {
+                throw TicketParseError.missingField("verification_resume")
+            }
+        }
+
         return Ticket(
             id: id,
             title: title,
             status: status,
             priority: priority,
             dependsOn: parseList(depsRaw),
-            runId: parseOptionalInt(runIdRaw),
+            runId: runId,
             canceled: try parseBool(cancelRaw, field: "canceled"),
             workerModel: optionalString(fields["worker_model"]),
             workerEffort: optionalString(fields["worker_effort"]),
             workerSizingRationale: optionalString(fields["worker_sizing_rationale"]),
             workerProviderNotes: optionalString(fields["worker_provider_notes"]),
+            verificationBlocker: verificationBlocker,
+            verificationResume: verificationResume,
             draft: try draftRaw.map { try parseBool($0, field: "draft") } ?? false,
             order: parseOrder(fields["order"], fallbackFrom: id),
             modifiedAt: modifiedAt,

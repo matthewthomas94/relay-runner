@@ -123,6 +123,9 @@ WORKER_SIZING_FIELDS = (
     "worker_sizing_rationale",
     "worker_provider_notes",
 )
+VERIFICATION_BLOCKED_STATUS = "verification_blocked"
+VERIFICATION_BLOCKED_RUN_STATE = "VerificationBlocked"
+VERIFICATION_BLOCKER_FIELDS = ("verification_blocker", "verification_resume")
 REVIEW_BLOCKING_STATES = ("AwaitingReview", "Reviewing", "MergeConflict", "Succeeded")
 MERGEABLE_REVIEW_STATES = REVIEW_BLOCKING_STATES
 WORKER_MODEL_TIERS = {
@@ -1620,6 +1623,7 @@ class RunsStore:
     """
 
     ACTIVE_STATES = ("Claimed", "Running")
+    DURABLE_INDEX_STATES = (VERIFICATION_BLOCKED_RUN_STATE,)
     # Completed entries linger in the runs-index file this long after `ended_at`
     # so the board can render review-pending pills across the typical merge gap
     # without flicker, then get pruned.
@@ -1677,6 +1681,53 @@ class RunsStore:
             run_id = int(cur.lastrowid)
         self.write_index()
         return run_id
+
+    def insert_reconciled(
+        self,
+        *,
+        run_id: int,
+        ticket_id: str,
+        repo_path: str,
+        state: str,
+        attempt: int = 1,
+        last_error: str | None = None,
+    ) -> dict[str, Any]:
+        """Restore one terminal run identity whose canonical ticket survived.
+
+        Callers must validate the committed ticket before using this method. It
+        never overwrites an existing ledger row and never invents a live
+        worktree or branch for preserved historical evidence.
+        """
+        if run_id <= 0:
+            raise ValueError("run_id must be positive")
+        if attempt <= 0:
+            raise ValueError("attempt must be positive")
+        now = time.time()
+        with self._conn() as c:
+            if c.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone():
+                raise ValueError(f"run {run_id} already exists")
+            c.execute(
+                "INSERT INTO runs(id, ticket_id, repo_path, workspace_path, branch, "
+                "state, attempt, started_at, ended_at, exit_code, last_error, activity, "
+                "activity_at) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+                (
+                    run_id,
+                    ticket_id,
+                    repo_path,
+                    f"preserved/{sanitize_identifier(ticket_id)}",
+                    state,
+                    attempt,
+                    now,
+                    now,
+                    last_error,
+                    "Reconciled from committed canonical ticket evidence",
+                    now,
+                ),
+            )
+            row = c.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            reconciled = dict(row)
+        self.write_index()
+        return reconciled
 
     def update(self, run_id: int, *, state: str | None = None, pid: int | None = None,
                exit_code: int | None = None, last_error: str | None = None,
@@ -1856,11 +1907,13 @@ class RunsStore:
         entry per run, shaped for the board overlay (run_id is the row id)."""
         cutoff = time.time() - self.INDEX_RETENTION_SECONDS
         review_placeholders = ",".join("?" * len(REVIEW_BLOCKING_STATES))
+        durable_placeholders = ",".join("?" * len(self.DURABLE_INDEX_STATES))
         rows = conn.execute(
             "SELECT * FROM runs WHERE ended_at IS NULL OR ended_at >= ? "
             f"OR state IN ({review_placeholders}) "
+            f"OR state IN ({durable_placeholders}) "
             "ORDER BY id DESC",
-            (cutoff, *REVIEW_BLOCKING_STATES),
+            (cutoff, *REVIEW_BLOCKING_STATES, *self.DURABLE_INDEX_STATES),
         ).fetchall()
         return [
             {
@@ -2868,19 +2921,20 @@ def _ticket_run_log(ticket_body: str) -> str:
     return ticket_body[index:].strip()
 
 
-def validate_worker_completion(
+def validate_worker_outcome(
     *,
     workspace_path: str,
     ticket_id: str,
     run_id: int,
     start_head: str | None,
-) -> tuple[bool, str]:
-    """Return whether an exit-0 worker actually completed its ticket.
+) -> tuple[str | None, str]:
+    """Return the declared, committed outcome for an exit-0 worker.
 
     Agent CLIs can return 0 after answering a clarification or unrelated prompt.
     The orchestrator treats ticket completion as on-disk evidence in the worker
-    worktree: a new commit, the requested ticket marked done, and a run-log body
-    that mentions the current run.
+    worktree: a new commit, the requested ticket marked done or verification
+    blocked, and a run-log body that mentions the current run. Verification
+    blockers must name the exact external condition and explicit resume path.
     """
     workspace = Path(workspace_path)
     ticket_path = workspace / ".orchestrator" / f"{ticket_id}.md"
@@ -2895,14 +2949,21 @@ def validate_worker_completion(
     try:
         ticket = read_ticket(ticket_path)
     except FileNotFoundError:
-        return False, f"ticket file missing at {ticket_path}"
+        return None, f"ticket file missing at {ticket_path}"
     except (OSError, TicketParseError) as e:
-        return False, f"ticket file unreadable at {ticket_path}: {e}"
+        return None, f"ticket file unreadable at {ticket_path}: {e}"
 
     if ticket.get("id") != ticket_id:
         reasons.append(f"ticket id is {ticket.get('id')!r}, expected {ticket_id!r}")
-    if ticket.get("status") != "done":
-        reasons.append(f"ticket status is {ticket.get('status')!r}, expected 'done'")
+    status = str(ticket.get("status") or "")
+    if status not in {"done", VERIFICATION_BLOCKED_STATUS}:
+        reasons.append(
+            f"ticket status is {status!r}, expected 'done' or {VERIFICATION_BLOCKED_STATUS!r}"
+        )
+    if status == VERIFICATION_BLOCKED_STATUS:
+        for field in VERIFICATION_BLOCKER_FIELDS:
+            if not str(ticket.get(field) or "").strip():
+                reasons.append(f"verification-blocked ticket is missing {field}")
     if ticket.get("run_id") != run_id:
         reasons.append(f"ticket run_id is {ticket.get('run_id')!r}, expected {run_id}")
 
@@ -2918,8 +2979,29 @@ def validate_worker_completion(
         reasons.append(f"ticket run log does not mention run {run_id}")
 
     if reasons:
-        return False, "; ".join(reasons)
-    return True, "ticket marked done with run evidence"
+        return None, "; ".join(reasons)
+    if status == VERIFICATION_BLOCKED_STATUS:
+        blocker = str(ticket["verification_blocker"]).strip()
+        resume = str(ticket["verification_resume"]).strip()
+        return status, f"verification blocked: {blocker}; resume: {resume}"
+    return status, "ticket marked done with run evidence"
+
+
+def validate_worker_completion(
+    *,
+    workspace_path: str,
+    ticket_id: str,
+    run_id: int,
+    start_head: str | None,
+) -> tuple[bool, str]:
+    """Compatibility wrapper for callers that require a fully done ticket."""
+    outcome, reason = validate_worker_outcome(
+        workspace_path=workspace_path,
+        ticket_id=ticket_id,
+        run_id=run_id,
+        start_head=start_head,
+    )
+    return outcome == "done", reason
 
 
 # ---------------------------------------------------------------------------
@@ -3150,15 +3232,28 @@ class Worker:
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
                 self._emit_lifecycle("run-canceled")
             elif rc == 0:
-                ok, reason = validate_worker_completion(
+                outcome, reason = validate_worker_outcome(
                     workspace_path=self.run["workspace_path"],
                     ticket_id=self.run["ticket_id"],
                     run_id=self.run_id,
                     start_head=start_head,
                 )
-                if ok:
-                    self.store.update(self.run_id, state="AwaitingReview", ended=True, exit_code=rc)
-                    self._emit_lifecycle("run-review-needed")
+                if outcome in {"done", VERIFICATION_BLOCKED_STATUS}:
+                    self.store.update(
+                        self.run_id,
+                        state="AwaitingReview",
+                        last_error=(reason if outcome == VERIFICATION_BLOCKED_STATUS else None),
+                        ended=True,
+                        exit_code=rc,
+                    )
+                    self._emit_lifecycle(
+                        "run-review-needed",
+                        message=(
+                            f"{self.run['ticket_id']} declared an external verification blocker and needs review"
+                            if outcome == VERIFICATION_BLOCKED_STATUS
+                            else None
+                        ),
+                    )
                 else:
                     log.write(f"\n[orchestrator] worker exited 0 but did not complete ticket: {reason}\n")
                     self.store.update(
@@ -3419,7 +3514,12 @@ class ReviewWorker:
             self.proc.wait()
             rc = self.proc.returncode
             current = self.store.get(self.run_id) or {}
-            if current.get("state") in {"Merged", "MergeConflict", "Failed"}:
+            if current.get("state") in {
+                "Merged",
+                "MergeConflict",
+                VERIFICATION_BLOCKED_RUN_STATE,
+                "Failed",
+            }:
                 return
 
             if rc == 0:
@@ -3887,7 +3987,7 @@ class Daemon:
             ticket_id = str(ticket["id"]).upper()
             if ticket.get("canceled") or ticket.get("draft"):
                 continue
-            if ticket.get("status") in {"ready", "in_progress"}:
+            if ticket.get("status") in {"ready", "in_progress", VERIFICATION_BLOCKED_STATUS}:
                 observed.add(ticket_id)
         for ticket_id, run in runs_by_ticket.items():
             state = str(run.get("state") or "")
@@ -4046,6 +4146,20 @@ class Daemon:
                 run_id=run_id,
                 reason=str(latest_run.get("last_error") or "merge conflict"),
                 next_step="Resolve the merge conflict or request an explicit retry.",
+            )
+
+        if ticket.get("status") == VERIFICATION_BLOCKED_STATUS:
+            blocker = str(ticket.get("verification_blocker") or "").strip()
+            resume = str(ticket.get("verification_resume") or "").strip()
+            return self._blocked_item(
+                ticket_id,
+                run_id=run_id or ticket.get("run_id"),
+                reason=blocker or "external verification is unavailable",
+                owner="external_verification",
+                next_step=(
+                    resume
+                    or "Change the external verification condition, then explicitly resume this run."
+                ),
             )
 
         if ticket.get("status") == "done":
@@ -4524,6 +4638,11 @@ class Daemon:
             ticket = read_ticket(ticket_file)
         except (OSError, TicketParseError) as e:
             raise ValueError(f"ticket {ticket_id} could not be read: {e}") from e
+        if ticket.get("status") == VERIFICATION_BLOCKED_STATUS:
+            raise ValueError(
+                f"ticket {ticket_id} is verification blocked; use the explicit resume action "
+                "after the external condition changes"
+            )
         _notify_orchestration_trace(
             "dispatch-started",
             ticket_id=ticket_id,
@@ -4905,6 +5024,11 @@ Review implementation worker run {run_id} for ticket {ticket_id}. The foreground
 {evidence.get("ticket_run_log") or "(none)"}
 ```
 
+### Declared ticket outcome
+```text
+{evidence.get("ticket_status") or "(unknown)"}
+```
+
 ### Worker log tail
 ```text
 {evidence.get("log_tail") or "(none)"}
@@ -4915,7 +5039,7 @@ Review implementation worker run {run_id} for ticket {ticket_id}. The foreground
 1. Confirm the source repo and implementation branch exist.
 2. Inspect the worker branch changes against `{target_branch}`.
 3. Run the appropriate verification for the changed files.
-4. If the branch is acceptable, call the private daemon decision endpoint with `decision: accept`. If it needs follow-up, call the same endpoint with `decision: retry` and a concise reason.
+4. If the branch is acceptable, call the private daemon decision endpoint with `decision: accept`. A `verification_blocked` outcome is acceptable only when implementation is reviewable and the ticket names an exact external blocker plus explicit resume condition; accepting it merges useful work without closing the ticket or progressing dependents. If the work itself needs follow-up, call the same endpoint with `decision: retry` and a concise reason.
 
 Use this command shape for the final decision:
 
@@ -4935,7 +5059,7 @@ PY
 
 For a retry decision, send `{{"decision": "retry", "reason": "...", "redispatch": true}}`.
 
-Do not edit tickets directly. Do not push. The daemon merge path publishes `done` only after acceptance and merge succeeds.
+Do not edit tickets directly. Do not push. The daemon merge path publishes `done` or the reviewed `verification_blocked` state only after acceptance and merge succeeds.
 """
 
     def dispatch_review_worker(
@@ -5236,6 +5360,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 ticket_log = _ticket_run_log(str(ticket.get("body") or ""))
             except (OSError, TicketParseError):
                 ticket_log = ""
+        if ticket_status is None and repo_path:
+            try:
+                ticket = read_ticket(Path(repo_path) / ".orchestrator" / f"{ticket_id}.md")
+                ticket_status = ticket.get("status")
+                ticket_log = _ticket_run_log(str(ticket.get("body") or ""))
+            except (OSError, TicketParseError):
+                pass
 
         return {
             "run": run,
@@ -5247,7 +5378,9 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             "branch_diff_stat": _git_text(repo_path, "diff", "--stat", f"HEAD...{branch}") if repo_path and branch else "",
             "branch_diff_name_status": _git_text(repo_path, "diff", "--name-status", f"HEAD...{branch}") if repo_path and branch else "",
             "verification_evidence": (
-                "worker completion validation passed"
+                run.get("last_error")
+                if ticket_status == VERIFICATION_BLOCKED_STATUS
+                else "worker completion validation passed"
                 if run.get("state") in REVIEW_BLOCKING_STATES
                 else run.get("last_error")
             ),
@@ -5263,6 +5396,18 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         repo_path = str(run["repo_path"])
         branch = str(run["branch"])
         ticket_id = str(run["ticket_id"])
+        workspace_ticket_path = (
+            Path(str(run["workspace_path"])) / ".orchestrator" / f"{ticket_id}.md"
+        )
+        try:
+            review_ticket = read_ticket(workspace_ticket_path)
+        except (OSError, TicketParseError) as e:
+            raise ValueError(f"could not read reviewed ticket for run {run_id}: {e}") from e
+        expected_status = str(review_ticket.get("status") or "")
+        if expected_status not in {"done", VERIFICATION_BLOCKED_STATUS}:
+            raise ValueError(
+                f"run {run_id} ticket status {expected_status!r} is not a reviewable outcome"
+            )
 
         status = _git(repo_path, "status", "--porcelain", check=False)
         if status.returncode != 0 or status.stdout.strip():
@@ -5314,8 +5459,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
         merged_ticket = read_ticket(Path(repo_path) / ".orchestrator" / f"{ticket_id}.md")
-        if merged_ticket.get("status") != "done":
-            reason = f"merged branch did not publish {ticket_id} as done"
+        if merged_ticket.get("status") != expected_status:
+            reason = (
+                f"merged branch did not publish {ticket_id} as {expected_status}"
+            )
             self.runs.update(run_id, state="MergeConflict", last_error=reason)
             self._emit_lifecycle(
                 "run-failed",
@@ -5328,26 +5475,42 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             )
             self._record_queue_drain_after_event(
                 repo_path=repo_path,
-                trigger="merge-missing-done-ticket",
+                trigger="merge-missing-reviewed-ticket-state",
                 drive_reviews=False,
             )
             return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
         removed, worktree_error = remove_worktree(repo_path, Path(str(run["workspace_path"])))
         delete_branch(repo_path, branch)
-        self.runs.update(run_id, state="Merged")
+        verification_blocked = expected_status == VERIFICATION_BLOCKED_STATUS
+        if verification_blocked:
+            blocker = str(merged_ticket.get("verification_blocker") or "").strip()
+            resume = str(merged_ticket.get("verification_resume") or "").strip()
+            self.runs.update(
+                run_id,
+                state=VERIFICATION_BLOCKED_RUN_STATE,
+                last_error=f"verification blocked: {blocker}; resume: {resume}",
+            )
+        else:
+            self.runs.update(run_id, state="Merged")
         self._emit_lifecycle(
-            "run-merged",
+            "run-verification-blocked" if verification_blocked else "run-merged",
             ticket_id=ticket_id,
             run_id=run_id,
             source="orchestrator",
+            message=(
+                f"{ticket_id} is reviewed and waiting on external verification"
+                if verification_blocked
+                else None
+            ),
             repo_path=repo_path,
             provider_key=run.get("provider_key"),
         )
-        try:
-            self._progress_dependents(repo_path=repo_path, finished_ticket_id=ticket_id)
-        except Exception as e:  # noqa: BLE001 — merge succeeded; report follow-up safely
-            print(f"[orchestrator] dep-progression error after merging {ticket_id}: {e}", file=sys.stderr)
+        if not verification_blocked:
+            try:
+                self._progress_dependents(repo_path=repo_path, finished_ticket_id=ticket_id)
+            except Exception as e:  # noqa: BLE001 — merge succeeded; report follow-up safely
+                print(f"[orchestrator] dep-progression error after merging {ticket_id}: {e}", file=sys.stderr)
         self._record_queue_drain_after_event(
             repo_path=repo_path,
             trigger="run-merged",
@@ -5416,6 +5579,203 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             drive_reviews=False,
         )
         return result
+
+    def resume_verification_blocked(
+        self,
+        run_id: int,
+        *,
+        reason: str,
+        redispatch: bool = True,
+    ) -> dict[str, Any]:
+        """Commit an explicit resume transition, then optionally dispatch it.
+
+        A reviewed verification blocker is terminal until a foreground PM or
+        human records what changed. This keeps queue-drain reconciliation from
+        turning an unchanged environment into recursive worker attempts.
+        """
+        run = self.runs.get(run_id)
+        if not run:
+            raise ValueError(f"unknown run_id {run_id}")
+        if run.get("state") != VERIFICATION_BLOCKED_RUN_STATE:
+            raise ValueError(f"run {run_id} is not verification blocked")
+
+        resume_reason = _clean_required_text(reason, "reason")
+        repo = Path(str(run["repo_path"])).expanduser().resolve()
+        ticket_id = str(run["ticket_id"])
+        ticket_path = repo / ".orchestrator" / f"{ticket_id}.md"
+        with self._authoring_mutex():
+            _ensure_ticket_authoring_paths_clean(repo, [ticket_path])
+            ticket = read_ticket(ticket_path)
+            if ticket.get("status") != VERIFICATION_BLOCKED_STATUS:
+                raise ValueError(
+                    f"ticket {ticket_id} is {ticket.get('status')!r}, expected "
+                    f"{VERIFICATION_BLOCKED_STATUS!r}"
+                )
+            if ticket.get("run_id") != run_id:
+                raise ValueError(
+                    f"ticket {ticket_id} run_id is {ticket.get('run_id')!r}, expected {run_id}"
+                )
+
+            body = str(ticket.get("body") or "").rstrip()
+            resume_entry = f"- **Verification resumed after run {run_id}** — {resume_reason}"
+            if "## Run log" in body:
+                ticket["body"] = f"{body}\n{resume_entry}\n"
+            else:
+                ticket["body"] = f"{body}\n\n## Run log\n\n{resume_entry}\n"
+            ticket["status"] = "ready"
+            ticket["run_id"] = None
+            raw = ticket.get("_raw_fields")
+            for field in VERIFICATION_BLOCKER_FIELDS:
+                ticket.pop(field, None)
+                if isinstance(raw, dict):
+                    raw.pop(field, None)
+            write_ticket(ticket_path, ticket)
+            _commit_ticket_authorship(repo, [ticket_path], [ticket_id])
+            resume_commit = _git_head(str(repo))
+
+        self._emit_lifecycle(
+            "run-verification-resumed",
+            ticket_id=ticket_id,
+            run_id=run_id,
+            source="orchestrator",
+            message=f"{ticket_id} verification resumed: {resume_reason}",
+            repo_path=str(repo),
+            provider_key=run.get("provider_key"),
+        )
+        result: dict[str, Any] = {
+            "resumed": True,
+            "reason": resume_reason,
+            "resume_commit": resume_commit,
+            "previous_run": self.runs.get(run_id),
+            "redispatched": None,
+        }
+        if redispatch:
+            result["redispatched"] = self.dispatch(
+                ticket_id=ticket_id,
+                repo_path=str(repo),
+                context=f"Verification resumed because: {resume_reason}",
+                source="verification-resume",
+            )
+        self._record_queue_drain_after_event(
+            repo_path=str(repo),
+            trigger="verification-resumed",
+            drive_reviews=False,
+        )
+        return result
+
+    def reconcile_preserved_run(
+        self,
+        *,
+        repo_path: str,
+        ticket_id: str,
+    ) -> dict[str, Any]:
+        """Restore a missing terminal ledger row from a committed ticket.
+
+        This is an explicit recovery action for canonical ticket evidence that
+        survived a lost local runs database. It does not mutate the ticket,
+        resume work, progress dependencies, or dispatch a worker.
+        """
+        repo = Path(repo_path).expanduser().resolve()
+        canonical_ticket_id = _clean_required_text(ticket_id, "ticket_id")
+        if Path(canonical_ticket_id).name != canonical_ticket_id or canonical_ticket_id in {".", ".."}:
+            raise ValueError("ticket_id must be a canonical ticket filename stem")
+        ticket_path = repo / ".orchestrator" / f"{canonical_ticket_id}.md"
+        with self._authoring_mutex():
+            _ensure_ticket_authoring_paths_clean(repo, [ticket_path])
+            tracked = _git(
+                str(repo),
+                "cat-file",
+                "-e",
+                f"HEAD:.orchestrator/{canonical_ticket_id}.md",
+                check=False,
+            )
+            if tracked.returncode != 0:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} is not committed at repository HEAD"
+                )
+            ticket = read_ticket(ticket_path)
+            if ticket.get("id") != canonical_ticket_id:
+                raise ValueError(
+                    f"ticket file id is {ticket.get('id')!r}, expected {canonical_ticket_id!r}"
+                )
+            status = str(ticket.get("status") or "")
+            expected_states = {
+                VERIFICATION_BLOCKED_STATUS: VERIFICATION_BLOCKED_RUN_STATE,
+                "done": "Merged",
+            }
+            expected_state = expected_states.get(status)
+            if expected_state is None:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} is {status!r}; only committed done or "
+                    "verification_blocked tickets can restore preserved runs"
+                )
+            run_id = ticket.get("run_id")
+            if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} does not declare a positive run_id"
+                )
+            body = str(ticket.get("body") or "")
+            run_evidence = re.search(
+                rf"\bRun\s+{run_id}\b",
+                body,
+                re.IGNORECASE,
+            )
+            if "## Run log" not in body or run_evidence is None:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} lacks preserved run {run_id} evidence"
+                )
+            attempt_evidence = re.search(
+                rf"\bRun\s+{run_id}\b(?:\*\*)?\s*\(attempt\s+(\d+)\)",
+                body,
+                re.IGNORECASE,
+            )
+            preserved_attempt = int(attempt_evidence.group(1)) if attempt_evidence else 1
+            if preserved_attempt <= 0:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} declares an invalid attempt for run {run_id}"
+                )
+
+            existing = self.runs.get(run_id)
+            if existing:
+                existing_repo = str(Path(str(existing.get("repo_path") or "")).expanduser().resolve())
+                if (
+                    existing.get("ticket_id") != canonical_ticket_id
+                    or existing_repo != str(repo)
+                    or existing.get("state") != expected_state
+                ):
+                    raise ValueError(
+                        f"run {run_id} already exists with a different ticket, repo, or state"
+                    )
+                return {"reconciled": False, "run": existing, "source": "existing-ledger"}
+
+            blocker_error = None
+            if status == VERIFICATION_BLOCKED_STATUS:
+                blocker = str(ticket.get("verification_blocker") or "").strip()
+                resume = str(ticket.get("verification_resume") or "").strip()
+                if not blocker or not resume:
+                    raise ValueError(
+                        f"ticket {canonical_ticket_id} lacks verification blocker metadata"
+                    )
+                blocker_error = f"verification blocked: {blocker}; resume: {resume}"
+            reconciled = self.runs.insert_reconciled(
+                run_id=run_id,
+                ticket_id=canonical_ticket_id,
+                repo_path=str(repo),
+                state=expected_state,
+                attempt=preserved_attempt,
+                last_error=blocker_error,
+            )
+
+        self._emit_lifecycle(
+            "run-reconciled",
+            ticket_id=canonical_ticket_id,
+            run_id=run_id,
+            source="orchestrator",
+            message=f"{canonical_ticket_id} preserved run {run_id} was restored",
+            repo_path=str(repo),
+            provider_key=reconciled.get("provider_key"),
+        )
+        return {"reconciled": True, "run": reconciled, "source": "canonical-ticket"}
 
     def reconcile_orchestrator_command_states(
         self,
@@ -6829,6 +7189,24 @@ class Handler(BaseHTTPRequestHandler):
                 prune = bool(body.get("prune_worktree", True))
                 result = self.daemon.cancel_run(int(segments[2]), prune_worktree=prune)
                 return 200, result
+
+            if method == "POST" and segments == ["v1", "runs", "reconcile-preserved"]:
+                body = _read_body(self)
+                result = self.daemon.reconcile_preserved_run(
+                    repo_path=body.get("repo_path", ""),
+                    ticket_id=body.get("ticket_id", ""),
+                )
+                return 200, result
+
+            if (method == "POST" and len(segments) == 4
+                    and segments[:2] == ["v1", "runs"] and segments[3] == "resume-verification"):
+                body = _read_body(self)
+                result = self.daemon.resume_verification_blocked(
+                    int(segments[2]),
+                    reason=body.get("reason", ""),
+                    redispatch=bool(body.get("redispatch", True)),
+                )
+                return (202 if result.get("redispatched") else 200), result
 
             return 404, {"error": f"no route for {method} {parsed.path}"}
         except ValueError as e:
