@@ -49,6 +49,9 @@ _LIFECYCLE_ROLES_BY_DETAIL = {
     "run-failed": "failure",
     "run-health-warning": "blocker",
     "run-review-needed": "blocker",
+    "run-reconciled": "result",
+    "run-verification-blocked": "blocker",
+    "run-verification-resumed": "decision",
     "run-merged": "result",
     "run-succeeded": "result",
     "sidecar-outcome": "result",
@@ -76,9 +79,12 @@ _BASE_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
 _UNSCOPED_LIFECYCLE_KINDS = frozenset({
     "run-health-warning",
     "run-review-needed",
+    "run-verification-blocked",
+    "run-verification-resumed",
     "run-failed",
     "run-canceled",
     "run-merged",
+    "run-reconciled",
     "run-succeeded",
 })
 _WORK_LIFECYCLE_KINDS = frozenset({"sidecar-outcome"})

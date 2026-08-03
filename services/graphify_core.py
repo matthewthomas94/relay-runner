@@ -459,7 +459,8 @@ class GraphifyCoreStore:
         return [
             ticket
             for ticket in tickets
-            if ticket["id"] in blocked_ids or _normalize_key(_node_state(ticket)) == "blocked"
+            if ticket["id"] in blocked_ids
+            or _normalize_key(_node_state(ticket)) in {"blocked", "verification_blocked"}
         ]
 
     def awaiting_merge(self, *, project_id: str | None = None) -> list[dict[str, Any]]:

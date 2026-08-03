@@ -168,6 +168,76 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertEqual(result.workerProviderNotes, "none")
     }
 
+    func testVerificationBlockedTicketRoundTripsExactResumeMetadata() throws {
+        let contents = """
+        ---
+        id: RR-274
+        title: Verify physical replay
+        status: verification_blocked
+        priority: high
+        depends_on: []
+        run_id: 7
+        canceled: false
+        verification_blocker: Screen Recording and physical Option input are unavailable.
+        verification_resume: Grant Screen Recording and connect physical Option input.
+        ---
+
+        ## Run log
+
+        - **Run 7** reviewed and blocked.
+        """
+
+        let ticket = try TicketParser.parse(contents: contents)
+        let rendered = TicketWriter.render(ticket)
+        let reparsed = try TicketParser.parse(contents: rendered)
+
+        XCTAssertEqual(ticket.status, .verificationBlocked)
+        XCTAssertEqual(ticket.verificationBlocker, "Screen Recording and physical Option input are unavailable.")
+        XCTAssertEqual(ticket.verificationResume, "Grant Screen Recording and connect physical Option input.")
+        XCTAssertEqual(reparsed.id, ticket.id)
+        XCTAssertEqual(reparsed.status, ticket.status)
+        XCTAssertEqual(reparsed.runId, ticket.runId)
+        XCTAssertEqual(reparsed.verificationBlocker, ticket.verificationBlocker)
+        XCTAssertEqual(reparsed.verificationResume, ticket.verificationResume)
+        XCTAssertEqual(reparsed.body.trimmingCharacters(in: .whitespacesAndNewlines), ticket.body.trimmingCharacters(in: .whitespacesAndNewlines))
+        XCTAssertEqual(ProgramBoardLane(status: ticket.status), .inProgress)
+        XCTAssertFalse(Ticket.Status.userSelectable.contains(.verificationBlocked))
+    }
+
+    func testVerificationBlockedRunStaysVisibleAsNonFailureInProgress() {
+        let run = RunState(
+            ticketId: "RR-274",
+            repoPath: "/repo",
+            runId: 7,
+            state: "VerificationBlocked",
+            lastError: "physical input unavailable",
+            activity: nil,
+            activityAt: nil
+        )
+
+        XCTAssertEqual(run.placement(ticketStatus: .verificationBlocked), .inProgress)
+        XCTAssertEqual(run.pill(ticketStatus: .verificationBlocked), .verificationBlocked)
+        XCTAssertFalse(run.isActive)
+    }
+
+    func testVerificationBlockedTicketRequiresRunLink() {
+        let contents = """
+        ---
+        id: RR-1
+        title: Verify externally
+        status: verification_blocked
+        priority: high
+        depends_on: []
+        run_id: null
+        canceled: false
+        verification_blocker: Physical input unavailable.
+        verification_resume: Connect physical input and resume.
+        ---
+        """
+
+        XCTAssertThrowsError(try TicketParser.parse(contents: contents))
+    }
+
     func testWorkerSizingDefaultsInheritGeneralAgentSettings() {
         var config = GeneralConfig()
         config.provider = .claude

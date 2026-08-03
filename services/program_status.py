@@ -341,7 +341,7 @@ def _blocked_tickets(ctx: dict[str, Any], provider: str | None) -> list[dict[str
         if (
             ticket["id"] in blocked_ids
             or _unsatisfied_dependencies(ctx, ticket)
-            or _key(_ticket_state(ticket)) == "blocked"
+            or _key(_ticket_state(ticket)) in {"blocked", "verification_blocked"}
         )
         and _ticket_matches_provider(ctx, ticket, provider)
     ]
@@ -515,7 +515,9 @@ def _project_board_state(ctx: dict[str, Any], ticket: dict[str, Any]) -> str:
         return "in_progress"
     if run_state in {"awaiting_merge", "awaiting_review", "merge_conflict"}:
         return "in_progress"
-    if ticket_state in {"inprogress", "in_progress"}:
+    if run_state == "verification_blocked":
+        return "in_progress"
+    if ticket_state in {"inprogress", "in_progress", "verification_blocked"}:
         return "in_progress"
     if ticket_state in {"ready", "awaitingmerge", "awaiting_merge"}:
         return "ready"

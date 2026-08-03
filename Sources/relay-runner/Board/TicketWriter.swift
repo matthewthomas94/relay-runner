@@ -166,6 +166,8 @@ enum TicketWriter {
             workerEffort: ticket.workerEffort,
             workerSizingRationale: ticket.workerSizingRationale,
             workerProviderNotes: ticket.workerProviderNotes,
+            verificationBlocker: ticket.verificationBlocker,
+            verificationResume: ticket.verificationResume,
             draft: ticket.draft,
             order: ticket.order,
             description: summary,
@@ -194,6 +196,8 @@ enum TicketWriter {
             workerEffort: defaults.workerEffort,
             workerSizingRationale: defaults.workerSizingRationale,
             workerProviderNotes: defaults.workerProviderNotes,
+            verificationBlocker: ticket.verificationBlocker,
+            verificationResume: ticket.verificationResume,
             draft: ticket.draft,
             order: ticket.order,
             description: ticket.description,
@@ -224,6 +228,12 @@ enum TicketWriter {
         }
         if let workerProviderNotes = ticket.workerProviderNotes {
             out += "worker_provider_notes: \(yamlString(workerProviderNotes))\n"
+        }
+        if let verificationBlocker = ticket.verificationBlocker {
+            out += "verification_blocker: \(yamlString(verificationBlocker))\n"
+        }
+        if let verificationResume = ticket.verificationResume {
+            out += "verification_resume: \(yamlString(verificationResume))\n"
         }
         if ticket.draft {
             out += "draft: true\n"

@@ -1541,6 +1541,9 @@ private struct ProgramWorkCard: View {
         if item.isAwaitingMerge {
             labels.append("Awaiting review")
         }
+        if item.isVerificationBlocked {
+            labels.append("Verification blocked")
+        }
         if !item.blockedBy.isEmpty {
             labels.append("Waiting")
         }
@@ -1586,6 +1589,9 @@ struct ProgramTicketDetailPanel: View {
                             .lineLimit(1)
                         if detail.item.isAwaitingMerge {
                             ProgramInlineBadge(label: "Awaiting review")
+                        }
+                        if detail.item.isVerificationBlocked {
+                            ProgramInlineBadge(label: "Verification blocked")
                         }
                     }
                     Text(detail.title)
@@ -2012,7 +2018,7 @@ private struct ProgramTicketEditModal: View {
                             .foregroundStyle(ProgramBoardStyle.mutedText)
                             .textCase(.uppercase)
                         Picker("Status", selection: $status) {
-                            ForEach(Ticket.Status.allCases, id: \.rawValue) { status in
+                            ForEach(Ticket.Status.userSelectable, id: \.rawValue) { status in
                                 Text(status.rawValue.displayLabel).tag(status)
                             }
                         }

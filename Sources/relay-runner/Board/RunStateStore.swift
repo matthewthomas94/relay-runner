@@ -10,8 +10,8 @@ struct RunState: Equatable, Decodable {
     let repoPath: String
     let runId: Int
     /// Matches the daemon's run-state enum: Claimed | Running |
-    /// AwaitingReview | Reviewing | MergeConflict | Succeeded | Merged |
-    /// Failed | Stalled | Canceled.
+    /// AwaitingReview | Reviewing | MergeConflict | VerificationBlocked |
+    /// Succeeded | Merged | Failed | Stalled | Canceled.
     let state: String
     let attempt: Int?
     let lastError: String?
@@ -94,6 +94,8 @@ struct RunState: Equatable, Decodable {
             // originate from backlog, so the review-pending run state should
             // own placement until it is accepted or retried.
             return .inProgress
+        case "VerificationBlocked":
+            return .inProgress
         default:
             // Failed / Canceled: don't move the card, just badge it.
             return nil
@@ -113,6 +115,8 @@ struct RunState: Equatable, Decodable {
             return .awaitingReview
         case "MergeConflict":
             return .mergeConflict
+        case "VerificationBlocked":
+            return .verificationBlocked
         default:
             return nil
         }
@@ -127,6 +131,7 @@ enum RunPill: Equatable {
     case failed
     case awaitingReview
     case mergeConflict
+    case verificationBlocked
 }
 
 /// Reads the daemon's runs-index file and projects it onto the active project.

@@ -25,6 +25,8 @@ final class MCPServer {
             InspectRunForReviewTool(),
             ReviewRunTool(),
             CancelRunTool(),
+            ReconcilePreservedRunTool(),
+            ResumeVerificationBlockedTool(),
             ProgramStatusTool(),
             SessionCaptureTool(),
         ]

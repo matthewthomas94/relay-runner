@@ -205,7 +205,7 @@ enum ProgramBoardLane: CaseIterable, Identifiable, Equatable, Hashable {
         switch status {
         case .backlog: self = .backlog
         case .ready: self = .ready
-        case .inProgress: self = .inProgress
+        case .inProgress, .verificationBlocked: self = .inProgress
         case .done: self = .done
         }
     }
@@ -474,6 +474,8 @@ enum ProgramBoardTicketMover {
             workerEffort: current.workerEffort,
             workerSizingRationale: current.workerSizingRationale,
             workerProviderNotes: current.workerProviderNotes,
+            verificationBlocker: current.verificationBlocker,
+            verificationResume: current.verificationResume,
             draft: current.draft,
             order: current.order,
             description: current.description,
@@ -557,6 +559,8 @@ enum ProgramBoardTicketCreator {
             workerEffort: withDescription.workerEffort,
             workerSizingRationale: withDescription.workerSizingRationale,
             workerProviderNotes: withDescription.workerProviderNotes,
+            verificationBlocker: withDescription.verificationBlocker,
+            verificationResume: withDescription.verificationResume,
             draft: false,
             order: withDescription.order,
             description: withDescription.description,
@@ -662,6 +666,8 @@ enum ProgramBoardTicketEditor {
             workerEffort: withBody.workerEffort,
             workerSizingRationale: withBody.workerSizingRationale,
             workerProviderNotes: withBody.workerProviderNotes,
+            verificationBlocker: withBody.verificationBlocker,
+            verificationResume: withBody.verificationResume,
             draft: withBody.draft,
             order: withBody.order,
             description: withBody.description,
@@ -1716,6 +1722,10 @@ extension ProgramStatusItem {
         programStateKeys.contains("awaiting_merge")
     }
 
+    var isVerificationBlocked: Bool {
+        programStateKeys.contains(Ticket.Status.verificationBlocked.rawValue)
+    }
+
     var hasActiveWorker: Bool {
         programStateKeys.contains("active")
     }
@@ -1751,7 +1761,8 @@ extension ProgramStatusItem {
         project?.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
             ticketID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
             !hasActiveWorker &&
-            !isAwaitingMerge
+            !isAwaitingMerge &&
+            !isVerificationBlocked
     }
 
     var isProgramBoardDone: Bool {
