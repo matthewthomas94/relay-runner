@@ -212,6 +212,7 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         ] {
             let fixture = try makeRealPTYFixture()
             let paths = deliveryPaths(in: fixture.directory)
+            let providerSessionID = "mounted-\(providerName.lowercased())"
             try "ping\n".write(
                 toFile: paths.command,
                 atomically: true,
@@ -230,6 +231,9 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
                 atomically: true,
                 encoding: .utf8
             )
+            try """
+            {"records":[{"state":"active","origin":"manual","provider_session_id":"orphaned-previous-session","session_id":"startup-identity","turn_id":"startup-turn"}]}
+            """.write(toFile: paths.providerTurns, atomically: true, encoding: .utf8)
 
             let process = SwiftTermEmbeddedProcess(
                 readinessStabilityInterval: 0.2,
@@ -257,7 +261,8 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
                 workingDirectory: fixture.directory.path,
                 target: target,
                 voiceDelivery: .appOwned,
-                sessionEventPath: fixture.events.path
+                sessionEventPath: fixture.events.path,
+                providerSessionID: providerSessionID
             ))
 
             let bootstrapWindow = expectation(
@@ -1543,6 +1548,159 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             XCTAssertTrue(events.contains(#""provider":"\#(provider)""#), provider)
             XCTAssertFalse(events.contains("Second request"), provider)
         }
+    }
+
+    func testDeliveryScopesPhantomManualRecordToEmbeddedProviderSession() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let providerSessionID = "embedded-\(provider)"
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-72\",\"relay_command_seq\":72}"
+            try "Next ordered turn\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            try writeProviderTurnRecords([
+                [
+                    "state": "stale",
+                    "provider": provider,
+                    "provider_session_id": providerSessionID,
+                    "session_id": "persisted-session",
+                    "turn_id": "relay-turn",
+                    "relay_command_seq": 71,
+                    "relay_command_id": "cmd-71",
+                    "release_reason": "stale_current_command",
+                    "updated_at": 100.0,
+                ],
+                [
+                    "state": "active",
+                    "origin": "manual",
+                    "provider": provider,
+                    "provider_session_id": "orphaned-previous-session",
+                    "session_id": "startup-identity",
+                    "turn_id": "startup-turn",
+                    "created_at": 99.0,
+                    "updated_at": 99.0,
+                ],
+            ], to: fixture.providerTurns)
+            var sent: [String] = []
+            var scheduled: [() -> Void] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+                schedule: { _, _, work in scheduled.append(work) },
+                isRunning: { true },
+                providerSessionID: providerSessionID
+            )
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent, ["Next ordered turn"], provider)
+            XCTAssertEqual(scheduled.count, 1, provider)
+            scheduled[0]()
+            XCTAssertEqual(sent, ["Next ordered turn", "\r"], provider)
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertFalse(events.contains(#""event":"safe_boundary_wait""#), provider)
+            XCTAssertEqual(countEvent("claimed", in: events), 1, provider)
+        }
+    }
+
+    func testGenuineScopedManualTurnBlocksUntilExactReleaseWithSafeDiagnostics() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let providerSessionID = "embedded-\(provider)"
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-82\",\"relay_command_seq\":82}"
+            try "Queued after manual turn\n".write(
+                to: fixture.command,
+                atomically: true,
+                encoding: .utf8
+            )
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            var currentTime = Date(timeIntervalSince1970: 101.0)
+            try writeProviderTurnRecords([[
+                "state": "active",
+                "origin": "manual",
+                "provider": provider,
+                "provider_session_id": providerSessionID,
+                "session_id": "native-session",
+                "turn_id": "manual-turn",
+                "created_at": 100.0,
+                "updated_at": 100.0,
+            ]], to: fixture.providerTurns)
+            var sent: [String] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+                schedule: { _, _, _ in },
+                isRunning: { true },
+                now: { currentTime },
+                providerSessionID: providerSessionID
+            )
+
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent, [], provider)
+            var events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertTrue(events.contains(#""provider_turn_origin":"manual""#), provider)
+            XCTAssertTrue(events.contains(#""provider_native_session_id":"native-session""#), provider)
+            XCTAssertTrue(events.contains(#""provider_native_turn_id":"manual-turn""#), provider)
+            XCTAssertTrue(events.contains(#""provider_turn_age_ms":1000"#), provider)
+            XCTAssertFalse(events.contains("Queued after manual turn"), provider)
+
+            currentTime = Date(timeIntervalSince1970: 101.2)
+            try writeProviderTurnRecords([[
+                "state": "completed_manual",
+                "origin": "manual",
+                "provider": provider,
+                "provider_session_id": providerSessionID,
+                "session_id": "native-session",
+                "turn_id": "manual-turn",
+                "created_at": 100.0,
+                "updated_at": 101.2,
+                "release_reason": "provider_stop",
+            ]], to: fixture.providerTurns)
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent, ["Queued after manual turn"], provider)
+            events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertTrue(events.contains(#""provider_turn_release_reason":"provider_stop""#), provider)
+            XCTAssertTrue(events.contains(#""event":"safe_boundary_verified""#), provider)
+        }
+    }
+
+    func testProviderTeardownReleasesOnlyItsScopedActiveRecord() throws {
+        let fixture = try makeFixture()
+        try writeProviderTurnRecords([
+            [
+                "state": "active",
+                "provider_session_id": "current-session",
+                "session_id": "native-current",
+                "turn_id": "current-turn",
+                "created_at": 100.0,
+                "updated_at": 100.0,
+            ],
+            [
+                "state": "active",
+                "provider_session_id": "other-session",
+                "session_id": "native-other",
+                "turn_id": "other-turn",
+                "created_at": 100.0,
+                "updated_at": 100.0,
+            ],
+        ], to: fixture.providerTurns)
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { _ in },
+            isRunning: { false },
+            now: { Date(timeIntervalSince1970: 101.0) },
+            providerSessionID: "current-session"
+        )
+
+        delivery.providerProcessTerminated(releaseReason: "app_teardown")
+
+        let data = try Data(contentsOf: fixture.providerTurns)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let records = try XCTUnwrap(object["records"] as? [[String: Any]])
+        XCTAssertEqual(records[0]["state"] as? String, "terminated")
+        XCTAssertEqual(records[0]["release_reason"] as? String, "app_teardown")
+        XCTAssertEqual(records[1]["state"] as? String, "active")
     }
 
     func testInterruptBypassesActiveProviderTurnDeferral() throws {

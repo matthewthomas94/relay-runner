@@ -1723,6 +1723,278 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 self.assertNotIn("private typed terminal text", stored)
                 self.assertNotIn("private manual response", stored)
 
+    def test_completion_hook_releases_startup_identity_before_stale_relay_stop(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                provider_session_id = f"embedded-{provider}"
+
+                startup = {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-startup-identity",
+                    "provider_session_id": provider_session_id,
+                    "provider": provider,
+                    "prompt": "private startup prompt",
+                }
+                relay_submit = {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-persisted-session",
+                    "provider_session_id": provider_session_id,
+                    "provider": provider,
+                    "prompt": "Claimed Relay prompt",
+                }
+                relay_stop = {
+                    "hook_event_name": "Stop",
+                    "session_id": f"{provider}-persisted-session",
+                    "provider_session_id": provider_session_id,
+                    "provider": provider,
+                    "last_assistant_message": "stale private final",
+                }
+                if provider == "codex":
+                    startup["turn_id"] = "startup-turn"
+                    relay_submit["turn_id"] = "relay-turn"
+                    relay_stop["turn_id"] = "relay-turn"
+
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    startup,
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=10,
+                    stderr=io.StringIO(),
+                ))
+
+                claim = {
+                    "relay_command_seq": 41,
+                    "relay_command_id": "cmd-41",
+                    "agent_prompt": "Claimed Relay prompt",
+                    "provider": provider,
+                }
+                Path(claim_path).write_text(json.dumps(claim))
+                Path(state_path).write_text(json.dumps(claim))
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    relay_submit,
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=11,
+                    stderr=io.StringIO(),
+                ))
+
+                newer = {**claim, "relay_command_seq": 42, "relay_command_id": "cmd-42"}
+                Path(state_path).write_text(json.dumps(newer))
+                self.assertFalse(relay_completion_hook.handle_hook_payload(
+                    relay_stop,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    write_control=lambda _payload: True,
+                    now=12,
+                    stderr=io.StringIO(),
+                ))
+
+                records = json.loads(Path(turns_path).read_text())["records"]
+                self.assertEqual([record["state"] for record in records], ["orphaned", "stale"])
+                self.assertEqual(records[0]["release_reason"], "superseded_by_prompt_submit")
+                self.assertEqual(records[1]["release_reason"], "stale_current_command")
+                self.assertFalse(any(record["state"] == "active" for record in records))
+                stored = Path(turns_path).read_text()
+                self.assertNotIn("private startup prompt", stored)
+                self.assertNotIn("Claimed Relay prompt", stored)
+                self.assertNotIn("stale private final", stored)
+
+    def test_completion_hook_rebinds_duplicate_relay_prompt_identity_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                claim = {
+                    "relay_command_seq": 51,
+                    "relay_command_id": "cmd-51",
+                    "agent_prompt": "One physical Relay prompt",
+                    "provider": provider,
+                }
+                Path(state_path).write_text(json.dumps(claim))
+                Path(claim_path).write_text(json.dumps(claim))
+                base = {
+                    "hook_event_name": "UserPromptSubmit",
+                    "provider_session_id": f"embedded-{provider}",
+                    "provider": provider,
+                    "prompt": claim["agent_prompt"],
+                }
+                first = {**base, "session_id": f"{provider}-startup"}
+                rebound = {**base, "session_id": f"{provider}-persisted"}
+                stop = {
+                    "hook_event_name": "Stop",
+                    "session_id": rebound["session_id"],
+                    "provider_session_id": base["provider_session_id"],
+                    "provider": provider,
+                    "last_assistant_message": "one final",
+                }
+                if provider == "codex":
+                    first["turn_id"] = "startup-turn"
+                    rebound["turn_id"] = "persisted-turn"
+                    stop["turn_id"] = "persisted-turn"
+
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    first,
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=20,
+                    stderr=io.StringIO(),
+                ))
+                self.assertFalse(relay_completion_hook.handle_hook_payload(
+                    rebound,
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=21,
+                    stderr=io.StringIO(),
+                ))
+
+                records = json.loads(Path(turns_path).read_text())["records"]
+                self.assertEqual(sum(record["state"] == "active" for record in records), 1)
+                self.assertEqual(records[-1]["session_id"], rebound["session_id"])
+                self.assertEqual(records[-1]["relay_command_id"], claim["relay_command_id"])
+                delivered: list[dict] = []
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    stop,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    write_control=lambda payload: delivered.append(payload) or True,
+                    now=22,
+                    stderr=io.StringIO(),
+                ))
+                records = json.loads(Path(turns_path).read_text())["records"]
+                self.assertFalse(any(record["state"] == "active" for record in records))
+                self.assertEqual(records[-1]["state"], "completed_final")
+                self.assertEqual(records[-1]["release_reason"], "provider_stop")
+                self.assertEqual([item["relay_command_id"] for item in delivered], ["cmd-51"])
+
+    def test_completion_hook_preserves_exact_manual_barrier_after_relay_turn(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                provider_session_id = f"embedded-{provider}"
+                claim = {
+                    "relay_command_seq": 61,
+                    "relay_command_id": "cmd-61",
+                    "agent_prompt": "Relay prompt",
+                    "provider": provider,
+                }
+                Path(state_path).write_text(json.dumps(claim))
+                Path(claim_path).write_text(json.dumps(claim))
+                relay_submit = {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-session",
+                    "provider_session_id": provider_session_id,
+                    "provider": provider,
+                    "prompt": claim["agent_prompt"],
+                }
+                relay_stop = {
+                    **relay_submit,
+                    "hook_event_name": "Stop",
+                    "last_assistant_message": "Relay final",
+                }
+                manual_submit = {
+                    **relay_submit,
+                    "prompt": "private typed prompt",
+                }
+                manual_stop = {
+                    **relay_stop,
+                    "last_assistant_message": "private manual final",
+                }
+                if provider == "codex":
+                    relay_submit["turn_id"] = "relay-turn"
+                    relay_stop["turn_id"] = "relay-turn"
+                    manual_submit["turn_id"] = "manual-turn"
+                    manual_stop["turn_id"] = "manual-turn"
+
+                relay_completion_hook.handle_hook_payload(
+                    relay_submit,
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=30,
+                    stderr=io.StringIO(),
+                )
+                relay_completion_hook.handle_hook_payload(
+                    relay_stop,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    write_control=lambda _payload: True,
+                    now=31,
+                    stderr=io.StringIO(),
+                )
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    manual_submit,
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=32,
+                    stderr=io.StringIO(),
+                ))
+                records = json.loads(Path(turns_path).read_text())["records"]
+                self.assertEqual(records[-1]["state"], "active")
+                self.assertEqual(records[-1]["origin"], "manual")
+
+                self.assertFalse(relay_completion_hook.handle_hook_payload(
+                    manual_stop,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    write_control=lambda _payload: True,
+                    now=33,
+                    stderr=io.StringIO(),
+                ))
+                records = json.loads(Path(turns_path).read_text())["records"]
+                self.assertEqual(records[-1]["state"], "completed_manual")
+                self.assertEqual(records[-1]["release_reason"], "provider_stop")
+
+    def test_voice_bridge_provider_activity_is_scoped_to_embedded_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            command = {
+                "relay_command_seq": 71,
+                "relay_command_id": "cmd-71",
+            }
+            Path(turns_path).write_text(json.dumps({
+                "records": [
+                    {
+                        **command,
+                        "state": "completed_final",
+                        "provider_session_id": "current-session",
+                    },
+                    {
+                        **command,
+                        "state": "active",
+                        "origin": "manual",
+                        "provider_session_id": "unrelated-session",
+                    },
+                ],
+            }))
+
+            self.assertEqual(
+                voice_bridge._provider_turn_state(
+                    command,
+                    turns_path=turns_path,
+                    provider_session_id="current-session",
+                ),
+                "completed_final",
+            )
+            self.assertFalse(voice_bridge._any_provider_turn_active(
+                turns_path=turns_path,
+                provider_session_id="current-session",
+            ))
+            self.assertTrue(voice_bridge._any_provider_turn_active(
+                turns_path=turns_path,
+                provider_session_id="unrelated-session",
+            ))
+
     def test_completion_hook_separates_later_identical_manual_prompt_for_both_app_providers(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:

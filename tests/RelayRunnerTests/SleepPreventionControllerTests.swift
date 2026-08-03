@@ -234,12 +234,20 @@ final class SleepPreventionControllerTests: XCTestCase {
         try """
         {
           "records": [
-            { "state": "completed_final", "provider": "codex" },
-            { "state": "active", "provider": "claude" }
+            { "state": "completed_final", "provider": "codex", "provider_session_id": "current" },
+            { "state": "active", "provider": "claude", "provider_session_id": "other" }
           ]
         }
         """.write(to: url, atomically: true, encoding: .utf8)
 
         XCTAssertTrue(ProcessManager.providerTurnActive(providerTurnsURL: url))
+        XCTAssertFalse(ProcessManager.providerTurnActive(
+            providerTurnsURL: url,
+            providerSessionID: "current"
+        ))
+        XCTAssertTrue(ProcessManager.providerTurnActive(
+            providerTurnsURL: url,
+            providerSessionID: "other"
+        ))
     }
 }

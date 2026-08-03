@@ -21,6 +21,7 @@ VOICE_COMMAND_STATE_FILE = os.environ.get("VOICE_COMMAND_STATE_FILE", "/tmp/voic
 VOICE_COMMAND_CLAIM_FILE = os.environ.get("VOICE_COMMAND_CLAIM_FILE", "/tmp/voice_cmd_claimed.json")
 VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
+PROVIDER_SESSION_ID = os.environ.get("RELAY_PROVIDER_SESSION_ID", "").strip()
 PROVIDER_TURN_TTL_SECONDS = float(os.environ.get("VOICE_PROVIDER_TURN_TTL_SECONDS", "3600"))
 PROVIDER_TURN_LIMIT = int(os.environ.get("VOICE_PROVIDER_TURN_LIMIT", "32"))
 SESSION_EVENTS_FILE = os.environ.get("RELAY_SESSION_EVENTS", "")
@@ -392,6 +393,14 @@ def _turn_id(payload: dict) -> str | None:
     return None
 
 
+def _provider_session_id(payload: dict) -> str | None:
+    for key in ("provider_session_id", "providerSessionId"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return PROVIDER_SESSION_ID or None
+
+
 def _record_key(record: dict) -> str:
     session_id = str(record.get("session_id") or "unknown")
     turn_id = str(record.get("turn_id") or "").strip()
@@ -445,11 +454,56 @@ def _upsert_turn_record(path: str, record: dict, *, now: float | None = None) ->
     _save_turn_state(path, state)
 
 
+def _activate_turn_record(
+    path: str,
+    record: dict,
+    *,
+    now: float,
+    release_reason: str = "superseded_by_prompt_submit",
+) -> None:
+    """Keep one physical foreground turn active per embedded provider session."""
+    provider_session_id = str(record.get("provider_session_id") or "").strip()
+    if not provider_session_id:
+        _upsert_turn_record(path, record, now=now)
+        return
+
+    state = _load_turn_state(path, now=now)
+    key = _record_key(record)
+    records = []
+    for existing in state["records"]:
+        if _record_key(existing) == key:
+            continue
+        if (
+            str(existing.get("provider_session_id") or "") == provider_session_id
+            and str(existing.get("state") or "") == "active"
+        ):
+            existing = dict(existing)
+            existing["state"] = "orphaned"
+            existing["release_reason"] = release_reason
+            existing["updated_at"] = now
+        records.append(existing)
+    record = dict(record)
+    record["updated_at"] = now
+    records.append(record)
+    state["records"] = records
+    state["updated_at"] = now
+    _save_turn_state(path, state)
+
+
 def _find_turn_record(path: str, payload: dict, *, now: float | None = None) -> dict | None:
     session_id = _session_id(payload)
     turn_id = _turn_id(payload)
+    provider_session_id = _provider_session_id(payload)
     state = _load_turn_state(path, now=now)
-    records = [r for r in state["records"] if str(r.get("session_id") or "") == session_id]
+    records = [
+        r
+        for r in state["records"]
+        if str(r.get("session_id") or "") == session_id
+        and (
+            not provider_session_id
+            or str(r.get("provider_session_id") or "") == provider_session_id
+        )
+    ]
     if turn_id:
         for record in reversed(records):
             if str(record.get("turn_id") or "") == turn_id:
@@ -485,10 +539,15 @@ def _command_turn_records(path: str, command: dict, *, now: float | None = None)
 def _command_bound_to_provider_turn(records: list[dict], payload: dict) -> bool:
     session_id = _session_id(payload)
     turn_id = _turn_id(payload)
+    provider_session_id = _provider_session_id(payload)
     matching_session = [
         record
         for record in records
         if str(record.get("session_id") or "") == session_id
+        and (
+            not provider_session_id
+            or str(record.get("provider_session_id") or "") == provider_session_id
+        )
     ]
     if turn_id:
         return any(str(record.get("turn_id") or "") == turn_id for record in matching_session)
@@ -538,8 +597,42 @@ def _bind_prompt_submit(
         and _prompt_matches_claim(prompt, claim)
     )
 
+    provider_session_id = _provider_session_id(payload)
     command_records = _command_turn_records(turns_path, claim, now=now) if correlated else []
     if correlated and _command_bound_to_provider_turn(command_records, payload):
+        return False
+    active_command_records = [
+        record
+        for record in command_records
+        if str(record.get("state") or "") == "active"
+        and (
+            not provider_session_id
+            or str(record.get("provider_session_id") or "") == provider_session_id
+        )
+    ]
+    if correlated and provider_session_id and active_command_records:
+        # Codex can emit a startup-scoped prompt identity before its persisted
+        # transcript session identity. Rebind the same logical Relay turn to
+        # the newest native identity instead of inventing a manual barrier.
+        record = dict(active_command_records[-1])
+        record["session_id"] = _session_id(payload)
+        record.pop("turn_id", None)
+        record.pop("local_turn_seq", None)
+        turn_id = _turn_id(payload)
+        if turn_id:
+            record["turn_id"] = turn_id
+        else:
+            record["local_turn_seq"] = _next_local_turn_seq(
+                turns_path,
+                session_id=record["session_id"],
+                now=now,
+            )
+        _activate_turn_record(
+            turns_path,
+            record,
+            now=now,
+            release_reason="provider_identity_rebound",
+        )
         return False
     # Matching text is not a provider-turn identity. Once the Relay command has
     # owned another turn, the same text in a new turn is ordinary manual input.
@@ -566,7 +659,9 @@ def _bind_prompt_submit(
         provider = _provider_name(payload)
         if provider:
             record["provider"] = provider
-        _upsert_turn_record(turns_path, record, now=now)
+        if provider_session_id:
+            record["provider_session_id"] = provider_session_id
+        _activate_turn_record(turns_path, record, now=now)
         return True
 
     key = _relay_command_key(claim)
@@ -589,10 +684,12 @@ def _bind_prompt_submit(
     provider = _provider_name(payload, claim)
     if provider:
         record["provider"] = provider
+    if provider_session_id:
+        record["provider_session_id"] = provider_session_id
     action = claim.get("action")
     if action:
         record["action"] = action
-    _upsert_turn_record(turns_path, record, now=now)
+    _activate_turn_record(turns_path, record, now=now)
     return True
 
 
@@ -616,11 +713,15 @@ def _complete_turn(
         event = _hook_event_name(payload)
         completed = dict(record)
         completed["state"] = "failed_manual" if event == "StopFailure" else "completed_manual"
+        completed["release_reason"] = (
+            "provider_stop_failure" if event == "StopFailure" else "provider_stop"
+        )
         _upsert_turn_record(turns_path, completed, now=now)
         return False
     if not _relay_command_current(record, state_path=state_path):
         stale_record = dict(record)
         stale_record["state"] = "stale"
+        stale_record["release_reason"] = "stale_current_command"
         _upsert_turn_record(turns_path, stale_record, now=now)
         print("[relay_completion_hook] dropped stale Relay provider completion", file=stderr)
         return False
@@ -655,6 +756,9 @@ def _complete_turn(
     next_record = dict(record)
     next_record["state"] = state
     next_record["delivery"] = "sent" if delivered else "bridge_unavailable"
+    next_record["release_reason"] = (
+        "provider_stop_failure" if event == "StopFailure" else "provider_stop"
+    )
     _upsert_turn_record(turns_path, next_record, now=now)
     if not delivered:
         print(

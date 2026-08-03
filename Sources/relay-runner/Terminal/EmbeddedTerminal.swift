@@ -664,6 +664,7 @@ final class RelayVoiceCommandDelivery {
     private let isRunning: () -> Bool
     private let fileManager: FileManager
     private let now: () -> Date
+    private let providerSessionID: String?
     private let queue = DispatchQueue(label: "relay-runner.voice-command-delivery")
     private let queueKey = DispatchSpecificKey<UUID>()
     private let queueIdentity = UUID()
@@ -687,7 +688,8 @@ final class RelayVoiceCommandDelivery {
         },
         isRunning: @escaping () -> Bool,
         fileManager: FileManager = .default,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        providerSessionID: String? = nil
     ) {
         self.paths = paths
         self.send = send
@@ -703,6 +705,7 @@ final class RelayVoiceCommandDelivery {
         self.isRunning = isRunning
         self.fileManager = fileManager
         self.now = now
+        self.providerSessionID = providerSessionID
         queue.setSpecific(key: queueKey, value: queueIdentity)
     }
 
@@ -726,15 +729,14 @@ final class RelayVoiceCommandDelivery {
         }
     }
 
-    func providerProcessTerminated() {
+    func providerProcessTerminated(releaseReason: String = "provider_process_terminated") {
         performOnDeliveryQueue {
             timer?.cancel()
             timer = nil
-            if completePendingSubmissionIfAcknowledged() {
-                return
+            if !completePendingSubmissionIfAcknowledged(), let pending = openSubmission {
+                finalizePendingSubmission(pending, event: "provider_process_terminated")
             }
-            guard let pending = openSubmission else { return }
-            finalizePendingSubmission(pending, event: "provider_process_terminated")
+            releaseActiveProviderTurns(reason: releaseReason)
         }
     }
 
@@ -856,10 +858,14 @@ final class RelayVoiceCommandDelivery {
         if case .waitingForSafeBoundary(let deferral) = deliveryState,
            deferral.key == key,
            deferral.reason == .providerTurn || deferral.reason == .providerPreemption {
+            var fields: [String: Any] = [
+                "deferral_reason": deferral.reason?.rawValue ?? "provider_turn"
+            ]
+            fields.merge(providerTurnDiagnosticFields(activeOnly: false)) { current, _ in current }
             recordDeliveryEvent(
                 "safe_boundary_verified",
                 key: key,
-                fields: ["deferral_reason": deferral.reason?.rawValue ?? "provider_turn"]
+                fields: fields
             )
             deliveryState = .queued(key: key, since: deferral.queuedAt)
         }
@@ -1241,14 +1247,16 @@ final class RelayVoiceCommandDelivery {
         }
         let currentTime = now()
         if currentTime.timeIntervalSince(deferral.lastDiagnosticAt) >= deferralDiagnosticInterval {
+            var fields: [String: Any] = [
+                "elapsed_ms": elapsedMilliseconds(since: deferral.queuedAt),
+                "pending_byte_count": inputTracker.pendingByteCount,
+                "deferral_reason": reason.rawValue,
+            ]
+            fields.merge(providerTurnDiagnosticFields(activeOnly: true)) { current, _ in current }
             recordDeliveryEvent(
                 "safe_boundary_wait",
                 key: key,
-                fields: [
-                    "elapsed_ms": elapsedMilliseconds(since: deferral.queuedAt),
-                    "pending_byte_count": inputTracker.pendingByteCount,
-                    "deferral_reason": reason.rawValue,
-                ]
+                fields: fields
             )
             deferral.lastDiagnosticAt = currentTime
         }
@@ -1427,17 +1435,79 @@ final class RelayVoiceCommandDelivery {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return []
         }
-        return object["records"] as? [[String: Any]] ?? []
+        let records = object["records"] as? [[String: Any]] ?? []
+        guard let providerSessionID, !providerSessionID.isEmpty else { return records }
+        return records.filter {
+            ($0["provider_session_id"] as? String) == providerSessionID
+        }
+    }
+
+    private func providerTurnDiagnosticFields(activeOnly: Bool) -> [String: Any] {
+        let records = providerTurnRecords().filter {
+            !activeOnly || ($0["state"] as? String) == "active"
+        }
+        guard let record = records.max(by: { lhs, rhs in
+            let lhsUpdated = (lhs["updated_at"] as? NSNumber)?.doubleValue
+                ?? (lhs["created_at"] as? NSNumber)?.doubleValue
+                ?? 0
+            let rhsUpdated = (rhs["updated_at"] as? NSNumber)?.doubleValue
+                ?? (rhs["created_at"] as? NSNumber)?.doubleValue
+                ?? 0
+            return lhsUpdated < rhsUpdated
+        }) else { return [:] }
+        var fields: [String: Any] = [:]
+        let mappings = [
+            ("provider", "provider_turn_provider"),
+            ("origin", "provider_turn_origin"),
+            ("provider_session_id", "provider_session_id"),
+            ("session_id", "provider_native_session_id"),
+            ("turn_id", "provider_native_turn_id"),
+            ("state", "provider_turn_record_state"),
+            ("release_reason", "provider_turn_release_reason"),
+        ]
+        for (source, destination) in mappings {
+            if let value = record[source] as? String, !value.isEmpty {
+                fields[destination] = value
+            }
+        }
+        let createdAt = (record["created_at"] as? NSNumber)?.doubleValue
+            ?? (record["updated_at"] as? NSNumber)?.doubleValue
+        if let createdAt {
+            fields["provider_turn_age_ms"] = max(
+                0,
+                Int((now().timeIntervalSince1970 - createdAt) * 1_000)
+            )
+        }
+        return fields
+    }
+
+    private func releaseActiveProviderTurns(reason: String) {
+        let turnsURL = URL(fileURLWithPath: paths.providerTurns)
+        guard let data = try? Data(contentsOf: turnsURL),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var records = object["records"] as? [[String: Any]] else { return }
+        var changed = false
+        for index in records.indices where (records[index]["state"] as? String) == "active" {
+            if let providerSessionID,
+               (records[index]["provider_session_id"] as? String) != providerSessionID {
+                continue
+            }
+            records[index]["state"] = "terminated"
+            records[index]["release_reason"] = reason
+            records[index]["updated_at"] = now().timeIntervalSince1970
+            changed = true
+        }
+        guard changed else { return }
+        object["records"] = records
+        object["updated_at"] = now().timeIntervalSince1970
+        guard let updated = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return
+        }
+        try? updated.write(to: turnsURL, options: .atomic)
     }
 
     private func providerTurnState(for key: RelayCommandKey) -> String? {
-        let turnsURL = URL(fileURLWithPath: paths.providerTurns)
-        guard let data = try? Data(contentsOf: turnsURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let records = object["records"] as? [[String: Any]] else {
-            return nil
-        }
-        for record in records.reversed() where Self.relayCommandKey(from: record) == key {
+        for record in providerTurnRecords().reversed() where Self.relayCommandKey(from: record) == key {
             let state = (record["state"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return state?.isEmpty == false ? state : nil
@@ -1731,6 +1801,14 @@ final class RelayVoiceCommandDelivery {
             "elapsed_ms",
             "pending_byte_count",
             "provider_turn_state",
+            "provider_session_id",
+            "provider_native_session_id",
+            "provider_native_turn_id",
+            "provider_turn_age_ms",
+            "provider_turn_origin",
+            "provider_turn_provider",
+            "provider_turn_record_state",
+            "provider_turn_release_reason",
         ])
         let safeFields = fields.filter { allowedFields.contains($0.key) }
         let url = URL(fileURLWithPath: paths.actionJournal)
@@ -2246,7 +2324,8 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
                 acknowledgementTimeout: voiceDeliveryAcknowledgementTimeout,
                 isRunning: { [weak self] in
                     self?.localProcess.running == true
-                }
+                },
+                providerSessionID: launch.providerSessionID
             )
             voiceDelivery = delivery
         }
@@ -2259,7 +2338,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     func terminate() {
         readinessScheduled = false
         stableTerminalSince = nil
-        voiceDelivery?.stop()
+        voiceDelivery?.providerProcessTerminated(releaseReason: "app_teardown")
         voiceDelivery = nil
         localProcess.terminate()
     }

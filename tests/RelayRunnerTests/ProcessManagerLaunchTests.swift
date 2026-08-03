@@ -61,7 +61,8 @@ final class ProcessManagerLaunchTests: XCTestCase {
             agentBinary: "/usr/local/bin/codex",
             config: config,
             voiceDelivery: .appOwned,
-            homeDirectory: home
+            homeDirectory: home,
+            providerSessionID: "embedded-provider-session"
         )
 
         XCTAssertTrue(script.contains("'/Relay Runner/relay-bridge' --start-daemon"))
@@ -70,6 +71,10 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(script.contains("\"/relay-bridge\""))
         XCTAssertFalse(script.contains("--suppress-startup-greeting"))
         XCTAssertTrue(script.contains("developer_instructions="))
+        XCTAssertTrue(script.contains("export RELAY_PROVIDER_SESSION_ID='embedded-provider-session'"))
+        XCTAssertTrue(script.contains(
+            "printf '%s\\n' \"$RELAY_PROVIDER_SESSION_ID\" > /tmp/voice_provider_session_id"
+        ))
         XCTAssertTrue(script.contains("exec '/usr/local/bin/codex'"))
         XCTAssertTrue(script.contains("--dangerously-bypass-approvals-and-sandbox"))
     }
@@ -525,6 +530,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertEqual(launch.target, .codex)
         XCTAssertEqual(launch.voiceDelivery, .appOwned)
         XCTAssertNil(launch.sessionEventPath)
+        XCTAssertNil(launch.providerSessionID)
     }
 
     func testEmbeddedLaunchScriptRecordsSingleSourceLifecycleStages() {

@@ -98,6 +98,7 @@ final class BridgeConsumerLivenessTests: XCTestCase {
                 "relay_command_seq": 9,
                 "relay_command_id": "cmd-9",
                 "state": "active",
+                "provider_session_id": "other-session",
             ]],
         ], to: fixture.providerTurns)
 
@@ -123,6 +124,30 @@ final class BridgeConsumerLivenessTests: XCTestCase {
             ),
             .waiting
         )
+
+        XCTAssertEqual(
+            ProcessManager.pendingVoiceCommandDeliveryState(
+                commandURL: fixture.command,
+                metaURL: fixture.meta,
+                stateURL: fixture.state,
+                claimedURL: fixture.claimed,
+                now: now,
+                providerTurnsURL: fixture.providerTurns,
+                providerSessionID: "current-session"
+            ),
+            .timedOut
+        )
+        XCTAssertFalse(ProcessManager.relayConsumerAlive(
+            voiceCommandPath: fixture.command.path,
+            voiceCommandMetaPath: fixture.meta.path,
+            voiceCommandStatePath: fixture.state.path,
+            voiceCommandClaimedPath: fixture.claimed.path,
+            voiceProviderTurnsPath: fixture.providerTurns.path,
+            voiceProviderSessionID: "current-session",
+            heartbeatPath: fixture.heartbeat.path,
+            sessionMarkerPaths: [fixture.socket.path],
+            now: now
+        ))
     }
 
     func testClaimedPendingVoiceCommandDoesNotMarkConsumerDead() throws {

@@ -344,6 +344,7 @@ VOICE_COMMAND_AUTHORIZATION_FILE = os.environ.get(
     "/tmp/voice_command_authorizations.json",
 )
 VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
+PROVIDER_SESSION_ID = os.environ.get("RELAY_PROVIDER_SESSION_ID", "").strip()
 VOICE_COMMAND_EVENT_LOG = os.environ.get(
     "VOICE_COMMAND_EVENT_LOG",
     str(
@@ -1725,6 +1726,7 @@ def _provider_turn_state(
     relay_command: dict | None,
     *,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    provider_session_id: str = PROVIDER_SESSION_ID,
 ) -> str | None:
     key = _relay_command_key(relay_command)
     if key is None:
@@ -1734,7 +1736,14 @@ def _provider_turn_state(
     if not isinstance(records, list):
         return None
     for record in reversed(records):
-        if isinstance(record, dict) and _relay_intent_matches(record, relay_command):
+        if (
+            isinstance(record, dict)
+            and (
+                not provider_session_id
+                or str(record.get("provider_session_id") or "") == provider_session_id
+            )
+            and _relay_intent_matches(record, relay_command)
+        ):
             state = str(record.get("state") or "").strip()
             return state or None
     return None
@@ -1744,13 +1753,19 @@ def _provider_turn_active(
     relay_command: dict | None,
     *,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    provider_session_id: str = PROVIDER_SESSION_ID,
 ) -> bool:
-    return _provider_turn_state(relay_command, turns_path=turns_path) == "active"
+    return _provider_turn_state(
+        relay_command,
+        turns_path=turns_path,
+        provider_session_id=provider_session_id,
+    ) == "active"
 
 
 def _any_provider_turn_active(
     *,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    provider_session_id: str = PROVIDER_SESSION_ID,
 ) -> bool:
     data = _read_json_file(turns_path)
     records = data.get("records") if isinstance(data, dict) else None
@@ -1759,6 +1774,10 @@ def _any_provider_turn_active(
     return any(
         isinstance(record, dict)
         and str(record.get("state") or "").strip() == "active"
+        and (
+            not provider_session_id
+            or str(record.get("provider_session_id") or "") == provider_session_id
+        )
         for record in records
     )
 
@@ -1780,8 +1799,13 @@ def _provider_turn_seen(
     command: dict | None,
     *,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    provider_session_id: str = PROVIDER_SESSION_ID,
 ) -> bool:
-    return _provider_turn_state(command, turns_path=turns_path) is not None
+    return _provider_turn_state(
+        command,
+        turns_path=turns_path,
+        provider_session_id=provider_session_id,
+    ) is not None
 
 
 def _manual_claim_ack_matches(

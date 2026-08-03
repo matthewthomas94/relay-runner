@@ -22,6 +22,7 @@ final class ProcessManager {
     private static let voiceCommandStatePath = "/tmp/voice_command_state.json"
     private static let voiceCommandClaimedPath = "/tmp/voice_cmd_claimed.json"
     private static let voiceProviderTurnsPath = "/tmp/voice_provider_turns.json"
+    private static let voiceProviderSessionPath = "/tmp/voice_provider_session_id"
     private static let terminalDeliveryEventsPath = "/tmp/relay_terminal_delivery_events.jsonl"
     private static let heartbeatPath = "/tmp/voice_bridge_heartbeat"
     private static let bridgeStopRequestedPath = "/tmp/voice_bridge_stop_requested"
@@ -40,6 +41,7 @@ final class ProcessManager {
         voiceCommandStatePath,
         voiceCommandClaimedPath,
         voiceProviderTurnsPath,
+        voiceProviderSessionPath,
         terminalDeliveryEventsPath,
         "/tmp/tts_in.fifo",
         "/tmp/tts_control.sock",
@@ -267,7 +269,8 @@ final class ProcessManager {
             stateURL: URL(fileURLWithPath: Self.voiceCommandStatePath),
             claimedURL: URL(fileURLWithPath: Self.voiceCommandClaimedPath),
             now: now,
-            providerTurnsURL: URL(fileURLWithPath: Self.voiceProviderTurnsPath)
+            providerTurnsURL: URL(fileURLWithPath: Self.voiceProviderTurnsPath),
+            providerSessionID: Self.currentProviderSessionID()
         )
     }
 
@@ -286,6 +289,7 @@ final class ProcessManager {
             voiceCommandStatePath: voiceCommandStatePath,
             voiceCommandClaimedPath: voiceCommandClaimedPath,
             voiceProviderTurnsPath: voiceProviderTurnsPath,
+            voiceProviderSessionID: currentProviderSessionID(),
             heartbeatPath: heartbeatPath,
             sessionMarkerPaths: [bridgeSocketPath, bridgeCwdPath],
             now: Date()
@@ -298,6 +302,7 @@ final class ProcessManager {
         voiceCommandStatePath: String? = nil,
         voiceCommandClaimedPath: String? = nil,
         voiceProviderTurnsPath: String? = nil,
+        voiceProviderSessionID: String? = nil,
         heartbeatPath: String,
         sessionMarkerPaths: [String],
         now: Date,
@@ -313,6 +318,7 @@ final class ProcessManager {
             voiceCommandStatePath: voiceCommandStatePath,
             voiceCommandClaimedPath: voiceCommandClaimedPath,
             voiceProviderTurnsPath: voiceProviderTurnsPath,
+            voiceProviderSessionID: voiceProviderSessionID,
             now: now,
             fileManager: fm
         ) {
@@ -355,6 +361,7 @@ final class ProcessManager {
         voiceCommandStatePath: String?,
         voiceCommandClaimedPath: String?,
         voiceProviderTurnsPath: String?,
+        voiceProviderSessionID: String?,
         now: Date,
         fileManager fm: FileManager
     ) -> Bool {
@@ -372,6 +379,7 @@ final class ProcessManager {
                 claimedURL: URL(fileURLWithPath: claimedPath),
                 now: now,
                 providerTurnsURL: voiceProviderTurnsPath.map { URL(fileURLWithPath: $0) },
+                providerSessionID: voiceProviderSessionID,
                 fileManager: fm
             )
             switch state {
@@ -408,6 +416,7 @@ final class ProcessManager {
         now: Date,
         timeout: TimeInterval = pendingVoiceCommandTimeout,
         providerTurnsURL: URL? = nil,
+        providerSessionID: String? = nil,
         fileManager fm: FileManager = .default
     ) -> PendingVoiceCommandDeliveryState {
         guard fm.fileExists(atPath: commandURL.path),
@@ -428,7 +437,12 @@ final class ProcessManager {
         }
 
         if now.timeIntervalSince(modified) > timeout {
-            return providerTurnsURL.map { providerTurnActive(providerTurnsURL: $0) } == true
+            return providerTurnsURL.map {
+                providerTurnActive(
+                    providerTurnsURL: $0,
+                    providerSessionID: providerSessionID
+                )
+            } == true
                 ? .waiting
                 : .timedOut
         }
@@ -436,7 +450,17 @@ final class ProcessManager {
     }
 
     static func foregroundProviderTurnActive() -> Bool {
-        providerTurnActive(providerTurnsURL: URL(fileURLWithPath: voiceProviderTurnsPath))
+        return providerTurnActive(
+            providerTurnsURL: URL(fileURLWithPath: voiceProviderTurnsPath),
+            providerSessionID: currentProviderSessionID()
+        )
+    }
+
+    private static func currentProviderSessionID() -> String? {
+        (try? String(
+            contentsOfFile: voiceProviderSessionPath,
+            encoding: .utf8
+        ))?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func modificationDate(of path: String, fileManager fm: FileManager) -> Date? {
@@ -475,15 +499,22 @@ final class ProcessManager {
         (value as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    static func providerTurnActive(providerTurnsURL: URL) -> Bool {
+    static func providerTurnActive(
+        providerTurnsURL: URL,
+        providerSessionID: String? = nil
+    ) -> Bool {
         guard let data = try? Data(contentsOf: providerTurnsURL),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let records = object["records"] as? [[String: Any]] else {
             return false
         }
         return records.contains { record in
-            (record["state"] as? String)?
+            let active = (record["state"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) == "active"
+            guard active, let providerSessionID, !providerSessionID.isEmpty else {
+                return active
+            }
+            return (record["provider_session_id"] as? String) == providerSessionID
         }
     }
 
@@ -562,6 +593,7 @@ final class ProcessManager {
         RELAY_CWD=\(shellQuoted(context.workingDirectory))
         RELAY_BRIDGE=\(shellQuoted(relayBridge))
         RELAY_PROVIDER=\(shellQuoted(provider))
+        RELAY_PROVIDER_SESSION_ID=$(cat /tmp/voice_provider_session_id 2>/dev/null || true)
         VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
         REPLAY_DIR=$(mktemp -d /tmp/voice_bridge_replay.XXXXXX 2>/dev/null || true)
         REPLAY_READY=0
@@ -614,12 +646,13 @@ final class ProcessManager {
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         pkill -f '[v]oice_bridge.py' 2>/dev/null || true
-        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_session_id /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
-        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" >> "$VOICE_BRIDGE_LOG" 2>&1
+        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$5" ]; then export RELAY_PROVIDER_SESSION_ID="$5"; else unset RELAY_PROVIDER_SESSION_ID; fi; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" "$RELAY_PROVIDER_SESSION_ID" >> "$VOICE_BRIDGE_LOG" 2>&1
         submit_status=$?
+        [ -n "$RELAY_PROVIDER_SESSION_ID" ] && printf '%s\n' "$RELAY_PROVIDER_SESSION_ID" > /tmp/voice_provider_session_id
         if [ "$submit_status" -eq 0 ]; then
             echo "[relay-runner] app watchdog launchctl job submission accepted exit_status=0 (submission only; bridge/provider outcome pending) provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         else
@@ -758,6 +791,7 @@ final class ProcessManager {
         let target: AgentTarget
         let voiceDelivery: SessionVoiceDelivery
         let sessionEventPath: String?
+        let providerSessionID: String?
 
         init(
             executable: String,
@@ -766,7 +800,8 @@ final class ProcessManager {
             workingDirectory: String,
             target: AgentTarget,
             voiceDelivery: SessionVoiceDelivery,
-            sessionEventPath: String? = nil
+            sessionEventPath: String? = nil,
+            providerSessionID: String? = nil
         ) {
             self.executable = executable
             self.arguments = arguments
@@ -775,6 +810,7 @@ final class ProcessManager {
             self.target = target
             self.voiceDelivery = voiceDelivery
             self.sessionEventPath = sessionEventPath
+            self.providerSessionID = providerSessionID
         }
     }
 
@@ -859,6 +895,9 @@ final class ProcessManager {
         installSkill()
 
         let launcher = "/tmp/voice_bridge_launch.command"
+        let providerSessionID = voiceDelivery == .appOwned
+            ? UUID().uuidString.lowercased()
+            : nil
         let script = Self.launchScript(
             relayBridge: relayBridge,
             target: target,
@@ -867,6 +906,7 @@ final class ProcessManager {
             voiceDelivery: voiceDelivery,
             suppressStartupGreeting: suppressStartupGreeting,
             sessionEventPath: sessionEventPath,
+            providerSessionID: providerSessionID,
             resolvedCodexModel: codexSelection?.resolvedModel,
             resolvedCodexEffort: codexSelection?.resolvedEffort
         )
@@ -893,7 +933,8 @@ final class ProcessManager {
             workingDirectory: workingDirectory,
             target: target,
             voiceDelivery: voiceDelivery,
-            sessionEventPath: sessionEventPath
+            sessionEventPath: sessionEventPath,
+            providerSessionID: providerSessionID
         )
     }
 
@@ -936,9 +977,13 @@ final class ProcessManager {
         suppressStartupGreeting: Bool = false,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         sessionEventPath: String? = nil,
+        providerSessionID: String? = nil,
         resolvedCodexModel: String? = nil,
         resolvedCodexEffort: String? = nil
     ) -> String {
+        let effectiveProviderSessionID = voiceDelivery == .appOwned
+            ? (providerSessionID ?? UUID().uuidString.lowercased())
+            : nil
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
         let modelFlag = Self.modelFlag(config.general.model, target: target, resolvedCodexModel: resolvedCodexModel)
         let reasoningEffortFlag = Self.orchestratorEffortFlag(
@@ -991,6 +1036,7 @@ final class ProcessManager {
         # process enumeration may not see the Relay Runner host. This marker is
         # advisory session context, not a security boundary.
         export RELAY_RUNNER_APP_SESSION=1
+        \(Self.appOwnedProviderSessionExport(effectiveProviderSessionID))
         \(Self.appOwnedAutomaticCompactionEnvironment(
             target: target,
             voiceDelivery: voiceDelivery,
@@ -1004,6 +1050,7 @@ final class ProcessManager {
         relay_record_session_event launcher_start started
         # relay-bridge records bridge_socket_readiness at the socket check.
         \(bridgeStartLine)
+        \(Self.appOwnedProviderSessionPublish(effectiveProviderSessionID))
         relay_record_session_event provider_spawn started
         # Interactive agent session with Relay Runner voice mode pre-fired.
         # Replacing this launcher process keeps the PTY child PID aligned with
@@ -1218,6 +1265,16 @@ final class ProcessManager {
         guard voiceDelivery == .appOwned else { return "" }
         return "export RELAY_REPLY_HELPER="
             + Self.shellQuoted(Self.replyHelperScriptPath(relayBridge: relayBridge))
+    }
+
+    private static func appOwnedProviderSessionExport(_ providerSessionID: String?) -> String {
+        guard let providerSessionID else { return "" }
+        return "export RELAY_PROVIDER_SESSION_ID=" + Self.shellQuoted(providerSessionID)
+    }
+
+    private static func appOwnedProviderSessionPublish(_ providerSessionID: String?) -> String {
+        guard providerSessionID != nil else { return "" }
+        return "printf '%s\\n' \"$RELAY_PROVIDER_SESSION_ID\" > /tmp/voice_provider_session_id"
     }
 
     private static func appOwnedAutomaticCompactionFlag(
