@@ -496,6 +496,21 @@ final class BridgeRecoveryTests: XCTestCase {
         XCTAssertTrue(script.contains("provider=${3:-none}"))
     }
 
+    func testRecoveryScriptPreservesProviderSessionIDForBothLaunchPaths() throws {
+        let script = ProcessManager.bridgeRecoveryScript(
+            relayBridge: "/usr/local/bin/relay-bridge",
+            context: .init(workingDirectory: "/Users/example/dev", provider: "codex")
+        )
+        let lines = script.split(separator: "\n").map(String.init)
+        let launchctl = try XCTUnwrap(lines.first { $0.contains("launchctl submit") })
+        let direct = try XCTUnwrap(lines.first { $0.contains("nohup /bin/bash -lc") })
+
+        for launch in [launchctl, direct] {
+            XCTAssertTrue(launch.contains("export RELAY_PROVIDER_SESSION_ID=\"$5\""))
+            XCTAssertTrue(launch.contains("\"$VOICE_BRIDGE_LOG\" \"$RELAY_PROVIDER_SESSION_ID\""))
+        }
+    }
+
     func testRecoveryScriptPreservesTutorialGreetingSuppression() {
         let script = ProcessManager.bridgeRecoveryScript(
             relayBridge: "/usr/local/bin/relay-bridge",
