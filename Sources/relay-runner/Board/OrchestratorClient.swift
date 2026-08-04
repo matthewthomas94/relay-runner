@@ -115,8 +115,19 @@ enum OrchestratorClient {
     /// Dispatch a ticket. Returns immediately; the request runs on URLSession's
     /// own queue. The daemon's `find_active` makes this idempotent — re-dispatching
     /// a ticket that's already running just returns `already_active: true`.
-    static func dispatchTicket(ticketId: String, repoPath: String, source: String = "board-ready-transition") {
-        guard let req = dispatchRequest(ticketId: ticketId, repoPath: repoPath, source: source, port: readPort()) else {
+    static func dispatchTicket(
+        ticketId: String,
+        repoPath: String,
+        source: String = "board-ready-transition",
+        projectScopeToken: String? = nil
+    ) {
+        guard let req = dispatchRequest(
+            ticketId: ticketId,
+            repoPath: repoPath,
+            source: source,
+            port: readPort(),
+            projectScopeToken: projectScopeToken
+        ) else {
             NSLog("[orchestrator-client] could not build dispatch request for \(ticketId)")
             return
         }
@@ -126,8 +137,17 @@ enum OrchestratorClient {
     /// Ask the daemon to scan the active repo and dispatch eligible queued tickets.
     /// This is intentionally repo-scoped and provider-neutral: the daemon still
     /// creates workers through the same dispatch path as board drag/save.
-    static func sweepReadyTickets(repoPath: String, trigger: String) {
-        guard let req = readySweepRequest(repoPath: repoPath, trigger: trigger, port: readPort()) else {
+    static func sweepReadyTickets(
+        repoPath: String,
+        trigger: String,
+        projectScopeToken: String? = nil
+    ) {
+        guard let req = readySweepRequest(
+            repoPath: repoPath,
+            trigger: trigger,
+            port: readPort(),
+            projectScopeToken: projectScopeToken
+        ) else {
             NSLog("[orchestrator-client] could not build ready-sweep request for \(repoPath)")
             return
         }
@@ -144,20 +164,37 @@ enum OrchestratorClient {
         post(req, label: "program-ready-sweep")
     }
 
-    static func dispatchRequest(ticketId: String, repoPath: String, source: String, port: Int) -> URLRequest? {
-        let payload: [String: Any] = [
+    static func dispatchRequest(
+        ticketId: String,
+        repoPath: String,
+        source: String,
+        port: Int,
+        projectScopeToken: String? = nil
+    ) -> URLRequest? {
+        var payload: [String: Any] = [
             "ticket_id": ticketId,
             "repo_path": repoPath,
             "source": source,
         ]
+        if let projectScopeToken, !projectScopeToken.isEmpty {
+            payload["project_scope_token"] = projectScopeToken
+        }
         return postRequest(path: "/v1/runs", payload: payload, port: port)
     }
 
-    static func readySweepRequest(repoPath: String, trigger: String, port: Int) -> URLRequest? {
-        let payload: [String: Any] = [
+    static func readySweepRequest(
+        repoPath: String,
+        trigger: String,
+        port: Int,
+        projectScopeToken: String? = nil
+    ) -> URLRequest? {
+        var payload: [String: Any] = [
             "repo_path": repoPath,
             "trigger": trigger,
         ]
+        if let projectScopeToken, !projectScopeToken.isEmpty {
+            payload["project_scope_token"] = projectScopeToken
+        }
         return postRequest(path: "/v1/ready-sweep", payload: payload, port: port)
     }
 

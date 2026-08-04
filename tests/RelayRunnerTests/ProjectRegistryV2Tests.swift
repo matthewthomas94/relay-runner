@@ -399,6 +399,15 @@ final class ProjectRegistryV2Tests: XCTestCase {
             XCTFail("A registered but unconfirmed project should remain a Workspace choice.")
         }
 
+        let actionToken = try fixture.service.scopeToken(matching: repo.path)
+        XCTAssertEqual(actionToken.projectID, registered.projectID)
+        XCTAssertNil(try fixture.service.load().document.activeProjectID)
+        if case .valid = fixture.service.validateScopeToken(actionToken) {
+            // A per-action scope is current without changing Workspace selection.
+        } else {
+            XCTFail("A per-action project token should validate.")
+        }
+
         let token = try fixture.service.confirmProject(projectID: registered.projectID)
         XCTAssertEqual(token.projectID, registered.projectID)
         XCTAssertEqual(token.repositoryPath, repo.path)

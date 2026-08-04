@@ -21,19 +21,34 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Mapping, Sequence
 
-from services.artifact_store import (
-    ArchiveIndexWrite,
-    ArtifactConcurrentUpdate,
-    ArtifactMaterializationConflict,
-    ArtifactMutation,
-    ArtifactStore,
-    ArtifactValidationError,
-    ArtifactWriteResult,
-    AttachmentWrite,
-    TicketDelete,
-    TicketWrite,
-    _attachment_mime_for_filename,
-)
+try:
+    from services.artifact_store import (
+        ArchiveIndexWrite,
+        ArtifactConcurrentUpdate,
+        ArtifactMaterializationConflict,
+        ArtifactMutation,
+        ArtifactStore,
+        ArtifactValidationError,
+        ArtifactWriteResult,
+        AttachmentWrite,
+        TicketDelete,
+        TicketWrite,
+        _attachment_mime_for_filename,
+    )
+except ModuleNotFoundError:  # Direct services/*.py execution.
+    from artifact_store import (  # type: ignore[no-redef]
+        ArchiveIndexWrite,
+        ArtifactConcurrentUpdate,
+        ArtifactMaterializationConflict,
+        ArtifactMutation,
+        ArtifactStore,
+        ArtifactValidationError,
+        ArtifactWriteResult,
+        AttachmentWrite,
+        TicketDelete,
+        TicketWrite,
+        _attachment_mime_for_filename,
+    )
 
 
 UTC = timezone.utc

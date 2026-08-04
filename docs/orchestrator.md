@@ -167,6 +167,8 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | `services/orchestrator.py` | The daemon (HTTP server + SQLite + worker spawn) |
 | `services/messenger.py` | Persistent tool-free Codex/Claude messenger backends and event runtime |
 | `services/orchestrator_workflow.md` | Default workflow template |
+| `services/orchestrator_artifact_workflow.md` | Source-only worker contract for artifact-lifecycle projects |
+| `services/artifact_lifecycle.py` | Artifact claim, snapshot, structured outcome, lease, review, and merge publication coordinator |
 | `Sources/relay-orchestrator-mcp/` | Swift MCP proxy (HTTP → MCP tools) |
 | `scripts/relay-orchestrator` | Launcher / installer |
 | `<repo>/.orchestrator/<TICKET_ID>.md` | One ticket per file (board source of truth) |
@@ -186,6 +188,8 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 When registry v2 is enabled, Workspace and provider sessions use the [explicit project-scope state machine](architecture/project-scope-v2.md): Workspace may be empty and open without a bridge, while project work and Start Session require an explicitly selected available registered repository. The legacy Workspace-folder behavior above remains only as the reversible compatibility path.
 
 Projects that separately opt into artifact storage use the [private-index project artifact writer](architecture/artifact-store.md). Its orphan `refs/heads/relay/artifacts` ref is canonical; repo-root `.orchestrator/` is an excluded, verified materialization. Artifact storage begins local-only and never changes or publishes a source ref.
+
+Projects may separately opt into the [artifact-owned worker lifecycle](architecture/artifact-lifecycle.md) after draining legacy runs. Confirmed project scope selects an immutable artifact snapshot; workers commit source only and submit bounded structured outcomes. Only a reviewed source merge lets the artifact writer publish canonical completion and dependency progression. `artifact_lifecycle = "legacy"` remains the reversible compatibility gate during migration.
 
 ## Troubleshooting
 

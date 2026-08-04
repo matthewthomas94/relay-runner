@@ -94,6 +94,7 @@ final class ProgramBoardOverlayController {
     private var requiresConfirmedProjectProvider: () -> Bool = {
         ProjectRegistryV2Rollout.isEnabled()
     }
+    private var projectScopeTokenProvider: (String) -> String? = { _ in nil }
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
     private var settingsContentProvider: (() -> AnyView?)?
     private var terminalContentProvider: ((String?) -> AnyView?)?
@@ -149,6 +150,10 @@ final class ProgramBoardOverlayController {
 
     func setRequiresConfirmedProjectProvider(_ provider: @escaping () -> Bool) {
         requiresConfirmedProjectProvider = provider
+    }
+
+    func setProjectScopeTokenProvider(_ provider: @escaping (String) -> String?) {
+        projectScopeTokenProvider = provider
     }
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
@@ -724,7 +729,8 @@ final class ProgramBoardOverlayController {
             if result.shouldDispatch {
                 OrchestratorClient.sweepReadyTickets(
                     repoPath: request.repoPath,
-                    trigger: "program-board-save"
+                    trigger: "program-board-save",
+                    projectScopeToken: projectScopeTokenProvider(request.repoPath)
                 )
             }
         } catch {
@@ -796,7 +802,8 @@ final class ProgramBoardOverlayController {
             if result.shouldDispatch {
                 OrchestratorClient.sweepReadyTickets(
                     repoPath: request.repoPath,
-                    trigger: "program-board-save"
+                    trigger: "program-board-save",
+                    projectScopeToken: projectScopeTokenProvider(request.repoPath)
                 )
             }
         } catch {
@@ -842,7 +849,8 @@ final class ProgramBoardOverlayController {
             if let dispatch = result.dispatchRequest {
                 OrchestratorClient.sweepReadyTickets(
                     repoPath: dispatch.repoPath,
-                    trigger: dispatch.source
+                    trigger: dispatch.source,
+                    projectScopeToken: projectScopeTokenProvider(dispatch.repoPath)
                 )
             }
             checkForUpdates(inBackground: true)

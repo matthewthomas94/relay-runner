@@ -77,6 +77,10 @@ struct DispatchTicketTool: MCPTool {
                     "type": "string",
                     "description": "Optional caller-supplied context for the sub-agent. Sub-agents have no memory of the dispatching session — pass background that doesn't fit cleanly in the ticket body (recent decisions, related runs, constraints). Rendered into the worker's workflow prompt under 'Additional context from the dispatcher'.",
                 ],
+                "project_scope_token": [
+                    "type": "string",
+                    "description": "Confirmed registry-v2 project scope token. Normally inherited from RELAY_PROJECT_SCOPE_TOKEN for the active session.",
+                ],
                 "relay_command_seq": [
                     "type": "integer",
                     "description": "Optional Relay voice command sequence. When present, the daemon rejects dispatch if a newer voice command has superseded it.",
@@ -101,6 +105,12 @@ struct DispatchTicketTool: MCPTool {
         ]
         if let ctx = arguments["context"] as? String, !ctx.isEmpty {
             body["context"] = ctx
+        }
+        if let token = arguments["project_scope_token"] as? String, !token.isEmpty {
+            body["project_scope_token"] = token
+        } else if let token = ProcessInfo.processInfo.environment["RELAY_PROJECT_SCOPE_TOKEN"],
+                  !token.isEmpty {
+            body["project_scope_token"] = token
         }
         if let seq = optionalInt(arguments["relay_command_seq"]),
            let id = arguments["relay_command_id"] as? String,

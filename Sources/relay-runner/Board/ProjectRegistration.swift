@@ -408,6 +408,31 @@ final class ProjectRegistryV2Service {
         return try confirmProject(projectID: project.projectID, issuedAt: issuedAt)
     }
 
+    /// Issue a mutation token for an explicitly selected project without
+    /// changing the registry's active-project preference.
+    func scopeToken(
+        matching reference: String,
+        issuedAt: Date? = nil
+    ) throws -> ConfirmedProjectScopeToken {
+        let selected = try project(matching: reference)
+        let refreshed = try refreshAvailability(projectID: selected.projectID)
+        guard refreshed.availability == .available else {
+            throw ServiceError.projectUnavailable(refreshed.projectID, refreshed.availability)
+        }
+        guard !isAppHomeTarget(refreshed.lastResolvedPath) else {
+            throw ServiceError.appHomeTarget(refreshed.lastResolvedPath)
+        }
+        let document = try store.load().document
+        guard let current = document.projects.first(where: { $0.projectID == refreshed.projectID }) else {
+            throw ServiceError.projectNotFound(refreshed.projectID)
+        }
+        return ConfirmedProjectScopeToken(
+            project: current,
+            registrySchemaVersion: document.schemaVersion,
+            issuedAt: issuedAt ?? now()
+        )
+    }
+
     func clearConfirmedProject() throws {
         var document = try store.load().document
         guard document.activeProjectID != nil else { return }

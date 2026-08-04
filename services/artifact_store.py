@@ -717,6 +717,8 @@ class ArtifactStore:
             raise ArtifactValidationError("artifact config uses an unexpected artifact_ref")
         if document.get("remote_sync") not in {"local_only", "enabled", "paused"}:
             raise ArtifactValidationError("artifact config remote_sync is invalid")
+        if document.get("artifact_lifecycle", "legacy") not in {"legacy", "enabled"}:
+            raise ArtifactValidationError("artifact config artifact_lifecycle is invalid")
 
     def _render_initial_config(self) -> bytes:
         prefix = re.sub(r"[^A-Za-z0-9]", "", self.repo_path.name).upper()[:3] or "RR"
@@ -726,6 +728,7 @@ class ArtifactStore:
             f'prefix = "{prefix}"\n'
             f'artifact_ref = "{self.artifact_ref}"\n'
             'remote_sync = "local_only"\n'
+            'artifact_lifecycle = "legacy"\n'
             "next_id = 1\n"
         ).encode("utf-8")
 

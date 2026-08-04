@@ -32,6 +32,18 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(body["trigger"] as? String, "bridge-watchdog")
     }
 
+    func testReadySweepRequestCarriesConfirmedProjectScope() throws {
+        let request = try XCTUnwrap(OrchestratorClient.readySweepRequest(
+            repoPath: "/repo",
+            trigger: "board-drop",
+            port: 8123,
+            projectScopeToken: "confirmed-scope"
+        ))
+
+        let body = try jsonBody(request)
+        XCTAssertEqual(body["project_scope_token"] as? String, "confirmed-scope")
+    }
+
     func testProgramReadySweepRequestUsesProgramSweepEndpoint() throws {
         let request = try XCTUnwrap(OrchestratorClient.programReadySweepRequest(
             trigger: "program-board-refresh",

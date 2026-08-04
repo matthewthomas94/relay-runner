@@ -488,6 +488,10 @@ final class AppState {
         programBoardOverlay.setRequiresConfirmedProjectProvider { [weak self] in
             self?.projectRegistryV2 != nil
         }
+        programBoardOverlay.setProjectScopeTokenProvider { [weak self] repoPath in
+            guard let registry = self?.projectRegistryV2 else { return nil }
+            return try? registry.scopeToken(matching: repoPath).encodedValue
+        }
         embeddedTerminal.setExitHandler { [weak self] exitCode in
             self?.embeddedTerminalDidExit(exitCode: exitCode)
         }
@@ -1851,7 +1855,12 @@ final class AppState {
 
     private func sweepReadyTicketsForActiveProject(trigger: String) {
         guard case .project(let project) = workspaceActivitySnapshot.route else { return }
-        OrchestratorClient.sweepReadyTickets(repoPath: project.repoPath.path, trigger: trigger)
+        let token = activeSessionProjectScopeToken
+        OrchestratorClient.sweepReadyTickets(
+            repoPath: project.repoPath.path,
+            trigger: trigger,
+            projectScopeToken: token?.repositoryPath == project.repoPath.path ? token?.encodedValue : nil
+        )
     }
 
     /// Read the bus's most-recently-detected parent and open the wizard if

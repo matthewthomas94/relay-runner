@@ -30,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +40,12 @@ from urllib.parse import parse_qs, urlparse
 # Reuse the existing config loader (sibling file).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
+try:
+    from services.artifact_lifecycle import ArtifactLifecycleCoordinator
+    from services.artifact_store import ArtifactStore, ArtifactValidationError
+except ModuleNotFoundError:  # Installed direct-script layout.
+    from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
+    from artifact_store import ArtifactStore, ArtifactValidationError  # type: ignore[no-redef]
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
 from codex_model_catalog import (
     CODEX_FAMILIES,
@@ -3390,7 +3397,8 @@ class Worker:
                  workflow_path: Path | None = None,
                  store: RunsStore, log_path: Path,
                  on_complete: Callable[[int], None] | None = None,
-                 emit_lifecycle: Callable[..., dict[str, Any] | None] | None = None):
+                 emit_lifecycle: Callable[..., dict[str, Any] | None] | None = None,
+                 artifact_completion_validator: Callable[[str | None], tuple[str | None, str]] | None = None):
         self.run_id = run_id
         self.run = run
         self.prompt = prompt
@@ -3401,6 +3409,7 @@ class Worker:
         self.log_path = log_path
         self.on_complete = on_complete
         self.emit_lifecycle = emit_lifecycle
+        self.artifact_completion_validator = artifact_completion_validator
         self.proc: subprocess.Popen | None = None
         self.thread: threading.Thread | None = None
         self._cancel_requested = threading.Event()
@@ -3580,13 +3589,16 @@ class Worker:
                         )
                         self._emit_lifecycle("preparing-response", queue_messenger=False)
                 else:
-                    outcome, reason = validate_worker_outcome(
-                        workspace_path=self.run["workspace_path"],
-                        ticket_id=self.run["ticket_id"],
-                        run_id=self.run_id,
-                        start_head=start_head,
-                    )
-                    if outcome in {"done", VERIFICATION_BLOCKED_STATUS}:
+                    if self.artifact_completion_validator is not None:
+                        outcome, reason = self.artifact_completion_validator(start_head)
+                    else:
+                        outcome, reason = validate_worker_outcome(
+                            workspace_path=self.run["workspace_path"],
+                            ticket_id=self.run["ticket_id"],
+                            run_id=self.run_id,
+                            start_head=start_head,
+                        )
+                    if outcome in {"done", "completed", VERIFICATION_BLOCKED_STATUS}:
                         self.store.update(
                             self.run_id,
                             state="AwaitingReview",
@@ -3967,6 +3979,13 @@ class Daemon:
         self.followup_proposals = FollowupProposalStore(data / "followup_proposals.db")
         self.graphify_path = data / "graphify.db"
         self.program_registry_path = _program_registry_path()
+        self.project_registry_v2_path = data / "projects" / "registry-v2.json"
+        self._artifact_state_root = data
+        self._artifact_device_id = "daemon-" + hashlib.sha256(
+            f"{socket.gethostname()}:{data}".encode("utf-8")
+        ).hexdigest()[:24]
+        self._artifact_lifecycles: dict[str, ArtifactLifecycleCoordinator] = {}
+        self._artifact_lifecycles_lock = threading.Lock()
 
         # MVP: single concurrency. Held during the dispatch claim → spawn window
         # (release immediately after spawn — the worker runs in its own thread).
@@ -3988,6 +4007,7 @@ class Daemon:
         # first transition (reconcile above mutates state directly, bypassing the
         # insert/update write hooks).
         self.runs.write_index()
+        self._recover_artifact_lifecycle_leases()
         stale_sessions = self.orchestrator_sessions.reconcile_stale()
         if stale_sessions:
             print(
@@ -4006,6 +4026,65 @@ class Daemon:
             self.reconcile_queue_drains(trigger="daemon-startup")
         except Exception as e:  # noqa: BLE001 - daemon startup must still finish.
             print(f"[orchestrator] queue-drain startup reconcile failed: {e}", file=sys.stderr)
+
+    def _artifact_lifecycle(self, repo_path: str) -> ArtifactLifecycleCoordinator | None:
+        repo = Path(repo_path).expanduser().resolve()
+        config_path = repo / ".orchestrator" / "config.toml"
+        try:
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return None
+        if config.get("artifact_lifecycle", "legacy") != "enabled":
+            return None
+        project_id = str(config.get("project_id") or "").strip()
+        if not project_id:
+            raise ValueError("artifact lifecycle config has no immutable project_id")
+        key = str(repo)
+        with self._artifact_lifecycles_lock:
+            coordinator = self._artifact_lifecycles.get(key)
+            if coordinator is None or coordinator.store.project_id != project_id:
+                store = ArtifactStore(
+                    repo,
+                    project_id,
+                    self._artifact_state_root,
+                    enabled=True,
+                )
+                if not ArtifactLifecycleCoordinator.is_enabled(store):
+                    return None
+                coordinator = ArtifactLifecycleCoordinator(
+                    store,
+                    registry_path=self.project_registry_v2_path,
+                    device_id=self._artifact_device_id,
+                )
+                self._artifact_lifecycles[key] = coordinator
+            return coordinator
+
+    def _recover_artifact_lifecycle_leases(self) -> None:
+        try:
+            document = json.loads(self.project_registry_v2_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        for record in document.get("projects", []):
+            if not isinstance(record, dict) or record.get("availability") != "available":
+                continue
+            repo_path = str(record.get("last_resolved_path") or "").strip()
+            if not repo_path:
+                continue
+            try:
+                lifecycle = self._artifact_lifecycle(repo_path)
+                if lifecycle is not None:
+                    def run_state(run_id: int) -> str | None:
+                        run = self.runs.get(run_id)
+                        return str(run.get("state")) if run and run.get("state") else None
+
+                    lifecycle.recover_leases(
+                        run_state
+                    )
+            except Exception as error:  # noqa: BLE001 - startup remains available.
+                print(
+                    f"[orchestrator] artifact lifecycle recovery failed for {repo_path}: {error}",
+                    file=sys.stderr,
+                )
 
     # -- prompt rendering -------------------------------------------------
 
@@ -5042,6 +5121,8 @@ Title: {ticket['title']}
         relay_command_seq: int | str | None = None,
         relay_command_id: str | None = None,
         relay_intent_id: str | None = None,
+        project_scope_token: str | None = None,
+        internally_confirmed_project_id: str | None = None,
     ) -> dict:
         if not ticket_id:
             raise ValueError("ticket_id is required")
@@ -5057,6 +5138,12 @@ Title: {ticket['title']}
         repo = Path(repo_path).expanduser().resolve()
         if not repo.is_dir() or not (repo / ".git").exists():
             raise ValueError(f"repo_path {repo} is not a git repository")
+        artifact_lifecycle = self._artifact_lifecycle(str(repo))
+        if artifact_lifecycle is not None:
+            artifact_lifecycle.validate_scope(
+                project_scope_token,
+                internally_confirmed_project_id=internally_confirmed_project_id,
+            )
         ticket_file = repo / ".orchestrator" / f"{ticket_id}.md"
         if not ticket_file.is_file():
             raise ValueError(f"ticket {ticket_id} not found at {ticket_file}")
@@ -5065,6 +5152,11 @@ Title: {ticket['title']}
         except (OSError, TicketParseError) as e:
             raise ValueError(f"ticket {ticket_id} could not be read: {e}") from e
         execution_mode = _execution_mode(ticket.get("execution_mode"))
+        if artifact_lifecycle is not None and execution_mode == SPIKE_EXECUTION_MODE:
+            raise ValueError(
+                "artifact lifecycle does not yet own branchless spike results; "
+                "drain active runs and use the reversible legacy lifecycle for this spike"
+            )
         if ticket.get("status") == VERIFICATION_BLOCKED_STATUS:
             raise ValueError(
                 f"ticket {ticket_id} is verification blocked; use the explicit resume action "
@@ -5179,7 +5271,16 @@ Title: {ticket['title']}
                 agent_kind=worker_provider,
             )
             if applied_default_sizing:
-                write_ticket(ticket_file, ticket)
+                if artifact_lifecycle is not None:
+                    raw_fields = ticket.get("_raw_fields") or {}
+                    artifact_lifecycle.update_worker_sizing(
+                        ticket_id=ticket_id,
+                        provider=worker_provider,
+                        fields=raw_fields,
+                    )
+                    ticket = read_ticket(ticket_file)
+                else:
+                    write_ticket(ticket_file, ticket)
 
             try:
                 sizing = resolve_worker_sizing(
@@ -5266,7 +5367,7 @@ Title: {ticket['title']}
                 raise
 
             try:
-                if execution_mode != SPIKE_EXECUTION_MODE:
+                if execution_mode != SPIKE_EXECUTION_MODE and artifact_lifecycle is None:
                     _materialize_ticket_snapshot(
                         ticket_file=ticket_file,
                         workspace_path=workspace_path,
@@ -5311,6 +5412,38 @@ Title: {ticket['title']}
                 log_path=str(log_path),
                 **sizing,
             )
+            if artifact_lifecycle is not None and execution_mode != SPIKE_EXECUTION_MODE:
+                try:
+                    artifact_lifecycle.claim_and_materialize(
+                        ticket_id=ticket_id,
+                        run_id=run_id,
+                        provider=worker_provider,
+                        workspace_path=workspace_path,
+                    )
+                except Exception as error:  # noqa: BLE001 - publish a bounded terminal outcome.
+                    reason = f"artifact lifecycle snapshot failed: {error}"
+                    try:
+                        artifact_lifecycle.record_failure(
+                            run_id=run_id,
+                            ticket_id=ticket_id,
+                            provider=worker_provider,
+                            reason=reason,
+                        )
+                    except Exception as lifecycle_error:  # noqa: BLE001
+                        reason += f"; lifecycle recovery failed: {lifecycle_error}"
+                    artifact_lifecycle.cleanup_snapshot(workspace_path)
+                    removed, cleanup_error = remove_worktree(str(repo), workspace_path)
+                    delete_branch(str(repo), branch)
+                    if not removed or cleanup_error:
+                        reason += f"; {cleanup_error or 'worker worktree cleanup failed'}"
+                    self.runs.update(
+                        run_id,
+                        state="Failed",
+                        last_error=reason,
+                        ended=True,
+                        exit_code=-1,
+                    )
+                    raise RuntimeError(reason) from error
             _notify_orchestration_trace(
                 "dispatch-claimed",
                 ticket_id=ticket_id,
@@ -5377,7 +5510,11 @@ Title: {ticket['title']}
                     )
                     raise RuntimeError(reason) from e
             else:
-                workflow_path = self._resolve_workflow_for_repo(str(repo))
+                workflow_path = (
+                    Path(__file__).resolve().with_name("orchestrator_artifact_workflow.md")
+                    if artifact_lifecycle is not None
+                    else self._resolve_workflow_for_repo(str(repo))
+                )
                 prompt = self._build_prompt(
                     ticket_id=ticket_id,
                     repo_path=str(repo),
@@ -5390,6 +5527,7 @@ Title: {ticket['title']}
                 )
 
             run = self.runs.get(run_id) or {}
+            run["artifact_lifecycle"] = artifact_lifecycle is not None
             if execution_mode == SPIKE_EXECUTION_MODE:
                 run["result_schema_path"] = str(result_schema_path)
             worker = Worker(
@@ -5398,6 +5536,21 @@ Title: {ticket['title']}
                 store=self.runs, log_path=log_path,
                 on_complete=self._on_worker_complete,
                 emit_lifecycle=self._emit_lifecycle,
+                artifact_completion_validator=(
+                    (
+                        lambda start_head, lifecycle=artifact_lifecycle,
+                        path=workspace_path, tid=ticket_id, rid=run_id,
+                        provider=worker_provider: lifecycle.validate_worker_completion(
+                            workspace_path=path,
+                            ticket_id=tid,
+                            run_id=rid,
+                            provider=provider,
+                            start_head=start_head,
+                        )
+                    )
+                    if artifact_lifecycle is not None
+                    else None
+                ),
             )
             with self._workers_lock:
                 self._workers[run_id] = worker
@@ -5551,6 +5704,26 @@ Title: {ticket['title']}
                 drive_reviews=False,
             )
             return
+        artifact_lifecycle = self._artifact_lifecycle(str(run.get("repo_path") or ""))
+        if artifact_lifecycle is not None:
+            raw_log_path = str(run.get("log_path") or "")
+            if raw_log_path:
+                artifact_lifecycle.cap_local_log(Path(raw_log_path))
+            if run.get("state") in {"Failed", "Canceled", "Stalled"}:
+                reason = str(run.get("last_error") or f"run ended in {run.get('state')}")
+                try:
+                    artifact_lifecycle.record_failure(
+                        run_id=run_id,
+                        ticket_id=str(run.get("ticket_id") or ""),
+                        provider=str(run.get("provider_key") or ""),
+                        reason=reason,
+                        canceled=run.get("state") == "Canceled",
+                    )
+                except Exception as error:  # noqa: BLE001 - preserve the worker ledger.
+                    self.runs.update(
+                        run_id,
+                        last_error=f"{reason}; artifact lifecycle publication failed: {error}",
+                    )
         if run.get("state") in {"AwaitingReview", "Succeeded"}:
             try:
                 self.dispatch_review_worker(run_id, source="worker-completion")
@@ -5703,6 +5876,12 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 return {"review_already_active": True, "run": self.runs.get(run_id)}
 
             review_provider, review_bin, _general_config = self._effective_worker_agent()
+            artifact_lifecycle = self._artifact_lifecycle(str(run.get("repo_path") or ""))
+            if artifact_lifecycle is not None:
+                artifact_lifecycle.begin_review(
+                    run_id=run_id,
+                    provider=review_provider,
+                )
             prompt = self._build_review_prompt(
                 run,
                 source=source,
@@ -5800,7 +5979,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             )
         return promoted
 
-    def sweep_ready_tickets(self, *, repo_path: str, trigger: str | None = None) -> dict:
+    def sweep_ready_tickets(
+        self,
+        *,
+        repo_path: str,
+        trigger: str | None = None,
+        project_scope_token: str | None = None,
+    ) -> dict:
         """Reconcile a repo board and dispatch eligible queued tickets.
 
         The app calls this repeatedly for the active project. It deliberately
@@ -5814,9 +5999,16 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         repo = Path(repo_path).expanduser().resolve()
         if not repo.is_dir() or not (repo / ".git").exists():
             raise ValueError(f"repo_path {repo} is not a git repository")
+        artifact_lifecycle = self._artifact_lifecycle(str(repo))
+        if artifact_lifecycle is not None:
+            artifact_lifecycle.validate_scope(project_scope_token)
 
         with self._authoring_mutex():
-            return self._sweep_ready_tickets_locked(repo=repo, trigger=trigger)
+            return self._sweep_ready_tickets_locked(
+                repo=repo,
+                trigger=trigger,
+                artifact_lifecycle=artifact_lifecycle,
+            )
 
     def _sweep_ready_tickets_locked(
         self,
@@ -5824,8 +6016,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         repo: Path,
         trigger: str | None = None,
         record_drain: bool = True,
+        artifact_lifecycle: ArtifactLifecycleCoordinator | None = None,
     ) -> dict:
-        promoted = self._promote_unblocked_dependents(repo_path=str(repo))
+        promoted = (
+            []
+            if artifact_lifecycle is not None
+            else self._promote_unblocked_dependents(repo_path=str(repo))
+        )
         all_tickets = scan_repo(repo)
         dispatched: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
@@ -5874,11 +6071,16 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 continue
 
             try:
-                result = self.dispatch(
-                    ticket_id=ticket["id"],
-                    repo_path=str(repo),
-                    source="ready-sweeper",
-                )
+                dispatch_args: dict[str, Any] = {
+                    "ticket_id": ticket["id"],
+                    "repo_path": str(repo),
+                    "source": "ready-sweeper",
+                }
+                if artifact_lifecycle is not None:
+                    dispatch_args["internally_confirmed_project_id"] = (
+                        artifact_lifecycle.store.project_id
+                    )
+                result = self.dispatch(**dispatch_args)
             except (ValueError, RuntimeError) as e:
                 skip(ticket, "dispatch_failed", error=str(e))
                 print(
@@ -5974,6 +6176,42 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
     def get_run(self, run_id: int) -> dict | None:
         return self.runs.get(run_id)
 
+    def submit_worker_outcome(self, run_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        run = self.runs.get(run_id)
+        if not run:
+            raise ValueError(f"unknown run_id {run_id}")
+        if run.get("state") not in {"Claimed", "Running"}:
+            raise ValueError(f"run {run_id} is not accepting a worker outcome")
+        lifecycle = self._artifact_lifecycle(str(run.get("repo_path") or ""))
+        if lifecycle is None:
+            raise ValueError(f"run {run_id} uses the legacy ticket lifecycle")
+        try:
+            outcome = lifecycle.submit_outcome(
+                run_id=run_id,
+                ticket_id=str(run["ticket_id"]),
+                provider=str(run.get("provider_key") or ""),
+                payload=payload,
+            )
+        except ArtifactValidationError as error:
+            raise ValueError(str(error)) from error
+        return {
+            "accepted": True,
+            "outcome": {
+                "schema_version": outcome.schema_version,
+                "project_id": outcome.project_id,
+                "ticket_id": outcome.ticket_id,
+                "run_id": outcome.run_id,
+                "provider": outcome.provider,
+                "status": outcome.status.value,
+                "summary": outcome.summary,
+                "changed_paths": list(outcome.changed_paths),
+                "verification": list(outcome.verification),
+                "source_commit": outcome.source_commit,
+                "verification_blocker": outcome.verification_blocker,
+                "verification_resume": outcome.verification_resume,
+            },
+        }
+
     def inspect_run_for_review(self, run_id: int) -> dict:
         run = self.runs.get(run_id)
         if not run:
@@ -6000,6 +6238,21 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 ticket_log = _ticket_run_log(str(ticket.get("body") or ""))
             except (OSError, TicketParseError):
                 pass
+
+        artifact_lifecycle = self._artifact_lifecycle(repo_path) if repo_path else None
+        if artifact_lifecycle is not None:
+            outcome = artifact_lifecycle.outcome(run_id)
+            if outcome is not None:
+                ticket_status = (
+                    VERIFICATION_BLOCKED_STATUS
+                    if outcome.status.value == VERIFICATION_BLOCKED_STATUS
+                    else "done"
+                )
+                ticket_log = (
+                    f"Structured outcome: {outcome.summary}\n"
+                    f"Verification: {'; '.join(outcome.verification) or '(none)'}\n"
+                    f"Source commit: {outcome.source_commit}"
+                )
 
         return {
             "run": run,
@@ -6029,22 +6282,45 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         repo_path = str(run["repo_path"])
         branch = str(run["branch"])
         ticket_id = str(run["ticket_id"])
-        workspace_ticket_path = (
-            Path(str(run["workspace_path"])) / ".orchestrator" / f"{ticket_id}.md"
-        )
-        try:
-            review_ticket = read_ticket(workspace_ticket_path)
-        except (OSError, TicketParseError) as e:
-            raise ValueError(f"could not read reviewed ticket for run {run_id}: {e}") from e
-        expected_status = str(review_ticket.get("status") or "")
-        if expected_status not in {"done", VERIFICATION_BLOCKED_STATUS}:
-            raise ValueError(
-                f"run {run_id} ticket status {expected_status!r} is not a reviewable outcome"
+        artifact_lifecycle = self._artifact_lifecycle(repo_path)
+        artifact_outcome = None
+        if artifact_lifecycle is not None:
+            artifact_outcome = artifact_lifecycle.outcome(run_id)
+            if artifact_outcome is None:
+                raise ValueError(f"run {run_id} has no structured artifact outcome")
+            expected_status = (
+                VERIFICATION_BLOCKED_STATUS
+                if artifact_outcome.status.value == VERIFICATION_BLOCKED_STATUS
+                else "done"
             )
+            review_ticket = None
+        else:
+            workspace_ticket_path = (
+                Path(str(run["workspace_path"])) / ".orchestrator" / f"{ticket_id}.md"
+            )
+            try:
+                review_ticket = read_ticket(workspace_ticket_path)
+            except (OSError, TicketParseError) as e:
+                raise ValueError(f"could not read reviewed ticket for run {run_id}: {e}") from e
+            expected_status = str(review_ticket.get("status") or "")
+            if expected_status not in {"done", VERIFICATION_BLOCKED_STATUS}:
+                raise ValueError(
+                    f"run {run_id} ticket status {expected_status!r} is not a reviewable outcome"
+                )
 
         status = _git(repo_path, "status", "--porcelain", check=False)
         if status.returncode != 0 or status.stdout.strip():
             reason = "source repo has uncommitted changes; refusing worker merge"
+            if artifact_lifecycle is not None:
+                try:
+                    artifact_lifecycle.record_merge_conflict(
+                        run_id=run_id,
+                        ticket_id=ticket_id,
+                        provider=str(run.get("provider_key") or ""),
+                        reason=reason,
+                    )
+                except Exception as error:  # noqa: BLE001
+                    reason += f"; artifact conflict publication failed: {error}"
             self.runs.update(run_id, state="MergeConflict", last_error=reason)
             self._emit_lifecycle(
                 "run-failed",
@@ -6074,6 +6350,16 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         if merge.returncode != 0:
             _git(repo_path, "merge", "--abort", check=False)
             reason = (merge.stderr or merge.stdout or "merge failed").strip()
+            if artifact_lifecycle is not None:
+                try:
+                    artifact_lifecycle.record_merge_conflict(
+                        run_id=run_id,
+                        ticket_id=ticket_id,
+                        provider=str(run.get("provider_key") or ""),
+                        reason=reason,
+                    )
+                except Exception as error:  # noqa: BLE001
+                    reason += f"; artifact conflict publication failed: {error}"
             self.runs.update(run_id, state="MergeConflict", last_error=reason)
             self._emit_lifecycle(
                 "run-failed",
@@ -6091,34 +6377,78 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             )
             return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
-        merged_ticket = read_ticket(Path(repo_path) / ".orchestrator" / f"{ticket_id}.md")
-        if merged_ticket.get("status") != expected_status:
-            reason = (
-                f"merged branch did not publish {ticket_id} as {expected_status}"
-            )
-            self.runs.update(run_id, state="MergeConflict", last_error=reason)
-            self._emit_lifecycle(
-                "run-failed",
-                ticket_id=ticket_id,
-                run_id=run_id,
-                source="orchestrator",
-                message=f"{ticket_id} run {run_id} merge needs attention",
-                repo_path=repo_path,
-                provider_key=run.get("provider_key"),
-            )
-            self._record_queue_drain_after_event(
-                repo_path=repo_path,
-                trigger="merge-missing-reviewed-ticket-state",
-                drive_reviews=False,
-            )
-            return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
+        promoted: tuple[str, ...] = ()
+        if artifact_lifecycle is not None:
+            merged_source_commit = _git_head(repo_path)
+            try:
+                lifecycle_result = artifact_lifecycle.publish_merge_success(
+                    run_id=run_id,
+                    ticket_id=ticket_id,
+                    provider=str(run.get("provider_key") or ""),
+                    merged_source_commit=str(merged_source_commit or ""),
+                )
+                promoted = lifecycle_result.promoted_ticket_ids
+            except Exception as error:  # noqa: BLE001 - source merge is durable; stop honestly.
+                reason = f"source merge succeeded but artifact lifecycle publication failed: {error}"
+                self.runs.update(run_id, state="MergeConflict", last_error=reason)
+                self._emit_lifecycle(
+                    "run-failed",
+                    ticket_id=ticket_id,
+                    run_id=run_id,
+                    source="orchestrator",
+                    message=f"{ticket_id} source merged but canonical outcome needs recovery",
+                    repo_path=repo_path,
+                    provider_key=run.get("provider_key"),
+                )
+                self._record_queue_drain_after_event(
+                    repo_path=repo_path,
+                    trigger="artifact-publication-failed",
+                    drive_reviews=False,
+                )
+                return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
+            merged_ticket = None
+            artifact_lifecycle.cleanup_snapshot(Path(str(run["workspace_path"])))
+        else:
+            merged_ticket = read_ticket(Path(repo_path) / ".orchestrator" / f"{ticket_id}.md")
+            if merged_ticket.get("status") != expected_status:
+                reason = (
+                    f"merged branch did not publish {ticket_id} as {expected_status}"
+                )
+                self.runs.update(run_id, state="MergeConflict", last_error=reason)
+                self._emit_lifecycle(
+                    "run-failed",
+                    ticket_id=ticket_id,
+                    run_id=run_id,
+                    source="orchestrator",
+                    message=f"{ticket_id} run {run_id} merge needs attention",
+                    repo_path=repo_path,
+                    provider_key=run.get("provider_key"),
+                )
+                self._record_queue_drain_after_event(
+                    repo_path=repo_path,
+                    trigger="merge-missing-reviewed-ticket-state",
+                    drive_reviews=False,
+                )
+                return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
 
         removed, worktree_error = remove_worktree(repo_path, Path(str(run["workspace_path"])))
         delete_branch(repo_path, branch)
         verification_blocked = expected_status == VERIFICATION_BLOCKED_STATUS
         if verification_blocked:
-            blocker = str(merged_ticket.get("verification_blocker") or "").strip()
-            resume = str(merged_ticket.get("verification_resume") or "").strip()
+            blocker = str(
+                artifact_outcome.verification_blocker
+                if artifact_outcome is not None
+                else merged_ticket.get("verification_blocker")
+                if merged_ticket is not None
+                else ""
+            ).strip()
+            resume = str(
+                artifact_outcome.verification_resume
+                if artifact_outcome is not None
+                else merged_ticket.get("verification_resume")
+                if merged_ticket is not None
+                else ""
+            ).strip()
             self.runs.update(
                 run_id,
                 state=VERIFICATION_BLOCKED_RUN_STATE,
@@ -6139,11 +6469,25 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             repo_path=repo_path,
             provider_key=run.get("provider_key"),
         )
-        if not verification_blocked:
+        if not verification_blocked and artifact_lifecycle is None:
             try:
                 self._progress_dependents(repo_path=repo_path, finished_ticket_id=ticket_id)
             except Exception as e:  # noqa: BLE001 — merge succeeded; report follow-up safely
                 print(f"[orchestrator] dep-progression error after merging {ticket_id}: {e}", file=sys.stderr)
+        elif not verification_blocked and artifact_lifecycle is not None:
+            for dependent_id in promoted:
+                try:
+                    self.dispatch(
+                        ticket_id=dependent_id,
+                        repo_path=repo_path,
+                        source="dependency-progression",
+                        internally_confirmed_project_id=artifact_lifecycle.store.project_id,
+                    )
+                except (ValueError, RuntimeError) as error:
+                    print(
+                        f"[orchestrator] artifact dependent dispatch declined for {dependent_id}: {error}",
+                        file=sys.stderr,
+                    )
         self._record_queue_drain_after_event(
             repo_path=repo_path,
             trigger="run-merged",
@@ -6154,6 +6498,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             "accepted": True,
             "run": self.runs.get(run_id),
             "worktree_removed": removed,
+            "promoted": list(promoted),
         }
         if worktree_error:
             result["worktree_error"] = worktree_error
@@ -6176,6 +6521,21 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         ticket_id = str(run["ticket_id"])
         workspace_path = Path(str(run["workspace_path"]))
         failure_reason = f"Review requested retry: {(reason or 'work incomplete').strip()}"
+        artifact_lifecycle = self._artifact_lifecycle(repo_path)
+        if artifact_lifecycle is not None:
+            try:
+                artifact_lifecycle.record_failure(
+                    run_id=run_id,
+                    ticket_id=ticket_id,
+                    provider=str(run.get("provider_key") or ""),
+                    reason=failure_reason,
+                    retry=True,
+                )
+            except Exception as error:  # noqa: BLE001
+                raise ValueError(
+                    f"could not publish canonical review retry for run {run_id}: {error}"
+                ) from error
+            artifact_lifecycle.cleanup_snapshot(workspace_path)
         removed, worktree_error = remove_worktree(repo_path, workspace_path)
         delete_branch(repo_path, str(run["branch"]))
         self.runs.update(run_id, state="Failed", last_error=failure_reason)
@@ -6199,11 +6559,16 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             result["worktree_error"] = worktree_error
         if redispatch:
             try:
-                result["redispatched"] = self.dispatch(
-                    ticket_id=ticket_id,
-                    repo_path=repo_path,
-                    source="orchestrator-review-retry",
-                )
+                dispatch_args: dict[str, Any] = {
+                    "ticket_id": ticket_id,
+                    "repo_path": repo_path,
+                    "source": "orchestrator-review-retry",
+                }
+                if artifact_lifecycle is not None:
+                    dispatch_args["internally_confirmed_project_id"] = (
+                        artifact_lifecycle.store.project_id
+                    )
+                result["redispatched"] = self.dispatch(**dispatch_args)
             except (ValueError, RuntimeError) as e:
                 result["redispatch_error"] = str(e)
         self._record_queue_drain_after_event(
@@ -6235,36 +6600,51 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         resume_reason = _clean_required_text(reason, "reason")
         repo = Path(str(run["repo_path"])).expanduser().resolve()
         ticket_id = str(run["ticket_id"])
-        ticket_path = repo / ".orchestrator" / f"{ticket_id}.md"
-        with self._authoring_mutex():
-            _ensure_ticket_authoring_paths_clean(repo, [ticket_path])
-            ticket = read_ticket(ticket_path)
-            if ticket.get("status") != VERIFICATION_BLOCKED_STATUS:
-                raise ValueError(
-                    f"ticket {ticket_id} is {ticket.get('status')!r}, expected "
-                    f"{VERIFICATION_BLOCKED_STATUS!r}"
+        artifact_lifecycle = self._artifact_lifecycle(str(repo))
+        if artifact_lifecycle is not None:
+            try:
+                publication = artifact_lifecycle.resume_verification(
+                    run_id=run_id,
+                    ticket_id=ticket_id,
+                    provider=str(run.get("provider_key") or ""),
+                    reason=resume_reason,
                 )
-            if ticket.get("run_id") != run_id:
+            except Exception as error:  # noqa: BLE001
                 raise ValueError(
-                    f"ticket {ticket_id} run_id is {ticket.get('run_id')!r}, expected {run_id}"
-                )
+                    f"could not publish canonical verification resume for run {run_id}: {error}"
+                ) from error
+            resume_commit = publication.commit_id
+        else:
+            ticket_path = repo / ".orchestrator" / f"{ticket_id}.md"
+            with self._authoring_mutex():
+                _ensure_ticket_authoring_paths_clean(repo, [ticket_path])
+                ticket = read_ticket(ticket_path)
+                if ticket.get("status") != VERIFICATION_BLOCKED_STATUS:
+                    raise ValueError(
+                        f"ticket {ticket_id} is {ticket.get('status')!r}, expected "
+                        f"{VERIFICATION_BLOCKED_STATUS!r}"
+                    )
+                if ticket.get("run_id") != run_id:
+                    raise ValueError(
+                        f"ticket {ticket_id} run_id is {ticket.get('run_id')!r}, expected {run_id}"
+                    )
 
-            body = str(ticket.get("body") or "").rstrip()
-            resume_entry = f"- **Verification resumed after run {run_id}** — {resume_reason}"
-            if "## Run log" in body:
-                ticket["body"] = f"{body}\n{resume_entry}\n"
-            else:
-                ticket["body"] = f"{body}\n\n## Run log\n\n{resume_entry}\n"
-            ticket["status"] = "ready"
-            ticket["run_id"] = None
-            raw = ticket.get("_raw_fields")
-            for field in VERIFICATION_BLOCKER_FIELDS:
-                ticket.pop(field, None)
-                if isinstance(raw, dict):
-                    raw.pop(field, None)
-            write_ticket(ticket_path, ticket)
-            _commit_ticket_authorship(repo, [ticket_path], [ticket_id])
-            resume_commit = _git_head(str(repo))
+                body = str(ticket.get("body") or "").rstrip()
+                resume_entry = f"- **Verification resumed after run {run_id}** — {resume_reason}"
+                if "## Run log" in body:
+                    ticket["body"] = f"{body}\n{resume_entry}\n"
+                else:
+                    ticket["body"] = f"{body}\n\n## Run log\n\n{resume_entry}\n"
+                ticket["status"] = "ready"
+                ticket["run_id"] = None
+                raw = ticket.get("_raw_fields")
+                for field in VERIFICATION_BLOCKER_FIELDS:
+                    ticket.pop(field, None)
+                    if isinstance(raw, dict):
+                        raw.pop(field, None)
+                write_ticket(ticket_path, ticket)
+                _commit_ticket_authorship(repo, [ticket_path], [ticket_id])
+                resume_commit = _git_head(str(repo))
 
         self._emit_lifecycle(
             "run-verification-resumed",
@@ -6283,12 +6663,17 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             "redispatched": None,
         }
         if redispatch:
-            result["redispatched"] = self.dispatch(
-                ticket_id=ticket_id,
-                repo_path=str(repo),
-                context=f"Verification resumed because: {resume_reason}",
-                source="verification-resume",
-            )
+            dispatch_args: dict[str, Any] = {
+                "ticket_id": ticket_id,
+                "repo_path": str(repo),
+                "context": f"Verification resumed because: {resume_reason}",
+                "source": "verification-resume",
+            }
+            if artifact_lifecycle is not None:
+                dispatch_args["internally_confirmed_project_id"] = (
+                    artifact_lifecycle.store.project_id
+                )
+            result["redispatched"] = self.dispatch(**dispatch_args)
         self._record_queue_drain_after_event(
             repo_path=str(repo),
             trigger="verification-resumed",
@@ -7774,6 +8159,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             worker.cancel()
             if worker.thread:
                 worker.thread.join(timeout=10)
+                if worker.thread.is_alive():
+                    return {
+                        "canceled": False,
+                        "cancel_requested": True,
+                        "reason": "worker is still terminating; snapshot and lease were preserved",
+                        "run": self.runs.get(run_id),
+                    }
         else:
             self.runs.update(run_id, state="Canceled",
                              last_error="Canceled (no live worker)", ended=True)
@@ -7786,6 +8178,24 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     )
                 except (OSError, RuntimeError, TicketParseError, ValueError) as e:
                     self.runs.update(run_id, last_error=f"Canceled; ticket reset failed: {e}")
+
+        artifact_lifecycle = self._artifact_lifecycle(str(run.get("repo_path") or ""))
+        if artifact_lifecycle is not None:
+            current = self.runs.get(run_id) or run
+            try:
+                artifact_lifecycle.record_failure(
+                    run_id=run_id,
+                    ticket_id=str(run.get("ticket_id") or ""),
+                    provider=str(run.get("provider_key") or ""),
+                    reason=str(current.get("last_error") or "Canceled by user."),
+                    canceled=True,
+                )
+            except Exception as error:  # noqa: BLE001
+                raise ValueError(
+                    f"run {run_id} stopped, but canonical cancellation could not be published: {error}"
+                ) from error
+            if prune_worktree:
+                artifact_lifecycle.cleanup_snapshot(Path(str(run["workspace_path"])))
 
         result: dict = {"canceled": True, "run": self.runs.get(run_id)}
         if prune_worktree:
@@ -8065,6 +8475,8 @@ class Handler(BaseHTTPRequestHandler):
                     dispatch_args["relay_command_id"] = body.get("relay_command_id")
                 if body.get("relay_intent_id"):
                     dispatch_args["relay_intent_id"] = body.get("relay_intent_id")
+                if body.get("project_scope_token"):
+                    dispatch_args["project_scope_token"] = body.get("project_scope_token")
                 result = self.daemon.dispatch(**dispatch_args)
                 return (200 if result["already_active"] else 202), result
 
@@ -8073,6 +8485,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.daemon.sweep_ready_tickets(
                     repo_path=body.get("repo_path", ""),
                     trigger=body.get("trigger"),
+                    project_scope_token=body.get("project_scope_token"),
                 )
                 return 200, result
 
@@ -8109,6 +8522,11 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and len(segments) == 3 and segments[:2] == ["v1", "runs"]:
                 run = self.daemon.get_run(int(segments[2]))
                 return (200 if run else 404), {"run": run}
+
+            if (method == "POST" and len(segments) == 4
+                    and segments[:2] == ["v1", "runs"] and segments[3] == "outcome"):
+                body = _read_body(self)
+                return 202, self.daemon.submit_worker_outcome(int(segments[2]), body)
 
             if (method == "GET" and len(segments) == 4
                     and segments[:2] == ["v1", "runs"] and segments[3] == "review"):

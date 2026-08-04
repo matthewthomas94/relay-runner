@@ -105,6 +105,62 @@ class ReadySweeperTests(unittest.TestCase):
             "relay_command_id": "second",
         }])
 
+    def test_ready_sweep_route_forwards_confirmed_project_scope(self):
+        calls: list[dict] = []
+
+        class FakeDaemon:
+            def sweep_ready_tickets(self, **kwargs):
+                calls.append(kwargs)
+                return {"dispatched": []}
+
+        handler = object.__new__(Handler)
+        handler.daemon = FakeDaemon()
+        original_read_body = orchestrator._read_body
+        orchestrator._read_body = lambda _: {
+            "repo_path": "/repo",
+            "trigger": "board-drop",
+            "project_scope_token": "confirmed-scope",
+        }
+        try:
+            status, _ = Handler._route(handler, "POST", "/v1/ready-sweep")
+        finally:
+            orchestrator._read_body = original_read_body
+
+        self.assertEqual(status, 200)
+        self.assertEqual(calls, [{
+            "repo_path": "/repo",
+            "trigger": "board-drop",
+            "project_scope_token": "confirmed-scope",
+        }])
+
+    def test_worker_outcome_route_forwards_bounded_payload(self):
+        calls: list[tuple[int, dict]] = []
+
+        class FakeDaemon:
+            def submit_worker_outcome(self, run_id, payload):
+                calls.append((run_id, payload))
+                return {"accepted": True}
+
+        payload = {
+            "status": "completed",
+            "summary": "Done.",
+            "changed_paths": ["source.txt"],
+            "verification": ["tests passed"],
+            "source_commit": "a" * 40,
+        }
+        handler = object.__new__(Handler)
+        handler.daemon = FakeDaemon()
+        original_read_body = orchestrator._read_body
+        orchestrator._read_body = lambda _: payload
+        try:
+            status, result = Handler._route(handler, "POST", "/v1/runs/12/outcome")
+        finally:
+            orchestrator._read_body = original_read_body
+
+        self.assertEqual(status, 202)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(calls, [(12, payload)])
+
     def test_stale_relay_dispatch_is_rejected_before_claim(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "voice_command_state.json"
