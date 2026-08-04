@@ -589,6 +589,12 @@ class ArtifactStore:
                         f"existing event {event_id!r} lacks its immutable digest"
                     )
                 return commit_id, digest
+            for line in body.splitlines():
+                if not line.startswith("Relay-Resolved-Event: "):
+                    continue
+                resolved = line.removeprefix("Relay-Resolved-Event: ").split(" ", 1)
+                if len(resolved) == 2 and resolved[0] == event_id:
+                    return commit_id, resolved[1]
         return None
 
     def _validate_artifact_head(self, head: str) -> None:
@@ -653,10 +659,46 @@ class ArtifactStore:
         if not config_entry:
             raise ArtifactValidationError("artifact tree has no .orchestrator/config.toml")
         self._validate_config(self._cat_blob(config_entry.oid))
+        for entry in entries.values():
+            self._validate_content_for_path(entry.path, self._cat_blob(entry.oid))
         self._write_json_atomic(
             self.history_verification_path,
             {"version": 1, "project_id": self.project_id, "commit_id": head},
         )
+
+    def _validate_content_for_path(self, path: str, content: bytes) -> bytes:
+        """Validate bytes selected by sync/conflict resolution before commit."""
+        _validate_allowlisted_path(path)
+        if path == ".orchestrator/config.toml":
+            self._validate_config(content)
+            _reject_secrets(content, "artifact config")
+            return content
+        if path == ".orchestrator/archive-index.jsonl":
+            _validate_archive_index(content)
+            _reject_secrets(content, "archive index")
+            return content
+        if path.startswith(".orchestrator/attachments/"):
+            filename = PurePosixPath(path).name
+            mime_type = _attachment_mime_for_filename(filename)
+            _validate_attachment(filename, mime_type, content)
+            return content
+        if path.startswith(".orchestrator/program/events/"):
+            event_id = PurePosixPath(path).stem
+            canonical = self._prepare_program_event(event_id, content)
+            if canonical != content:
+                raise ArtifactValidationError(
+                    f"Program event {event_id} is not in canonical artifact form"
+                )
+            return content
+        ticket_id = PurePosixPath(path).stem
+        artifact_id = _ticket_front_matter_value(content, "artifact_id")
+        if not artifact_id:
+            raise ArtifactValidationError(f"ticket {ticket_id} has no immutable artifact_id")
+        normalized = _prepare_ticket_markdown(ticket_id, artifact_id, content)
+        _reject_secrets(normalized, f"ticket {ticket_id}")
+        if normalized != content:
+            raise ArtifactValidationError(f"ticket {ticket_id} is not in canonical artifact form")
+        return content
 
     def _validate_config(self, content: bytes) -> None:
         try:
@@ -1125,6 +1167,38 @@ def _prepare_ticket_markdown(ticket_id: str, artifact_id: str, content: bytes) -
     if artifact_index is None:
         lines.insert(id_index + 1, f"artifact_id: {artifact_id}")
     return ("\n".join(lines).rstrip("\n") + "\n").encode("utf-8")
+
+
+def _ticket_front_matter_value(content: bytes, wanted_key: str) -> str | None:
+    try:
+        lines = content.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+    if not lines or lines[0].strip() != "---":
+        return None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return None
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == wanted_key:
+            return value.strip().strip("\"'") or None
+    return None
+
+
+def _attachment_mime_for_filename(filename: str) -> str:
+    extension = Path(filename).suffix.lower()
+    mapping = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".pdf": "application/pdf",
+    }
+    mime_type = mapping.get(extension)
+    if not mime_type:
+        raise ArtifactValidationError(f"attachment extension is unsupported: {filename!r}")
+    return mime_type
 
 
 def _validate_attachment(filename: str, mime_type: str, content: bytes) -> None:
