@@ -4698,6 +4698,21 @@ Title: {ticket['title']}
         tickets = scan_repo(repo)
         runs = self._repo_runs(str(repo))
         runs_by_ticket = self._latest_runs_by_ticket(runs)
+        runs_by_id = {
+            int(run["id"]): run
+            for run in runs
+            if run.get("id") is not None
+        }
+        for ticket in tickets:
+            if ticket.get("status") not in {"done", VERIFICATION_BLOCKED_STATUS}:
+                continue
+            try:
+                linked_run = runs_by_id.get(int(ticket.get("run_id")))
+            except (TypeError, ValueError):
+                linked_run = None
+            ticket_id = str(ticket.get("id") or "").upper()
+            if linked_run and str(linked_run.get("ticket_id") or "").upper() == ticket_id:
+                runs_by_ticket[ticket_id] = linked_run
         active_drain = store.active_for_repo(str(repo))
         observed_ids = self._queue_drain_candidate_ids(
             tickets=tickets,

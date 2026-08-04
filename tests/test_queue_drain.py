@@ -90,6 +90,15 @@ worker_provider_notes: Codex and Claude share the same lifecycle.
             )
             self.git(repo, "add", ".orchestrator/RR-1.md")
             self.git(repo, "commit", "-m", "record blocked ticket")
+            retry_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "canceled-retry"),
+                branch="relay/rr-1",
+                state="Canceled",
+                attempt=2,
+            )
+            daemon.runs.update(retry_id, exit_code=-15, ended=True)
 
             with patch("orchestrator.create_worktree") as create_worktree, \
                     patch.object(Worker, "start") as start_worker:
@@ -100,14 +109,54 @@ worker_provider_notes: Codex and Claude share the same lifecycle.
 
             create_worktree.assert_not_called()
             start_worker.assert_not_called()
-            self.assertEqual(len(daemon.runs.list()), 1)
+            self.assertEqual(len(daemon.runs.list()), 2)
             self.assertEqual(first["drain"]["state"], "blocked")
             self.assertEqual(second["drain"]["state"], "blocked")
             item = second["drain"]["items"][0]
             self.assertEqual(item["state"], "blocked")
+            self.assertEqual(item["run_id"], run_id)
             self.assertEqual(item["blocker_owner"], "external_verification")
             self.assertIn("modifier-only physical input", item["reason"])
             self.assertIn("explicitly resume", item["blocker_next_step"])
+
+    def test_done_ticket_uses_canonical_run_after_canceled_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            daemon = self.make_daemon(root, provider="codex")
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "merged-workspace"),
+                branch="relay/rr-1",
+                state="Merged",
+            )
+            self.write_ticket(repo, "RR-1", status="done", run_id=run_id)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "record done ticket")
+            retry_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(root / "canceled-retry"),
+                branch="relay/rr-1",
+                state="Canceled",
+                attempt=2,
+            )
+            daemon.runs.update(retry_id, exit_code=-15, ended=True)
+            daemon.queue_drains.ensure_active(
+                repo_path=str(repo),
+                target_branch="main",
+                provider_key="codex",
+                observed_ticket_ids=["RR-1"],
+            )
+
+            result = daemon.reconcile_queue_drain(repo_path=str(repo), trigger="test")
+
+            item = result["drain"]["items"][0]
+            self.assertEqual(item["state"], "done")
+            self.assertEqual(item["run_id"], run_id)
+            self.assertEqual(item["reason"], "source ticket is done")
 
     def test_ready_tickets_create_and_join_one_active_drain(self):
         with tempfile.TemporaryDirectory() as tmp:
