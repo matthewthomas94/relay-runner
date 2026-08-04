@@ -168,6 +168,106 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertEqual(result.workerProviderNotes, "none")
     }
 
+    func testLegacyTicketDefaultsToImplementationExecutionMode() throws {
+        let contents = """
+        ---
+        id: RR-1
+        title: Legacy implementation
+        status: backlog
+        priority: medium
+        depends_on: []
+        run_id: null
+        canceled: false
+        ---
+
+        ## Description
+
+        Existing ticket without an execution mode.
+        """
+
+        XCTAssertEqual(try TicketParser.parse(contents: contents).executionMode, .implementation)
+    }
+
+    func testSpikeExecutionModeAndReportRoundTrip() throws {
+        let ticket = Ticket(
+            id: "RR-2",
+            title: "Research parser",
+            status: .done,
+            priority: .high,
+            executionMode: .spike,
+            dependsOn: [],
+            runId: 42,
+            canceled: false,
+            order: 20,
+            description: "Research parser behavior.",
+            body: """
+            ## Description
+
+            Research parser behavior.
+
+            ## Spike report
+
+            - **Run:** 42 (attempt 1)
+
+            **Conclusions**
+
+            - One canonical parser exists.
+            """
+        )
+
+        let parsed = try TicketParser.parse(contents: TicketWriter.render(ticket))
+
+        XCTAssertEqual(parsed.executionMode, .spike)
+        XCTAssertEqual(parsed.runId, 42)
+        XCTAssertEqual(
+            TicketParser.extractSpikeReport(parsed.body),
+            """
+            - **Run:** 42 (attempt 1)
+
+            **Conclusions**
+
+            - One canonical parser exists.
+            """
+        )
+    }
+
+    func testWorkspaceCreateAndEditPersistSpikeMode() throws {
+        let repo = try makeTempRepo(named: "research-repo")
+        defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
+
+        let created = try ProgramBoardTicketCreator.create(
+            ProgramBoardCreateRequest(
+                repoPath: repo.path,
+                status: .backlog,
+                executionMode: .spike,
+                title: "Investigate architecture",
+                description: "Answer one bounded question."
+            )
+        )
+        XCTAssertEqual(created.ticket.executionMode, .spike)
+
+        let edited = try ProgramBoardTicketEditor.save(
+            ProgramBoardEditRequest(
+                repoPath: repo.path,
+                ticketID: created.ticket.id,
+                title: created.ticket.title,
+                status: .ready,
+                priority: .high,
+                executionMode: .spike,
+                description: "Answer one bounded question.",
+                acceptanceCriteria: "- [ ] Cite local evidence."
+            )
+        )
+        XCTAssertEqual(edited.ticket.executionMode, .spike)
+        XCTAssertEqual(edited.ticket.status, .ready)
+        XCTAssertTrue(
+            try String(
+                contentsOf: repo.appendingPathComponent(".orchestrator/\(created.ticket.id).md"),
+                encoding: .utf8
+            ).contains("execution_mode: spike")
+        )
+    }
+
     func testVerificationBlockedTicketRoundTripsExactResumeMetadata() throws {
         let contents = """
         ---

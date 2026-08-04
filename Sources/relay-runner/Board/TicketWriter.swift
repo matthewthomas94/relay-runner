@@ -63,6 +63,7 @@ enum TicketWriter {
             title: title,
             status: status,
             priority: .medium,
+            executionMode: .implementation,
             dependsOn: [],
             runId: nil,
             canceled: false,
@@ -159,6 +160,7 @@ enum TicketWriter {
             title: ticket.title,
             status: ticket.status,
             priority: ticket.priority,
+            executionMode: ticket.executionMode,
             dependsOn: ticket.dependsOn,
             runId: ticket.runId,
             canceled: ticket.canceled,
@@ -189,6 +191,7 @@ enum TicketWriter {
             title: ticket.title,
             status: ticket.status,
             priority: ticket.priority,
+            executionMode: ticket.executionMode,
             dependsOn: ticket.dependsOn,
             runId: ticket.runId,
             canceled: ticket.canceled,
@@ -213,6 +216,7 @@ enum TicketWriter {
         out += "title: \(yamlString(ticket.title))\n"
         out += "status: \(ticket.status.rawValue)\n"
         out += "priority: \(ticket.priority.rawValue)\n"
+        out += "execution_mode: \(ticket.executionMode.rawValue)\n"
         out += "depends_on: [\(ticket.dependsOn.map(yamlString).joined(separator: ", "))]\n"
         out += "run_id: \(ticket.runId.map { String($0) } ?? "null")\n"
         out += "canceled: \(ticket.canceled)\n"

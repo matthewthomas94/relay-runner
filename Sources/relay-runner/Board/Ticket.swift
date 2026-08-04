@@ -5,6 +5,7 @@ struct Ticket: Identifiable, Equatable {
     let title: String
     let status: Status
     let priority: Priority
+    let executionMode: ExecutionMode
     let dependsOn: [String]
     let runId: Int?
     let canceled: Bool
@@ -43,6 +44,7 @@ struct Ticket: Identifiable, Equatable {
         title: String,
         status: Status,
         priority: Priority,
+        executionMode: ExecutionMode = .implementation,
         dependsOn: [String],
         runId: Int?,
         canceled: Bool,
@@ -62,6 +64,7 @@ struct Ticket: Identifiable, Equatable {
         self.title = title
         self.status = status
         self.priority = priority
+        self.executionMode = executionMode
         self.dependsOn = dependsOn
         self.runId = runId
         self.canceled = canceled
@@ -93,6 +96,27 @@ struct Ticket: Identifiable, Equatable {
         case high
         case medium
         case low
+    }
+
+    enum ExecutionMode: String, CaseIterable, Equatable, Hashable {
+        case implementation
+        case spike
+
+        var displayName: String {
+            switch self {
+            case .implementation: "Implementation"
+            case .spike: "Spike"
+            }
+        }
+
+        var explanation: String {
+            switch self {
+            case .implementation:
+                "Creates an isolated branch, commits changes, then enters review and merge."
+            case .spike:
+                "Research only. Runs branchless in a read-only repository snapshot and saves findings without an implementation merge."
+            }
+        }
     }
 }
 
@@ -180,6 +204,7 @@ enum TicketParser {
         let title     = try requireString(fields, "title")
         let statusRaw = try requireString(fields, "status")
         let priRaw    = try requireString(fields, "priority")
+        let modeRaw   = fields["execution_mode"] ?? Ticket.ExecutionMode.implementation.rawValue
         let depsRaw   = try requireString(fields, "depends_on")
         let runIdRaw  = try requireString(fields, "run_id")
         let cancelRaw = try requireString(fields, "canceled")
@@ -190,6 +215,9 @@ enum TicketParser {
         }
         guard let priority = Ticket.Priority(rawValue: priRaw) else {
             throw TicketParseError.invalidEnum(field: "priority", value: priRaw)
+        }
+        guard let executionMode = Ticket.ExecutionMode(rawValue: modeRaw) else {
+            throw TicketParseError.invalidEnum(field: "execution_mode", value: modeRaw)
         }
 
         let verificationBlocker = optionalString(fields["verification_blocker"])
@@ -212,6 +240,7 @@ enum TicketParser {
             title: title,
             status: status,
             priority: priority,
+            executionMode: executionMode,
             dependsOn: parseList(depsRaw),
             runId: runId,
             canceled: try parseBool(cancelRaw, field: "canceled"),
@@ -297,6 +326,10 @@ enum TicketParser {
 
     static func extractAcceptanceCriteria(_ body: String) -> String? {
         extractSection(named: "Acceptance criteria", in: body)
+    }
+
+    static func extractSpikeReport(_ body: String) -> String? {
+        extractSection(named: "Spike report", in: body)
     }
 
     static func replaceAcceptanceCriteria(in body: String, with newAcceptanceCriteria: String) -> String {

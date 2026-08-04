@@ -56,6 +56,7 @@ id: RR-1
 title: Read-only kanban board view in menu bar
 status: ready
 priority: high
+execution_mode: implementation
 depends_on: []
 run_id: null
 canceled: false
@@ -83,6 +84,7 @@ Free-form prose explaining the work.
 | `title`       | string         | yes      | One-line human-readable summary.                                                            |
 | `status`      | enum           | yes      | `backlog` \| `ready` \| `in_progress` \| `verification_blocked` \| `done`.                   |
 | `priority`    | enum           | yes      | `urgent` \| `high` \| `medium` \| `low`. Default `medium`.                                  |
+| `execution_mode` | enum       | no       | `implementation` \| `spike`. Missing values default to `implementation` for legacy compatibility. |
 | `depends_on`  | list of `id`s  | yes      | May be `[]`. Cycles are invalid (validated at parse time).                                  |
 | `run_id`      | integer / null | yes      | Set by the daemon when dispatched. Persists after completion as an audit-trail back-link.   |
 | `canceled`    | boolean        | yes      | A flag, not a column. Default `false`. Canceled tickets stay in their existing column.      |
@@ -109,6 +111,21 @@ Use `worker_model` as the model/tier choice and `worker_effort` as the reasoning
 Provider-scoped model values are allowed when the ticket intentionally requires one provider's stable model surface, such as `codex:luna` or `claude:sonnet`. Keep effort separate from the model field.
 
 Provider parity is part of the sizing decision. RR-102 verified that Codex workers accept `low`, `medium`, `high`, and `xhigh` through `model_reasoning_effort`, while Claude workers accept `low`, `medium`, `high`, `xhigh`, and `max` through `--effort`. Do not use `max` for provider-neutral or Codex-dispatchable tickets until a future Codex release exposes it. If a ticket is intentionally Claude-only, write that limitation in `worker_provider_notes` instead of leaving the cold worker to discover it.
+
+### Execution modes
+
+`implementation` is the default and retains the isolated `relay/<id>` branch, source commit, independent review, and merge lifecycle.
+
+Use `spike` for a bounded research question whose output is evidence rather than code. A spike:
+
+- runs in an isolated detached clone made read-only before the provider starts;
+- creates no `relay/<id>` branch and never enters implementation review/merge;
+- limits Codex to its read-only sandbox and Claude to `Read`, `Glob`, and `Grep`, with custom tools, MCP servers, network, desktop control, and external side effects unavailable;
+- returns structured conclusions, evidence, uncertainties, recommended next steps, and mutation-attempt reporting;
+- is completed by a daemon-owned ticket-only commit that writes a concise `## Spike report` with run provenance and moves the ticket to `done`;
+- returns to `backlog` with the exact cause when canceled, incomplete, or failed, so retry requires renewed user authorization.
+
+Spike completion does not auto-promote backlog dependents. A downstream ticket already refined and explicitly placed in `ready` may dispatch once its spike dependency is done; otherwise the foreground PM uses the findings to author or refine a separate implementation ticket.
 
 ### Body
 
@@ -145,9 +162,9 @@ Backlog → Queued → In Progress → Done
 |---------------|---------------------------------------------------------------------------------------------|
 | `backlog`     | Idea captured. Not yet refined or estimated. Often no acceptance criteria.                  |
 | `ready`       | Refined queued work. The on-disk value stays `ready`; board UI labels this lane "Queued".   |
-| `in_progress` | Daemon has dispatched it; a `relay/<id>` worktree exists; `run_id` is stamped.              |
+| `in_progress` | Daemon has dispatched it and stamped `run_id`. Implementations use a `relay/<id>` worktree; spikes use a detached read-only snapshot. |
 | `verification_blocked` | Implementation has been reviewed, but a named external condition prevents required verification. Rendered in the In Progress lane. |
-| `done`        | Sub-agent's branch was merged into the working branch.                                      |
+| `done`        | Implementation branch was merged, or a spike report was committed through the daemon-owned ticket-only path. |
 
 ### Who flips status
 
@@ -156,6 +173,7 @@ Backlog → Queued → In Progress → Done
 | `backlog → ready`             | Human via board drag/edit, OR daemon auto-progression | Promoting a card into the Queued lane writes `status: ready`. The board asks the daemon to sweep queued work; dependency-gated queued tickets remain visible and waiting until all predecessors are `done`. The daemon also flips `backlog → ready` on dependents when a predecessor reaches `done` (then dispatches eligible queued tickets in turn). |
 | `ready → in_progress`         | Sub-agent                   | Worker's first step after `dispatch_ticket` claims the run; the worker stamps `run_id` and commits the frontmatter change. |
 | `in_progress → done`          | Sub-agent                   | Worker flips status and appends `## Run log` before exiting; commit lands on the worker's branch and reaches the board when the branch is merged. |
+| spike `ready → in_progress → done` | Daemon | Daemon claims the branchless run, validates structured findings, commits `## Spike report`, and cleans the snapshot without review/merge. |
 | `in_progress → verification_blocked` | Sub-agent + reviewer | Worker commits the exact external blocker and resume condition; review merges useful work without closing the ticket or progressing dependents. |
 | `verification_blocked → ready` | Daemon via explicit resume action | `resume_verification_blocked` appends what changed to the run log, commits the canonical transition, clears blocker fields, and optionally dispatches a fresh attempt. |
 | any → `canceled: true`        | Daemon or human             | `cancel_run` called, or manual cancel.      |
