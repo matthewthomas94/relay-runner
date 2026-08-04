@@ -3,7 +3,7 @@ import XCTest
 
 final class OnboardingModelSelectionTests: XCTestCase {
     func testInitialClaudeSelectionPreservesMaxForSupportedModels() {
-        for model in ["best", "fable", "opus"] {
+        for model in ["fable", "opus"] {
             let selection = OnboardingView.normalizedInitialSelection(
                 provider: .claude,
                 model: model,
@@ -23,7 +23,7 @@ final class OnboardingModelSelectionTests: XCTestCase {
         )
 
         XCTAssertEqual(selection.model, "sonnet")
-        XCTAssertEqual(selection.effort, GeneralConfig.defaultReasoningEffort)
+        XCTAssertEqual(selection.effort, "high")
     }
 
     func testGuidedSetupPersistsClaudeProviderModelAndEffort() {

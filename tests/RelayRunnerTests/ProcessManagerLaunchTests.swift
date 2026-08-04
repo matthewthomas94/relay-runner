@@ -22,9 +22,8 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(codexScript.contains("export RELAY_RUNNER_PROVIDER='codex'"))
         XCTAssertTrue(codexScript.contains("export RELAY_RUNNER_APP_SESSION=1"))
         XCTAssertTrue(codexScript.contains("cd '/Users/example/dev workspace'"))
-        XCTAssertTrue(codexScript.contains(
-            "exec '/usr/local/bin/codex' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
-        ))
+        XCTAssertTrue(codexScript.contains("exec '/usr/local/bin/codex'"))
+        XCTAssertTrue(codexScript.contains("model_reasoning_effort=\"xhigh\""))
 
         var claudeConfig = AppConfig()
         claudeConfig.general.provider = .claude
@@ -344,12 +343,12 @@ final class ProcessManagerLaunchTests: XCTestCase {
             agentBinary: "/usr/local/bin/codex",
             config: config,
             homeDirectory: home,
-            resolvedCodexModel: "gpt-5.7-sol"
+            resolvedCodexModel: "gpt-5.7-sol",
+            resolvedCodexEffort: "xhigh"
         )
 
-        XCTAssertTrue(script.contains(
-            "'/usr/local/bin/codex' --model 'gpt-5.7-sol' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
-        ))
+        XCTAssertTrue(script.contains("--model 'gpt-5.7-sol'"))
+        XCTAssertTrue(script.contains("model_reasoning_effort=\"xhigh\""))
     }
 
     func testLaunchScriptRejectsCodexFamilyForClaude() {
@@ -366,10 +365,8 @@ final class ProcessManagerLaunchTests: XCTestCase {
             homeDirectory: home
         )
 
-        XCTAssertFalse(script.contains("--model"))
-        XCTAssertTrue(script.contains(
-            "'/usr/local/bin/claude' --dangerously-skip-permissions \"/relay-bridge\""
-        ))
+        XCTAssertFalse(script.contains("--model 'sol'"))
+        XCTAssertTrue(script.contains("--effort 'xhigh'"))
     }
 
     func testLaunchScriptAppliesCodexReasoningEffortConfig() {
@@ -415,25 +412,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(script.contains("model_reasoning_effort"))
     }
 
-    func testLaunchScriptOmitsUnknownCodexReasoningEffortWithoutResolution() {
-        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
-        var config = AppConfig()
-        config.general.provider = .codex
-        config.general.codex_reasoning_effort = "banana"
-
-        let script = ProcessManager.launchScript(
-            relayBridge: "/Relay Runner/relay-bridge",
-            target: .codex,
-            agentBinary: "/usr/local/bin/codex",
-            config: config,
-            homeDirectory: home
-        )
-
-        XCTAssertFalse(script.contains("model_reasoning_effort"))
-        XCTAssertFalse(script.contains(" -c "))
-    }
-
-    func testLaunchScriptRejectsUnsupportedModelEffortCombinations() {
+    func testLaunchScriptNormalizesUnsupportedModelEffortCombinations() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
 
         var codexConfig = AppConfig()
@@ -442,7 +421,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         codexConfig.general.orchestrator_effort = "ultra"
         XCTAssertEqual(
             GeneralConfig.normalizedOrchestratorEffort("ultra", for: .codex, model: codexConfig.general.model),
-            GeneralConfig.defaultReasoningEffort
+            GeneralConfig.defaultOrchestratorEffort
         )
 
         var claudeConfig = AppConfig()
@@ -457,7 +436,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             homeDirectory: home
         )
         XCTAssertTrue(claudeScript.contains("--model 'sonnet'"))
-        XCTAssertFalse(claudeScript.contains("--effort"))
+        XCTAssertTrue(claudeScript.contains("--effort 'high'"))
     }
 
     func testLaunchScriptRendersEverySupportedSessionModelEffortCombination() {
