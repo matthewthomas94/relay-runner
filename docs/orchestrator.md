@@ -169,6 +169,8 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | `scripts/relay-orchestrator` | Launcher / installer |
 | `<repo>/.orchestrator/<TICKET_ID>.md` | One ticket per file (board source of truth) |
 | `<repo>/.orchestrator/config.toml` | Repo-scoped ticket counter (`prefix`, `next_id`) |
+| `~/Library/Application Support/relay-runner/projects/registry-v2.json` | Opt-in schema-2 project registry; see [registry v2 ownership and recovery](architecture/registry-v2.md) |
+| `~/Library/Application Support/relay-runner/projects/registry-v2.backup.json` | Registry v2 last-known-good backup |
 | `~/Library/Application Support/relay-runner/orchestrator/runs.db` | Run history (SQLite) |
 | `~/Library/Application Support/relay-runner/orchestrator/queue_drains.db` | Durable rolling queue-drain goals and observed ticket states |
 | `~/Library/Application Support/relay-runner/orchestrator/orchestrator_sessions.db` | Persistent orchestrator lifecycle state |
