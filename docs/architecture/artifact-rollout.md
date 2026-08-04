@@ -241,8 +241,9 @@ push, migration, and source cleanup remain explicit operations.
   immutable event reconciliation take precedence over making rollback look clean.
 
 Until the signed installed two-device manifest passes and is externally accepted,
-RR-289 remains `verification_blocked`; RR-273 must not be marked done and neither
-later cohort may be enabled.
+neither later cohort may be enabled. The user explicitly deferred that physical
+execution to backlog RR-290 on 2026-08-05; RR-289 and the RR-273 implementation
+roadmap close without recording installed acceptance.
 
 The current source results and exact installed blocker are recorded in
 [RR-289 verification](../verification/RR-289-artifact-rollout.md).

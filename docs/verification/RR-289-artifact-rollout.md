@@ -2,9 +2,10 @@
 
 Date: 2026-08-05 (Australia/Melbourne)
 
-RR-289's implementation and source gates pass. The signed installed two-device
-gate remains externally blocked, so no evidence in this record enables either
-later rollout cohort and RR-273 remains open.
+RR-289's implementation and source gates pass. On 2026-08-05 the user explicitly
+deferred execution of the signed installed two-device gate to RR-290. No evidence
+in this record enables either later rollout cohort; the deferral closes RR-289's
+implementation scope without asserting that the installed gate passed.
 
 ## Passing evidence
 
@@ -68,5 +69,6 @@ fresh install/reset, source isolation, and Codex/Claude parity. Evaluate the one
 bounded manifest with `relay-artifact-verify evaluate-installed`, externally
 accept the resulting signed evidence, then explicitly review cohort promotion.
 
-Until that condition is met, RR-289 remains `verification_blocked`, RR-273 stays
-open, and later cohort promotion is prohibited.
+Until that condition is met, RR-290 remains backlog verification work and later
+cohort promotion is prohibited. RR-289 and its RR-273 implementation roadmap are
+closed under the explicit scope decision, not under a fabricated evidence result.
