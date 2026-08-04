@@ -656,6 +656,9 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             onEditCommit: { _ in },
             onEditCancel: {},
             onDelete: { _ in },
+            onSpikeFollowupStart: { _ in },
+            onSpikeFollowupReview: { _, _, _, _ in },
+            onSpikeFollowupClose: {},
             onDrop: { _, _, _ in }
         ))
         let panelFrame = CGRect(x: 0, y: 0, width: 1_512, height: 800)
@@ -797,6 +800,9 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             onEditCommit: { _ in },
             onEditCancel: {},
             onDelete: { _ in },
+            onSpikeFollowupStart: { _ in },
+            onSpikeFollowupReview: { _, _, _, _ in },
+            onSpikeFollowupClose: {},
             onDrop: { drops.append(($0, $1, $2)) }
         ))
         let panelFrame = CGRect(x: 0, y: 0, width: 1_512, height: 800)
@@ -937,6 +943,9 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             onEditCommit: { _ in },
             onEditCancel: {},
             onDelete: { _ in },
+            onSpikeFollowupStart: { _ in },
+            onSpikeFollowupReview: { _, _, _, _ in },
+            onSpikeFollowupClose: {},
             onDrop: { drops.append(($0, $1, $2)) }
         ))
         let panelFrame = CGRect(x: 0, y: 0, width: 1_512, height: 800)
@@ -1402,7 +1411,8 @@ final class BoardOverlayScrollViewTests: XCTestCase {
                 theme: nil,
                 onClose: {},
                 onEdit: {},
-                onDelete: { _ in }
+                onDelete: { _ in },
+                onSpikeFollowup: {}
             )
         )
         host.frame = CGRect(x: 0, y: 0, width: 560, height: 633)

@@ -79,6 +79,9 @@ struct ProgramBoardOverlayView: View {
     let onEditCommit: (ProgramBoardEditRequest) -> Void
     let onEditCancel: () -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
+    let onSpikeFollowupStart: (ProgramTicketDetail) -> Void
+    let onSpikeFollowupReview: (SpikeFollowupBatch, SpikeFollowupProposal, String, [String: Any]?) -> Void
+    let onSpikeFollowupClose: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -147,6 +150,7 @@ struct ProgramBoardOverlayView: View {
                         onCreateStart: onCreateStart,
                         onEditStart: onEditStart,
                         onDelete: onDelete,
+                        onSpikeFollowupStart: onSpikeFollowupStart,
                         onDrop: onDrop
                     )
                     .padding(.top, BoardSurfaceLayout.columnTopPadding)
@@ -196,6 +200,16 @@ struct ProgramBoardOverlayView: View {
                     onDelete: onDelete
                 )
                 .id(draft.id)
+                .transition(.opacity)
+            }
+
+            if let batch = model.spikeFollowupBatch {
+                ProgramSpikeFollowupReviewModal(
+                    batch: batch,
+                    onReview: onSpikeFollowupReview,
+                    onClose: onSpikeFollowupClose
+                )
+                .id(batch.id)
                 .transition(.opacity)
             }
         }
@@ -498,6 +512,7 @@ private struct ProgramBoardContent: View {
     let onCreateStart: (ProgramBoardLane) -> Void
     let onEditStart: (ProgramTicketDetail) -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
+    let onSpikeFollowupStart: (ProgramTicketDetail) -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -540,7 +555,8 @@ private struct ProgramBoardContent: View {
                             theme: model.theme,
                             onClose: model.clearSelectedTicket,
                             onEdit: { onEditStart(detail) },
-                            onDelete: onDelete
+                            onDelete: onDelete,
+                            onSpikeFollowup: { onSpikeFollowupStart(detail) }
                         )
                         .padding(.top, 18)
                         .zIndex(1)
@@ -647,6 +663,24 @@ struct ProgramEditButtonPresentation: Equatable {
             isEnabled: isEnabled,
             help: help,
             accessibilityLabel: accessibilityLabel
+        )
+    }
+}
+
+struct ProgramSpikeFollowupActionPresentation: Equatable {
+    let isVisible: Bool
+
+    static func resolve(
+        executionMode: Ticket.ExecutionMode?,
+        status: Ticket.Status?,
+        runID: Int?,
+        spikeReport: String?
+    ) -> ProgramSpikeFollowupActionPresentation {
+        ProgramSpikeFollowupActionPresentation(
+            isVisible: executionMode == .spike
+                && status == .done
+                && runID != nil
+                && spikeReport?.isEmpty == false
         )
     }
 }
@@ -1579,6 +1613,7 @@ struct ProgramTicketDetailPanel: View {
     let onClose: () -> Void
     let onEdit: () -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
+    let onSpikeFollowup: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1662,6 +1697,16 @@ struct ProgramTicketDetailPanel: View {
                 ) {
                     revealTicket()
                 }
+                if canProposeSpikeFollowups {
+                    ProgramDetailActionButton(
+                        systemName: "arrow.triangle.branch",
+                        title: "Follow-ups",
+                        disabled: false,
+                        help: "Propose implementation tickets from this spike"
+                    ) {
+                        onSpikeFollowup()
+                    }
+                }
             }
 
             if let unavailableMessage = detail.unavailableMessage {
@@ -1711,6 +1756,15 @@ struct ProgramTicketDetailPanel: View {
             repoPath: identity.projectPath,
             ticketID: identity.ticketID
         )
+    }
+
+    private var canProposeSpikeFollowups: Bool {
+        ProgramSpikeFollowupActionPresentation.resolve(
+            executionMode: detail.ticket?.executionMode,
+            status: detail.ticket?.status,
+            runID: detail.ticket?.runId,
+            spikeReport: detail.spikeReport
+        ).isVisible
     }
 
     private var metadataRows: [ProgramDetailRow] {
@@ -1765,6 +1819,188 @@ struct ProgramTicketDetailPanel: View {
     private func revealTicket() {
         guard let ticketPath = detail.ticketPath else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: ticketPath)])
+    }
+}
+
+private struct ProgramSpikeFollowupReviewModal: View {
+    let batch: SpikeFollowupBatch
+    let onReview: (SpikeFollowupBatch, SpikeFollowupProposal, String, [String: Any]?) -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.45)
+                .contentShape(Rectangle())
+                .onTapGesture { onClose() }
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Spike follow-up tickets")
+                            .font(AppTypography.font(.screenTitle))
+                            .foregroundStyle(ProgramBoardStyle.primaryText)
+                        Text("Review each proposal separately. Accepted tickets stay in Backlog.")
+                            .font(AppTypography.font(.label))
+                            .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    }
+                    Spacer(minLength: 0)
+                    ProgramIconButton(systemName: "xmark", help: "Close follow-up proposals", action: onClose)
+                }
+
+                Text("\(batch.originTicketID) · spike run \(batch.originRunID)")
+                    .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+
+                BoardOverlayScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(batch.proposals) { proposal in
+                            ProgramSpikeFollowupProposalCard(
+                                batch: batch,
+                                proposal: proposal,
+                                onReview: onReview
+                            )
+                        }
+                    }
+                }
+            }
+            .padding(20)
+            .frame(width: 760, height: 690, alignment: .topLeading)
+            .background(
+                ProgramBoardDarkSurfaceBackground(
+                    cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius
+                )
+            )
+        }
+    }
+}
+
+private struct ProgramSpikeFollowupProposalCard: View {
+    let batch: SpikeFollowupBatch
+    let proposal: SpikeFollowupProposal
+    let onReview: (SpikeFollowupBatch, SpikeFollowupProposal, String, [String: Any]?) -> Void
+
+    @State private var title: String
+    @State private var description: String
+    @State private var acceptanceCriteria: String
+    @State private var priority: String
+    @State private var dependsOn: String
+    @State private var workerModel: String
+    @State private var workerEffort: String
+    @State private var workerSizingRationale: String
+    @State private var workerProviderNotes: String
+    @State private var targetRepoPath: String
+
+    init(
+        batch: SpikeFollowupBatch,
+        proposal: SpikeFollowupProposal,
+        onReview: @escaping (SpikeFollowupBatch, SpikeFollowupProposal, String, [String: Any]?) -> Void
+    ) {
+        self.batch = batch
+        self.proposal = proposal
+        self.onReview = onReview
+        _title = State(initialValue: proposal.draft.title)
+        _description = State(initialValue: proposal.draft.description)
+        _acceptanceCriteria = State(initialValue: proposal.draft.acceptanceCriteria.joined(separator: "\n"))
+        _priority = State(initialValue: proposal.draft.priority)
+        _dependsOn = State(initialValue: proposal.draft.dependsOn.joined(separator: ", "))
+        _workerModel = State(initialValue: proposal.draft.workerModel)
+        _workerEffort = State(initialValue: proposal.draft.workerEffort)
+        _workerSizingRationale = State(initialValue: proposal.draft.workerSizingRationale)
+        _workerProviderNotes = State(initialValue: proposal.draft.workerProviderNotes)
+        _targetRepoPath = State(initialValue: proposal.draft.targetRepoPath)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(proposal.state.displayLabel)
+                    .font(AppTypography.font(.caption))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+                if let ticketID = proposal.ticketID {
+                    Text(ticketID)
+                        .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                }
+                Spacer(minLength: 0)
+            }
+
+            TextField("Title", text: $title)
+                .font(AppTypography.font(.body))
+                .textFieldStyle(.roundedBorder)
+                .disabled(!isDraft)
+            TextField("Target project path", text: $targetRepoPath)
+                .font(AppTypography.monospacedFont(size: 10, weight: .regular))
+                .textFieldStyle(.roundedBorder)
+                .disabled(!isDraft)
+
+            ProgramEditTextArea(title: "Description", text: $description, minHeight: 64, maxHeight: 110)
+                .disabled(!isDraft)
+            ProgramEditTextArea(
+                title: "Acceptance criteria (one per line)",
+                text: $acceptanceCriteria,
+                minHeight: 72,
+                maxHeight: 130
+            )
+            .disabled(!isDraft)
+
+            HStack(spacing: 8) {
+                TextField("Priority", text: $priority)
+                TextField("Dependencies", text: $dependsOn)
+                TextField("Worker model", text: $workerModel)
+                TextField("Effort", text: $workerEffort)
+            }
+            .textFieldStyle(.roundedBorder)
+            .disabled(!isDraft)
+
+            TextField("Sizing rationale", text: $workerSizingRationale)
+                .textFieldStyle(.roundedBorder)
+                .disabled(!isDraft)
+            TextField("Provider notes", text: $workerProviderNotes)
+                .textFieldStyle(.roundedBorder)
+                .disabled(!isDraft)
+
+            if let error = proposal.error, !error.isEmpty {
+                ProgramDetailNotice(message: error)
+            }
+
+            if isDraft {
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    Button("Save changes") { onReview(batch, proposal, "edit", updates) }
+                    Button("Reject") { onReview(batch, proposal, "reject", nil) }
+                    Button("Accept to Backlog") { onReview(batch, proposal, "accept", updates) }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(BoardDarkSurfaceStyle.contentFill)
+        )
+    }
+
+    private var isDraft: Bool { proposal.state == "draft" }
+
+    private var updates: [String: Any] {
+        [
+            "title": title,
+            "description": description,
+            "acceptance_criteria": acceptanceCriteria
+                .split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty },
+            "priority": priority,
+            "depends_on": dependsOn
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty },
+            "worker_model": workerModel,
+            "worker_effort": workerEffort,
+            "worker_sizing_rationale": workerSizingRationale,
+            "worker_provider_notes": workerProviderNotes,
+            "target_repo_path": targetRepoPath,
+        ]
     }
 }
 

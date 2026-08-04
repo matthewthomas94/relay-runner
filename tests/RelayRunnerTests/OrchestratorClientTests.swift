@@ -44,6 +44,114 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(body["trigger"] as? String, "program-board-refresh")
     }
 
+    func testSpikeFollowupRequestsSeparateProposalFromPerTicketConfirmation() throws {
+        let propose = try XCTUnwrap(OrchestratorClient.proposeSpikeFollowupsRequest(
+            originRepoPath: "/repo",
+            originTicketID: "RR-7",
+            originRunID: 42,
+            port: 8123
+        ))
+        XCTAssertEqual(
+            propose.url?.absoluteString,
+            "http://127.0.0.1:8123/v1/spikes/follow-ups/propose"
+        )
+        let proposalBody = try jsonBody(propose)
+        XCTAssertEqual(proposalBody["origin_repo_path"] as? String, "/repo")
+        XCTAssertEqual(proposalBody["origin_ticket_id"] as? String, "RR-7")
+        XCTAssertEqual(proposalBody["origin_run_id"] as? Int, 42)
+
+        let review = try XCTUnwrap(OrchestratorClient.reviewSpikeFollowupRequest(
+            batchID: "spike-abc",
+            proposalID: "proposal-1",
+            decision: "accept",
+            updates: ["title": "Refined title"],
+            port: 8123
+        ))
+        XCTAssertEqual(
+            review.url?.absoluteString,
+            "http://127.0.0.1:8123/v1/spikes/follow-ups/spike-abc/proposals/proposal-1/review"
+        )
+        let reviewBody = try jsonBody(review)
+        XCTAssertEqual(reviewBody["decision"] as? String, "accept")
+        XCTAssertEqual((reviewBody["updates"] as? [String: Any])?["title"] as? String, "Refined title")
+    }
+
+    func testSpikeFollowupBatchRendersIndependentProposalStates() throws {
+        let data = Data("""
+        {
+          "id": "spike-abc",
+          "origin_repo_path": "/repo",
+          "origin_ticket_id": "RR-7",
+          "origin_run_id": 42,
+          "proposals": [
+            {
+              "id": "proposal-1",
+              "state": "accepted",
+              "ticket_id": "RR-8",
+              "error": null,
+              "draft": {
+                "title": "First",
+                "description": "First implementation",
+                "acceptance_criteria": ["First passes"],
+                "priority": "high",
+                "depends_on": [],
+                "worker_model": "strong",
+                "worker_effort": "high",
+                "worker_sizing_rationale": "Broad change",
+                "worker_provider_notes": "Provider neutral",
+                "target_repo_path": "/repo"
+              }
+            },
+            {
+              "id": "proposal-2",
+              "state": "draft",
+              "ticket_id": null,
+              "error": "Needs a target project",
+              "draft": {
+                "title": "Second",
+                "description": "Second implementation",
+                "acceptance_criteria": ["Second passes"],
+                "priority": "medium",
+                "depends_on": ["RR-8"],
+                "worker_model": "balanced",
+                "worker_effort": "medium",
+                "worker_sizing_rationale": "Scoped change",
+                "worker_provider_notes": "Provider neutral",
+                "target_repo_path": "/other"
+              }
+            }
+          ]
+        }
+        """.utf8)
+
+        let batch = try JSONDecoder().decode(SpikeFollowupBatch.self, from: data)
+        XCTAssertEqual(batch.proposals.map(\.state), ["accepted", "draft"])
+        XCTAssertEqual(batch.proposals[0].ticketID, "RR-8")
+        XCTAssertEqual(batch.proposals[1].draft.dependsOn, ["RR-8"])
+        XCTAssertEqual(batch.proposals[1].error, "Needs a target project")
+    }
+
+    func testFollowupActionAppearsOnlyForCompletedSpikeWithReport() {
+        XCTAssertTrue(ProgramSpikeFollowupActionPresentation.resolve(
+            executionMode: .spike,
+            status: .done,
+            runID: 42,
+            spikeReport: "Recommended next steps"
+        ).isVisible)
+        XCTAssertFalse(ProgramSpikeFollowupActionPresentation.resolve(
+            executionMode: .implementation,
+            status: .done,
+            runID: 42,
+            spikeReport: "Recommended next steps"
+        ).isVisible)
+        XCTAssertFalse(ProgramSpikeFollowupActionPresentation.resolve(
+            executionMode: .spike,
+            status: .done,
+            runID: 42,
+            spikeReport: nil
+        ).isVisible)
+    }
+
     func testProgramStatusRequestUsesProgramEndpoint() throws {
         let request = try XCTUnwrap(OrchestratorClient.programStatusRequest(
             query: "ready_work",

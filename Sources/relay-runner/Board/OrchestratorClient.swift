@@ -29,6 +29,63 @@ private struct ProgramDashboardResponse: Decodable {
     }
 }
 
+private struct SpikeFollowupBatchResponse: Decodable {
+    let batch: SpikeFollowupBatch
+}
+
+struct SpikeFollowupBatch: Decodable, Equatable, Identifiable {
+    let id: String
+    let originRepoPath: String
+    let originTicketID: String
+    let originRunID: Int
+    let proposals: [SpikeFollowupProposal]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case originRepoPath = "origin_repo_path"
+        case originTicketID = "origin_ticket_id"
+        case originRunID = "origin_run_id"
+        case proposals
+    }
+}
+
+struct SpikeFollowupProposal: Decodable, Equatable, Identifiable {
+    let id: String
+    let state: String
+    let draft: SpikeFollowupDraft
+    let ticketID: String?
+    let error: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, state, draft, error
+        case ticketID = "ticket_id"
+    }
+}
+
+struct SpikeFollowupDraft: Decodable, Equatable {
+    let title: String
+    let description: String
+    let acceptanceCriteria: [String]
+    let priority: String
+    let dependsOn: [String]
+    let workerModel: String
+    let workerEffort: String
+    let workerSizingRationale: String
+    let workerProviderNotes: String
+    let targetRepoPath: String
+
+    private enum CodingKeys: String, CodingKey {
+        case title, description, priority
+        case acceptanceCriteria = "acceptance_criteria"
+        case dependsOn = "depends_on"
+        case workerModel = "worker_model"
+        case workerEffort = "worker_effort"
+        case workerSizingRationale = "worker_sizing_rationale"
+        case workerProviderNotes = "worker_provider_notes"
+        case targetRepoPath = "target_repo_path"
+    }
+}
+
 /// Fire-and-forget HTTP client for triggering orchestrator dispatches from
 /// the menu-bar app. Mirrors the port-discovery logic in the relay-orchestrator-mcp
 /// target's HTTPClient — they live in separate Swift modules and can't share
@@ -110,6 +167,87 @@ enum OrchestratorClient {
             payload: ["trigger": trigger],
             port: port
         )
+    }
+
+    static func proposeSpikeFollowupsRequest(
+        originRepoPath: String,
+        originTicketID: String,
+        originRunID: Int,
+        port: Int
+    ) -> URLRequest? {
+        postRequest(
+            path: "/v1/spikes/follow-ups/propose",
+            payload: [
+                "origin_repo_path": originRepoPath,
+                "origin_ticket_id": originTicketID,
+                "origin_run_id": originRunID,
+            ],
+            port: port
+        )
+    }
+
+    static func reviewSpikeFollowupRequest(
+        batchID: String,
+        proposalID: String,
+        decision: String,
+        updates: [String: Any]? = nil,
+        port: Int
+    ) -> URLRequest? {
+        var payload: [String: Any] = ["decision": decision]
+        if let updates { payload["updates"] = updates }
+        return postRequest(
+            path: "/v1/spikes/follow-ups/\(batchID)/proposals/\(proposalID)/review",
+            payload: payload,
+            port: port
+        )
+    }
+
+    static func proposeSpikeFollowups(
+        originRepoPath: String,
+        originTicketID: String,
+        originRunID: Int
+    ) async throws -> SpikeFollowupBatch {
+        guard let request = proposeSpikeFollowupsRequest(
+            originRepoPath: originRepoPath,
+            originTicketID: originTicketID,
+            originRunID: originRunID,
+            port: readPort()
+        ) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        return try await followupBatch(for: request)
+    }
+
+    static func reviewSpikeFollowup(
+        batchID: String,
+        proposalID: String,
+        decision: String,
+        updates: [String: Any]? = nil
+    ) async throws -> SpikeFollowupBatch {
+        guard let request = reviewSpikeFollowupRequest(
+            batchID: batchID,
+            proposalID: proposalID,
+            decision: decision,
+            updates: updates,
+            port: readPort()
+        ) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        return try await followupBatch(for: request)
+    }
+
+    private static func followupBatch(for request: URLRequest) async throws -> SpikeFollowupBatch {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw OrchestratorClientError.badStatus(status, body)
+        }
+        do {
+            return try JSONDecoder().decode(SpikeFollowupBatchResponse.self, from: data).batch
+        } catch {
+            throw OrchestratorClientError.decodeFailed(error.localizedDescription)
+        }
     }
 
     static func fetchProgramDashboard(
