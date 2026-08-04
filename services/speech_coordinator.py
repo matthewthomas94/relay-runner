@@ -232,6 +232,7 @@ class SpeechCoordinator:
         self._playing_id: str | None = None
         self._backlog: list[SpeechIntent] = []
         self._replayable_history: list[SpeechIntent] = []
+        self._stopped_attempt_ids: set[str] = set()
         self._played_coverage: dict[tuple[int, str], list[dict[str, Any]]] = {}
         self._waiting_preview: tuple[tuple[int, str], str] | None = None
         self._play_requested = False
@@ -474,15 +475,34 @@ class SpeechCoordinator:
             self._committed_id = None
             self._playing_id = None
             self._backlog.clear()
+            self._stopped_attempt_ids.difference_update(
+                intent.utterance_id for intent in stale
+            )
         self.worker.stop_playback()
         for intent in stale:
             self._diagnostic("interrupted", intent, reason="speech_only_barge_in")
 
     def stop_playback(self) -> None:
-        """Expose the executor-compatible stop API at the coordinator boundary."""
-        self.stop()
+        """Stop one active attempt without revoking its replay eligibility."""
+        with self._lock:
+            intent = self._intent_for(self._playing_id)
+            if intent is not None:
+                self._stopped_attempt_ids.add(intent.utterance_id)
+                self._clear_play_request_locked()
+        if intent is None:
+            self.stop()
+            return
+        self.worker.stop_playback()
 
     def skip(self) -> None:
+        with self._lock:
+            if self._playing_id is not None:
+                stop_active_attempt = True
+            else:
+                stop_active_attempt = False
+        if stop_active_attempt:
+            self.stop_playback()
+            return
         with self._lock:
             self._clear_play_request_locked()
             stale = [
@@ -576,7 +596,7 @@ class SpeechCoordinator:
 
     def shutdown(self) -> None:
         self._shutdown.set()
-        self.skip()
+        self.stop()
         self.worker.shutdown()
         thread = self._control_thread
         if thread and thread is not threading.current_thread():
@@ -670,6 +690,7 @@ class SpeechCoordinator:
         intent_id = str(payload.get("utterance_id") or "")
         observed_at = float(payload.get("_event_at") or time.time())
         next_intent: SpeechIntent | None = None
+        retained_after_stop = False
         with self._lock:
             intent = self._intent_for(intent_id)
             if intent is None:
@@ -681,16 +702,19 @@ class SpeechCoordinator:
                 if self._matches_waiting_preview(intent):
                     self._clear_play_request_locked(preserve_timing=True)
             elif state in {"completed", "cancelled", "failed"}:
+                stopped_attempt = (
+                    state == "cancelled" and intent_id in self._stopped_attempt_ids
+                )
+                self._stopped_attempt_ids.discard(intent_id)
                 if self._play_dispatched_id == intent_id:
                     self._play_dispatched_id = None
                 if self._playing_id == intent_id:
                     self._playing_id = None
                 if self._committed_id == intent_id:
                     self._committed_id = None
-                if state == "completed" and intent.replayable:
-                    self._replayable_history.append(intent)
-                    if len(self._replayable_history) > REPLAY_HISTORY_LIMIT:
-                        del self._replayable_history[:-REPLAY_HISTORY_LIMIT]
+                retained_after_stop = stopped_attempt and self._retain_replayable_locked(intent)
+                if state == "completed":
+                    self._retain_replayable_locked(intent)
                 if state == "completed":
                     self._record_played_coverage_locked(intent)
                 if not self._committed_id and not self._playing_id and not self._speech_stopped:
@@ -716,15 +740,34 @@ class SpeechCoordinator:
             )
         else:
             self._diagnostic(
-                "played" if state == "completed" else state,
+                (
+                    "played" if state == "completed"
+                    else "stopped" if retained_after_stop
+                    else state
+                ),
                 intent,
                 at=observed_at,
             )
+        if next_intent is not None:
+            self.worker.input_queue.put(next_intent.to_worker_payload())
+        if retained_after_stop and next_intent is None:
+            publish_retained = getattr(self.worker, "publish_replay_retained", None)
+            if callable(publish_retained):
+                publish_retained()
         if state in {"completed", "cancelled", "failed"}:
             self._utterance_timings.pop(intent_id, None)
             self._intent_committed_at.pop(intent_id, None)
-        if next_intent is not None:
-            self.worker.input_queue.put(next_intent.to_worker_payload())
+    def _retain_replayable_locked(self, intent: SpeechIntent) -> bool:
+        if not intent.replayable or not self._fresh(intent):
+            return False
+        if not any(
+            retained.utterance_id == intent.utterance_id
+            for retained in self._replayable_history
+        ):
+            self._replayable_history.append(intent)
+            if len(self._replayable_history) > REPLAY_HISTORY_LIMIT:
+                del self._replayable_history[:-REPLAY_HISTORY_LIMIT]
+        return True
 
     def _next_eligible_locked(self) -> SpeechIntent | None:
         while self._backlog:

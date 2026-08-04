@@ -75,6 +75,30 @@ final class CapsLockGestureTests: XCTestCase {
         XCTAssertNil(gesture.poll(currentSegment: ""))
     }
 
+    func testControlStopThenOptionReplayPreservesGestureOrdering() {
+        var localHandler: ((NSEvent) -> NSEvent?)?
+        let gesture = CapsLockGesture(
+            globalMonitorInstaller: { _, _ in NSObject() },
+            localMonitorInstaller: { _, handler in
+                localHandler = handler
+                return NSObject()
+            },
+            monitorRemover: { _ in }
+        )
+
+        sendDoubleTap(.control, keyCode: 59, to: localHandler)
+        guard case .cancel? = gesture.poll(currentSegment: "") else {
+            return XCTFail("Double-tap Control did not emit stop")
+        }
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+
+        sendDoubleTap(.option, keyCode: 58, to: localHandler)
+        guard case .play? = gesture.poll(currentSegment: "") else {
+            return XCTFail("First Option gesture after stop did not emit replay")
+        }
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+    }
+
     func testConfirmationConsumesOptionDoubleTapWithoutPlayback() {
         var localHandler: ((NSEvent) -> NSEvent?)?
         let gesture = CapsLockGesture(

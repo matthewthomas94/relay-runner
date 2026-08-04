@@ -91,6 +91,7 @@ final class StateMachine: @unchecked Sendable {
     private(set) var state: OverlayState = .idle
     private(set) var partialTranscription: String = ""
     private(set) var messagePreview: String?
+    private(set) var replayRetained = false
     private(set) var workingProgress: String?
     private(set) var workingProgressUpdatedAt: Date?
 
@@ -124,6 +125,7 @@ final class StateMachine: @unchecked Sendable {
         case ("tts", "message_waiting"):
             pendingAcknowledgement = nil
             clearWorkingProgress()
+            replayRetained = false
             let preview = normalizedMessagePreview(text) ?? messagePreview
             guard preview != nil else { break }
             messagePreview = preview
@@ -137,6 +139,7 @@ final class StateMachine: @unchecked Sendable {
         case ("tts", "preparing"):
             pendingAcknowledgement = nil
             clearWorkingProgress()
+            replayRetained = false
             if let preview = normalizedMessagePreview(text) {
                 messagePreview = preview
             }
@@ -145,6 +148,7 @@ final class StateMachine: @unchecked Sendable {
         case ("tts", "speaking"):
             pendingAcknowledgement = nil
             clearWorkingProgress()
+            replayRetained = false
             if let preview = normalizedMessagePreview(text) {
                 messagePreview = preview
             }
@@ -153,6 +157,7 @@ final class StateMachine: @unchecked Sendable {
         case ("tts", "failed"):
             pendingAcknowledgement = nil
             clearWorkingProgress()
+            replayRetained = false
             if let preview = normalizedMessagePreview(text) {
                 messagePreview = preview
             }
@@ -168,6 +173,16 @@ final class StateMachine: @unchecked Sendable {
             default:
                 break
             }
+
+        case ("tts", "replay_retained"):
+            pendingAcknowledgement = nil
+            clearWorkingProgress()
+            if let preview = normalizedMessagePreview(text) {
+                messagePreview = preview
+            }
+            guard messagePreview != nil else { break }
+            replayRetained = true
+            state = .cancelled(.tts)
 
         case ("bridge", "processing"):
             switch state {
@@ -227,7 +242,10 @@ final class StateMachine: @unchecked Sendable {
         case .sent:
             state = .idle
             sentEnteredAt = nil
+        case .cancelled(.tts) where replayRetained && messagePreview != nil:
+            state = .messageWaiting(preview: messagePreview)
         case .cancelled(_):
+            replayRetained = false
             state = .idle
             sentEnteredAt = nil
             messagePreview = nil
@@ -259,6 +277,10 @@ final class StateMachine: @unchecked Sendable {
     /// Immediately acknowledge a valid Option gesture while speech is retained.
     func setPlaybackRequested() {
         if case .messageWaiting = state {
+            replayRetained = false
+            state = .preparing
+        } else if case .cancelled(.tts) = state, replayRetained {
+            replayRetained = false
             state = .preparing
         }
     }
@@ -279,6 +301,9 @@ final class StateMachine: @unchecked Sendable {
 
     /// User cancelled the current recording or TTS.
     func setCancelled() {
+        if case .cancelled(.tts) = state, replayRetained {
+            return
+        }
         let referenceState: OverlayState
         if state == .idle {
             if now().timeIntervalSince(lastIdleTransitionTime) < 0.5 {
@@ -302,6 +327,7 @@ final class StateMachine: @unchecked Sendable {
             source = .stt
         }
         state = .cancelled(source)
+        replayRetained = false
         partialTranscription = ""
     }
 
@@ -337,6 +363,7 @@ final class StateMachine: @unchecked Sendable {
         state = .programStatus(title: title, body: body)
         partialTranscription = ""
         messagePreview = nil
+        replayRetained = false
     }
 
     func dismissProgramStatus() {
@@ -379,6 +406,7 @@ final class StateMachine: @unchecked Sendable {
         state = .idle
         partialTranscription = ""
         messagePreview = nil
+        replayRetained = false
         clearWorkingProgress()
         sentEnteredAt = nil
         pendingAcknowledgement = nil

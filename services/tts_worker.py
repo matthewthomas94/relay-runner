@@ -491,12 +491,20 @@ class TTSWorker:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
+                with self._lock:
+                    if self._current_proc is proc:
+                        self._current_proc = None
             self._stop_chime()
             self._playing = False
             self._paused = False
             intent = getattr(self, "_current_speech_intent", None)
             self._current_speech_intent = None
             self._observe_speech("cancelled", intent)
+
+    def publish_replay_retained(self):
+        """Tell the app that a stopped attempt remains available to replay."""
+        preview = self._last_response_display_text or self._last_response_text
+        _notify_state("replay_retained", text=preview[:2000])
 
     def skip(self):
         """Stop playback AND discard pending text."""
@@ -550,21 +558,25 @@ class TTSWorker:
                     "preparing",
                     text=(self._last_response_display_text or self._last_response_text)[:2000],
                 )
-            self._playing = True
-            self._paused = False
-            t = threading.Thread(target=self._play_wav, args=(wav,), daemon=True)
+            generation = self._begin_playback()
+            t = threading.Thread(
+                target=self._play_wav,
+                args=(wav, generation),
+                daemon=True,
+            )
             t.start()
 
-    def _play_wav(self, wav_path: str):
+    def _play_wav(self, wav_path: str, generation: int):
         """Play a WAV file with afplay."""
         try:
             self._play_wav_blocking(wav_path)
         except Exception as e:
             print(f"[tts_worker] Replay error: {e}", file=sys.stderr)
         finally:
-            self._playing = False
-            self._current_proc = None
-            _notify_state("idle")
+            if self._playback_is_current(generation):
+                self._playing = False
+                self._paused = False
+                _notify_state("idle")
 
     def _play_wav_blocking(self, wav_path: str):
         """Play a single WAV file with afplay."""
@@ -572,16 +584,20 @@ class TTSWorker:
         cmd = ["afplay", wav_path]
         if self._rate != 1.0:
             cmd.extend(["-r", str(self._rate)])
-        self._current_proc = subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        with self._lock:
+            self._current_proc = proc
         self._observe_speech("afplay_started", self._current_speech_intent)
         try:
-            self._current_proc.wait()
+            proc.wait()
         finally:
-            self._current_proc = None
+            with self._lock:
+                if self._current_proc is proc:
+                    self._current_proc = None
 
     def _synthesize_to_wav(self, text: str) -> str | None:
         """Render `text` to a fresh WAV via Kokoro, return its path or None on failure.
@@ -869,15 +885,15 @@ class TTSWorker:
                 _notify_state("failed", text=preview[:2000])
             else:
                 _notify_state("idle")
-        self._current_proc = None
-        if getattr(self, "_current_speech_intent", None) == speech_intent:
+        intent_was_current = getattr(self, "_current_speech_intent", None) == speech_intent
+        if intent_was_current:
             self._current_speech_intent = None
-        if failed:
-            self._observe_speech("failed", speech_intent)
-        elif completed:
-            self._observe_speech("completed", speech_intent)
-        else:
-            self._observe_speech("cancelled", speech_intent)
+            if failed:
+                self._observe_speech("failed", speech_intent)
+            elif completed:
+                self._observe_speech("completed", speech_intent)
+            else:
+                self._observe_speech("cancelled", speech_intent)
 
     def _set_last_wav(self, wav_path: str, preserve_old: bool = False):
         old_wav = self._last_wav

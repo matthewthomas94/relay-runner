@@ -75,7 +75,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
             worker.played_displays.append(display_text)
             worker.played_intents.append(speech_intent)
         worker._play_text = play_text
-        worker._play_wav = lambda wav: worker.played_wavs.append(wav)
+        worker._play_wav = lambda wav, _generation: worker.played_wavs.append(wav)
         worker._play_chime = lambda: None
         worker._start_speculation = lambda text: None
         worker._cancel_speculation = lambda: None
@@ -182,6 +182,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
     def test_play_drains_ineligible_items_until_it_claims_current_speech(self):
         worker = self.make_worker()
         events = []
+        worker._last_wav = self.temp_wav()
         worker._speech_eligibility = lambda payload: payload["utterance_id"] == "new"
         worker._speech_observer = lambda state, payload: events.append(
             (state, payload["utterance_id"])
@@ -198,6 +199,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker.play()
 
         self.assertEqual(worker.played_texts, ["current response"])
+        self.assertEqual(worker.played_wavs, [])
         self.assertEqual(worker.played_intents, [{"utterance_id": "new"}])
         self.assertEqual(events, [("cancelled", "old"), ("queued", "new")])
 
@@ -342,6 +344,59 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker.stop_playback()
 
         self.assertEqual(order, ["player-terminate", "player-wait", "cancelled"])
+        self.assertIsNone(worker._current_proc)
+
+    def test_stop_lifecycle_is_same_in_queue_and_auto_modes(self):
+        for auto_play in (False, True):
+            with self.subTest(auto_play=auto_play):
+                worker = self.make_worker()
+                intent = {"utterance_id": "speech-1"}
+                events = []
+                worker._auto_play = auto_play
+                worker._playing = True
+                worker._current_speech_intent = intent
+                worker._speech_observer = lambda state, payload: events.append(
+                    (state, payload["utterance_id"])
+                )
+
+                worker.stop_playback()
+
+                self.assertFalse(worker._playing)
+                self.assertEqual(events, [("cancelled", "speech-1")])
+
+    def test_stopped_generation_reports_one_terminal_lifecycle(self):
+        worker = self.make_worker()
+        intent = {"utterance_id": "speech-1"}
+        events = []
+
+        worker._playing = True
+        worker._playback_generation = 1
+        worker._current_speech_intent = intent
+        worker._speech_observer = lambda state, payload: events.append(
+            (state, payload["utterance_id"])
+        )
+
+        worker.stop_playback()
+        worker._finish_playback(1, speech_intent=intent)
+
+        self.assertEqual(events, [("cancelled", "speech-1")])
+
+    def test_late_stopped_generation_cannot_clear_new_playback_owner(self):
+        worker = self.make_worker()
+        old_intent = {"utterance_id": "speech-1"}
+        new_intent = {"utterance_id": "speech-2"}
+        new_proc = object()
+
+        worker._playing = True
+        worker._playback_generation = 3
+        worker._current_speech_intent = new_intent
+        worker._current_proc = new_proc
+
+        worker._finish_playback(1, speech_intent=old_intent)
+
+        self.assertTrue(worker._playing)
+        self.assertIs(worker._current_proc, new_proc)
+        self.assertEqual(worker._current_speech_intent, new_intent)
 
     def test_collected_chunks_refresh_waiting_preview_before_playback(self):
         worker = self.make_worker()
