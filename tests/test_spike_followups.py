@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import concurrent.futures
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -84,6 +87,63 @@ class SpikeFollowupTests(unittest.TestCase):
             self.assertTrue(duplicate["duplicate"])
             self.assertEqual(self.config_next_id(repo), 3)
             self.assertEqual(len(list((repo / ".orchestrator").glob("RR-2.md"))), 1)
+
+    def test_concurrent_accepts_allocate_distinct_ids_and_leave_clean_repository(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self.make_spike_repo(root / "repo")
+            daemon = self.make_daemon(root / "followups.db", root / "registry.json")
+            first = self.refined_proposal(repo)
+            second = self.refined_proposal(repo)
+            first["title"] = "Implement the first parser boundary"
+            second["title"] = "Implement the second parser boundary"
+            batch = daemon.propose_spike_followups(
+                origin_repo_path=str(repo),
+                origin_ticket_id="RR-1",
+                origin_run_id=7,
+                proposals=[first, second],
+            )["batch"]
+
+            original_accept = daemon._accept_spike_followup
+            probe_lock = threading.Lock()
+            start = threading.Barrier(2)
+            active = 0
+            maximum_active = 0
+
+            def probed_accept(**kwargs):
+                nonlocal active, maximum_active
+                with probe_lock:
+                    active += 1
+                    maximum_active = max(maximum_active, active)
+                try:
+                    time.sleep(0.05)
+                    return original_accept(**kwargs)
+                finally:
+                    with probe_lock:
+                        active -= 1
+
+            daemon._accept_spike_followup = probed_accept
+
+            def accept(proposal: dict) -> dict:
+                start.wait(timeout=5)
+                return daemon.review_spike_followup(
+                    batch_id=batch["id"],
+                    proposal_id=proposal["id"],
+                    decision="accept",
+                )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(accept, batch["proposals"]))
+
+            self.assertEqual(maximum_active, 1)
+            self.assertEqual(
+                {result["committed"][0]["ticket_id"] for result in results},
+                {"RR-2", "RR-3"},
+            )
+            self.assertEqual(self.config_next_id(repo), 4)
+            self.assertTrue((repo / ".orchestrator/RR-2.md").is_file())
+            self.assertTrue((repo / ".orchestrator/RR-3.md").is_file())
+            self.assertEqual(self.git(repo, "status", "--short").stdout, "")
 
     def test_cross_project_acceptance_uses_registered_target_counter(self):
         with tempfile.TemporaryDirectory() as tmp:

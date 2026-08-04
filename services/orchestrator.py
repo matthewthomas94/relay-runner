@@ -7050,6 +7050,28 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         relay_command_id: str | None = None,
         relay_intent_id: str | None = None,
     ) -> dict[str, Any]:
+        with self._authoring_mutex():
+            return self._review_spike_followup_locked(
+                batch_id=batch_id,
+                proposal_id=proposal_id,
+                decision=decision,
+                updates=updates,
+                relay_command_seq=relay_command_seq,
+                relay_command_id=relay_command_id,
+                relay_intent_id=relay_intent_id,
+            )
+
+    def _review_spike_followup_locked(
+        self,
+        *,
+        batch_id: str,
+        proposal_id: str,
+        decision: str,
+        updates: dict[str, Any] | None = None,
+        relay_command_seq: int | str | None = None,
+        relay_command_id: str | None = None,
+        relay_intent_id: str | None = None,
+    ) -> dict[str, Any]:
         batch = self.followup_proposals.get(batch_id)
         if batch is None:
             raise ValueError(f"follow-up batch {batch_id} not found")
