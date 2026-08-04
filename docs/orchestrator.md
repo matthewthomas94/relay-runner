@@ -183,6 +183,8 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 
 When registry v2 is enabled, Workspace and provider sessions use the [explicit project-scope state machine](architecture/project-scope-v2.md): Workspace may be empty and open without a bridge, while project work and Start Session require an explicitly selected available registered repository. The legacy Workspace-folder behavior above remains only as the reversible compatibility path.
 
+Projects that separately opt into artifact storage use the [private-index project artifact writer](architecture/artifact-store.md). Its orphan `refs/heads/relay/artifacts` ref is canonical; repo-root `.orchestrator/` is an excluded, verified materialization. Artifact storage begins local-only and never changes or publishes a source ref.
+
 ## Troubleshooting
 
 **MCP tools missing.** Confirm the registration:
