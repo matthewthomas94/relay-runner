@@ -299,8 +299,16 @@ def _context(
         if blocker and blocked:
             blockers.setdefault(blocked["id"], []).append(blocker)
 
-    for ticket_runs in runs_by_ticket.values():
+    for ticket_id, ticket_runs in runs_by_ticket.items():
         ticket_runs.sort(key=_run_sort_key, reverse=True)
+        ticket = tickets_by_id.get(ticket_id)
+        linked_run_id = (ticket or {}).get("body", {}).get("run_id")
+        if linked_run_id is None:
+            continue
+        for index, run in enumerate(ticket_runs):
+            if str(run.get("body", {}).get("run_id")) == str(linked_run_id):
+                ticket_runs.insert(0, ticket_runs.pop(index))
+                break
 
     ticket_ids = set(tickets_by_id)
     return {

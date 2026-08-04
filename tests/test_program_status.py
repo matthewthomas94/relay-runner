@@ -79,6 +79,7 @@ class ProgramStatusTests(unittest.TestCase):
             "RR-274",
             "Verify physical replay",
             "verification_blocked",
+            run_id=274,
         )
         _run(
             store,
@@ -89,6 +90,16 @@ class ProgramStatusTests(unittest.TestCase):
             "codex",
             model="sol",
         )
+        _run(
+            store,
+            project,
+            ticket,
+            275,
+            "canceled",
+            "codex",
+            model="sol",
+            attempt=2,
+        )
 
         blocked = build_program_status(store, query="blocked_work", now=2000.0)
         in_progress = build_program_status(store, query="in_progress_lane", now=2000.0)
@@ -98,6 +109,7 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertEqual([item["ticket_id"] for item in blocked["items"]], ["RR-274"])
         self.assertEqual([item["ticket_id"] for item in in_progress["items"]], ["RR-274"])
         self.assertEqual(in_progress["items"][0]["ticket_state"], "verification_blocked")
+        self.assertEqual(in_progress["items"][0]["run_id"], 274)
         self.assertEqual(in_progress["items"][0]["run_state"], "verification_blocked")
         self.assertEqual(ready["items"], [])
         self.assertEqual(done["items"], [])
@@ -401,6 +413,7 @@ def _ticket(
     priority: str = "medium",
     depends_on: list[str] | None = None,
     source_path: str | None = None,
+    run_id: int | None = None,
 ) -> dict:
     return store.upsert_node(
         kind=NODE_TICKET,
@@ -413,6 +426,7 @@ def _ticket(
             "priority": priority,
             "depends_on": depends_on or [],
             "source_path": source_path,
+            "run_id": run_id,
         },
     )
 
