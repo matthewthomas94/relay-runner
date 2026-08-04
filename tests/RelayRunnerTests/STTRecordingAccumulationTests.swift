@@ -67,6 +67,18 @@ final class STTRecordingAccumulationTests: XCTestCase {
         XCTAssertEqual(buffer.get(), [5, 6, 7, 8, 9, 10].map { Float($0) })
     }
 
+    func testAudioBufferRejectsSamplesWhileCaptureRouteIsInvalid() {
+        let buffer = AudioBuffer()
+
+        buffer.accepting = false
+        buffer.append([1, 2])
+        XCTAssertTrue(buffer.get().isEmpty)
+
+        buffer.accepting = true
+        buffer.append([3])
+        XCTAssertEqual(buffer.get(), [3])
+    }
+
     func testTutorialVoiceOutputNeverPublishesToTheVoiceFIFO() {
         var published: [String] = []
 

@@ -1,4 +1,3 @@
-import AVFAudio
 import FluidAudio
 import Foundation
 import QuartzCore
@@ -51,11 +50,24 @@ final class STTEngine: @unchecked Sendable {
 
     // MARK: - Internal state
 
-    private var audioEngine: AVAudioEngine?
     private let audioBuffer = AudioBuffer()
     private var asrManager: AsrManager?
     private var processingTask: Task<Void, Error>?
     private let gesture: CapsLockGesture
+    @ObservationIgnored private let captureInterruptionLock = NSLock()
+    @ObservationIgnored private var pendingCaptureInterruption: AudioCaptureInterruption?
+    @ObservationIgnored private var captureInterruptionEpoch: UInt64 = 0
+    @ObservationIgnored private var routeCancellationNoticePending = false
+    @ObservationIgnored private var captureReady = false
+    @ObservationIgnored private lazy var audioCapture: AudioCaptureLifecycle = AudioCaptureLifecycle(
+        sampleHandler: { [weak self] samples in
+            self?.audioBuffer.append(samples)
+        },
+        isRecording: { [weak self] in
+            guard let self else { return false }
+            return self.isRecording || self.gesture.isRecording
+        }
+    )
 
     // MARK: - Init
 
@@ -116,46 +128,19 @@ final class STTEngine: @unchecked Sendable {
         statusMessage = "Listening"
         FIFOWriter.write("__STATUS__:Listening")
 
-        // Setup audio capture
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let nativeFormat = inputNode.outputFormat(forBus: 0)
-        let targetFormat = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
-        guard let converter = AVAudioConverter(from: nativeFormat, to: targetFormat) else {
-            NSLog("[STTEngine] Failed to create audio converter")
-            return
+        audioCapture.onWillReconfigure = { [weak self] interruption in
+            self?.prepareForCaptureReconfiguration(interruption)
         }
-
-        inputNode.installTap(onBus: 0, bufferSize: 8000, format: nativeFormat) { [audioBuffer] buffer, _ in
-            let ratio = 16000.0 / nativeFormat.sampleRate
-            let frameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
-            guard frameCount > 0,
-                  let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCount)
-            else { return }
-
-            var error: NSError?
-            var consumed = false
-            converter.convert(to: converted, error: &error) { _, outStatus in
-                if consumed {
-                    outStatus.pointee = .noDataNow
-                    return nil
-                }
-                consumed = true
-                outStatus.pointee = .haveData
-                return buffer
-            }
-
-            if error == nil, let channelData = converted.floatChannelData {
-                let samples = Array(UnsafeBufferPointer(
-                    start: channelData[0], count: Int(converted.frameLength)
-                ))
-                audioBuffer.append(samples)
-            }
+        audioCapture.onRecovery = { [weak self] recovery in
+            self?.captureDidRecover(recovery)
         }
-
-        try engine.start()
-        self.audioEngine = engine
-        NSLog("[STTEngine] Audio capture started. Mode: \(inputMode)")
+        if let route = try audioCapture.start() {
+            setCaptureReady(true)
+            NSLog(
+                "[STTEngine] Audio capture started. device=\(route.deviceID) " +
+                "format=\(route.sampleRate)Hz/\(route.channelCount)ch mode=\(inputMode)"
+            )
+        }
 
         // Start processing loop
         processingTask = Task { [weak self] in
@@ -182,11 +167,16 @@ final class STTEngine: @unchecked Sendable {
     }
 
     func stop() {
+        audioBuffer.accepting = false
+        captureInterruptionLock.lock()
+        captureInterruptionEpoch &+= 1
+        captureReady = false
+        pendingCaptureInterruption = nil
+        routeCancellationNoticePending = false
+        captureInterruptionLock.unlock()
         processingTask?.cancel()
         processingTask = nil
-        audioEngine?.stop()
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine = nil
+        audioCapture.stop()
         asrManager = nil
         isRecording = false
         partialTranscription = ""
@@ -202,6 +192,97 @@ final class STTEngine: @unchecked Sendable {
         audioBuffer.setMaxSamples(AudioBuffer.defaultMaxSamples)
     }
 
+    private func prepareForCaptureReconfiguration(_ interruption: AudioCaptureInterruption) {
+        audioBuffer.accepting = false
+        audioBuffer.clear()
+        captureInterruptionLock.lock()
+        captureInterruptionEpoch &+= 1
+        captureReady = false
+        if interruption.recordingOutcome == .cancelRecording {
+            routeCancellationNoticePending = true
+        }
+        if let pendingCaptureInterruption {
+            let outcome: AudioCaptureInterruption.RecordingOutcome =
+                pendingCaptureInterruption.recordingOutcome == .cancelRecording ||
+                interruption.recordingOutcome == .cancelRecording
+                    ? .cancelRecording
+                    : .idle
+            self.pendingCaptureInterruption = AudioCaptureInterruption(
+                reasons: pendingCaptureInterruption.reasons.union(interruption.reasons),
+                recordingOutcome: outcome
+            )
+        } else {
+            pendingCaptureInterruption = interruption
+        }
+        captureInterruptionLock.unlock()
+    }
+
+    private func takeCaptureInterruption() -> AudioCaptureInterruption? {
+        captureInterruptionLock.lock()
+        defer { captureInterruptionLock.unlock() }
+        let interruption = pendingCaptureInterruption
+        pendingCaptureInterruption = nil
+        return interruption
+    }
+
+    private func currentCaptureEpoch() -> UInt64 {
+        captureInterruptionLock.lock()
+        defer { captureInterruptionLock.unlock() }
+        return captureInterruptionEpoch
+    }
+
+    private func captureEpochIsCurrent(_ epoch: UInt64) -> Bool {
+        currentCaptureEpoch() == epoch
+    }
+
+    private func setCaptureReady(_ ready: Bool) {
+        captureInterruptionLock.lock()
+        captureReady = ready
+        captureInterruptionLock.unlock()
+    }
+
+    private func isCaptureReady() -> Bool {
+        captureInterruptionLock.lock()
+        defer { captureInterruptionLock.unlock() }
+        return captureReady
+    }
+
+    private func captureDidRecover(_ recovery: AudioCaptureRecovery) {
+        captureInterruptionLock.lock()
+        let cancelledRecording = routeCancellationNoticePending
+        routeCancellationNoticePending = false
+        captureInterruptionLock.unlock()
+
+        if let error = recovery.error {
+            setCaptureReady(false)
+            audioBuffer.accepting = false
+            statusMessage = error.localizedDescription
+            FIFOWriter.write("__STATUS__:\(error.localizedDescription)")
+            NSLog(
+                "[STTEngine] Audio route recovery failed. " +
+                "reasons=\(recovery.reasons.sorted().joined(separator: ",")) error=\(error)"
+            )
+            return
+        }
+
+        guard let route = recovery.route else { return }
+        setCaptureReady(true)
+        audioBuffer.clear()
+        audioBuffer.setMaxSamples(AudioBuffer.defaultMaxSamples)
+        audioBuffer.accepting = inputMode != "caps_lock_toggle"
+        let message = cancelledRecording
+            ? "Microphone changed — recording cancelled. Ready to retry."
+            : "Listening"
+        statusMessage = message
+        FIFOWriter.write("__STATUS__:\(message)")
+        let previousID = recovery.previousRoute.map { String($0.deviceID) } ?? "none"
+        NSLog(
+            "[STTEngine] Audio route recovered. previous=\(previousID) " +
+            "current=\(route.deviceID) format=\(route.sampleRate)Hz/\(route.channelCount)ch " +
+            "reasons=\(recovery.reasons.sorted().joined(separator: ","))"
+        )
+    }
+
     // MARK: - Always-on mode
 
     private func runAlwaysOnMode() async throws {
@@ -209,6 +290,7 @@ final class STTEngine: @unchecked Sendable {
 
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
+            _ = takeCaptureInterruption()
             transcribeCounter += 1
             if transcribeCounter < stepMs / pollMs { continue }
             transcribeCounter = 0
@@ -220,7 +302,9 @@ final class STTEngine: @unchecked Sendable {
             guard rms >= vadThreshold else { continue }
 
             guard let manager = asrManager else { continue }
+            let captureEpoch = currentCaptureEpoch()
             let result = try await manager.transcribe(audio, source: .microphone)
+            guard captureEpochIsCurrent(captureEpoch) else { continue }
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
 
@@ -249,10 +333,42 @@ final class STTEngine: @unchecked Sendable {
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
 
+            if let interruption = takeCaptureInterruption() {
+                let cancelledRecording = interruption.recordingOutcome == .cancelRecording
+                gesture.reset()
+                transcript.reset()
+                resetRecordingBuffer()
+                isRecording = false
+                partialTranscription = ""
+                mediaSettleDeadline = nil
+                if cancelledRecording {
+                    wasCancelled = true
+                    let message = "Microphone changed — recording cancelled. Ready to retry."
+                    statusMessage = message
+                    writeVoiceOutput("__CANCEL__")
+                    writeVoiceOutput("__STATUS__:\(message)")
+                    NSLog(
+                        "[STTEngine] Recording cancelled for audio route recovery. " +
+                        "reasons=\(interruption.reasons.sorted().joined(separator: ","))"
+                    )
+                }
+                continue
+            }
+
             // Poll gesture detector
             if let event = gesture.poll(currentSegment: transcript.transcript) {
                 switch event {
                 case .startRecording:
+                    guard isCaptureReady() else {
+                        gesture.reset()
+                        isRecording = false
+                        partialTranscription = ""
+                        let message = statusMessage.isEmpty
+                            ? "Microphone input is recovering. Try again in a moment."
+                            : statusMessage
+                        writeVoiceOutput("__STATUS__:\(message)")
+                        continue
+                    }
                     // Kill TTS playback immediately (but don't notify Claude yet —
                     // that waits until after settle to avoid breaking double-tap play)
                     writeVoiceOutput("__TTS_STOP__")
@@ -268,7 +384,10 @@ final class STTEngine: @unchecked Sendable {
                     writeVoiceOutput("__STATUS__:preparing...")
 
                 case .stopRecording(_):
-                    if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
+                    let captureEpoch = currentCaptureEpoch()
+                    let finalText = try await finalizeRecordingTranscript(into: &transcript)
+                    guard captureEpochIsCurrent(captureEpoch) else { continue }
+                    if let finalText {
                         if tutorialActive {
                             tutorialTranscriptSerial += 1
                             NSLog("[STTEngine] Tutorial transcript consumed locally")
@@ -294,7 +413,10 @@ final class STTEngine: @unchecked Sendable {
                     mediaSettleDeadline = nil
 
                 case .interrupt:
-                    if let finalText = try await finalizeRecordingTranscript(into: &transcript) {
+                    let captureEpoch = currentCaptureEpoch()
+                    let finalText = try await finalizeRecordingTranscript(into: &transcript)
+                    guard captureEpochIsCurrent(captureEpoch) else { continue }
+                    if let finalText {
                         if tutorialActive {
                             tutorialTranscriptSerial += 1
                             NSLog("[STTEngine] Tutorial transcript consumed locally")
@@ -368,7 +490,10 @@ final class STTEngine: @unchecked Sendable {
             let audio = audioBuffer.get()
             guard audio.count >= minSamples else { continue }
 
-            guard let text = try await transcribeMeaningfulText(audio) else { continue }
+            let captureEpoch = currentCaptureEpoch()
+            guard let text = try await transcribeMeaningfulText(audio),
+                  captureEpochIsCurrent(captureEpoch)
+            else { continue }
 
             transcript.refine(text)
             speechDetectedSerial += 1
