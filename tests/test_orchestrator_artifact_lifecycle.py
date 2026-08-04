@@ -208,6 +208,76 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
         self.assertEqual(document["record_kind"], "decision")
         self.assertEqual(result["counts"], {"Decision": 1})
 
+    def test_board_authoring_uses_confirmed_typed_artifact_writer_for_id_ticket_attachment_and_delete(self):
+        with self.assertRaisesRegex(Exception, "confirmed project scope token"):
+            self.daemon.artifact_board_claim_next_id(
+                repo_path=str(self.repo),
+                project_scope_token=None,
+            )
+
+        claim = self.daemon.artifact_board_claim_next_id(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            request_id="board-claim-test",
+        )
+        self.assertEqual(claim["ticket_id"], "REP-1")
+        markdown = b"""---
+id: REP-1
+title: Board artifact writer
+status: backlog
+priority: medium
+execution_mode: implementation
+depends_on: []
+run_id: null
+canceled: false
+order: 20
+---
+
+## Description
+
+Saved through the daemon-owned typed writer.
+"""
+        saved = self.daemon.artifact_board_write_ticket(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            ticket_id="REP-1",
+            markdown_base64=base64.b64encode(markdown).decode("ascii"),
+            request_id="board-save-test",
+        )
+        stored = base64.b64decode(saved["markdown_base64"])
+        self.assertIn(b"artifact_id: ticket-", stored)
+        self.assertIn(b"user_edited_at:", stored)
+        self.assertEqual(
+            stored,
+            self.store.snapshot().files[".orchestrator/REP-1.md"],
+        )
+
+        png = b"\x89PNG\r\n\x1a\nboard-proof"
+        self.daemon.artifact_board_write_attachment(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            ticket_id="REP-1",
+            filename="proof.png",
+            mime_type="image/png",
+            content_base64=base64.b64encode(png).decode("ascii"),
+            request_id="board-attachment-test",
+        )
+        self.assertEqual(
+            self.store.snapshot().files[".orchestrator/attachments/REP-1/proof.png"],
+            png,
+        )
+
+        deleted = self.daemon.artifact_board_delete_ticket(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            ticket_id="REP-1",
+            request_id="board-delete-test",
+        )
+        self.assertFalse(deleted["idempotent"])
+        snapshot = self.store.snapshot()
+        self.assertNotIn(".orchestrator/REP-1.md", snapshot.files)
+        self.assertNotIn(".orchestrator/attachments/REP-1/proof.png", snapshot.files)
+
     def scope_token(self) -> str:
         payload = {
             "version": 1,

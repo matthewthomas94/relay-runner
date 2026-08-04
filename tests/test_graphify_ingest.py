@@ -36,6 +36,55 @@ class GraphifyIngestTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         return GraphifyCoreStore(Path(tmp.name) / "graphify.db")
 
+    def test_ingests_registry_v2_identity_and_skips_unavailable_projects(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        available = _make_repo(root, "available")
+        unavailable = _make_repo(root, "offline")
+        _write_ticket(available, "AV-1", "Artifact-backed work", "backlog")
+        _write_ticket(unavailable, "OF-1", "Unavailable work", "backlog")
+        registry_path = root / "registry-v2.json"
+        registry_path.write_text(json.dumps({
+            "schema_version": 2,
+            "active_project_id": "project-available",
+            "projects": [
+                {
+                    "project_id": "project-available",
+                    "display_name": "Available Project",
+                    "selected_path": str(available),
+                    "last_resolved_path": str(available.resolve()),
+                    "availability": "available",
+                    "last_resolved_at": "2026-08-04T05:00:00Z",
+                    "remote": {
+                        "mode": "local_only",
+                        "remoteName": None,
+                        "artifactRef": "refs/heads/relay/artifacts",
+                    },
+                },
+                {
+                    "project_id": "project-offline",
+                    "display_name": "Offline Project",
+                    "selected_path": str(unavailable),
+                    "last_resolved_path": str(unavailable.resolve()),
+                    "availability": "offline",
+                },
+            ],
+        }))
+
+        store = self.make_store()
+        counts = ingest_registered_projects(store, registry_path=registry_path)
+
+        self.assertEqual(counts["projects"], 1)
+        project = store.find_node(kind=NODE_PROJECT, stable_key=f"repo:{available.resolve()}")
+        self.assertIsNotNone(project)
+        self.assertEqual(project["title"], "Available Project")
+        self.assertEqual(project["body"]["project_id"], "project-available")
+        self.assertTrue(project["body"]["active"])
+        self.assertEqual(project["body"]["availability"], "available")
+        self.assertIsNone(
+            store.find_node(kind=NODE_PROJECT, stable_key=f"repo:{unavailable.resolve()}")
+        )
+
     def test_ingests_registered_projects_tickets_dependencies_and_runs_idempotently(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: _remove_tree(root))

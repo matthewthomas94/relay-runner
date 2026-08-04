@@ -20,17 +20,23 @@ enum TicketImageStore {
         _ sourceURLs: [URL],
         into ticket: Ticket,
         in project: ProjectResolver.LinkedProject,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        projectScopeToken: String? = nil
     ) throws -> Ticket {
         guard !sourceURLs.isEmpty else { return ticket }
 
         let attachmentDirectory = ProjectResolver.ticketsDirectory(in: project)
             .appendingPathComponent("attachments", isDirectory: true)
             .appendingPathComponent(ticket.id, isDirectory: true)
-        try fileManager.createDirectory(
-            at: attachmentDirectory,
-            withIntermediateDirectories: true
+        let usesArtifactWriter = BoardProjectConfig.usesArtifactWriter(
+            forRepoAt: project.repoPath
         )
+        if !usesArtifactWriter {
+            try fileManager.createDirectory(
+                at: attachmentDirectory,
+                withIntermediateDirectories: true
+            )
+        }
 
         var relativePaths: [String] = []
         for sourceURL in sourceURLs {
@@ -46,6 +52,10 @@ enum TicketImageStore {
                   contentType.conforms(to: .image) else {
                 throw IngestError.unsupportedFile(source.path)
             }
+            guard !usesArtifactWriter || ["png", "jpg", "jpeg", "gif", "webp"].contains(pathExtension),
+                  let mimeType = contentType.preferredMIMEType else {
+                throw IngestError.unsupportedFile(source.path)
+            }
 
             let baseName = sanitizedBaseName(
                 source.deletingPathExtension().lastPathComponent
@@ -58,7 +68,18 @@ enum TicketImageStore {
                 fileManager: fileManager
             )
             if !fileManager.fileExists(atPath: destination.path) {
-                try fileManager.copyItem(at: source, to: destination)
+                if usesArtifactWriter {
+                    try OrchestratorClient.writeArtifactAttachment(
+                        repoPath: project.repoPath.path,
+                        ticketID: ticket.id,
+                        filename: destination.lastPathComponent,
+                        mimeType: mimeType,
+                        content: try Data(contentsOf: source),
+                        projectScopeToken: projectScopeToken
+                    )
+                } else {
+                    try fileManager.copyItem(at: source, to: destination)
+                }
             }
             relativePaths.append(
                 "attachments/\(ticket.id)/\(destination.lastPathComponent)"

@@ -297,6 +297,56 @@ class ArtifactStore:
             self._ensure_materialization_consistent(head)
             return self._commit_mutation(mutation, current_head=head, digest=digest)
 
+    def bootstrap_legacy(self, mutation: ArtifactMutation) -> ArtifactWriteResult:
+        """Create an orphan ref from a reviewed legacy import without cutover.
+
+        Phase-8 migration must verify the new ref before it removes tracked
+        source files or replaces the legacy materialization.  Normal
+        ``initialize`` therefore remains fail-closed when ``.orchestrator``
+        exists, while this migration-only entry point publishes the typed tree
+        and deliberately leaves the existing directory untouched.
+        """
+        self._require_enabled()
+        self._validate_mutation_envelope(mutation)
+        if mutation.actor_type != "migration" or mutation.expected_base is not None:
+            raise ArtifactValidationError(
+                "legacy bootstrap requires migration ownership and an absent base"
+            )
+        with self._writer_lock():
+            self._verify_repository()
+            self._recover_materialization_transaction()
+            if self.materialized_path.is_symlink() or not self.materialized_path.is_dir():
+                raise ArtifactMaterializationConflict(
+                    "legacy bootstrap requires a normal existing .orchestrator directory"
+                )
+            head = self._head()
+            digest = self._mutation_digest(mutation)
+            if head:
+                self._validate_artifact_head(head)
+                prior = self._find_event(mutation.event_id)
+                if prior is None:
+                    raise ArtifactConcurrentUpdate(
+                        "artifact ref appeared before legacy bootstrap; review it explicitly"
+                    )
+                prior_commit, prior_digest = prior
+                if prior_digest != digest:
+                    raise ArtifactEventCollision(
+                        f"event ID {mutation.event_id!r} was already committed with different content"
+                    )
+                return ArtifactWriteResult(
+                    event_id=mutation.event_id,
+                    commit_id=prior_commit,
+                    tree_id=self._tree_id(prior_commit),
+                    base_commit=self._first_parent(prior_commit),
+                    idempotent=True,
+                )
+            return self._commit_mutation(
+                mutation,
+                current_head=None,
+                digest=digest,
+                materialize=False,
+            )
+
     def recover(self) -> str:
         """Reconstruct the projection from the canonical ref after interruption."""
         self._require_enabled()
@@ -333,6 +383,7 @@ class ArtifactStore:
         *,
         current_head: str | None,
         digest: str | None = None,
+        materialize: bool = True,
     ) -> ArtifactWriteResult:
         digest = digest or self._mutation_digest(mutation)
         entries = self._tree_entries(current_head) if current_head else {}
@@ -392,7 +443,8 @@ class ArtifactStore:
             )
 
         self._inject("after_ref_update")
-        self._materialize(commit_id)
+        if materialize:
+            self._materialize(commit_id)
         return ArtifactWriteResult(
             event_id=mutation.event_id,
             commit_id=commit_id,

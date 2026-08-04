@@ -50,12 +50,16 @@ enum TicketWriter {
         title: String = "Untitled",
         order: Int,
         draft: Bool = false,
-        workerSizingDefaults: WorkerSizingDefaults? = nil
+        workerSizingDefaults: WorkerSizingDefaults? = nil,
+        projectScopeToken: String? = nil
     ) throws -> Ticket {
         let dir = ProjectResolver.ticketsDirectory(in: project)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        let (prefix, nextId) = try BoardProjectConfig.claimNextId(forRepoAt: project.repoPath)
+        let (prefix, nextId) = try BoardProjectConfig.claimNextId(
+            forRepoAt: project.repoPath,
+            projectScopeToken: projectScopeToken
+        )
         let id = "\(prefix)-\(nextId)"
 
         let ticket = Ticket(
@@ -77,7 +81,7 @@ enum TicketWriter {
             body: ""
         )
 
-        try save(ticket, in: project)
+        try save(ticket, in: project, projectScopeToken: projectScopeToken)
         return ticket
     }
 
@@ -89,7 +93,8 @@ enum TicketWriter {
         status: Ticket.Status,
         existingTickets: [Ticket],
         title: String = "Untitled",
-        workerSizingDefaults: WorkerSizingDefaults? = nil
+        workerSizingDefaults: WorkerSizingDefaults? = nil,
+        projectScopeToken: String? = nil
     ) throws -> Ticket {
         try mint(
             in: project,
@@ -97,7 +102,8 @@ enum TicketWriter {
             title: title,
             order: nextOrder(for: status, in: existingTickets),
             draft: true,
-            workerSizingDefaults: workerSizingDefaults
+            workerSizingDefaults: workerSizingDefaults,
+            projectScopeToken: projectScopeToken
         )
     }
 
@@ -112,12 +118,25 @@ enum TicketWriter {
     /// paragraph. Body sections outside `## Description` are preserved from
     /// the ticket's stored body — pass the up-to-date `Ticket` so the round
     /// trip stays clean.
-    static func save(_ ticket: Ticket, in project: ProjectResolver.LinkedProject) throws {
+    static func save(
+        _ ticket: Ticket,
+        in project: ProjectResolver.LinkedProject,
+        projectScopeToken: String? = nil
+    ) throws {
         let url = ProjectResolver.ticketsDirectory(in: project)
             .appendingPathComponent("\(ticket.id).md")
         let rendered = render(ticket)
         do {
-            try rendered.data(using: .utf8)?.write(to: url, options: .atomic)
+            if BoardProjectConfig.usesArtifactWriter(forRepoAt: project.repoPath) {
+                _ = try OrchestratorClient.writeArtifactTicket(
+                    repoPath: project.repoPath.path,
+                    ticketID: ticket.id,
+                    markdown: rendered,
+                    projectScopeToken: projectScopeToken
+                )
+            } else {
+                try rendered.data(using: .utf8)?.write(to: url, options: .atomic)
+            }
         } catch {
             throw WriteError.writeFailed(underlying: error)
         }
@@ -125,11 +144,23 @@ enum TicketWriter {
 
     /// Delete a ticket file from disk. Missing files are treated as already
     /// deleted (no-op).
-    static func delete(_ id: String, in project: ProjectResolver.LinkedProject) throws {
+    static func delete(
+        _ id: String,
+        in project: ProjectResolver.LinkedProject,
+        projectScopeToken: String? = nil
+    ) throws {
         let url = ProjectResolver.ticketsDirectory(in: project)
             .appendingPathComponent("\(id).md")
         do {
-            try FileManager.default.removeItem(at: url)
+            if BoardProjectConfig.usesArtifactWriter(forRepoAt: project.repoPath) {
+                try OrchestratorClient.deleteArtifactTicket(
+                    repoPath: project.repoPath.path,
+                    ticketID: id,
+                    projectScopeToken: projectScopeToken
+                )
+            } else {
+                try FileManager.default.removeItem(at: url)
+            }
         } catch let error as NSError where error.domain == NSCocoaErrorDomain
             && error.code == NSFileNoSuchFileError {
             return

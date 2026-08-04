@@ -471,7 +471,8 @@ enum ProgramBoardTicketMover {
     static func move(
         _ request: ProgramBoardDropRequest,
         dispatchSource: String = "board-drop",
-        workerSizingDefaults: TicketWriter.WorkerSizingDefaults? = nil
+        workerSizingDefaults: TicketWriter.WorkerSizingDefaults? = nil,
+        projectScopeToken: String? = nil
     ) throws -> ProgramBoardDropResult {
         let repoURL = URL(fileURLWithPath: request.repoPath)
             .standardizedFileURL
@@ -513,7 +514,11 @@ enum ProgramBoardTicketMover {
             ? TicketWriter.applyingWorkerSizingDefaults(workerSizingDefaults, to: updated)
             : updated
         do {
-            try TicketWriter.save(ticketToSave, in: project)
+            try TicketWriter.save(
+                ticketToSave,
+                in: project,
+                projectScopeToken: projectScopeToken
+            )
         } catch {
             throw ProgramBoardDropError.saveFailed(ticketID: current.id, underlying: error)
         }
@@ -561,7 +566,8 @@ enum ProgramBoardCreatePolicy {
 enum ProgramBoardTicketCreator {
     static func create(
         _ request: ProgramBoardCreateRequest,
-        workerSizingDefaults: TicketWriter.WorkerSizingDefaults? = nil
+        workerSizingDefaults: TicketWriter.WorkerSizingDefaults? = nil,
+        projectScopeToken: String? = nil
     ) throws -> ProgramBoardCreateResult {
         let repoURL = URL(fileURLWithPath: request.repoPath)
             .standardizedFileURL
@@ -571,7 +577,8 @@ enum ProgramBoardTicketCreator {
             in: project,
             status: request.status,
             existingTickets: ProjectResolver.scanTickets(in: project),
-            title: "Untitled"
+            title: "Untitled",
+            projectScopeToken: projectScopeToken
         )
         let withDescription = TicketWriter.ticket(
             draft,
@@ -601,9 +608,14 @@ enum ProgramBoardTicketCreator {
         let ticketToSave = try TicketImageStore.ingest(
             request.imageURLs,
             into: sizedTicket,
-            in: project
+            in: project,
+            projectScopeToken: projectScopeToken
         )
-        try TicketWriter.save(ticketToSave, in: project)
+        try TicketWriter.save(
+            ticketToSave,
+            in: project,
+            projectScopeToken: projectScopeToken
+        )
         return ProgramBoardCreateResult(
             ticket: ticketToSave,
             shouldDispatch: request.shouldDispatch
@@ -664,7 +676,8 @@ enum ProgramBoardTicketEditor {
     static func save(
         _ request: ProgramBoardEditRequest,
         fileManager: FileManager = .default,
-        workerSizingDefaults: TicketWriter.WorkerSizingDefaults? = nil
+        workerSizingDefaults: TicketWriter.WorkerSizingDefaults? = nil,
+        projectScopeToken: String? = nil
     ) throws -> ProgramBoardEditResult {
         let repoURL = URL(fileURLWithPath: request.repoPath)
             .standardizedFileURL
@@ -715,10 +728,15 @@ enum ProgramBoardTicketEditor {
             request.imageURLs,
             into: sizedTicket,
             in: project,
-            fileManager: fileManager
+            fileManager: fileManager,
+            projectScopeToken: projectScopeToken
         )
 
-        try TicketWriter.save(ticketToSave, in: project)
+        try TicketWriter.save(
+            ticketToSave,
+            in: project,
+            projectScopeToken: projectScopeToken
+        )
         let refreshed = [ticketToSave] + ProjectResolver.scanTickets(in: project).filter { $0.id != ticketToSave.id }
         return ProgramBoardEditResult(
             ticket: ticketToSave,
@@ -731,12 +749,19 @@ enum ProgramBoardTicketEditor {
 }
 
 enum ProgramBoardTicketDeleter {
-    static func delete(_ request: ProgramBoardDeleteRequest) throws -> ProgramBoardDeleteResult {
+    static func delete(
+        _ request: ProgramBoardDeleteRequest,
+        projectScopeToken: String? = nil
+    ) throws -> ProgramBoardDeleteResult {
         let repoURL = URL(fileURLWithPath: request.repoPath)
             .standardizedFileURL
             .resolvingSymlinksInPath()
         let project = ProjectResolver.LinkedProject(repoPath: repoURL)
-        try TicketWriter.delete(request.ticketID, in: project)
+        try TicketWriter.delete(
+            request.ticketID,
+            in: project,
+            projectScopeToken: projectScopeToken
+        )
         return ProgramBoardDeleteResult(
             ticketID: request.ticketID,
             repoPath: project.repoPath.path

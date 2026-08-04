@@ -16,6 +16,7 @@ when it finishes. No external service is involved.
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import hashlib
 import json
@@ -31,6 +32,8 @@ import sys
 import threading
 import time
 import tomllib
+import uuid
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -42,10 +45,30 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 try:
     from services.artifact_lifecycle import ArtifactLifecycleCoordinator
-    from services.artifact_store import ArtifactStore, ArtifactValidationError
+    from services.artifact_store import (
+        ArtifactConcurrentUpdate,
+        ArtifactMutation,
+        ArtifactStore,
+        ArtifactValidationError,
+        AttachmentWrite,
+        ConfigWrite,
+        TicketDelete,
+        TicketWrite,
+        _ticket_front_matter_value,
+    )
 except ModuleNotFoundError:  # Installed direct-script layout.
     from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
-    from artifact_store import ArtifactStore, ArtifactValidationError  # type: ignore[no-redef]
+    from artifact_store import (  # type: ignore[no-redef]
+        ArtifactConcurrentUpdate,
+        ArtifactMutation,
+        ArtifactStore,
+        ArtifactValidationError,
+        AttachmentWrite,
+        ConfigWrite,
+        TicketDelete,
+        TicketWrite,
+        _ticket_front_matter_value,
+    )
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
 from codex_model_catalog import (
     CODEX_FAMILIES,
@@ -74,6 +97,7 @@ from relay_authorization import (
 from session_capture import capture_session_review
 from tickets import (
     TicketParseError,
+    parse as parse_ticket,
     read as read_ticket,
     scan_repo,
     write as write_ticket,
@@ -460,6 +484,46 @@ def render_template(template: str, **vars: Any) -> str:
 def _ticket_frontmatter(ticket: dict[str, Any]) -> dict[str, str]:
     raw = ticket.get("_raw_fields")
     return raw if isinstance(raw, dict) else {}
+
+
+def _upsert_ticket_frontmatter_fields(markdown: bytes, fields: dict[str, str]) -> bytes:
+    """Set daemon-owned artifact metadata without rewriting ticket prose."""
+    try:
+        lines = markdown.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise ValueError("ticket markdown must be UTF-8") from error
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("ticket markdown has no frontmatter")
+    try:
+        closing = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
+    except StopIteration as error:
+        raise ValueError("ticket markdown frontmatter is not closed") from error
+    positions: dict[str, int] = {}
+    for index in range(1, closing):
+        key, separator, _ = lines[index].partition(":")
+        if separator:
+            positions[key.strip()] = index
+    insertion = positions.get("id", 0) + 1
+    for key, value in fields.items():
+        rendered = f"{key}: {value}"
+        if key in positions:
+            lines[positions[key]] = rendered
+        else:
+            lines.insert(insertion, rendered)
+            insertion += 1
+            positions = {
+                existing: (position + 1 if position >= insertion - 1 else position)
+                for existing, position in positions.items()
+            }
+    return ("\n".join(lines).rstrip("\n") + "\n").encode("utf-8")
+
+
+def _artifact_board_event_id(kind: str, request_id: str | None) -> str:
+    raw = str(request_id or uuid.uuid4().hex).strip()
+    safe = re.sub(r"[^A-Za-z0-9_.:-]", "-", raw)[:120].strip("-")
+    if not safe:
+        safe = uuid.uuid4().hex
+    return f"board-{kind}:{safe}"
 
 
 def _required_sizing_value(ticket: dict[str, Any], field: str) -> str:
@@ -3979,8 +4043,13 @@ class Daemon:
         self.followup_proposals = FollowupProposalStore(data / "followup_proposals.db")
         self.graphify_path = data / "graphify.db"
         self.program_registry_path = _program_registry_path()
-        self.project_registry_v2_path = data / "projects" / "registry-v2.json"
-        self._artifact_state_root = data
+        # Registry/artifact ownership is rooted directly at Application
+        # Support/relay-runner. Operational daemon ledgers remain under the
+        # orchestrator/ child. Keeping these paths aligned with the Swift v2
+        # registry is required for one confirmed project identity.
+        app_support_root = data.parent if data.name == "orchestrator" else data
+        self.project_registry_v2_path = app_support_root / "projects" / "registry-v2.json"
+        self._artifact_state_root = app_support_root
         self._artifact_device_id = "daemon-" + hashlib.sha256(
             f"{socket.gethostname()}:{data}".encode("utf-8")
         ).hexdigest()[:24]
@@ -4085,6 +4154,191 @@ class Daemon:
                     f"[orchestrator] artifact lifecycle recovery failed for {repo_path}: {error}",
                     file=sys.stderr,
                 )
+
+    def artifact_board_claim_next_id(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically claim the artifact-backed board's next display ID."""
+        lifecycle = self._artifact_board_lifecycle(repo_path, project_scope_token)
+        event_id = _artifact_board_event_id("claim", request_id)
+        for attempt in range(2):
+            snapshot = lifecycle.store.snapshot()
+            path = ".orchestrator/config.toml"
+            content = snapshot.files[path]
+            try:
+                config = tomllib.loads(content.decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+                raise ValueError(f"artifact config is invalid: {error}") from error
+            prefix = str(config.get("prefix") or "").strip()
+            next_id = config.get("next_id")
+            if (
+                not prefix
+                or not prefix.isalnum()
+                or not isinstance(next_id, int)
+                or isinstance(next_id, bool)
+                or next_id <= 0
+            ):
+                raise ValueError("artifact config has no valid prefix/next_id")
+            rendered, count = re.subn(
+                r"(?m)^next_id\s*=\s*[^\n]+$",
+                f"next_id = {next_id + 1}",
+                content.decode("utf-8"),
+                count=1,
+            )
+            if count != 1:
+                raise ValueError("artifact config next_id is ambiguous")
+            try:
+                write = lifecycle.store.mutate(ArtifactMutation(
+                    event_id=event_id,
+                    actor_type="user",
+                    device_id=self._artifact_device_id,
+                    expected_base=snapshot.commit_id,
+                    operations=(ConfigWrite(rendered.encode("utf-8")),),
+                    summary=f"Claim Relay ticket ID {prefix}-{next_id}",
+                ))
+                return {
+                    "prefix": prefix,
+                    "id": int(next_id),
+                    "ticket_id": f"{prefix}-{next_id}",
+                    "artifact_commit": write.commit_id,
+                    "idempotent": write.idempotent,
+                }
+            except ArtifactConcurrentUpdate:
+                if attempt:
+                    raise
+        raise AssertionError("unreachable")
+
+    def artifact_board_write_ticket(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        ticket_id: str,
+        markdown_base64: str,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        lifecycle = self._artifact_board_lifecycle(repo_path, project_scope_token)
+        try:
+            markdown = base64.b64decode(markdown_base64, validate=True)
+            parsed = parse_ticket(markdown.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, TicketParseError) as error:
+            raise ValueError(f"ticket write payload is invalid: {error}") from error
+        if str(parsed.get("id") or "") != ticket_id:
+            raise ValueError("ticket write ID does not match markdown frontmatter")
+        event_id = _artifact_board_event_id("ticket", request_id)
+        for attempt in range(2):
+            snapshot = lifecycle.store.snapshot()
+            path = f".orchestrator/{ticket_id}.md"
+            existing = snapshot.files.get(path)
+            artifact_id = (
+                _ticket_front_matter_value(existing, "artifact_id")
+                if existing is not None
+                else None
+            ) or "ticket-" + hashlib.sha256(
+                f"{lifecycle.store.project_id}:{ticket_id}".encode("utf-8")
+            ).hexdigest()[:40]
+            edited = _upsert_ticket_frontmatter_fields(
+                markdown,
+                {"user_edited_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")},
+            )
+            try:
+                write = lifecycle.store.mutate(ArtifactMutation(
+                    event_id=event_id,
+                    actor_type="user",
+                    device_id=self._artifact_device_id,
+                    expected_base=snapshot.commit_id,
+                    operations=(TicketWrite(ticket_id, artifact_id, edited),),
+                    summary=f"Save Relay ticket {ticket_id}",
+                ))
+                stored = lifecycle.store.snapshot().files[path]
+                return {
+                    "ticket_id": ticket_id,
+                    "markdown_base64": base64.b64encode(stored).decode("ascii"),
+                    "artifact_commit": write.commit_id,
+                    "idempotent": write.idempotent,
+                }
+            except ArtifactConcurrentUpdate:
+                if attempt:
+                    raise
+        raise AssertionError("unreachable")
+
+    def artifact_board_delete_ticket(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        ticket_id: str,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        lifecycle = self._artifact_board_lifecycle(repo_path, project_scope_token)
+        snapshot = lifecycle.store.snapshot()
+        path = f".orchestrator/{ticket_id}.md"
+        if path not in snapshot.files:
+            return {
+                "ticket_id": ticket_id,
+                "artifact_commit": snapshot.commit_id,
+                "idempotent": True,
+            }
+        write = lifecycle.store.mutate(ArtifactMutation(
+            event_id=_artifact_board_event_id("delete", request_id),
+            actor_type="user",
+            device_id=self._artifact_device_id,
+            expected_base=snapshot.commit_id,
+            operations=(TicketDelete(ticket_id),),
+            summary=f"Delete Relay ticket {ticket_id}",
+        ))
+        return {
+            "ticket_id": ticket_id,
+            "artifact_commit": write.commit_id,
+            "idempotent": write.idempotent,
+        }
+
+    def artifact_board_write_attachment(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        ticket_id: str,
+        filename: str,
+        mime_type: str,
+        content_base64: str,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        lifecycle = self._artifact_board_lifecycle(repo_path, project_scope_token)
+        try:
+            content = base64.b64decode(content_base64, validate=True)
+        except ValueError as error:
+            raise ValueError("attachment content is not valid base64") from error
+        snapshot = lifecycle.store.snapshot()
+        if f".orchestrator/{ticket_id}.md" not in snapshot.files:
+            raise ValueError(f"attachment owner ticket does not exist: {ticket_id}")
+        write = lifecycle.store.mutate(ArtifactMutation(
+            event_id=_artifact_board_event_id("attachment", request_id),
+            actor_type="user",
+            device_id=self._artifact_device_id,
+            expected_base=snapshot.commit_id,
+            operations=(AttachmentWrite(ticket_id, filename, mime_type, content),),
+            summary=f"Attach {filename} to Relay ticket {ticket_id}",
+        ))
+        return {
+            "ticket_id": ticket_id,
+            "filename": filename,
+            "artifact_commit": write.commit_id,
+            "idempotent": write.idempotent,
+        }
+
+    def _artifact_board_lifecycle(
+        self, repo_path: str, project_scope_token: str | None
+    ) -> ArtifactLifecycleCoordinator:
+        lifecycle = self._artifact_lifecycle(repo_path)
+        if lifecycle is None:
+            raise ValueError("project is not using the artifact-backed board writer")
+        lifecycle.validate_scope(project_scope_token)
+        return lifecycle
 
     # -- prompt rendering -------------------------------------------------
 
@@ -8427,6 +8681,45 @@ class Handler(BaseHTTPRequestHandler):
                     project_scope_token=body.get("project_scope_token"),
                 )
                 return 201, result
+
+            if method == "POST" and segments == ["v1", "artifacts", "tickets", "claim-next-id"]:
+                body = _read_body(self)
+                return 201, self.daemon.artifact_board_claim_next_id(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    request_id=body.get("request_id"),
+                )
+
+            if method == "POST" and segments == ["v1", "artifacts", "tickets", "write"]:
+                body = _read_body(self)
+                return 200, self.daemon.artifact_board_write_ticket(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    ticket_id=body.get("ticket_id", ""),
+                    markdown_base64=body.get("markdown_base64", ""),
+                    request_id=body.get("request_id"),
+                )
+
+            if method == "POST" and segments == ["v1", "artifacts", "tickets", "delete"]:
+                body = _read_body(self)
+                return 200, self.daemon.artifact_board_delete_ticket(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    ticket_id=body.get("ticket_id", ""),
+                    request_id=body.get("request_id"),
+                )
+
+            if method == "POST" and segments == ["v1", "artifacts", "attachments", "write"]:
+                body = _read_body(self)
+                return 200, self.daemon.artifact_board_write_attachment(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    ticket_id=body.get("ticket_id", ""),
+                    filename=body.get("filename", ""),
+                    mime_type=body.get("mime_type", ""),
+                    content_base64=body.get("content_base64", ""),
+                    request_id=body.get("request_id"),
+                )
 
             if method == "POST" and segments == ["v1", "orchestrator-actions"]:
                 body = _read_body(self)

@@ -37,6 +37,29 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), custom)
     }
 
+    func testArtifactLifecycleConfigSelectsDaemonOwnedBoardWriter() throws {
+        let repo = try makeTempRepo(named: "artifact-board")
+        defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
+        let directory = repo.appendingPathComponent(".orchestrator", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("""
+        schema_version = 2
+        project_id = "project-1"
+        prefix = "AB"
+        artifact_ref = "refs/heads/relay/artifacts"
+        remote_sync = "local_only"
+        artifact_lifecycle = "enabled"
+        next_id = 1
+
+        """.utf8).write(to: directory.appendingPathComponent("config.toml"))
+
+        XCTAssertTrue(BoardProjectConfig.usesArtifactWriter(forRepoAt: repo))
+
+        let legacy = "prefix = \"AB\"\nnext_id = 1\n"
+        try Data(legacy.utf8).write(to: directory.appendingPathComponent("config.toml"))
+        XCTAssertFalse(BoardProjectConfig.usesArtifactWriter(forRepoAt: repo))
+    }
+
     func testMintInitializesMouseAssistAndBumpsNextId() throws {
         let repo = try makeTempRepo(named: "mouse-assist")
         defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }

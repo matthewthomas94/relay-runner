@@ -32,13 +32,34 @@ enum BoardProjectConfig {
         try writeConfig(prefix: prefix, nextId: 1, to: configURL)
     }
 
-    static func claimNextId(forRepoAt repoURL: URL) throws -> (prefix: String, id: Int) {
+    static func claimNextId(
+        forRepoAt repoURL: URL,
+        projectScopeToken: String? = nil
+    ) throws -> (prefix: String, id: Int) {
         try ensureExists(forRepoAt: repoURL)
+
+        if usesArtifactWriter(forRepoAt: repoURL) {
+            return try OrchestratorClient.claimArtifactTicketID(
+                repoPath: repoURL.path,
+                projectScopeToken: projectScopeToken
+            )
+        }
 
         let configURL = configURL(forRepoAt: repoURL)
         let config = try readConfig(at: configURL)
         try writeConfig(prefix: config.prefix, nextId: config.nextId + 1, to: configURL)
         return (config.prefix, config.nextId)
+    }
+
+    static func usesArtifactWriter(forRepoAt repoURL: URL) -> Bool {
+        let configURL = configURL(forRepoAt: repoURL)
+        guard let raw = try? String(contentsOf: configURL, encoding: .utf8),
+              let table = try? TOMLTable(string: raw) else {
+            return false
+        }
+        return table["schema_version"]?.tomlValue.int == 2
+            && table["artifact_lifecycle"]?.tomlValue.string == "enabled"
+            && table["artifact_ref"]?.tomlValue.string == "refs/heads/relay/artifacts"
     }
 
     static func derivedPrefix(forRepoNamed repoName: String) -> String {

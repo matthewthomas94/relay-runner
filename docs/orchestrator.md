@@ -169,8 +169,12 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | `services/orchestrator_workflow.md` | Default workflow template |
 | `services/orchestrator_artifact_workflow.md` | Source-only worker contract for artifact-lifecycle projects |
 | `services/artifact_lifecycle.py` | Artifact claim, snapshot, structured outcome, lease, review, and merge publication coordinator |
+| `services/artifact_migration.py` | Journaled legacy preflight, bootstrap, cutover, Program rebuild, retention preview, and rollback coordinator |
+| `services/fresh_install.py` | State-preserving app replacement and recoverable Relay-owned state reset |
 | `Sources/relay-orchestrator-mcp/` | Swift MCP proxy (HTTP → MCP tools) |
 | `scripts/relay-orchestrator` | Launcher / installer |
+| `scripts/relay-artifact-migrate` | Preview/execute/resume/rollback CLI for RR-270 phase 8 |
+| `scripts/relay-runner-fresh-install` | Preserving reinstall and explicit recoverable reset CLI |
 | `<repo>/.orchestrator/<TICKET_ID>.md` | One ticket per file (board source of truth) |
 | `<repo>/.orchestrator/config.toml` | Repo-scoped ticket counter (`prefix`, `next_id`) |
 | `~/Library/Application Support/relay-runner/projects/registry-v2.json` | Opt-in schema-2 project registry; see [registry v2 ownership and recovery](architecture/registry-v2.md) |
@@ -190,6 +194,8 @@ When registry v2 is enabled, Workspace and provider sessions use the [explicit p
 Projects that separately opt into artifact storage use the [private-index project artifact writer](architecture/artifact-store.md). Its orphan `refs/heads/relay/artifacts` ref is canonical; repo-root `.orchestrator/` is an excluded, verified materialization. Artifact storage begins local-only and never changes or publishes a source ref.
 
 Projects may separately opt into the [artifact-owned worker lifecycle](architecture/artifact-lifecycle.md) after draining legacy runs. Confirmed project scope selects an immutable artifact snapshot; workers commit source only and submit bounded structured outcomes. Only a reviewed source merge lets the artifact writer publish canonical completion and dependency progression. `artifact_lifecycle = "legacy"` remains the reversible compatibility gate during migration.
+
+Existing direct-file projects move through the [guarded migration, rollback, and reinstall recovery](architecture/artifact-migration.md) workflow. The migration remains local-only without a separately confirmed first normal push, isolates source cleanup in one reviewed commit, and retains every artifact/remote ref during rollback.
 
 ## Troubleshooting
 

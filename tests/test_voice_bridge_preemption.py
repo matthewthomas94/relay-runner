@@ -3205,6 +3205,17 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertIn("sidecar_lane.py", script)
         self.assertIn("speech_coordinator.py", script)
         self.assertIn("codex_model_catalog.py", script)
+        self.assertIn("artifact_lifecycle.py", script)
+        self.assertIn("artifact_migration.py", script)
+        self.assertIn("artifact_migration_cli.py", script)
+        self.assertIn("artifact_retention.py", script)
+        self.assertIn("artifact_store.py", script)
+        self.assertIn("artifact_sync.py", script)
+        self.assertIn("program_artifacts.py", script)
+        self.assertIn("fresh_install.py", script)
+        self.assertIn("fresh_install_cli.py", script)
+        self.assertIn("relay-artifact-migrate", script)
+        self.assertIn("relay-runner-fresh-install", script)
         self.assertNotIn('if [ -f "$PROJECT_ROOT/services/$f" ]', script)
 
     def test_build_bundle_includes_swiftterm_metal_resources(self):

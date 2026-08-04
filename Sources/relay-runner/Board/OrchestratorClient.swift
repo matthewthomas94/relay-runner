@@ -33,6 +33,36 @@ private struct SpikeFollowupBatchResponse: Decodable {
     let batch: SpikeFollowupBatch
 }
 
+private struct ArtifactBoardClaimResponse: Decodable {
+    let prefix: String
+    let id: Int
+}
+
+private struct ArtifactBoardTicketResponse: Decodable {
+    let markdownBase64: String
+
+    private enum CodingKeys: String, CodingKey {
+        case markdownBase64 = "markdown_base64"
+    }
+}
+
+private final class BlockingHTTPResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Result<(Data, URLResponse), Error>?
+
+    func set(_ value: Result<(Data, URLResponse), Error>) {
+        lock.lock()
+        self.value = value
+        lock.unlock()
+    }
+
+    func get() -> Result<(Data, URLResponse), Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
 struct SpikeFollowupBatch: Decodable, Equatable, Identifiable {
     let id: String
     let originRepoPath: String
@@ -132,6 +162,93 @@ enum OrchestratorClient {
             return
         }
         post(req, label: "dispatch \(ticketId)")
+    }
+
+    static func claimArtifactTicketID(
+        repoPath: String,
+        projectScopeToken: String?
+    ) throws -> (prefix: String, id: Int) {
+        let payload = artifactPayload(
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+        let data = try synchronousPost(
+            path: "/v1/artifacts/tickets/claim-next-id",
+            payload: payload
+        )
+        let response = try decode(ArtifactBoardClaimResponse.self, from: data)
+        return (response.prefix, response.id)
+    }
+
+    static func writeArtifactTicket(
+        repoPath: String,
+        ticketID: String,
+        markdown: String,
+        projectScopeToken: String?
+    ) throws -> String {
+        var payload = artifactPayload(
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+        payload["ticket_id"] = ticketID
+        payload["markdown_base64"] = Data(markdown.utf8).base64EncodedString()
+        let data = try synchronousPost(
+            path: "/v1/artifacts/tickets/write",
+            payload: payload
+        )
+        let response = try decode(ArtifactBoardTicketResponse.self, from: data)
+        guard let stored = Data(base64Encoded: response.markdownBase64),
+              let value = String(data: stored, encoding: .utf8) else {
+            throw OrchestratorClientError.decodeFailed("Artifact ticket bytes are not UTF-8.")
+        }
+        return value
+    }
+
+    static func deleteArtifactTicket(
+        repoPath: String,
+        ticketID: String,
+        projectScopeToken: String?
+    ) throws {
+        var payload = artifactPayload(
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+        payload["ticket_id"] = ticketID
+        _ = try synchronousPost(path: "/v1/artifacts/tickets/delete", payload: payload)
+    }
+
+    static func writeArtifactAttachment(
+        repoPath: String,
+        ticketID: String,
+        filename: String,
+        mimeType: String,
+        content: Data,
+        projectScopeToken: String?
+    ) throws {
+        var payload = artifactPayload(
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+        payload["ticket_id"] = ticketID
+        payload["filename"] = filename
+        payload["mime_type"] = mimeType
+        payload["content_base64"] = content.base64EncodedString()
+        _ = try synchronousPost(path: "/v1/artifacts/attachments/write", payload: payload)
+    }
+
+    static func artifactRequest(
+        path: String,
+        repoPath: String,
+        projectScopeToken: String?,
+        values: [String: Any] = [:],
+        port: Int
+    ) -> URLRequest? {
+        var payload = artifactPayload(
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+        for (key, value) in values { payload[key] = value }
+        return postRequest(path: path, payload: payload, port: port)
     }
 
     /// Ask the daemon to scan the active repo and dispatch eligible queued tickets.
@@ -536,6 +653,66 @@ enum OrchestratorClient {
         )
     }
 
+    private static func artifactPayload(
+        repoPath: String,
+        projectScopeToken: String?
+    ) -> [String: Any] {
+        var payload: [String: Any] = [
+            "repo_path": repoPath,
+            "request_id": UUID().uuidString,
+        ]
+        if let projectScopeToken, !projectScopeToken.isEmpty {
+            payload["project_scope_token"] = projectScopeToken
+        }
+        return payload
+    }
+
+    private static func synchronousPost(
+        path: String,
+        payload: [String: Any],
+        timeout: TimeInterval = 15
+    ) throws -> Data {
+        guard let request = postRequest(path: path, payload: payload, port: readPort()) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        let result = BlockingHTTPResult()
+        let semaphore = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                result.set(.failure(error))
+            } else if let data, let response {
+                result.set(.success((data, response)))
+            } else {
+                result.set(.failure(OrchestratorClientError.decodeFailed("Empty daemon response.")))
+            }
+            semaphore.signal()
+        }.resume()
+        guard semaphore.wait(timeout: .now() + timeout) == .success else {
+            throw OrchestratorClientError.timedOut
+        }
+        guard let outcome = result.get() else {
+            throw OrchestratorClientError.decodeFailed("Missing daemon response.")
+        }
+        let (data, response) = try outcome.get()
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw OrchestratorClientError.badStatus(status, body)
+        }
+        return data
+    }
+
+    private static func decode<Value: Decodable>(
+        _ type: Value.Type,
+        from data: Data
+    ) throws -> Value {
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            throw OrchestratorClientError.decodeFailed(error.localizedDescription)
+        }
+    }
+
     private static func postRequest(path: String, payload: [String: Any], port: Int) -> URLRequest? {
         guard let url = URL(string: "http://127.0.0.1:\(port)\(path)"),
               let body = try? JSONSerialization.data(withJSONObject: payload, options: [.withoutEscapingSlashes]) else {
@@ -705,6 +882,7 @@ enum OrchestratorClientError: Error, LocalizedError, Equatable {
     case invalidRequest
     case badStatus(Int, String)
     case decodeFailed(String)
+    case timedOut
     case daemonRefreshDeferred
     case daemonRefreshFailed(String)
 
@@ -717,6 +895,8 @@ enum OrchestratorClientError: Error, LocalizedError, Equatable {
             return "Orchestrator returned HTTP \(status). \(detail)"
         case .decodeFailed(let message):
             return "Could not decode orchestrator response: \(message)"
+        case .timedOut:
+            return "The local artifact writer did not respond before the board save timed out."
         case .daemonRefreshDeferred:
             return (
                 "Relay Runner needs to restart the orchestrator to load the bundled Program Workspace schema, "

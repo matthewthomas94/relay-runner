@@ -723,7 +723,8 @@ final class ProgramBoardOverlayController {
         do {
             let result = try ProgramBoardTicketCreator.create(
                 request,
-                workerSizingDefaults: workerSizingDefaultsProvider()
+                workerSizingDefaults: workerSizingDefaultsProvider(),
+                projectScopeToken: projectScopeTokenProvider(request.repoPath)
             )
             model.applyTicket(result.ticket, projectPath: request.repoPath)
             if result.shouldDispatch {
@@ -796,7 +797,8 @@ final class ProgramBoardOverlayController {
         do {
             let result = try ProgramBoardTicketEditor.save(
                 request,
-                workerSizingDefaults: workerSizingDefaultsProvider()
+                workerSizingDefaults: workerSizingDefaultsProvider(),
+                projectScopeToken: projectScopeTokenProvider(request.repoPath)
             )
             model.applyTicket(result.ticket, projectPath: request.repoPath)
             if result.shouldDispatch {
@@ -816,7 +818,10 @@ final class ProgramBoardOverlayController {
 
     private func handleDelete(_ request: ProgramBoardDeleteRequest) {
         do {
-            _ = try ProgramBoardTicketDeleter.delete(request)
+            _ = try ProgramBoardTicketDeleter.delete(
+                request,
+                projectScopeToken: projectScopeTokenProvider(request.repoPath)
+            )
             model.removeTicket(ticketID: request.ticketID, projectPath: request.repoPath)
         } catch {
             NSLog("[relay-runner] failed to delete program ticket \(request.ticketID) in \(request.repoPath): \(error)")
@@ -843,7 +848,8 @@ final class ProgramBoardOverlayController {
         do {
             let result = try ProgramBoardTicketMover.move(
                 unresolved,
-                workerSizingDefaults: workerSizingDefaultsProvider()
+                workerSizingDefaults: workerSizingDefaultsProvider(),
+                projectScopeToken: projectScopeTokenProvider(unresolved.repoPath)
             )
             model.applyTicket(result.ticket, projectPath: unresolved.repoPath)
             if let dispatch = result.dispatchRequest {

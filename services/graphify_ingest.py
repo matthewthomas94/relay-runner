@@ -40,8 +40,11 @@ def ingest_registered_projects(
     read-only inputs. All writes go through the provided GraphifyCoreStore.
     """
     registry = _load_registry(Path(registry_path))
-    active_project_id = registry.get("activeProjectID")
-    active_project_path = _clean_path(active_project_id)
+    registry_v2 = registry.get("schema_version") == 2
+    active_project_id = (
+        registry.get("active_project_id") if registry_v2 else registry.get("activeProjectID")
+    )
+    active_project_path = None if registry_v2 else _clean_path(active_project_id)
     active_workspace_root_path = _clean_path(registry.get("activeWorkspaceRootID"))
     workspace_root_paths = _workspace_root_paths(registry)
     workspace_roots_to_filter = {
@@ -75,25 +78,35 @@ def ingest_registered_projects(
     for record in registered_projects:
         if not isinstance(record, dict):
             continue
+        if registry_v2 and record.get("availability") != "available":
+            continue
         repo_path = _repo_path(record)
         if repo_path is None:
             continue
         if repo_path in workspace_roots_to_filter:
             continue
 
+        record_project_id = record.get("project_id") if registry_v2 else record.get("id")
+        display_name = (
+            record.get("display_name") if registry_v2 else record.get("displayName")
+        )
         project = store.upsert_node(
             kind=NODE_PROJECT,
             stable_key=_project_key(repo_path),
-            title=str(record.get("displayName") or record.get("alias") or Path(repo_path).name),
+            title=str(display_name or record.get("alias") or Path(repo_path).name),
             body={
-                "project_id": record.get("id") or repo_path,
+                "project_id": record_project_id or repo_path,
                 "repo_path": repo_path,
                 "root_path": repo_path,
                 "alias": record.get("alias"),
-                "display_name": record.get("displayName"),
-                "active": (record.get("id") or repo_path) == active_project_id,
-                "last_seen_at": record.get("lastSeenAt"),
+                "display_name": display_name,
+                "active": (record_project_id or repo_path) == active_project_id,
+                "last_seen_at": (
+                    record.get("last_resolved_at") if registry_v2 else record.get("lastSeenAt")
+                ),
                 "last_activation_source": record.get("lastActivationSource"),
+                "availability": record.get("availability") if registry_v2 else "available",
+                "remote": record.get("remote") if registry_v2 else None,
                 "providers": record.get("providers") if isinstance(record.get("providers"), dict) else {},
             },
         )
@@ -525,7 +538,12 @@ def _link_ticket_file_mentions(
 
 
 def _repo_path(record: dict[str, Any]) -> str | None:
-    return _clean_path(record.get("repoPath") or record.get("id"))
+    return _clean_path(
+        record.get("last_resolved_path")
+        or record.get("selected_path")
+        or record.get("repoPath")
+        or record.get("id")
+    )
 
 
 def _clean_path(value: Any) -> str | None:

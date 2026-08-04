@@ -44,6 +44,32 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(body["project_scope_token"] as? String, "confirmed-scope")
     }
 
+    func testArtifactBoardRequestCarriesOnlyConfirmedProjectMutationPayload() throws {
+        let request = try XCTUnwrap(OrchestratorClient.artifactRequest(
+            path: "/v1/artifacts/tickets/write",
+            repoPath: "/repo",
+            projectScopeToken: "confirmed-scope",
+            values: [
+                "ticket_id": "RR-9",
+                "markdown_base64": "LS0tCg==",
+            ],
+            port: 8123
+        ))
+
+        XCTAssertEqual(
+            request.url?.absoluteString,
+            "http://127.0.0.1:8123/v1/artifacts/tickets/write"
+        )
+        let body = try jsonBody(request)
+        XCTAssertEqual(body["repo_path"] as? String, "/repo")
+        XCTAssertEqual(body["project_scope_token"] as? String, "confirmed-scope")
+        XCTAssertEqual(body["ticket_id"] as? String, "RR-9")
+        XCTAssertEqual(body["markdown_base64"] as? String, "LS0tCg==")
+        XCTAssertNotNil(body["request_id"] as? String)
+        XCTAssertNil(body["source_ref"])
+        XCTAssertNil(body["force"])
+    }
+
     func testProgramReadySweepRequestUsesProgramSweepEndpoint() throws {
         let request = try XCTUnwrap(OrchestratorClient.programReadySweepRequest(
             trigger: "program-board-refresh",
