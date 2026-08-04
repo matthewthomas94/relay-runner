@@ -23,6 +23,7 @@ from graphify_core import (
     NODE_TICKET,
     GraphifyCoreStore,
 )
+from program_artifacts import ingest_project_program_events
 from tickets import scan_repo
 
 
@@ -60,6 +61,7 @@ def ingest_registered_projects(
         "runs": 0,
         "runs_deleted": 0,
         "providers": 0,
+        "program_events": 0,
         "files_indexed": 0,
         "files_unchanged": 0,
         "files_deleted": 0,
@@ -235,6 +237,13 @@ def ingest_registered_projects(
             store,
             projects=projects_by_repo.values(),
             seen_run_stable_keys=seen_run_stable_keys,
+        )
+
+    for repo_path, project in projects_by_repo.items():
+        counts["program_events"] += ingest_project_program_events(
+            store,
+            project=project,
+            repo_path=repo_path,
         )
 
     return counts

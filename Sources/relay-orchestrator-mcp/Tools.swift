@@ -597,9 +597,9 @@ struct ProgramStatusTool: MCPTool {
 struct SessionCaptureTool: MCPTool {
     let name = "session_capture"
     let description = """
-        Capture a meaningful work-session review directly into Graphify Core when the user wants to record shipped work, started work, blockers, \
+        Capture a meaningful work-session review into the confirmed project's Relay artifact history when the user wants to record shipped work, started work, blockers, \
         ideas, decisions, status updates, or notes. The tool writes ProgramEvent, Decision, Risk, Idea, and \
-        Status nodes, then links them to project, ticket, and run nodes when repo_path, ticket_id, or run_id evidence is available. \
+        Status event records, then rebuilds their Graphify projection and links them to project, ticket, and run nodes when repo_path, ticket_id, or run_id evidence is available. \
         Codex and Claude use the same schema; the daemon does not scrape either provider's transcript history, \
         so pass concise structured entries and any relevant conversation context explicitly.
         """
@@ -654,6 +654,10 @@ struct SessionCaptureTool: MCPTool {
                     "type": "string",
                     "description": "Optional idempotency key for this review capture.",
                 ],
+                "project_scope_token": [
+                    "type": "string",
+                    "description": "Confirmed registry-v2 project scope token. Normally inherited from RELAY_PROJECT_SCOPE_TOKEN for the active session.",
+                ],
             ],
             "required": ["repo_path", "entries"],
         ]
@@ -672,6 +676,12 @@ struct SessionCaptureTool: MCPTool {
         }
         if arguments["run_id"] != nil {
             body["run_id"] = try requireInt(arguments, "run_id")
+        }
+        if let token = arguments["project_scope_token"] as? String, !token.isEmpty {
+            body["project_scope_token"] = token
+        } else if let token = ProcessInfo.processInfo.environment["RELAY_PROJECT_SCOPE_TOKEN"],
+                  !token.isEmpty {
+            body["project_scope_token"] = token
         }
 
         let payload = try await DaemonClient.request(method: "POST", path: "/v1/program/capture", body: body)

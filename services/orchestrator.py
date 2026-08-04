@@ -8124,6 +8124,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         context: str | None = None,
         capture_id: str | None = None,
         source: str = "session_capture",
+        project_scope_token: str | None = None,
     ) -> dict:
         store = GraphifyCoreStore(self.graphify_path)
         counts = ingest_registered_projects(
@@ -8132,6 +8133,9 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             runs_db_path=self.runs.path,
             index_files=False,
         )
+        artifact_lifecycle = self._artifact_lifecycle(str(repo_path or "")) if repo_path else None
+        if artifact_lifecycle is not None:
+            artifact_lifecycle.validate_scope(project_scope_token)
         result = capture_session_review(
             store,
             repo_path=repo_path,
@@ -8142,6 +8146,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             context=context,
             capture_id=capture_id,
             source=source,
+            artifact_store=artifact_lifecycle.store if artifact_lifecycle is not None else None,
+            artifact_device_id=self._artifact_device_id if artifact_lifecycle is not None else None,
         )
         result["ingest_counts"] = counts
         return result
@@ -8418,6 +8424,7 @@ class Handler(BaseHTTPRequestHandler):
                     context=body.get("context"),
                     capture_id=body.get("capture_id"),
                     source=body.get("source") or "session_capture",
+                    project_scope_token=body.get("project_scope_token"),
                 )
                 return 201, result
 

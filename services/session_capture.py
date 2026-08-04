@@ -8,6 +8,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    from services.artifact_store import ArtifactStore
+except ModuleNotFoundError:  # Installed direct-script layout.
+    from artifact_store import ArtifactStore  # type: ignore[no-redef]
+
 from graphify_core import (
     EDGE_BELONGS_TO,
     EDGE_BLOCKS,
@@ -22,6 +27,11 @@ from graphify_core import (
     NODE_STATUS,
     NODE_TICKET,
     GraphifyCoreStore,
+)
+from program_artifacts import (
+    durable_program_event,
+    ingest_project_program_events,
+    write_program_events,
 )
 from tickets import scan_repo
 
@@ -80,12 +90,15 @@ def capture_session_review(
     capture_id: str | None = None,
     source: str = "session_capture",
     occurred_at: float | None = None,
+    artifact_store: ArtifactStore | None = None,
+    artifact_device_id: str | None = None,
 ) -> dict[str, Any]:
-    """Write structured session review entries to Graphify Core.
+    """Write structured session review entries to the selected Program authority.
 
     The caller supplies structured entries and any provider transcript context
-    it has. This keeps Codex and Claude on the same graph schema while avoiding
-    provider-specific transcript scraping inside the daemon.
+    it has. Artifact-enabled projects commit a privacy-filtered durable event
+    before refreshing Graphify; legacy projects retain the old projection-only
+    path until their reviewed migration. Codex and Claude share both schemas.
     """
     normalized_entries = _normalize_entries(entries)
     repo = _resolve_repo_path(repo_path)
@@ -107,6 +120,15 @@ def capture_session_review(
     links = 0
     created: list[dict[str, Any]] = []
 
+    resolved: list[tuple[
+        int,
+        dict[str, Any],
+        dict[str, Any] | None,
+        dict[str, Any] | None,
+        dict[str, Any] | None,
+    ]] = []
+    durable_documents: list[dict[str, Any]] = []
+
     for index, entry in enumerate(normalized_entries):
         entry_ticket = _resolve_ticket(
             store,
@@ -116,53 +138,119 @@ def capture_session_review(
         ) or default_ticket
         entry_run = _resolve_run(store, run_id=entry.get("run_id") or run_id) or default_run
         entry_project = project or _project_from_evidence(store, entry_ticket, entry_run)
-        node = store.upsert_node(
-            kind=entry["node_kind"],
-            stable_key=f"capture:{capture_id}:{index}",
-            project_id=entry_project["id"] if entry_project else None,
-            title=entry["title"],
-            body=_node_body(
-                capture_id=capture_id,
-                index=index,
-                entry=entry,
-                repo=repo,
+        resolved.append((index, entry, entry_ticket, entry_run, entry_project))
+        if artifact_store is not None:
+            if repo is None or entry_project is None:
+                raise SessionCaptureError("artifact-backed capture requires confirmed project scope")
+            durable_documents.append(
+                durable_program_event(
+                    project_id=artifact_store.project_id,
+                    stable_key=f"capture:{capture_id}:{index}",
+                    node_kind=entry["node_kind"],
+                    capture_id=capture_id,
+                    entry_index=index,
+                    summary=entry["title"],
+                    details=entry["body"],
+                    occurred_at=occurred_at,
+                    source=source,
+                    provider=provider_key,
+                    ticket_id=_ticket_id(entry_ticket),
+                    run_id=_run_id(entry_run),
+                    event_type=entry["event_type"],
+                    risk_type=entry["risk_type"],
+                    status=entry["status"],
+                )
+            )
+
+    artifact_result = None
+    if artifact_store is not None:
+        if not artifact_device_id:
+            raise SessionCaptureError("artifact-backed capture requires a writer device ID")
+        writer_digest = hashlib.sha256(
+            json.dumps(durable_documents, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:40]
+        artifact_result = write_program_events(
+            artifact_store,
+            durable_documents,
+            writer_event_id=f"program-capture:{writer_digest}",
+            device_id=artifact_device_id,
+            provider=provider_key,
+        )
+        assert project is not None and repo is not None
+        ingest_project_program_events(store, project=project, repo_path=repo)
+        for index, entry, _ticket, _run, _project in resolved:
+            node = store.find_node(
+                kind=entry["node_kind"],
+                stable_key=f"capture:{capture_id}:{index}",
+            )
+            if node is None:
+                raise SessionCaptureError(f"durable capture projection is missing entry {index}")
+            counts[node["kind"]] += 1
+            node_links = len(store.edges(src_id=node["id"])) + len(store.edges(dst_id=node["id"]))
+            links += node_links
+            created.append(
+                {"id": node["id"], "kind": node["kind"], "title": node["title"], "links": node_links}
+            )
+    else:
+        for index, entry, entry_ticket, entry_run, entry_project in resolved:
+            node = store.upsert_node(
+                kind=entry["node_kind"],
+                stable_key=f"capture:{capture_id}:{index}",
+                project_id=entry_project["id"] if entry_project else None,
+                title=entry["title"],
+                body=_node_body(
+                    capture_id=capture_id,
+                    index=index,
+                    entry=entry,
+                    repo=repo,
+                    ticket=entry_ticket,
+                    run=entry_run,
+                    provider_key=provider_key,
+                    context=context,
+                    source=source,
+                    occurred_at=occurred_at,
+                ),
+            )
+            counts[node["kind"]] += 1
+            linked = _link_capture_node(
+                store,
+                node=node,
+                project=entry_project,
                 ticket=entry_ticket,
                 run=entry_run,
-                provider_key=provider_key,
-                context=context,
-                source=source,
-                occurred_at=occurred_at,
-            ),
-        )
-        counts[node["kind"]] += 1
-        linked = _link_capture_node(
-            store,
-            node=node,
-            project=entry_project,
-            ticket=entry_ticket,
-            run=entry_run,
-            capture_id=capture_id,
-            entry=entry,
-        )
-        links += linked
-        created.append(
-            {
-                "id": node["id"],
-                "kind": node["kind"],
-                "title": node["title"],
-                "links": linked,
-            }
-        )
+                capture_id=capture_id,
+                entry=entry,
+            )
+            links += linked
+            created.append(
+                {
+                    "id": node["id"],
+                    "kind": node["kind"],
+                    "title": node["title"],
+                    "links": linked,
+                }
+            )
 
-    return {
+    result = {
         "capture_id": capture_id,
-        "message": _message(created, repo, provider_key),
+        "message": _message(
+            created,
+            repo,
+            provider_key,
+            durable=artifact_result is not None,
+        ),
         "nodes": created,
         "counts": {key: value for key, value in counts.items() if value},
         "links": links,
         "provider": provider_key,
         "repo_path": str(repo) if repo else None,
     }
+    if artifact_result is not None:
+        result["artifact_commit"] = artifact_result.commit_id
+        result["artifact_event_ids"] = list(artifact_result.event_ids)
+        result["artifact_idempotent"] = artifact_result.idempotent
+        result["durable_authority"] = "relay/artifacts"
+    return result
 
 
 def _normalize_entries(entries: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -394,10 +482,22 @@ def _capture_id(
     return f"{int(occurred_at * 1000)}-{digest}"
 
 
-def _message(nodes: list[dict[str, Any]], repo: Path | None, provider: str | None) -> str:
+def _message(
+    nodes: list[dict[str, Any]],
+    repo: Path | None,
+    provider: str | None,
+    *,
+    durable: bool = False,
+) -> str:
     repo_text = f" for {repo}" if repo else ""
     provider_text = f" ({provider})" if provider else ""
-    return f"Captured {len(nodes)} session review entr{'y' if len(nodes) == 1 else 'ies'}{repo_text}{provider_text} into Graphify Core."
+    destination = (
+        "into Relay artifacts and refreshed Graphify Core"
+        if durable
+        else "into Graphify Core"
+    )
+    noun = "entry" if len(nodes) == 1 else "entries"
+    return f"Captured {len(nodes)} session review {noun}{repo_text}{provider_text} {destination}."
 
 
 def _event_type(raw: dict[str, Any], raw_kind: str) -> str:

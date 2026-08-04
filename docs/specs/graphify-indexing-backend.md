@@ -19,7 +19,7 @@ Graphify has two layers that should not be collapsed:
 - **Graphify Core:** program graph data: Project, Initiative, Ticket, Run, AgentProvider, Risk, Decision, File, and edges such as contains, depends_on, blocks, executes, awaits_merge, related_to, uses_provider, and mentions_file. This is product state and coordination state.
 - **Graphify Code Indexing:** enrichment data about repo files and symbols. The MVP should be only a file manifest plus text chunks linked to Project and File nodes. Tree-sitter symbol graphs, SCIP references, call graphs, and embeddings are deeper indexing layers.
 
-Graphify Core should remain authoritative for program status. Code indexing should make context discovery faster and more relevant, not become the source of truth for tickets, runs, or provider status.
+Graphify Core is the query projection for program status. RR-270 phase 7 moved project-owned ticket and capture authority to `relay/artifacts`; code indexing should make context discovery faster and more relevant, not become a writable source of truth. See [Program artifact ownership](../architecture/program-artifact-ownership.md).
 
 ## Assumptions
 

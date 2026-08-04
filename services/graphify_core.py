@@ -188,6 +188,30 @@ class GraphifyCoreStore:
         with self._conn() as conn:
             conn.executescript(self.SCHEMA)
 
+    def backup(self, destination: str | os.PathLike[str]) -> Path:
+        """Create a consistent SQLite backup without copying a live WAL by hand."""
+        destination_path = Path(destination)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination_path.with_name(f".{destination_path.name}.{time.time_ns()}.tmp")
+        if self._memory_conn is not None:
+            target = sqlite3.connect(str(temporary))
+            try:
+                with self._lock:
+                    self._memory_conn.backup(target)
+            finally:
+                target.close()
+        else:
+            source = sqlite3.connect(str(self.path))
+            target = sqlite3.connect(str(temporary))
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+                source.close()
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, destination_path)
+        return destination_path
+
     def upsert_node(
         self,
         *,

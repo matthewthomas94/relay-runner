@@ -97,7 +97,7 @@ Voice equivalents work too: "what are the agents doing?", "how's MA-6?", "stop M
 
 ## Capture a session review
 
-Use `session_capture` to write end-of-session review notes directly into Graphify Core. The tool accepts a `repo_path`, optional `ticket_id` / `run_id` / `provider`, and structured `entries` whose `kind` can be `shipped`, `started`, `note`, `decision`, `blocker`, `risk`, `idea`, or `status`.
+Use `session_capture` to write end-of-session review notes for an explicitly selected project. For artifact-enabled projects, it validates the same confirmed project-scope token as dispatch, commits immutable privacy-filtered records to `relay/artifacts`, and then refreshes Graphify as a disposable projection. The tool accepts a `repo_path`, optional `ticket_id` / `run_id` / `provider`, and structured `entries` whose `kind` can be `shipped`, `started`, `note`, `decision`, `blocker`, `risk`, `idea`, or `status`. See [Program artifact ownership](architecture/program-artifact-ownership.md) for the RR-270 phase 7 ownership, rebuild, and rollback contract.
 
 Capture creates ProgramEvent, Decision, Risk, Idea, and Status nodes and links them to project, ticket, and run nodes when the repo, ticket, or run evidence is available. It does not require `.pm/project-id`; that file is legacy metadata, and if the repo has `.orchestrator` ticket files, capture can use that evidence directly. Existing `.pm/` directories in user repos are not deleted automatically and can remain for historical reference unless the user chooses a separate manual cleanup.
 

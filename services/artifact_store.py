@@ -463,8 +463,14 @@ class ArtifactStore:
             elif isinstance(operation, ProgramEventWrite):
                 event_id = _validate_event_id(operation.event_id, "Program event ID")
                 content = self._prepare_program_event(event_id, operation.content)
+                path = f".orchestrator/program/events/{event_id}.json"
+                existing = entries.get(path)
+                if existing is not None and self._cat_blob(existing.oid) != content:
+                    raise ArtifactEventCollision(
+                        f"immutable Program event {event_id!r} already exists with different content"
+                    )
                 prepared.append(
-                    ("write", f".orchestrator/program/events/{event_id}.json", content)
+                    ("write", path, content)
                 )
             else:  # pragma: no cover - protects callers bypassing type checking.
                 raise ArtifactValidationError(f"unsupported typed operation: {type(operation)!r}")

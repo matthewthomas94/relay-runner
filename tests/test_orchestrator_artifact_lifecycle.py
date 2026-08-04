@@ -178,6 +178,36 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
             self.git("ls-tree", "-r", "--name-only", "HEAD"),
         )
 
+    def test_session_capture_requires_same_confirmed_scope_and_publishes_artifact_first(self):
+        with self.assertRaisesRegex(Exception, "confirmed project scope token"):
+            self.daemon.session_capture(
+                repo_path=str(self.repo),
+                capture_id="scope-capture",
+                provider="codex",
+                entries=[{"kind": "decision", "title": "Use confirmed scope"}],
+            )
+
+        result = self.daemon.session_capture(
+            repo_path=str(self.repo),
+            capture_id="scope-capture",
+            provider="claude",
+            entries=[{"kind": "decision", "title": "Use confirmed scope"}],
+            project_scope_token=self.scope_token(),
+        )
+
+        self.assertEqual(result["durable_authority"], "relay/artifacts")
+        self.assertEqual(result["provider"], "claude")
+        event_id = result["artifact_event_ids"][0]
+        document = json.loads(
+            self.store.snapshot().files[
+                f".orchestrator/program/events/{event_id}.json"
+            ]
+        )
+        self.assertEqual(document["project_id"], "daemon-project")
+        self.assertEqual(document["provider"], "claude")
+        self.assertEqual(document["record_kind"], "decision")
+        self.assertEqual(result["counts"], {"Decision": 1})
+
     def scope_token(self) -> str:
         payload = {
             "version": 1,
