@@ -170,15 +170,20 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | `services/orchestrator_artifact_workflow.md` | Source-only worker contract for artifact-lifecycle projects |
 | `services/artifact_lifecycle.py` | Artifact claim, snapshot, structured outcome, lease, review, and merge publication coordinator |
 | `services/artifact_migration.py` | Journaled legacy preflight, bootstrap, cutover, Program rebuild, retention preview, and rollback coordinator |
+| `services/artifact_rollout.py` | Evidence-gated per-project/new-project/legacy cohort policy and privacy-safe diagnostics |
+| `services/artifact_verification.py` | Disposable two-device harness and signed installed evidence gate |
 | `services/fresh_install.py` | State-preserving app replacement and recoverable Relay-owned state reset |
 | `Sources/relay-orchestrator-mcp/` | Swift MCP proxy (HTTP → MCP tools) |
 | `scripts/relay-orchestrator` | Launcher / installer |
 | `scripts/relay-artifact-migrate` | Preview/execute/resume/rollback CLI for RR-270 phase 8 |
+| `scripts/relay-artifact-verify` | RR-289 source harness and signed installed two-device evidence gate |
+| `scripts/relay-artifact-rollout` | Explicit evidence, cohort, and independent kill-switch controls |
 | `scripts/relay-runner-fresh-install` | Preserving reinstall and explicit recoverable reset CLI |
 | `<repo>/.orchestrator/<TICKET_ID>.md` | One ticket per file (board source of truth) |
 | `<repo>/.orchestrator/config.toml` | Repo-scoped ticket counter (`prefix`, `next_id`) |
 | `~/Library/Application Support/relay-runner/projects/registry-v2.json` | Opt-in schema-2 project registry; see [registry v2 ownership and recovery](architecture/registry-v2.md) |
 | `~/Library/Application Support/relay-runner/projects/registry-v2.backup.json` | Registry v2 last-known-good backup |
+| `~/Library/Application Support/relay-runner/rollout/artifact-rollout-v1.json` | Local evidence-gated artifact cohort state; never project truth |
 | `~/Library/Application Support/relay-runner/orchestrator/runs.db` | Run history (SQLite) |
 | `~/Library/Application Support/relay-runner/orchestrator/queue_drains.db` | Durable rolling queue-drain goals and observed ticket states |
 | `~/Library/Application Support/relay-runner/orchestrator/orchestrator_sessions.db` | Persistent orchestrator lifecycle state |
@@ -196,6 +201,8 @@ Projects that separately opt into artifact storage use the [private-index projec
 Projects may separately opt into the [artifact-owned worker lifecycle](architecture/artifact-lifecycle.md) after draining legacy runs. Confirmed project scope selects an immutable artifact snapshot; workers commit source only and submit bounded structured outcomes. Only a reviewed source merge lets the artifact writer publish canonical completion and dependency progression. `artifact_lifecycle = "legacy"` remains the reversible compatibility gate during migration.
 
 Existing direct-file projects move through the [guarded migration, rollback, and reinstall recovery](architecture/artifact-migration.md) workflow. The migration remains local-only without a separately confirmed first normal push, isolates source cleanup in one reviewed commit, and retains every artifact/remote ref during rollback.
+
+Artifact defaults and legacy offers remain behind the [signed installed verification and staged rollout](architecture/artifact-rollout.md) gate. Source suites and the disposable two-device harness cannot substitute for Developer ID signed, mounted, two-device Codex/Claude evidence.
 
 ## Troubleshooting
 

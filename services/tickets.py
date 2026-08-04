@@ -19,6 +19,7 @@ from typing import Any
 VALID_STATUSES = ("backlog", "ready", "in_progress", "verification_blocked", "done")
 VALID_PRIORITIES = ("urgent", "high", "medium", "low")
 VALID_EXECUTION_MODES = ("implementation", "spike")
+VALID_VERIFICATION_ORIGINS = ("inline",)
 
 
 class TicketParseError(ValueError):
@@ -115,8 +116,11 @@ def parse(contents: str) -> dict[str, Any]:
 
     verification_blocker = raw.get("verification_blocker", "").strip() or None
     verification_resume = raw.get("verification_resume", "").strip() or None
+    verification_origin = raw.get("verification_origin", "").strip().lower() or None
+    if verification_origin not in (None, *VALID_VERIFICATION_ORIGINS):
+        raise TicketParseError(f"invalid verification_origin: {verification_origin!r}")
     if status == "verification_blocked":
-        if run_id is None:
+        if run_id is None and verification_origin != "inline":
             raise TicketParseError("verification_blocked ticket requires run_id")
         if verification_blocker is None:
             raise TicketParseError("missing required field: verification_blocker")
@@ -135,6 +139,7 @@ def parse(contents: str) -> dict[str, Any]:
         "draft": draft,
         "verification_blocker": verification_blocker,
         "verification_resume": verification_resume,
+        "verification_origin": verification_origin,
         "order": int(raw.get("order", "0") or "0"),
         "body": body,
         "_raw_fields": raw,  # preserves any extra fields on round-trip
@@ -158,6 +163,7 @@ _FIELD_ORDER = (
     "canceled",
     "verification_blocker",
     "verification_resume",
+    "verification_origin",
     "order",
 )
 

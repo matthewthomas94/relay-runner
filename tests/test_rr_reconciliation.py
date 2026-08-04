@@ -44,6 +44,26 @@ verification_resume: Connect physical input and resume.
         with self.assertRaisesRegex(TicketParseError, "requires run_id"):
             parse(contents)
 
+    def test_inline_verification_blocker_does_not_fabricate_a_run_link(self):
+        contents = """---
+id: RR-1
+title: Inline blocked
+status: verification_blocked
+priority: high
+depends_on: []
+run_id: null
+canceled: false
+verification_blocker: Signed installed evidence is unavailable.
+verification_resume: Install a signed build and rerun verification.
+verification_origin: inline
+---
+"""
+
+        ticket = parse(contents)
+
+        self.assertIsNone(ticket["run_id"])
+        self.assertEqual(ticket["verification_origin"], "inline")
+
     def test_rr274_closes_only_with_explicit_manual_uat_disposition(self):
         ticket = self.ticket("RR-274")
 

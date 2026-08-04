@@ -27,3 +27,6 @@ Unrelated path changes replay automatically. Same-ticket, display-ID, config, at
 Switching a project to Local only stops network access while preserving its artifact ref, pending commits, materialization, conflict evidence, and Git remote configuration. A failed push never discards the local candidate. If a replay changes the local artifact ref before an offline or rejected push, Relay immediately rematerializes that local head so the projection and canonical ref remain consistent. No rollback path rewrites published history.
 
 Disposable two-device tests cover initial publication, clean/ahead/behind/diverged transitions, unrelated offline rebase, all conflict classes, explicit resolution, source isolation, push races, bounded retry, missing/protected/auth/offline classification, foreign-ref quarantine, and Codex/Claude-equivalent snapshots.
+
+RR-289 adds a production disposable harness and signed installed gate in
+[Artifact installed verification and staged rollout](artifact-rollout.md).

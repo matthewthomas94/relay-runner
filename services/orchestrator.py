@@ -45,6 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 try:
     from services.artifact_lifecycle import ArtifactLifecycleCoordinator
+    from services.artifact_rollout import ArtifactRolloutError, ArtifactRolloutStore
     from services.artifact_store import (
         ArtifactConcurrentUpdate,
         ArtifactMutation,
@@ -58,6 +59,7 @@ try:
     )
 except ModuleNotFoundError:  # Installed direct-script layout.
     from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
+    from artifact_rollout import ArtifactRolloutError, ArtifactRolloutStore  # type: ignore[no-redef]
     from artifact_store import (  # type: ignore[no-redef]
         ArtifactConcurrentUpdate,
         ArtifactMutation,
@@ -4050,6 +4052,7 @@ class Daemon:
         app_support_root = data.parent if data.name == "orchestrator" else data
         self.project_registry_v2_path = app_support_root / "projects" / "registry-v2.json"
         self._artifact_state_root = app_support_root
+        self.artifact_rollout = ArtifactRolloutStore(app_support_root)
         self._artifact_device_id = "daemon-" + hashlib.sha256(
             f"{socket.gethostname()}:{data}".encode("utf-8")
         ).hexdigest()[:24]
@@ -4095,6 +4098,20 @@ class Daemon:
             self.reconcile_queue_drains(trigger="daemon-startup")
         except Exception as e:  # noqa: BLE001 - daemon startup must still finish.
             print(f"[orchestrator] queue-drain startup reconcile failed: {e}", file=sys.stderr)
+
+    def artifact_rollout_status(self) -> dict[str, Any]:
+        """Expose bounded cohort/recovery diagnostics without project identities."""
+        try:
+            return {
+                "status": "available",
+                "rollout": self.artifact_rollout.diagnostics(),
+            }
+        except ArtifactRolloutError as error:
+            return {
+                "status": "verification_blocked",
+                "error_code": error.code,
+                "recovery": error.recovery,
+            }
 
     def _artifact_lifecycle(self, repo_path: str) -> ArtifactLifecycleCoordinator | None:
         repo = Path(repo_path).expanduser().resolve()
@@ -8531,6 +8548,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if method == "GET" and segments == ["v1", "health"]:
                 return 200, {"ok": True, "version": self.server_version}
+
+            if method == "GET" and segments == ["v1", "artifacts", "rollout"]:
+                return 200, self.daemon.artifact_rollout_status()
 
             if method == "GET" and segments == ["v1", "runs"]:
                 state = (query.get("state") or [None])[0]

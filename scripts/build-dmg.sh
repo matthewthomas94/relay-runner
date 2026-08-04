@@ -171,7 +171,8 @@ fi
 # Python services
 for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py relay_authorization.py intent_arbitration.py intent_inbox.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py \
          artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py \
-         artifact_retention.py artifact_store.py artifact_sync.py fresh_install.py fresh_install_cli.py \
+         artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py \
+         artifact_verification.py artifact_verification_cli.py fresh_install.py fresh_install_cli.py \
          graphify_core.py graphify_ingest.py orchestrator.py orchestrator_artifact_workflow.md orchestrator_workflow.md \
          program_artifacts.py program_status.py requirements.txt session_capture.py tickets.py; do
     cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"
@@ -191,6 +192,10 @@ cp "$PROJECT_ROOT/scripts/relay-artifact-migrate" "$APP_DIR/Contents/SharedSuppo
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-artifact-migrate"
 cp "$PROJECT_ROOT/scripts/relay-runner-fresh-install" "$APP_DIR/Contents/SharedSupport/scripts/"
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-runner-fresh-install"
+cp "$PROJECT_ROOT/scripts/relay-artifact-verify" "$APP_DIR/Contents/SharedSupport/scripts/"
+chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-artifact-verify"
+cp "$PROJECT_ROOT/scripts/relay-artifact-rollout" "$APP_DIR/Contents/SharedSupport/scripts/"
+chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-artifact-rollout"
 
 # Setup script for Python venv (runs on first launch if needed)
 cat > "$APP_DIR/Contents/SharedSupport/setup-venv.sh" << 'SETUP_EOF'

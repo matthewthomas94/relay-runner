@@ -1,0 +1,18 @@
+#!/bin/bash
+# RR-289 disposable source harness and signed-installed evidence gate.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_RUNTIME="$HOME/Library/Application Support/relay-runner/python/bin/python3"
+APP_VENV="$HOME/Library/Application Support/relay-runner/services/.venv/bin/python"
+
+for candidate in "$APP_RUNTIME" "$APP_VENV" /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    if [[ -x "$candidate" ]] && "$candidate" -c 'import tomllib' >/dev/null 2>&1; then
+        exec "$candidate" "$PROJECT_ROOT/services/artifact_verification_cli.py" "$@"
+    fi
+done
+
+echo "relay-artifact-verify requires Relay's bundled Python or Python 3.11+" >&2
+exit 1

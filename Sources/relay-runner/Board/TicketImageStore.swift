@@ -105,6 +105,7 @@ enum TicketImageStore {
             workerProviderNotes: ticket.workerProviderNotes,
             verificationBlocker: ticket.verificationBlocker,
             verificationResume: ticket.verificationResume,
+            verificationOrigin: ticket.verificationOrigin,
             draft: ticket.draft,
             order: ticket.order,
             modifiedAt: ticket.modifiedAt,

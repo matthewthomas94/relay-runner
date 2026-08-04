@@ -201,6 +201,7 @@ enum TicketWriter {
             workerProviderNotes: ticket.workerProviderNotes,
             verificationBlocker: ticket.verificationBlocker,
             verificationResume: ticket.verificationResume,
+            verificationOrigin: ticket.verificationOrigin,
             draft: ticket.draft,
             order: ticket.order,
             description: summary,
@@ -232,6 +233,7 @@ enum TicketWriter {
             workerProviderNotes: defaults.workerProviderNotes,
             verificationBlocker: ticket.verificationBlocker,
             verificationResume: ticket.verificationResume,
+            verificationOrigin: ticket.verificationOrigin,
             draft: ticket.draft,
             order: ticket.order,
             description: ticket.description,
@@ -269,6 +271,9 @@ enum TicketWriter {
         }
         if let verificationResume = ticket.verificationResume {
             out += "verification_resume: \(yamlString(verificationResume))\n"
+        }
+        if let verificationOrigin = ticket.verificationOrigin {
+            out += "verification_origin: \(yamlString(verificationOrigin))\n"
         }
         if ticket.draft {
             out += "draft: true\n"

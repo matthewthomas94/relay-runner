@@ -19,6 +19,10 @@ struct Ticket: Identifiable, Equatable {
     /// Explicit condition/action that makes a blocked ticket eligible to
     /// resume. The daemon owns the transition back to `ready`.
     let verificationResume: String?
+    /// Set to `inline` only when the foreground PM performed the work without
+    /// creating an orchestrator worker run. This keeps an external evidence
+    /// gate honest without fabricating a run id.
+    let verificationOrigin: String?
     /// Board-created tickets are written before the editor opens so they get a
     /// real id immediately. While `draft` is true, the daemon must not sweep a
     /// ready ticket into a worker; saving the editor clears the flag.
@@ -54,6 +58,7 @@ struct Ticket: Identifiable, Equatable {
         workerProviderNotes: String? = nil,
         verificationBlocker: String? = nil,
         verificationResume: String? = nil,
+        verificationOrigin: String? = nil,
         draft: Bool = false,
         order: Int,
         modifiedAt: Date? = nil,
@@ -74,6 +79,7 @@ struct Ticket: Identifiable, Equatable {
         self.workerProviderNotes = workerProviderNotes
         self.verificationBlocker = verificationBlocker
         self.verificationResume = verificationResume
+        self.verificationOrigin = verificationOrigin
         self.draft = draft
         self.order = order
         self.modifiedAt = modifiedAt
@@ -222,9 +228,16 @@ enum TicketParser {
 
         let verificationBlocker = optionalString(fields["verification_blocker"])
         let verificationResume = optionalString(fields["verification_resume"])
+        let verificationOrigin = optionalString(fields["verification_origin"])
+        if let verificationOrigin, verificationOrigin != "inline" {
+            throw TicketParseError.invalidEnum(
+                field: "verification_origin",
+                value: verificationOrigin
+            )
+        }
         let runId = parseOptionalInt(runIdRaw)
         if status == .verificationBlocked {
-            guard runId != nil else {
+            guard runId != nil || verificationOrigin == "inline" else {
                 throw TicketParseError.invalidType(field: "run_id", value: runIdRaw)
             }
             guard verificationBlocker != nil else {
@@ -250,6 +263,7 @@ enum TicketParser {
             workerProviderNotes: optionalString(fields["worker_provider_notes"]),
             verificationBlocker: verificationBlocker,
             verificationResume: verificationResume,
+            verificationOrigin: verificationOrigin,
             draft: try draftRaw.map { try parseBool($0, field: "draft") } ?? false,
             order: parseOrder(fields["order"], fallbackFrom: id),
             modifiedAt: modifiedAt,

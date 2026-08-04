@@ -95,6 +95,7 @@ Free-form prose explaining the work.
 | `worker_provider_notes` | string | for `ready` | Provider-parity note. Use `none` only when the selected model/tier and effort are intentionally provider-neutral with no caveats. Otherwise name the Codex/Claude difference or limitation. |
 | `verification_blocker` | string | for `verification_blocked` | Exact external condition that prevented required verification. |
 | `verification_resume` | string | for `verification_blocked` | Explicit condition/action that permits the daemon to resume the ticket. |
+| `verification_origin` | enum | no | `inline` only. Permits an explicitly foreground-executed ticket to record an external verification blocker without fabricating a worker `run_id`. |
 
 Anything else under `---` is ignored, leaving room for future fields without breaking old parsers.
 
@@ -177,6 +178,7 @@ Backlog → Queued → In Progress → Done
 | `in_progress → done`          | Sub-agent                   | Worker flips status and appends `## Run log` before exiting; commit lands on the worker's branch and reaches the board when the branch is merged. |
 | spike `ready → in_progress → done` | Daemon | Daemon claims the branchless run, validates structured findings, commits `## Spike report`, and cleans the snapshot without review/merge. |
 | `in_progress → verification_blocked` | Sub-agent + reviewer | Worker commits the exact external blocker and resume condition; review merges useful work without closing the ticket or progressing dependents. |
+| `backlog → verification_blocked` | Foreground PM, inline execution only | The user explicitly requested inline execution; the PM records `verification_origin: inline`, an exact blocker, and an exact resume condition without inventing a daemon run. |
 | `verification_blocked → ready` | Daemon via explicit resume action | `resume_verification_blocked` appends what changed to the run log, commits the canonical transition, clears blocker fields, and optionally dispatches a fresh attempt. |
 | any → `canceled: true`        | Daemon or human             | `cancel_run` called, or manual cancel.      |
 
@@ -203,7 +205,7 @@ A ticket file is valid iff:
 4. `depends_on` references resolve to existing ticket files (no dangling pointers).
 5. No dependency cycles in the project-wide graph.
 6. If `status == in_progress`, `run_id` is non-null and points to a known orchestrator run.
-7. If `status == verification_blocked`, `run_id`, `verification_blocker`, and `verification_resume` are present and the run is retained as a non-failure lifecycle record.
+7. If `status == verification_blocked`, `verification_blocker` and `verification_resume` are present. A normal dispatched ticket also retains its non-failure `run_id`; only an explicitly foreground-executed ticket with `verification_origin: inline` may leave `run_id` null.
 8. If `status == done`, the file has at least one commit on the working branch referencing the `id` (audit hint, not strictly enforced).
 
 Validation is a one-shot pass over `.orchestrator/`; the daemon runs it on startup and after every write.

@@ -208,6 +208,24 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
         self.assertEqual(document["record_kind"], "decision")
         self.assertEqual(result["counts"], {"Decision": 1})
 
+    def test_rollout_diagnostics_are_bounded_default_off_and_surface_recovery_code(self):
+        status = self.daemon.artifact_rollout_status()
+        self.assertEqual(status["status"], "available")
+        rollout = status["rollout"]
+        self.assertEqual(rollout["project_opt_in_count"], 0)
+        self.assertFalse(rollout["cohorts"]["new_project_default"]["enabled"])
+        self.assertFalse(rollout["cohorts"]["legacy_migration_offer"]["enabled"])
+        self.assertNotIn(str(self.repo), json.dumps(status, sort_keys=True))
+
+        rollout_store = self.daemon.artifact_rollout
+        rollout_store.rollout_root.mkdir(parents=True, exist_ok=True)
+        rollout_store.path.write_text("{broken", encoding="utf-8")
+        rollout_store.backup_path.write_text("{also-broken", encoding="utf-8")
+        blocked = self.daemon.artifact_rollout_status()
+        self.assertEqual(blocked["status"], "verification_blocked")
+        self.assertEqual(blocked["error_code"], "rollout_state_corrupt")
+        self.assertIn("restore", blocked["recovery"].lower())
+
     def test_board_authoring_uses_confirmed_typed_artifact_writer_for_id_ticket_attachment_and_delete(self):
         with self.assertRaisesRegex(Exception, "confirmed project scope token"):
             self.daemon.artifact_board_claim_next_id(

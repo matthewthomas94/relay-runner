@@ -34,3 +34,6 @@ Worker and reviewer leases are durable app-local records tied to the immutable a
 Ready sweeps validate one confirmed project scope before dispatch. Artifact merge publication owns dependency promotion, and internally confirmed same-project dispatch handles promoted tickets. Review retry, explicit verification resume, cancellation, queue-drain classification, health observation, provider authentication failure, and merge-conflict reporting all read the materialized canonical artifact state. If source merge succeeds but artifact publication fails, the run remains `MergeConflict` with its evidence and reviewer lease intact so publication can be recovered without fabricating completion.
 
 Provider attribution affects only diagnostics and launch configuration. Snapshot bytes, validation, event IDs, leases, retry/cancel behavior, merge truth, dependency outcomes, and privacy limits are identical for Codex and Claude; executable discovery, authentication, model names, and effort flags remain the intentional provider-specific differences.
+
+Installed provider parity and cohort promotion remain externally evidence-gated;
+see [Artifact installed verification and staged rollout](artifact-rollout.md).

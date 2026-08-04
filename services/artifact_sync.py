@@ -20,19 +20,34 @@ import uuid
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Sequence
 
-from services.artifact_store import (
-    ARTIFACT_REF,
-    ArtifactConcurrentUpdate,
-    ArtifactIdentityError,
-    ArtifactMaterializationConflict,
-    ArtifactStore,
-    ArtifactStoreError,
-    ArtifactValidationError,
-    _parse_trailers,
-    _validate_actor,
-    _validate_allowlisted_path,
-    _validate_event_id,
-)
+try:
+    from services.artifact_store import (
+        ARTIFACT_REF,
+        ArtifactConcurrentUpdate,
+        ArtifactIdentityError,
+        ArtifactMaterializationConflict,
+        ArtifactStore,
+        ArtifactStoreError,
+        ArtifactValidationError,
+        _parse_trailers,
+        _validate_actor,
+        _validate_allowlisted_path,
+        _validate_event_id,
+    )
+except ModuleNotFoundError:  # Installed direct-script layout.
+    from artifact_store import (  # type: ignore[no-redef]
+        ARTIFACT_REF,
+        ArtifactConcurrentUpdate,
+        ArtifactIdentityError,
+        ArtifactMaterializationConflict,
+        ArtifactStore,
+        ArtifactStoreError,
+        ArtifactValidationError,
+        _parse_trailers,
+        _validate_actor,
+        _validate_allowlisted_path,
+        _validate_event_id,
+    )
 
 
 class ArtifactSyncMode(str, enum.Enum):

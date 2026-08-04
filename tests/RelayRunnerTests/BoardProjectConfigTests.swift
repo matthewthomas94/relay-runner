@@ -361,6 +361,30 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertThrowsError(try TicketParser.parse(contents: contents))
     }
 
+    func testInlineVerificationBlockedTicketRoundTripsWithoutInventedRunLink() throws {
+        let contents = """
+        ---
+        id: RR-289
+        title: Gate rollout
+        status: verification_blocked
+        priority: high
+        depends_on: []
+        run_id: null
+        canceled: false
+        verification_blocker: Signed installed evidence is unavailable.
+        verification_resume: Install a signed build and rerun verification.
+        verification_origin: inline
+        ---
+        """
+
+        let ticket = try TicketParser.parse(contents: contents)
+        let reparsed = try TicketParser.parse(contents: TicketWriter.render(ticket))
+
+        XCTAssertNil(reparsed.runId)
+        XCTAssertEqual(reparsed.status, .verificationBlocked)
+        XCTAssertEqual(reparsed.verificationOrigin, "inline")
+    }
+
     func testWorkerSizingDefaultsInheritGeneralAgentSettings() {
         var config = GeneralConfig()
         config.provider = .claude
