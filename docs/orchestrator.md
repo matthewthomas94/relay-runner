@@ -1,6 +1,6 @@
 # Relay Runner Orchestrator
 
-The opt-in project artifact writer and exact-ref synchronization contracts are documented in [Project-owned Relay artifact store](architecture/artifact-store.md) and [Relay artifact synchronization](architecture/artifact-sync.md). These are RR-273 phases 3 and 4; the legacy worker-ticket lifecycle described below remains the compatibility path until the later lifecycle and migration gates are enabled.
+The opt-in project artifact writer, exact-ref synchronization, and bounded history contracts are documented in [Project-owned Relay artifact store](architecture/artifact-store.md), [Relay artifact synchronization](architecture/artifact-sync.md), and [Relay artifact retention and history](architecture/artifact-retention.md). These are RR-273 phases 3–5; the legacy worker-ticket lifecycle described below remains the compatibility path until the later lifecycle and migration gates are enabled.
 
 Symphony-style sub-agent orchestrator. Dispatches tickets from a repo's local kanban board (`<repo>/.orchestrator/<TICKET_ID>.md`) to autonomous Codex or Claude runs in isolated git worktrees, and tracks state in SQLite. Modeled on [openai/symphony](https://github.com/openai/symphony) — the daemon owns "is this ticket claimed / running / done", and each sub-agent owns its own context window for the duration of one run.
 

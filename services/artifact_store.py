@@ -68,6 +68,7 @@ _FORBIDDEN_TEXT_MARKERS = (
 
 _global_locks_guard = threading.Lock()
 _global_locks: dict[str, threading.RLock] = {}
+_global_lock_depth = threading.local()
 
 
 class ArtifactStoreError(RuntimeError):
@@ -969,11 +970,24 @@ class ArtifactStore:
         with _global_locks_guard:
             process_lock = _global_locks.setdefault(key, threading.RLock())
         with process_lock:
-            with self.lock_path.open("a+b") as handle:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            depths = getattr(_global_lock_depth, "depths", None)
+            if depths is None:
+                depths = {}
+                _global_lock_depth.depths = depths
+            if depths.get(key, 0) > 0:
+                depths[key] += 1
                 try:
                     yield
                 finally:
+                    depths[key] -= 1
+                return
+            with self.lock_path.open("a+b") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                depths[key] = 1
+                try:
+                    yield
+                finally:
+                    depths.pop(key, None)
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _require_enabled(self) -> None:
