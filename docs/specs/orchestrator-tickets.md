@@ -127,6 +127,8 @@ Use `spike` for a bounded research question whose output is evidence rather than
 
 Spike completion does not auto-promote backlog dependents. A downstream ticket already refined and explicitly placed in `ready` may dispatch once its spike dependency is done; otherwise the foreground PM uses the findings to author or refine a separate implementation ticket.
 
+Completed spike recommendations can be staged as durable follow-up proposals without mutating a board. Each draft carries its own target project, description, acceptance criteria, priority, dependencies, and sizing. Edit, acceptance, and rejection are per proposal. Acceptance atomically allocates the target board's current `next_id`, writes the ticket and counter in one commit, records an `## Provenance` link to the originating spike ticket/run, and leaves the ticket in `backlog`. The embedded idempotency marker prevents retries or restarts from creating another card or advancing `next_id` again.
+
 ### Body
 
 Two recommended sections, both freeform:

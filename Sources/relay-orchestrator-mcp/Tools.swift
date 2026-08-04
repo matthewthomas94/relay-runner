@@ -396,6 +396,123 @@ struct ResumeVerificationBlockedTool: MCPTool {
     }
 }
 
+// MARK: - spike follow-up tickets
+
+struct ProposeSpikeFollowupsTool: MCPTool {
+    let name = "propose_spike_followups"
+    let description = """
+        Build a durable, reviewable batch of implementation-ticket proposals from a completed spike report. \
+        Omit proposals to derive drafts from the report's recommended next steps, or provide PM-refined drafts \
+        with target project, acceptance criteria, dependencies, priority, and worker sizing. This never writes \
+        tickets or dispatches workers; each proposal requires a separate accept decision.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "origin_repo_path": ["type": "string"],
+                "origin_ticket_id": ["type": "string"],
+                "origin_run_id": ["type": "integer"],
+                "provider": ["type": "string", "description": "Optional foreground PM provider label."],
+                "proposals": [
+                    "type": "array",
+                    "description": "Optional refined drafts. Omit to use the spike report recommendations.",
+                    "items": [
+                        "type": "object",
+                        "properties": [
+                            "title": ["type": "string"],
+                            "description": ["type": "string"],
+                            "acceptance_criteria": ["type": "array", "items": ["type": "string"]],
+                            "priority": ["type": "string", "enum": ["urgent", "high", "medium", "low"]],
+                            "depends_on": ["type": "array", "items": ["type": "string"]],
+                            "worker_model": ["type": "string"],
+                            "worker_effort": ["type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]],
+                            "worker_sizing_rationale": ["type": "string"],
+                            "worker_provider_notes": ["type": "string"],
+                            "target_repo_path": ["type": "string"],
+                        ],
+                        "required": ["title", "description", "acceptance_criteria", "priority", "depends_on", "worker_model", "worker_effort", "worker_sizing_rationale", "worker_provider_notes"],
+                    ],
+                ],
+            ],
+            "required": ["origin_repo_path", "origin_ticket_id", "origin_run_id"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        var body: [String: Any] = [
+            "origin_repo_path": try requireString(arguments, "origin_repo_path"),
+            "origin_ticket_id": try requireString(arguments, "origin_ticket_id"),
+            "origin_run_id": try requireInt(arguments, "origin_run_id"),
+        ]
+        if let provider = arguments["provider"] as? String, !provider.isEmpty {
+            body["provider"] = provider
+        }
+        if let proposals = arguments["proposals"] as? [[String: Any]] {
+            body["proposals"] = proposals
+        }
+        return try await proxy(method: "POST", path: "/v1/spikes/follow-ups/propose", body: body)
+    }
+}
+
+struct ReviewSpikeFollowupTool: MCPTool {
+    let name = "review_spike_followup"
+    let description = """
+        Edit, accept, or reject one proposed spike follow-up. Edit changes only the recoverable draft. Accept \
+        atomically allocates and commits one backlog ticket on the selected canonical project board; it never \
+        promotes or dispatches the ticket. Reject leaves other proposals untouched.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "batch_id": ["type": "string"],
+                "proposal_id": ["type": "string"],
+                "decision": ["type": "string", "enum": ["edit", "accept", "reject"]],
+                "updates": [
+                    "type": "object",
+                    "description": "Fields to replace before edit or acceptance. Accepting with updates is atomic.",
+                ],
+                "relay_command_seq": ["type": "integer"],
+                "relay_command_id": ["type": "string"],
+                "relay_intent_id": ["type": "string"],
+            ],
+            "required": ["batch_id", "proposal_id", "decision"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let batchID = try requireString(arguments, "batch_id")
+        let proposalID = try requireString(arguments, "proposal_id")
+        var body: [String: Any] = ["decision": try requireString(arguments, "decision")]
+        if let updates = arguments["updates"] as? [String: Any] {
+            body["updates"] = updates
+        }
+        if let seq = optionalInt(arguments["relay_command_seq"]),
+           let id = arguments["relay_command_id"] as? String,
+           !id.isEmpty {
+            body["relay_command_seq"] = seq
+            body["relay_command_id"] = id
+            if let intentID = arguments["relay_intent_id"] as? String, !intentID.isEmpty {
+                body["relay_intent_id"] = intentID
+            }
+        } else if let claimed = claimedRelayCommand() {
+            body["relay_command_seq"] = claimed.seq
+            body["relay_command_id"] = claimed.id
+            if let intentID = claimed.intentID {
+                body["relay_intent_id"] = intentID
+            }
+        }
+        return try await proxy(
+            method: "POST",
+            path: "/v1/spikes/follow-ups/\(urlEscape(batchID))/proposals/\(urlEscape(proposalID))/review",
+            body: body
+        )
+    }
+}
+
 // MARK: - program_status
 
 struct ProgramStatusTool: MCPTool {

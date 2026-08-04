@@ -50,6 +50,13 @@ from codex_model_catalog import (
 )
 from graphify_core import GraphifyCoreStore
 from graphify_ingest import ingest_registered_projects
+from followup_tickets import (
+    FOLLOWUP_KEY_PREFIX,
+    FollowupProposalStore,
+    acceptance_key as followup_acceptance_key,
+    automatic_followup_drafts,
+    sanitize_followup_draft,
+)
 from pm_frontstage import OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata
 from program_status import build_program_dashboard, build_program_status
 from relay_authorization import (
@@ -3957,6 +3964,7 @@ class Daemon:
         self.orchestrator_sessions = OrchestratorSessionStore(data / "orchestrator_sessions.db")
         self.orchestrator_commands = OrchestratorCommandStore(data / "orchestrator_commands.db")
         self.messenger_outcomes = MessengerOutcomeStore(data / "messenger_outcomes.db")
+        self.followup_proposals = FollowupProposalStore(data / "followup_proposals.db")
         self.graphify_path = data / "graphify.db"
         self.program_registry_path = _program_registry_path()
 
@@ -6963,6 +6971,265 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             self._orchestrator_action_request_ids = seen
         return seen
 
+    def _completed_spike(self, repo_path: str, ticket_id: str, run_id: int) -> tuple[Path, dict[str, Any]]:
+        repo = Path(repo_path).expanduser().resolve()
+        if not repo.is_dir() or not (repo / ".git").exists():
+            raise ValueError(f"origin_repo_path {repo} is not a git repository")
+        ticket_path = repo / ".orchestrator" / f"{ticket_id.upper()}.md"
+        if not ticket_path.is_file():
+            raise ValueError(f"originating spike {ticket_id.upper()} not found")
+        ticket = read_ticket(ticket_path)
+        if ticket.get("execution_mode") != SPIKE_EXECUTION_MODE:
+            raise ValueError(f"originating ticket {ticket_id.upper()} is not a spike")
+        if ticket.get("status") != "done":
+            raise ValueError(f"originating spike {ticket_id.upper()} is not complete")
+        if ticket.get("run_id") != run_id:
+            raise ValueError(
+                f"originating spike run changed: expected {run_id}, found {ticket.get('run_id')}"
+            )
+        if not _body_section(ticket, "Spike report"):
+            raise ValueError(f"originating spike {ticket_id.upper()} has no durable Spike report")
+        return repo, ticket
+
+    def _followup_target_repo(self, origin_repo: Path, value: str) -> Path:
+        target = Path(value).expanduser().resolve()
+        registered = {Path(path).resolve() for path in _registered_project_repo_paths(self.program_registry_path)}
+        if target != origin_repo and target not in registered:
+            raise ValueError(
+                "ambiguous project ownership: select one registered target project before accepting"
+            )
+        if not target.is_dir() or not (target / ".git").exists():
+            raise ValueError(f"target project {target} is not a git repository")
+        if not (target / ".orchestrator" / "config.toml").is_file():
+            raise ValueError(f"target project {target} has no canonical board config")
+        return target
+
+    def propose_spike_followups(
+        self,
+        *,
+        origin_repo_path: str,
+        origin_ticket_id: str,
+        origin_run_id: int,
+        proposals: list[dict[str, Any]] | None = None,
+        provider: str | None = None,
+    ) -> dict[str, Any]:
+        origin_repo, spike = self._completed_spike(
+            origin_repo_path, origin_ticket_id, int(origin_run_id)
+        )
+        raw_drafts = proposals
+        if raw_drafts is None:
+            raw_drafts = automatic_followup_drafts(
+                spike.get("body") or "", origin_repo_path=str(origin_repo)
+            )
+        if not isinstance(raw_drafts, list) or not raw_drafts:
+            raise ValueError(
+                "the completed spike has no actionable recommended next steps; provide refined proposals"
+            )
+        drafts: list[dict[str, Any]] = []
+        for raw in raw_drafts:
+            draft = sanitize_followup_draft(raw, origin_repo_path=str(origin_repo))
+            self._followup_target_repo(origin_repo, draft["target_repo_path"])
+            drafts.append(draft)
+        batch, created = self.followup_proposals.create_or_get(
+            origin_repo_path=str(origin_repo),
+            origin_ticket_id=origin_ticket_id.upper(),
+            origin_run_id=int(origin_run_id),
+            provider_key=_clean_optional_text(provider),
+            drafts=drafts,
+        )
+        return {"batch": batch, "created": created, "duplicate": not created}
+
+    def review_spike_followup(
+        self,
+        *,
+        batch_id: str,
+        proposal_id: str,
+        decision: str,
+        updates: dict[str, Any] | None = None,
+        relay_command_seq: int | str | None = None,
+        relay_command_id: str | None = None,
+        relay_intent_id: str | None = None,
+    ) -> dict[str, Any]:
+        batch = self.followup_proposals.get(batch_id)
+        if batch is None:
+            raise ValueError(f"follow-up batch {batch_id} not found")
+        proposal = next(
+            (item for item in batch["proposals"] if item["id"] == proposal_id), None
+        )
+        if proposal is None:
+            raise ValueError(f"follow-up proposal {proposal_id} not found")
+        if proposal["state"] != "draft":
+            return {"batch": batch, "duplicate": True}
+
+        origin_repo, _ = self._completed_spike(
+            batch["origin_repo_path"], batch["origin_ticket_id"], batch["origin_run_id"]
+        )
+        draft = proposal["draft"]
+        if updates is not None:
+            if not isinstance(updates, dict):
+                raise ValueError("updates must be an object")
+            draft = sanitize_followup_draft(
+                {**draft, **updates}, origin_repo_path=str(origin_repo)
+            )
+            self._followup_target_repo(origin_repo, draft["target_repo_path"])
+            batch = self.followup_proposals.update_draft(batch_id, proposal_id, draft)
+
+        normalized_decision = str(decision or "").strip().lower()
+        if normalized_decision == "edit":
+            if updates is None:
+                raise ValueError("edit requires updates")
+            return {"batch": batch, "edited": proposal_id}
+        if normalized_decision == "reject":
+            return {
+                "batch": self.followup_proposals.set_result(
+                    batch_id, proposal_id, state="rejected"
+                ),
+                "rejected": proposal_id,
+            }
+        if normalized_decision != "accept":
+            raise ValueError("decision must be 'edit', 'accept', or 'reject'")
+
+        _validate_relay_command(
+            relay_command_seq,
+            relay_command_id,
+            relay_intent_id=relay_intent_id,
+            mutation=_relay_mutation_metadata(
+                "spike_followup_accept",
+                request_id=f"{batch_id}:{proposal_id}",
+            ),
+        )
+
+        try:
+            ticket_id, duplicate = self._accept_spike_followup(
+                batch=batch, proposal_id=proposal_id, draft=draft
+            )
+        except (ValueError, RuntimeError) as error:
+            failed = self.followup_proposals.set_error(batch_id, proposal_id, str(error))
+            return {
+                "batch": failed,
+                "partial": True,
+                "committed": [],
+                "not_committed": [{"proposal_id": proposal_id, "error": str(error)}],
+            }
+        accepted = self.followup_proposals.set_result(
+            batch_id, proposal_id, state="accepted", ticket_id=ticket_id
+        )
+        return {
+            "batch": accepted,
+            "committed": [{"proposal_id": proposal_id, "ticket_id": ticket_id}],
+            "not_committed": [],
+            "duplicate": duplicate,
+        }
+
+    def _accept_spike_followup(
+        self,
+        *,
+        batch: dict[str, Any],
+        proposal_id: str,
+        draft: dict[str, Any],
+    ) -> tuple[str, bool]:
+        origin_repo, _ = self._completed_spike(
+            batch["origin_repo_path"], batch["origin_ticket_id"], batch["origin_run_id"]
+        )
+        target = self._followup_target_repo(origin_repo, draft["target_repo_path"])
+        key = followup_acceptance_key(batch["id"], proposal_id)
+        marker = f"{FOLLOWUP_KEY_PREFIX} {key}"
+        for ticket in scan_repo(target):
+            if marker in str(ticket.get("body") or ""):
+                return str(ticket["id"]), True
+
+        for dependency in draft["depends_on"]:
+            if not (target / ".orchestrator" / f"{dependency}.md").is_file():
+                raise ValueError(
+                    f"dependency {dependency} is not present on target board {target}"
+                )
+
+        current_branch = _git_text(str(target), "branch", "--show-current")
+        if not current_branch:
+            raise ValueError("target project must be on a named canonical branch")
+        target_head = _git_text(str(target), "rev-parse", "HEAD")
+        origin_ticket_path = origin_repo / ".orchestrator" / f"{batch['origin_ticket_id']}.md"
+        if target == origin_repo:
+            origin_commit = _git_text(
+                str(origin_repo), "log", "-1", "--format=%H", "--", str(origin_ticket_path)
+            )
+            ancestry = _git(
+                str(target), "merge-base", "--is-ancestor", origin_commit, target_head, check=False
+            )
+            if not origin_commit or ancestry.returncode != 0:
+                raise ValueError(
+                    "originating spike result is not an ancestor of the target board branch"
+                )
+
+        orch_dir = target / ".orchestrator"
+        config_path = orch_dir / "config.toml"
+        prefix, next_id, config_text = _ticket_config(config_path)
+        ticket_number = next_id
+        while (orch_dir / f"{prefix}-{ticket_number}.md").exists():
+            ticket_number += 1
+        ticket_id = f"{prefix}-{ticket_number}"
+        ticket_path = orch_dir / f"{ticket_id}.md"
+        _ensure_ticket_authoring_paths_clean(target, [config_path, ticket_path])
+        staged = _git(str(target), "diff", "--cached", "--name-only", check=False)
+        if staged.returncode != 0 or staged.stdout.strip():
+            raise ValueError("follow-up authoring blocked by already-staged changes")
+        if _git_text(str(target), "rev-parse", "HEAD") != target_head:
+            raise ValueError("target branch changed while preparing the follow-up ticket")
+
+        order = ticket_number
+        provenance = (
+            "## Provenance\n\n"
+            f"- Originating spike: `{batch['origin_ticket_id']}`\n"
+            f"- Spike run: {batch['origin_run_id']}\n\n"
+            f"<!-- {marker} -->"
+        )
+        ticket = {
+            "id": ticket_id,
+            "title": draft["title"],
+            "status": "backlog",
+            "priority": draft["priority"],
+            "execution_mode": "implementation",
+            "depends_on": draft["depends_on"],
+            "run_id": None,
+            "canceled": False,
+            "order": order,
+            "body": _structured_ticket_body(
+                draft["description"], draft["acceptance_criteria"]
+            ).rstrip() + "\n\n" + provenance + "\n",
+            "_raw_fields": {
+                "worker_model": draft["worker_model"],
+                "worker_effort": draft["worker_effort"],
+                "worker_sizing_rationale": draft["worker_sizing_rationale"],
+                "worker_provider_notes": draft["worker_provider_notes"],
+            },
+        }
+        try:
+            _write_ticket_config_next_id(config_path, config_text, ticket_number + 1)
+            write_ticket(ticket_path, ticket)
+            paths = _ticket_authoring_pathspecs(target, [config_path, ticket_path])
+            added = _git(str(target), "add", "--", *paths, check=False)
+            if added.returncode != 0:
+                raise RuntimeError((added.stderr or added.stdout).strip())
+            commit = _git(
+                str(target), "commit", "-m",
+                f"chore: author {ticket_id} from {batch['origin_ticket_id']} spike",
+                "--", *paths, check=False,
+            )
+            if commit.returncode != 0:
+                raise RuntimeError((commit.stderr or commit.stdout).strip())
+        except Exception as error:
+            _git(
+                str(target), "restore", "--staged", "--",
+                str(config_path.relative_to(target)), str(ticket_path.relative_to(target)),
+                check=False,
+            )
+            config_path.write_text(config_text)
+            if ticket_path.exists():
+                ticket_path.unlink()
+            raise RuntimeError(f"follow-up ticket commit failed: {error}") from error
+        _notify_orchestration_trace("ticket-created", ticket_id=ticket_id)
+        return ticket_id, False
+
     def apply_orchestrator_actions(
         self,
         *,
@@ -7718,6 +7985,34 @@ class Handler(BaseHTTPRequestHandler):
                     relay_intent_id=body.get("relay_intent_id"),
                 )
                 return 202, result
+
+            if method == "POST" and segments == ["v1", "spikes", "follow-ups", "propose"]:
+                body = _read_body(self)
+                proposals = body.get("proposals")
+                if proposals is not None and not isinstance(proposals, list):
+                    raise ValueError("proposals must be a list")
+                result = self.daemon.propose_spike_followups(
+                    origin_repo_path=body.get("origin_repo_path", ""),
+                    origin_ticket_id=body.get("origin_ticket_id", ""),
+                    origin_run_id=int(body.get("origin_run_id") or 0),
+                    proposals=proposals,
+                    provider=body.get("provider"),
+                )
+                return (201 if result.get("created") else 200), result
+
+            if (method == "POST" and len(segments) == 7
+                    and segments[:3] == ["v1", "spikes", "follow-ups"]
+                    and segments[4] == "proposals" and segments[6] == "review"):
+                body = _read_body(self)
+                return 200, self.daemon.review_spike_followup(
+                    batch_id=segments[3],
+                    proposal_id=segments[5],
+                    decision=body.get("decision", ""),
+                    updates=body.get("updates"),
+                    relay_command_seq=body.get("relay_command_seq"),
+                    relay_command_id=body.get("relay_command_id"),
+                    relay_intent_id=body.get("relay_intent_id"),
+                )
 
             if method == "POST" and segments == ["v1", "runs"]:
                 body = _read_body(self)

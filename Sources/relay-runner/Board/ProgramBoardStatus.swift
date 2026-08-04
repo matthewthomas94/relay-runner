@@ -1311,6 +1311,7 @@ final class ProgramBoardViewModel {
     var hasActiveSession = false
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?
+    var spikeFollowupBatch: SpikeFollowupBatch?
     var creating: ProgramBoardCreateDraft?
     var editing: ProgramBoardEditDraft?
     var dragItemID: String?
@@ -1343,6 +1344,7 @@ final class ProgramBoardViewModel {
         reloadState = .idle
         errorMessage = nil
         selectedTicketDetail = nil
+        spikeFollowupBatch = nil
         creating = nil
         editing = nil
         endDrag()
@@ -1367,6 +1369,7 @@ final class ProgramBoardViewModel {
         snapshot = nil
         self.selectedProjectPath = selectedProjectPath
         selectedTicketDetail = nil
+        spikeFollowupBatch = nil
     }
 
     @discardableResult
