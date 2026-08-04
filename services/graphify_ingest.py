@@ -115,6 +115,7 @@ def ingest_registered_projects(
                     "state": _ticket_state(ticket),
                     "status": ticket["status"],
                     "priority": ticket["priority"],
+                    "execution_mode": ticket["execution_mode"],
                     "depends_on": ticket["depends_on"],
                     "run_id": ticket["run_id"],
                     "canceled": ticket["canceled"],
@@ -200,6 +201,7 @@ def ingest_registered_projects(
             "raw_state": run.get("state"),
             "program_state": program_state,
             "branch": run.get("branch"),
+            "execution_mode": run.get("execution_mode") or "implementation",
             "workspace_path": run.get("workspace_path"),
             "log_path": run.get("log_path"),
             "started_at": run.get("started_at"),
@@ -708,7 +710,7 @@ def _run_state(raw_state: Any) -> str:
         return "merge_conflict"
     if state == "merged":
         return "merged"
-    if state in {"succeeded", "success", "done"}:
+    if state in {"succeeded", "success", "done", "spikecompleted", "spike_completed"}:
         return "succeeded"
     if state in {"verification_blocked", "verificationblocked"}:
         return "verification_blocked"

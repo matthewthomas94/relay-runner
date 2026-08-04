@@ -18,6 +18,7 @@ from typing import Any
 
 VALID_STATUSES = ("backlog", "ready", "in_progress", "verification_blocked", "done")
 VALID_PRIORITIES = ("urgent", "high", "medium", "low")
+VALID_EXECUTION_MODES = ("implementation", "spike")
 
 
 class TicketParseError(ValueError):
@@ -88,6 +89,9 @@ def parse(contents: str) -> dict[str, Any]:
     priority = require("priority")
     if priority not in VALID_PRIORITIES:
         raise TicketParseError(f"invalid priority: {priority!r}")
+    execution_mode = raw.get("execution_mode", "implementation").strip().lower()
+    if execution_mode not in VALID_EXECUTION_MODES:
+        raise TicketParseError(f"invalid execution_mode: {execution_mode!r}")
 
     canceled_raw = require("canceled").lower()
     if canceled_raw not in ("true", "false"):
@@ -124,6 +128,7 @@ def parse(contents: str) -> dict[str, Any]:
         "title": require("title"),
         "status": status,
         "priority": priority,
+        "execution_mode": execution_mode,
         "depends_on": _parse_list(require("depends_on")),
         "run_id": run_id,
         "canceled": canceled,
@@ -147,6 +152,7 @@ _FIELD_ORDER = (
     "title",
     "status",
     "priority",
+    "execution_mode",
     "depends_on",
     "run_id",
     "canceled",

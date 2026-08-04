@@ -409,6 +409,16 @@ final class ProgramBoardOverlayController {
                 onEditCommit: { [weak self] request in self?.commitEdit(request) },
                 onEditCancel: { [weak self] in self?.cancelEdit() },
                 onDelete: { [weak self] request in self?.handleDelete(request) },
+                onSpikeFollowupStart: { [weak self] detail in self?.beginSpikeFollowups(detail) },
+                onSpikeFollowupReview: { [weak self] batch, proposal, decision, updates in
+                    self?.reviewSpikeFollowup(
+                        batch: batch,
+                        proposal: proposal,
+                        decision: decision,
+                        updates: updates
+                    )
+                },
+                onSpikeFollowupClose: { [weak self] in self?.model.spikeFollowupBatch = nil },
                 onDrop: { [weak self] item, sourceLane, targetLane in
                     self?.handleDrop(item: item, from: sourceLane, to: targetLane)
                 }
@@ -708,6 +718,45 @@ final class ProgramBoardOverlayController {
         model.beginEdit(detail: detail)
         if model.editing != nil {
             updatePanelKeyEligibility()
+        }
+    }
+
+    private func beginSpikeFollowups(_ detail: ProgramTicketDetail) {
+        guard let identity = detail.identity,
+              let runID = detail.ticket?.runId else { return }
+        Task { @MainActor [weak self] in
+            do {
+                self?.model.spikeFollowupBatch = try await OrchestratorClient.proposeSpikeFollowups(
+                    originRepoPath: identity.projectPath,
+                    originTicketID: identity.ticketID,
+                    originRunID: runID
+                )
+            } catch {
+                self?.model.errorMessage = "Could not propose spike follow-ups: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func reviewSpikeFollowup(
+        batch: SpikeFollowupBatch,
+        proposal: SpikeFollowupProposal,
+        decision: String,
+        updates: [String: Any]?
+    ) {
+        Task { @MainActor [weak self] in
+            do {
+                self?.model.spikeFollowupBatch = try await OrchestratorClient.reviewSpikeFollowup(
+                    batchID: batch.id,
+                    proposalID: proposal.id,
+                    decision: decision,
+                    updates: updates
+                )
+                if decision == "accept" {
+                    self?.checkForUpdates(inBackground: true)
+                }
+            } catch {
+                self?.model.errorMessage = "Could not review spike follow-up: \(error.localizedDescription)"
+            }
         }
     }
 

@@ -44,15 +44,17 @@ verification_resume: Connect physical input and resume.
         with self.assertRaisesRegex(TicketParseError, "requires run_id"):
             parse(contents)
 
-    def test_rr274_remains_open_with_exact_physical_verification_blocker(self):
+    def test_rr274_closes_only_with_explicit_manual_uat_disposition(self):
         ticket = self.ticket("RR-274")
 
-        self.assertEqual(ticket["status"], "verification_blocked")
+        self.assertEqual(ticket["status"], "done")
         self.assertEqual(ticket["run_id"], 7)
-        self.assertIn("Screen Recording", ticket["verification_blocker"])
-        self.assertIn("modifier-only Option", ticket["verification_blocker"])
-        self.assertIn("physical HID", ticket["verification_blocker"])
-        self.assertIn("explicitly resume RR-274", ticket["verification_resume"])
+        self.assertIsNone(ticket["verification_blocker"])
+        self.assertIsNone(ticket["verification_resume"])
+        self.assertIn("User-approved UAT disposition", ticket["body"])
+        self.assertIn("explicitly deferred to the user", ticket["body"])
+        self.assertIn("three unchecked physical-verification criteria remain visible", ticket["body"])
+        self.assertIn("no replay `started`/`played` evidence is claimed", ticket["body"])
         self.assertIn("No post-repair mounted `started`/`played` evidence is claimed", ticket["body"])
         self.assertIn("foreground/background physical double-Option replay remains open", ticket["body"])
 

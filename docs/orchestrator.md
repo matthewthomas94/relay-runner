@@ -32,7 +32,7 @@ Messenger model choices use stable provider aliases. Codex stores `sol`, `terra`
 
 ### 2. Write a ticket
 
-Open the menu-bar Board (double-tap Shift to toggle) and create a ticket via the column's `+` button. The board writes the file to `<repo>/.orchestrator/<TICKET_ID>.md` and bumps `<repo>/.orchestrator/config.toml`'s `next_id`. Existing configs keep their configured prefix; fresh repos derive one from the repo name. Commit both to the working branch — that's the ticket's audit trail going forward.
+Open Workspace and create a ticket via the column's `+` button. Choose **Implementation** for code changes or **Spike** for branchless, read-only research; the editor explains the lifecycle before save. The board writes the file to `<repo>/.orchestrator/<TICKET_ID>.md` and bumps `<repo>/.orchestrator/config.toml`'s `next_id`. Existing configs keep their configured prefix; fresh repos derive one from the repo name. Commit both to the working branch — that's the ticket's audit trail going forward.
 
 You can also create the file by hand. The schema is in [docs/specs/orchestrator-tickets.md](specs/orchestrator-tickets.md).
 
@@ -55,6 +55,10 @@ The daemon:
 5. Returns a `run_id` immediately — the worker continues in the background.
 
 The worker reads the ticket file, flips its status to `in_progress`, implements the change, commits the code with a conventional commit referencing the ticket, then flips the ticket's status to `done` (or leaves it `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits land on the worker's branch.
+
+For `execution_mode: spike`, dispatch takes a separate path: the daemon creates a detached read-only clone without a `relay/<id>` branch, gives the provider only local repository/ticket evidence, and requires structured conclusions, evidence, uncertainties, recommendations, and mutation-attempt reporting. Codex uses its read-only sandbox; Claude runs in safe mode with only `Read`, `Glob`, and `Grep`. A valid result is committed directly to the ticket as `## Spike report` and reaches Done without an implementation review or merge. Failure or cancellation cleans the snapshot, records the exact cause, and returns the ticket to Backlog for explicit retry. Backlog dependents are not auto-promoted by spike completion; already-authorized Queued dependents remain eligible.
+
+From a completed spike in Workspace, choose **Follow-ups** to review implementation-ticket proposals derived from its recommended next steps. The foreground PM can use `propose_spike_followups` for the equivalent voice/text flow and supply refined drafts. Each proposal can be edited, accepted, or rejected independently; only acceptance writes to the explicitly selected canonical project board. Accepted tickets include concise spike ticket/run provenance, remain in Backlog, and are not dispatched automatically. Retrying an accepted proposal is idempotent and does not advance the target board counter again.
 
 ### Rolling queue drain
 
@@ -104,7 +108,7 @@ Relay Runner runs as a three-role loop: the fast messenger owns spoken conversat
 1. **Parallel delivery and classification.** `/relay-bridge` captures the user's voice or typed instruction and immediately queues it to the persistent messenger, then publishes the same command to the foreground orchestrator/PM. The notch shows deterministic visual receipt, while task-like turns can also get a short contextual spoken handoff from the messenger before planning finishes. The messenger speaks in first person (`I` / `me`) on behalf of the foreground orchestrator and names workers directly once authoritative worker context exists. The foreground session clarifies ambiguity, answers general questions, and only creates board work after deciding the command is real project work.
 2. **Ticket authoring.** Raw Relay command captures are private metadata, not board cards or ticket body text. The foreground orchestrator/PM writes refined `.orchestrator/<ticket_id>.md` tickets with actionable summaries and acceptance criteria when work should be delegated.
 3. **Worker creation.** Once a ticket is refined enough, the foreground orchestrator/PM moves it to `ready` or calls the shared dispatch path. The board auto-dispatches `ready`, and direct dispatch stays available for retries or explicit manual control.
-4. **Worker execution.** The daemon creates an isolated worktree on `relay/<id>`, renders the worker workflow prompt, and launches the configured agent. The worker claims the ticket, implements the change, verifies it, commits code, and appends a run log entry before exiting.
+4. **Worker execution.** Implementation mode creates an isolated worktree on `relay/<id>` and follows the commit/review path. Spike mode creates a detached read-only snapshot and returns a structured report through the daemon-owned ticket path.
 5. **Review and merge.** Successful implementation runs automatically receive an independent review/merge worker. Accepted work merges through the daemon path, which publishes `done` on the board, prunes the throwaway worktree/branch, records the drain item as done, and triggers dependent auto-promotion.
 6. **Status and response synthesis.** The foreground orchestrator/PM mirrors provider-visible progress and worker events to the messenger, then sends its authoritative final response. The messenger uses that bounded public context to speak concise updates and the final outcome while the orchestrator stays frontstage and workers do backstage work.
 

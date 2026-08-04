@@ -13,11 +13,24 @@ final class AudioBuffer: @unchecked Sendable {
 
     /// When false, `append` is a no-op. Set by STTEngine to avoid
     /// accumulating audio while idle in caps-lock-toggle mode.
-    var accepting = true
+    private var isAccepting = true
+
+    var accepting: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return isAccepting
+        }
+        set {
+            lock.lock()
+            isAccepting = newValue
+            lock.unlock()
+        }
+    }
 
     func append(_ newSamples: [Float]) {
         lock.lock()
-        guard accepting else { lock.unlock(); return }
+        guard isAccepting else { lock.unlock(); return }
         samples.append(contentsOf: newSamples)
         if let maxSamples, samples.count > maxSamples {
             samples = Array(samples.suffix(maxSamples))
