@@ -161,11 +161,12 @@ struct ProgramBoardOverlayView: View {
                 ProgramTicketCreateModal(
                     draft: draft,
                     projects: model.projectTargets,
-                    makeRequest: { selectedProjectPath, title, description, imageURLs in
+                    makeRequest: { selectedProjectPath, title, description, executionMode, imageURLs in
                         model.createRequest(
                             selectedProjectPath: selectedProjectPath,
                             title: title,
                             description: description,
+                            executionMode: executionMode,
                             imageURLs: imageURLs
                         )
                     },
@@ -179,11 +180,12 @@ struct ProgramBoardOverlayView: View {
             if let draft = model.editing {
                 ProgramTicketEditModal(
                     draft: draft,
-                    makeRequest: { title, status, priority, description, acceptanceCriteria, imageURLs in
+                    makeRequest: { title, status, priority, executionMode, description, acceptanceCriteria, imageURLs in
                         model.editRequest(
                             title: title,
                             status: status,
                             priority: priority,
+                            executionMode: executionMode,
                             description: description,
                             acceptanceCriteria: acceptanceCriteria,
                             imageURLs: imageURLs
@@ -1677,6 +1679,9 @@ struct ProgramTicketDetailPanel: View {
                         title: "Acceptance criteria",
                         text: detail.acceptanceCriteria ?? "No acceptance criteria in the ticket file."
                     )
+                    if let spikeReport = detail.spikeReport {
+                        ProgramDetailSection(title: "Spike report", text: spikeReport)
+                    }
                     if !detail.imageAttachments.isEmpty {
                         ProgramTicketImageSection(attachments: detail.imageAttachments)
                     }
@@ -1712,6 +1717,7 @@ struct ProgramTicketDetailPanel: View {
         var rows: [ProgramDetailRow] = []
         append("Status", detail.item.status ?? detail.ticket?.status.rawValue, to: &rows)
         append("Priority", detail.item.priority ?? detail.ticket?.priority.rawValue, to: &rows)
+        append("Execution mode", detail.item.executionMode ?? detail.ticket?.executionMode.rawValue, to: &rows)
         append("Ticket state", detail.item.ticketState, to: &rows)
         append("Run state", detail.item.runState, to: &rows)
         append("Run ID", detail.item.runID.map { "run \($0)" }, to: &rows, prettify: false)
@@ -1933,6 +1939,7 @@ private struct ProgramTicketEditModal: View {
         _ title: String,
         _ status: Ticket.Status,
         _ priority: Ticket.Priority,
+        _ executionMode: Ticket.ExecutionMode,
         _ description: String,
         _ acceptanceCriteria: String,
         _ imageURLs: [URL]
@@ -1944,6 +1951,7 @@ private struct ProgramTicketEditModal: View {
     @State private var title: String
     @State private var status: Ticket.Status
     @State private var priority: Ticket.Priority
+    @State private var executionMode: Ticket.ExecutionMode
     @State private var description: String
     @State private var acceptanceCriteria: String
     @State private var imageURLs: [URL] = []
@@ -1955,6 +1963,7 @@ private struct ProgramTicketEditModal: View {
             _ title: String,
             _ status: Ticket.Status,
             _ priority: Ticket.Priority,
+            _ executionMode: Ticket.ExecutionMode,
             _ description: String,
             _ acceptanceCriteria: String,
             _ imageURLs: [URL]
@@ -1971,6 +1980,7 @@ private struct ProgramTicketEditModal: View {
         self._title = State(initialValue: draft.title)
         self._status = State(initialValue: draft.status)
         self._priority = State(initialValue: draft.priority)
+        self._executionMode = State(initialValue: draft.executionMode)
         self._description = State(initialValue: draft.description)
         self._acceptanceCriteria = State(initialValue: draft.acceptanceCriteria)
     }
@@ -2041,6 +2051,8 @@ private struct ProgramTicketEditModal: View {
                     Spacer(minLength: 0)
                 }
 
+                ProgramExecutionModePicker(selection: $executionMode)
+
                 Divider()
                     .background(BoardDarkSurfaceStyle.border)
 
@@ -2103,7 +2115,7 @@ private struct ProgramTicketEditModal: View {
     }
 
     private var currentRequest: ProgramBoardEditRequest? {
-        makeRequest(title, status, priority, description, acceptanceCriteria, imageURLs)
+        makeRequest(title, status, priority, executionMode, description, acceptanceCriteria, imageURLs)
     }
 
     private var deleteRequest: ProgramBoardDeleteRequest {
@@ -2152,6 +2164,7 @@ private struct ProgramTicketCreateModal: View {
         _ selectedProjectPath: String?,
         _ title: String,
         _ description: String,
+        _ executionMode: Ticket.ExecutionMode,
         _ imageURLs: [URL]
     ) -> ProgramBoardCreateRequest?
     let onCommit: (ProgramBoardCreateRequest) -> Void
@@ -2160,6 +2173,7 @@ private struct ProgramTicketCreateModal: View {
     @State private var selectedProjectPath: String?
     @State private var title: String
     @State private var description: String
+    @State private var executionMode: Ticket.ExecutionMode = .implementation
     @State private var imageURLs: [URL] = []
     @FocusState private var titleFocused: Bool
 
@@ -2170,6 +2184,7 @@ private struct ProgramTicketCreateModal: View {
             _ selectedProjectPath: String?,
             _ title: String,
             _ description: String,
+            _ executionMode: Ticket.ExecutionMode,
             _ imageURLs: [URL]
         ) -> ProgramBoardCreateRequest?,
         onCommit: @escaping (ProgramBoardCreateRequest) -> Void,
@@ -2229,6 +2244,8 @@ private struct ProgramTicketCreateModal: View {
                     .focused($titleFocused)
                     .lineLimit(1...3)
 
+                ProgramExecutionModePicker(selection: $executionMode)
+
                 Divider()
                     .background(BoardDarkSurfaceStyle.border)
 
@@ -2268,13 +2285,13 @@ private struct ProgramTicketCreateModal: View {
                         .programControlChrome()
                         .programButtonCursor()
                     Button("Save") {
-                        if let request = makeRequest(selectedProjectPath, title, description, imageURLs) {
+                        if let request = makeRequest(selectedProjectPath, title, description, executionMode, imageURLs) {
                             onCommit(request)
                         }
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.plain)
-                    .disabled(makeRequest(selectedProjectPath, title, description, imageURLs) == nil)
+                    .disabled(makeRequest(selectedProjectPath, title, description, executionMode, imageURLs) == nil)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .foregroundStyle(Color.white.opacity(canSave ? 1.0 : 0.45))
@@ -2301,7 +2318,31 @@ private struct ProgramTicketCreateModal: View {
     }
 
     private var canSave: Bool {
-        makeRequest(selectedProjectPath, title, description, imageURLs) != nil
+        makeRequest(selectedProjectPath, title, description, executionMode, imageURLs) != nil
+    }
+}
+
+private struct ProgramExecutionModePicker: View {
+    @Binding var selection: Ticket.ExecutionMode
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Execution mode")
+                .font(AppTypography.font(.controlHeading))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .textCase(.uppercase)
+            Picker("Execution mode", selection: $selection) {
+                ForEach(Ticket.ExecutionMode.allCases, id: \.rawValue) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Text(selection.explanation)
+                .font(AppTypography.font(.label))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

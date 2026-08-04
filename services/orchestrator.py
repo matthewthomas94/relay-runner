@@ -123,6 +123,9 @@ WORKER_SIZING_FIELDS = (
     "worker_sizing_rationale",
     "worker_provider_notes",
 )
+EXECUTION_MODES = frozenset({"implementation", "spike"})
+SPIKE_EXECUTION_MODE = "spike"
+SPIKE_COMPLETED_RUN_STATE = "SpikeCompleted"
 VERIFICATION_BLOCKED_STATUS = "verification_blocked"
 VERIFICATION_BLOCKED_RUN_STATE = "VerificationBlocked"
 VERIFICATION_BLOCKER_FIELDS = ("verification_blocker", "verification_resume")
@@ -788,6 +791,13 @@ def _action_worker_sizing(action: dict[str, Any]) -> dict[str, str]:
     return sizing
 
 
+def _execution_mode(value: Any) -> str:
+    mode = str(value or "implementation").strip().lower()
+    if mode not in EXECUTION_MODES:
+        raise ValueError(f"invalid execution_mode: {mode!r}")
+    return mode
+
+
 def _apply_ticket_action_fields(ticket: dict[str, Any], action: dict[str, Any]) -> None:
     if "title" in action:
         ticket["title"] = _clean_required_text(action.get("title"), "title")
@@ -798,6 +808,8 @@ def _apply_ticket_action_fields(ticket: dict[str, Any], action: dict[str, Any]) 
         ticket["priority"] = priority
     if "depends_on" in action:
         ticket["depends_on"] = _ticket_id_list(action.get("depends_on"), "depends_on")
+    if "execution_mode" in action:
+        ticket["execution_mode"] = _execution_mode(action.get("execution_mode"))
     if "description" in action or "acceptance_criteria" in action:
         description = _clean_markdown(
             action.get("description") if "description" in action else _body_section(ticket, "Description"),
@@ -1592,7 +1604,7 @@ class QueueDrainStore:
 
 
 class RunsStore:
-    SCHEMA_VERSION = 4  # bump when the runs table shape changes
+    SCHEMA_VERSION = 5  # bump when the runs table shape changes
 
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS runs (
@@ -1601,6 +1613,7 @@ class RunsStore:
         repo_path TEXT NOT NULL,
         workspace_path TEXT NOT NULL,
         branch TEXT NOT NULL,
+        execution_mode TEXT NOT NULL DEFAULT 'implementation',
         state TEXT NOT NULL,
         attempt INTEGER NOT NULL DEFAULT 1,
         pid INTEGER,
@@ -1622,7 +1635,7 @@ class RunsStore:
     CREATE INDEX IF NOT EXISTS idx_runs_ticket ON runs(ticket_id);
     """
 
-    ACTIVE_STATES = ("Claimed", "Running")
+    ACTIVE_STATES = ("Claimed", "Running", "SpikeResultReady")
     DURABLE_INDEX_STATES = (VERIFICATION_BLOCKED_RUN_STATE,)
     # Completed entries linger in the runs-index file this long after `ended_at`
     # so the board can render review-pending pills across the typical merge gap
@@ -1655,7 +1668,14 @@ class RunsStore:
         # acceptable for a local dev tool).
         with self._conn() as c:
             current = int(c.execute("PRAGMA user_version").fetchone()[0])
-            if current != self.SCHEMA_VERSION:
+            if current == 4:
+                c.execute(
+                    "ALTER TABLE runs ADD COLUMN execution_mode TEXT NOT NULL "
+                    "DEFAULT 'implementation'"
+                )
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+                c.executescript(self.SCHEMA)
+            elif current != self.SCHEMA_VERSION:
                 c.execute("DROP TABLE IF EXISTS runs")
                 c.executescript(self.SCHEMA)
                 c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
@@ -1663,18 +1683,19 @@ class RunsStore:
                 c.executescript(self.SCHEMA)
 
     def insert(self, *, ticket_id: str, repo_path: str, workspace_path: str,
-               branch: str, state: str, attempt: int = 1, log_path: str | None = None,
+               branch: str, state: str, execution_mode: str = "implementation",
+               attempt: int = 1, log_path: str | None = None,
                provider_key: str | None = None, model_alias: str | None = None,
                worker_model: str | None = None, worker_effort: str | None = None,
                worker_sizing_rationale: str | None = None,
                worker_provider_notes: str | None = None) -> int:
         with self._conn() as c:
             cur = c.execute(
-                "INSERT INTO runs(ticket_id, repo_path, workspace_path, branch, "
+                "INSERT INTO runs(ticket_id, repo_path, workspace_path, branch, execution_mode, "
                 "state, attempt, started_at, log_path, provider_key, model_alias, "
                 "worker_model, worker_effort, worker_sizing_rationale, worker_provider_notes) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (ticket_id, repo_path, workspace_path, branch,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ticket_id, repo_path, workspace_path, branch, _execution_mode(execution_mode),
                  state, attempt, time.time(), log_path, provider_key, model_alias,
                  worker_model, worker_effort, worker_sizing_rationale, worker_provider_notes),
             )
@@ -1844,20 +1865,30 @@ class RunsStore:
         ph = ",".join("?" * len(self.ACTIVE_STATES))
         with self._conn() as c:
             rows = c.execute(
-                f"SELECT id, pid FROM runs WHERE state IN ({ph})",
+                f"SELECT id, pid, execution_mode FROM runs WHERE state IN ({ph})",
                 self.ACTIVE_STATES,
             ).fetchall()
             abandoned = [
                 int(row["id"])
                 for row in rows
-                if not _process_is_alive(row["pid"])
+                if row["execution_mode"] == SPIKE_EXECUTION_MODE
+                or not _process_is_alive(row["pid"])
             ]
+            for row in rows:
+                if row["execution_mode"] != SPIKE_EXECUTION_MODE or int(row["id"]) not in abandoned:
+                    continue
+                try:
+                    os.kill(int(row["pid"]), signal.SIGTERM)
+                except (OSError, TypeError, ValueError):
+                    pass
             if not abandoned:
                 return 0
             placeholders = ",".join("?" * len(abandoned))
             c.execute(
                 f"UPDATE runs SET state = 'Stalled', ended_at = ?, "
-                "last_error = 'Worker process was no longer running when daemon restarted' "
+                "last_error = CASE WHEN execution_mode = 'spike' "
+                "THEN 'Spike stopped during daemon restart; retry is available' "
+                "ELSE 'Worker process was no longer running when daemon restarted' END "
                 f"WHERE id IN ({placeholders})",
                 (time.time(), *abandoned),
             )
@@ -1927,6 +1958,7 @@ class RunsStore:
                 "last_error": r["last_error"],
                 "workspace_path": r["workspace_path"],
                 "branch": r["branch"],
+                "execution_mode": r["execution_mode"],
                 "activity": r["activity"],
                 "activity_at": r["activity_at"],
                 "provider_key": r["provider_key"],
@@ -2889,6 +2921,253 @@ def delete_branch(repo_path: str, branch: str) -> None:
     _git(repo_path, "branch", "-D", branch, check=False)
 
 
+SPIKE_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "conclusions": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "source": {"type": "string"},
+                    "finding": {"type": "string"},
+                },
+                "required": ["source", "finding"],
+            },
+            "minItems": 1,
+        },
+        "uncertainties": {"type": "array", "items": {"type": "string"}},
+        "recommended_next_steps": {"type": "array", "items": {"type": "string"}},
+        "mutation_attempts": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "conclusions",
+        "evidence",
+        "uncertainties",
+        "recommended_next_steps",
+        "mutation_attempts",
+    ],
+}
+
+
+def _make_tree_writable(path: Path) -> None:
+    if not path.exists():
+        return
+    for root, dirs, files in os.walk(path):
+        root_path = Path(root)
+        try:
+            root_path.chmod(root_path.stat().st_mode | 0o700)
+        except OSError:
+            pass
+        for name in [*dirs, *files]:
+            child = root_path / name
+            if child.is_symlink():
+                continue
+            try:
+                child.chmod(child.stat().st_mode | 0o700)
+            except OSError:
+                pass
+
+
+def create_spike_workspace(
+    *, repo_path: str, workspace_path: Path, base_branch: str
+) -> None:
+    """Create an isolated detached clone and make it read-only for a spike."""
+    if workspace_path.exists():
+        raise RuntimeError(f"spike workspace already exists: {workspace_path}")
+    workspace_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["GIT_LFS_SKIP_SMUDGE"] = "1"
+    clone = subprocess.run(
+        [
+            "git", "-c", "core.hooksPath=/dev/null", "clone", "--no-local",
+            "--no-checkout", "--quiet", repo_path, str(workspace_path),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if clone.returncode != 0:
+        shutil.rmtree(workspace_path, ignore_errors=True)
+        raise RuntimeError(f"spike snapshot clone failed: {(clone.stderr or clone.stdout).strip()}")
+    revision = f"refs/remotes/origin/{base_branch}"
+    if _git(str(workspace_path), "rev-parse", "--verify", revision, check=False).returncode != 0:
+        revision = "HEAD"
+    checkout = subprocess.run(
+        [
+            "git", "-c", "core.hooksPath=/dev/null", "-C", str(workspace_path),
+            "checkout", "--detach", "--quiet", revision,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if checkout.returncode != 0:
+        shutil.rmtree(workspace_path, ignore_errors=True)
+        raise RuntimeError(f"spike snapshot checkout failed: {(checkout.stderr or checkout.stdout).strip()}")
+    _git(str(workspace_path), "remote", "remove", "origin", check=False)
+    for child in sorted(workspace_path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if child.is_symlink():
+            continue
+        try:
+            child.chmod(child.stat().st_mode & ~0o222)
+        except OSError as e:
+            _make_tree_writable(workspace_path)
+            shutil.rmtree(workspace_path, ignore_errors=True)
+            raise RuntimeError(f"could not protect spike snapshot: {e}") from e
+    workspace_path.chmod(workspace_path.stat().st_mode & ~0o222)
+
+
+def remove_spike_workspace(workspace_path: Path) -> tuple[bool, str | None]:
+    if not workspace_path.exists():
+        return True, None
+    _make_tree_writable(workspace_path)
+    try:
+        shutil.rmtree(workspace_path)
+    except OSError as e:
+        return False, f"could not remove spike workspace: {e}"
+    return not workspace_path.exists(), None
+
+
+def _spike_text(value: Any, *, field: str, max_length: int = 600) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        raise ValueError(f"spike result {field} contains an empty value")
+    return text[:max_length]
+
+
+def validate_spike_result(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("spike result is not an object")
+    expected = set(SPIKE_RESULT_SCHEMA["required"])
+    if set(value) != expected:
+        raise ValueError("spike result fields do not match the structured contract")
+
+    def strings(field: str, *, required: bool = False) -> list[str]:
+        raw = value.get(field)
+        if not isinstance(raw, list) or (required and not raw):
+            raise ValueError(f"spike result {field} must be a non-empty list" if required else f"spike result {field} must be a list")
+        if len(raw) > 12:
+            raise ValueError(f"spike result {field} exceeds 12 items")
+        return [_spike_text(item, field=field) for item in raw]
+
+    evidence_raw = value.get("evidence")
+    if not isinstance(evidence_raw, list) or not evidence_raw or len(evidence_raw) > 12:
+        raise ValueError("spike result evidence must contain 1-12 items")
+    evidence: list[dict[str, str]] = []
+    for item in evidence_raw:
+        if not isinstance(item, dict) or set(item) != {"source", "finding"}:
+            raise ValueError("spike result evidence entries require source and finding")
+        evidence.append({
+            "source": _spike_text(item["source"], field="evidence.source", max_length=300),
+            "finding": _spike_text(item["finding"], field="evidence.finding"),
+        })
+    result = {
+        "conclusions": strings("conclusions", required=True),
+        "evidence": evidence,
+        "uncertainties": strings("uncertainties"),
+        "recommended_next_steps": strings("recommended_next_steps"),
+        "mutation_attempts": strings("mutation_attempts"),
+    }
+    if result["mutation_attempts"]:
+        raise ValueError(
+            "spike reported blocked mutation attempt(s): "
+            + "; ".join(result["mutation_attempts"])
+        )
+    return result
+
+
+def extract_spike_result(log_path: Path) -> dict[str, Any]:
+    candidates: list[Any] = []
+    last_error: ValueError | None = None
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except OSError as e:
+        raise ValueError(f"could not read spike output: {e}") from e
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if isinstance(event.get("structured_output"), dict):
+            candidates.append(event["structured_output"])
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            candidates.append(item.get("text"))
+        if event.get("type") == "result":
+            candidates.append(event.get("result"))
+    for candidate in reversed(candidates):
+        if isinstance(candidate, str):
+            try:
+                candidate = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+        try:
+            return validate_spike_result(candidate)
+        except ValueError as e:
+            last_error = e
+            continue
+    if last_error is not None:
+        raise last_error
+    raise ValueError("provider returned no valid structured spike result")
+
+
+def _replace_markdown_section(body: str, heading: str, content: str) -> str:
+    pattern = re.compile(
+        rf"^## {re.escape(heading)}\s*\n.*?(?=^## |\Z)",
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    section = f"## {heading}\n\n{content.strip()}\n"
+    if pattern.search(body):
+        return pattern.sub(section, body, count=1)
+    return body.rstrip() + "\n\n" + section
+
+
+def render_spike_report(
+    result: dict[str, Any], *, run_id: int, attempt: int, provider: str
+) -> str:
+    def bullets(items: list[str], empty: str) -> str:
+        return "\n".join(f"- {item}" for item in items) if items else f"- {empty}"
+
+    evidence = "\n".join(
+        f"- `{item['source']}` - {item['finding']}" for item in result["evidence"]
+    )
+    return (
+        f"- **Run:** {run_id} (attempt {attempt})\n"
+        f"- **Provider:** {provider}\n\n"
+        "**Conclusions**\n\n"
+        f"{bullets(result['conclusions'], 'No conclusion recorded.')}\n\n"
+        "**Evidence**\n\n"
+        f"{evidence}\n\n"
+        "**Uncertainties**\n\n"
+        f"{bullets(result['uncertainties'], 'None recorded.')}\n\n"
+        "**Recommended next steps**\n\n"
+        f"{bullets(result['recommended_next_steps'], 'No follow-up recommended.')}"
+    )
+
+
+def commit_daemon_ticket_update(
+    *, repo: Path, ticket_path: Path, ticket: dict[str, Any], message: str
+) -> None:
+    original = ticket_path.read_text()
+    write_ticket(ticket_path, ticket)
+    rel = str(ticket_path.resolve().relative_to(repo.resolve()))
+    commit = _git(
+        str(repo), "commit", "--only", "-m", message, "--", rel, check=False,
+    )
+    if commit.returncode == 0:
+        return
+    ticket_path.write_text(original)
+    raise RuntimeError(
+        f"daemon ticket-only commit failed: {(commit.stderr or commit.stdout).strip()}"
+    )
+
+
 def _git_head(repo_path: str) -> str | None:
     result = _git(repo_path, "rev-parse", "HEAD", check=False)
     if result.returncode != 0:
@@ -3011,6 +3290,7 @@ def validate_worker_completion(
 def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
     model_alias = str(run.get("model_alias") or "").strip().lower()
     worker_effort = str(run.get("worker_effort") or "").strip().lower()
+    spike = run.get("execution_mode") == SPIKE_EXECUTION_MODE
     if agent_kind == "claude":
         if model_alias == "default":
             model_alias = ""
@@ -3019,13 +3299,29 @@ def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
         # Claude stream-json gives assistant/tool_use/tool_result events. The
         # same command shape is used for implementation and review workers so
         # provider-facing effort semantics stay aligned.
-        cmd = [
-            agent_bin,
-            "-p",
-            "--dangerously-skip-permissions",
-            "--verbose",
-            "--output-format", "stream-json",
-        ]
+        if spike:
+            cmd = [
+                agent_bin,
+                "-p",
+                "--safe-mode",
+                "--no-chrome",
+                "--no-session-persistence",
+                "--permission-mode", "dontAsk",
+                "--tools", "Read,Glob,Grep",
+                "--strict-mcp-config",
+                "--mcp-config", "{}",
+                "--json-schema", json.dumps(SPIKE_RESULT_SCHEMA, separators=(",", ":")),
+                "--verbose",
+                "--output-format", "stream-json",
+            ]
+        else:
+            cmd = [
+                agent_bin,
+                "-p",
+                "--dangerously-skip-permissions",
+                "--verbose",
+                "--output-format", "stream-json",
+            ]
         if model_alias:
             cmd.extend(["--model", model_alias])
         if worker_effort:
@@ -3049,14 +3345,29 @@ def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
 
     # Codex exec --json emits JSONL events such as thread.started,
     # item.started command_execution, item.completed, and turn.completed.
-    cmd = [
-        agent_bin,
-        "exec",
-        "--json",
-        "--ephemeral",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--dangerously-bypass-hook-trust",
-    ]
+    if spike:
+        schema_path = str(run.get("result_schema_path") or "").strip()
+        if not schema_path:
+            raise RuntimeError("spike run is missing its structured result schema")
+        cmd = [
+            agent_bin,
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--sandbox", "read-only",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--output-schema", schema_path,
+        ]
+    else:
+        cmd = [
+            agent_bin,
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+        ]
     if model_alias:
         cmd.extend(["--model", model_alias])
     if worker_effort:
@@ -3086,6 +3397,8 @@ class Worker:
         self.proc: subprocess.Popen | None = None
         self.thread: threading.Thread | None = None
         self._cancel_requested = threading.Event()
+        self.spike_result: dict[str, Any] | None = None
+        self._spike_violation: str | None = None
         # Tool-use ids dispatched but not yet resolved by a tool_result. Shared
         # with the heartbeat thread, so guarded by a lock.
         self._inflight: set[str] = set()
@@ -3134,6 +3447,9 @@ class Worker:
 
         try:
             log.write(f"[orchestrator] provider={self.agent_kind}\n")
+            log.write(
+                f"[orchestrator] execution_mode={self.run.get('execution_mode') or 'implementation'}\n"
+            )
             if self.run.get("model_alias"):
                 log.write(f"[orchestrator] model_alias={self.run['model_alias']}\n")
             if self.run.get("worker_model"):
@@ -3232,38 +3548,63 @@ class Worker:
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
                 self._emit_lifecycle("run-canceled")
             elif rc == 0:
-                outcome, reason = validate_worker_outcome(
-                    workspace_path=self.run["workspace_path"],
-                    ticket_id=self.run["ticket_id"],
-                    run_id=self.run_id,
-                    start_head=start_head,
-                )
-                if outcome in {"done", VERIFICATION_BLOCKED_STATUS}:
-                    self.store.update(
-                        self.run_id,
-                        state="AwaitingReview",
-                        last_error=(reason if outcome == VERIFICATION_BLOCKED_STATUS else None),
-                        ended=True,
-                        exit_code=rc,
-                    )
-                    self._emit_lifecycle(
-                        "run-review-needed",
-                        message=(
-                            f"{self.run['ticket_id']} declared an external verification blocker and needs review"
-                            if outcome == VERIFICATION_BLOCKED_STATUS
-                            else None
-                        ),
-                    )
+                if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE:
+                    try:
+                        if self._spike_violation:
+                            raise ValueError(self._spike_violation)
+                        self.spike_result = extract_spike_result(self.log_path)
+                    except ValueError as e:
+                        reason = str(e)
+                        log.write(f"\n[orchestrator] spike incomplete: {reason}\n")
+                        self.store.update(
+                            self.run_id,
+                            state="Failed",
+                            last_error=reason,
+                            ended=True,
+                            exit_code=rc,
+                        )
+                        self._emit_lifecycle("run-failed")
+                    else:
+                        self.store.update(
+                            self.run_id,
+                            state="SpikeResultReady",
+                            ended=True,
+                            exit_code=rc,
+                        )
+                        self._emit_lifecycle("preparing-response", queue_messenger=False)
                 else:
-                    log.write(f"\n[orchestrator] worker exited 0 but did not complete ticket: {reason}\n")
-                    self.store.update(
-                        self.run_id,
-                        state="Failed",
-                        last_error=f"exit=0 but ticket incomplete: {reason}",
-                        ended=True,
-                        exit_code=rc,
+                    outcome, reason = validate_worker_outcome(
+                        workspace_path=self.run["workspace_path"],
+                        ticket_id=self.run["ticket_id"],
+                        run_id=self.run_id,
+                        start_head=start_head,
                     )
-                    self._emit_lifecycle("run-failed")
+                    if outcome in {"done", VERIFICATION_BLOCKED_STATUS}:
+                        self.store.update(
+                            self.run_id,
+                            state="AwaitingReview",
+                            last_error=(reason if outcome == VERIFICATION_BLOCKED_STATUS else None),
+                            ended=True,
+                            exit_code=rc,
+                        )
+                        self._emit_lifecycle(
+                            "run-review-needed",
+                            message=(
+                                f"{self.run['ticket_id']} declared an external verification blocker and needs review"
+                                if outcome == VERIFICATION_BLOCKED_STATUS
+                                else None
+                            ),
+                        )
+                    else:
+                        log.write(f"\n[orchestrator] worker exited 0 but did not complete ticket: {reason}\n")
+                        self.store.update(
+                            self.run_id,
+                            state="Failed",
+                            last_error=f"exit=0 but ticket incomplete: {reason}",
+                            ended=True,
+                            exit_code=rc,
+                        )
+                        self._emit_lifecycle("run-failed")
             elif rc in (-9, -15):
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
                 self._emit_lifecycle("run-canceled")
@@ -3328,6 +3669,10 @@ class Worker:
                     with self._inflight_lock:
                         self._inflight.add(tool_id)
                 name = block.get("name") or ""
+                if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE and name not in {
+                    "Read", "Glob", "Grep"
+                }:
+                    self._spike_violation = f"spike attempted disallowed tool {name or 'unknown'}"
                 now = time.time()
                 meaningful = name not in _NOOP_TOOLS
                 # Don't let a no-op tool clobber a useful activity set seconds ago.
@@ -3347,6 +3692,15 @@ class Worker:
         elif etype == "item.started":
             item = evt.get("item") or {}
             if isinstance(item, dict):
+                if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE:
+                    command = str(item.get("command") or "")
+                    if item.get("type") == "command_execution" and re.search(
+                        r"(?:^|[;&|]\s*)(?:rm|mv|cp|touch|mkdir|install|curl|wget|open|osascript|chmod|chown|ln|tee)\b|"
+                        r"(?:^|\s)(?:>|>>|2>|2>>)\s*|"
+                        r"\bgit\s+(?:add|apply|branch|checkout|clean|commit|merge|push|rebase|reset|restore|switch|tag|worktree)\b",
+                        command,
+                    ):
+                        self._spike_violation = "spike attempted a mutating or external command"
                 item_id = item.get("id")
                 if item_id:
                     with self._inflight_lock:
@@ -3355,6 +3709,17 @@ class Worker:
         elif etype == "item.completed":
             item = evt.get("item") or {}
             if isinstance(item, dict):
+                if (
+                    self.run.get("execution_mode") == SPIKE_EXECUTION_MODE
+                    and item.get("type") == "command_execution"
+                    and item.get("exit_code") not in (None, 0, "0")
+                    and re.search(
+                        r"operation not permitted|permission denied|read-only|sandbox",
+                        str(item.get("aggregated_output") or item.get("output") or ""),
+                        re.IGNORECASE,
+                    )
+                ):
+                    self._spike_violation = "spike command was blocked by mutation isolation"
                 item_id = item.get("id")
                 if item_id:
                     with self._inflight_lock:
@@ -3610,6 +3975,7 @@ class Daemon:
         stalled = self.runs.reconcile_on_startup()
         if stalled:
             print(f"[orchestrator] reconciled {stalled} stalled run(s) on startup", file=sys.stderr)
+            self._recover_stalled_spikes()
         # Seed the runs-index file so the board has something to read before the
         # first transition (reconcile above mutates state directly, bypassing the
         # insert/update write hooks).
@@ -3715,6 +4081,41 @@ class Daemon:
             run_id=str(run_id),
             caller_context=context_block,
         )
+
+    @staticmethod
+    def _build_spike_prompt(
+        *,
+        ticket: dict[str, Any],
+        repo_path: str,
+        workspace_path: str,
+        attempt: int,
+        run_id: int,
+        caller_context: str | None = None,
+    ) -> str:
+        context = caller_context.strip() if caller_context and caller_context.strip() else "None."
+        return f"""You are a Relay Runner research-spike worker.
+
+Investigate the bounded question in ticket {ticket['id']} and return only the structured result required by the provider output schema.
+
+- Run: {run_id} (attempt {attempt})
+- Source repository: {repo_path}
+- Read-only detached snapshot: {workspace_path}
+- Allowed evidence: files and Git history inside the snapshot, plus the refined ticket and dispatcher context below.
+- Forbidden: edits, file creation, Git mutations, network access, desktop/app control, messages, purchases, deletion, or any other external side effect.
+- Do not expose chain-of-thought, raw provider transcript, credentials, or unrelated private data.
+- If you try a forbidden mutation, record it in `mutation_attempts`; the daemon will fail the run visibly.
+- Conclusions must cite concise local evidence and separate uncertainties from recommendations.
+
+## Refined ticket
+
+Title: {ticket['title']}
+
+{str(ticket.get('body') or '').strip()}
+
+## Dispatcher context
+
+{context}
+"""
 
     def _effective_worker_agent(self) -> tuple[str, str, dict[str, Any]]:
         orch_cfg = self.cfg.get("orchestrator", {}) if isinstance(self.cfg.get("orchestrator"), dict) else {}
@@ -4543,6 +4944,7 @@ class Daemon:
         reason: str,
         provider_key: str,
         sizing: dict[str, Any] | None = None,
+        execution_mode: str = "implementation",
     ) -> dict | None:
         attempt = self.runs.next_attempt(ticket_id, repo_path=repo_path)
         metadata = {
@@ -4560,6 +4962,7 @@ class Daemon:
             repo_path=repo_path,
             workspace_path=str(workspace_path),
             branch=branch,
+            execution_mode=execution_mode,
             state="Failed",
             attempt=attempt,
             log_path=str(log_path),
@@ -4638,6 +5041,7 @@ class Daemon:
             ticket = read_ticket(ticket_file)
         except (OSError, TicketParseError) as e:
             raise ValueError(f"ticket {ticket_id} could not be read: {e}") from e
+        execution_mode = _execution_mode(ticket.get("execution_mode"))
         if ticket.get("status") == VERIFICATION_BLOCKED_STATUS:
             raise ValueError(
                 f"ticket {ticket_id} is verification blocked; use the explicit resume action "
@@ -4651,8 +5055,9 @@ class Daemon:
         )
 
         sanitized = sanitize_identifier(ticket_id)
-        branch = f"{self.branch_prefix}{sanitized}"
-        workspace_path = self.workspace_root / workspace_slug(str(repo), ticket_id)
+        branch = "" if execution_mode == SPIKE_EXECUTION_MODE else f"{self.branch_prefix}{sanitized}"
+        workspace_base = self.workspace_root / workspace_slug(str(repo), ticket_id)
+        workspace_path = workspace_base
         log_path = workspace_path / ".relay" / "run.log"
         base_branch = self._resolve_default_branch(str(repo))
         target_branch = _git_text(str(repo), "branch", "--show-current") or base_branch
@@ -4770,6 +5175,7 @@ class Daemon:
                     reason=reason,
                     provider_key=worker_provider,
                     sizing=raw_worker_sizing_metadata(ticket, worker_provider),
+                    execution_mode=execution_mode,
                 )
                 print(
                     f"[orchestrator] dispatch refused for {ticket_id} from {source}: {reason}",
@@ -4784,14 +5190,29 @@ class Daemon:
 
             # Pre-existing attempts: bump attempt number for THIS ticket.
             attempt = self.runs.next_attempt(ticket_id, repo_path=str(repo))
+            if execution_mode == SPIKE_EXECUTION_MODE:
+                workspace_path = Path(f"{workspace_base}-spike-{attempt}")
+                log_path = (
+                    self.workspace_root
+                    / ".spike-runs"
+                    / workspace_slug(str(repo), ticket_id)
+                    / f"run-{attempt}.log"
+                )
 
             try:
-                create_worktree(
-                    repo_path=str(repo),
-                    workspace_path=workspace_path,
-                    branch=branch,
-                    base_branch=base_branch,
-                )
+                if execution_mode == SPIKE_EXECUTION_MODE:
+                    create_spike_workspace(
+                        repo_path=str(repo),
+                        workspace_path=workspace_path,
+                        base_branch=base_branch,
+                    )
+                else:
+                    create_worktree(
+                        repo_path=str(repo),
+                        workspace_path=workspace_path,
+                        branch=branch,
+                        base_branch=base_branch,
+                    )
             except RuntimeError as e:
                 # Pre-flight failure — record the attempt as Failed for visibility.
                 run_id = self.runs.insert(
@@ -4799,6 +5220,7 @@ class Daemon:
                     repo_path=str(repo),
                     workspace_path=str(workspace_path),
                     branch=branch,
+                    execution_mode=execution_mode,
                     state="Failed",
                     attempt=attempt,
                     log_path=str(log_path),
@@ -4821,17 +5243,19 @@ class Daemon:
                 raise
 
             try:
-                _materialize_ticket_snapshot(
-                    ticket_file=ticket_file,
-                    workspace_path=workspace_path,
-                    ticket_id=ticket_id,
-                )
+                if execution_mode != SPIKE_EXECUTION_MODE:
+                    _materialize_ticket_snapshot(
+                        ticket_file=ticket_file,
+                        workspace_path=workspace_path,
+                        ticket_id=ticket_id,
+                    )
             except RuntimeError as e:
                 run_id = self.runs.insert(
                     ticket_id=ticket_id,
                     repo_path=str(repo),
                     workspace_path=str(workspace_path),
                     branch=branch,
+                    execution_mode=execution_mode,
                     state="Failed",
                     attempt=attempt,
                     log_path=str(log_path),
@@ -4858,6 +5282,7 @@ class Daemon:
                 repo_path=str(repo),
                 workspace_path=str(workspace_path),
                 branch=branch,
+                execution_mode=execution_mode,
                 state="Claimed",
                 attempt=attempt,
                 log_path=str(log_path),
@@ -4871,19 +5296,79 @@ class Daemon:
                 relay_command_id=str(relay_command_id or "") if relay_command_id else None,
             )
 
-            workflow_path = self._resolve_workflow_for_repo(str(repo))
-            prompt = self._build_prompt(
-                ticket_id=ticket_id,
-                repo_path=str(repo),
-                workspace_path=str(workspace_path),
-                branch=branch,
-                attempt=attempt,
-                run_id=run_id,
-                caller_context=context,
-                workflow_path=workflow_path,
-            )
+            if execution_mode == SPIKE_EXECUTION_MODE:
+                ticket["status"] = "in_progress"
+                ticket["run_id"] = run_id
+                try:
+                    commit_daemon_ticket_update(
+                        repo=repo,
+                        ticket_path=ticket_file,
+                        ticket=ticket,
+                        message=f"chore({ticket_id}): start spike run {run_id}",
+                    )
+                except RuntimeError as e:
+                    removed, cleanup_error = remove_spike_workspace(workspace_path)
+                    reason = str(e)
+                    if cleanup_error:
+                        reason += f"; {cleanup_error}"
+                    self.runs.update(
+                        run_id,
+                        state="Failed",
+                        last_error=reason,
+                        ended=True,
+                        exit_code=-1,
+                    )
+                    raise
+                try:
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    result_schema_path = log_path.parent / f"run-{attempt}-result.schema.json"
+                    result_schema_path.write_text(json.dumps(SPIKE_RESULT_SCHEMA, indent=2))
+                    workflow_path = None
+                    prompt = self._build_spike_prompt(
+                        ticket=ticket,
+                        repo_path=str(repo),
+                        workspace_path=str(workspace_path),
+                        attempt=attempt,
+                        run_id=run_id,
+                        caller_context=context,
+                    )
+                except (OSError, RuntimeError) as e:
+                    reason = f"spike launch preparation failed: {e}"
+                    try:
+                        self._spike_ticket_update(
+                            self.runs.get(run_id) or {},
+                            result=None,
+                            incomplete_reason=reason,
+                        )
+                    except (OSError, RuntimeError, TicketParseError, ValueError) as reset_error:
+                        reason += f"; ticket reset failed: {reset_error}"
+                    removed, cleanup_error = remove_spike_workspace(workspace_path)
+                    if not removed or cleanup_error:
+                        reason += f"; {cleanup_error or 'spike workspace still exists'}"
+                    self.runs.update(
+                        run_id,
+                        state="Failed",
+                        last_error=reason,
+                        ended=True,
+                        exit_code=-1,
+                    )
+                    raise RuntimeError(reason) from e
+            else:
+                workflow_path = self._resolve_workflow_for_repo(str(repo))
+                prompt = self._build_prompt(
+                    ticket_id=ticket_id,
+                    repo_path=str(repo),
+                    workspace_path=str(workspace_path),
+                    branch=branch,
+                    attempt=attempt,
+                    run_id=run_id,
+                    caller_context=context,
+                    workflow_path=workflow_path,
+                )
 
             run = self.runs.get(run_id) or {}
+            if execution_mode == SPIKE_EXECUTION_MODE:
+                run["result_schema_path"] = str(result_schema_path)
             worker = Worker(
                 run_id=run_id, run=run, prompt=prompt, agent_bin=worker_bin,
                 agent_kind=worker_provider, workflow_path=workflow_path,
@@ -4921,12 +5406,127 @@ class Daemon:
             )
         return {"already_active": False, "run": run}
 
+    def _spike_ticket_update(
+        self,
+        run: dict[str, Any],
+        *,
+        result: dict[str, Any] | None,
+        incomplete_reason: str | None = None,
+    ) -> None:
+        repo = Path(str(run["repo_path"])).expanduser().resolve()
+        ticket_path = repo / ".orchestrator" / f"{run['ticket_id']}.md"
+        ticket = read_ticket(ticket_path)
+        if ticket.get("execution_mode") != SPIKE_EXECUTION_MODE:
+            raise RuntimeError("canonical ticket no longer has spike execution mode")
+        if ticket.get("status") != "in_progress" or ticket.get("run_id") != run["id"]:
+            raise RuntimeError(
+                "canonical spike ticket changed while the run was active; refusing overwrite"
+            )
+        existing_log = _body_section(ticket, "Run log")
+        if result is not None:
+            report = render_spike_report(
+                result,
+                run_id=int(run["id"]),
+                attempt=int(run.get("attempt") or 1),
+                provider=str(run.get("provider_key") or "unknown"),
+            )
+            ticket["body"] = _replace_markdown_section(
+                str(ticket.get("body") or ""), "Spike report", report
+            )
+            log_entry = (
+                f"- **Run {run['id']}** (attempt {run.get('attempt') or 1}) - "
+                "branchless spike completed; findings persisted by the daemon."
+            )
+            ticket["status"] = "done"
+            message = f"docs({run['ticket_id']}): record spike run {run['id']}"
+        else:
+            reason = _spike_text(
+                incomplete_reason or "Spike did not produce a complete result.",
+                field="incomplete_reason",
+            )
+            log_entry = (
+                f"- **Run {run['id']}** (attempt {run.get('attempt') or 1}) - "
+                f"branchless spike incomplete: {reason}"
+            )
+            ticket["status"] = "backlog"
+            ticket["run_id"] = None
+            message = f"docs({run['ticket_id']}): record incomplete spike run {run['id']}"
+        run_log = "\n".join(item for item in (existing_log, log_entry) if item)
+        ticket["body"] = _replace_markdown_section(
+            str(ticket.get("body") or ""), "Run log", run_log
+        )
+        commit_daemon_ticket_update(
+            repo=repo,
+            ticket_path=ticket_path,
+            ticket=ticket,
+            message=message,
+        )
+
+    def _recover_stalled_spikes(self) -> None:
+        for run in self.runs.list(state="Stalled", limit=5000):
+            if run.get("execution_mode") != SPIKE_EXECUTION_MODE:
+                continue
+            try:
+                self._spike_ticket_update(
+                    run,
+                    result=None,
+                    incomplete_reason=str(run.get("last_error") or "Spike stopped during daemon restart."),
+                )
+            except (OSError, RuntimeError, TicketParseError, ValueError) as e:
+                self.runs.update(run["id"], last_error=f"{run.get('last_error')}; recovery: {e}")
+            remove_spike_workspace(Path(str(run.get("workspace_path") or "")))
+
     def _on_worker_complete(self, run_id: int) -> None:
         with self._workers_lock:
-            self._workers.pop(run_id, None)
+            worker = self._workers.pop(run_id, None)
         self._forget_run_health(run_id)
         run = self.runs.get(run_id)
         if not run:
+            return
+        if run.get("execution_mode") == SPIKE_EXECUTION_MODE:
+            try:
+                if run.get("state") == "SpikeResultReady" and worker and worker.spike_result:
+                    self._spike_ticket_update(run, result=worker.spike_result)
+                    self.runs.update(
+                        run_id,
+                        state=SPIKE_COMPLETED_RUN_STATE,
+                        last_error="",
+                    )
+                    self._emit_lifecycle(
+                        "run-succeeded",
+                        ticket_id=run.get("ticket_id"),
+                        run_id=run_id,
+                        source="orchestrator",
+                        message=f"{run.get('ticket_id')} spike findings are ready",
+                        repo_path=run.get("repo_path"),
+                        provider_key=run.get("provider_key"),
+                    )
+                else:
+                    reason = str(run.get("last_error") or f"spike ended in {run.get('state')}")
+                    self._spike_ticket_update(run, result=None, incomplete_reason=reason)
+            except (OSError, RuntimeError, TicketParseError, ValueError) as e:
+                self.runs.update(
+                    run_id,
+                    state="Failed",
+                    last_error=f"spike result persistence failed: {e}",
+                )
+            finally:
+                removed, error = remove_spike_workspace(Path(str(run["workspace_path"])))
+                if not removed or error:
+                    current = self.runs.get(run_id) or run
+                    cleanup = error or "spike workspace still exists"
+                    self.runs.update(
+                        run_id,
+                        last_error="; ".join(
+                            item for item in (str(current.get("last_error") or "").strip(), cleanup)
+                            if item
+                        ),
+                    )
+            self._record_queue_drain_after_event(
+                repo_path=run.get("repo_path"),
+                trigger="spike-completion",
+                drive_reviews=False,
+            )
             return
         if run.get("state") in {"AwaitingReview", "Succeeded"}:
             try:
@@ -5134,6 +5734,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 continue
             if not all_deps_done(dep, all_tickets):
                 continue
+            if dep["status"] == "backlog" and finished.get("execution_mode") == SPIKE_EXECUTION_MODE:
+                # A research result informs refinement; it never authorizes a
+                # downstream implementation ticket on the user's behalf.
+                continue
             if dep["status"] == "backlog":
                 dep["status"] = "ready"
                 write_ticket(dep["_path"], dep)
@@ -5152,11 +5756,17 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         """Promote backlog dependents whose dependencies are done in the source repo."""
         repo = Path(repo_path)
         all_tickets = scan_repo(repo)
+        by_id = {ticket["id"]: ticket for ticket in all_tickets}
         promoted: list[str] = []
         for ticket in all_tickets:
             if ticket["status"] != "backlog" or not ticket["depends_on"]:
                 continue
             if not all_deps_done(ticket, all_tickets):
+                continue
+            if any(
+                by_id.get(dep_id, {}).get("execution_mode") == SPIKE_EXECUTION_MODE
+                for dep_id in ticket["depends_on"]
+            ):
                 continue
             ticket["status"] = "ready"
             write_ticket(ticket["_path"], ticket)
@@ -6687,6 +7297,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             "title": title,
             "status": "backlog",
             "priority": priority,
+            "execution_mode": _execution_mode(action.get("execution_mode")),
             "depends_on": depends_on,
             "run_id": None,
             "canceled": False,
@@ -6862,20 +7473,33 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         else:
             self.runs.update(run_id, state="Canceled",
                              last_error="Canceled (no live worker)", ended=True)
+            if run.get("execution_mode") == SPIKE_EXECUTION_MODE:
+                try:
+                    self._spike_ticket_update(
+                        self.runs.get(run_id) or run,
+                        result=None,
+                        incomplete_reason="Canceled by user.",
+                    )
+                except (OSError, RuntimeError, TicketParseError, ValueError) as e:
+                    self.runs.update(run_id, last_error=f"Canceled; ticket reset failed: {e}")
 
         result: dict = {"canceled": True, "run": self.runs.get(run_id)}
         if prune_worktree:
             repo_path = run.get("repo_path")
             if repo_path:
-                removed, error = remove_worktree(
-                    repo_path, Path(run["workspace_path"])
-                )
+                if run.get("execution_mode") == SPIKE_EXECUTION_MODE:
+                    removed, error = remove_spike_workspace(Path(run["workspace_path"]))
+                else:
+                    removed, error = remove_worktree(
+                        repo_path, Path(run["workspace_path"])
+                    )
                 result["worktree_removed"] = removed
                 if error:
                     result["worktree_error"] = error
                 # Drop the throwaway branch ref so a re-dispatch starts fresh off the
                 # current default branch instead of attaching to the old tip.
-                delete_branch(repo_path, run["branch"])
+                if run.get("execution_mode") != SPIKE_EXECUTION_MODE:
+                    delete_branch(repo_path, run["branch"])
         self._record_queue_drain_after_event(
             repo_path=run.get("repo_path"),
             trigger="run-canceled",

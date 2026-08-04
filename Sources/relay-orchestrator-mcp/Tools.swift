@@ -54,11 +54,11 @@ private func proxy(method: String, path: String, body: [String: Any]? = nil) asy
 struct DispatchTicketTool: MCPTool {
     let name = "dispatch_ticket"
     let description = """
-        Dispatch a ticket from a repo's local kanban board to a sub-agent run. The orchestrator creates \
-        a git worktree at branch `relay/<sanitized-id>`, renders the workflow prompt, and spawns \
-        the configured agent in that worktree. The worker reads the ticket from `<repo_path>/.orchestrator/<ticket_id>.md`, \
-        updates its YAML status, appends a run log to the body, and commits everything. Returns the run \
-        record (state, run_id, workspace_path, branch).
+        Dispatch a ticket from a repo's local kanban board to a sub-agent run. Implementation tickets use \
+        an isolated `relay/<sanitized-id>` worktree and the review/merge lifecycle. Spike tickets use a \
+        detached read-only snapshot, create no worker branch, and persist structured findings through a \
+        daemon-owned ticket-only completion. Returns the run record (state, run_id, execution_mode, \
+        workspace_path, branch).
         """
 
     var inputSchema: [String: Any] {
@@ -127,7 +127,7 @@ struct ListRunsTool: MCPTool {
     let name = "list_runs"
     let description = """
         List orchestrator runs, newest first. Pass `state` to filter by lifecycle state \
-        (Claimed, Running, AwaitingReview, Reviewing, MergeConflict, VerificationBlocked, Merged, Failed, Stalled, Canceled). Default limit: 100.
+        (Claimed, Running, SpikeCompleted, AwaitingReview, Reviewing, MergeConflict, VerificationBlocked, Merged, Failed, Stalled, Canceled). Default limit: 100.
         """
 
     var inputSchema: [String: Any] {
@@ -136,7 +136,7 @@ struct ListRunsTool: MCPTool {
             "properties": [
                 "state": [
                     "type": "string",
-                    "enum": ["Claimed", "Running", "AwaitingReview", "Reviewing", "MergeConflict", "VerificationBlocked", "Merged", "Succeeded", "Failed", "Stalled", "Canceled"],
+                    "enum": ["Claimed", "Running", "SpikeCompleted", "AwaitingReview", "Reviewing", "MergeConflict", "VerificationBlocked", "Merged", "Succeeded", "Failed", "Stalled", "Canceled"],
                 ],
                 "limit": ["type": "integer", "description": "Max rows to return. Default: 100."],
             ],

@@ -277,6 +277,7 @@ struct ProgramBoardCreateDraft: Equatable {
 struct ProgramBoardCreateRequest: Equatable {
     let repoPath: String
     let status: Ticket.Status
+    let executionMode: Ticket.ExecutionMode
     let title: String
     let description: String
     let imageURLs: [URL]
@@ -286,12 +287,14 @@ struct ProgramBoardCreateRequest: Equatable {
     init(
         repoPath: String,
         status: Ticket.Status,
+        executionMode: Ticket.ExecutionMode = .implementation,
         title: String,
         description: String,
         imageURLs: [URL] = []
     ) {
         self.repoPath = repoPath
         self.status = status
+        self.executionMode = executionMode
         self.title = title
         self.description = description
         self.imageURLs = imageURLs
@@ -310,6 +313,7 @@ struct ProgramBoardEditDraft: Equatable, Identifiable {
     var title: String
     var status: Ticket.Status
     var priority: Ticket.Priority
+    var executionMode: Ticket.ExecutionMode
     var description: String
     var acceptanceCriteria: String
 
@@ -325,6 +329,7 @@ struct ProgramBoardEditRequest: Equatable {
     let title: String
     let status: Ticket.Status
     let priority: Ticket.Priority
+    let executionMode: Ticket.ExecutionMode
     let description: String
     let acceptanceCriteria: String
     let imageURLs: [URL]
@@ -335,6 +340,7 @@ struct ProgramBoardEditRequest: Equatable {
         title: String,
         status: Ticket.Status,
         priority: Ticket.Priority,
+        executionMode: Ticket.ExecutionMode = .implementation,
         description: String,
         acceptanceCriteria: String,
         imageURLs: [URL] = []
@@ -344,6 +350,7 @@ struct ProgramBoardEditRequest: Equatable {
         self.title = title
         self.status = status
         self.priority = priority
+        self.executionMode = executionMode
         self.description = description
         self.acceptanceCriteria = acceptanceCriteria
         self.imageURLs = imageURLs
@@ -467,6 +474,7 @@ enum ProgramBoardTicketMover {
             title: current.title,
             status: resolved.targetStatus,
             priority: current.priority,
+            executionMode: current.executionMode,
             dependsOn: current.dependsOn,
             runId: current.runId,
             canceled: current.canceled,
@@ -510,6 +518,7 @@ enum ProgramBoardCreatePolicy {
         selectedProjectPath: String?,
         title: String,
         description: String,
+        executionMode: Ticket.ExecutionMode = .implementation,
         imageURLs: [URL] = [],
         projects: [ProgramBoardProjectTarget]
     ) -> ProgramBoardCreateRequest? {
@@ -521,6 +530,7 @@ enum ProgramBoardCreatePolicy {
         return ProgramBoardCreateRequest(
             repoPath: selectedProjectPath,
             status: draft.status,
+            executionMode: executionMode,
             title: trimmedTitle.isEmpty ? "Untitled" : trimmedTitle,
             description: description,
             imageURLs: imageURLs
@@ -552,6 +562,7 @@ enum ProgramBoardTicketCreator {
             title: request.title,
             status: withDescription.status,
             priority: withDescription.priority,
+            executionMode: request.executionMode,
             dependsOn: withDescription.dependsOn,
             runId: withDescription.runId,
             canceled: withDescription.canceled,
@@ -593,6 +604,7 @@ enum ProgramBoardEditPolicy {
             title: ticket.title,
             status: ticket.status,
             priority: ticket.priority,
+            executionMode: ticket.executionMode,
             description: TicketParser.extractFullDescription(ticket.body) ?? "",
             acceptanceCriteria: TicketParser.extractAcceptanceCriteria(ticket.body) ?? ""
         )
@@ -603,6 +615,7 @@ enum ProgramBoardEditPolicy {
         title: String,
         status: Ticket.Status,
         priority: Ticket.Priority,
+        executionMode: Ticket.ExecutionMode,
         description: String,
         acceptanceCriteria: String,
         imageURLs: [URL] = []
@@ -614,6 +627,7 @@ enum ProgramBoardEditPolicy {
             title: trimmedTitle.isEmpty ? "Untitled" : trimmedTitle,
             status: status,
             priority: priority,
+            executionMode: executionMode,
             description: description,
             acceptanceCriteria: acceptanceCriteria,
             imageURLs: imageURLs
@@ -659,6 +673,7 @@ enum ProgramBoardTicketEditor {
             title: request.title,
             status: request.status,
             priority: request.priority,
+            executionMode: request.executionMode,
             dependsOn: withBody.dependsOn,
             runId: withBody.runId,
             canceled: withBody.canceled,
@@ -835,6 +850,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let title: String?
     let status: String?
     let priority: String?
+    let executionMode: String?
     let ticketModifiedAt: Date?
     let ticketState: String?
     let runID: String?
@@ -881,6 +897,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         title: String?,
         status: String?,
         priority: String?,
+        executionMode: String? = nil,
         ticketModifiedAt: Date? = nil,
         ticketState: String? = nil,
         runID: String? = nil,
@@ -914,6 +931,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         self.title = title
         self.status = status
         self.priority = priority
+        self.executionMode = executionMode
         self.ticketModifiedAt = ticketModifiedAt
         self.ticketState = ticketState
         self.runID = runID
@@ -955,6 +973,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
             title: ticket.title,
             status: ticket.status.rawValue,
             priority: ticket.priority.rawValue,
+            executionMode: ticket.executionMode.rawValue,
             ticketModifiedAt: ticket.modifiedAt ?? Date(),
             dependsOn: ticket.dependsOn
         )
@@ -966,6 +985,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         case title
         case status
         case priority
+        case executionMode = "execution_mode"
         case ticketModifiedAt = "ticket_modified_at"
         case ticketState = "ticket_state"
         case runID = "run_id"
@@ -1002,6 +1022,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         title = try values.decodeIfPresent(String.self, forKey: .title)
         status = try values.decodeIfPresent(String.self, forKey: .status)
         priority = try values.decodeIfPresent(String.self, forKey: .priority)
+        executionMode = try values.decodeIfPresent(String.self, forKey: .executionMode)
         ticketModifiedAt = try values.decodeIfPresent(Double.self, forKey: .ticketModifiedAt)
             .map(Date.init(timeIntervalSince1970:))
         ticketState = try values.decodeIfPresent(String.self, forKey: .ticketState)
@@ -1119,6 +1140,10 @@ struct ProgramTicketDetail: Equatable, Identifiable {
 
     var imageAttachmentPaths: [String] {
         ticket.map { TicketParser.extractImageAttachmentPaths($0.body) } ?? []
+    }
+
+    var spikeReport: String? {
+        ticket.flatMap { TicketParser.extractSpikeReport($0.body) }
     }
 
     static func load(
@@ -1494,6 +1519,7 @@ final class ProgramBoardViewModel {
         selectedProjectPath: String?,
         title: String,
         description: String,
+        executionMode: Ticket.ExecutionMode = .implementation,
         imageURLs: [URL] = []
     ) -> ProgramBoardCreateRequest? {
         guard let creating else { return nil }
@@ -1502,6 +1528,7 @@ final class ProgramBoardViewModel {
             selectedProjectPath: selectedProjectPath,
             title: title,
             description: description,
+            executionMode: executionMode,
             imageURLs: imageURLs,
             projects: projectTargets
         )
@@ -1511,6 +1538,7 @@ final class ProgramBoardViewModel {
         title: String,
         status: Ticket.Status,
         priority: Ticket.Priority,
+        executionMode: Ticket.ExecutionMode? = nil,
         description: String,
         acceptanceCriteria: String,
         imageURLs: [URL] = []
@@ -1521,6 +1549,7 @@ final class ProgramBoardViewModel {
             title: title,
             status: status,
             priority: priority,
+            executionMode: executionMode ?? editing.executionMode,
             description: description,
             acceptanceCriteria: acceptanceCriteria,
             imageURLs: imageURLs

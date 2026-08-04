@@ -74,6 +74,7 @@ enum TicketImageStore {
             title: ticket.title,
             status: ticket.status,
             priority: ticket.priority,
+            executionMode: ticket.executionMode,
             dependsOn: ticket.dependsOn,
             runId: ticket.runId,
             canceled: ticket.canceled,
