@@ -21,6 +21,12 @@ enum ProjectResolver {
     /// `git symbolic-ref` daemon-side now, and nothing in the UI used them.
     struct LinkedProject {
         let repoPath: URL
+        let projectID: String?
+
+        init(repoPath: URL, projectID: String? = nil) {
+            self.repoPath = repoPath
+            self.projectID = projectID
+        }
     }
 
     enum BoardRoute {
@@ -39,7 +45,13 @@ enum ProjectResolver {
     private static let bridgeProviderFilePath = "/tmp/voice_bridge.provider"
 
     static func resolve() -> LinkedProject? {
-        resolve(
+        if let registryV2 = ProjectRegistryV2Service.makeIfEnabled() {
+            if case .project(let project) = resolveWorkspaceScope(registryV2: registryV2).route {
+                return project
+            }
+            return nil
+        }
+        return resolve(
             bridgeSocket: URL(fileURLWithPath: bridgeSocketPath),
             bridgeCwdFile: URL(fileURLWithPath: bridgeCwdFilePath),
             bridgeProviderFile: URL(fileURLWithPath: bridgeProviderFilePath),
@@ -80,7 +92,10 @@ enum ProjectResolver {
     }
 
     static func resolveActivityProjects() -> [LinkedProject] {
-        resolveActivityProjects(
+        if let registryV2 = ProjectRegistryV2Service.makeIfEnabled() {
+            return resolveWorkspaceScope(registryV2: registryV2).projects
+        }
+        return resolveActivityProjects(
             bridgeSocket: URL(fileURLWithPath: bridgeSocketPath),
             bridgeCwdFile: URL(fileURLWithPath: bridgeCwdFilePath),
             bridgeProviderFile: URL(fileURLWithPath: bridgeProviderFilePath),
@@ -127,7 +142,10 @@ enum ProjectResolver {
     }
 
     static func resolveBoardRoute() -> BoardRoute {
-        resolveBoardRoute(
+        if let registryV2 = ProjectRegistryV2Service.makeIfEnabled() {
+            return resolveWorkspaceScope(registryV2: registryV2).route
+        }
+        return resolveBoardRoute(
             bridgeSocket: URL(fileURLWithPath: bridgeSocketPath),
             bridgeCwdFile: URL(fileURLWithPath: bridgeCwdFilePath),
             bridgeProviderFile: URL(fileURLWithPath: bridgeProviderFilePath),
@@ -209,6 +227,37 @@ enum ProjectResolver {
         }
     }
 
+    /// Registry-v2 is app-home backed and therefore resolves without a live
+    /// bridge. Bridge cwd is intentionally not consulted here: it may suggest
+    /// a project elsewhere, but it cannot confirm mutation ownership.
+    static func resolveWorkspaceScope(
+        registryV2: ProjectRegistryV2Service,
+        fileManager: FileManager = .default
+    ) -> WorkspaceScope {
+        guard let document = try? registryV2.load().document else {
+            return WorkspaceScope(route: .programBoard, projects: [])
+        }
+        let projects = document.projects.compactMap { record -> LinkedProject? in
+            guard record.availability == .available else { return nil }
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: record.lastResolvedPath, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                return nil
+            }
+            return LinkedProject(
+                repoPath: URL(fileURLWithPath: record.lastResolvedPath, isDirectory: true),
+                projectID: record.projectID
+            )
+        }
+        if let activeProjectID = document.activeProjectID,
+           let active = projects.first(where: { $0.projectID == activeProjectID }) {
+            return WorkspaceScope(route: .project(active), projects: [active])
+        }
+        // An empty registry is an honest Workspace state, not an unavailable
+        // utility surface. The Work tab owns Add Existing/Create Project.
+        return WorkspaceScope(route: .programBoard, projects: projects)
+    }
+
     private static func readBridgeProvider(from url: URL) -> String? {
         guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let provider = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -220,7 +269,14 @@ enum ProjectResolver {
         provider: String? = nil,
         registry: ProjectRegistry = ProjectRegistry()
     ) throws -> LinkedProject {
-        try registry.activateProject(matching: pathOrAlias, provider: provider, source: .programmatic)
+        if let registryV2 = ProjectRegistryV2Service.makeIfEnabled() {
+            let token = try registryV2.confirmProject(matching: pathOrAlias)
+            return LinkedProject(
+                repoPath: URL(fileURLWithPath: token.repositoryPath, isDirectory: true),
+                projectID: token.projectID
+            )
+        }
+        return try registry.activateProject(matching: pathOrAlias, provider: provider, source: .programmatic)
     }
 
     static func activateProject(
@@ -229,7 +285,14 @@ enum ProjectResolver {
         provider: String? = nil,
         registry: ProjectRegistry = ProjectRegistry()
     ) throws -> LinkedProject {
-        try registry.activateProject(at: path, alias: alias, provider: provider, source: .programmatic)
+        if let registryV2 = ProjectRegistryV2Service.makeIfEnabled() {
+            let token = try registryV2.confirmProject(matching: path.path)
+            return LinkedProject(
+                repoPath: URL(fileURLWithPath: token.repositoryPath, isDirectory: true),
+                projectID: token.projectID
+            )
+        }
+        return try registry.activateProject(at: path, alias: alias, provider: provider, source: .programmatic)
     }
 
     static func scanTickets(in project: LinkedProject) -> [Ticket] {

@@ -230,7 +230,7 @@ struct ProjectRegistry {
             .compactMap { project in
                 try? resolveGitRepo(containing: URL(fileURLWithPath: project.repoPath))
             }
-            .map(ProjectResolver.LinkedProject.init(repoPath:))
+            .map { ProjectResolver.LinkedProject(repoPath: $0) }
     }
 
     private func activeWorkspaceRootContainsDescendant(_ directory: URL) throws -> Bool {

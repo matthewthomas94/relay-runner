@@ -264,6 +264,12 @@ final class ProjectRegistryV2Service {
         case projectNotFound(String)
         case identityMismatch(expected: String, found: String?)
         case confirmationRequired
+        case projectUnavailable(String, RegisteredProjectAvailability)
+        case appHomeTarget(String)
+        case ambiguousProjectReference(String)
+        case staleScope(String)
+        case createTargetExists(String)
+        case createFailed(String)
 
         var description: String {
             switch self {
@@ -279,6 +285,18 @@ final class ProjectRegistryV2Service {
                 return "project identity mismatch; expected \(expected), found \(found ?? "none")"
             case .confirmationRequired:
                 return "removing a project requires explicit confirmation"
+            case .projectUnavailable(let projectID, let availability):
+                return "registered project \(projectID) is unavailable: \(availability.rawValue)"
+            case .appHomeTarget(let path):
+                return "Relay Runner application support cannot be used as a project: \(path)"
+            case .ambiguousProjectReference(let reference):
+                return "project reference is ambiguous: \(reference)"
+            case .staleScope(let projectID):
+                return "confirmed project scope is stale: \(projectID)"
+            case .createTargetExists(let path):
+                return "new project target already exists: \(path)"
+            case .createFailed(let message):
+                return "could not create project: \(message)"
             }
         }
     }
@@ -330,9 +348,140 @@ final class ProjectRegistryV2Service {
         try store.load()
     }
 
+    func projects() throws -> [RegisteredProjectV2] {
+        try store.load().document.projects
+    }
+
+    func project(projectID: String) throws -> RegisteredProjectV2 {
+        let document = try store.load().document
+        guard let project = document.projects.first(where: { $0.projectID == projectID }) else {
+            throw ServiceError.projectNotFound(projectID)
+        }
+        return project
+    }
+
+    func project(matching reference: String) throws -> RegisteredProjectV2 {
+        let query = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = URL(fileURLWithPath: query).standardizedFileURL.resolvingSymlinksInPath().path
+        let matches = try store.load().document.projects.filter { project in
+            project.projectID.caseInsensitiveCompare(query) == .orderedSame
+                || project.displayName.caseInsensitiveCompare(query) == .orderedSame
+                || normalizedPath(project.selectedPath) == path
+                || normalizedPath(project.lastResolvedPath) == path
+        }
+        guard !matches.isEmpty else { throw ServiceError.projectNotFound(query) }
+        guard matches.count == 1 else { throw ServiceError.ambiguousProjectReference(query) }
+        return matches[0]
+    }
+
+    @discardableResult
+    func confirmProject(
+        projectID: String,
+        issuedAt: Date? = nil
+    ) throws -> ConfirmedProjectScopeToken {
+        let refreshed = try refreshAvailability(projectID: projectID)
+        guard refreshed.availability == .available else {
+            throw ServiceError.projectUnavailable(projectID, refreshed.availability)
+        }
+        guard !isAppHomeTarget(refreshed.lastResolvedPath) else {
+            throw ServiceError.appHomeTarget(refreshed.lastResolvedPath)
+        }
+
+        var document = try store.load().document
+        guard let project = document.projects.first(where: { $0.projectID == projectID }) else {
+            throw ServiceError.projectNotFound(projectID)
+        }
+        document.activeProjectID = projectID
+        try store.save(document)
+        return ConfirmedProjectScopeToken(
+            project: project,
+            registrySchemaVersion: document.schemaVersion,
+            issuedAt: issuedAt ?? now()
+        )
+    }
+
+    func confirmProject(
+        matching reference: String,
+        issuedAt: Date? = nil
+    ) throws -> ConfirmedProjectScopeToken {
+        let project = try project(matching: reference)
+        return try confirmProject(projectID: project.projectID, issuedAt: issuedAt)
+    }
+
+    func clearConfirmedProject() throws {
+        var document = try store.load().document
+        guard document.activeProjectID != nil else { return }
+        document.activeProjectID = nil
+        try store.save(document)
+    }
+
+    func validateScopeToken(_ token: ConfirmedProjectScopeToken) -> ProjectScopeValidation {
+        guard token.version == ConfirmedProjectScopeToken.currentVersion else {
+            return .invalidVersion
+        }
+        guard let document = try? store.load().document,
+              document.schemaVersion == token.registrySchemaVersion else {
+            return .staleRegistry
+        }
+        guard let project = document.projects.first(where: { $0.projectID == token.projectID }) else {
+            return .missingProject
+        }
+        guard project.availability == .available else {
+            return .unavailable(project.availability)
+        }
+        guard !isAppHomeTarget(project.lastResolvedPath) else {
+            return .appHomeTarget
+        }
+        guard project.lastResolvedPath == token.repositoryPath,
+              project.gitCommonDirectoryFingerprint == token.gitCommonDirectoryFingerprint else {
+            return .identityMismatch
+        }
+        guard project.updatedAt == token.registryRecordUpdatedAt else {
+            return .staleRegistry
+        }
+        return .valid(project)
+    }
+
     func inspect(selectedURL: URL) throws -> ProjectRegistrationCandidate {
         let document = try store.load().document
         return try validator.validate(selectedURL: selectedURL, existingProjects: document.projects)
+    }
+
+    /// Creates a new, otherwise empty Git repository and immediately registers
+    /// it. A failed registration removes only the directory created by this
+    /// operation; existing files and repositories are never adopted or removed.
+    @discardableResult
+    func createProject(
+        at targetURL: URL,
+        displayName: String? = nil
+    ) throws -> RegisteredProjectV2 {
+        let target = targetURL.standardizedFileURL
+        guard !fileManager.fileExists(atPath: target.path) else {
+            throw ServiceError.createTargetExists(target.path)
+        }
+        guard !isAppHomeTarget(target.path) else {
+            throw ServiceError.appHomeTarget(target.path)
+        }
+
+        var createdDirectory = false
+        do {
+            try fileManager.createDirectory(at: target, withIntermediateDirectories: false)
+            createdDirectory = true
+            let result = try runGit(["init", "--initial-branch=main"], in: target)
+            guard result.status == 0 else {
+                throw ServiceError.createFailed(result.stderr)
+            }
+            let candidate = try inspect(selectedURL: target)
+            return try register(
+                candidate: candidate,
+                displayName: displayName ?? target.lastPathComponent
+            )
+        } catch {
+            if createdDirectory {
+                try? fileManager.removeItem(at: target)
+            }
+            throw error
+        }
     }
 
     @discardableResult
@@ -576,5 +725,38 @@ final class ProjectRegistryV2Service {
             return fileManager.fileExists(atPath: volumeRoot.path)
         }
         return fileManager.fileExists(atPath: "/")
+    }
+
+    private func normalizedPath(_ rawPath: String) -> String {
+        URL(fileURLWithPath: rawPath).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private func isAppHomeTarget(_ rawPath: String) -> Bool {
+        let candidate = normalizedPath(rawPath)
+        let root = appSupportRoot.standardizedFileURL.resolvingSymlinksInPath().path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return candidate == root || candidate.hasPrefix(prefix)
+    }
+
+    private func runGit(
+        _ arguments: [String],
+        in directory: URL
+    ) throws -> (status: Int32, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git"] + arguments
+        process.currentDirectoryURL = directory
+        process.standardOutput = Pipe()
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+        return (
+            process.terminationStatus,
+            String(
+                decoding: stderr.fileHandleForReading.readDataToEndOfFile(),
+                as: UTF8.self
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 }

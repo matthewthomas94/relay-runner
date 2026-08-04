@@ -27,6 +27,26 @@ struct ProgramDashboardSnapshot: Equatable {
         self.awaitingMerge = awaitingMerge
     }
 
+    static func empty(message: String = "No registered projects yet.") -> ProgramDashboardSnapshot {
+        func response(_ query: String) -> ProgramStatusResponse {
+            ProgramStatusResponse(
+                query: query,
+                provider: nil,
+                message: message,
+                items: [],
+                counts: ProgramStatusCounts(projects: 0, items: 0)
+            )
+        }
+        return ProgramDashboardSnapshot(
+            summary: response("summary"),
+            backlogWork: response("backlog_lane"),
+            readyWork: response("ready_lane"),
+            inProgressWork: response("in_progress_lane"),
+            doneWork: response("done_lane"),
+            awaitingMerge: response("awaiting_merge")
+        )
+    }
+
     var projects: [ProgramStatusItem] { summary.items }
     var projectCount: Int { summary.counts.projects }
     var hasRegisteredProjects: Bool { projectCount > 0 }
@@ -1326,7 +1346,10 @@ final class ProgramBoardViewModel {
     @ObservationIgnored private var fetchDashboard: ([String]) async throws -> ProgramDashboardSnapshot
 
     init(fetchDashboard: @escaping ([String]) async throws -> ProgramDashboardSnapshot = { repoPaths in
-        try await OrchestratorClient.fetchProgramDashboard(repoPaths: repoPaths)
+        if ProjectRegistryV2Rollout.isEnabled(), repoPaths.isEmpty {
+            return .empty()
+        }
+        return try await OrchestratorClient.fetchProgramDashboard(repoPaths: repoPaths)
     }) {
         self.fetchDashboard = fetchDashboard
     }

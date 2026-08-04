@@ -168,6 +168,29 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(action, .end)
     }
 
+    func testRegistryV2SessionControlRequiresAnExplicitProjectButStillAllowsEnd() {
+        XCTAssertFalse(ProgramSessionControlPolicy.canStart(
+            hasActiveSession: false,
+            selectedProjectPath: nil,
+            requiresConfirmedProject: true
+        ))
+        XCTAssertTrue(ProgramSessionControlPolicy.canStart(
+            hasActiveSession: false,
+            selectedProjectPath: "/repo/selected",
+            requiresConfirmedProject: true
+        ))
+        XCTAssertTrue(ProgramSessionControlPolicy.canStart(
+            hasActiveSession: true,
+            selectedProjectPath: nil,
+            requiresConfirmedProject: true
+        ))
+        XCTAssertTrue(ProgramSessionControlPolicy.canStart(
+            hasActiveSession: false,
+            selectedProjectPath: nil,
+            requiresConfirmedProject: false
+        ))
+    }
+
     func testSessionToolbarPresentationSwitchesBetweenStartAndEnd() {
         XCTAssertEqual(
             ProgramSessionToolbarPresentation.resolve(hasActiveSession: false),

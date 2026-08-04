@@ -103,6 +103,52 @@ final class ProcessManagerLaunchTests: XCTestCase {
         }
     }
 
+    func testLaunchScriptExportsEquivalentConfirmedProjectScopeForCodexAndClaude() throws {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let project = RegisteredProjectV2(
+            projectID: "project-scope",
+            displayName: "Scoped Project",
+            selectedPath: "/Users/example/dev/scoped",
+            lastResolvedPath: "/Users/example/dev/scoped",
+            fileResourceIdentifier: nil,
+            gitCommonDirectoryFingerprint: "fingerprint-scope",
+            worktreeKind: .primary,
+            remote: .localOnly,
+            availability: .available,
+            bookmarkReference: .project("project-scope"),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            lastResolvedAt: timestamp,
+            legacyRecordID: nil
+        )
+        let token = ConfirmedProjectScopeToken(
+            project: project,
+            registrySchemaVersion: ProjectRegistryV2Document.currentSchemaVersion,
+            issuedAt: timestamp
+        )
+        let encoded = try XCTUnwrap(token.encodedValue)
+
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            var config = AppConfig()
+            config.general.provider = provider
+            config.general.model = GeneralConfig.defaultModel(for: provider)
+            config.general.working_directory = project.lastResolvedPath
+            let script = ProcessManager.launchScript(
+                relayBridge: "/Relay Runner/relay-bridge",
+                target: provider == .codex ? .codex : .claude,
+                agentBinary: provider == .codex ? "/usr/local/bin/codex" : "/usr/local/bin/claude",
+                config: config,
+                homeDirectory: home,
+                projectScopeToken: token
+            )
+
+            XCTAssertTrue(script.contains("export RELAY_PROJECT_SCOPE_TOKEN='\(encoded)'"), provider.rawValue)
+            XCTAssertTrue(script.contains("export RELAY_PROJECT_ID='project-scope'"), provider.rawValue)
+            XCTAssertTrue(script.contains("export RELAY_PROJECT_SCOPE_VERSION='1'"), provider.rawValue)
+        }
+    }
+
     func testEmbeddedLaunchScriptPassesEquivalentHiddenRelayInstructionsForCodexAndClaude() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
 

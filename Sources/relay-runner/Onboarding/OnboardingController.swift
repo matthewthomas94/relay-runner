@@ -64,6 +64,7 @@ final class OnboardingController {
     /// into AppConfig + ConfigManager. Called from the Ready step's Done
     /// button so a fresh path applies to the next voice session.
     private let setWorkingDirectory: (String) -> Void
+    private let usesProjectRegistryV2: Bool
     private let setOnboardingNotchOverrideActive: (Bool) -> Void
     private let setFirstRunExperienceActive: (Bool) -> Void
     private let requestPermissionSetup: (PermissionKind, PermissionSetupSource, String) -> Void
@@ -109,6 +110,7 @@ final class OnboardingController {
     private struct AgentSetupState {
         var provider: GeneralConfig.AgentProvider
         var requiresWorkspaceSelection: Bool
+        var requiresProjectlessTutorial: Bool
         var providerPersisted = false
     }
 
@@ -126,6 +128,7 @@ final class OnboardingController {
          getAgentProvider: @escaping () -> GeneralConfig.AgentProvider = { .codex },
          setAgentProvider: @escaping (GeneralConfig.AgentProvider) -> Void = { _ in },
          setWorkingDirectory: @escaping (String) -> Void = { _ in },
+         usesProjectRegistryV2: Bool = false,
          setOnboardingNotchOverrideActive: @escaping (Bool) -> Void = { _ in },
          setFirstRunExperienceActive: @escaping (Bool) -> Void = { _ in },
          requestPermissionSetup: @escaping (PermissionKind, PermissionSetupSource, String) -> Void = { _, _, _ in },
@@ -168,6 +171,7 @@ final class OnboardingController {
         self.getAgentProvider = getAgentProvider
         self.setAgentProvider = setAgentProvider
         self.setWorkingDirectory = setWorkingDirectory
+        self.usesProjectRegistryV2 = usesProjectRegistryV2
         self.setOnboardingNotchOverrideActive = setOnboardingNotchOverrideActive
         self.setFirstRunExperienceActive = setFirstRunExperienceActive
         self.requestPermissionSetup = requestPermissionSetup
@@ -404,10 +408,12 @@ final class OnboardingController {
     private func completeFreshPermissionSequence() {
         removeFreshPermissionObservers()
         freshPermissionState = nil
-        let requiresWorkspaceSelection = forceWorkspaceSelectionAfterIntro || !hasOnboarded
+        let isFreshSetup = forceWorkspaceSelectionAfterIntro || !hasOnboarded
+        let requiresWorkspaceSelection = isFreshSetup && !usesProjectRegistryV2
         forceWorkspaceSelectionAfterIntro = false
         beginIntroAgentSetup(
             requiresWorkspaceSelection: requiresWorkspaceSelection,
+            requiresProjectlessTutorial: isFreshSetup && usesProjectRegistryV2,
             resumeState: OnboardingResumeState.load()
         )
     }
@@ -508,6 +514,7 @@ final class OnboardingController {
 
     private func beginIntroAgentSetup(
         requiresWorkspaceSelection: Bool,
+        requiresProjectlessTutorial: Bool = false,
         resumeState: OnboardingResumeState.Snapshot? = nil
     ) {
         guard !presentation.isPresented else { return }
@@ -517,7 +524,8 @@ final class OnboardingController {
         introController = intro
         agentSetupState = AgentSetupState(
             provider: provider,
-            requiresWorkspaceSelection: requiresWorkspaceSelection
+            requiresWorkspaceSelection: requiresWorkspaceSelection,
+            requiresProjectlessTutorial: requiresProjectlessTutorial
         )
         if !isContinuingExistingIntro {
             setOnboardingNotchOverrideActive(true)
@@ -548,6 +556,8 @@ final class OnboardingController {
         case .ready:
             if requiresWorkspaceSelection {
                 showFreshWorkspaceSelection()
+            } else if requiresProjectlessTutorial {
+                beginSessionControlsTutorial(screen: .intro)
             } else {
                 finish()
             }
@@ -779,6 +789,8 @@ final class OnboardingController {
                 parentPermissionsReviewed: true
             )
             showFreshWorkspaceSelection()
+        } else if state.requiresProjectlessTutorial {
+            beginSessionControlsTutorial(screen: .intro)
         } else {
             if introDismissed {
                 introController = nil

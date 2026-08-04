@@ -86,9 +86,14 @@ final class ProgramBoardOverlayController {
     private var projectScopeProvider: () -> [String] = { [] }
     private var noSessionHandler: (() -> Void)?
     private var loadingStateHandler: ((Bool) -> Void)?
+    private var addExistingProjectHandler: (() -> Void)?
+    private var createProjectHandler: (() -> Void)?
     private var startSessionHandler: ((String?) -> Void)?
     private var endSessionHandler: (() -> Void)?
     private var sessionActiveProvider: () -> Bool = { false }
+    private var requiresConfirmedProjectProvider: () -> Bool = {
+        ProjectRegistryV2Rollout.isEnabled()
+    }
     private var workerSizingDefaultsProvider: () -> TicketWriter.WorkerSizingDefaults? = { nil }
     private var settingsContentProvider: (() -> AnyView?)?
     private var terminalContentProvider: ((String?) -> AnyView?)?
@@ -122,6 +127,14 @@ final class ProgramBoardOverlayController {
         self.loadingStateHandler = handler
     }
 
+    func setProjectManagementHandlers(
+        addExisting: @escaping () -> Void,
+        create: @escaping () -> Void
+    ) {
+        addExistingProjectHandler = addExisting
+        createProjectHandler = create
+    }
+
     func setStartSessionHandler(_ handler: @escaping (String?) -> Void) {
         self.startSessionHandler = handler
     }
@@ -132,6 +145,10 @@ final class ProgramBoardOverlayController {
 
     func setSessionActiveProvider(_ provider: @escaping () -> Bool) {
         self.sessionActiveProvider = provider
+    }
+
+    func setRequiresConfirmedProjectProvider(_ provider: @escaping () -> Bool) {
+        requiresConfirmedProjectProvider = provider
     }
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
@@ -400,6 +417,8 @@ final class ProgramBoardOverlayController {
                 onDismiss: { [weak self] in self?.hide() },
                 onWorkspaceTabChange: { [weak self] tab in self?.workspaceTabDidChange(tab) },
                 onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
+                onAddExistingProject: { [weak self] in self?.addExistingProjectHandler?() },
+                onCreateProject: { [weak self] in self?.createProjectHandler?() },
                 onStartSession: { [weak self] in self?.startSession() },
                 onEndSession: { [weak self] in self?.endSession() },
                 onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
@@ -671,6 +690,8 @@ final class ProgramBoardOverlayController {
 
     private func startSession() {
         guard !model.hasActiveSession else { return }
+        guard !requiresConfirmedProjectProvider()
+                || model.selectedSessionProjectPath != nil else { return }
         startSessionHandler?(model.selectedSessionProjectPath)
         model.hasActiveSession = sessionActiveProvider()
     }

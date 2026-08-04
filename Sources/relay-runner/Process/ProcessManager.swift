@@ -819,6 +819,8 @@ final class ProcessManager {
         case launcherPermissions(Int32)
         case invalidWorkingDirectory(String)
         case codexModelResolution(String)
+        case projectScopeRequired
+        case invalidProjectScope(String)
 
         var errorDescription: String? {
             switch self {
@@ -830,6 +832,10 @@ final class ProcessManager {
                 return "The session workspace folder is unavailable: \(path)"
             case .codexModelResolution(let message):
                 return "Could not resolve the selected Codex model family: \(message)"
+            case .projectScopeRequired:
+                return "Select an available registered project before starting a session."
+            case .invalidProjectScope(let message):
+                return "The selected project scope is no longer valid: \(message)"
             }
         }
     }
@@ -847,7 +853,8 @@ final class ProcessManager {
         config: AppConfig,
         voiceDelivery: SessionVoiceDelivery = .agentSkill,
         suppressStartupGreeting: Bool = false,
-        sessionEventPath: String? = nil
+        sessionEventPath: String? = nil,
+        projectScopeToken: ConfirmedProjectScopeToken? = nil
     ) throws -> PreparedSessionLaunch {
         Self.clearBridgeStopRequested()
 
@@ -856,6 +863,27 @@ final class ProcessManager {
         guard FileManager.default.fileExists(atPath: workingDirectory, isDirectory: &isDirectory),
               isDirectory.boolValue else {
             throw SessionLaunchPreparationError.invalidWorkingDirectory(workingDirectory)
+        }
+        if let registryV2 = ProjectRegistryV2Service.makeIfEnabled() {
+            guard let projectScopeToken else {
+                throw SessionLaunchPreparationError.projectScopeRequired
+            }
+            guard case .valid(let project) = registryV2.validateScopeToken(projectScopeToken) else {
+                throw SessionLaunchPreparationError.invalidProjectScope(projectScopeToken.projectID)
+            }
+            let confirmedPath = URL(fileURLWithPath: project.lastResolvedPath)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+                .path
+            let requestedPath = URL(fileURLWithPath: workingDirectory)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+                .path
+            guard confirmedPath == requestedPath else {
+                throw SessionLaunchPreparationError.invalidProjectScope(
+                    "requested cwd does not match \(projectScopeToken.projectID)"
+                )
+            }
         }
 
         let configPath = ConfigManager.shared.configPath.path
@@ -908,7 +936,8 @@ final class ProcessManager {
             sessionEventPath: sessionEventPath,
             providerSessionID: providerSessionID,
             resolvedCodexModel: codexSelection?.resolvedModel,
-            resolvedCodexEffort: codexSelection?.resolvedEffort
+            resolvedCodexEffort: codexSelection?.resolvedEffort,
+            projectScopeToken: projectScopeToken
         )
         try script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
@@ -979,7 +1008,8 @@ final class ProcessManager {
         sessionEventPath: String? = nil,
         providerSessionID: String? = nil,
         resolvedCodexModel: String? = nil,
-        resolvedCodexEffort: String? = nil
+        resolvedCodexEffort: String? = nil,
+        projectScopeToken: ConfirmedProjectScopeToken? = nil
     ) -> String {
         let effectiveProviderSessionID = voiceDelivery == .appOwned
             ? (providerSessionID ?? UUID().uuidString.lowercased())
@@ -1032,6 +1062,7 @@ final class ProcessManager {
         # dropped a binary moments ago and the shell profile may not know yet.
         export PATH="$HOME/.local/bin:$PATH"
         export RELAY_RUNNER_PROVIDER=\(Self.shellQuoted(target.providerMetadataValue))
+        \(Self.projectScopeEnvironment(projectScopeToken))
         # The agent can execute bootstrap checks inside its own sandbox, where
         # process enumeration may not see the Relay Runner host. This marker is
         # advisory session context, not a security boundary.
@@ -1056,6 +1087,17 @@ final class ProcessManager {
         # Replacing this launcher process keeps the PTY child PID aligned with
         # the agent, so End Session terminates the interactive process cleanly.
         exec \(launchLine)
+        """
+    }
+
+    private static func projectScopeEnvironment(_ token: ConfirmedProjectScopeToken?) -> String {
+        guard let token, let encoded = token.encodedValue else {
+            return "unset RELAY_PROJECT_SCOPE_TOKEN RELAY_PROJECT_ID RELAY_PROJECT_SCOPE_VERSION"
+        }
+        return """
+        export RELAY_PROJECT_SCOPE_TOKEN=\(shellQuoted(encoded))
+        export RELAY_PROJECT_ID=\(shellQuoted(token.projectID))
+        export RELAY_PROJECT_SCOPE_VERSION=\(shellQuoted(String(token.version)))
         """
     }
 

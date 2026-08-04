@@ -372,6 +372,138 @@ final class ProjectRegistryV2Tests: XCTestCase {
         )
     }
 
+    func testRegistryV2WorkspaceOpensEmptyAndConfirmsOnlyAvailableProjects() throws {
+        let root = try makeTempDirectory(named: "scope")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "project-scope")
+
+        let emptyScope = ProjectResolver.resolveWorkspaceScope(registryV2: fixture.service)
+        if case .programBoard = emptyScope.route {
+            XCTAssertTrue(emptyScope.projects.isEmpty)
+        } else {
+            XCTFail("An empty registry should still open the Workspace project surface.")
+        }
+
+        let repo = root.appendingPathComponent("source", isDirectory: true)
+        try makeGitRepo(at: repo)
+        let registered = try fixture.service.register(
+            candidate: fixture.service.inspect(selectedURL: repo),
+            displayName: "Scoped Project"
+        )
+        try fixture.service.clearConfirmedProject()
+
+        let unconfirmed = ProjectResolver.resolveWorkspaceScope(registryV2: fixture.service)
+        if case .programBoard = unconfirmed.route {
+            XCTAssertEqual(unconfirmed.projects.map(\.projectID), [registered.projectID])
+        } else {
+            XCTFail("A registered but unconfirmed project should remain a Workspace choice.")
+        }
+
+        let token = try fixture.service.confirmProject(projectID: registered.projectID)
+        XCTAssertEqual(token.projectID, registered.projectID)
+        XCTAssertEqual(token.repositoryPath, repo.path)
+        if case .valid(let project) = fixture.service.validateScopeToken(token) {
+            XCTAssertEqual(project.projectID, registered.projectID)
+        } else {
+            XCTFail("A freshly confirmed project token should validate.")
+        }
+        if case .project(let project) = ProjectResolver.resolveWorkspaceScope(registryV2: fixture.service).route {
+            XCTAssertEqual(project.projectID, registered.projectID)
+        } else {
+            XCTFail("A confirmed project should become the selected Workspace route.")
+        }
+
+        fixture.grants.resolutions[registered.projectID] = .requiresRegrant(.stale, lastKnownURL: repo)
+        XCTAssertThrowsError(try fixture.service.confirmProject(projectID: registered.projectID))
+        XCTAssertEqual(
+            fixture.service.validateScopeToken(token),
+            .unavailable(.accessRequiresRegrant)
+        )
+    }
+
+    func testScopeCoordinatorSeparatesSuggestionsInheritanceRedirectAndCancel() {
+        let first = document(projectID: "first").projects[0]
+        let second = document(projectID: "second").projects[0]
+        let firstToken = ConfirmedProjectScopeToken(
+            project: first,
+            registrySchemaVersion: ProjectRegistryV2Document.currentSchemaVersion
+        )
+        let secondToken = ConfirmedProjectScopeToken(
+            project: second,
+            registrySchemaVersion: ProjectRegistryV2Document.currentSchemaVersion
+        )
+        let coordinator = ProjectScopeCoordinator()
+
+        coordinator.suggest(projectID: first.projectID)
+        XCTAssertNil(coordinator.inheritedToken())
+
+        coordinator.confirm(firstToken)
+        XCTAssertEqual(coordinator.inheritedToken(), firstToken)
+        XCTAssertEqual(
+            firstToken.encodedValue.flatMap(ConfirmedProjectScopeToken.init(encodedValue:)),
+            firstToken
+        )
+        XCTAssertNil(coordinator.inheritedToken(for: second.projectID))
+
+        coordinator.redirect(to: secondToken)
+        XCTAssertEqual(coordinator.inheritedToken(), secondToken)
+        coordinator.cancel(projectID: first.projectID)
+        XCTAssertEqual(coordinator.inheritedToken(), secondToken)
+        coordinator.cancel(projectID: second.projectID)
+        XCTAssertNil(coordinator.inheritedToken())
+    }
+
+    func testRegistryV2RejectsApplicationSupportAsAConfirmedSessionTarget() throws {
+        let root = try makeTempDirectory(named: "app-home-scope")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "project-app-home")
+        let repo = fixture.appSupportRoot.appendingPathComponent("nested-repo", isDirectory: true)
+        try makeGitRepo(at: repo)
+        let project = try fixture.service.register(
+            candidate: fixture.service.inspect(selectedURL: repo),
+            displayName: "Invalid App Home Project"
+        )
+
+        XCTAssertThrowsError(try fixture.service.confirmProject(projectID: project.projectID)) { error in
+            XCTAssertEqual(
+                error as? ProjectRegistryV2Service.ServiceError,
+                .appHomeTarget(repo.path)
+            )
+        }
+    }
+
+    func testCreateProjectInitializesRegistersAndRollsBackRejectedTargets() throws {
+        let root = try makeTempDirectory(named: "create-project")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "project-created")
+        let target = root.appendingPathComponent("Created", isDirectory: true)
+
+        let project = try fixture.service.createProject(at: target)
+
+        XCTAssertEqual(project.projectID, "project-created")
+        XCTAssertEqual(project.displayName, "Created")
+        XCTAssertEqual(project.availability, .available)
+        XCTAssertTrue(
+            try runGitOutput(["rev-parse", "--show-toplevel"], in: target)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .hasSuffix("/create-project/Created")
+        )
+
+        let existing = root.appendingPathComponent("existing", isDirectory: true)
+        try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: existing.appendingPathComponent("keep.txt"))
+        XCTAssertThrowsError(try fixture.service.createProject(at: existing)) {
+            XCTAssertEqual(
+                $0 as? ProjectRegistryV2Service.ServiceError,
+                .createTargetExists(existing.path)
+            )
+        }
+        XCTAssertEqual(
+            try String(contentsOf: existing.appendingPathComponent("keep.txt"), encoding: .utf8),
+            "keep"
+        )
+    }
+
     func testAccessGrantManagerSurfacesStaleAndRevokedBookmarksWithoutSilentRefresh() throws {
         let store = MemoryBookmarkStore()
         let codec = FakeBookmarkCodec()

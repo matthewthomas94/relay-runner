@@ -353,6 +353,44 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
     }
 
+    func testRegistryV2FreshOnboardingSkipsWorkspaceFolderAndAllowsEmptyRegistry() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var workspaceWrites: [String] = []
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            setWorkingDirectory: { workspaceWrites.append($0) },
+            usesProjectRegistryV2: true,
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+
+        XCTAssertTrue(intro.workspacePromptPaths.isEmpty)
+        XCTAssertTrue(workspaceWrites.isEmpty)
+        XCTAssertEqual(intro.tutorialPresentations.first?.screen, .intro)
+        XCTAssertFalse(intro.tutorialPresentations.map(\.screen).contains(.workspace))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        completeSessionControlsTutorial(controller)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
     func testLoginDismissesIntroBeforeTerminalAndRestoresRetryOnCancel() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

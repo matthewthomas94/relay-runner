@@ -116,6 +116,7 @@ final class AppState {
                 newConfig.general.working_directory = path
                 self.saveConfig(newConfig, forceWorkspaceDiscovery: true)
             },
+            usesProjectRegistryV2: ProjectRegistryV2Rollout.isEnabled(),
             setOnboardingNotchOverrideActive: { [weak self] active in
                 self?.setOnboardingNotchOverrideActive(active)
             },
@@ -184,6 +185,9 @@ final class AppState {
         didSet { syncNotchStatusSurface() }
     }
     @ObservationIgnored private var activeSessionLaunchConfig: AppConfig?
+    @ObservationIgnored private let projectRegistryV2 = ProjectRegistryV2Service.makeIfEnabled()
+    @ObservationIgnored private let projectScopeCoordinator = ProjectScopeCoordinator()
+    @ObservationIgnored private var activeSessionProjectScopeToken: ConfirmedProjectScopeToken?
     /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
     private var bridgeAliveCache = false {
         didSet { syncNotchStatusSurface() }
@@ -477,6 +481,13 @@ final class AppState {
         programBoardOverlay.setProjectScopeProvider { [weak self] in
             self?.workspaceActivitySnapshot.projects.map(\.repoPath.path) ?? []
         }
+        programBoardOverlay.setProjectManagementHandlers(
+            addExisting: { [weak self] in self?.addExistingProject() },
+            create: { [weak self] in self?.createProject() }
+        )
+        programBoardOverlay.setRequiresConfirmedProjectProvider { [weak self] in
+            self?.projectRegistryV2 != nil
+        }
         embeddedTerminal.setExitHandler { [weak self] exitCode in
             self?.embeddedTerminalDidExit(exitCode: exitCode)
         }
@@ -737,6 +748,8 @@ final class AppState {
         processManager.killBridge(stopRequested: true)
         menuSessionActive = false
         activeSessionLaunchConfig = nil
+        activeSessionProjectScopeToken = nil
+        projectScopeCoordinator.cancel()
         bridgeAliveCache = false
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
@@ -767,6 +780,8 @@ final class AppState {
         embeddedTerminal.shutdown()
         menuSessionActive = false
         activeSessionLaunchConfig = nil
+        activeSessionProjectScopeToken = nil
+        projectScopeCoordinator.cancel()
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
         sessionReadyShownForCurrentBridgeSession = false
@@ -796,6 +811,8 @@ final class AppState {
         embeddedTerminal.shutdown()
         menuSessionActive = false
         activeSessionLaunchConfig = nil
+        activeSessionProjectScopeToken = nil
+        projectScopeCoordinator.cancel()
         bridgeAliveCache = false
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
@@ -887,6 +904,7 @@ final class AppState {
         newGeneral: GeneralConfig,
         force: Bool
     ) -> Bool {
+        guard projectRegistryV2 == nil else { return false }
         if force { return true }
 
         let hasExplicitWorkspace = !newGeneral.working_directory
@@ -914,9 +932,31 @@ final class AppState {
             onboarding.showAlways()
             return false
         }
+        let projectScopeToken: ConfirmedProjectScopeToken?
+        if let projectRegistryV2 {
+            let requestedProject = workingDirectory?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !requestedProject.isEmpty else {
+                surfaceProjectScopeFailure("Select an available project in Workspace before starting a session.")
+                return false
+            }
+            do {
+                let token = try projectRegistryV2.confirmProject(matching: requestedProject)
+                guard projectRegistryV2.validateScopeToken(token).isValid else {
+                    throw ProjectRegistryV2Service.ServiceError.staleScope(token.projectID)
+                }
+                projectScopeCoordinator.confirm(token)
+                projectScopeToken = token
+            } catch {
+                surfaceProjectScopeFailure(String(describing: error))
+                return false
+            }
+        } else {
+            projectScopeToken = nil
+        }
         let request = Self.sessionLaunchRequest(
             from: config,
-            workingDirectory: workingDirectory,
+            workingDirectory: projectScopeToken?.repositoryPath ?? workingDirectory,
             destination: destination
         )
         let launchConfig = request.config
@@ -940,6 +980,7 @@ final class AppState {
         activeSessionSuppressesStartupGreeting = suppressesStartupGreeting
         sessionPromptGate.reset()
         activeSessionLaunchConfig = launchConfig
+        activeSessionProjectScopeToken = projectScopeToken
         // Bridge is about to launch — assume alive until watchdog says otherwise
         bridgeAliveCache = true
         refreshWorkspaceActivity(invalidateRoute: true)
@@ -963,7 +1004,8 @@ final class AppState {
                 config: launchConfig,
                 voiceDelivery: voiceDelivery,
                 suppressStartupGreeting: suppressesStartupGreeting,
-                sessionEventPath: embeddedTerminal.diagnosticEventPath
+                sessionEventPath: embeddedTerminal.diagnosticEventPath,
+                projectScopeToken: projectScopeToken
             )
             switch request.destination {
             case .embedded:
@@ -982,6 +1024,8 @@ final class AppState {
             processManager.killBridge(stopRequested: true)
             menuSessionActive = false
             activeSessionLaunchConfig = nil
+            activeSessionProjectScopeToken = nil
+            projectScopeCoordinator.cancel()
             bridgeAliveCache = false
             sessionBridgeSeen = false
             sessionReadyShownForCurrentBridgeSession = false
@@ -1068,6 +1112,17 @@ final class AppState {
         sttEngine?.tutorialActive = true
         stateMachine.dismissSessionPrompt()
         return true
+    }
+
+    private func surfaceProjectScopeFailure(_ detail: String) {
+        statusText = "Select a project"
+        if overlayController == nil { startOverlay() }
+        stateMachine.showProgramStatus(
+            title: "Project selection required",
+            body: detail
+        )
+        syncNotchActivitySurface()
+        showWorkspaceWork()
     }
 
     private func stopOnboardingTutorialSpeech() {
@@ -1163,6 +1218,159 @@ final class AppState {
         guard allowsAppShellAccess else { return }
         if overlayController == nil { startOverlay() }
         programBoardOverlay.showWork()
+    }
+
+    var usesProjectRegistryV2: Bool {
+        projectRegistryV2 != nil
+    }
+
+    func registeredProjectsV2() -> [RegisteredProjectV2] {
+        (try? projectRegistryV2?.projects()) ?? []
+    }
+
+    func refreshRegisteredProject(_ projectID: String) throws -> RegisteredProjectV2 {
+        guard let projectRegistryV2 else {
+            throw ProjectRegistryV2Service.ServiceError.projectNotFound(projectID)
+        }
+        let project = try projectRegistryV2.refreshAvailability(projectID: projectID)
+        invalidateConfirmedProjectScopeIfNeeded()
+        refreshWorkspaceActivity(invalidateRoute: true)
+        return project
+    }
+
+    func removeRegisteredProject(_ projectID: String) throws {
+        guard let projectRegistryV2 else {
+            throw ProjectRegistryV2Service.ServiceError.projectNotFound(projectID)
+        }
+        try projectRegistryV2.removeProject(projectID: projectID, confirmed: true)
+        if activeSessionProjectScopeToken?.projectID == projectID {
+            projectScopeCoordinator.cancel(projectID: projectID)
+            activeSessionProjectScopeToken = nil
+        }
+        invalidateConfirmedProjectScopeIfNeeded()
+        refreshWorkspaceActivity(invalidateRoute: true)
+    }
+
+    func addExistingProject(
+        resumeInSettings: Bool = false,
+        completion: ((Result<RegisteredProjectV2, Error>) -> Void)? = nil
+    ) {
+        guard let projectRegistryV2 else { return }
+        WorkspaceDirectoryPicker.pick(
+            message: "Choose an existing Git repository",
+            onPrepareExternalWindow: { [weak self] ready in
+                self?.suspendWorkspaceForExternalWindow()
+                ready()
+            },
+            chooseDirectory: {
+                WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
+                    message: "Choose an existing Git repository"
+                )
+            },
+            completion: { [weak self] path in
+                guard let self else { return }
+                defer { self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings) }
+                guard let path else { return }
+                do {
+                    let url = URL(fileURLWithPath: path, isDirectory: true)
+                    let candidate = try projectRegistryV2.inspect(selectedURL: url)
+                    let project = try projectRegistryV2.register(
+                        candidate: candidate,
+                        displayName: candidate.repoPath.lastPathComponent
+                    )
+                    self.refreshWorkspaceActivity(invalidateRoute: true)
+                    completion?(.success(project))
+                } catch {
+                    self.surfaceProjectManagementFailure(error)
+                    completion?(.failure(error))
+                }
+            }
+        )
+    }
+
+    func createProject(
+        resumeInSettings: Bool = false,
+        completion: ((Result<RegisteredProjectV2, Error>) -> Void)? = nil
+    ) {
+        guard let projectRegistryV2 else { return }
+        suspendWorkspaceForExternalWindow()
+        let panel = NSSavePanel()
+        panel.title = "Create Project"
+        panel.message = "Choose a new folder for the Git repository."
+        panel.nameFieldLabel = "Project name:"
+        panel.nameFieldStringValue = "New Project"
+        panel.canCreateDirectories = true
+        let selectedURL = panel.runModal() == .OK ? panel.url : nil
+        defer { resumeWorkspace(afterProjectManagementInSettings: resumeInSettings) }
+        guard let selectedURL else { return }
+        do {
+            let project = try projectRegistryV2.createProject(at: selectedURL)
+            refreshWorkspaceActivity(invalidateRoute: true)
+            completion?(.success(project))
+        } catch {
+            surfaceProjectManagementFailure(error)
+            completion?(.failure(error))
+        }
+    }
+
+    func locateRegisteredProject(
+        _ projectID: String,
+        resumeInSettings: Bool = true,
+        completion: ((Result<RegisteredProjectV2, Error>) -> Void)? = nil
+    ) {
+        guard let projectRegistryV2 else { return }
+        WorkspaceDirectoryPicker.pick(
+            message: "Locate the registered Git repository",
+            onPrepareExternalWindow: { [weak self] ready in
+                self?.suspendWorkspaceForExternalWindow()
+                ready()
+            },
+            chooseDirectory: {
+                WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
+                    message: "Locate the registered Git repository"
+                )
+            },
+            completion: { [weak self] path in
+                guard let self else { return }
+                defer { self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings) }
+                guard let path else { return }
+                do {
+                    let project = try projectRegistryV2.locate(
+                        projectID: projectID,
+                        selectedURL: URL(fileURLWithPath: path, isDirectory: true)
+                    )
+                    self.invalidateConfirmedProjectScopeIfNeeded()
+                    self.refreshWorkspaceActivity(invalidateRoute: true)
+                    completion?(.success(project))
+                } catch {
+                    self.surfaceProjectManagementFailure(error)
+                    completion?(.failure(error))
+                }
+            }
+        )
+    }
+
+    private func resumeWorkspace(afterProjectManagementInSettings settings: Bool) {
+        if settings {
+            programBoardOverlay.showSettings()
+        } else {
+            programBoardOverlay.showWork()
+        }
+    }
+
+    private func invalidateConfirmedProjectScopeIfNeeded() {
+        guard let projectRegistryV2 else { return }
+        projectScopeCoordinator.invalidateIfNeeded(using: projectRegistryV2.validateScopeToken)
+        activeSessionProjectScopeToken = projectScopeCoordinator.inheritedToken()
+    }
+
+    private func surfaceProjectManagementFailure(_ error: Error) {
+        statusText = "Project update failed"
+        stateMachine.showProgramStatus(
+            title: "Project update failed",
+            body: String(describing: error)
+        )
+        syncNotchActivitySurface()
     }
 
     func activateProject(pathOrAlias: String, provider: String?) async -> ProjectActivationReply {
@@ -1261,6 +1469,8 @@ final class AppState {
             bridgeAliveCache = false
             menuSessionActive = false
             activeSessionLaunchConfig = nil
+            activeSessionProjectScopeToken = nil
+            projectScopeCoordinator.cancel()
             sessionBridgeSeen = false
             sessionReadyShownForCurrentBridgeSession = false
             activeSessionSuppressesStartupGreeting = false
@@ -1304,6 +1514,8 @@ final class AppState {
             NSLog("[AppState] Bridge died but no recovery context was available")
             menuSessionActive = false
             activeSessionLaunchConfig = nil
+            activeSessionProjectScopeToken = nil
+            projectScopeCoordinator.cancel()
             sessionBridgeSeen = false
             sessionReadyShownForCurrentBridgeSession = false
             activeSessionSuppressesStartupGreeting = false
@@ -1531,6 +1743,8 @@ final class AppState {
                     self.bridgeAliveCache = false
                     self.menuSessionActive = false
                     self.activeSessionLaunchConfig = nil
+                    self.activeSessionProjectScopeToken = nil
+                    self.projectScopeCoordinator.cancel()
                     self.sessionBridgeSeen = false
                     self.sessionReadyShownForCurrentBridgeSession = false
                     self.activeSessionSuppressesStartupGreeting = false
@@ -1549,6 +1763,8 @@ final class AppState {
                     self.bridgeAliveCache = false
                     self.menuSessionActive = false
                     self.activeSessionLaunchConfig = nil
+                    self.activeSessionProjectScopeToken = nil
+                    self.projectScopeCoordinator.cancel()
                     self.sessionBridgeSeen = false
                     self.sessionReadyShownForCurrentBridgeSession = false
                     self.activeSessionSuppressesStartupGreeting = false

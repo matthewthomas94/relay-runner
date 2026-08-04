@@ -70,6 +70,8 @@ struct ProgramBoardOverlayView: View {
     let onDismiss: () -> Void
     let onWorkspaceTabChange: (WorkspaceTab) -> Void
     let onRefresh: () -> Void
+    var onAddExistingProject: () -> Void = {}
+    var onCreateProject: () -> Void = {}
     let onStartSession: () -> Void
     let onEndSession: () -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
@@ -116,6 +118,11 @@ struct ProgramBoardOverlayView: View {
                 Spacer(minLength: 0)
                 ProgramSessionToolbarControl(
                     hasActiveSession: model.hasActiveSession,
+                    canStartSession: ProgramSessionControlPolicy.canStart(
+                        hasActiveSession: model.hasActiveSession,
+                        selectedProjectPath: model.selectedSessionProjectPath,
+                        requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
+                    ),
                     onStartSession: onStartSession,
                     onEndSession: onEndSession
                 )
@@ -147,6 +154,8 @@ struct ProgramBoardOverlayView: View {
                         model: model,
                         onRefresh: onRefresh,
                         onDismiss: onDismiss,
+                        onAddExistingProject: onAddExistingProject,
+                        onCreateProject: onCreateProject,
                         onCreateStart: onCreateStart,
                         onEditStart: onEditStart,
                         onDelete: onDelete,
@@ -509,6 +518,8 @@ private struct ProgramBoardContent: View {
     @Bindable var model: ProgramBoardViewModel
     let onRefresh: () -> Void
     let onDismiss: () -> Void
+    let onAddExistingProject: () -> Void
+    let onCreateProject: () -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
     let onEditStart: (ProgramTicketDetail) -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
@@ -571,7 +582,11 @@ private struct ProgramBoardContent: View {
                     reloadState: model.reloadState,
                     theme: model.theme,
                     onRefresh: onRefresh,
-                    onDismiss: onDismiss
+                    onDismiss: onDismiss,
+                    primaryActionTitle: "Add Existing Project",
+                    primaryAction: onAddExistingProject,
+                    secondaryActionTitle: "Create Project",
+                    secondaryAction: onCreateProject
                 )
                 .padding(.horizontal, ProgramBoardLayout.statePanelHorizontalPadding)
             }
@@ -2705,6 +2720,10 @@ private struct ProgramStatePanel: View {
     let theme: ParticleFieldRenderer.Theme?
     let onRefresh: () -> Void
     let onDismiss: () -> Void
+    var primaryActionTitle: String? = nil
+    var primaryAction: (() -> Void)? = nil
+    var secondaryActionTitle: String? = nil
+    var secondaryAction: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2728,8 +2747,29 @@ private struct ProgramStatePanel: View {
                         .lineLimit(3)
                         .frame(maxWidth: 560)
                 }
+                if let primaryActionTitle, let primaryAction {
+                    HStack(spacing: 8) {
+                        ProgramWorkspaceActionButton(
+                            title: primaryActionTitle,
+                            systemName: "folder.badge.plus",
+                            prominence: .primary,
+                            accessibilityLabel: primaryActionTitle,
+                            help: "Register an existing Git repository",
+                            action: primaryAction
+                        )
+                        if let secondaryActionTitle, let secondaryAction {
+                            ProgramWorkspaceActionButton(
+                                title: secondaryActionTitle,
+                                systemName: "plus",
+                                accessibilityLabel: secondaryActionTitle,
+                                help: "Create and register a new Git repository",
+                                action: secondaryAction
+                            )
+                        }
+                    }
+                }
                 Button(action: onRefresh) {
-                    Text("Try again")
+                    Text("Refresh")
                         .font(AppTypography.font(.programAction))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .padding(.horizontal, 12)
@@ -2739,7 +2779,7 @@ private struct ProgramStatePanel: View {
                 .disabled(reloadState.isLoading)
                 .programControlChrome(disabled: reloadState.isLoading)
                 .programButtonCursor(enabled: !reloadState.isLoading)
-                .help("Try loading workspace work again")
+                .help("Refresh registered projects")
             }
             .frame(maxWidth: .infinity)
             Spacer(minLength: 0)
@@ -2799,8 +2839,19 @@ struct ProgramSessionToolbarPresentation: Equatable {
     }
 }
 
+enum ProgramSessionControlPolicy {
+    static func canStart(
+        hasActiveSession: Bool,
+        selectedProjectPath: String?,
+        requiresConfirmedProject: Bool
+    ) -> Bool {
+        hasActiveSession || !requiresConfirmedProject || selectedProjectPath != nil
+    }
+}
+
 private struct ProgramSessionToolbarControl: View {
     let hasActiveSession: Bool
+    let canStartSession: Bool
     let onStartSession: () -> Void
     let onEndSession: () -> Void
 
@@ -2809,7 +2860,10 @@ private struct ProgramSessionToolbarControl: View {
     }
 
     var body: some View {
-        ProgramSessionButton(presentation: presentation) {
+        ProgramSessionButton(
+            presentation: presentation,
+            isEnabled: hasActiveSession || canStartSession
+        ) {
             if hasActiveSession {
                 onEndSession()
             } else {
@@ -2821,6 +2875,7 @@ private struct ProgramSessionToolbarControl: View {
 
 private struct ProgramSessionButton: View {
     let presentation: ProgramSessionToolbarPresentation
+    let isEnabled: Bool
     let action: () -> Void
 
     var body: some View {
@@ -2831,6 +2886,8 @@ private struct ProgramSessionButton: View {
             help: presentation.help,
             action: action
         )
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
     }
 }
 

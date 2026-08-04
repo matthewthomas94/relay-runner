@@ -12,6 +12,7 @@ struct GeneralSettingsTab: View {
 
     @Binding var config: GeneralConfig
     var onOpenExternalWindow: () -> Void = {}
+    var projectRegistryAppState: AppState? = nil
     @State private var skillInstalled = ProcessManager().isSkillInstalled
     @State private var skillStatusText: String?
     @State private var skillStatusColor: SettingsSemanticColor = .idle
@@ -68,17 +69,22 @@ struct GeneralSettingsTab: View {
             }
 
             SettingsSection("Workspace") {
-                SettingsStackedControlRow(
-                    Self.workspaceFolderLabel,
-                    description: Self.workspaceFolderHelpText
-                ) {
-                    HStack(spacing: 8) {
-                        TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text("~ (home)"))
-                        SettingsActionButton(
-                            title: "Browse\u{2026}",
-                            systemImage: "folder"
-                        ) {
-                            pickDirectory()
+                if let projectRegistryAppState,
+                   projectRegistryAppState.usesProjectRegistryV2 {
+                    RegisteredProjectsSettingsView(appState: projectRegistryAppState)
+                } else {
+                    SettingsStackedControlRow(
+                        Self.workspaceFolderLabel,
+                        description: Self.workspaceFolderHelpText
+                    ) {
+                        HStack(spacing: 8) {
+                            TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text("~ (home)"))
+                            SettingsActionButton(
+                                title: "Browse\u{2026}",
+                                systemImage: "folder"
+                            ) {
+                                pickDirectory()
+                            }
                         }
                     }
                 }
@@ -228,5 +234,163 @@ struct GeneralSettingsTab: View {
             chooseDirectory: chooseDirectory,
             completion: completion
         )
+    }
+}
+
+private struct RegisteredProjectsSettingsView: View {
+    @Bindable var appState: AppState
+    @State private var projects: [RegisteredProjectV2] = []
+    @State private var statusText: String?
+    @State private var projectPendingRemoval: RegisteredProjectV2?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsRow {
+                SettingsRowLabel(
+                    "Registered projects",
+                    description: "Sessions start only from an available project selected in Workspace. Relay Runner never uses its application-support folder as an agent workspace."
+                )
+                Spacer(minLength: 16)
+                HStack(spacing: 8) {
+                    SettingsActionButton(
+                        title: "Add Existing",
+                        systemImage: "folder.badge.plus"
+                    ) {
+                        appState.addExistingProject(resumeInSettings: true) { result in
+                            handle(result)
+                        }
+                    }
+                    SettingsActionButton(
+                        title: "Create",
+                        systemImage: "plus",
+                        prominence: .primary
+                    ) {
+                        appState.createProject(resumeInSettings: true) { result in
+                            handle(result)
+                        }
+                    }
+                }
+            }
+
+            if projects.isEmpty {
+                SettingsDivider()
+                SettingsRow {
+                    Text("No projects registered. Workspace can remain empty until you add or create one.")
+                        .font(AppTypography.font(.settingsDescription))
+                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                }
+            } else {
+                ForEach(Array(projects.enumerated()), id: \.element.projectID) { index, project in
+                    SettingsDivider()
+                    projectRow(project)
+                }
+            }
+
+            if let statusText {
+                SettingsDivider()
+                SettingsRow {
+                    Text(statusText)
+                        .font(AppTypography.font(.settingsDescription))
+                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .onAppear(perform: reload)
+        .alert(
+            "Remove registered project?",
+            isPresented: Binding(
+                get: { projectPendingRemoval != nil },
+                set: { if !$0 { projectPendingRemoval = nil } }
+            ),
+            presenting: projectPendingRemoval
+        ) { project in
+            Button("Remove", role: .destructive) {
+                do {
+                    try appState.removeRegisteredProject(project.projectID)
+                    statusText = "Removed \(project.displayName). Its repository and artifact history were not changed."
+                    reload()
+                } catch {
+                    statusText = String(describing: error)
+                }
+                projectPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) { projectPendingRemoval = nil }
+        } message: { project in
+            Text("Relay Runner will remove its registry entry, access grant, and derived cache for \(project.displayName). The repository is left untouched.")
+        }
+    }
+
+    private func projectRow(_ project: RegisteredProjectV2) -> some View {
+        SettingsRow {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(project.displayName)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(SettingsSurfaceColor.primaryText)
+                Text("\(project.availability.settingsLabel) · \(project.lastResolvedPath)")
+                    .font(AppTypography.font(.settingsDescription))
+                    .foregroundStyle(
+                        project.availability == .available
+                            ? SettingsSurfaceColor.secondaryText
+                            : SettingsSurfaceColor.error
+                    )
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 12)
+            HStack(spacing: 6) {
+                SettingsActionButton(
+                    title: "Refresh",
+                    systemImage: "arrow.clockwise"
+                ) {
+                    do {
+                        _ = try appState.refreshRegisteredProject(project.projectID)
+                        statusText = nil
+                    } catch {
+                        statusText = String(describing: error)
+                    }
+                    reload()
+                }
+                SettingsActionButton(
+                    title: project.availability == .accessRequiresRegrant ? "Regrant" : "Locate",
+                    systemImage: "location.magnifyingglass"
+                ) {
+                    appState.locateRegisteredProject(project.projectID) { result in
+                        handle(result)
+                    }
+                }
+                SettingsActionButton(
+                    title: "Remove",
+                    systemImage: "minus.circle"
+                ) {
+                    projectPendingRemoval = project
+                }
+            }
+        }
+    }
+
+    private func handle(_ result: Result<RegisteredProjectV2, Error>) {
+        switch result {
+        case .success(let project):
+            statusText = "\(project.displayName) is registered and available."
+        case .failure(let error):
+            statusText = String(describing: error)
+        }
+        reload()
+    }
+
+    private func reload() {
+        projects = appState.registeredProjectsV2()
+    }
+}
+
+private extension RegisteredProjectAvailability {
+    var settingsLabel: String {
+        switch self {
+        case .available: return "Available"
+        case .missing: return "Missing"
+        case .offline: return "Offline"
+        case .accessRequiresRegrant: return "Access needs regrant"
+        case .identityMismatch: return "Identity mismatch"
+        }
     }
 }
