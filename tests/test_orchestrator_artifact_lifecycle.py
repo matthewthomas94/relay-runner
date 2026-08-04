@@ -16,6 +16,10 @@ SERVICES = ROOT / "services"
 sys.path.insert(0, str(SERVICES))
 
 import orchestrator  # noqa: E402
+from services.artifact_rollout import (  # noqa: E402
+    PROJECT_OPT_IN,
+    ArtifactRolloutBlocked,
+)
 from services.artifact_store import (  # noqa: E402
     ArtifactMutation,
     ArtifactStore,
@@ -225,6 +229,58 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
         self.assertEqual(blocked["status"], "verification_blocked")
         self.assertEqual(blocked["error_code"], "rollout_state_corrupt")
         self.assertIn("restore", blocked["recovery"].lower())
+
+    def test_rollout_kill_switch_blocks_cached_configured_writer_without_legacy_fallback(self):
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        self.assertIsNotNone(lifecycle)
+        initial = self.daemon.artifact_rollout.decision(
+            "daemon-project",
+            project_kind="existing",
+            configured_opt_in=True,
+        )
+        self.assertEqual(initial.reason_code, "configured_project_opt_in")
+        head_before = self.store._head()
+
+        self.daemon.artifact_rollout.pause_cohort(
+            PROJECT_OPT_IN,
+            writers_drained=True,
+            sync_frozen=True,
+            reason_code="verified_writer_failure",
+        )
+        paused = self.daemon.artifact_rollout.decision(
+            "daemon-project",
+            project_kind="existing",
+            configured_opt_in=True,
+        )
+        self.assertFalse(paused.artifact_writes_enabled)
+        self.assertFalse(paused.artifact_sync_enabled)
+        with self.assertRaises(ArtifactRolloutBlocked) as blocked:
+            self.daemon.artifact_board_claim_next_id(
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+                request_id="paused-board-claim",
+            )
+        self.assertEqual(blocked.exception.code, "project_opt_in_kill_switch")
+        self.assertEqual(self.store._head(), head_before)
+
+        handler = object.__new__(orchestrator.Handler)
+        handler.daemon = self.daemon
+        with patch.object(orchestrator, "_read_body", return_value={
+            "repo_path": str(self.repo),
+            "project_scope_token": self.scope_token(),
+            "request_id": "paused-http-board-claim",
+        }):
+            status, payload = handler._route(
+                "POST",
+                "/v1/artifacts/tickets/claim-next-id",
+            )
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error_code"], "project_opt_in_kill_switch")
+        self.assertIn("drained", payload["recovery"])
+        self.assertEqual(self.store._head(), head_before)
+
+        self.daemon.artifact_rollout.resume_cohort(PROJECT_OPT_IN, confirmed=True)
+        self.assertIs(self.daemon._artifact_lifecycle(str(self.repo)), lifecycle)
 
     def test_board_authoring_uses_confirmed_typed_artifact_writer_for_id_ticket_attachment_and_delete(self):
         with self.assertRaisesRegex(Exception, "confirmed project scope token"):

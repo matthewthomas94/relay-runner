@@ -111,6 +111,30 @@ class ArtifactVerificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ArtifactVerificationError, "unsupported shape"):
                 SignedInstalledAppGate(runner=self.signed_runner).evaluate(identity, evidence)
 
+    def test_installed_gate_rejects_non_developer_id_certificate_with_team_id(self):
+        with tempfile.TemporaryDirectory(prefix="relay-installed-certificate-") as directory:
+            app = self.make_app(Path(directory))
+
+            def development_runner(command):
+                if "-dv" in command:
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        b"",
+                        (
+                            b"TeamIdentifier=TEAM123\n"
+                            b"Signature size=9000\n"
+                            b"Authority=Apple Development: Local Developer (TEAM123)\n"
+                        ),
+                    )
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+
+            with self.assertRaisesRegex(ArtifactVerificationError, "Developer ID signed"):
+                SignedInstalledAppGate(runner=development_runner).inspect(
+                    app,
+                    require_applications=False,
+                )
+
     @staticmethod
     def make_app(root: Path) -> Path:
         app = root / "Relay Runner.app"

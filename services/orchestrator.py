@@ -45,7 +45,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 try:
     from services.artifact_lifecycle import ArtifactLifecycleCoordinator
-    from services.artifact_rollout import ArtifactRolloutError, ArtifactRolloutStore
+    from services.artifact_rollout import (
+        ArtifactRolloutBlocked,
+        ArtifactRolloutError,
+        ArtifactRolloutStore,
+    )
     from services.artifact_store import (
         ArtifactConcurrentUpdate,
         ArtifactMutation,
@@ -59,7 +63,11 @@ try:
     )
 except ModuleNotFoundError:  # Installed direct-script layout.
     from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
-    from artifact_rollout import ArtifactRolloutError, ArtifactRolloutStore  # type: ignore[no-redef]
+    from artifact_rollout import (  # type: ignore[no-redef]
+        ArtifactRolloutBlocked,
+        ArtifactRolloutError,
+        ArtifactRolloutStore,
+    )
     from artifact_store import (  # type: ignore[no-redef]
         ArtifactConcurrentUpdate,
         ArtifactMutation,
@@ -4125,6 +4133,20 @@ class Daemon:
         project_id = str(config.get("project_id") or "").strip()
         if not project_id:
             raise ValueError("artifact lifecycle config has no immutable project_id")
+        rollout = self.artifact_rollout.decision(
+            project_id,
+            project_kind="existing",
+            configured_opt_in=True,
+        )
+        if not rollout.artifact_writes_enabled:
+            raise ArtifactRolloutBlocked(
+                f"Artifact lifecycle is blocked by rollout policy ({rollout.reason_code}).",
+                code=rollout.reason_code,
+                recovery=(
+                    "Review the per-project opt-in and cohort failure, then explicitly opt in "
+                    "or resume only after writers are drained and synchronization is safe."
+                ),
+            )
         key = str(repo)
         with self._artifact_lifecycles_lock:
             coordinator = self._artifact_lifecycles.get(key)
@@ -8903,6 +8925,12 @@ class Handler(BaseHTTPRequestHandler):
                 return (202 if result.get("redispatched") else 200), result
 
             return 404, {"error": f"no route for {method} {parsed.path}"}
+        except ArtifactRolloutError as e:
+            return 409, {
+                "error": str(e),
+                "error_code": e.code,
+                "recovery": e.recovery,
+            }
         except ValueError as e:
             return 400, {"error": str(e)}
         except RuntimeError as e:

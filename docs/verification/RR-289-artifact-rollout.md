@@ -9,8 +9,16 @@ later rollout cohort and RR-273 remains open.
 ## Passing evidence
 
 - `/opt/homebrew/bin/python3 -m unittest discover -s tests -p 'test_*.py'`:
-  546 tests passed with 0 failures.
+  549 tests passed with 0 failures on the clean final run. The first post-change
+  run exposed one unrelated temporary-WAV cleanup race in a TTS test; that test
+  immediately passed alone and the complete rerun passed.
 - `swift test`: 668 tests executed, 3 intentional benchmark skips, 0 failures.
+- The focused artifact rollout/lifecycle/verification set passed 20 tests. It
+  proves configured project opt-ins are checked on every daemon lifecycle
+  lookup, explicit opt-out takes precedence, a paused cohort blocks a cached
+  board writer without moving the artifact ref, backup recovery state blocks new
+  starts pending reviewed repair, and non-Developer-ID certificate authorities
+  are rejected even when they carry a Team ID.
 - `scripts/relay-artifact-verify source-harness` from the checkout: passed the
   disposable two-device remote harness and all nine RR-270 source-matrix groups;
   report SHA-256
@@ -25,8 +33,10 @@ later rollout cohort and RR-273 remains open.
   Its nine source-matrix entries correctly report
   `external_source_report_required` because test sources are not shipped in the
   app and are supplied by the passing checkout report above.
-- Installed rollout diagnostics reported zero opted-in projects. Both
-  `new_project_default` and `legacy_migration_offer` had writes and sync disabled.
+- Installed rollout diagnostics reported zero app-local explicit project-policy
+  opt-in records. The compatibility config opt-in remains subject to the enabled
+  `project_opt_in` baseline gate. Both `new_project_default` and
+  `legacy_migration_offer` had writes and sync disabled.
 
 The automated remote harness uses independent disposable clones of one bare
 remote. It does not claim two physical Macs, TCC behavior, mounted AppKit

@@ -27,6 +27,13 @@ bounded evidence identifiers/hashes. Repositories, artifact refs, migration
 journals, registry backups, and evidence files remain intact when a cohort is
 paused or rolled back.
 
+For projects enabled before this control plane existed,
+`artifact_lifecycle = "enabled"` is the durable compatibility opt-in. The daemon
+re-evaluates that configured opt-in against the `project_opt_in` cohort on every
+artifact lifecycle lookup, including cached coordinators. An explicit policy
+`opt-out` record takes precedence over the repository config; it cannot be
+silently undone by a daemon restart or by falling back to the legacy writer.
+
 Two later cohorts begin disabled:
 
 1. `new_project_default` can affect newly registered projects only. It never
@@ -71,10 +78,21 @@ erases conflict evidence. Resume is a distinct confirmed action after recovery.
 Disabling one project's opt-in has the same drain/freeze rule and preserves its
 canonical artifact history and materialization for explicit recovery.
 
+The daemon enforces the write decision before returning an artifact lifecycle
+coordinator. A blocked decision raises its stable rollout reason instead of
+returning `None`, because `None` would activate the legacy direct-file writer.
+Artifact HTTP mutations return that reason and bounded recovery action as a
+`409` response rather than reducing the gate to an opaque server error.
+The same policy decision disables artifact synchronization while the cohort is
+paused. A focused daemon test pauses an already-cached configured project,
+attempts a board claim, and proves the artifact ref does not move.
+
 If policy JSON is corrupt, a valid backup is used with a visible recovery state.
-If both copies are invalid, all new starts fail closed with
-`rollout_state_corrupt`. Stop writers, restore a reviewed backup, and explicitly
-resume; do not synthesize an empty enabled policy.
+Diagnostics may inspect that backup, but new starts remain blocked with
+`rollout_state_recovery_required` until a reviewed repair. If both copies are
+invalid, all new starts fail closed with `rollout_state_corrupt`. Stop writers,
+restore a reviewed backup, and explicitly resume; do not synthesize an empty
+enabled policy.
 
 ## Automated source gate
 
@@ -124,10 +142,12 @@ kind or promote a cohort.
 
 ## Signed installed two-device gate
 
-The installed gate accepts only the exact Developer ID signed app at
-`/Applications/Relay Runner.app`. Ad-hoc signatures, invalid nested signatures,
-another bundle identifier, a source-build path, and evidence for another bundle
-hash fail closed.
+The installed gate accepts only the exact Developer ID Application signed app at
+`/Applications/Relay Runner.app`. A Team ID and non-ad-hoc signature alone are
+insufficient: Apple Development, Apple Distribution, and other certificate
+authorities are rejected. Ad-hoc signatures, invalid nested signatures, another
+bundle identifier, a source-build path, and evidence for another bundle hash
+fail closed.
 
 First inspect the installed identity and create a bounded evidence template:
 

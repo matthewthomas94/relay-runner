@@ -768,9 +768,18 @@ class SignedInstalledAppGate:
         detail_text = (details.stdout + details.stderr).decode("utf-8", errors="replace")
         team_match = re.search(r"(?m)^TeamIdentifier=([^\s]+)$", detail_text)
         signature_match = re.search(r"(?m)^Signature=([^\n]+)$", detail_text)
+        authorities = re.findall(r"(?m)^Authority=([^\n]+)$", detail_text)
         team = team_match.group(1) if team_match else ""
         signature = signature_match.group(1).strip().lower() if signature_match else ""
-        developer_signed = bool(team and team.lower() not in {"not set", "none"}) and signature != "adhoc"
+        developer_signed = (
+            bool(team and team.lower() not in {"not set", "none"})
+            and signature != "adhoc"
+            and any(
+                authority.strip() == "Developer ID Application"
+                or authority.strip().startswith("Developer ID Application:")
+                for authority in authorities
+            )
+        )
         identity = InstalledBundleIdentity(
             version=str(info.get("CFBundleShortVersionString") or ""),
             build_number=str(info.get("CFBundleVersion") or ""),

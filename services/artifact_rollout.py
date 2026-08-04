@@ -254,8 +254,7 @@ class ArtifactRolloutStore:
                     code="project_opt_in_paused",
                     recovery="Resolve the recorded cohort failure before an explicit operator resume.",
                 )
-            current = document["project_opt_ins"].get(project_id)
-            if not enabled and current and (not writers_drained or not sync_frozen):
+            if not enabled and (not writers_drained or not sync_frozen):
                 raise ArtifactRolloutBlocked(
                     "Disabling a project requires drained writers and frozen synchronization.",
                     code="project_not_drained",
@@ -368,7 +367,13 @@ class ArtifactRolloutStore:
             self._advance(document, event="cohort_resumed")
         return self.diagnostics()
 
-    def decision(self, project_id: str, *, project_kind: str) -> RolloutDecision:
+    def decision(
+        self,
+        project_id: str,
+        *,
+        project_kind: str,
+        configured_opt_in: bool = False,
+    ) -> RolloutDecision:
         self._validate_id(project_id, "project ID")
         if project_kind not in {"existing", "new", "legacy"}:
             raise ArtifactRolloutError(
@@ -376,18 +381,49 @@ class ArtifactRolloutStore:
                 code="invalid_project_kind",
                 recovery="Use existing, new, or legacy after confirming registry identity.",
             )
+        if configured_opt_in and project_kind != "existing":
+            raise ArtifactRolloutError(
+                "A repository-configured opt-in is valid only for an existing project.",
+                code="invalid_configured_opt_in",
+                recovery="Use the staged new-project or legacy cohort decision for this project.",
+            )
         document = self.load()
-        explicit = document["project_opt_ins"].get(project_id, {}).get("enabled") is True
-        if explicit:
+        if document.get("recovery_state") == "primary_corrupt_using_backup":
+            raise ArtifactRolloutBlocked(
+                "Artifact rollout policy is using a backup; new artifact starts remain blocked until reviewed repair.",
+                code="rollout_state_recovery_required",
+                recovery=(
+                    "Stop artifact writers, repair the primary policy from the reviewed backup, "
+                    "then explicitly resume the intended cohort."
+                ),
+            )
+        explicit_record = document["project_opt_ins"].get(project_id)
+        explicit = explicit_record.get("enabled") if explicit_record is not None else None
+        if explicit is False:
+            return RolloutDecision(
+                project_id=project_id,
+                cohort=None,
+                artifact_writes_enabled=False,
+                artifact_sync_enabled=False,
+                offer_legacy_migration=False,
+                reason_code="explicit_project_opt_out",
+            )
+        if explicit is True or configured_opt_in:
             state = document["cohorts"][PROJECT_OPT_IN]
             enabled = not state["paused"] and state["writes_allowed"]
+            if not enabled:
+                reason_code = "project_opt_in_kill_switch"
+            elif explicit is True:
+                reason_code = "explicit_project_opt_in"
+            else:
+                reason_code = "configured_project_opt_in"
             return RolloutDecision(
                 project_id=project_id,
                 cohort=PROJECT_OPT_IN,
                 artifact_writes_enabled=enabled,
                 artifact_sync_enabled=enabled and state["sync_allowed"],
                 offer_legacy_migration=False,
-                reason_code="explicit_project_opt_in" if enabled else "project_opt_in_kill_switch",
+                reason_code=reason_code,
             )
         if project_kind == "new":
             state = document["cohorts"][NEW_PROJECT_DEFAULT]

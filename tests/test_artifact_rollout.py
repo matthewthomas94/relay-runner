@@ -57,6 +57,44 @@ class ArtifactRolloutTests(unittest.TestCase):
         self.assertFalse(disabled.artifact_writes_enabled)
         self.assertEqual(self.store.diagnostics()["project_opt_in_count"], 0)
 
+    def test_configured_opt_in_uses_baseline_gate_and_explicit_opt_out_wins(self):
+        configured = self.store.decision(
+            "configured-project",
+            project_kind="existing",
+            configured_opt_in=True,
+        )
+        self.assertTrue(configured.artifact_writes_enabled)
+        self.assertTrue(configured.artifact_sync_enabled)
+        self.assertEqual(configured.reason_code, "configured_project_opt_in")
+        with self.assertRaisesRegex(ArtifactRolloutError, "configured opt-in"):
+            self.store.decision(
+                "configured-new-project",
+                project_kind="new",
+                configured_opt_in=True,
+            )
+
+        with self.assertRaisesRegex(ArtifactRolloutBlocked, "drained writers"):
+            self.store.set_project_opt_in(
+                "configured-project",
+                enabled=False,
+                confirmed=True,
+            )
+        self.store.set_project_opt_in(
+            "configured-project",
+            enabled=False,
+            confirmed=True,
+            writers_drained=True,
+            sync_frozen=True,
+        )
+        disabled = self.store.decision(
+            "configured-project",
+            project_kind="existing",
+            configured_opt_in=True,
+        )
+        self.assertFalse(disabled.artifact_writes_enabled)
+        self.assertFalse(disabled.artifact_sync_enabled)
+        self.assertEqual(disabled.reason_code, "explicit_project_opt_out")
+
     def test_later_cohorts_never_auto_promote_and_require_accepted_external_evidence(self):
         self.store.set_project_opt_in("pilot", enabled=True, confirmed=True)
         for kind in sorted(NEW_PROJECT_REQUIRED_EVIDENCE):
@@ -124,6 +162,14 @@ class ArtifactRolloutTests(unittest.TestCase):
         self.assertFalse(
             self.store.decision("pilot", project_kind="existing").artifact_writes_enabled
         )
+        configured = self.store.decision(
+            "configured-pilot",
+            project_kind="existing",
+            configured_opt_in=True,
+        )
+        self.assertFalse(configured.artifact_writes_enabled)
+        self.assertFalse(configured.artifact_sync_enabled)
+        self.assertEqual(configured.reason_code, "project_opt_in_kill_switch")
         self.assertEqual(paused["project_opt_in_count"], 1)
         self.assertIn("source_matrix", paused["evidence"])
         self.store.resume_cohort("project_opt_in", confirmed=True)
@@ -140,6 +186,9 @@ class ArtifactRolloutTests(unittest.TestCase):
 
         recovered = self.store.load()
         self.assertEqual(recovered["recovery_state"], "primary_corrupt_using_backup")
+        with self.assertRaisesRegex(ArtifactRolloutBlocked, "reviewed repair") as blocked:
+            self.store.decision("first", project_kind="existing")
+        self.assertEqual(blocked.exception.code, "rollout_state_recovery_required")
         self.store.set_project_opt_in("repair", enabled=True, confirmed=True)
 
         self.assertEqual(self.store.backup_path.read_bytes(), backup_before)

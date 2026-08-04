@@ -4,7 +4,7 @@ This is RR-273 phase 6 and implements the [RR-270 worker and lifecycle contract]
 
 ## Rollout and authority
 
-Artifact lifecycle is selected per project by `artifact_lifecycle = "enabled"` in the canonical artifact `config.toml`. Missing or `legacy` keeps the existing ticket-on-worker-branch path. Change the gate only after active runs drain: disabling it stops new artifact-owned claims but preserves the artifact ref, emitted events, source commits, outcomes, and leases for recovery.
+Artifact lifecycle is selected per project by `artifact_lifecycle = "enabled"` in the canonical artifact `config.toml`. Missing or `legacy` keeps the existing ticket-on-worker-branch path. For an enabled project, the daemon also requires the RR-289 `project_opt_in` rollout decision on every lifecycle lookup; a cohort pause or explicit policy opt-out raises a stable blocker and never falls through to the legacy writer. Change either gate only after active runs drain: disabling it stops new artifact-owned claims but preserves the artifact ref, emitted events, source commits, outcomes, and leases for recovery.
 
 The artifact gate currently covers implementation worktrees. Branchless spike result persistence remains on the legacy lifecycle; an enabled project refuses a spike with an explicit instruction to drain and switch the reversible gate instead of mixing two authorities in one run.
 
