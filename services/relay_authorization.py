@@ -132,6 +132,7 @@ def allowed_mutations_for_metadata(metadata: dict[str, Any]) -> list[dict[str, A
                 "ticket_id": "*",
             },
             {"kind": "dispatch_ticket", "ticket_id": "*"},
+            {"kind": "spike_followup_accept"},
             {"kind": "orchestrator_command"},
         ]
 
@@ -143,6 +144,7 @@ def allowed_mutations_for_metadata(metadata: dict[str, Any]) -> list[dict[str, A
                 "ticket_id": ticket_id or "*",
             },
             {"kind": "dispatch_ticket", "ticket_id": ticket_id or "*"},
+            {"kind": "spike_followup_accept"},
             {"kind": "orchestrator_command"},
         ]
 

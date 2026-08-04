@@ -14,10 +14,49 @@ sys.path.insert(0, str(ROOT / "services"))
 
 from followup_tickets import FollowupProposalStore  # noqa: E402
 from orchestrator import Daemon  # noqa: E402
+from relay_authorization import (  # noqa: E402
+    allowed_mutations_for_metadata,
+    record_command_authorization,
+    validate_and_mark_mutation,
+)
 from tickets import read as read_ticket  # noqa: E402
 
 
 class SpikeFollowupTests(unittest.TestCase):
+    def test_ticket_command_authorization_allows_spike_followup_accept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, action in enumerate(("create_ticket", "update_ticket"), start=1):
+                with self.subTest(action=action):
+                    ledger = root / f"{action}.json"
+                    metadata = {
+                        "relay_command_seq": index,
+                        "relay_command_id": f"command-{index}",
+                        "action": action,
+                        "source_text": "accept the first spike follow-up proposal",
+                    }
+                    record_command_authorization(
+                        ledger,
+                        metadata,
+                        relationship="replacement",
+                        allowed_mutations=allowed_mutations_for_metadata(metadata),
+                    )
+
+                    record = validate_and_mark_mutation(
+                        ledger,
+                        index,
+                        f"command-{index}",
+                        {
+                            "kind": "spike_followup_accept",
+                            "request_id": "batch:proposal",
+                        },
+                    )
+
+                    self.assertEqual(
+                        record["started_mutations"][0]["mutation"]["kind"],
+                        "spike_followup_accept",
+                    )
+
     def test_proposals_are_durable_editable_and_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
