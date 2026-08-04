@@ -426,6 +426,69 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertNil(stateMachine.messagePreview)
     }
 
+    func testStoppedPlaybackKeepsReplayVisibleAndOptionRestartsPreparing() {
+        let stateMachine = StateMachine()
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "speaking",
+            text: "Replay this response.",
+            autoDismiss: nil
+        )
+
+        stateMachine.setCancelled()
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "replay_retained",
+            text: "Replay this response.",
+            autoDismiss: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .cancelled(.tts))
+        XCTAssertTrue(stateMachine.replayRetained)
+        XCTAssertEqual(stateMachine.messagePreview, "Replay this response.")
+
+        stateMachine.setPlaybackRequested()
+
+        XCTAssertEqual(stateMachine.state, .preparing)
+        XCTAssertFalse(stateMachine.replayRetained)
+        XCTAssertEqual(stateMachine.messagePreview, "Replay this response.")
+    }
+
+    func testStoppedPlaybackDismissesToReplayWaitingState() {
+        let stateMachine = StateMachine()
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "replay_retained",
+            text: "Replay this response.",
+            autoDismiss: nil
+        )
+
+        stateMachine.dismissSent()
+
+        XCTAssertEqual(
+            stateMachine.state,
+            .messageWaiting(preview: "Replay this response.")
+        )
+        XCTAssertTrue(stateMachine.replayRetained)
+    }
+
+    func testCancelledUnstartedMessageDoesNotClaimReplayAvailability() {
+        let stateMachine = StateMachine()
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Never started.",
+            autoDismiss: nil
+        )
+
+        stateMachine.setCancelled()
+        stateMachine.dismissSent()
+
+        XCTAssertEqual(stateMachine.state, .idle)
+        XCTAssertFalse(stateMachine.replayRetained)
+        XCTAssertNil(stateMachine.messagePreview)
+    }
+
     func testConsecutiveResponsesUseFreshWaitingPreviewAfterIdle() {
         let stateMachine = StateMachine()
 

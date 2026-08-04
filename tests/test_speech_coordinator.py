@@ -33,6 +33,9 @@ class FakeWorker:
     def stop_playback(self):
         self.calls.append("stop")
 
+    def publish_replay_retained(self):
+        self.calls.append("replay_retained")
+
     def play(self):
         self.calls.append("play")
 
@@ -226,6 +229,161 @@ class SpeechCoordinatorTests(unittest.TestCase):
 
         self.assertFalse(coordinator.play_or_replay())
         self.assertTrue(worker.input_queue.empty())
+
+    def test_stopping_initial_playback_retains_one_fresh_replay(self):
+        worker, coordinator, _ = self.make_coordinator()
+        final = intent(kind="final", authoritative=True, replayable=True)
+        coordinator.submit(final)
+        payload = worker.input_queue.get_nowait()["_speech_intent"]
+        worker.observer("started", payload)
+
+        coordinator.stop_playback()
+        worker.observer("cancelled", payload)
+
+        self.assertEqual(worker.calls, ["stop", "replay_retained"])
+        self.assertTrue(coordinator.play_or_replay())
+        replay = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(replay["spoken_text"], final.spoken_text)
+        self.assertEqual(replay["command_seq"], final.command_seq)
+        self.assertEqual(replay["command_id"], final.command_id)
+        self.assertEqual(replay["replacement_policy"], "replay")
+        self.assertEqual(worker.calls, ["stop", "replay_retained", "play"])
+        self.assertTrue(worker.input_queue.empty())
+
+    def test_stopping_replay_repeatedly_keeps_same_message_replayable(self):
+        worker, coordinator, _ = self.make_coordinator()
+        final = intent(kind="final", authoritative=True, replayable=True)
+        coordinator.submit(final)
+        payload = worker.input_queue.get_nowait()["_speech_intent"]
+        worker.observer("started", payload)
+        worker.observer("completed", payload)
+
+        for _ in range(3):
+            self.assertTrue(coordinator.play_or_replay())
+            replay = worker.input_queue.get_nowait()["_speech_intent"]
+            self.assertEqual(replay["spoken_text"], final.spoken_text)
+            worker.observer("started", replay)
+            coordinator.skip()
+            worker.observer("cancelled", replay)
+
+        self.assertEqual(worker.calls.count("play"), 3)
+        self.assertEqual(worker.calls.count("stop"), 3)
+        self.assertEqual(worker.calls.count("replay_retained"), 3)
+        self.assertTrue(coordinator.play_or_replay())
+        self.assertEqual(worker.input_queue.qsize(), 1)
+
+    def test_stopped_attempt_is_not_retained_after_actual_intent_cancellation(self):
+        worker, coordinator, _ = self.make_coordinator()
+        final = intent(kind="final", authoritative=True, replayable=True)
+        coordinator.submit(final)
+        payload = worker.input_queue.get_nowait()["_speech_intent"]
+        worker.observer("started", payload)
+
+        coordinator.stop()
+        worker.observer("cancelled", payload)
+
+        self.assertFalse(coordinator.play_or_replay())
+        self.assertEqual(worker.calls, ["stop"])
+        self.assertTrue(worker.input_queue.empty())
+
+    def test_stopped_attempt_respects_freshness_and_replayable_policy(self):
+        for replayable in (False, True):
+            with self.subTest(replayable=replayable):
+                worker, coordinator, holder = self.make_coordinator()
+                final = intent(
+                    kind="final",
+                    authoritative=True,
+                    replayable=replayable,
+                )
+                coordinator.submit(final)
+                payload = worker.input_queue.get_nowait()["_speech_intent"]
+                worker.observer("started", payload)
+                if replayable:
+                    holder["key"] = (2, "two")
+                coordinator.stop_playback()
+                worker.observer("cancelled", payload)
+
+                self.assertFalse(coordinator.play_or_replay())
+                self.assertNotIn("replay_retained", worker.calls)
+
+    def test_stopped_attempt_retention_covers_supported_speech_sources(self):
+        cases = (
+            intent(kind="final", authoritative=True, replayable=True),
+            intent(
+                seq=0,
+                command_id="work",
+                kind="final",
+                authoritative=True,
+                replayable=True,
+                source="lifecycle",
+                freshness_scope="work",
+            ),
+            intent(kind="progress", replayable=True),
+        )
+        for original in cases:
+            with self.subTest(source=original.source, kind=original.kind):
+                worker, coordinator, _ = self.make_coordinator()
+                coordinator.submit(original)
+                payload = worker.input_queue.get_nowait()["_speech_intent"]
+                worker.observer("started", payload)
+                coordinator.stop_playback()
+                worker.observer("cancelled", payload)
+
+                self.assertTrue(coordinator.play_or_replay())
+                replay = worker.input_queue.get_nowait()["_speech_intent"]
+                self.assertEqual(replay["spoken_text"], original.spoken_text)
+                self.assertEqual(replay["command_id"], original.command_id)
+
+    def test_stopped_attempt_is_not_played_until_later_replay_completes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "speech.jsonl"
+            worker, coordinator, _ = self.make_coordinator(log=log)
+            final = intent(kind="final", authoritative=True, replayable=True)
+            coordinator.submit(final)
+            initial = worker.input_queue.get_nowait()["_speech_intent"]
+            worker.observer("started", initial)
+            coordinator.stop_playback()
+            worker.observer("cancelled", initial)
+
+            self.assertTrue(coordinator.play_or_replay())
+            replay = worker.input_queue.get_nowait()["_speech_intent"]
+            worker.observer("started", replay)
+            worker.observer("completed", replay)
+
+            terminal = [
+                record
+                for record in (
+                    json.loads(line) for line in log.read_text().splitlines()
+                )
+                if record["event"] in {"stopped", "played"}
+            ]
+            self.assertEqual([record["event"] for record in terminal], ["stopped", "played"])
+            self.assertEqual(
+                {record["relay_command_id"] for record in terminal},
+                {final.command_id},
+            )
+            self.assertNotEqual(
+                terminal[0]["utterance_id"],
+                terminal[1]["utterance_id"],
+            )
+
+    def test_stopped_attempt_does_not_mask_the_next_queued_message(self):
+        worker, coordinator, _ = self.make_coordinator()
+        first = intent(kind="handoff", text="first", replayable=True)
+        second = intent(kind="final", text="second", authoritative=True)
+        coordinator.submit(first)
+        first_payload = worker.input_queue.get_nowait()["_speech_intent"]
+        worker.observer("started", first_payload)
+        coordinator.submit(second)
+
+        coordinator.stop_playback()
+        worker.observer("cancelled", first_payload)
+
+        next_payload = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(next_payload["spoken_text"], "second")
+        self.assertEqual(worker.calls, ["stop"])
+        coordinator.play_or_replay()
+        self.assertEqual(worker.calls, ["stop", "play"])
 
     def test_first_play_is_retained_until_authoritative_speech_is_proposed(self):
         worker, coordinator, _ = self.make_coordinator()
