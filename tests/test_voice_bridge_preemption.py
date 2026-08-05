@@ -3218,6 +3218,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertIn("program_artifacts.py", script)
         self.assertIn("fresh_install.py", script)
         self.assertIn("fresh_install_cli.py", script)
+        self.assertIn("followup_tickets.py", script)
         self.assertIn("relay-artifact-migrate", script)
         self.assertIn("relay-artifact-verify", script)
         self.assertIn("relay-artifact-rollout", script)
