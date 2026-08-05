@@ -2,6 +2,30 @@ import XCTest
 @testable import relay_runner
 
 final class WorkspaceDirectoryPickerTests: XCTestCase {
+    func testPickerWaitsForExternalWindowPreparationBeforeOpeningPanel() {
+        var events: [String] = []
+        var openPanel: (() -> Void)?
+
+        WorkspaceDirectoryPicker.pick(
+            message: "Choose a project",
+            onPrepareExternalWindow: { ready in
+                events.append("prepare")
+                openPanel = ready
+            },
+            chooseDirectory: {
+                events.append("panel")
+                return URL(fileURLWithPath: "/repo")
+            },
+            completion: { path in
+                events.append("complete:\(path ?? "nil")")
+            }
+        )
+
+        XCTAssertEqual(events, ["prepare"])
+        openPanel?()
+        XCTAssertEqual(events, ["prepare", "panel", "complete:/repo"])
+    }
+
     func testAppKitPanelHelperActivatesApplicationBeforeRunningModalPanel() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -763,6 +763,11 @@ private struct ProgramProjectsHeader: View {
     }
 }
 
+private enum ProgramAddProjectMenuMetrics {
+    static let disclosureWidth: CGFloat = 32
+    static let dividerWidth: CGFloat = 1
+}
+
 private struct ProgramAddProjectMenu: View {
     let title: String
     let onAddExistingProject: () -> Void
@@ -777,19 +782,31 @@ private struct ProgramAddProjectMenu: View {
                 onCreateProject()
             }
         } label: {
-            HStack(alignment: .center, spacing: SharedActionButtonMetrics.iconSpacing) {
+            HStack(alignment: .center, spacing: 0) {
                 Text(title)
                     .font(AppTypography.font(.programAction))
                     .lineLimit(1)
+                    .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+                    .frame(height: SharedActionButtonMetrics.controlHeight)
+                Rectangle()
+                    .fill(BoardDarkSurfaceStyle.border)
+                    .frame(
+                        width: ProgramAddProjectMenuMetrics.dividerWidth,
+                        height: SharedActionButtonMetrics.controlHeight
+                    )
                 Image(systemName: "chevron.down")
                     .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                    .frame(
+                        width: ProgramAddProjectMenuMetrics.disclosureWidth,
+                        height: SharedActionButtonMetrics.controlHeight
+                    )
                     .accessibilityHidden(true)
             }
             .foregroundStyle(ProgramBoardStyle.primaryText)
-            .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
             .frame(height: SharedActionButtonMetrics.controlHeight)
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
         .programControlChrome(shape: .rounded(SharedActionButtonMetrics.cornerRadius))

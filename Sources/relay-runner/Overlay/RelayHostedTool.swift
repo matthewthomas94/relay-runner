@@ -233,7 +233,14 @@ enum RelayHostedTool {
         }
 
         let display = content.displays[displayIndex]
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let excludedWindows = content.windows.filter { window in
+            RelayVisionOverlayWindowPolicy.shouldExcludeFromCapture(
+                ownerProcessID: window.owningApplication?.processID,
+                windowLayer: window.windowLayer,
+                title: window.title
+            )
+        }
+        let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
         let (configWidth, configHeight) = nativePixelDimensions(forDisplayID: display.displayID)
             ?? (display.width, display.height)
 

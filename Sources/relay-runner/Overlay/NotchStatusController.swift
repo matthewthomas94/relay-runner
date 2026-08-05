@@ -1570,9 +1570,8 @@ final class NotchStatusPanel: NSPanel {
             defer: true
         )
 
-        // Relay Vision, ActionGlow, and the board overlay all sit at
-        // `.screenSaver`; keep the notch above them so its glyph stays
-        // visible and interactive while those surfaces are open.
+        // Keep the notch above Workspace while leaving ActionGlow one level
+        // higher so Relay Vision feedback is never obscured by app surfaces.
         level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         isOpaque = false

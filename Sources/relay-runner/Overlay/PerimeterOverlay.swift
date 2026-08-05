@@ -1,13 +1,37 @@
 import AppKit
 import QuartzCore
 
+enum RelayVisionOverlayWindowPolicy {
+    static let actionGlowWindowTitle = "Relay Runner ActionGlow"
+    static let windowLevel = NSWindow.Level(
+        rawValue: NSWindow.Level.screenSaver.rawValue + 2
+    )
+
+    static func configure(_ window: NSWindow) {
+        window.level = windowLevel
+        window.sharingType = .none
+        window.title = actionGlowWindowTitle
+    }
+
+    static func shouldExcludeFromCapture(
+        ownerProcessID: pid_t?,
+        windowLayer: Int,
+        title: String?
+    ) -> Bool {
+        guard ownerProcessID == getpid() else { return false }
+        return windowLayer == Int(windowLevel.rawValue)
+            || title == actionGlowWindowTitle
+    }
+}
+
 // Halftone-dot perimeter around every connected screen while
 // `OverlayState.actionGlow` is active. Pulses brighter when an
 // `awaitingConfirmation` prompt is surfaced — visual signal that the
 // user needs to double-tap Option (yes) or Control (no).
 //
 // Architecture:
-// - One NSPanel per NSScreen, screen-saver level, click-through, transparent.
+// - One NSPanel per NSScreen, above every Relay Runner surface, click-through,
+//   transparent, and excluded from capture.
 // - Each panel hosts a PerimeterParticleField — same dot grid + animation as
 //   ParticleFieldRenderer, but the visibility mask favors dots within ~90pt
 //   of any edge instead of along the bottom. Uses the `.stt` color palette
@@ -153,11 +177,7 @@ private final class PerimeterPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        // Same level as OverlayPanel so we sit above full-screen apps. Using
-        // .screenSaver (highest non-system level) means notification banners
-        // and Spotlight still appear on top — appropriate, since those are
-        // user-initiated UI.
-        level = .screenSaver
+        RelayVisionOverlayWindowPolicy.configure(self)
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false

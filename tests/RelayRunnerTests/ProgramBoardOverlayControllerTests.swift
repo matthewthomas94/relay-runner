@@ -227,4 +227,50 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(metric.name, "reveal_duration")
         XCTAssertEqual(metric.milliseconds, 955)
     }
+
+    func testProjectPickerHandoffUsesWorkspaceDismissAndRevealAnimations() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let controllerSource = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/relay-runner/Board/ProgramBoardOverlayController.swift"
+            ),
+            encoding: .utf8
+        )
+        let appStateSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/App/AppState.swift"),
+            encoding: .utf8
+        )
+
+        let suspendStart = try XCTUnwrap(
+            controllerSource.range(of: "func suspendForExternalWindowAnimated(")
+        )
+        let suspendEnd = try XCTUnwrap(
+            controllerSource.range(
+                of: "private func resumeAfterExternalWindow(",
+                range: suspendStart.upperBound..<controllerSource.endIndex
+            )
+        )
+        let suspendBody = String(
+            controllerSource[suspendStart.lowerBound..<suspendEnd.lowerBound]
+        )
+        let resumeStart = suspendEnd
+        let resumeEnd = try XCTUnwrap(
+            controllerSource.range(
+                of: "private func selectWorkspaceTab(",
+                range: resumeStart.upperBound..<controllerSource.endIndex
+            )
+        )
+        let resumeBody = String(
+            controllerSource[resumeStart.lowerBound..<resumeEnd.lowerBound]
+        )
+
+        XCTAssertTrue(suspendBody.contains("container.animateDismiss("))
+        XCTAssertTrue(suspendBody.contains("completion()"))
+        XCTAssertTrue(resumeBody.contains("container.prepareForOpening("))
+        XCTAssertTrue(resumeBody.contains("container.animateReveal("))
+        XCTAssertTrue(appStateSource.contains("suspendWorkspaceForProjectPicker(ready)"))
+    }
 }

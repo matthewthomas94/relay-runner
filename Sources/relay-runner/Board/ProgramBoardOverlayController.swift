@@ -73,6 +73,7 @@ final class ProgramBoardOverlayController {
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
     private(set) var isSuspendedForExternalWindow = false
+    private var resumesExternalWindowWithAnimation = false
     private var dismissInFlight = false
     private var lastSelectedTab: WorkspaceTab = .work
     private weak var revealContainer: BoardRevealContainerView?
@@ -509,7 +510,21 @@ final class ProgramBoardOverlayController {
     }
 
     func suspendForExternalWindow() {
-        guard isVisible else { return }
+        suspendForExternalWindow(animated: false, completion: {})
+    }
+
+    func suspendForExternalWindowAnimated(completion: @escaping () -> Void) {
+        suspendForExternalWindow(animated: true, completion: completion)
+    }
+
+    private func suspendForExternalWindow(
+        animated: Bool,
+        completion: @escaping () -> Void
+    ) {
+        guard isVisible else {
+            completion()
+            return
+        }
         updateCheckTask?.cancel()
         updateCheckTask = nil
         model.cancelReload()
@@ -522,7 +537,26 @@ final class ProgramBoardOverlayController {
         stopStatusPoll()
         isVisible = false
         isSuspendedForExternalWindow = true
-        panel?.orderOut(nil)
+        resumesExternalWindowWithAnimation = animated
+
+        let panelToDismiss = panel
+        let container = revealContainer ?? panelToDismiss?.contentView as? BoardRevealContainerView
+        guard animated, let container else {
+            panelToDismiss?.orderOut(nil)
+            dismissInFlight = false
+            completion()
+            return
+        }
+
+        dismissInFlight = true
+        container.animateDismiss(
+            firstMotion: {},
+            completion: { [weak self, weak panelToDismiss] in
+                panelToDismiss?.orderOut(nil)
+                self?.dismissInFlight = false
+                completion()
+            }
+        )
     }
 
     private func resumeAfterExternalWindow(initialTab: WorkspaceTab) -> Bool {
@@ -530,12 +564,18 @@ final class ProgramBoardOverlayController {
               let panel,
               panel.contentView != nil else { return false }
 
+        let animated = resumesExternalWindowWithAnimation
         isSuspendedForExternalWindow = false
+        resumesExternalWindowWithAnimation = false
         workspace.select(initialTab)
         lastSelectedTab = workspace.selectedTab
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
         contentLoadBlocked = workspace.showsWorkTab && model.snapshot == nil
+        let container = revealContainer ?? panel.contentView as? BoardRevealContainerView
+        if animated, let container {
+            container.prepareForOpening(startsLoading: contentLoadBlocked)
+        }
         isVisible = true
         panel.orderFrontRegardless()
         updatePanelKeyEligibility()
@@ -545,6 +585,11 @@ final class ProgramBoardOverlayController {
             checkForUpdates(inBackground: model.snapshot != nil)
         } else {
             loadingStateHandler?(false)
+        }
+        if animated, let container {
+            DispatchQueue.main.async {
+                container.animateReveal(firstMotion: {}, completion: {})
+            }
         }
         return true
     }

@@ -1273,8 +1273,11 @@ final class AppState {
         WorkspaceDirectoryPicker.pick(
             message: "Choose an existing Git repository",
             onPrepareExternalWindow: { [weak self] ready in
-                self?.suspendWorkspaceForExternalWindow()
-                ready()
+                guard let self else {
+                    ready()
+                    return
+                }
+                self.suspendWorkspaceForProjectPicker(ready)
             },
             chooseDirectory: {
                 WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
@@ -1307,23 +1310,25 @@ final class AppState {
         completion: ((Result<RegisteredProjectV2, Error>) -> Void)? = nil
     ) {
         guard let projectRegistryV2 else { return }
-        suspendWorkspaceForExternalWindow()
-        let panel = NSSavePanel()
-        panel.title = "Create Project"
-        panel.message = "Choose a new folder for the Git repository."
-        panel.nameFieldLabel = "Project name:"
-        panel.nameFieldStringValue = "New Project"
-        panel.canCreateDirectories = true
-        let selectedURL = WorkspaceDirectoryPicker.runAppKitPanel(panel)
-        defer { resumeWorkspace(afterProjectManagementInSettings: resumeInSettings) }
-        guard let selectedURL else { return }
-        do {
-            let project = try projectRegistryV2.createProject(at: selectedURL)
-            refreshWorkspaceActivity(invalidateRoute: true)
-            completion?(.success(project))
-        } catch {
-            surfaceProjectManagementFailure(error)
-            completion?(.failure(error))
+        suspendWorkspaceForProjectPicker { [weak self] in
+            guard let self else { return }
+            let panel = NSSavePanel()
+            panel.title = "Create Project"
+            panel.message = "Choose a new folder for the Git repository."
+            panel.nameFieldLabel = "Project name:"
+            panel.nameFieldStringValue = "New Project"
+            panel.canCreateDirectories = true
+            let selectedURL = WorkspaceDirectoryPicker.runAppKitPanel(panel)
+            defer { self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings) }
+            guard let selectedURL else { return }
+            do {
+                let project = try projectRegistryV2.createProject(at: selectedURL)
+                self.refreshWorkspaceActivity(invalidateRoute: true)
+                completion?(.success(project))
+            } catch {
+                self.surfaceProjectManagementFailure(error)
+                completion?(.failure(error))
+            }
         }
     }
 
@@ -1336,8 +1341,11 @@ final class AppState {
         WorkspaceDirectoryPicker.pick(
             message: "Locate the registered Git repository",
             onPrepareExternalWindow: { [weak self] ready in
-                self?.suspendWorkspaceForExternalWindow()
-                ready()
+                guard let self else {
+                    ready()
+                    return
+                }
+                self.suspendWorkspaceForProjectPicker(ready)
             },
             chooseDirectory: {
                 WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
@@ -2261,6 +2269,10 @@ final class AppState {
 
     private func suspendWorkspaceForExternalWindow() {
         programBoardOverlay.suspendForExternalWindow()
+    }
+
+    private func suspendWorkspaceForProjectPicker(_ completion: @escaping () -> Void) {
+        programBoardOverlay.suspendForExternalWindowAnimated(completion: completion)
     }
 
     private func stopOverlay() {
