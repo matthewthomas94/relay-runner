@@ -430,6 +430,39 @@ final class ProjectRegistryV2Tests: XCTestCase {
         )
     }
 
+    func testRegistryV2WorkspaceKeepsAllAvailableProjectsWhenOneIsActive() throws {
+        let root = try makeTempDirectory(named: "multi-project-scope")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "unused")
+        let firstRepo = root.appendingPathComponent("first", isDirectory: true)
+        let secondRepo = root.appendingPathComponent("second", isDirectory: true)
+        try makeGitRepo(at: firstRepo)
+        try makeGitRepo(at: secondRepo)
+
+        let first = record(
+            projectID: "project-first",
+            candidate: try fixture.service.inspect(selectedURL: firstRepo)
+        )
+        let second = record(
+            projectID: "project-second",
+            candidate: try fixture.service.inspect(selectedURL: secondRepo)
+        )
+        try fixture.store.save(ProjectRegistryV2Document(
+            schemaVersion: ProjectRegistryV2Document.currentSchemaVersion,
+            activeProjectID: second.projectID,
+            projects: [first, second]
+        ))
+
+        let scope = ProjectResolver.resolveWorkspaceScope(registryV2: fixture.service)
+
+        XCTAssertEqual(scope.projects.map(\.projectID), [first.projectID, second.projectID])
+        if case .project(let active) = scope.route {
+            XCTAssertEqual(active.projectID, second.projectID)
+        } else {
+            XCTFail("The active project should remain the selected Workspace route.")
+        }
+    }
+
     func testScopeCoordinatorSeparatesSuggestionsInheritanceRedirectAndCancel() {
         let first = document(projectID: "first").projects[0]
         let second = document(projectID: "second").projects[0]

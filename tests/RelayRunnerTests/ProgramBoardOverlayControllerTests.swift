@@ -38,6 +38,62 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(opening?.reloadsWork, true)
     }
 
+    func testRegistryV2ProjectRouteShowsEveryRegisteredProjectAndKeepsActiveSelection() {
+        let active = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/active"))
+        let opening = ProgramBoardOverlayController.workspaceOpening(
+            route: .project(active),
+            initialTab: .work,
+            hasTerminalTab: true,
+            hasSettingsTab: true,
+            hasCachedSnapshot: true,
+            activityProjectPaths: ["/repo/first", "/repo/active", "/repo/third"],
+            showsRegisteredProjectCatalog: true
+        )
+
+        XCTAssertEqual(opening?.projectScope, ["/repo/first", "/repo/active", "/repo/third"])
+        XCTAssertEqual(opening?.selectedProjectPath, "/repo/active")
+    }
+
+    func testRegistryV2RefreshPreservesAVisibleExplicitProjectSelection() {
+        let active = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/active"))
+
+        XCTAssertEqual(
+            ProgramBoardOverlayController.refreshedProjectSelection(
+                route: .project(active),
+                currentSelection: "/repo/selected",
+                projectScope: ["/repo/active", "/repo/selected"]
+            ),
+            "/repo/selected"
+        )
+        XCTAssertEqual(
+            ProgramBoardOverlayController.refreshedProjectSelection(
+                route: .project(active),
+                currentSelection: "/repo/removed",
+                projectScope: ["/repo/active"]
+            ),
+            "/repo/active"
+        )
+    }
+
+    func testRegistryInvalidationWiresImmediateVisibleWorkspaceScopeRefresh() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appState = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/App/AppState.swift"),
+            encoding: .utf8
+        )
+        let controller = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayController.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(appState.contains("programBoardOverlay.refreshProjectScopeAfterRegistryChange()"))
+        XCTAssertTrue(controller.contains("func refreshProjectScopeAfterRegistryChange()"))
+        XCTAssertTrue(controller.contains("preserveProjectSelection: false"))
+    }
+
     func testWorkspaceRouteOpensWorkspaceAcrossDiscoveredProjects() {
         let opening = ProgramBoardOverlayController.workspaceOpening(
             route: .programBoard,

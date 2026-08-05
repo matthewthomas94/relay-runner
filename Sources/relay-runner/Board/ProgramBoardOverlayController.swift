@@ -190,7 +190,8 @@ final class ProgramBoardOverlayController {
         hasTerminalTab: Bool,
         hasSettingsTab: Bool,
         hasCachedSnapshot: Bool,
-        activityProjectPaths: [String]
+        activityProjectPaths: [String],
+        showsRegisteredProjectCatalog: Bool = false
     ) -> WorkspaceOpening? {
         let showsWorkTab: Bool
         let projectScope: [String]
@@ -201,7 +202,11 @@ final class ProgramBoardOverlayController {
         case .project(let project):
             let path = project.repoPath.path
             showsWorkTab = true
-            projectScope = [path]
+            projectScope = Self.projectScope(
+                for: route,
+                activityProjectPaths: activityProjectPaths,
+                showsRegisteredProjectCatalog: showsRegisteredProjectCatalog
+            )
             selectedProjectPath = path
             requestedTab = initialTab
         case .programBoard:
@@ -329,10 +334,12 @@ final class ProgramBoardOverlayController {
         let settingsContent = settingsContentProvider?()
         let route = boardRouteResolver()
         let activityProjectPaths = projectScopeProvider()
+        let showsRegisteredProjectCatalog = requiresConfirmedProjectProvider()
         let terminalAvailable = terminalContentProvider != nil
         let hasCachedSnapshot = model.snapshot != nil && model.projectPaths == Self.projectScope(
             for: route,
-            activityProjectPaths: activityProjectPaths
+            activityProjectPaths: activityProjectPaths,
+            showsRegisteredProjectCatalog: showsRegisteredProjectCatalog
         )
         guard let opening = Self.workspaceOpening(
             route: route,
@@ -340,7 +347,8 @@ final class ProgramBoardOverlayController {
             hasTerminalTab: terminalAvailable,
             hasSettingsTab: settingsContent != nil,
             hasCachedSnapshot: hasCachedSnapshot,
-            activityProjectPaths: activityProjectPaths
+            activityProjectPaths: activityProjectPaths,
+            showsRegisteredProjectCatalog: showsRegisteredProjectCatalog
         ) else {
             noSessionHandler?()
             return false
@@ -351,16 +359,51 @@ final class ProgramBoardOverlayController {
 
     private static func projectScope(
         for route: ProjectResolver.BoardRoute,
-        activityProjectPaths: [String]
+        activityProjectPaths: [String],
+        showsRegisteredProjectCatalog: Bool
     ) -> [String] {
         switch route {
         case .project(let project):
-            return [project.repoPath.path]
+            let activePath = project.repoPath.path
+            if showsRegisteredProjectCatalog,
+               activityProjectPaths.contains(activePath) {
+                return activityProjectPaths
+            }
+            return [activePath]
         case .programBoard:
             return activityProjectPaths
         case .unavailable:
             return []
         }
+    }
+
+    static func refreshedProjectSelection(
+        route: ProjectResolver.BoardRoute,
+        currentSelection: String?,
+        projectScope: [String]
+    ) -> String? {
+        if let currentSelection, projectScope.contains(currentSelection) {
+            return currentSelection
+        }
+        if case .project(let project) = route {
+            return project.repoPath.path
+        }
+        return nil
+    }
+
+    func refreshProjectScopeAfterRegistryChange() {
+        guard isVisible else { return }
+        guard workspace.showsWorkTab else {
+            refreshRouteIfNeeded()
+            return
+        }
+        updateCheckTask?.cancel()
+        updateCheckTask = nil
+        model.cancelReload()
+        checkForUpdates(
+            inBackground: model.snapshot != nil,
+            preserveProjectSelection: false
+        )
     }
 
     func refreshRouteIfNeeded() {
@@ -685,7 +728,10 @@ final class ProgramBoardOverlayController {
         statusPollTimer = nil
     }
 
-    private func checkForUpdates(inBackground: Bool) {
+    private func checkForUpdates(
+        inBackground: Bool,
+        preserveProjectSelection: Bool = true
+    ) {
         guard workspace.showsWorkTab else {
             contentLoadBlocked = false
             revealContainer?.setLoading(false)
@@ -695,16 +741,16 @@ final class ProgramBoardOverlayController {
         }
         guard !model.hasReloadInFlight else { return }
         let route = boardRouteResolver()
-        let nextScope = Self.projectScope(for: route, activityProjectPaths: projectScopeProvider())
-        let selectedProjectPath: String?
-        switch route {
-        case .project(let project):
-            selectedProjectPath = project.repoPath.path
-        case .programBoard:
-            selectedProjectPath = model.selectedProjectPath
-        case .unavailable:
-            selectedProjectPath = nil
-        }
+        let nextScope = Self.projectScope(
+            for: route,
+            activityProjectPaths: projectScopeProvider(),
+            showsRegisteredProjectCatalog: requiresConfirmedProjectProvider()
+        )
+        let selectedProjectPath = Self.refreshedProjectSelection(
+            route: route,
+            currentSelection: preserveProjectSelection ? model.selectedProjectPath : nil,
+            projectScope: nextScope
+        )
         model.setProjectScope(nextScope, selectedProjectPath: selectedProjectPath)
         if contentLoadBlocked {
             revealContainer?.setLoading(true)

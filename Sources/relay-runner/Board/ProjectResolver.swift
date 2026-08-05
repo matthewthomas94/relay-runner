@@ -251,7 +251,7 @@ enum ProjectResolver {
         }
         if let activeProjectID = document.activeProjectID,
            let active = projects.first(where: { $0.projectID == activeProjectID }) {
-            return WorkspaceScope(route: .project(active), projects: [active])
+            return WorkspaceScope(route: .project(active), projects: projects)
         }
         // An empty registry is an honest Workspace state, not an unavailable
         // utility surface. The Work tab owns Add Existing/Create Project.

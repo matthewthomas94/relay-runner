@@ -346,7 +346,11 @@ final class AppState {
             }
             self.syncNotchActivitySurface()
             self.syncSleepPreventionController(with: snapshot)
-            self.programBoardOverlay.refreshRouteIfNeeded()
+            if invalidateRoute {
+                self.programBoardOverlay.refreshProjectScopeAfterRegistryChange()
+            } else {
+                self.programBoardOverlay.refreshRouteIfNeeded()
+            }
         }
     }
 
