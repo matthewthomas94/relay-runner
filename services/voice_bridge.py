@@ -73,6 +73,7 @@ PM_UPDATE_CADENCE_SECONDS = float(os.environ.get("PM_UPDATE_CADENCE_SECONDS", "8
 PM_UPDATE_STARTUP_GRACE_SECONDS = float(os.environ.get("PM_UPDATE_STARTUP_GRACE_SECONDS", "6"))
 STARTUP_GREETING = "Hello, what would you like to work on?"
 MESSENGER_OUTCOME_POLL_SECONDS = float(os.environ.get("MESSENGER_OUTCOME_POLL_SECONDS", "2"))
+MESSENGER_OUTCOME_FETCH_LIMIT = 50
 FOREGROUND_REPLY_FALLBACK_SECONDS = float(os.environ.get("FOREGROUND_REPLY_FALLBACK_SECONDS", "120"))
 PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS = float(os.environ.get("PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS", "5"))
 
@@ -881,7 +882,34 @@ def _pending_messenger_outcome_params(orchestrator_session: dict | None) -> dict
     return {
         "repo_path": repo_path,
         "provider": provider,
-        "limit": 10,
+        "limit": MESSENGER_OUTCOME_FETCH_LIMIT,
+    }
+
+
+def _messenger_outcome_trace(outcomes: list[tuple[int, dict]]) -> dict:
+    if len(outcomes) == 1:
+        return outcomes[0][1]
+
+    ticket_ids: list[str] = []
+    for _, trace in outcomes:
+        ticket_id = str(trace.get("ticket_id") or "").strip().upper()
+        if ticket_id and ticket_id not in ticket_ids:
+            ticket_ids.append(ticket_id)
+    ticket_count = len(ticket_ids)
+    ticket_summary = (
+        f" across {ticket_count} {'ticket' if ticket_count == 1 else 'tickets'}"
+        if ticket_count
+        else ""
+    )
+    return {
+        "kind": "run-health-warning",
+        "message": (
+            f"{len(outcomes)} Relay work updates accumulated while this session was away"
+            f"{ticket_summary}. Open Workspace for current status."
+        ),
+        "source": "orchestrator",
+        "ticket_ids": ticket_ids,
+        "outcome_count": len(outcomes),
     }
 
 
@@ -906,7 +934,7 @@ def _deliver_pending_messenger_outcomes_once(
     if not isinstance(outcomes, list):
         return 0
 
-    delivered = 0
+    pending: list[tuple[int, dict]] = []
     for outcome in outcomes:
         if not isinstance(outcome, dict):
             continue
@@ -915,16 +943,26 @@ def _deliver_pending_messenger_outcomes_once(
         trace = payload.get("trace_event") if isinstance(payload, dict) else None
         if not isinstance(trace, dict):
             continue
-        if messenger.submit_trace(trace):
+        try:
+            pending.append((int(outcome_id), trace))
+        except (TypeError, ValueError):
+            continue
+    if not pending:
+        return 0
+
+    delivered = 0
+    accepted = messenger.submit_trace(_messenger_outcome_trace(pending))
+    for outcome_id, _ in pending:
+        if accepted:
             try:
-                request_json(f"/v1/messenger/outcomes/{int(outcome_id)}/delivered", {})
+                request_json(f"/v1/messenger/outcomes/{outcome_id}/delivered", {})
                 delivered += 1
-            except (TypeError, ValueError, OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+            except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
                 print(f"[voice_bridge] pending messenger outcome ack failed: {e}", file=sys.stderr)
         else:
             try:
-                request_json(f"/v1/messenger/outcomes/{int(outcome_id)}/attempt", {})
-            except (TypeError, ValueError, OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+                request_json(f"/v1/messenger/outcomes/{outcome_id}/attempt", {})
+            except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
                 pass
     return delivered
 

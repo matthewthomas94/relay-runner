@@ -3140,6 +3140,74 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertEqual(messenger.traces, [outcome["payload"]["trace_event"]])
         self.assertEqual(requests, [("/v1/messenger/outcomes/4/delivered", {})])
 
+    def test_pending_messenger_outcome_poll_batches_recovered_backlog(self):
+        messenger = FakeMessenger()
+        requests: list[tuple[str, dict]] = []
+        fetches: list[tuple[str, dict]] = []
+        outcomes = [
+            {
+                "id": 4,
+                "payload": {
+                    "trace_event": {
+                        "kind": "run-failed",
+                        "message": "RR-7 run 12 failed",
+                        "source": "worker",
+                        "ticket_id": "RR-7",
+                        "run_id": 12,
+                    }
+                },
+            },
+            {
+                "id": 5,
+                "payload": {
+                    "trace_event": {
+                        "kind": "run-verification-blocked",
+                        "message": "RR-7 is waiting on external verification",
+                        "source": "orchestrator",
+                        "ticket_id": "RR-7",
+                        "run_id": 12,
+                    }
+                },
+            },
+            {
+                "id": 6,
+                "payload": {
+                    "trace_event": {
+                        "kind": "run-merged",
+                        "message": "RR-8 run 13 merged",
+                        "source": "orchestrator",
+                        "ticket_id": "RR-8",
+                        "run_id": 13,
+                    }
+                },
+            },
+        ]
+
+        delivered = voice_bridge._deliver_pending_messenger_outcomes_once(
+            orchestrator_session={"repo_path": "/tmp/repo", "provider": "codex"},
+            messenger=messenger,
+            request_get_json=lambda path, params: (
+                fetches.append((path, params)) or {"outcomes": outcomes}
+            ),
+            request_json=lambda path, payload: requests.append((path, payload)) or {},
+        )
+
+        self.assertEqual(delivered, 3)
+        self.assertEqual(fetches[0][1]["limit"], 50)
+        self.assertEqual(len(messenger.traces), 1)
+        self.assertEqual(messenger.traces[0]["kind"], "run-health-warning")
+        self.assertIn("3 Relay work updates", messenger.traces[0]["message"])
+        self.assertIn("2 tickets", messenger.traces[0]["message"])
+        self.assertEqual(messenger.traces[0]["ticket_ids"], ["RR-7", "RR-8"])
+        self.assertEqual(
+            requests,
+            [
+                ("/v1/messenger/outcomes/4/delivered", {}),
+                ("/v1/messenger/outcomes/5/delivered", {}),
+                ("/v1/messenger/outcomes/6/delivered", {}),
+            ],
+        )
+
     def test_pending_messenger_outcome_rejection_is_not_marked_delivered(self):
         messenger = RejectingTraceMessenger()
         requests: list[tuple[str, dict]] = []
