@@ -46,6 +46,19 @@ SESSION_OPERATION_RE = re.compile(
     r"|\bpush\b[^.?!]{0,80}\b(?:remote|origin|main)\b",
     re.IGNORECASE,
 )
+SCREEN_OBSERVATION_RE = re.compile(
+    r"\bwhat(?:'s|\s+is)\s+(?:on\s+)?(?:my|the)\s+(?:screen|display|desktop)\b"
+    r"|\b(?:look|check|describe|read)\s+(?:at\s+)?(?:my|the)\s+(?:screen|display|desktop)\b"
+    r"|\b(?:take|capture)\s+(?:a\s+)?screenshot\b"
+    r"|\bcan\s+you\s+see\b[^.?!]{0,80}\b(?:screen|display|desktop|window)\b",
+    re.IGNORECASE,
+)
+DESKTOP_CONTROL_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:open|launch|reveal|bring\s+up|focus|switch\s+to|close|quit)\b"
+    r"|\bshow\b[^.?!]{0,80}\b(?:finder|chrome|safari|browser|app|application|folder|directory|file|window)\b"
+    r"|^\s*(?:please\s+)?(?:click|double[- ]click|right[- ]click|scroll|press|tap|drag|type|select)\b",
+    re.IGNORECASE,
+)
 PENDING_WORK_RE = re.compile(
     r"\b(?:once|when|after)\s+"
     r"(?:(?:all|any|the|these|those|this|that)\s+)?"
@@ -161,6 +174,8 @@ class CommandAction:
             return f"inspect ticket {self.ticket_id}"
         if self.kind == "inline_work":
             return "inline work explicitly requested"
+        if self.kind == "direct_action":
+            return "foreground computer action"
         if self.kind == "needs_project":
             return "waiting on target-project choice"
         if self.kind == "control":
@@ -196,6 +211,20 @@ def classify_command(text: str) -> CommandAction:
 
     if explicit_cancel_requested(source):
         return CommandAction(kind="control", source_text=source, reason="cancel")
+
+    if SCREEN_OBSERVATION_RE.search(source):
+        return CommandAction(
+            kind="direct_action",
+            source_text=source,
+            reason="screen_observation",
+        )
+
+    if DESKTOP_CONTROL_RE.search(source):
+        return CommandAction(
+            kind="direct_action",
+            source_text=source,
+            reason="desktop_control",
+        )
 
     if INLINE_RE.search(source):
         return CommandAction(kind="inline_work", source_text=source)
@@ -325,6 +354,33 @@ def format_command_for_agent(action: CommandAction, disposition: dict | None = N
     if action.kind in {"conversation", "control"}:
         prompt = action.source_text
         return _append_work_disposition(prompt, disposition)
+
+    if action.kind == "direct_action":
+        lines = [
+            action.source_text,
+            "",
+            "Relay Runner command action:",
+            "- action: direct_action",
+            "- ticket_id: null",
+            "- outcome_to_report: foreground computer action",
+            f"- reason: {action.reason}",
+        ]
+        if action.repo_path:
+            lines.append(f"- repo_path: {action.repo_path}")
+        lines.extend(_relay_prompt_lines(action).splitlines())
+        lines.extend([
+            "",
+            "Foreground computer-action contract:",
+            "- Handle this directly in the foreground PM. Do not create a ticket, dispatch a worker, or send this to the Relay daemon.",
+            "- The messenger remains tool-free; it may acknowledge and speak the PM's final result, but it never executes the action.",
+            "- Prefer a deterministic shell or operating-system command when it can fully complete the request, including launching an app, opening or revealing a known path, or locating a file.",
+            "- Do not inspect the screen merely to navigate toward an action that a direct command can complete.",
+            "- Use Relay Vision when the request genuinely requires observing pixels or visible UI state.",
+            "- Use Relay Actions only when visual interaction is necessary after direct-command options are exhausted. Never use native computer-use tools while the Relay stack is connected.",
+            "- Check that this Relay command is still current immediately before every side effect. Ask in normal chat before a genuinely high-stakes or irreversible action.",
+            "- Report the completed action or exact blocker concisely through the normal authoritative reply path so the messenger can speak it.",
+        ])
+        return _append_work_disposition("\n".join(lines), disposition)
 
     if action.kind == "inline_work":
         metadata = _relay_prompt_lines(action)

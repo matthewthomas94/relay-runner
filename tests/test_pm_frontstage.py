@@ -274,6 +274,16 @@ class PMFrontstageTests(unittest.TestCase):
         self.assertEqual(needs_user.outcome.kind, "needs_user")
         self.assertTrue(needs_user.outcome.question)
 
+    def test_default_planner_keeps_direct_computer_actions_with_the_pm(self):
+        result = PMFrontstagePrototype().handle_voice_command(
+            "open Chrome",
+            relay_command(3, "direct-action"),
+            repo_path="/tmp/repo",
+        )
+
+        self.assertEqual(result.outcome.kind, "execute_solo")
+        self.assertEqual(result.outcome.solo_action, "foreground computer action")
+
     def test_stale_command_stops_before_backstage_planning(self):
         planner_calls = 0
 

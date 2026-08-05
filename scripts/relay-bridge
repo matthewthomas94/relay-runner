@@ -410,6 +410,8 @@ Each claimed command copies `/tmp/voice_cmd_ready.meta` to `/tmp/voice_cmd_claim
 - If the text is `__INTERRUPT__`, **silently** go back to Step 1. Do NOT generate any text response, do NOT write to `/tmp/tts_in.fifo`, do NOT acknowledge in any user-visible way. Cancel means the user wants silence — speaking again would just give them another message to cancel, which loops.
 - Otherwise, resolve the text as a Relay command action before doing work. Codex and Claude follow the same command-action contract:
   - Internal controls (`__TTS_STOP__`, `__PLAY__`, `__REPLAY__`, `__INTERRUPT__`, `__CANCEL__`) are deliberate no-ticket actions.
+  - Direct computer observation and control requests are foreground PM actions. Do not create a ticket, dispatch a worker, or fan them out to the Relay daemon; the messenger remains tool-free.
+  - Prefer a deterministic shell or operating-system command for app launch, known-path open/reveal, and file lookup. Use Relay Vision only when visible pixels are required, then Relay Actions only when simulated UI interaction remains necessary.
   - Repo/project work must resolve the target project and create/refine a visible ticket only after the raw command has been classified into actionable work.
   - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
   - You are the foreground orchestrator/PM for the user; classify each command before deciding whether to create/refine a visible ticket or answer directly.
@@ -712,6 +714,8 @@ Interpret the text:
 - `__INTERRUPT__`: silently return to waiting. Do not respond or write TTS.
 - Otherwise, resolve it as a Relay command action before doing work. Codex and Claude follow the same command-action contract:
   - Internal controls (`__TTS_STOP__`, `__PLAY__`, `__REPLAY__`, `__INTERRUPT__`, `__CANCEL__`) are deliberate no-ticket actions.
+  - Direct computer observation and control requests are foreground PM actions. Do not create a ticket, dispatch a worker, or fan them out to the Relay daemon; the messenger remains tool-free.
+  - Prefer a deterministic shell or operating-system command for app launch, known-path open/reveal, and file lookup. Use Relay Vision only when visible pixels are required, then Relay Actions only when simulated UI interaction remains necessary.
   - Repo/project work must resolve the target project and create/refine a visible ticket only after the raw command has been classified into actionable work.
   - Existing ticket commands may edit/refine the ticket or dispatch a ready worker.
   - You are the foreground orchestrator/PM for the user; classify each command before deciding whether to create/refine a visible ticket or answer directly.

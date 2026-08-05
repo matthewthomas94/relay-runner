@@ -81,9 +81,10 @@ _GLOBAL_CANCEL_RE = re.compile(
 )
 _TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
 _ITEM_START = (
-    r"add|build|cancel|change|create|debug|delete|design|dispatch|edit|fix|"
-    r"implement|install|merge|never\s+mind|nevermind|redirect|refactor|remove|"
-    r"repair|replace|scratch|ship|start|stop|test|update|wire|write"
+    r"add|build|cancel|change|click|create|debug|delete|design|dispatch|drag|edit|fix|"
+    r"focus|implement|install|launch|merge|never\s+mind|nevermind|open|press|redirect|"
+    r"refactor|remove|repair|replace|reveal|scratch|scroll|select|ship|show|start|stop|"
+    r"switch|tap|test|type|update|wire|write"
 )
 _ITEM_BOUNDARY_RE = re.compile(
     rf"(?:\s*[.;]\s*|\s+\b(?:and(?:\s+then)?|but|then)\b\s+)"
@@ -351,6 +352,11 @@ def resolve_intent_disposition(
     resources = tuple(sorted({
         *(str(resource) for resource in requested_resources),
         *inferred_resource_claims(text),
+        *(
+            (ExclusiveResource.DESKTOP.value,)
+            if kind == "direct_action"
+            else ()
+        ),
     }))
 
     if kind == "control" and reason not in {"cancel", "interrupt", "redirect", "replace"}:

@@ -4084,6 +4084,16 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             voice_bridge._should_fanout_raw_instruction_to_orchestrator(conversation)
         )
 
+        direct_action = voice_bridge.resolve_command_action(
+            "open Chrome",
+            repo_path="/tmp/repo",
+            relay_command=relay_command,
+        )
+        self.assertEqual(direct_action.kind, "direct_action")
+        self.assertFalse(
+            voice_bridge._should_fanout_raw_instruction_to_orchestrator(direct_action)
+        )
+
     def test_private_command_event_log_is_bounded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             event_path = os.path.join(temp_dir, "voice_command_events.jsonl")

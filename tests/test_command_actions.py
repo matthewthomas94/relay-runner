@@ -103,6 +103,48 @@ class CommandActionsTests(unittest.TestCase):
                 self.assertEqual(action.kind, "inline_work")
                 self.assertFalse(action.requires_ticket)
 
+    def test_direct_computer_requests_stay_with_the_foreground_pm(self):
+        samples = [
+            ("what's on my screen", "screen_observation"),
+            ("open this folder in Finder", "desktop_control"),
+            ("open Chrome", "desktop_control"),
+            ("open Slack", "desktop_control"),
+            ("click the Add project button", "desktop_control"),
+        ]
+        for sample, reason in samples:
+            with self.subTest(sample=sample):
+                action = classify_command(sample)
+
+                self.assertEqual(action.kind, "direct_action")
+                self.assertEqual(action.reason, reason)
+                self.assertFalse(action.requires_ticket)
+
+    def test_direct_computer_prompt_is_shell_first_and_keeps_messenger_tool_free(self):
+        action = resolve_command_action(
+            "open this folder in Finder",
+            repo_path="/tmp/repo",
+            relay_command={
+                "relay_command_seq": 4,
+                "relay_command_id": "cmd-4",
+            },
+        )
+
+        prompt = format_command_for_agent(action)
+
+        self.assertIn("action: direct_action", prompt)
+        self.assertIn("Handle this directly in the foreground PM", prompt)
+        self.assertIn("Do not create a ticket, dispatch a worker, or send this to the Relay daemon", prompt)
+        self.assertIn("Prefer a deterministic shell or operating-system command", prompt)
+        self.assertIn("Relay Vision", prompt)
+        self.assertIn("Relay Actions", prompt)
+        self.assertIn("The messenger remains tool-free", prompt)
+
+    def test_project_work_with_open_word_still_requires_a_ticket(self):
+        action = classify_command("fix the open source login retry bug")
+
+        self.assertEqual(action.kind, "create_ticket")
+        self.assertTrue(action.requires_ticket)
+
     def test_new_project_work_requires_refined_management_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

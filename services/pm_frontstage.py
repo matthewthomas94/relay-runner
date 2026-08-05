@@ -823,7 +823,7 @@ def default_backstage_planner(
             max_parallel_workers=1,
         )
 
-    if action.kind in {"inline_work", "inspect_ticket", "control"}:
+    if action.kind in {"inline_work", "direct_action", "inspect_ticket", "control"}:
         return BackstageOutcome.execute_solo(
             "This can stay with the PM frontstage session.",
             solo_action=action.outcome,

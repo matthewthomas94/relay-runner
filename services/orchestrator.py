@@ -7484,7 +7484,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 self._notify_command_outcome(command, message=message, ticket_id=action.ticket_id)
                 return updated or {"relay_command_id": command_id, "status": "blocked"}
 
-            if action.kind in {"conversation", "control", "inline_work"}:
+            if action.kind in {"conversation", "control", "inline_work", "direct_action"}:
                 message = "No backstage ticket action is needed for this Relay command."
                 updated = self.orchestrator_commands.update_status(
                     command_id,

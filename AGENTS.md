@@ -17,6 +17,8 @@ The user experiences Relay Runner as a three-role loop: a persistent fast **mess
 
 A small change you can do inline in this session **without going through the board** is fine — dispatching has cold-start cost, eats agent quota, and offers no coordination. Promote to `ready` when the work is large enough that the round-trip pays off, or when you want an in-repo audit trail (ticket + run log) without writing it by hand.
 
+Direct computer requests are foreground PM actions, not project work. Requests such as “what’s on my screen,” “open this folder in Finder,” or “open Chrome” must not create a ticket, dispatch a worker, or fan out to the Relay daemon. Prefer a deterministic shell or operating-system command when it can fully complete the action. Use Relay Vision only when visible pixels must be observed, and Relay Actions only when simulated interaction remains necessary. The messenger stays tool-free and may acknowledge the request or speak the PM’s final result, but it never executes the action.
+
 ## Program Manager capture
 
 When the user wants to record a session review, project status, shipped work, started work, blockers, risks, ideas, decisions, or notes for program tracking, use the native `mcp__relay-orchestrator__session_capture` tool.
@@ -41,7 +43,9 @@ The custom stack has three pieces:
 
 ### 1. RelayActions — the screen-manipulation tools
 
-For all screen *manipulation* — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` — moved to RelayVision; see below.)
+First use a deterministic shell or operating-system command for actions it can complete directly, such as launching an app, opening or revealing a known path, or locating a file. Do not inspect the screen and click through Finder, the Dock, or a browser merely to reach a result the operating system can produce directly.
+
+When screen *manipulation* is necessary — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` — moved to RelayVision; see below.)
 
 If you genuinely need an operation RelayActions doesn't yet expose, surface that gap to the human before falling through to `mcp__computer-use__*`. The default answer is "extend RelayActions," not "fall back to native."
 

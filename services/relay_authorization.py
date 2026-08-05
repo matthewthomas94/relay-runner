@@ -94,6 +94,8 @@ def command_relationship(
         return "inspection"
     if kind == "conversation":
         return "conversation"
+    if kind == "direct_action":
+        return "control"
     if kind in {"create_ticket", "update_ticket", "dispatch_ticket", "inline_work"}:
         if _NATURAL_CANCEL_RE.search(text):
             return "cancel"

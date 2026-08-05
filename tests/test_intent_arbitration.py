@@ -54,6 +54,13 @@ class IntentArbitrationTests(unittest.TestCase):
         self.assertEqual(disposition.authorization_effect, AuthorizationEffect.PRESERVE)
         self.assertIn("repository", disposition.resource_claims)
 
+    def test_direct_computer_action_stays_foreground_and_claims_the_desktop(self):
+        disposition = self.resolve("open Chrome", kind="direct_action")
+
+        self.assertEqual(disposition.route, IntentRoute.CONTINUE_CURRENT)
+        self.assertEqual(disposition.authorization_effect, AuthorizationEffect.PRESERVE)
+        self.assertIn("desktop", disposition.resource_claims)
+
     def test_explicit_completed_redirect_is_the_only_default_preemption(self):
         disposition = self.resolve(
             "Actually instead, stop that and switch to the login bug",
@@ -136,6 +143,15 @@ class IntentArbitrationTests(unittest.TestCase):
                     [item.intent_id for item in items],
                     [f"{provider}-7:item:1", f"{provider}-7:item:2"],
                 )
+
+    def test_direct_action_after_project_work_is_a_separate_ordered_item(self):
+        items = normalize_voice_work_items(
+            "Fix login and open Chrome",
+            relay_command_seq=8,
+            relay_command_id="cmd-8",
+        )
+
+        self.assertEqual([item.source_text for item in items], ["Fix login", "open Chrome"])
 
     def test_same_turn_abandonment_cancels_only_the_named_item(self):
         items = normalize_voice_work_items(
