@@ -1304,7 +1304,7 @@ final class AppState {
         panel.nameFieldLabel = "Project name:"
         panel.nameFieldStringValue = "New Project"
         panel.canCreateDirectories = true
-        let selectedURL = panel.runModal() == .OK ? panel.url : nil
+        let selectedURL = WorkspaceDirectoryPicker.runAppKitPanel(panel)
         defer { resumeWorkspace(afterProjectManagementInSettings: resumeInSettings) }
         guard let selectedURL else { return }
         do {

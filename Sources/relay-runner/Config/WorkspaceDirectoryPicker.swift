@@ -19,6 +19,11 @@ enum WorkspaceDirectoryPicker {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.message = message
+        return runAppKitPanel(panel)
+    }
+
+    static func runAppKitPanel(_ panel: NSSavePanel) -> URL? {
+        NSApplication.shared.activate(ignoringOtherApps: true)
         return panel.runModal() == .OK ? panel.url : nil
     }
 }

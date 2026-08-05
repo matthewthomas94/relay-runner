@@ -162,7 +162,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(disabled.accessibilityLabel, "Edit ticket")
     }
 
-    func testWorkspaceBoardUsesAddProjectMenuAndSharedTicketActions() throws {
+    func testWorkspaceBoardUsesSettingsStyleAddProjectButtonAndSharedTicketActions() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -173,16 +173,38 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("ProgramAddProjectMenu("))
         XCTAssertTrue(contents.contains("title: presentation.actionTitle"))
         XCTAssertTrue(contents.contains(
-            "Button(\"Add existing project\", systemImage: \"folder.badge.plus\")"
+            "title: \"Add existing project\""
         ))
         XCTAssertTrue(contents.contains(
-            "Button(\"Create new project\", systemImage: \"plus\")"
+            "title: \"Create new project\""
         ))
+        XCTAssertTrue(contents.contains("ProgramWorkspaceActionButton("))
+        XCTAssertFalse(contents.contains(".menuStyle(.borderlessButton)"))
         XCTAssertTrue(contents.contains("ProgramEditCapsuleButton("))
         XCTAssertTrue(contents.contains("presentation: ProgramEditButtonPresentation.resolve("))
         XCTAssertFalse(contents.contains("showsEditButton"))
         XCTAssertTrue(contents.contains("destructive: destructive"))
         XCTAssertTrue(contents.contains("SharedActionButtonChrome("))
+    }
+
+    func testNoRegisteredProjectsStateOmitsSubtitleAndRefresh() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        let stateStart = try XCTUnwrap(contents.range(of: "case .noRegisteredProjects:"))
+        let stateEnd = try XCTUnwrap(
+            contents.range(of: "case .loadFailure:", range: stateStart.upperBound..<contents.endIndex)
+        )
+        let state = String(contents[stateStart.lowerBound..<stateEnd.lowerBound])
+
+        XCTAssertTrue(state.contains("title: \"No registered projects\""))
+        XCTAssertTrue(state.contains("detail: nil"))
+        XCTAssertTrue(state.contains("onRefresh: nil"))
+        XCTAssertTrue(state.contains("primaryActionTitle: \"Add Existing Project\""))
+        XCTAssertTrue(state.contains("secondaryActionTitle: \"Create Project\""))
     }
 
     func testProgramBoardProjectHoverPresentationKeepsSelectedAndDisabledPrecedence() {
