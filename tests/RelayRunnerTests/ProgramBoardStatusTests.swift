@@ -130,6 +130,11 @@ final class ProgramBoardStatusTests: XCTestCase {
             selectedScopeTitle: "mentistic",
             usesProjectRegistryV2: false
         )
+        let legacyAllProjects = ProgramProjectsHeaderPresentation(
+            isAllSelected: true,
+            selectedScopeTitle: "All projects",
+            usesProjectRegistryV2: false
+        )
 
         XCTAssertEqual(registryV2.actionTitle, "Add project")
         XCTAssertEqual(registryV2.selectedScopeTitle, "All projects")
@@ -137,6 +142,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(legacySelectedProject.actionTitle, "Select all")
         XCTAssertEqual(legacySelectedProject.selectedScopeTitle, "mentistic")
         XCTAssertEqual(legacySelectedProject.actionProminence, .secondary)
+        XCTAssertEqual(legacyAllProjects.actionProminence, .secondary)
 
         let activeText = ProgramBoardStyle.neutralTextNSColor.usingColorSpace(.sRGB)
         XCTAssertEqual(activeText?.redComponent ?? 0, 248 / 255, accuracy: 0.001)
@@ -201,6 +207,17 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(menu.contains("private var palette: SharedActionButtonPalette { .settingsSecondary }"))
         XCTAssertFalse(menu.contains("BoardDarkSurfaceStyle.border"))
         XCTAssertFalse(menu.contains(".programControlChrome("))
+    }
+
+    func testWorkspaceButtonsNeverUsePrimaryProminence() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertFalse(contents.contains("prominence: .primary"))
     }
 
     func testNoRegisteredProjectsStateOmitsSubtitleAndRefresh() throws {

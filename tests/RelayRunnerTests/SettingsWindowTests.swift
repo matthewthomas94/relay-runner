@@ -213,6 +213,29 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertTrue(contents.contains(".accessibilityLabel(accessibilityLabel)"))
     }
 
+    func testWorkspaceSettingsButtonsStaySecondaryWhileOnboardingRetainsPrimary() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let settingsWindow = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift"),
+            encoding: .utf8
+        )
+        let generalSettings = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Settings/GeneralSettingsTab.swift"),
+            encoding: .utf8
+        )
+        let onboarding = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Onboarding/OnboardingView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(settingsWindow.contains("prominence: .primary"))
+        XCTAssertFalse(generalSettings.contains("prominence: .primary"))
+        XCTAssertTrue(onboarding.contains("prominence: .primary"))
+    }
+
     func testSettingsSourceDoesNotHostOrRouteOnboarding() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

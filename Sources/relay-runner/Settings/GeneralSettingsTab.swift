@@ -262,8 +262,7 @@ private struct RegisteredProjectsSettingsView: View {
                     }
                     SettingsActionButton(
                         title: "Create",
-                        systemImage: "plus",
-                        prominence: .primary
+                        systemImage: "plus"
                     ) {
                         appState.createProject(resumeInSettings: true) { result in
                             handle(result)

@@ -308,7 +308,6 @@ private struct SettingsFooterSaveButton: View {
         SettingsActionButton(
             title: "Save",
             systemImage: "checkmark",
-            prominence: .primary,
             isEnabled: isEnabled,
             accessibilityLabel: "Save settings",
             helpText: isEnabled ? "Save settings" : "No settings changes to save",

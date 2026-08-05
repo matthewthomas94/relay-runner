@@ -671,9 +671,7 @@ struct ProgramProjectsHeaderPresentation: Equatable {
     let usesProjectRegistryV2: Bool
 
     var actionTitle: String { usesProjectRegistryV2 ? "Add project" : "Select all" }
-    var actionProminence: SharedActionButtonProminence {
-        usesProjectRegistryV2 || !isAllSelected ? .secondary : .primary
-    }
+    var actionProminence: SharedActionButtonProminence { .secondary }
 }
 
 struct ProgramEditButtonPresentation: Equatable {
@@ -2864,7 +2862,6 @@ private struct ProgramStatePanel: View {
                         ProgramWorkspaceActionButton(
                             title: primaryActionTitle,
                             systemName: "folder.badge.plus",
-                            prominence: .primary,
                             accessibilityLabel: primaryActionTitle,
                             help: "Register an existing Git repository",
                             action: primaryAction
