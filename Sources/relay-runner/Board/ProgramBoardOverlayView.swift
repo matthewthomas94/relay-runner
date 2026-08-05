@@ -772,6 +772,20 @@ private struct ProgramAddProjectMenu: View {
     let title: String
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var isFocused: Bool
+    @State private var isHovered = false
+
+    private var palette: SharedActionButtonPalette { .settingsSecondary }
+
+    private var presentation: SettingsActionPresentation {
+        SettingsActionPresentation.resolve(
+            isEnabled: true,
+            isHovered: isHovered,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
+        )
+    }
 
     var body: some View {
         Menu {
@@ -789,7 +803,11 @@ private struct ProgramAddProjectMenu: View {
                     .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
                     .frame(height: SharedActionButtonMetrics.controlHeight)
                 Rectangle()
-                    .fill(BoardDarkSurfaceStyle.border)
+                    .fill(
+                        palette.stroke.opacity(
+                            presentation.sharedStrokeOpacity(for: .secondary)
+                        )
+                    )
                     .frame(
                         width: ProgramAddProjectMenuMetrics.dividerWidth,
                         height: SharedActionButtonMetrics.controlHeight
@@ -802,14 +820,31 @@ private struct ProgramAddProjectMenu: View {
                     )
                     .accessibilityHidden(true)
             }
-            .foregroundStyle(ProgramBoardStyle.primaryText)
+            .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
             .frame(height: SharedActionButtonMetrics.controlHeight)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .programControlChrome(shape: .rounded(SharedActionButtonMetrics.cornerRadius))
+        .background(
+            SharedActionButtonSurface(
+                prominence: .secondary,
+                presentation: presentation,
+                palette: palette
+            )
+        )
+        .contentShape(
+            RoundedRectangle(
+                cornerRadius: SharedActionButtonMetrics.cornerRadius,
+                style: .continuous
+            )
+        )
+        .focusable(true)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .focused($isFocused)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
         .programButtonCursor(enabled: true)
         .accessibilityLabel("Add project")
         .help("Add an existing project or create a new project")

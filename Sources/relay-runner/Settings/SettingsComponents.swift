@@ -167,6 +167,36 @@ struct SharedActionButtonPalette {
     let stroke: Color
 }
 
+extension SharedActionButtonPalette {
+    static let settingsSecondary = SharedActionButtonPalette(
+        foreground: SettingsSurfaceColor.primaryText,
+        fill: Color.white,
+        stroke: SettingsSurfaceColor.focusRing
+    )
+}
+
+struct SharedActionButtonSurface: View {
+    let prominence: SharedActionButtonProminence
+    let presentation: SettingsActionPresentation
+    let palette: SharedActionButtonPalette
+
+    var body: some View {
+        let shape = RoundedRectangle(
+            cornerRadius: SharedActionButtonMetrics.cornerRadius,
+            style: .continuous
+        )
+
+        shape
+            .fill(palette.fill.opacity(presentation.sharedFillOpacity(for: prominence)))
+            .overlay(
+                shape.stroke(
+                    palette.stroke.opacity(presentation.sharedStrokeOpacity(for: prominence)),
+                    lineWidth: 1
+                )
+            )
+    }
+}
+
 struct SharedActionButtonChrome<Label: View>: View {
     let prominence: SharedActionButtonProminence
     let isEnabled: Bool
@@ -216,10 +246,11 @@ struct SharedActionButtonChrome<Label: View>: View {
                     height: SharedActionButtonMetrics.controlHeight
                 )
                 .background(
-                    shape.fill(palette.fill.opacity(fillOpacity(from: presentation)))
-                )
-                .overlay(
-                    shape.stroke(palette.stroke.opacity(strokeOpacity(from: presentation)), lineWidth: 1)
+                    SharedActionButtonSurface(
+                        prominence: prominence,
+                        presentation: presentation,
+                        palette: palette
+                    )
                 )
                 .contentShape(shape)
         }
@@ -232,24 +263,6 @@ struct SharedActionButtonChrome<Label: View>: View {
         .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
         .accessibilityLabel(accessibilityLabel)
         .help(helpText)
-    }
-
-    private func fillOpacity(from presentation: SettingsActionPresentation) -> Double {
-        switch prominence {
-        case .primary:
-            return presentation.fillOpacity
-        case .secondary, .icon:
-            return presentation.neutralFillOpacity
-        }
-    }
-
-    private func strokeOpacity(from presentation: SettingsActionPresentation) -> Double {
-        switch prominence {
-        case .primary:
-            return presentation.strokeOpacity
-        case .secondary, .icon:
-            return presentation.neutralStrokeOpacity
-        }
     }
 }
 
@@ -274,11 +287,7 @@ struct SettingsActionButton: View {
             isEnabled: isEnabled,
             accessibilityLabel: accessibilityLabel ?? title,
             helpText: helpText ?? title,
-            palette: SharedActionButtonPalette(
-                foreground: foregroundColor,
-                fill: fillColor,
-                stroke: strokeColor
-            ),
+            palette: palette,
             action: action,
             label: {
             HStack(spacing: systemImage == nil || prominence == .icon ? 0 : SharedActionButtonMetrics.iconSpacing) {
@@ -306,6 +315,15 @@ struct SettingsActionButton: View {
 
     private var foregroundColor: Color {
         prominence == .primary ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.primaryText
+    }
+
+    private var palette: SharedActionButtonPalette {
+        guard prominence == .primary else { return .settingsSecondary }
+        return SharedActionButtonPalette(
+            foreground: foregroundColor,
+            fill: fillColor,
+            stroke: strokeColor
+        )
     }
 
     private var sharedProminence: SharedActionButtonProminence {
@@ -449,6 +467,26 @@ struct SettingsActionPresentation: Equatable {
             accentOpacity: isFocused ? 0.34 : 0.22,
             animationDuration: boardPresentation.animationDuration
         )
+    }
+}
+
+extension SettingsActionPresentation {
+    func sharedFillOpacity(for prominence: SharedActionButtonProminence) -> Double {
+        switch prominence {
+        case .primary:
+            return fillOpacity
+        case .secondary, .icon:
+            return neutralFillOpacity
+        }
+    }
+
+    func sharedStrokeOpacity(for prominence: SharedActionButtonProminence) -> Double {
+        switch prominence {
+        case .primary:
+            return strokeOpacity
+        case .secondary, .icon:
+            return neutralStrokeOpacity
+        }
     }
 }
 

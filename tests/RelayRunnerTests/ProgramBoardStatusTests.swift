@@ -179,7 +179,6 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("spacing: 0"))
         XCTAssertTrue(contents.contains("ProgramAddProjectMenuMetrics.disclosureWidth"))
         XCTAssertTrue(contents.contains("ProgramAddProjectMenuMetrics.dividerWidth"))
-        XCTAssertTrue(contents.contains("BoardDarkSurfaceStyle.border"))
         XCTAssertTrue(contents.contains(".frame(height: SharedActionButtonMetrics.controlHeight)"))
         XCTAssertTrue(contents.contains(".menuStyle(.button)"))
         XCTAssertTrue(contents.contains(".buttonStyle(.plain)"))
@@ -191,6 +190,17 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(contents.contains("showsEditButton"))
         XCTAssertTrue(contents.contains("destructive: destructive"))
         XCTAssertTrue(contents.contains("SharedActionButtonChrome("))
+
+        let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
+        let menuEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProgramProjectCard: View", range: menuStart.upperBound..<contents.endIndex)
+        )
+        let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
+        XCTAssertTrue(menu.contains("SettingsActionPresentation.resolve("))
+        XCTAssertTrue(menu.contains("SharedActionButtonSurface("))
+        XCTAssertTrue(menu.contains("private var palette: SharedActionButtonPalette { .settingsSecondary }"))
+        XCTAssertFalse(menu.contains("BoardDarkSurfaceStyle.border"))
+        XCTAssertFalse(menu.contains(".programControlChrome("))
     }
 
     func testNoRegisteredProjectsStateOmitsSubtitleAndRefresh() throws {
