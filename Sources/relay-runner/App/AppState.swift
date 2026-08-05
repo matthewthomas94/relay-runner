@@ -147,10 +147,14 @@ final class AppState {
         )
     }()
     @ObservationIgnored private let permissionNotifier = PermissionNotifier()
+    @ObservationIgnored private let permissionRelaunchGuard = PermissionRelaunchGuard()
     @ObservationIgnored private lazy var permissionSetupCoordinator = PermissionSetupCoordinator(
         permissions: permissions,
         setSetupNotchState: { [weak self] state in
             self?.setPermissionSetupNotchState(state)
+        },
+        prepareForExternalWindow: { [weak self] permission in
+            self?.prepareForPermissionExternalWindow(permission)
         }
     )
 
@@ -278,6 +282,12 @@ final class AppState {
                                 source: PermissionSetupSource,
                                 purpose: String = "") {
         permissionSetupCoordinator.request(kind, source: source, purpose: purpose)
+    }
+
+    private func prepareForPermissionExternalWindow(_ kind: PermissionKind) {
+        guard kind.opensSystemSettingsDuringSetup else { return }
+        suspendWorkspaceForExternalWindow()
+        permissionRelaunchGuard.armIfNeeded(for: kind)
     }
 
     func cancelPermissionSetup(source: PermissionSetupSource? = nil) {

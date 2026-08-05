@@ -5,6 +5,62 @@ import XCTest
 
 final class PermissionSetupCoordinatorTests: XCTestCase {
 
+    func testExternalPermissionSetupPreparesWindowBeforePromptAndOpen() {
+        let permissions = FakePermissionSetupPermissions()
+        let companion = FakePermissionSetupCompanion()
+        var events: [String] = []
+        permissions.onPromptAccessibility = { events.append("prompt") }
+        permissions.onOpenSettings = { _ in events.append("open") }
+        let coordinator = PermissionSetupCoordinator(
+            permissions: permissions,
+            setSetupNotchState: { _ in },
+            prepareForExternalWindow: { _ in events.append("prepare") },
+            companion: companion,
+            successAcknowledgementDelay: 0
+        )
+
+        coordinator.request(.accessibility, source: .settingsPermissions)
+
+        XCTAssertEqual(events, ["prepare", "prompt", "open"])
+        XCTAssertEqual(companion.shownRequests.map(\.permission), [.accessibility])
+    }
+
+    func testMicrophoneSetupDoesNotPrepareExternalWindow() {
+        let permissions = FakePermissionSetupPermissions()
+        var prepared: [PermissionKind] = []
+        let coordinator = PermissionSetupCoordinator(
+            permissions: permissions,
+            setSetupNotchState: { _ in },
+            prepareForExternalWindow: { prepared.append($0) },
+            companion: FakePermissionSetupCompanion(),
+            successAcknowledgementDelay: 0
+        )
+
+        coordinator.request(.microphone, source: .settingsPermissions)
+
+        XCTAssertTrue(prepared.isEmpty)
+        XCTAssertNotNil(permissions.microphoneCompletion)
+    }
+
+    func testEverySystemSettingsPermissionPreparesExternalWindow() {
+        let permissions = FakePermissionSetupPermissions()
+        var prepared: [PermissionKind] = []
+        let coordinator = PermissionSetupCoordinator(
+            permissions: permissions,
+            setSetupNotchState: { _ in },
+            prepareForExternalWindow: { prepared.append($0) },
+            companion: FakePermissionSetupCompanion(),
+            successAcknowledgementDelay: 0
+        )
+
+        for permission in PermissionKind.allCases where permission.opensSystemSettingsDuringSetup {
+            coordinator.request(permission, source: .settingsPermissions)
+        }
+
+        XCTAssertEqual(prepared, [.accessibility, .inputMonitoring, .screenRecording])
+        XCTAssertEqual(permissions.openedSettings, prepared)
+    }
+
     func testInteractionPauseDebouncesRepeatedActivityAndDrag() {
         var model = PermissionCompanionInteractionModel()
 
@@ -999,6 +1055,8 @@ private final class FakePermissionSetupPermissions: PermissionSetupPermissionMan
     private(set) var promptedScreenRecording = false
     private(set) var registeredInputMonitoring = false
     private(set) var openedSettings: [PermissionKind] = []
+    var onPromptAccessibility: (() -> Void)?
+    var onOpenSettings: ((PermissionKind) -> Void)?
 
     func status(for kind: PermissionKind) -> PermissionStatus {
         statuses[kind] ?? .denied
@@ -1010,6 +1068,7 @@ private final class FakePermissionSetupPermissions: PermissionSetupPermissionMan
 
     func promptAccessibility() {
         promptedAccessibility = true
+        onPromptAccessibility?()
     }
 
     func registerForInputMonitoringList() {
@@ -1026,6 +1085,7 @@ private final class FakePermissionSetupPermissions: PermissionSetupPermissionMan
 
     func openSettings(for kind: PermissionKind) {
         openedSettings.append(kind)
+        onOpenSettings?(kind)
     }
 }
 

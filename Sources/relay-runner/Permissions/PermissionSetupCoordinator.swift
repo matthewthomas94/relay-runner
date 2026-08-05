@@ -111,6 +111,7 @@ final class PermissionSetupCoordinator {
 
     private let permissions: PermissionSetupPermissionManaging
     private let setSetupNotchState: (PermissionSetupNotchState?) -> Void
+    private let prepareForExternalWindow: (PermissionKind) -> Void
     private let postGrantReady: (PermissionKind, PermissionSetupSource) -> Void
     private let postEndedWithoutGrant: (PermissionKind, PermissionSetupSource) -> Void
     private let companion: PermissionSetupCompanionControlling
@@ -120,6 +121,7 @@ final class PermissionSetupCoordinator {
 
     init(permissions: PermissionSetupPermissionManaging,
          setSetupNotchState: @escaping (PermissionSetupNotchState?) -> Void,
+         prepareForExternalWindow: @escaping (PermissionKind) -> Void = { _ in },
          postGrantReady: @escaping (PermissionKind, PermissionSetupSource) -> Void = { kind, _ in
              NotificationCenter.default.post(
                 name: .relayPermissionSetupGrantReady,
@@ -136,6 +138,7 @@ final class PermissionSetupCoordinator {
          successAcknowledgementDelay: TimeInterval = PermissionSetupCoordinator.successAcknowledgementDelay) {
         self.permissions = permissions
         self.setSetupNotchState = setSetupNotchState
+        self.prepareForExternalWindow = prepareForExternalWindow
         self.postGrantReady = postGrantReady
         self.postEndedWithoutGrant = postEndedWithoutGrant
         self.companion = companion
@@ -178,15 +181,18 @@ final class PermissionSetupCoordinator {
                 }
             }
         case .accessibility:
+            prepareForExternalWindow(permission)
             permissions.promptAccessibility()
             permissions.openSettings(for: permission)
             showCompanion(for: request)
         case .inputMonitoring:
+            prepareForExternalWindow(permission)
             permissions.registerForInputMonitoringList()
             permissions.promptInputMonitoring()
             permissions.openSettings(for: permission)
             showCompanion(for: request)
         case .screenRecording:
+            prepareForExternalWindow(permission)
             permissions.promptScreenRecording()
             permissions.openSettings(for: permission)
             showCompanion(for: request)
