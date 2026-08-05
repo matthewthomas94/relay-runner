@@ -220,6 +220,32 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(contents.contains("prominence: .primary"))
     }
 
+    func testAddProjectMenuOwnsFullLabelHitTargetWithoutStickyFocus() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
+        let menuEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProgramProjectCard: View", range: menuStart.upperBound..<contents.endIndex)
+        )
+        let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
+        let styleStart = try XCTUnwrap(menu.range(of: "\n        .menuStyle(.button)"))
+        let label = String(menu[..<styleStart.lowerBound])
+        let outerModifiers = String(menu[styleStart.lowerBound...])
+
+        XCTAssertTrue(label.contains("SharedActionButtonSurface("))
+        XCTAssertTrue(label.contains(".contentShape("))
+        XCTAssertFalse(outerModifiers.contains("SharedActionButtonSurface("))
+        XCTAssertTrue(menu.contains("isFocused: false"))
+        XCTAssertTrue(menu.contains(".focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)"))
+        XCTAssertFalse(menu.contains("@FocusState"))
+        XCTAssertFalse(menu.contains(".focusable(true)"))
+        XCTAssertFalse(menu.contains(".focused($isFocused)"))
+    }
+
     func testNoRegisteredProjectsStateOmitsSubtitleAndRefresh() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
