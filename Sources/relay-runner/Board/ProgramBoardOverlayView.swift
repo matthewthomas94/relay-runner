@@ -62,6 +62,14 @@ enum ProgramBoardLayout {
     static let sessionToolbarTrailingPadding: CGFloat = 40
 }
 
+private enum ProgramTicketPanelStyle {
+    static let width: CGFloat = 560
+    static let height: CGFloat = 633
+    static let horizontalPadding: CGFloat = 24
+    static let verticalPadding: CGFloat = 18
+    static let modalBackdropOpacity: Double = 0.55
+}
+
 struct ProgramBoardOverlayView: View {
     @Bindable var model: ProgramBoardViewModel
     @Bindable var workspace: WorkspaceViewModel
@@ -157,9 +165,6 @@ struct ProgramBoardOverlayView: View {
                         onAddExistingProject: onAddExistingProject,
                         onCreateProject: onCreateProject,
                         onCreateStart: onCreateStart,
-                        onEditStart: onEditStart,
-                        onDelete: onDelete,
-                        onSpikeFollowupStart: onSpikeFollowupStart,
                         onDrop: onDrop
                     )
                     .padding(.top, BoardSurfaceLayout.columnTopPadding)
@@ -170,54 +175,77 @@ struct ProgramBoardOverlayView: View {
 
             ProgramDragPreviewLayer(model: model)
 
+            if let detail = model.selectedTicketDetail,
+               model.creating == nil,
+               model.editing == nil,
+               model.spikeFollowupBatch == nil {
+                ProgramBoardModalLayer(onDismiss: model.clearSelectedTicket) {
+                    ProgramTicketDetailPanel(
+                        detail: detail,
+                        theme: model.theme,
+                        onClose: model.clearSelectedTicket,
+                        onEdit: { onEditStart(detail) },
+                        onDelete: onDelete,
+                        onSpikeFollowup: { onSpikeFollowupStart(detail) }
+                    )
+                }
+                .transition(.opacity)
+            }
+
             if let draft = model.creating {
-                ProgramTicketCreateModal(
-                    draft: draft,
-                    projects: model.projectTargets,
-                    makeRequest: { selectedProjectPath, title, description, executionMode, imageURLs in
-                        model.createRequest(
-                            selectedProjectPath: selectedProjectPath,
-                            title: title,
-                            description: description,
-                            executionMode: executionMode,
-                            imageURLs: imageURLs
-                        )
-                    },
-                    onCommit: onCreateCommit,
-                    onCancel: onCreateCancel
-                )
+                ProgramBoardModalLayer(onDismiss: onCreateCancel) {
+                    ProgramTicketCreateModal(
+                        draft: draft,
+                        projects: model.projectTargets,
+                        makeRequest: { selectedProjectPath, title, description, executionMode, imageURLs in
+                            model.createRequest(
+                                selectedProjectPath: selectedProjectPath,
+                                title: title,
+                                description: description,
+                                executionMode: executionMode,
+                                imageURLs: imageURLs
+                            )
+                        },
+                        onCommit: onCreateCommit,
+                        onCancel: onCreateCancel
+                    )
+                }
                 .id("\(draft.lane.id)-\(draft.selectedProjectPath ?? "all")")
                 .transition(.opacity)
             }
 
             if let draft = model.editing {
-                ProgramTicketEditModal(
-                    draft: draft,
-                    makeRequest: { title, status, priority, executionMode, description, acceptanceCriteria, imageURLs in
-                        model.editRequest(
-                            title: title,
-                            status: status,
-                            priority: priority,
-                            executionMode: executionMode,
-                            description: description,
-                            acceptanceCriteria: acceptanceCriteria,
-                            imageURLs: imageURLs
-                        )
-                    },
-                    onCommit: onEditCommit,
-                    onCancel: onEditCancel,
-                    onDelete: onDelete
-                )
+                ProgramBoardModalLayer(onDismiss: onEditCancel) {
+                    ProgramTicketEditModal(
+                        draft: draft,
+                        makeRequest: { title, status, priority, executionMode, description, acceptanceCriteria, imageURLs in
+                            model.editRequest(
+                                title: title,
+                                status: status,
+                                priority: priority,
+                                executionMode: executionMode,
+                                description: description,
+                                acceptanceCriteria: acceptanceCriteria,
+                                imageURLs: imageURLs
+                            )
+                        },
+                        onCommit: onEditCommit,
+                        onCancel: onEditCancel,
+                        onDelete: onDelete
+                    )
+                }
                 .id(draft.id)
                 .transition(.opacity)
             }
 
             if let batch = model.spikeFollowupBatch {
-                ProgramSpikeFollowupReviewModal(
-                    batch: batch,
-                    onReview: onSpikeFollowupReview,
-                    onClose: onSpikeFollowupClose
-                )
+                ProgramBoardModalLayer(onDismiss: onSpikeFollowupClose) {
+                    ProgramSpikeFollowupReviewModal(
+                        batch: batch,
+                        onReview: onSpikeFollowupReview,
+                        onClose: onSpikeFollowupClose
+                    )
+                }
                 .id(batch.id)
                 .transition(.opacity)
             }
@@ -256,6 +284,33 @@ private struct ProgramBoardBackdropShape: Shape {
         )
         path.closeSubpath()
         return path
+    }
+}
+
+private struct ProgramBoardModalLayer<Content: View>: View {
+    let onDismiss: () -> Void
+    @ViewBuilder let content: Content
+
+    init(onDismiss: @escaping () -> Void, @ViewBuilder content: () -> Content) {
+        self.onDismiss = onDismiss
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack {
+            ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
+                .fill(Color.black.opacity(ProgramTicketPanelStyle.modalBackdropOpacity))
+                .contentShape(
+                    ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
+                )
+                .onTapGesture(perform: onDismiss)
+
+            content
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: ProgramBoardBackdropStyle.backdropHeight)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .zIndex(3)
     }
 }
 
@@ -521,9 +576,6 @@ private struct ProgramBoardContent: View {
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
-    let onEditStart: (ProgramTicketDetail) -> Void
-    let onDelete: (ProgramBoardDeleteRequest) -> Void
-    let onSpikeFollowupStart: (ProgramTicketDetail) -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -534,48 +586,33 @@ private struct ProgramBoardContent: View {
         ) {
         case .board:
             if let snapshot = model.snapshot {
-                ZStack(alignment: .top) {
-                    HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
-                        ProgramOverviewColumn(
-                            snapshot: snapshot,
-                            selectedProjectPath: model.selectedProjectPath,
-                            selectedScopeTitle: model.selectedScopeTitle,
-                            errorMessage: model.errorMessage,
+                HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
+                    ProgramOverviewColumn(
+                        snapshot: snapshot,
+                        selectedProjectPath: model.selectedProjectPath,
+                        selectedScopeTitle: model.selectedScopeTitle,
+                        errorMessage: model.errorMessage,
+                        theme: model.theme,
+                        usesProjectRegistryV2: ProjectRegistryV2Rollout.isEnabled(),
+                        onSelectAll: model.selectAllProjects,
+                        onAddExistingProject: onAddExistingProject,
+                        onCreateProject: onCreateProject,
+                        onSelectProject: model.selectProject
+                    )
+                    ForEach(ProgramBoardLane.allCases) { lane in
+                        ProgramWorkColumnPanel(
+                            model: model,
+                            lane: lane,
+                            showsProjectContext: model.isAllSelected,
                             theme: model.theme,
-                            usesProjectRegistryV2: ProjectRegistryV2Rollout.isEnabled(),
-                            onSelectAll: model.selectAllProjects,
-                            onAddExistingProject: onAddExistingProject,
-                            onCreateProject: onCreateProject,
-                            onSelectProject: model.selectProject
+                            canCreate: !model.projectTargets.isEmpty,
+                            onCreate: { onCreateStart(lane) },
+                            onDrop: onDrop
                         )
-                        ForEach(ProgramBoardLane.allCases) { lane in
-                            ProgramWorkColumnPanel(
-                                model: model,
-                                lane: lane,
-                                showsProjectContext: model.isAllSelected,
-                                theme: model.theme,
-                                canCreate: !model.projectTargets.isEmpty,
-                                onCreate: { onCreateStart(lane) },
-                                onDrop: onDrop
-                            )
-                        }
-                    }
-                    .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
-                    .frame(maxWidth: .infinity, alignment: .top)
-
-                    if let detail = model.selectedTicketDetail {
-                        ProgramTicketDetailPanel(
-                            detail: detail,
-                            theme: model.theme,
-                            onClose: model.clearSelectedTicket,
-                            onEdit: { onEditStart(detail) },
-                            onDelete: onDelete,
-                            onSpikeFollowup: { onSpikeFollowupStart(detail) }
-                        )
-                        .padding(.top, 18)
-                        .zIndex(1)
                     }
                 }
+                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
         case .noRegisteredProjects:
             if model.snapshot != nil {
@@ -1855,18 +1892,7 @@ struct ProgramTicketDetailPanel: View {
                 }
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
-        .frame(width: 560, height: 633, alignment: .topLeading)
-        .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
-        .shadow(
-            color: ProgramBoardColumnChrome.shadowColor(for: theme),
-            radius: BoardDarkSurfaceStyle.shadowRadius,
-            x: 0,
-            y: BoardDarkSurfaceStyle.shadowYOffset
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { }
+        .programTicketPanelChrome(theme: theme)
     }
 
     private var deleteRequest: ProgramBoardDeleteRequest? {
@@ -1944,55 +1970,87 @@ struct ProgramTicketDetailPanel: View {
     }
 }
 
+private struct ProgramTicketPanelChrome: ViewModifier {
+    let theme: ParticleFieldRenderer.Theme?
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, ProgramTicketPanelStyle.horizontalPadding)
+            .padding(.vertical, ProgramTicketPanelStyle.verticalPadding)
+            .frame(
+                width: ProgramTicketPanelStyle.width,
+                height: ProgramTicketPanelStyle.height,
+                alignment: .topLeading
+            )
+            .background(
+                ProgramBoardDarkSurfaceBackground(
+                    cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius
+                )
+            )
+            .shadow(
+                color: ProgramBoardColumnChrome.shadowColor(for: theme),
+                radius: BoardDarkSurfaceStyle.shadowRadius,
+                x: 0,
+                y: BoardDarkSurfaceStyle.shadowYOffset
+            )
+            .contentShape(Rectangle())
+            .onTapGesture { }
+    }
+}
+
+private extension View {
+    func programTicketPanelChrome(
+        theme: ParticleFieldRenderer.Theme? = nil
+    ) -> some View {
+        modifier(ProgramTicketPanelChrome(theme: theme))
+    }
+}
+
 private struct ProgramSpikeFollowupReviewModal: View {
     let batch: SpikeFollowupBatch
     let onReview: (SpikeFollowupBatch, SpikeFollowupProposal, String, [String: Any]?) -> Void
     let onClose: () -> Void
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.45)
-                .contentShape(Rectangle())
-                .onTapGesture { onClose() }
-
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Spike follow-up tickets")
-                            .font(AppTypography.font(.screenTitle))
-                            .foregroundStyle(ProgramBoardStyle.primaryText)
-                        Text("Review each proposal separately. Accepted tickets stay in Backlog.")
-                            .font(AppTypography.font(.label))
-                            .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    }
-                    Spacer(minLength: 0)
-                    ProgramIconButton(systemName: "xmark", help: "Close follow-up proposals", action: onClose)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Spike follow-up tickets")
+                        .font(AppTypography.font(.screenTitle))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                    Text("Review each proposal separately. Accepted tickets stay in Backlog.")
+                        .font(AppTypography.font(.label))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
                 }
+                Spacer(minLength: 0)
+                ProgramIconButton(systemName: "xmark", help: "Close follow-up proposals", action: onClose)
+            }
 
-                Text("\(batch.originTicketID) · spike run \(batch.originRunID)")
-                    .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
+            Text("\(batch.originTicketID) · spike run \(batch.originRunID)")
+                .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
 
-                BoardOverlayScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(batch.proposals) { proposal in
-                            ProgramSpikeFollowupProposalCard(
-                                batch: batch,
-                                proposal: proposal,
-                                onReview: onReview
-                            )
+            BoardOverlayScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(batch.proposals) { proposal in
+                        ProgramSpikeFollowupProposalCard(
+                            batch: batch,
+                            proposal: proposal,
+                            onReview: onReview
+                        )
                         }
-                    }
                 }
             }
-            .padding(20)
-            .frame(width: 760, height: 690, alignment: .topLeading)
-            .background(
-                ProgramBoardDarkSurfaceBackground(
-                    cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius
-                )
-            )
         }
+        .padding(20)
+        .frame(width: 760, height: 690, alignment: .topLeading)
+        .background(
+            ProgramBoardDarkSurfaceBackground(
+                cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius
+            )
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { }
     }
 }
 
@@ -2313,8 +2371,6 @@ private struct ProgramTicketEditModal: View {
     @State private var description: String
     @State private var acceptanceCriteria: String
     @State private var imageURLs: [URL] = []
-    @FocusState private var titleFocused: Bool
-
     init(
         draft: ProgramBoardEditDraft,
         makeRequest: @escaping (
@@ -2344,40 +2400,34 @@ private struct ProgramTicketEditModal: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.35)
-                .contentShape(Rectangle())
-                .onTapGesture { onCancel() }
-
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text(draft.identity.ticketID)
-                        .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    ProgramIconButton(
-                        systemName: "trash",
-                        help: "Delete ticket",
-                        iconColor: ProgramBoardStyle.red
-                    ) {
-                        onDelete(deleteRequest)
-                    }
-                    ProgramIconButton(systemName: "xmark", help: "Cancel edit", action: onCancel)
-                }
-
-                Text(draft.identity.projectPath)
-                    .font(AppTypography.monospacedFont(size: 10, weight: .regular))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(draft.identity.ticketID)
+                    .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                ProgramIconButton(
+                    systemName: "trash",
+                    help: "Delete ticket",
+                    iconColor: ProgramBoardStyle.red
+                ) {
+                    onDelete(deleteRequest)
+                }
+                ProgramIconButton(systemName: "xmark", help: "Cancel edit", action: onCancel)
+            }
 
-                TextField("Title", text: $title, axis: .vertical)
-                    .font(AppTypography.font(.screenTitle))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .textFieldStyle(.plain)
-                    .focused($titleFocused)
-                    .lineLimit(1...3)
+            Text(draft.identity.projectPath)
+                .font(AppTypography.monospacedFont(size: 10, weight: .regular))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            BoardOverlayScrollView(
+                contentInsets: EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 10)
+            ) {
+                VStack(alignment: .leading, spacing: 14) {
+                    ProgramTicketTitleField(text: $title)
 
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -2432,44 +2482,36 @@ private struct ProgramTicketEditModal: View {
                     existingPaths: draft.imageAttachmentPaths,
                     selectedURLs: $imageURLs
                 )
+                }
+            }
 
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    Button("Cancel", action: onCancel)
-                        .keyboardShortcut(.cancelAction)
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
-                        .programControlChrome()
-                        .programButtonCursor()
-                    Button("Save") {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                ProgramWorkspaceActionButton(
+                    title: "Cancel",
+                    systemName: "xmark",
+                    accessibilityLabel: "Cancel ticket changes",
+                    help: "Discard ticket changes",
+                    action: onCancel,
+                    labelFont: .action
+                )
+                .keyboardShortcut(.cancelAction)
+                ProgramWorkspaceActionButton(
+                    title: "Save",
+                    systemName: "checkmark",
+                    isEnabled: currentRequest != nil,
+                    accessibilityLabel: "Save ticket changes",
+                    help: currentRequest == nil ? "Complete the required fields" : "Save ticket changes",
+                    action: {
                         if let request = currentRequest {
                             onCommit(request)
                         }
                     }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.plain)
-                    .disabled(currentRequest == nil)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(Color.white.opacity(currentRequest == nil ? 0.45 : 1.0))
-                    .programControlChrome(disabled: currentRequest == nil)
-                    .programButtonCursor(enabled: currentRequest != nil)
-                }
+                )
+                .keyboardShortcut(.defaultAction)
             }
-            .padding(20)
-            .frame(width: 560)
-            .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
-            .shadow(
-                color: Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity),
-                radius: BoardDarkSurfaceStyle.shadowRadius,
-                x: 0,
-                y: BoardDarkSurfaceStyle.shadowYOffset
-            )
-            .onTapGesture { }
-            .onAppear { titleFocused = true }
         }
+        .programTicketPanelChrome()
     }
 
     private var currentRequest: ProgramBoardEditRequest? {
@@ -2503,15 +2545,112 @@ private struct ProgramEditTextArea: View {
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: minHeight, maxHeight: maxHeight)
                 .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(BoardDarkSurfaceStyle.contentFill)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
-                )
+                .background(ProgramTicketFieldBackground())
         }
+    }
+}
+
+private struct ProgramTicketTitleField: View {
+    @Binding var text: String
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Title")
+                .font(AppTypography.font(.controlHeading))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .textCase(.uppercase)
+
+            TextField("Enter ticket title", text: $text, axis: .vertical)
+                .font(AppTypography.font(.screenTitle))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
+                .textFieldStyle(.plain)
+                .focused($isFocused)
+                .lineLimit(1...3)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(ProgramTicketFieldBackground())
+        }
+        .onAppear { isFocused = true }
+    }
+}
+
+private struct ProgramTicketProjectPicker: View {
+    let projects: [ProgramBoardProjectTarget]
+    @Binding var selection: String?
+
+    private var selectedProject: ProgramBoardProjectTarget? {
+        projects.first { $0.path == selection }
+    }
+
+    var body: some View {
+        Menu {
+            Button {
+                selection = nil
+            } label: {
+                if selection == nil {
+                    Label("Select project", systemImage: "checkmark")
+                } else {
+                    Text("Select project")
+                }
+            }
+            Divider()
+            ForEach(projects) { project in
+                Button {
+                    selection = project.path
+                } label: {
+                    if selection == project.path {
+                        Label(project.name, systemImage: "checkmark")
+                    } else {
+                        Text(project.name)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(selectedProject?.name ?? "Select project")
+                    .font(AppTypography.font(.field))
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                Image(systemName: "chevron.down")
+                    .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(ProgramBoardStyle.primaryText)
+            .padding(.horizontal, 10)
+            .frame(width: SettingsLayout.controlMaxWidth, height: 34)
+            .background(ProgramTicketFieldBackground())
+            .contentShape(
+                RoundedRectangle(
+                    cornerRadius: SettingsLayout.sidebarCornerRadius,
+                    style: .continuous
+                )
+            )
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .programButtonCursor()
+        .accessibilityLabel("Project")
+        .help("Choose the project that will own this ticket")
+    }
+}
+
+private struct ProgramTicketFieldBackground: View {
+    var body: some View {
+        RoundedRectangle(
+            cornerRadius: SettingsLayout.sidebarCornerRadius,
+            style: .continuous
+        )
+        .fill(BoardDarkSurfaceStyle.contentFill)
+        .overlay(
+            RoundedRectangle(
+                cornerRadius: SettingsLayout.sidebarCornerRadius,
+                style: .continuous
+            )
+            .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
+        )
     }
 }
 
@@ -2533,7 +2672,6 @@ private struct ProgramTicketCreateModal: View {
     @State private var description: String
     @State private var executionMode: Ticket.ExecutionMode = .implementation
     @State private var imageURLs: [URL] = []
-    @FocusState private var titleFocused: Bool
 
     init(
         draft: ProgramBoardCreateDraft,
@@ -2559,34 +2697,29 @@ private struct ProgramTicketCreateModal: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.35)
-                .contentShape(Rectangle())
-                .onTapGesture { onCancel() }
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(draft.lane.title)
+                    .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                ProgramIconButton(systemName: "xmark", help: "Cancel new ticket", action: onCancel)
+            }
 
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text(draft.lane.title)
-                        .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    ProgramIconButton(systemName: "xmark", help: "Cancel new ticket", action: onCancel)
-                }
-
+            BoardOverlayScrollView(
+                contentInsets: EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 10)
+            ) {
+                VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Project")
                         .font(AppTypography.font(.controlHeading))
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .textCase(.uppercase)
-                    Picker("Project", selection: $selectedProjectPath) {
-                        Text("Select project").tag(nil as String?)
-                        ForEach(projects) { project in
-                            Text(project.name).tag(project.path as String?)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
+                    ProgramTicketProjectPicker(
+                        projects: projects,
+                        selection: $selectedProjectPath
+                    )
 
                     Text(selectedProject?.path ?? "Select project")
                         .font(AppTypography.monospacedFont(size: 10, weight: .regular))
@@ -2595,80 +2728,55 @@ private struct ProgramTicketCreateModal: View {
                         .truncationMode(.middle)
                 }
 
-                TextField("Title", text: $title, axis: .vertical)
-                    .font(AppTypography.font(.screenTitle))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .textFieldStyle(.plain)
-                    .focused($titleFocused)
-                    .lineLimit(1...3)
+                ProgramTicketTitleField(text: $title)
 
                 ProgramExecutionModePicker(selection: $executionMode)
 
                 Divider()
                     .background(BoardDarkSurfaceStyle.border)
 
-                Text("Description")
-                    .font(AppTypography.font(.controlHeading))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .textCase(.uppercase)
-
-                TextEditor(text: $description)
-                    .font(AppTypography.font(.field))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 160, maxHeight: 280)
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(BoardDarkSurfaceStyle.contentFill)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
-                    )
+                ProgramEditTextArea(
+                    title: "Description",
+                    text: $description,
+                    minHeight: 190,
+                    maxHeight: 280
+                )
 
                 ProgramTicketImageSelector(
                     existingPaths: [],
                     selectedURLs: $imageURLs
                 )
+                }
+            }
 
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    Button("Cancel", action: onCancel)
-                        .keyboardShortcut(.cancelAction)
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.85))
-                        .programControlChrome()
-                        .programButtonCursor()
-                    Button("Save") {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                ProgramWorkspaceActionButton(
+                    title: "Cancel",
+                    systemName: "xmark",
+                    accessibilityLabel: "Cancel new ticket",
+                    help: "Discard the new ticket",
+                    action: onCancel,
+                    labelFont: .action
+                )
+                .keyboardShortcut(.cancelAction)
+                ProgramWorkspaceActionButton(
+                    title: "Save",
+                    systemName: "checkmark",
+                    isEnabled: canSave,
+                    accessibilityLabel: "Save new ticket",
+                    help: canSave ? "Save new ticket" : "Complete the required fields",
+                    action: {
                         if let request = makeRequest(selectedProjectPath, title, description, executionMode, imageURLs) {
                             onCommit(request)
                         }
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.plain)
-                    .disabled(makeRequest(selectedProjectPath, title, description, executionMode, imageURLs) == nil)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(Color.white.opacity(canSave ? 1.0 : 0.45))
-                    .programControlChrome(disabled: !canSave)
-                    .programButtonCursor(enabled: canSave)
-                }
+                    },
+                    labelFont: .action
+                )
+                .keyboardShortcut(.defaultAction)
             }
-            .padding(20)
-            .frame(width: 520)
-            .background(ProgramBoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
-            .shadow(
-                color: Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity),
-                radius: BoardDarkSurfaceStyle.shadowRadius,
-                x: 0,
-                y: BoardDarkSurfaceStyle.shadowYOffset
-            )
-            .onTapGesture { }
-            .onAppear { titleFocused = true }
         }
+        .programTicketPanelChrome()
     }
 
     private var selectedProject: ProgramBoardProjectTarget? {
@@ -2689,18 +2797,68 @@ private struct ProgramExecutionModePicker: View {
                 .font(AppTypography.font(.controlHeading))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .textCase(.uppercase)
-            Picker("Execution mode", selection: $selection) {
-                ForEach(Ticket.ExecutionMode.allCases, id: \.rawValue) { mode in
-                    Text(mode.displayName).tag(mode)
+            HStack(spacing: 0) {
+                ForEach(Array(Ticket.ExecutionMode.allCases.enumerated()), id: \.element.rawValue) { index, mode in
+                    if index > 0 {
+                        Rectangle()
+                            .fill(BoardDarkSurfaceStyle.border)
+                            .frame(width: 1, height: 34)
+                    }
+                    ProgramExecutionModeButton(
+                        mode: mode,
+                        isSelected: selection == mode,
+                        action: { selection = mode }
+                    )
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            .frame(maxWidth: 360)
+            .background(ProgramTicketFieldBackground())
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: SettingsLayout.sidebarCornerRadius,
+                    style: .continuous
+                )
+            )
             Text(selection.explanation)
                 .font(AppTypography.font(.label))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+private struct ProgramExecutionModeButton: View {
+    let mode: Ticket.ExecutionMode
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(mode.displayName)
+                .font(AppTypography.font(.action))
+                .foregroundStyle(
+                    isSelected
+                        ? ProgramBoardStyle.primaryText
+                        : ProgramBoardStyle.secondaryText
+                )
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .background(backgroundColor)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .onHover { isHovered = $0 }
+        .programButtonCursor()
+        .accessibilityLabel(mode.displayName)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var backgroundColor: Color {
+        if isSelected {
+            return SettingsSurfaceColor.rowFillSelected
+        }
+        return isHovered ? SettingsSurfaceColor.rowFillHovered : Color.clear
     }
 }
 
@@ -2716,16 +2874,14 @@ private struct ProgramTicketImageSelector: View {
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .textCase(.uppercase)
                 Spacer(minLength: 0)
-                Button {
-                    addImages()
-                } label: {
-                    Label("Add images", systemImage: "photo.badge.plus")
-                        .font(AppTypography.font(.action))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(ProgramBoardStyle.primaryText.opacity(0.9))
-                .programControlChrome()
-                .programButtonCursor()
+                ProgramWorkspaceActionButton(
+                    title: "Add images",
+                    systemName: "photo.badge.plus",
+                    accessibilityLabel: "Add ticket images",
+                    help: "Attach design images to this ticket",
+                    action: addImages,
+                    labelFont: .action
+                )
             }
 
             if existingPaths.isEmpty && selectedURLs.isEmpty {

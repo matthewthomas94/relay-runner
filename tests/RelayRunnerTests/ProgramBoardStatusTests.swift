@@ -246,6 +246,39 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(menu.contains(".focused($isFocused)"))
     }
 
+    func testCreateTicketUsesStandardTicketPanelAndWorkspaceModalTreatment() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("private struct ProgramBoardModalLayer<Content: View>: View"))
+        XCTAssertTrue(contents.contains("ProgramBoardBackdropStyle.backdropHeight"))
+        XCTAssertTrue(contents.contains("ProgramBoardBackdropShape("))
+        XCTAssertEqual(
+            contents.components(separatedBy: "ProgramBoardModalLayer(onDismiss:").count - 1,
+            4
+        )
+        XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.width"))
+        XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.height"))
+
+        let createStart = try XCTUnwrap(contents.range(of: "private struct ProgramTicketCreateModal: View"))
+        let createEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProgramExecutionModePicker: View", range: createStart.upperBound..<contents.endIndex)
+        )
+        let createModal = String(contents[createStart.lowerBound..<createEnd.lowerBound])
+
+        XCTAssertTrue(createModal.contains("BoardOverlayScrollView"))
+        XCTAssertTrue(createModal.contains("ProgramTicketProjectPicker("))
+        XCTAssertTrue(createModal.contains("ProgramTicketTitleField("))
+        XCTAssertTrue(createModal.contains(".programTicketPanelChrome()"))
+        XCTAssertTrue(createModal.contains("ProgramWorkspaceActionButton("))
+        XCTAssertFalse(createModal.contains("Color.black.opacity"))
+        XCTAssertFalse(createModal.contains(".programControlChrome"))
+    }
+
     func testNoRegisteredProjectsStateOmitsSubtitleAndRefresh() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
