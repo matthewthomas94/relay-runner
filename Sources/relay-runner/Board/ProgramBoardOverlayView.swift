@@ -20,7 +20,7 @@ enum ProgramBoardLayout {
     static let headerHorizontalInset: CGFloat = 16
     static let headerLeadingInset: CGFloat = panelHorizontalPadding + headerHorizontalInset
     static let projectsHeaderHeight: CGFloat = 32
-    static let selectAllButtonHeight: CGFloat = SharedActionButtonMetrics.controlHeight
+    static let projectActionButtonHeight: CGFloat = SharedActionButtonMetrics.controlHeight
     static let compactControlHeight: CGFloat = 24
     static let newTicketButtonSize: CGFloat = compactControlHeight
     static let workHeaderHeight: CGFloat = 36
@@ -542,7 +542,10 @@ private struct ProgramBoardContent: View {
                             selectedScopeTitle: model.selectedScopeTitle,
                             errorMessage: model.errorMessage,
                             theme: model.theme,
+                            usesProjectRegistryV2: ProjectRegistryV2Rollout.isEnabled(),
                             onSelectAll: model.selectAllProjects,
+                            onAddExistingProject: onAddExistingProject,
+                            onCreateProject: onCreateProject,
                             onSelectProject: model.selectProject
                         )
                         ForEach(ProgramBoardLane.allCases) { lane in
@@ -617,7 +620,10 @@ private struct ProgramOverviewColumn: View {
     let selectedScopeTitle: String
     let errorMessage: String?
     let theme: ParticleFieldRenderer.Theme?
+    let usesProjectRegistryV2: Bool
     let onSelectAll: () -> Void
+    let onAddExistingProject: () -> Void
+    let onCreateProject: () -> Void
     let onSelectProject: (String) -> Void
 
     var body: some View {
@@ -625,7 +631,10 @@ private struct ProgramOverviewColumn: View {
             ProgramProjectsHeader(
                 isAllSelected: selectedProjectPath == nil,
                 selectedScopeTitle: selectedScopeTitle,
-                onSelectAll: onSelectAll
+                usesProjectRegistryV2: usesProjectRegistryV2,
+                onSelectAll: onSelectAll,
+                onAddExistingProject: onAddExistingProject,
+                onCreateProject: onCreateProject
             )
 
             if let errorMessage {
@@ -659,9 +668,12 @@ private struct ProgramOverviewColumn: View {
 struct ProgramProjectsHeaderPresentation: Equatable {
     let isAllSelected: Bool
     let selectedScopeTitle: String
+    let usesProjectRegistryV2: Bool
 
-    var selectAllTitle: String { "Select all" }
-    var selectAllProminence: SharedActionButtonProminence { isAllSelected ? .primary : .secondary }
+    var actionTitle: String { usesProjectRegistryV2 ? "Add project" : "Select all" }
+    var actionProminence: SharedActionButtonProminence {
+        usesProjectRegistryV2 || !isAllSelected ? .secondary : .primary
+    }
 }
 
 struct ProgramEditButtonPresentation: Equatable {
@@ -703,12 +715,16 @@ struct ProgramSpikeFollowupActionPresentation: Equatable {
 private struct ProgramProjectsHeader: View {
     let isAllSelected: Bool
     let selectedScopeTitle: String
+    let usesProjectRegistryV2: Bool
     let onSelectAll: () -> Void
+    let onAddExistingProject: () -> Void
+    let onCreateProject: () -> Void
 
     private var presentation: ProgramProjectsHeaderPresentation {
         ProgramProjectsHeaderPresentation(
             isAllSelected: isAllSelected,
-            selectedScopeTitle: selectedScopeTitle
+            selectedScopeTitle: selectedScopeTitle,
+            usesProjectRegistryV2: usesProjectRegistryV2
         )
     }
 
@@ -725,17 +741,61 @@ private struct ProgramProjectsHeader: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            ProgramWorkspaceActionButton(
-                title: presentation.selectAllTitle,
-                systemName: nil,
-                prominence: presentation.selectAllProminence,
-                accessibilityLabel: "Show tickets from all projects",
-                help: "Show tickets from all projects",
-                action: onSelectAll
-            )
+            if presentation.usesProjectRegistryV2 {
+                ProgramAddProjectMenu(
+                    title: presentation.actionTitle,
+                    onAddExistingProject: onAddExistingProject,
+                    onCreateProject: onCreateProject
+                )
+            } else {
+                ProgramWorkspaceActionButton(
+                    title: presentation.actionTitle,
+                    systemName: nil,
+                    prominence: presentation.actionProminence,
+                    accessibilityLabel: "Show tickets from all projects",
+                    help: "Show tickets from all projects",
+                    action: onSelectAll
+                )
+            }
         }
         .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
         .frame(height: ProgramBoardLayout.projectsHeaderHeight, alignment: .top)
+    }
+}
+
+private struct ProgramAddProjectMenu: View {
+    let title: String
+    let onAddExistingProject: () -> Void
+    let onCreateProject: () -> Void
+
+    var body: some View {
+        Menu {
+            Button("Add existing project", systemImage: "folder.badge.plus") {
+                onAddExistingProject()
+            }
+            Button("Create new project", systemImage: "plus") {
+                onCreateProject()
+            }
+        } label: {
+            HStack(alignment: .center, spacing: 6) {
+                Text(title)
+                    .font(AppTypography.font(.programAction))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(ProgramBoardStyle.primaryText)
+            .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+            .frame(height: ProgramBoardLayout.projectActionButtonHeight)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .programControlChrome(shape: .rounded(SharedActionButtonMetrics.cornerRadius))
+        .programButtonCursor(enabled: true)
+        .accessibilityLabel("Add project")
+        .help("Add an existing project or create a new project")
     }
 }
 

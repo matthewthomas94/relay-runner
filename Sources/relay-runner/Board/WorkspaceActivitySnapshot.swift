@@ -47,7 +47,7 @@ actor WorkspaceActivitySnapshotStore {
 
         static let live = Dependencies(
             routeKey: WorkspaceActivitySnapshotStore.loadRouteKey,
-            resolveScope: WorkspaceActivitySnapshotStore.resolveScope,
+            resolveScope: { WorkspaceActivitySnapshotStore.resolveScope(bridgeSessionAlive: $0) },
             loadActivity: WorkspaceActivitySnapshotStore.loadActivity
         )
     }
@@ -161,8 +161,14 @@ actor WorkspaceActivitySnapshotStore {
         )
     }
 
-    private static func resolveScope(bridgeSessionAlive: Bool) -> ProjectResolver.WorkspaceScope {
-        ProjectResolver.resolveWorkspaceScope(
+    static func resolveScope(
+        bridgeSessionAlive: Bool,
+        registryV2: ProjectRegistryV2Service? = ProjectRegistryV2Service.makeIfEnabled()
+    ) -> ProjectResolver.WorkspaceScope {
+        if let registryV2 {
+            return ProjectResolver.resolveWorkspaceScope(registryV2: registryV2)
+        }
+        return ProjectResolver.resolveWorkspaceScope(
             bridgeSocket: URL(fileURLWithPath: "/tmp/voice_bridge.sock"),
             bridgeCwdFile: URL(fileURLWithPath: "/tmp/voice_bridge.cwd"),
             bridgeProviderFile: URL(fileURLWithPath: "/tmp/voice_bridge.provider"),

@@ -58,8 +58,8 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(ProgramBoardLayout.headerHorizontalInset, 16)
         XCTAssertEqual(ProgramBoardLayout.headerLeadingInset, 24)
         XCTAssertEqual(ProgramBoardLayout.projectsHeaderHeight, 32)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHeight, SharedActionButtonMetrics.controlHeight)
-        XCTAssertEqual(ProgramBoardLayout.selectAllButtonHeight, 28)
+        XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, SharedActionButtonMetrics.controlHeight)
+        XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, 28)
         XCTAssertEqual(ProgramBoardLayout.compactControlHeight, 24)
         XCTAssertEqual(
             ProgramBoardLayout.newTicketButtonSize,
@@ -119,21 +119,24 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(screenWidth - buttonTrailingEdge, 40)
     }
 
-    func testProgramProjectsHeaderPresentationUsesActiveTextForAllProjects() {
-        let allProjects = ProgramProjectsHeaderPresentation(
+    func testProgramProjectsHeaderPresentationUsesAddProjectForRegistryV2() {
+        let registryV2 = ProgramProjectsHeaderPresentation(
             isAllSelected: true,
-            selectedScopeTitle: "All projects"
+            selectedScopeTitle: "All projects",
+            usesProjectRegistryV2: true
         )
-        let selectedProject = ProgramProjectsHeaderPresentation(
+        let legacySelectedProject = ProgramProjectsHeaderPresentation(
             isAllSelected: false,
-            selectedScopeTitle: "mentistic"
+            selectedScopeTitle: "mentistic",
+            usesProjectRegistryV2: false
         )
 
-        XCTAssertEqual(allProjects.selectAllTitle, "Select all")
-        XCTAssertEqual(allProjects.selectedScopeTitle, "All projects")
-        XCTAssertEqual(allProjects.selectAllProminence, .primary)
-        XCTAssertEqual(selectedProject.selectedScopeTitle, "mentistic")
-        XCTAssertEqual(selectedProject.selectAllProminence, .secondary)
+        XCTAssertEqual(registryV2.actionTitle, "Add project")
+        XCTAssertEqual(registryV2.selectedScopeTitle, "All projects")
+        XCTAssertEqual(registryV2.actionProminence, .secondary)
+        XCTAssertEqual(legacySelectedProject.actionTitle, "Select all")
+        XCTAssertEqual(legacySelectedProject.selectedScopeTitle, "mentistic")
+        XCTAssertEqual(legacySelectedProject.actionProminence, .secondary)
 
         let activeText = ProgramBoardStyle.neutralTextNSColor.usingColorSpace(.sRGB)
         XCTAssertEqual(activeText?.redComponent ?? 0, 248 / 255, accuracy: 0.001)
@@ -159,7 +162,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(disabled.accessibilityLabel, "Edit ticket")
     }
 
-    func testWorkspaceBoardUsesSharedActionButtonsForSelectAllAndTicketActions() throws {
+    func testWorkspaceBoardUsesAddProjectMenuAndSharedTicketActions() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -167,7 +170,14 @@ final class ProgramBoardStatusTests: XCTestCase {
         let source = root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        XCTAssertTrue(contents.contains("ProgramWorkspaceActionButton(\n                title: presentation.selectAllTitle"))
+        XCTAssertTrue(contents.contains("ProgramAddProjectMenu("))
+        XCTAssertTrue(contents.contains("title: presentation.actionTitle"))
+        XCTAssertTrue(contents.contains(
+            "Button(\"Add existing project\", systemImage: \"folder.badge.plus\")"
+        ))
+        XCTAssertTrue(contents.contains(
+            "Button(\"Create new project\", systemImage: \"plus\")"
+        ))
         XCTAssertTrue(contents.contains("ProgramEditCapsuleButton("))
         XCTAssertTrue(contents.contains("presentation: ProgramEditButtonPresentation.resolve("))
         XCTAssertFalse(contents.contains("showsEditButton"))

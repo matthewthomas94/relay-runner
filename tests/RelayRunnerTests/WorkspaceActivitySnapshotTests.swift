@@ -2,6 +2,29 @@ import XCTest
 @testable import relay_runner
 
 final class WorkspaceActivitySnapshotTests: XCTestCase {
+    func testRegistryV2ScopeDoesNotLeakLegacyProjects() throws {
+        let root = try makeTempDirectory(named: "registry-v2-scope")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let service = ProjectRegistryV2Service(
+            store: ProjectRegistryV2Store(appSupportRoot: root),
+            validator: ProjectRegistrationValidator(relayWorktreeRoots: []),
+            accessGrants: ProjectAccessGrantManager(),
+            appSupportRoot: root
+        )
+
+        let scope = WorkspaceActivitySnapshotStore.resolveScope(
+            bridgeSessionAlive: false,
+            registryV2: service
+        )
+
+        XCTAssertTrue(scope.projects.isEmpty)
+        if case .programBoard = scope.route {
+            // Empty registry-v2 is an honest project-management surface.
+        } else {
+            XCTFail("Registry-v2 must not fall through to the legacy project registry.")
+        }
+    }
+
     func testConcurrentConsumersCoalesceRefreshAndReuseRouteClassification() async {
         let routeResolutions = LockedCounter()
         let activityLoads = LockedCounter()
