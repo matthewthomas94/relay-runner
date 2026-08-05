@@ -270,13 +270,52 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
         let createModal = String(contents[createStart.lowerBound..<createEnd.lowerBound])
 
-        XCTAssertTrue(createModal.contains("BoardOverlayScrollView"))
+        XCTAssertFalse(createModal.contains("BoardOverlayScrollView"))
         XCTAssertTrue(createModal.contains("ProgramTicketProjectPicker("))
         XCTAssertTrue(createModal.contains("ProgramTicketTitleField("))
         XCTAssertTrue(createModal.contains(".programTicketPanelChrome()"))
         XCTAssertTrue(createModal.contains("ProgramWorkspaceActionButton("))
         XCTAssertFalse(createModal.contains("Color.black.opacity"))
         XCTAssertFalse(createModal.contains(".programControlChrome"))
+    }
+
+    func testCreateTicketUsesCompactSentenceCaseControlsAndDescriptionOnlyScrolling() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertFalse(contents.contains(".textCase(.uppercase)"))
+
+        let titleStart = try XCTUnwrap(contents.range(of: "private struct ProgramTicketTitleField: View"))
+        let titleEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProgramTicketProjectPicker: View", range: titleStart.upperBound..<contents.endIndex)
+        )
+        let titleField = String(contents[titleStart.lowerBound..<titleEnd.lowerBound])
+        XCTAssertTrue(titleField.contains("TextField(\"Enter ticket title\", text: $text)"))
+        XCTAssertTrue(titleField.contains(".font(AppTypography.font(.field))"))
+        XCTAssertTrue(titleField.contains(".frame(height: ProgramTicketPanelStyle.compactFieldHeight)"))
+        XCTAssertFalse(titleField.contains(".screenTitle"))
+        XCTAssertFalse(titleField.contains("axis: .vertical"))
+
+        let createStart = try XCTUnwrap(contents.range(of: "private struct ProgramTicketCreateModal: View"))
+        let createEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProgramExecutionModePicker: View", range: createStart.upperBound..<contents.endIndex)
+        )
+        let createModal = String(contents[createStart.lowerBound..<createEnd.lowerBound])
+        XCTAssertFalse(createModal.contains("BoardOverlayScrollView"))
+        XCTAssertTrue(createModal.contains("minHeight: ProgramTicketPanelStyle.createDescriptionHeight"))
+        XCTAssertTrue(createModal.contains("maxHeight: ProgramTicketPanelStyle.createDescriptionHeight"))
+        XCTAssertTrue(createModal.contains("ProgramTicketImageSelector("))
+
+        let executionStart = createEnd
+        let executionEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProgramTicketImageSelector: View", range: executionStart.upperBound..<contents.endIndex)
+        )
+        let executionPicker = String(contents[executionStart.lowerBound..<executionEnd.lowerBound])
+        XCTAssertTrue(executionPicker.contains("SharedActionButtonMetrics.controlHeight"))
     }
 
     func testNoRegisteredProjectsStateOmitsSubtitleAndRefresh() throws {

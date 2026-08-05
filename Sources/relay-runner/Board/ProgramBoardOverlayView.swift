@@ -67,6 +67,8 @@ private enum ProgramTicketPanelStyle {
     static let height: CGFloat = 633
     static let horizontalPadding: CGFloat = 24
     static let verticalPadding: CGFloat = 18
+    static let compactFieldHeight: CGFloat = 34
+    static let createDescriptionHeight: CGFloat = 132
     static let modalBackdropOpacity: Double = 0.55
 }
 
@@ -2432,9 +2434,8 @@ private struct ProgramTicketEditModal: View {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Status")
-                            .font(AppTypography.font(.controlHeading))
+                            .font(AppTypography.font(.body))
                             .foregroundStyle(ProgramBoardStyle.mutedText)
-                            .textCase(.uppercase)
                         Picker("Status", selection: $status) {
                             ForEach(Ticket.Status.userSelectable, id: \.rawValue) { status in
                                 Text(status.rawValue.displayLabel).tag(status)
@@ -2445,9 +2446,8 @@ private struct ProgramTicketEditModal: View {
                     }
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Priority")
-                            .font(AppTypography.font(.controlHeading))
+                            .font(AppTypography.font(.body))
                             .foregroundStyle(ProgramBoardStyle.mutedText)
-                            .textCase(.uppercase)
                         Picker("Priority", selection: $priority) {
                             ForEach(Ticket.Priority.allCases, id: \.rawValue) { priority in
                                 Text(priority.rawValue.displayLabel).tag(priority)
@@ -2535,9 +2535,8 @@ private struct ProgramEditTextArea: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(AppTypography.font(.controlHeading))
+                .font(AppTypography.font(.body))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
-                .textCase(.uppercase)
 
             TextEditor(text: $text)
                 .font(AppTypography.font(.field))
@@ -2557,18 +2556,17 @@ private struct ProgramTicketTitleField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Title")
-                .font(AppTypography.font(.controlHeading))
+                .font(AppTypography.font(.body))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
-                .textCase(.uppercase)
 
-            TextField("Enter ticket title", text: $text, axis: .vertical)
-                .font(AppTypography.font(.screenTitle))
+            TextField("Enter ticket title", text: $text)
+                .font(AppTypography.font(.field))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
                 .textFieldStyle(.plain)
                 .focused($isFocused)
-                .lineLimit(1...3)
+                .lineLimit(1)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
                 .background(ProgramTicketFieldBackground())
         }
         .onAppear { isFocused = true }
@@ -2707,15 +2705,11 @@ private struct ProgramTicketCreateModal: View {
                 ProgramIconButton(systemName: "xmark", help: "Cancel new ticket", action: onCancel)
             }
 
-            BoardOverlayScrollView(
-                contentInsets: EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 10)
-            ) {
-                VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Project")
-                        .font(AppTypography.font(.controlHeading))
+                        .font(AppTypography.font(.body))
                         .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .textCase(.uppercase)
                     ProgramTicketProjectPicker(
                         projects: projects,
                         selection: $selectedProjectPath
@@ -2738,15 +2732,14 @@ private struct ProgramTicketCreateModal: View {
                 ProgramEditTextArea(
                     title: "Description",
                     text: $description,
-                    minHeight: 190,
-                    maxHeight: 280
+                    minHeight: ProgramTicketPanelStyle.createDescriptionHeight,
+                    maxHeight: ProgramTicketPanelStyle.createDescriptionHeight
                 )
 
                 ProgramTicketImageSelector(
                     existingPaths: [],
                     selectedURLs: $imageURLs
                 )
-                }
             }
 
             HStack(spacing: 8) {
@@ -2794,15 +2787,14 @@ private struct ProgramExecutionModePicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Execution mode")
-                .font(AppTypography.font(.controlHeading))
+                .font(AppTypography.font(.body))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
-                .textCase(.uppercase)
             HStack(spacing: 0) {
                 ForEach(Array(Ticket.ExecutionMode.allCases.enumerated()), id: \.element.rawValue) { index, mode in
                     if index > 0 {
                         Rectangle()
                             .fill(BoardDarkSurfaceStyle.border)
-                            .frame(width: 1, height: 34)
+                            .frame(width: 1, height: SharedActionButtonMetrics.controlHeight)
                     }
                     ProgramExecutionModeButton(
                         mode: mode,
@@ -2812,6 +2804,7 @@ private struct ProgramExecutionModePicker: View {
                 }
             }
             .frame(maxWidth: 360)
+            .frame(height: SharedActionButtonMetrics.controlHeight)
             .background(ProgramTicketFieldBackground())
             .clipShape(
                 RoundedRectangle(
@@ -2842,7 +2835,7 @@ private struct ProgramExecutionModeButton: View {
                         ? ProgramBoardStyle.primaryText
                         : ProgramBoardStyle.secondaryText
                 )
-                .frame(maxWidth: .infinity, minHeight: 34)
+                .frame(maxWidth: .infinity, minHeight: SharedActionButtonMetrics.controlHeight)
                 .background(backgroundColor)
                 .contentShape(Rectangle())
         }
@@ -2870,9 +2863,8 @@ private struct ProgramTicketImageSelector: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text("Images")
-                    .font(AppTypography.font(.controlHeading))
+                    .font(AppTypography.font(.body))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .textCase(.uppercase)
                 Spacer(minLength: 0)
                 ProgramWorkspaceActionButton(
                     title: "Add images",
