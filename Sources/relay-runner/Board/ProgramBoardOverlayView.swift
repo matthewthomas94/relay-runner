@@ -769,74 +769,33 @@ private struct ProgramAddProjectMenu: View {
     let onCreateProject: () -> Void
 
     var body: some View {
-        ProgramWorkspaceActionButton(
-            title: title,
-            systemName: "plus",
-            accessibilityLabel: "Add project",
-            help: "Add an existing project or create a new project"
-        ) {
-            ProgramAddProjectMenuPresenter.present(
-                onAddExistingProject: onAddExistingProject,
-                onCreateProject: onCreateProject
-            )
+        Menu {
+            Button("Add existing project", systemImage: "folder.badge.plus") {
+                onAddExistingProject()
+            }
+            Button("Create new project", systemImage: "plus") {
+                onCreateProject()
+            }
+        } label: {
+            HStack(alignment: .center, spacing: SharedActionButtonMetrics.iconSpacing) {
+                Text(title)
+                    .font(AppTypography.font(.programAction))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(ProgramBoardStyle.primaryText)
+            .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+            .frame(height: SharedActionButtonMetrics.controlHeight)
         }
-    }
-}
-
-private enum ProgramAddProjectMenuPresenter {
-    private final class Target: NSObject {
-        let onAddExistingProject: () -> Void
-        let onCreateProject: () -> Void
-
-        init(
-            onAddExistingProject: @escaping () -> Void,
-            onCreateProject: @escaping () -> Void
-        ) {
-            self.onAddExistingProject = onAddExistingProject
-            self.onCreateProject = onCreateProject
-        }
-
-        @objc func addExistingProject() {
-            onAddExistingProject()
-        }
-
-        @objc func createProject() {
-            onCreateProject()
-        }
-    }
-
-    static func present(
-        onAddExistingProject: @escaping () -> Void,
-        onCreateProject: @escaping () -> Void
-    ) {
-        let target = Target(
-            onAddExistingProject: onAddExistingProject,
-            onCreateProject: onCreateProject
-        )
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-
-        let addExistingItem = NSMenuItem(
-            title: "Add existing project",
-            action: #selector(Target.addExistingProject),
-            keyEquivalent: ""
-        )
-        addExistingItem.image = NSImage(systemSymbolName: "folder.badge.plus", accessibilityDescription: nil)
-        addExistingItem.target = target
-        menu.addItem(addExistingItem)
-
-        let createItem = NSMenuItem(
-            title: "Create new project",
-            action: #selector(Target.createProject),
-            keyEquivalent: ""
-        )
-        createItem.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
-        createItem.target = target
-        menu.addItem(createItem)
-
-        _ = withExtendedLifetime(target) {
-            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .programControlChrome(shape: .rounded(SharedActionButtonMetrics.cornerRadius))
+        .programButtonCursor(enabled: true)
+        .accessibilityLabel("Add project")
+        .help("Add an existing project or create a new project")
     }
 }
 

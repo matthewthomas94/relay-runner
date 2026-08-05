@@ -162,7 +162,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(disabled.accessibilityLabel, "Edit ticket")
     }
 
-    func testWorkspaceBoardUsesSettingsStyleAddProjectButtonAndSharedTicketActions() throws {
+    func testWorkspaceBoardUsesNativeAddProjectDropdownAndSharedTicketActions() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -172,14 +172,15 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         XCTAssertTrue(contents.contains("ProgramAddProjectMenu("))
         XCTAssertTrue(contents.contains("title: presentation.actionTitle"))
-        XCTAssertTrue(contents.contains(
-            "title: \"Add existing project\""
-        ))
-        XCTAssertTrue(contents.contains(
-            "title: \"Create new project\""
-        ))
+        XCTAssertTrue(contents.contains("Menu {"))
+        XCTAssertTrue(contents.contains("Button(\"Add existing project\", systemImage: \"folder.badge.plus\")"))
+        XCTAssertTrue(contents.contains("Button(\"Create new project\", systemImage: \"plus\")"))
+        XCTAssertTrue(contents.contains("Image(systemName: \"chevron.down\")"))
+        XCTAssertTrue(contents.contains(".frame(height: SharedActionButtonMetrics.controlHeight)"))
+        XCTAssertTrue(contents.contains(".menuStyle(.borderlessButton)"))
+        XCTAssertTrue(contents.contains(".menuIndicator(.hidden)"))
+        XCTAssertFalse(contents.contains("ProgramAddProjectMenuPresenter"))
         XCTAssertTrue(contents.contains("ProgramWorkspaceActionButton("))
-        XCTAssertFalse(contents.contains(".menuStyle(.borderlessButton)"))
         XCTAssertTrue(contents.contains("ProgramEditCapsuleButton("))
         XCTAssertTrue(contents.contains("presentation: ProgramEditButtonPresentation.resolve("))
         XCTAssertFalse(contents.contains("showsEditButton"))
