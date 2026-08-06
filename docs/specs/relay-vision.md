@@ -1,42 +1,33 @@
-# Relay Vision — Specification
+# Relay Vision
 
-**Created:** 2026-05-26
 **Status:** Implemented
-**Owner:** matthewthomas94
 
-> Relay Vision is the **screen-observation** half of the Relay stack, split out of [Relay Actions](relay-actions.md) in RR-10. Relay Actions keeps *manipulation* (`click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`); Relay Vision owns *observation*. The split keeps "looking at the screen" and "acting on the screen" as separate tool families so prompts and CLAUDE.md guidance can address each cleanly.
+Relay Vision is Relay Runner's screen-observation MCP service. It is intentionally separate from [Relay Actions](relay-actions.md), which owns screen manipulation and window introspection.
 
-## Goal
+## Capability
 
-Give voice-driven agents (Codex or Claude) a clean, separately-namespaced way to *see* the screen — without bundling observation into the manipulation tool family. The user-facing voice intent "look at my screen" routes to `mcp__relay-vision__screenshot`.
+The current `relay-vision-mcp` server exposes one tool:
 
-## Scope
+- `screenshot(display_index?: int)` captures a connected display as a base64 PNG. Display `0` is the default primary display. The response includes the native pixel dimensions used by Relay Actions click and scroll coordinates.
 
-Initial scope is exactly one tool, moved verbatim from Relay Actions with behavioral parity:
+Relay Vision excludes Relay Runner overlay windows from the capture policy where the app can identify them, hides the pointer in the returned frame, and returns a descriptive MCP error when the display index is invalid or capture fails.
 
-- **`screenshot(display_index?: int)`** — Capture a connected display and return a base64-encoded PNG plus a sibling text block with the captured pixel dimensions. Defaults to the primary display (`display_index: 0`). Pixel dimensions match `NSScreen.frame × backingScaleFactor` (native pixels), the same coordinate space the Relay Actions `click`/`scroll` tools consume. Returns a descriptive error string (not a crash) when Screen Recording permission is missing or capture fails.
+## Permission and process boundary
 
-The namespace is designed to grow — future observation tools could include region reads or text extraction — but those are **out of scope** for the initial split.
+The MCP executable forwards the request through a local socket to Relay Runner.app. The app performs ScreenCaptureKit capture so macOS attributes Screen Recording to **Relay Runner**, not Codex, Claude, Terminal, or an editor.
 
-## Architecture
+If Screen Recording is absent, Relay Runner requests the grant and returns recovery instructions when it remains unavailable. macOS can require Relay Runner to quit and relaunch after the permission changes. Microphone transcription, local speech, and non-visual Relay Actions do not require Screen Recording.
 
-- **`Sources/relay-vision-mcp/`** — a standalone Swift executable MCP target, mirroring `Sources/relay-actions-mcp/`. Hand-rolled JSON-RPC 2.0 over stdio (initialize / tools/list / tools/call), single-threaded. Server name `relay-vision`.
-- Reuses the same permission-preflight, parent-process detection, and menu-bar-notification helpers as Relay Actions (the same `PermissionPreflight`, `ParentProcess`, and `ConfirmationClient` patterns).
-- **ActionGlow parity:** the server fires the same `tool_fired` notification (same name and payload shape, same `/tmp/relay_actions.sock`) after every successful tool call, so the ActionGlow perimeter overlay pulses on screenshot calls with no overlay changes.
+A screenshot is local until the tool is invoked. Its image result is returned to the requesting Codex or Claude session and can therefore reach that provider. Do not capture private or unrelated applications when they are not needed for the request.
 
-## Registration & packaging
+## ActionGlow
 
-- Registered by `scripts/relay-bridge` with each available supported agent CLI: `claude mcp add -s user relay-vision -- <binary>` for Claude and `codex mcp add relay-vision -- <binary>` for Codex. Each path is gated on the matching `mcp get` probe, mirroring the `relay-actions` registration.
-- Bundled into the `.app` and codesigned by `scripts/build-dmg.sh`, alongside `relay-actions-mcp` and `relay-orchestrator-mcp`. TCC attribution falls on the bundle (Screen Recording prompts read "Relay Runner").
+Every successful screenshot sends the same local `tool_fired` notification used by Relay Actions. ActionGlow pulses around the screen edge and then decays. The glow is a visible signal that observation occurred, not a confirmation gate or proof of the requested higher-level outcome.
 
-## Acceptance
+## Registration and packaging
 
-- [ ] `mcp__relay-vision__screenshot` is discoverable by Codex and Claude when those CLIs are installed and returns an image + dimensions block identical to the pre-split `mcp__relay-actions__screenshot`.
-- [ ] ActionGlow pulses on a `relay-vision` screenshot, identically to before the split.
-- [ ] The old `mcp__relay-actions__screenshot` tool no longer exists; the remaining Relay Actions tools still pulse ActionGlow.
-- [ ] Screen Recording denial returns a descriptive error string naming the terminal/IDE to grant, not a crash.
+`scripts/relay-bridge` idempotently registers the bundled `relay-vision-mcp` binary with every available supported provider. `scripts/build-dmg.sh` builds, embeds, and signs it alongside the Relay Actions and orchestrator helpers.
 
-## Non-goals
+Codex and Claude receive the same screenshot schema, app-hosted permission ownership, coordinate space, errors, and ActionGlow behavior. Provider differences are limited to MCP registration commands and the surrounding provider CLI data policies.
 
-- Region reads, text extraction, screenshot history/diff/annotate — deferred until a concrete need appears.
-- Any change to the ActionGlow overlay itself.
+Region capture, OCR, screenshot history, annotation, and automatic background observation are not current capabilities.

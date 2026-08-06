@@ -1,190 +1,44 @@
-# Relay Actions — Specification
+# Relay Actions
 
-**Created:** 2026-05-03
-**Status:** Implemented (with one deviation — see below)
-**Owner:** matthewthomas94
+**Status:** Implemented
 
-> **Deviation from this spec:** the `propose_action(risk: medium|high)` double-tap confirmation flow described below was implemented but **abandoned in practice.** The double-tap Option/Control modifier gestures are bound to play/cancel TTS, and repurposing them for action confirmation produced a dual-binding that caused real UX problems. The current policy is: state-changing Relay Actions tools execute directly; if the model needs user permission for a genuinely high-stakes action, it asks via a normal chat message rather than via `propose_action`. The `propose_action` tool is still registered in the MCP server but should not be called — see [CLAUDE.md](../../CLAUDE.md) for the live guidance.
->
-> ActionGlow (the perimeter-glow overlay) is unchanged: it still pulses whenever any Relay Actions tool fires, as a visual signal that screen control is happening. It is no longer a confirmation surface.
->
-> **Scope split (RR-10):** the `screenshot` *observation* tool described below was moved out of Relay Actions into a separate **Relay Vision** namespace (`mcp__relay-vision__screenshot`) so observation and manipulation are distinct tool families. Relay Actions now ships manipulation only — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`. See [relay-vision.md](relay-vision.md) for the observation spec. ActionGlow pulses identically for both servers (same `tool_fired` notification). The screenshot design details below are retained as the original record; the implementation now lives in `Sources/relay-vision-mcp/`.
->
-> **Provider-aware update (RR-24):** Relay Actions is no longer Claude-only. `scripts/relay-bridge` registers the `relay-actions` MCP server with each available supported agent CLI: `claude mcp add -s user relay-actions -- <binary>` for Claude and `codex mcp add relay-actions -- <binary>` for Codex. Current users should read the older Claude-specific prose below as original design history unless a line explicitly describes current registration or discovery behavior.
->
-> The rest of this document is left intact as the original design record.
+Relay Actions is Relay Runner's screen-manipulation and window-introspection MCP service. Relay Vision owns screenshot observation in a separate namespace. Both are registered for available Codex and Claude CLIs and forward privileged work to Relay Runner.app.
 
-## Goal
+## Capabilities
 
-Voice-driven agents (Codex or Claude) can drive the macOS UI for two specific use cases — UAT of in-development software and configuring dense dashboards that lack CLI/MCP interfaces (e.g. Apple Developer site, Xcode preferences), with a purple perimeter overlay (ActionGlow) while screen-control tools are active. The existing voice → STT → configured agent CLI → TTS loop is unchanged when no Relay Actions tools are invoked.
+The current `relay-actions-mcp` server exposes:
 
-## Background
+- `click` — click or double-click a screen coordinate with an optional button and modifiers;
+- `type` — type text into the focused application;
+- `key` — send a key or modifier combination;
+- `scroll` — send horizontal or vertical scroll input;
+- `frontmost_app` — identify the focused application;
+- `list_windows` — list visible application windows and frames;
+- `activate_project` — select a known registered project through the app-owned project route;
+- `toggle_board` — open or close the project Work surface.
 
-In the original design, voice prompts went through `voice_bridge.py` to `claude --dangerously-skip-permissions` ([services/voice_bridge.py:70](../../services/voice_bridge.py)). Relay Runner now launches the configured provider (Codex by default, Claude when selected) and uses the provider-specific bypass flag when bypass is enabled. That gives the active agent its normal tools but no built-in way to see the screen, click, or type into other apps.
+`propose_action` remains registered for protocol compatibility with older clients, but current Relay instructions explicitly tell agents not to call it. Its abandoned modifier-double-tap confirmation flow conflicts with the same gestures used for voice playback. It is not part of the supported user workflow.
 
-Anthropic's Claude Cowork solves the same problem via MCP servers (`mcp__computer-use__*`, `mcp__Claude_in_Chrome__*`) bundled with the Claude Desktop app. Those servers are not publicly distributed, so we build our own narrow equivalent — a Swift-native MCP server scoped to UAT and dashboard config — and register it with the available supported agent CLIs.
+## Permission and process boundary
 
-Existing project assets we will reuse:
-- Full-screen transparent overlay panel at `screenSaver` level ([Sources/relay-runner/Overlay/OverlayPanel.swift:15](../../Sources/relay-runner/Overlay/OverlayPanel.swift))
-- Particle-field renderer with `.tts` purple theme ([Sources/relay-runner/Overlay/ParticleFieldRenderer.swift:12](../../Sources/relay-runner/Overlay/ParticleFieldRenderer.swift))
-- Central state machine ([Sources/relay-runner/Overlay/StateMachine.swift](../../Sources/relay-runner/Overlay/StateMachine.swift))
-- Modifier double-tap monitoring for Option (play) and Control (cancel) ([Sources/relay-runner/STT/CapsLockGesture.swift:189-212](../../Sources/relay-runner/STT/CapsLockGesture.swift))
-- Accessibility permission already requested ([Sources/relay-runner/Permissions/PermissionsManager.swift:30](../../Sources/relay-runner/Permissions/PermissionsManager.swift))
-- Bundled-CLI installer with extension points ([scripts/relay-bridge:567](../../scripts/relay-bridge))
-- Unix datagram state-event socket pattern at `/tmp/voice_state.sock`
+The MCP executable is a JSON-RPC adapter. Accessibility-gated operations run in Relay Runner.app through its local hosted-tool socket so macOS attributes the grant to **Relay Runner**, not to Codex, Claude, Terminal, or an editor.
 
-## Architecture (locked decisions)
+Without Accessibility, manipulation and accessibility-based introspection return a descriptive error. Voice recording and speech still work from the app's available controls. Input Monitoring can provide listen-only global-shortcut behavior but does not grant Relay Actions control.
 
-These were resolved during the feasibility discussion and are not open for re-litigation in implementation:
+Relay Actions does not capture screenshots. That requires the separately registered [Relay Vision](relay-vision.md) service and Screen Recording permission.
 
-| Decision                      | Choice                                                                                |
-|-------------------------------|---------------------------------------------------------------------------------------|
-| Implementation path           | Native Swift MCP server in this repo (not community MCP, not direct Anthropic API)    |
-| Confirmation modality         | Hardware double-tap, modal: Option = yes, Control = no                                |
-| Overlay color                 | Reuse existing `.tts` purple — no new theme                                           |
-| State ownership               | Single source of truth in `StateMachine` (new `.actionGlow(...)` state)           |
-| MCP transport                 | stdio between `RelayActionsMCP` ↔ the supported agent CLI (Codex or Claude)           |
-| Cross-process state           | New Unix socket between `RelayActionsMCP` ↔ menu-bar app for events + confirm replies |
-| MCP server lifecycle          | Spawned per-session by the agent CLI; menu-bar app does not own it                    |
-| Existing tool permissions     | Provider-specific permission bypass stays on when enabled                             |
-| New tool permissions          | Relay Actions tools gated by `propose_action`, not the host CLI's permission system   |
-| Confirmation timeout          | 30s; default to "no" / aborted on timeout                                             |
-| Perimeter glow scope          | All connected screens (user may not be looking at the screen the agent is acting on)  |
-| Vision-active decay           | 10s after last MCP tool call; immediate clear on `/relay-stop` or session end         |
-| Confirmation surface          | Reuse the existing pill for proposal text                                             |
-| Risk tiering                  | `propose_action` accepts `risk: low | medium | high`; `low` auto-confirms with brief visual flash (no double-tap); `medium`/`high` require double-tap |
+## ActionGlow and confirmation behavior
 
-## Requirements
+Every successful Relay Actions call sends a local `tool_fired` notification to the app. ActionGlow pulses around the screen edge and decays after the activity window. It is a visible signal that the tool ran, not proof that the target application accepted the input and not a confirmation gate.
 
-1. **MCP server target & bundling**: A new Swift executable target speaks MCP over stdio.
-   - Current: No MCP server target exists in `Package.swift`. Only the `relay-runner` executable target is built.
-   - Target: New `RelayActionsMCP` SPM executable target. Built binary is bundled inside `Relay Runner.app/Contents/MacOS/relay-actions-mcp` (or equivalent path). DMG produced by `scripts/build-dmg.sh` includes the binary.
-   - Acceptance: `swift build` produces a `relay-actions-mcp` binary; running `Relay\ Runner.app/Contents/MacOS/relay-actions-mcp` returns a valid MCP server initialization response over stdio (verified with a mock MCP client).
+Starting a Relay session authorizes ordinary use of the tools within the user's request and the provider's configured permissions. For an irreversible, externally visible, financial, destructive, or otherwise consequential action whose intent is unclear, the foreground agent asks in normal conversation and waits for an explicit answer. Confirmation must not be routed through `propose_action` or an unrelated native computer-control prompt.
 
-2. **Screenshot tool**: The active agent can capture the screen.
-   - Current: The agent has no way to see what's on screen.
-   - Target: MCP tool `screenshot(display?: string, region?: rect)` returns a base64 PNG. Uses ScreenCaptureKit. Default = primary display, full frame. Returns error string (not crash) when Screen Recording permission is missing or target is DRM-protected.
-   - Acceptance: Tool call returns valid PNG bytes for primary display; returns descriptive error (not crash) when permission denied; image dimensions match the requested display's pixel resolution.
+## Coordinate and error behavior
 
-3. **Input event tools**: The active agent can click, type, press keys, and scroll.
-   - Current: No mechanism for the agent to drive UI input.
-   - Target: MCP tools `click(x, y, button?, modifiers?)`, `type(text)`, `key(combo)`, `scroll(x, y, dx, dy)` post CGEvents to the system event stream. Coordinates are in screen-space pixels matching the most recent screenshot.
-   - Acceptance: For each tool, a recorded test (e.g. click on a known menu-bar coordinate, type into TextEdit, press cmd+a, scroll in a Safari window) produces the expected observable system change.
+Click coordinates use the same native-pixel display space returned by Relay Vision. Window frames are derived from macOS workspace and accessibility APIs. Tool errors are returned as MCP error content rather than crashing the server. A successful transport response does not prove the requested higher-level outcome; callers should inspect the target state when that outcome matters.
 
-4. **Window introspection tools**: The active agent can identify what's on screen without a screenshot.
-   - Current: No structured way to enumerate apps/windows.
-   - Target: MCP tools `frontmost_app()` (returns `{name, bundle_id, pid}`) and `list_windows()` (returns array of `{app_name, window_title, frame, on_screen}`) using NSWorkspace + AX APIs.
-   - Acceptance: `frontmost_app()` matches the user's currently focused app; `list_windows()` returns at least the windows visible in a screenshot taken at the same instant.
+## Registration and packaging
 
-5. **`propose_action` confirmation tool**: Relay Actions tools that touch state are gated by an explicit user confirmation step.
-   - Current: No confirmation mechanism exists. The host CLI's permission system may be bypassed for voice flow.
-   - Target: MCP tool `propose_action(summary: string, risk: "low"|"medium"|"high")`. Behavior: `low` returns `{confirmed: true}` after sending a brief visual flash event to the menu-bar app (~300ms); `medium` and `high` block waiting on user double-tap, returning `{confirmed: true}` on Option-double-tap, `{confirmed: false, reason: "user_rejected"}` on Control-double-tap, `{confirmed: false, reason: "timeout"}` after 30s of no input.
-   - Acceptance: Calling with `risk: "low"` returns within 500ms with `confirmed: true`; calling with `risk: "high"`, then double-tapping Option, returns `confirmed: true`; double-tapping Control returns `confirmed: false, reason: "user_rejected"`; no input for 30s returns `confirmed: false, reason: "timeout"`.
+`scripts/relay-bridge` idempotently registers the bundled `relay-actions-mcp` binary for every available supported provider. `scripts/build-dmg.sh` builds, embeds, and signs the helper alongside `relay-vision-mcp` and `relay-orchestrator-mcp`.
 
-6. **MCP auto-registration**: The bundled CLI install flow registers the MCP server.
-   - Current: `scripts/relay-bridge` installs Relay skills for Codex and Claude and registers Relay MCP servers with each available supported CLI.
-   - Target: After CLI install, the script writes an MCP server entry pointing to the absolute path of `relay-actions-mcp` inside the `.app`. It uses `claude mcp add -s user` for Claude and `codex mcp add` for Codex. Registration is idempotent (does not duplicate on re-run) and does not clobber unrelated MCP entries.
-   - Acceptance: Fresh install on a clean machine with Codex and Claude available configures both CLIs to launch `relay-actions-mcp` on session start. Running either CLI and asking "what tools do you have?" lists the new MCP tools. Re-running the installer does not duplicate the entry.
-
-7. **Modal double-tap confirmation gestures**: When a confirmation is pending, Option/Control double-tap means yes/no instead of play/cancel.
-   - Current: Option double-tap = `__PLAY__`; Control double-tap = `__CANCEL__` ([CapsLockGesture.swift:189-212](../../Sources/relay-runner/STT/CapsLockGesture.swift)). No notion of confirmation state.
-   - Target: `CapsLockGesture` consults `StateMachine`. If `state == .actionGlow(awaitingConfirmation: prompt)` is set, double-tap Option resolves the pending prompt with `confirmed: true` and double-tap Control resolves it with `confirmed: false`. Neither emits the existing `__PLAY__`/`__CANCEL__` while a confirmation is pending. When no confirmation is pending, gestures behave exactly as today.
-   - Acceptance: With no confirmation pending, double-tap Option still triggers TTS playback (verified by existing `__PLAY__` path); with a confirmation pending, double-tap Option resolves the prompt and does NOT trigger playback; same for Control double-tap respectively.
-
-8. **Perimeter overlay**: Purple particle band around all connected screens while ActionGlow is active.
-   - Current: `OverlayPanel` is a full-screen `screenSaver`-level panel, but renders only the centered transcription pill ([OverlayPanel.swift:5-26](../../Sources/relay-runner/Overlay/OverlayPanel.swift)).
-   - Target: A new `PerimeterOverlay` view renders a ~24pt-thick band along the perimeter of every connected screen, using the existing `.tts` purple particle theme ([ParticleFieldRenderer.swift:12](../../Sources/relay-runner/Overlay/ParticleFieldRenderer.swift)). Visible whenever `state == .actionGlow(...)`. Brightness/intensity pulses higher when `awaitingConfirmation` is non-nil. Click-through (does not intercept input).
-   - Acceptance: After the agent calls any Relay Actions MCP tool, the perimeter band appears on every connected screen within 100ms and uses the `.tts` purple. Mouse clicks pass through it to underlying apps. Band intensity visibly pulses while a confirmation is pending. Band clears within 100ms of the 10s decay window expiring or `/relay-stop` running.
-
-9. **Screen Recording permission flow**: First-run UX explains and routes the user to grant Screen Recording to Relay Runner.
-   - Current: `PermissionsManager` manages microphone, accessibility, input-monitoring, and screen-recording status for the Relay Runner app.
-   - Target: Relay Vision MCP forwards `screenshot` to the app-hosted tool path. The app process performs ScreenCaptureKit capture, so TCC attribution belongs to Relay Runner rather than the terminal, IDE, Codex, or Claude host. The app degrades gracefully if denied: the `screenshot` tool returns a clear error string and voice features remain available.
-   - Acceptance: On a fresh install, denying Screen Recording does not crash the app or block voice features; calling the `screenshot` tool from voice returns a message that names Relay Runner as the app to grant and includes the Relay Runner relaunch step macOS may require.
-
-10. **Risk-tiered confirmation**: Read-only or low-blast-radius actions auto-confirm; state-changing actions require double-tap.
-    - Current: N/A (no actions exist yet).
-    - Target: `propose_action` requires the agent to classify each action. The system prompt or tool description guides classification: `low` = reversible/read-only (taking a screenshot, scrolling, hovering, reading window titles); `medium` = single-step state changes (clicking a button, typing into a field, pressing a key combo); `high` = irreversible or destructive (pressing Enter on a confirmation dialog, clicking buttons whose label includes Delete/Submit/Send/Pay/Confirm, sending keystrokes that would bypass a system dialog).
-    - Acceptance: A test session that has the agent take 5 screenshots and 5 scrolls produces zero double-tap requirements. A test session that has the agent click a non-destructive button produces a medium-risk prompt resolvable by double-tap. A test session that has the agent click a destructive-labeled button produces a high-risk prompt.
-
-11. **Existing voice loop unchanged in absence of Relay Actions tools**: Adding Relay Actions does not regress the existing experience.
-    - Current: Voice → STT → configured agent CLI → TTS works as documented in [README.md](../../README.md).
-    - Target: A voice session that does not invoke any Relay Actions MCP tool has identical perceived latency, identical pill behavior, identical gestures, and no perimeter overlay.
-    - Acceptance: Running a regression script of 10 prompts that don't touch Relay Actions tools (e.g. "what time is it", "summarize the last commit", "what files changed today") shows: no perimeter overlay, double-tap Option still plays TTS, double-tap Control still cancels, end-to-end latency within ±10% of baseline.
-
-## Boundaries
-
-**In scope:**
-- New `RelayActionsMCP` Swift SPM executable bundled in the `.app`.
-- The 8 MCP tools listed: `screenshot`, `click`, `type`, `key`, `scroll`, `frontmost_app`, `list_windows`, `propose_action`.
-- Pixel-based interaction with browser windows (treats Safari/Chrome as another macOS app).
-- Auto-registration of the MCP server during bundled-CLI install.
-- Modal hardware double-tap confirmation reusing existing Option/Control gestures.
-- Purple perimeter overlay on all connected screens, reusing the existing `.tts` particle theme.
-- Screen Recording permission added to PermissionsManager + Info.plist.
-- Risk-tiered confirmation (low/medium/high) with `low` auto-confirming.
-- Graceful failure modes (errors returned to the agent, no crashes).
-- Compatibility with both menu-bar mode and `/relay-bridge` slash-command mode.
-
-**Out of scope** (reason in italics):
-- DOM-aware browser automation via Chrome extension MCP — *pixel-based works for v1; defer until pixel approach proves insufficient for the stated use cases.*
-- App-specific MCP integrations (Mail, Slack, Calendar, Granola) — *Cowork's value-add; not needed for UAT or dashboard config.*
-- Cross-app multi-step workflow orchestration in Relay Runner — *the agent can chain tool calls itself; orchestration belongs in the model, not the host.*
-- Per-app tier restrictions ("browsers read-only, terminals click-only") — *defer until a real safety incident motivates the complexity.*
-- Recorded UAT scripts / replay — *future feature; out of v1 scope.*
-- Screenshot history / diff / annotate tools — *start without; add only if agent session memory loses earlier screenshots in practice.*
-- Per-app permission gating UI — *the global Screen Recording + Accessibility grants cover all apps; per-app TCC enforcement is macOS's job.*
-- Voice-spoken confirmation as an alternative to double-tap — *spoofable by TTS audio; intentionally avoided.*
-- Headless / unattended mode — *the whole point is interactive confirmation; no value in unattended.*
-
-## Constraints
-
-- **Coordinates must match screenshot pixels.** Whatever coordinate space `screenshot` returns must be the same space `click(x, y)` consumes. On Retina displays this means clarifying logical-points vs. backing-pixels and picking one consistently. Documented in the MCP tool descriptions.
-- **No new heavyweight dependencies.** ScreenCaptureKit, CGEvent, NSWorkspace, AX, and JSON-over-stdio are sufficient. No SwiftPM additions for an MCP framework — we write the protocol layer ourselves (it's small) or vendor the smallest viable Swift MCP package after evaluating size and maintenance.
-- **Latency budget for `propose_action(low)`.** ≤ 500ms round-trip including the visual flash; otherwise UAT becomes painful.
-- **Latency budget for `screenshot`.** ≤ 1s round-trip on 5K display, ideally ≤ 500ms. Using ScreenCaptureKit's stream-frame API rather than full-frame capture if needed.
-- **Compatibility with existing permission-bypass flags.** The Swift MCP server must work when the host CLI is run with the provider-specific bypass flag. Confirmation is enforced inside `propose_action`, not by the host CLI's permission system.
-- **No leak of voice content.** Pixel data from screenshots stays on-device; the on-device promise from [README.md](../../README.md) extends to vision.
-
-## Acceptance Criteria
-
-- [ ] `swift build` succeeds with new `RelayActionsMCP` target.
-- [ ] DMG built by `scripts/build-dmg.sh` contains `relay-actions-mcp` binary inside the `.app`.
-- [ ] Running `relay-actions-mcp` standalone returns a valid MCP `initialize` response over stdio.
-- [ ] Fresh install on a clean machine (or `RELAY_FORCE_RELOCATABLE_PYTHON=1` test path) registers the MCP server with each available supported agent CLI (Codex and/or Claude); re-running the installer does not duplicate the entry.
-- [ ] All 8 MCP tools (`screenshot`, `click`, `type`, `key`, `scroll`, `frontmost_app`, `list_windows`, `propose_action`) are discoverable by Codex and Claude when those CLIs are installed and behave per Acceptance lines in Requirements §1–5.
-- [ ] Voice prompt: *"Take a screenshot of the front window."* → screenshot tool fires, image returned, TTS confirms.
-- [ ] Voice prompt: *"Click the Apple menu in the top-left."* → `propose_action(risk: medium)` fires, perimeter pulses, double-tap Option resolves it, `click` fires, the Apple menu opens.
-- [ ] Voice prompt: *"Walk through the new checkout flow in my staging app and tell me if anything looks broken."* → multi-step screenshot/click loop, each state-changing step gated by double-tap, TTS reports findings at the end.
-- [ ] Voice prompt: *"Open Apple Developer and turn off all certificate-expiry email notifications except for production."* → multi-step pixel/click flow on `developer.apple.com`, destructive toggles gated by double-tap, completes without manual intervention beyond confirmations.
-- [ ] Perimeter overlay on every connected screen appears within 100ms of the first MCP tool call; pulses while `awaitingConfirmation` is set; clears within 100ms after 10s of inactivity OR `/relay-stop`.
-- [ ] Click-through verified: a click anywhere on the perimeter band reaches the underlying app.
-- [ ] With no confirmation pending, double-tap Option still triggers TTS playback; with confirmation pending, it resolves the prompt and does NOT trigger playback.
-- [ ] Screen Recording permission flow: denying it on first run produces a clear in-app explanation, `screenshot` tool returns a descriptive error string when called, app does not crash, voice features remain functional.
-- [ ] Regression: 10-prompt non-vision script shows no perimeter overlay, identical gesture behavior, end-to-end latency within ±10% of baseline.
-- [ ] Confirmation timeout: no input for 30s after a `medium`/`high` `propose_action` returns `confirmed: false, reason: "timeout"`.
-- [ ] DRM-protected content (e.g. a fullscreen Netflix tab) returns a descriptive error from `screenshot`, not a crash and not a black image silently.
-
-## Risks & open questions for implementation
-
-These are **not** spec ambiguities — they're known unknowns to flag during planning, not before:
-
-- **Coordinate system on multi-monitor with mixed scale factors.** Screen-pixel coordinates from `screenshot` need to map cleanly to CGEvent coordinates across e.g. one Retina + one external 1× display. Need to verify ScreenCaptureKit + CGEvent agree on origin and scale.
-- **Swift MCP protocol implementation.** No first-party Swift MCP SDK. Choices: vendor a small community Swift MCP package, or hand-roll the JSON-RPC-over-stdio layer (likely under 300 lines). Decide during plan-phase.
-- **CGEvent posting reliability.** Some apps (e.g. games, secure input fields) reject CGEvents. Document the known restrictions; expect Apple's secure-input mode to silently drop typed text into password fields. Acceptable for v1.
-- **Risk classification accuracy.** The agent classifies risk via the tool's `risk` parameter — we trust the model. If classification proves unreliable in practice (e.g. it marks a delete button as `medium`), we add a server-side keyword guard (escalates `medium` → `high` if action summary contains Delete/Send/Submit/Pay/Confirm). Treat as a v1.1 hardening if needed.
-- **Bridge socket contention.** The existing `/tmp/voice_state.sock` is one-way (datagram). The confirmation flow needs request/reply. Likely a separate socket; design during plan-phase.
-- **App-hosted TCC attribution.** Relay Actions and Relay Vision MCP helpers must forward CGEvent and ScreenCaptureKit work to the running Relay Runner app over the local socket. Accessibility and Screen Recording prompts therefore target Relay Runner for both Codex and Claude, while helper-unavailable errors tell the user to start Relay Runner.
-
-## Glossary
-
-- **MCP**: Model Context Protocol — Anthropic's open standard for letting compatible agent clients use external tools via JSON-RPC over stdio (or other transports).
-- **CGEvent**: Quartz Event Services API for posting synthetic mouse/keyboard events on macOS.
-- **ScreenCaptureKit**: Apple's modern screen-capture framework (replaces deprecated CGDisplayStream).
-- **AX**: Accessibility API — used for reading window structure and (optionally) UI element trees.
-- **TCC**: Transparency, Consent, and Control — macOS's privacy permission database.
-- **`/relay-bridge`**: Slash command or Codex skill (defined in [scripts/relay-bridge](../../scripts/relay-bridge)) that runs the voice bridge inside an existing Codex or Claude agent session.
-
----
-
-*Spec drafted: 2026-05-03*
-*Next step: Review and refine with the user, then begin implementation. No GSD discuss/plan phase scaffolding — this is a single-feature plain spec.*
+Codex and Claude receive the same tool schema, app-hosted permission boundary, ActionGlow behavior, and user-confirmation rule. Provider differences are limited to MCP registration commands and the surrounding provider CLI permission model.
