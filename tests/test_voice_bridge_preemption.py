@@ -3455,6 +3455,38 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 self.assertFalse(metadata["preempt_provider"])
                 self.assertEqual(metadata["provider"], provider)
 
+    def test_demo_self_explanation_is_provider_neutral_conversation(self):
+        source_text = (
+            "I'm demoing Relay Runner; please explain what it does to the audience."
+        )
+
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                command = {
+                    "provider": provider,
+                    "relay_command_seq": 10,
+                    "relay_command_id": f"{provider}-demo-10",
+                    "source_text": source_text,
+                }
+
+                resolved = voice_bridge._resolve_voice_work_items(
+                    source_text,
+                    command,
+                    repo_path="/tmp/repo",
+                )
+
+                self.assertEqual(len(resolved), 1)
+                self.assertEqual(resolved[0]["action"].kind, "conversation")
+                self.assertEqual(
+                    resolved[0]["action"].reason,
+                    "relay_runner_self_explanation",
+                )
+                self.assertEqual(
+                    resolved[0]["disposition"].route,
+                    voice_bridge.IntentRoute.CONTINUE_CURRENT,
+                )
+                self.assertEqual(resolved[0]["metadata"]["provider"], provider)
+
     def test_real_same_turn_work_resolves_to_two_provider_neutral_deliveries(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider):

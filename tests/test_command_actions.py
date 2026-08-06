@@ -15,6 +15,7 @@ from command_actions import (  # noqa: E402
     classify_command,
     create_ticket_for_command,
     format_command_for_agent,
+    is_relay_runner_self_explanation,
     resolve_command_action,
 )
 
@@ -76,6 +77,44 @@ class CommandActionsTests(unittest.TestCase):
         self.assertEqual(action.kind, "control")
         self.assertFalse(action.requires_ticket)
         self.assertEqual(action.reason, "orchestration_process_correction")
+
+    def test_relay_runner_self_explanations_stay_in_fast_conversation(self):
+        samples = [
+            "What is Relay Runner?",
+            "Could you explain what Relay Runner is and what it does?",
+            "What is the core functionality of Relay Runner?",
+            "Tell the audience about Relay Runner.",
+            (
+                "I'm demoing Relay Runner right now; please explain what it what "
+                "it does to the audience."
+            ),
+            (
+                "I might add this to the demo: when I present Relay Runner, "
+                "briefly explain it to the audience."
+            ),
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                action = classify_command(sample)
+
+                self.assertTrue(is_relay_runner_self_explanation(sample))
+                self.assertEqual(action.kind, "conversation")
+                self.assertEqual(action.reason, "relay_runner_self_explanation")
+                self.assertFalse(action.requires_ticket)
+
+    def test_relay_runner_project_changes_do_not_use_self_explanation_shortcut(self):
+        samples = [
+            "Change what Relay Runner does when recording commands.",
+            "Add a self-explanation shortcut to Relay Runner.",
+            "Explain how to change Relay Runner's command routing.",
+            "What is Relay Runner's command classification architecture?",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertFalse(is_relay_runner_self_explanation(sample))
+
+        self.assertEqual(classify_command(samples[0]).kind, "create_ticket")
+        self.assertEqual(classify_command(samples[1]).kind, "create_ticket")
 
     def test_negated_stop_status_request_is_not_a_cancel_control(self):
         action = resolve_command_action(

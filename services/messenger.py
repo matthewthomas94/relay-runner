@@ -35,12 +35,19 @@ from codex_model_catalog import (
     resolve_codex_effort,
     resolve_codex_family_from_cli,
 )
+from command_actions import is_relay_runner_self_explanation
 
 CODEX_DEFAULT_MODEL = CODEX_MESSENGER_DEFAULT_FAMILY
 CODEX_DEFAULT_EFFORT = CODEX_PROVIDER_DEFAULT_EFFORT
 CLAUDE_DEFAULT_MODEL = "best"
 CLAUDE_DEFAULT_EFFORT = "default"
 SILENT_RESPONSE = "__SILENT__"
+RELAY_RUNNER_DEMO_EXPLANATION = (
+    "Relay Runner is a local macOS workspace that turns natural conversation "
+    "into visible, coordinated software work. It organizes requests into tickets, "
+    "runs coding agents in isolated workspaces, and tracks progress through testing, "
+    "review, and integration."
+)
 _REALIZATION_DECISIONS = frozenset({"full", "delta", "suppress"})
 _PROTECTED_LIFECYCLE_ROLES = frozenset({"result", "failure", "blocker", "decision"})
 _LIFECYCLE_ROLES_BY_DETAIL = {
@@ -123,6 +130,12 @@ later authoritative event says so. The notch
 already provides deterministic visual receipt, so do not add a canned spoken
 acknowledgement that ignores the user's actual request.
 You may answer lightweight social conversation when no orchestration is needed.
+When the user asks what Relay Runner is, what it does, or requests a short
+introduction for a demo audience, answer immediately in one or two natural
+sentences. Do not hand that request off or promise a later answer. Describe Relay
+Runner as a local macOS workspace that turns natural conversation into visible,
+coordinated software work through tickets, isolated agent workspaces, and tracked
+testing, review, and integration.
 When a progress event contains a genuinely useful update, give at most two short
 conversational sentences. Skip noisy, repetitive, or low-value updates by
 returning exactly __SILENT__. For an authoritative final reply, convey the
@@ -884,9 +897,13 @@ class MessengerRuntime:
             self._current_command = command_key
             route = str((disposition or {}).get("route") or "").strip().lower()
             action_kind = (
-                "conversation"
-                if route in {"continue_current", "control_only"}
-                else "work"
+                "self_explanation"
+                if is_relay_runner_self_explanation(cleaned)
+                else (
+                    "conversation"
+                    if route in {"continue_current", "control_only"}
+                    else "work"
+                )
             )
             self._action_kinds[command_key] = action_kind
             if len(self._action_kinds) > 100:
@@ -983,6 +1000,10 @@ class MessengerRuntime:
             if command_key is None or command_key != self._current_command:
                 return False
             if command_key in self._final_commands:
+                return True
+            if self._action_kinds.get(command_key) == "self_explanation":
+                self._final_commands.add(command_key)
+                self._context.append(f"AUTHORITATIVE ORCHESTRATOR FINAL: {text}")
                 return True
             self._final_commands.add(command_key)
             if len(self._final_commands) > 100:
@@ -1160,6 +1181,7 @@ class MessengerRuntime:
     def _must_fail_open(self, event: _MessengerEvent) -> bool:
         return (
             event.kind == "orchestrator_final"
+            or event.action_kind == "self_explanation"
             or event.detail == "clarification-request"
             or self._event_is_unscoped_lifecycle(event)
             or event.work_lifecycle
@@ -1193,7 +1215,14 @@ class MessengerRuntime:
                 "concisely without adding unsupported claims."
             ),
         }[event.kind]
-        if event.kind == "orchestrator_trace" and event.detail == "clarification-request":
+        if event.kind == "user_turn" and event.action_kind == "self_explanation":
+            instructions = (
+                "This is Relay Runner's demo-audience self-introduction. Answer it now in one "
+                "or two concise, natural sentences; do not hand it off, promise a later answer, "
+                "or mention internal orchestration. Ground the answer in these facts: "
+                f"{RELAY_RUNNER_DEMO_EXPLANATION}"
+            )
+        elif event.kind == "orchestrator_trace" and event.detail == "clarification-request":
             instructions = (
                 "This is an authoritative clarification request from the orchestrator. Ask the "
                 "user the requested question directly and concisely."
@@ -1326,9 +1355,17 @@ class MessengerRuntime:
         if event.work_lifecycle:
             return "result"
         if event.kind == "user_turn":
-            return "conversation" if event.action_kind == "conversation" else "acknowledgement"
+            return (
+                "conversation"
+                if event.action_kind in {"conversation", "self_explanation"}
+                else "acknowledgement"
+            )
         if event.kind == "orchestrator_final":
-            return "conversation" if event.action_kind == "conversation" else "result"
+            return (
+                "conversation"
+                if event.action_kind in {"conversation", "self_explanation"}
+                else "result"
+            )
         return _LIFECYCLE_ROLES_BY_DETAIL.get(event.detail, "progress")
 
     @classmethod
@@ -1376,11 +1413,16 @@ class MessengerRuntime:
     @staticmethod
     def _fallback_realization(event: _MessengerEvent, reason: str) -> _SpeechRealization:
         role = MessengerRuntime._lifecycle_role_for(event)
+        text = (
+            RELAY_RUNNER_DEMO_EXPLANATION
+            if event.action_kind == "self_explanation"
+            else event.text
+        )
         return _SpeechRealization(
             "full",
-            event.text,
+            text,
             role,
-            (event.text,),
+            (text,),
             reason,
         )
 
@@ -1503,7 +1545,11 @@ class MessengerRuntime:
             kind = "fallback"
         elif event.kind == "user_turn":
             source = "messenger"
-            kind = "handoff"
+            kind = (
+                "conversation"
+                if event.action_kind == "self_explanation"
+                else "handoff"
+            )
         elif event.kind == "orchestrator_final":
             source = event.speech_source or "orchestrator"
             kind = "final"

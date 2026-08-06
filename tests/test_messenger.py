@@ -16,6 +16,7 @@ sys.path.insert(0, SERVICES)
 
 from messenger import (  # noqa: E402
     MESSENGER_SYSTEM_PROMPT,
+    RELAY_RUNNER_DEMO_EXPLANATION,
     ClaudeMessengerBackend,
     CodexMessengerBackend,
     MessengerConfig,
@@ -294,6 +295,75 @@ class MessengerBackendContractTests(unittest.TestCase):
 
 
 class MessengerRuntimeTests(unittest.TestCase):
+    def test_demo_self_explanation_is_answered_directly_without_foreground_duplicate(self):
+        answer = (
+            "Relay Runner is a local Mac workspace for turning conversation into "
+            "visible software work, with tickets, isolated agents, and tracked review."
+        )
+        backend = FakeBackend([answer])
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id, display_text, metadata: spoken.append(
+                (text, seq, command_id, display_text, metadata)
+            ),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {
+                "relay_command_seq": 3,
+                "relay_command_id": "demo-3",
+                # The semantic shortcut remains authoritative even if stale upstream
+                # metadata incorrectly labeled the turn as project work.
+                "work_disposition": {"route": "queue_project_work"},
+            }
+            runtime.submit_user(
+                "I'm demoing Relay Runner; explain what it does to the audience.",
+                command,
+            )
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            self.assertIn("demo-audience self-introduction", backend.prompts[0])
+            self.assertIn(RELAY_RUNNER_DEMO_EXPLANATION, backend.prompts[0])
+            self.assertNotIn("brief contextual acknowledgement", backend.prompts[0])
+            self.assertEqual(spoken[0][0], answer)
+            self.assertEqual(spoken[0][4]["kind"], "conversation")
+            self.assertEqual(spoken[0][4]["lifecycle_role"], "conversation")
+
+            self.assertTrue(runtime.submit_final({
+                "text": "Relay Runner coordinates software work for you.",
+                **command,
+            }))
+            self.assertEqual(len(spoken), 1)
+            self.assertEqual(len(backend.prompts), 1)
+        finally:
+            runtime.shutdown()
+
+    def test_demo_self_explanation_fails_open_to_canonical_answer(self):
+        class FailingBackend(FakeBackend):
+            def ask(self, prompt: str, timeout: float = 60.0) -> str:
+                self.prompts.append(prompt)
+                raise RuntimeError("messenger unavailable")
+
+        backend = FailingBackend()
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            runtime.submit_user(
+                "What is Relay Runner?",
+                {"relay_command_seq": 4, "relay_command_id": "demo-4"},
+            )
+
+            self.assertTrue(wait_until(lambda: spoken == [RELAY_RUNNER_DEMO_EXPLANATION]))
+        finally:
+            runtime.shutdown()
+
     def test_task_user_turn_generates_contextual_handoff_acknowledgement(self):
         backend = FakeBackend(["I picked up the architecture request, and I’ll come back with the next step."])
         spoken: list[tuple[str, int, str]] = []

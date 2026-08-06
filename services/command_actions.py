@@ -72,6 +72,34 @@ ORCHESTRATION_CORRECTION_RE = re.compile(
     r"|\bso\s+(?:i|we)\s+can\s+continue\s+talking\b.*\b(ticket|orchestrator)\b",
     re.IGNORECASE,
 )
+RELAY_RUNNER_NAME_RE = re.compile(r"\b(?:the\s+)?relay\s+runner\b", re.IGNORECASE)
+RELAY_RUNNER_DEMO_CONTEXT_RE = re.compile(
+    r"\b(?:demo(?:ing|nstrat(?:e|ing|ion))?|audience|viewers?)\b",
+    re.IGNORECASE,
+)
+RELAY_RUNNER_EXPLANATION_RE = re.compile(
+    r"\b(?:explain|describe|introduce|summari[sz]e)\b[^.?!]{0,160}"
+    r"\b(?:what(?:\s+it|\s+what\s+it)+\s+(?:is|does)|"
+    r"what\s+(?:the\s+)?relay\s+runner\s+(?:is|does))\b"
+    r"|\b(?:explain|describe|introduce|summari[sz]e)\s+"
+    r"(?:the\s+)?relay\s+runner\s*(?:[?.!]|$)",
+    re.IGNORECASE,
+)
+RELAY_RUNNER_DIRECT_QUESTION_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|okay|ok|so)\b[,!\s]*)*"
+    r"(?:what\s+is\s+(?:the\s+)?relay\s+runner\b(?!['’]s\b)"
+    r"|what\s+does\s+(?:the\s+)?relay\s+runner\s+do\b)",
+    re.IGNORECASE,
+)
+RELAY_RUNNER_OVERVIEW_RE = re.compile(
+    r"\btell\s+(?:me|us|the\s+audience)\s+about\s+(?:the\s+)?relay\s+runner\b"
+    r"|\b(?:give|provide)\b[^.?!]{0,80}\b(?:overview|introduction)\b"
+    r"[^.?!]{0,80}\b(?:the\s+)?relay\s+runner\b"
+    r"|^\s*(?:(?:hey|hi|okay|ok|so)\b[,!\s]*)*what\s+(?:is|are)\s+"
+    r"(?:the\s+)?(?:core\s+)?(?:functionality|capabilities|purpose)\s+of\s+"
+    r"(?:the\s+)?relay\s+runner\b",
+    re.IGNORECASE,
+)
 WORK_RE = re.compile(
     r"\b(add|build|change|clean\s+up|create|debug|delete|design|fix|implement|"
     r"install|make|migrate|refactor|remove|repair|ship|test|update|wire|write)\b",
@@ -193,6 +221,23 @@ def is_control_command(text: str) -> bool:
     )
 
 
+def is_relay_runner_self_explanation(text: str) -> bool:
+    """Return whether a turn asks for Relay Runner's short product introduction."""
+    source = (text or "").strip()
+    if not RELAY_RUNNER_NAME_RE.search(source):
+        return False
+    if (
+        RELAY_RUNNER_EXPLANATION_RE.search(source)
+        or RELAY_RUNNER_DIRECT_QUESTION_RE.search(source)
+        or RELAY_RUNNER_OVERVIEW_RE.search(source)
+    ):
+        return True
+    return bool(
+        RELAY_RUNNER_DEMO_CONTEXT_RE.search(source)
+        and re.search(r"\b(?:explain|describe|introduce|overview)\b", source, re.IGNORECASE)
+    )
+
+
 def classify_command(text: str) -> CommandAction:
     source = (text or "").strip()
     if is_control_command(source):
@@ -224,6 +269,13 @@ def classify_command(text: str) -> CommandAction:
             kind="direct_action",
             source_text=source,
             reason="desktop_control",
+        )
+
+    if is_relay_runner_self_explanation(source):
+        return CommandAction(
+            kind="conversation",
+            source_text=source,
+            reason="relay_runner_self_explanation",
         )
 
     if INLINE_RE.search(source):
