@@ -1836,8 +1836,8 @@ final class AppState {
     }
 
     static let voiceCommandQueuedPresentation = ProgramStatusPresentation(
-        statusText: "Voice command queued",
-        title: "Voice command queued",
+        statusText: "Command queued",
+        title: "Command queued",
         body: "Relay Runner is holding the latest voice command until the active Codex or Claude turn can take it. Speak again to replace the queued command."
     )
 

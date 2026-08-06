@@ -624,7 +624,6 @@ final class RelayVoiceCommandDelivery {
         let barrierStartedAt: Date?
         let reason: SafeBoundaryReason?
         var lastDiagnosticAt: Date
-        var feedbackAttempted: Bool
     }
 
     private enum DeliveryState: Equatable {
@@ -1170,8 +1169,7 @@ final class RelayVoiceCommandDelivery {
                 queuedAt: queuedAt(for: key),
                 barrierStartedAt: nil,
                 reason: nil,
-                lastDiagnosticAt: .distantPast,
-                feedbackAttempted: false
+                lastDiagnosticAt: .distantPast
             )
         }
         let currentTime = now()
@@ -1190,18 +1188,6 @@ final class RelayVoiceCommandDelivery {
             )
             deferral.lastDiagnosticAt = currentTime
         }
-        if !deferral.feedbackAttempted {
-            let published = writeQueuedFeedback(
-                key: key,
-                message: "Voice command queued until terminal input is submitted or cleared."
-            )
-            recordDeliveryEvent(
-                published ? "queued_feedback_published" : "queued_feedback_unavailable",
-                key: key,
-                fields: ["deferral_reason": "terminal_draft"]
-            )
-            deferral.feedbackAttempted = true
-        }
         deliveryState = .blockedByDraft(deferral)
     }
 
@@ -1209,10 +1195,7 @@ final class RelayVoiceCommandDelivery {
         deferForSafeBoundary(
             key: key,
             barrierStartedAt: boundary.startedAt,
-            reason: boundary.reason,
-            message: boundary.reason == .manualSubmission
-                ? "Voice command queued until the terminal turn finishes."
-                : "Voice command queued while terminal input clears safely."
+            reason: boundary.reason
         )
     }
 
@@ -1220,18 +1203,14 @@ final class RelayVoiceCommandDelivery {
         deferForSafeBoundary(
             key: key,
             barrierStartedAt: now(),
-            reason: reason,
-            message: reason == .providerPreemption
-                ? "Voice command queued until provider interruption is confirmed."
-                : "Voice command queued until the active provider turn finishes."
+            reason: reason
         )
     }
 
     private func deferForSafeBoundary(
         key: RelayCommandKey,
         barrierStartedAt: Date,
-        reason: SafeBoundaryReason,
-        message: String
+        reason: SafeBoundaryReason
     ) {
         var deferral: Deferral
         if case .waitingForSafeBoundary(let existing) = deliveryState,
@@ -1244,8 +1223,7 @@ final class RelayVoiceCommandDelivery {
                 queuedAt: queuedAt(for: key),
                 barrierStartedAt: barrierStartedAt,
                 reason: reason,
-                lastDiagnosticAt: .distantPast,
-                feedbackAttempted: false
+                lastDiagnosticAt: .distantPast
             )
         }
         let currentTime = now()
@@ -1262,15 +1240,6 @@ final class RelayVoiceCommandDelivery {
                 fields: fields
             )
             deferral.lastDiagnosticAt = currentTime
-        }
-        if !deferral.feedbackAttempted {
-            let published = writeQueuedFeedback(key: key, message: message)
-            recordDeliveryEvent(
-                published ? "queued_feedback_published" : "queued_feedback_unavailable",
-                key: key,
-                fields: ["deferral_reason": reason.rawValue]
-            )
-            deferral.feedbackAttempted = true
         }
         deliveryState = .waitingForSafeBoundary(deferral)
     }
@@ -1304,25 +1273,6 @@ final class RelayVoiceCommandDelivery {
 
     private func elapsedMilliseconds(since date: Date) -> Int {
         max(0, Int(now().timeIntervalSince(date) * 1_000))
-    }
-
-    @discardableResult
-    private func writeQueuedFeedback(key: RelayCommandKey, message: String) -> Bool {
-        var command: [String: Any] = [
-            "relay_command_seq": key.seq,
-            "relay_command_id": key.id,
-        ]
-        if let provider = key.provider { command["provider"] = provider }
-        var payload: [String: Any] = [
-            "kind": "reasoning-summary",
-            "source": "orchestrator",
-            "message": message,
-            "relay_command": command,
-        ]
-        if let intentID = key.intentID { payload["intent_id"] = intentID }
-        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
-              let json = String(data: data, encoding: .utf8) else { return false }
-        return writeBridgeControlLine("__TRACE__:\(json)")
     }
 
     func claimNextCommand() -> ClaimedCommand? {
@@ -1565,10 +1515,6 @@ final class RelayVoiceCommandDelivery {
         )
         deliveryState = .recovering(pending, since: now())
         recordDeliveryEvent("recovery_started", key: key, fields: ["attempt": 1])
-        writeQueuedFeedback(
-            key: key,
-            message: "Voice command submitted; waiting for exact provider acknowledgement."
-        )
         scheduleRecoveryPoll(for: key)
     }
 

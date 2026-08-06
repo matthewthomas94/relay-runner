@@ -137,8 +137,8 @@ final class BridgeRecoveryTests: XCTestCase {
     func testVoiceCommandQueuedPresentationUsesPassiveReplacementCopy() {
         let presentation = AppState.voiceCommandQueuedPresentation
 
-        XCTAssertEqual(presentation.statusText, "Voice command queued")
-        XCTAssertEqual(presentation.title, "Voice command queued")
+        XCTAssertEqual(presentation.statusText, "Command queued")
+        XCTAssertEqual(presentation.title, "Command queued")
         XCTAssertTrue(presentation.body.contains("Speak again to replace"))
         XCTAssertFalse(presentation.body.contains("listener"))
         XCTAssertFalse(presentation.body.contains("new session"))

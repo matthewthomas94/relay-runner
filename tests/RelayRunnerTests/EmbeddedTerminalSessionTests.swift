@@ -1132,7 +1132,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertTrue(events.contains(#""event":"late_ack_reconciled""#))
         XCTAssertTrue(events.contains(#""event":"provider_acknowledged""#))
         XCTAssertFalse(events.contains(#""event":"delivery_failure_published""#))
-        XCTAssertTrue((try String(contentsOf: fixture.voiceInput)).contains("__TRACE__:"))
+        XCTAssertFalse((try String(contentsOf: fixture.voiceInput)).contains("__TRACE__:"))
     }
 
     func testRecoveryPublishesFailureOnlyAfterProviderProcessTerminates() throws {
@@ -1308,8 +1308,8 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertTrue(events.contains(#""pending_byte_count":6"#))
         XCTAssertFalse(events.contains("manual"))
         let feedback = try String(contentsOf: fixture.voiceInput)
-        XCTAssertTrue(feedback.contains("__TRACE__:"))
-        XCTAssertTrue(feedback.contains("queued until terminal input"))
+        XCTAssertFalse(feedback.contains("__TRACE__:"))
+        XCTAssertFalse(feedback.contains("Voice command queued"))
         XCTAssertFalse(feedback.contains("manual"))
     }
 
