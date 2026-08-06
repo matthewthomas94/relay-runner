@@ -1238,6 +1238,24 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             event_log_path=None,
         ))
 
+    def test_whitespace_separated_reserved_control_is_quarantined_without_payload_logging(self):
+        worker = FakeTTSWorker()
+        stderr = io.StringIO()
+
+        with mock.patch.object(voice_bridge.sys, "stderr", stderr):
+            self.assertTrue(voice_bridge._handle_relay_control_message(
+                '__TRACE__ {"text":"private trace payload"}',
+                worker,
+                event_log_path=None,
+            ))
+
+        diagnostic = stderr.getvalue()
+        self.assertIn("quarantined_relay_control", diagnostic)
+        self.assertIn("control_type=trace", diagnostic)
+        self.assertIn("syntax=malformed", diagnostic)
+        self.assertIn("reason=noncanonical_separator", diagnostic)
+        self.assertNotIn("private trace payload", diagnostic)
+
     def test_completion_hook_recovers_after_malformed_explicit_reply(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             voice_bridge._reset_foreground_reply_delivery_for_tests()

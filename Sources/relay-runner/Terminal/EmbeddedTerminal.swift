@@ -871,17 +871,20 @@ final class RelayVoiceCommandDelivery {
         }
 
         guard let command = claimNextCommand() else { return false }
-        guard let events = Self.providerInputEvents(for: command.text) else {
-            deliveryState = .superseded(key)
-            recordDeliveryEvent("superseded", key: key, fields: ["deferral_reason": "control"])
-            return true
-        }
-        guard let first = events.first else { return true }
         guard Self.relayCommandKey(from: command.metadata) == key else {
             deliveryState = .terminalFailure(key)
             recordDeliveryEvent("terminal_failure", key: key, fields: ["deferral_reason": "metadata_mismatch"])
             return true
         }
+        guard let events = Self.providerInputEvents(for: command.text) else {
+            writeClaimedMetadata(command.metadata)
+            writeConsumerAcknowledgement(command.metadata)
+            deliveryState = .superseded(key)
+            recordDeliveryEvent("superseded", key: key, fields: ["deferral_reason": "control"])
+            recordDeliveryEvent("claim_published", key: key)
+            return true
+        }
+        guard let first = events.first else { return true }
         if !isCommandCurrent(key) {
             deliveryState = .superseded(key)
             recordDeliveryEvent("stale_command_dropped", key: key)

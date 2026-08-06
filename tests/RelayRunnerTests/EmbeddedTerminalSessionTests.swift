@@ -1753,6 +1753,41 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         }
     }
 
+    func testSuppressedReservedControlReleasesDurableLeaseForCodexAndClaude() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-173\",\"relay_command_seq\":173,\"intent_id\":\"intent-173\"}"
+            try "__TRACE__ {\"text\":\"malformed\"}\n".write(
+                to: fixture.command,
+                atomically: true,
+                encoding: .utf8
+            )
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            var sent: [[UInt8]] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in sent.append(Array(data)) },
+                isRunning: { true }
+            )
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+
+            XCTAssertEqual(sent, [], provider)
+            XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata, provider)
+            XCTAssertEqual(
+                try String(contentsOf: fixture.consumerAcknowledgement),
+                metadata,
+                provider
+            )
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.command.path), provider)
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertEqual(countEvent("superseded", in: events), 1, provider)
+            XCTAssertEqual(countEvent("claim_published", in: events), 1, provider)
+            XCTAssertTrue(events.contains(#""deferral_reason":"control""#), provider)
+        }
+    }
+
     func testAppOwnedInterruptPreemptionSendsOneControlCForCodexAndClaude() throws {
         for provider in ["codex", "claude"] {
             let fixture = try makeFixture()

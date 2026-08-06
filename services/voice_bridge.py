@@ -2567,14 +2567,22 @@ def _handle_relay_control_message(
     if _quarantine_raw_relay_control_object(text):
         return True
 
-    unknown_control = re.match(r"^(?P<type>__[A-Z][A-Z0-9_]*__):", text)
-    if unknown_control is not None:
+    reserved_control = re.match(
+        r"^(?P<type>__[A-Z][A-Z0-9_]*__)(?P<separator>:|\s+|$)",
+        text,
+    )
+    if reserved_control is not None:
+        separator = reserved_control.group("separator")
         _log_quarantined_relay_control(
             envelope="prefixed",
-            control_type=unknown_control.group("type"),
+            control_type=reserved_control.group("type"),
             shape="top_level",
-            syntax="unknown",
-            reason="unknown_control_type",
+            syntax="unknown" if separator == ":" else "malformed",
+            reason=(
+                "unknown_control_type"
+                if separator == ":"
+                else "noncanonical_separator"
+            ),
         )
         return True
 
