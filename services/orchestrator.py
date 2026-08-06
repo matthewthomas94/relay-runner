@@ -350,6 +350,13 @@ def _program_registry_path() -> Path:
     return _data_root().parent / "program" / "projects.json"
 
 
+def _project_registry_v2_enabled() -> bool:
+    value = os.environ.get("RELAY_RUNNER_REGISTRY_V2")
+    if value is None:
+        return True
+    return value.lower() in {"1", "true", "yes", "enabled"}
+
+
 def _registered_project_repo_paths(registry_path: Path) -> list[str]:
     try:
         payload = json.loads(registry_path.read_text())
@@ -8393,9 +8400,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             repo_paths=repo_paths,
         )
         store = GraphifyCoreStore(self.graphify_path)
+        registry_path = (
+            self.project_registry_v2_path
+            if _project_registry_v2_enabled()
+            else self.program_registry_path
+        )
         ingest_registered_projects(
             store,
-            registry_path=self.program_registry_path,
+            registry_path=registry_path,
             runs_db_path=self.runs.path,
             index_files=False,
         )

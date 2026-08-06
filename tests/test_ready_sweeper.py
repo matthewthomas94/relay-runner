@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
@@ -41,6 +42,43 @@ class FakeRuns:
 
 
 class ReadySweeperTests(unittest.TestCase):
+    def test_program_dashboard_uses_registry_v2_for_new_empty_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "New Project"
+            (repo / ".git").mkdir(parents=True)
+            legacy_registry = root / "projects.json"
+            legacy_registry.write_text(json.dumps({"projects": []}))
+            registry_v2 = root / "registry-v2.json"
+            registry_v2.write_text(json.dumps({
+                "schema_version": 2,
+                "active_project_id": None,
+                "projects": [{
+                    "project_id": "project-new",
+                    "display_name": "New Project",
+                    "last_resolved_path": str(repo.resolve()),
+                    "availability": "available",
+                }],
+            }))
+
+            daemon = object.__new__(Daemon)
+            daemon.program_registry_path = legacy_registry
+            daemon.project_registry_v2_path = registry_v2
+            daemon.graphify_path = root / "graphify.db"
+            daemon.runs = type("EmptyRuns", (), {"path": root / "runs.db"})()
+            daemon.sweep_program_ready_tickets = lambda **_: {"dispatched": []}
+
+            with patch.dict(os.environ, {"RELAY_RUNNER_REGISTRY_V2": "1"}):
+                dashboard = Daemon.program_dashboard(
+                    daemon,
+                    repo_paths=[str(repo.resolve())],
+                )
+
+            self.assertEqual(
+                [item["project"] for item in dashboard["summary"]["items"]],
+                [{"name": "New Project", "path": str(repo.resolve())}],
+            )
+
     def test_direct_runs_route_still_dispatches_ready_transition(self):
         calls: list[dict] = []
 
