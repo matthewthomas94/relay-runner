@@ -4,7 +4,7 @@ Registry v2 implements phase 1 of [RR-270's application-support and registration
 
 ## Rollout boundary
 
-The v2 service is available only when `RELAY_RUNNER_REGISTRY_V2=1` (also `true`, `yes`, or `enabled`). The flag defaults off. Phase 1 established storage and phase 2 opts Workspace and session scope into the service; the [explicit scope contract](project-scope-v2.md) documents that boundary. Disabling the flag immediately restores the preserved legacy read path. The legacy file is never changed or removed by v2 migration.
+The v2 service is the default Workspace and session-scope path. Setting `RELAY_RUNNER_REGISTRY_V2=0` (or any value other than `1`, `true`, `yes`, or `enabled`) restores the preserved legacy read path without deleting v2 state. Phase 1 established storage and phase 2 moved Workspace and session scope into the service; the [explicit scope contract](project-scope-v2.md) documents that boundary. The legacy file is never changed or removed by v2 migration.
 
 This boundary makes rollback non-destructive: the v2 JSON, backup, and Keychain items remain intact while the legacy path is active, and rollback must not touch a registered repository. The implementation does not yet initialize `relay/artifacts`, sync a remote, or cut over repository-local `.orchestrator` files.
 

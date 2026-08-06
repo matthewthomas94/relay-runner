@@ -1,7 +1,26 @@
+import Darwin
 import XCTest
 @testable import relay_runner
 
 final class ProjectRegistryTests: XCTestCase {
+    private var previousRegistryV2Value: String?
+
+    override func setUp() {
+        super.setUp()
+        previousRegistryV2Value = ProcessInfo.processInfo.environment[
+            ProjectRegistryV2Rollout.environmentKey
+        ]
+        setenv(ProjectRegistryV2Rollout.environmentKey, "0", 1)
+    }
+
+    override func tearDown() {
+        if let previousRegistryV2Value {
+            setenv(ProjectRegistryV2Rollout.environmentKey, previousRegistryV2Value, 1)
+        } else {
+            unsetenv(ProjectRegistryV2Rollout.environmentKey)
+        }
+        super.tearDown()
+    }
 
     func testExplicitActivationRegistersExistingRepoAndInitializesBoard() throws {
         let repo = try makeTempRepo(named: "mouse-assist")

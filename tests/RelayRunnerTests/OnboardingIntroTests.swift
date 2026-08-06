@@ -80,6 +80,10 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(OnboardingController.sharedOnboardingInProgress(flagURLs: flagURLs))
 
         try Data().write(to: flagURLs.onboarded)
+        XCTAssertTrue(OnboardingController.sharedOnboardingInProgress(flagURLs: flagURLs))
+
+        try Data(OnboardingController.currentArchitectureVersion.utf8)
+            .write(to: flagURLs.architectureVersion)
         XCTAssertFalse(OnboardingController.sharedOnboardingInProgress(flagURLs: flagURLs))
 
         try Data().write(to: flagURLs.manualRedo)
@@ -389,6 +393,66 @@ final class OnboardingIntroTests: XCTestCase {
 
         completeSessionControlsTutorial(controller)
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertEqual(
+            try String(contentsOf: flagURLs.architectureVersion, encoding: .utf8),
+            OnboardingController.currentArchitectureVersion
+        )
+    }
+
+    func testRegistryV2UpgradeForcesOneFullOnboardingPass() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        try Data().write(to: flagURLs.onboarded)
+        try Data().write(to: flagURLs.agentChoice)
+        let intro = CapturingIntroPresenter()
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            usesProjectRegistryV2: true,
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in true },
+            isAgentAuthenticated: { _ in true },
+            introAdvanceDelay: 0,
+            reduceMotion: { false }
+        )
+
+        controller.showIfNeeded()
+
+        XCTAssertEqual(intro.presentCallCount, 1)
+        XCTAssertEqual(intro.events, ["cinematic"])
+
+        intro.completeCinematic()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+
+        XCTAssertTrue(intro.workspacePromptPaths.isEmpty)
+        XCTAssertEqual(intro.tutorialPresentations.first?.screen, .intro)
+        completeSessionControlsTutorial(controller)
+        XCTAssertEqual(
+            try String(contentsOf: flagURLs.architectureVersion, encoding: .utf8),
+            OnboardingController.currentArchitectureVersion
+        )
+
+        let secondIntro = CapturingIntroPresenter()
+        let secondController = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            usesProjectRegistryV2: true,
+            permissionStatus: { _ in .granted },
+            makeIntroController: { secondIntro },
+            reduceMotion: { true }
+        )
+        secondController.showIfNeeded()
+
+        XCTAssertEqual(secondIntro.presentCallCount, 0)
+        XCTAssertTrue(secondIntro.permissionPrompts.isEmpty)
+        XCTAssertTrue(secondIntro.agentChoiceSelectedProviders.isEmpty)
     }
 
     func testLoginDismissesIntroBeforeTerminalAndRestoresRetryOnCancel() throws {
@@ -2476,6 +2540,7 @@ private extension OnboardingFlagURLs {
     static func testURLs(in directory: URL) -> OnboardingFlagURLs {
         OnboardingFlagURLs(
             onboarded: directory.appendingPathComponent(".onboarded"),
+            architectureVersion: directory.appendingPathComponent(".onboarding-architecture-version"),
             started: directory.appendingPathComponent(".onboarding-started"),
             sessionRun: directory.appendingPathComponent(".session-run"),
             agentChoice: directory.appendingPathComponent(".agent-choice-v1"),

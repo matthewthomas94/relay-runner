@@ -1,6 +1,6 @@
 # Explicit project scope (registry v2)
 
-This is RR-273 phase 2 and implements the [RR-270 work-scope state machine](../investigations/RR-270-repo-local-retention-and-scope.md#work-scope-state-machine). It is enabled with `RELAY_RUNNER_REGISTRY_V2=1`; disabling that gate restores legacy Workspace routing without deleting registry-v2 records or access grants.
+This is RR-273 phase 2 and implements the [RR-270 work-scope state machine](../investigations/RR-270-repo-local-retention-and-scope.md#work-scope-state-machine). Registry v2 is enabled by default; setting `RELAY_RUNNER_REGISTRY_V2=0` restores legacy Workspace routing without deleting registry-v2 records or access grants. Existing installations without the current architecture marker complete one full onboarding pass before the v2 Workspace unlocks; completion records the marker so subsequent launches do not repeat onboarding.
 
 ## Workspace and project management
 

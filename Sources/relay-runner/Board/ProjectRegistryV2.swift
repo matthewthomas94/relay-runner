@@ -7,7 +7,7 @@ enum ProjectRegistryV2Rollout {
     static func isEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        guard let value = environment[environmentKey]?.lowercased() else { return false }
+        guard let value = environment[environmentKey]?.lowercased() else { return true }
         return ["1", "true", "yes", "enabled"].contains(value)
     }
 }

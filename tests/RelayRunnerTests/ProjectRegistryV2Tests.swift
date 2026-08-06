@@ -347,9 +347,12 @@ final class ProjectRegistryV2Tests: XCTestCase {
     }
 
     func testRolloutGateIsExplicitReversibleAndKeepsLegacyRegistrySeparate() throws {
-        XCTAssertFalse(ProjectRegistryV2Rollout.isEnabled(environment: [:]))
+        XCTAssertTrue(ProjectRegistryV2Rollout.isEnabled(environment: [:]))
         XCTAssertFalse(ProjectRegistryV2Rollout.isEnabled(environment: [
             ProjectRegistryV2Rollout.environmentKey: "0",
+        ]))
+        XCTAssertFalse(ProjectRegistryV2Rollout.isEnabled(environment: [
+            ProjectRegistryV2Rollout.environmentKey: "unexpected",
         ]))
         XCTAssertTrue(ProjectRegistryV2Rollout.isEnabled(environment: [
             ProjectRegistryV2Rollout.environmentKey: "true",
@@ -357,7 +360,11 @@ final class ProjectRegistryV2Tests: XCTestCase {
 
         let root = try makeTempDirectory(named: "gate")
         defer { try? FileManager.default.removeItem(at: root) }
-        XCTAssertNil(ProjectRegistryV2Service.makeIfEnabled(environment: [:], appSupportRoot: root))
+        XCTAssertNil(ProjectRegistryV2Service.makeIfEnabled(
+            environment: [ProjectRegistryV2Rollout.environmentKey: "0"],
+            appSupportRoot: root
+        ))
+        XCTAssertNotNil(ProjectRegistryV2Service.makeIfEnabled(environment: [:], appSupportRoot: root))
         XCTAssertNotNil(ProjectRegistryV2Service.makeIfEnabled(
             environment: [ProjectRegistryV2Rollout.environmentKey: "1"],
             appSupportRoot: root

@@ -3,6 +3,7 @@ import Foundation
 
 struct OnboardingFlagURLs {
     let onboarded: URL
+    let architectureVersion: URL
     let started: URL
     let sessionRun: URL
     let agentChoice: URL
@@ -16,6 +17,7 @@ struct OnboardingFlagURLs {
                                                  withIntermediateDirectories: true)
         return OnboardingFlagURLs(
             onboarded: support.appendingPathComponent(".onboarded"),
+            architectureVersion: support.appendingPathComponent(".onboarding-architecture-version"),
             started: support.appendingPathComponent(".onboarding-started"),
             sessionRun: support.appendingPathComponent(".session-run"),
             agentChoice: support.appendingPathComponent(".agent-choice-v1"),
@@ -44,6 +46,8 @@ extension VenvInstaller: OnboardingRuntimeInstalling {}
 /// All methods must be called from the main thread — the class coordinates
 /// SwiftUI presentation and AppKit launch state that require main-thread access.
 final class OnboardingController {
+
+    static let currentArchitectureVersion = "2"
 
     private var introController: (any OnboardingIntroPresenting)?
     private var dismissingIntroController: (any OnboardingIntroPresenting)?
@@ -209,6 +213,19 @@ final class OnboardingController {
         FileManager.default.fileExists(atPath: flagURLs.onboarded.path)
     }
 
+    private var hasCompletedCurrentArchitectureOnboarding: Bool {
+        Self.hasCompletedCurrentArchitectureOnboarding(flagURLs: flagURLs)
+    }
+
+    private static func hasCompletedCurrentArchitectureOnboarding(
+        flagURLs: OnboardingFlagURLs
+    ) -> Bool {
+        guard let value = try? String(contentsOf: flagURLs.architectureVersion, encoding: .utf8) else {
+            return false
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines) == currentArchitectureVersion
+    }
+
     /// True iff the user has started at least one voice session (direct
     /// or via `/relay-bridge`). Kept for compatibility with existing
     /// launch/session bookkeeping; onboarding completion no longer depends on it.
@@ -239,13 +256,19 @@ final class OnboardingController {
         !hasOnboarded && FileManager.default.fileExists(atPath: flagURLs.started.path)
     }
 
-    static func sharedOnboardingInProgress(flagURLs: OnboardingFlagURLs = .live) -> Bool {
+    static func sharedOnboardingInProgress(
+        flagURLs: OnboardingFlagURLs = .live,
+        usesProjectRegistryV2: Bool = ProjectRegistryV2Rollout.isEnabled()
+    ) -> Bool {
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: flagURLs.manualRedo.path) {
             return true
         }
-        return !fileManager.fileExists(atPath: flagURLs.onboarded.path)
-            && fileManager.fileExists(atPath: flagURLs.started.path)
+        if !fileManager.fileExists(atPath: flagURLs.onboarded.path) {
+            return fileManager.fileExists(atPath: flagURLs.started.path)
+        }
+        guard usesProjectRegistryV2 else { return false }
+        return !hasCompletedCurrentArchitectureOnboarding(flagURLs: flagURLs)
     }
 
     private var manualRedoInProgress: Bool {
@@ -260,6 +283,12 @@ final class OnboardingController {
             resumeManualRedo()
             return
         }
+        if usesProjectRegistryV2,
+           hasOnboarded,
+           !hasCompletedCurrentArchitectureOnboarding {
+            showArchitectureMigration()
+            return
+        }
         if hasOnboarded {
             if !hasChosenAgent {
                 beginIntroAgentSetup(
@@ -269,6 +298,36 @@ final class OnboardingController {
             }
         } else {
             showFreshAutomatic()
+        }
+    }
+
+    private func showArchitectureMigration() {
+        guard !presentation.isPresented, introController == nil else { return }
+        let fileManager = FileManager.default
+        let wasInterrupted = fileManager.fileExists(atPath: flagURLs.started.path)
+        if !wasInterrupted {
+            OnboardingResumeState.clear()
+        }
+        forceWorkspaceSelectionAfterIntro = true
+        setFirstRunExperienceActive(true)
+        try? Data().write(to: flagURLs.started)
+
+        guard OnboardingIntroPolicy.shouldPlayAutomaticIntro(
+            hasOnboarded: false,
+            wasInterrupted: wasInterrupted,
+            reduceMotion: reduceMotion()
+        ) else {
+            beginFreshPermissionSequence(intro: makeIntroController())
+            return
+        }
+
+        let intro = makeIntroController()
+        introController = intro
+        setOnboardingNotchOverrideActive(true)
+        intro.present { [weak self, weak intro] in
+            guard let self else { return }
+            guard let intro, self.introController === intro else { return }
+            self.beginFreshPermissionSequence(intro: intro)
         }
     }
 
@@ -1034,6 +1093,9 @@ final class OnboardingController {
         stopTutorialSpeech()
         cancelPermissionSetup(.onboarding)
         try? Data().write(to: flagURLs.onboarded)
+        if usesProjectRegistryV2 {
+            try? Data(Self.currentArchitectureVersion.utf8).write(to: flagURLs.architectureVersion)
+        }
         OnboardingResumeState.clear()
         try? FileManager.default.removeItem(at: flagURLs.manualRedo)
         // Started flag is no longer meaningful once onboarding has completed.
