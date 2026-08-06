@@ -56,6 +56,17 @@ class PublicReleaseDocumentationTests(unittest.TestCase):
         ):
             self.assertTrue((PROJECT_ROOT / relative).is_file(), relative)
 
+    def test_signed_release_requires_apple_silicon(self):
+        readme = (PROJECT_ROOT / "README.md").read_text()
+        requirement = "an Apple Silicon Mac running macOS 14 or later"
+        self.assertIn(requirement, readme)
+        self.assertNotIn("Apple Silicon is recommended", readme)
+
+    def test_release_updates_identify_public_source_repository(self):
+        release_updates = (PROJECT_ROOT / "docs/release-updates.md").read_text()
+        self.assertIn("public source repository release", release_updates)
+        self.assertNotIn("private source repo release", release_updates)
+
     def test_packaging_includes_license_notices(self):
         script = (PROJECT_ROOT / "scripts/build-dmg.sh").read_text()
         self.assertIn('cp "$PROJECT_ROOT/LICENSE"', script)

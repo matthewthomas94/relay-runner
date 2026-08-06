@@ -50,7 +50,7 @@ The repository remains the durable boundary. Relay artifacts live with the regis
 | **Shipped** | Native macOS app; Codex and Claude sessions; local Parakeet transcription and Kokoro speech; embedded Terminal; project registry; Workspace tickets; orchestrator and isolated worker runs; visible lifecycle and replay controls. |
 | **Optional** | Relay Actions for clicks, typing, keys, scrolling, project activation, and window inspection; Relay Vision for screenshots. These are installed for both providers and work only with the macOS permissions you grant. |
 | **Evolving** | Artifact-ref storage, synchronization, retention, migration, and staged lifecycle policies have explicit per-project rollout boundaries. The early-release UI and provider model catalog will continue to change. |
-| **Known limits** | macOS 14 or later; Apple Silicon is recommended; TTS is currently English; provider models and effort levels depend on the user's account; agents can make consequential changes when permission bypass is enabled; the orchestrator stops at reviewed project work and does not release or deploy automatically. |
+| **Known limits** | The shipped release requires an Apple Silicon Mac running macOS 14 or later; TTS is currently English; provider models and effort levels depend on the user's account; agents can make consequential changes when permission bypass is enabled; the orchestrator stops at reviewed project work and does not release or deploy automatically. |
 
 ## What stays local
 
@@ -79,7 +79,7 @@ Relay Runner attributes Accessibility and Screen Recording to **Relay Runner.app
 
 ### Install the signed release
 
-You need macOS 14 or later, an internet connection for first-run downloads, and an account that can authenticate either Codex or Claude Code.
+You need an Apple Silicon Mac running macOS 14 or later, an internet connection for first-run downloads, and an account that can authenticate either Codex or Claude Code.
 
 1. Download `RelayRunner.dmg` from the [latest GitHub release](https://github.com/matthewthomas94/relay-runner/releases/latest).
 2. Open the DMG, run **Relay Runner.app**, and let the installer place it in `/Applications`.
