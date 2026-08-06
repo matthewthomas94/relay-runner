@@ -168,6 +168,43 @@ else
     exit 1
 fi
 
+# License and attribution files ship inside every app, including ad-hoc local
+# packages. Copy the resolved Swift checkout licenses rather than maintaining
+# partial copies that can drift from Package.resolved.
+if [ ! -f "$PROJECT_ROOT/LICENSE" ] || [ ! -f "$PROJECT_ROOT/THIRD_PARTY_NOTICES.md" ]; then
+    echo "error: project license or third-party notices are missing" >&2
+    exit 1
+fi
+cp "$PROJECT_ROOT/LICENSE" "$APP_DIR/Contents/Resources/LICENSE.txt"
+cp "$PROJECT_ROOT/THIRD_PARTY_NOTICES.md" \
+    "$APP_DIR/Contents/Resources/THIRD_PARTY_NOTICES.md"
+
+THIRD_PARTY_LICENSES_DIR="$APP_DIR/Contents/Resources/ThirdPartyLicenses"
+mkdir -p "$THIRD_PARTY_LICENSES_DIR"
+DEPENDENCY_LICENSE_COUNT=0
+for DEPENDENCY_DIR in "$PROJECT_ROOT"/.build/checkouts/*; do
+    [ -d "$DEPENDENCY_DIR" ] || continue
+    DEPENDENCY_LICENSE="$(find "$DEPENDENCY_DIR" -maxdepth 2 -type f \
+        \( -iname 'LICENSE*' -o -iname 'COPYING*' \) -print -quit)"
+    if [ -z "$DEPENDENCY_LICENSE" ]; then
+        echo "error: no license found for resolved dependency $(basename "$DEPENDENCY_DIR")" >&2
+        exit 1
+    fi
+    cp "$DEPENDENCY_LICENSE" \
+        "$THIRD_PARTY_LICENSES_DIR/$(basename "$DEPENDENCY_DIR").txt"
+    DEPENDENCY_LICENSE_COUNT=$((DEPENDENCY_LICENSE_COUNT + 1))
+    DEPENDENCY_NOTICE="$(find "$DEPENDENCY_DIR" -maxdepth 2 -type f \
+        -iname 'NOTICE*' -print -quit)"
+    if [ -n "$DEPENDENCY_NOTICE" ]; then
+        cp "$DEPENDENCY_NOTICE" \
+            "$THIRD_PARTY_LICENSES_DIR/$(basename "$DEPENDENCY_DIR")-NOTICE.txt"
+    fi
+done
+if [ "$DEPENDENCY_LICENSE_COUNT" -eq 0 ]; then
+    echo "error: no resolved dependency licenses were copied" >&2
+    exit 1
+fi
+
 # Python services
 for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py relay_authorization.py intent_arbitration.py intent_inbox.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py \
          artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py \

@@ -1,237 +1,146 @@
+<div align="center">
+
 # Relay Runner
 
-A native macOS menu bar app that gives Codex or [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) a voice — speak prompts, hear responses, watch a live transcription overlay.
+**Talk to Codex or Claude while a native macOS workspace keeps your sessions, project tickets, and agent progress in view.**
 
-All speech-to-text and text-to-speech runs **on-device**. No audio leaves your machine; only the transcribed text and public orchestration context reach your configured Codex or Claude sessions, the same way typed text would.
+[Get started](#get-started) · [See the product](#a-voice-layer-and-a-workspace) · [Privacy](#what-stays-local) · [Documentation](#go-further) · [Contribute](CONTRIBUTING.md)
 
-> **Status:** early release. Codex is the default target; Claude Code remains supported via configuration.
+</div>
 
----
+![Relay Runner playing a spoken response while the session overlay stays out of the way](docs/images/relay-runner-message-playing.png)
 
-## How it works
+*A response plays locally while the notch and perimeter animation show session state without covering the work underneath.*
 
-```
-  mic ─► STT (Parakeet, local) ─► bridge ─┬─► foreground orchestrator ─► workers
-                                          └─► fast messenger ◄─ public progress/final
-                                                     │
-                                                     └─► TTS (Kokoro, local) ─► speakers
-```
+Relay Runner adds a voice and coordination layer to the coding agents you already use. Speak a request, keep the full interactive provider session available, and move into Workspace when the work needs a project, a ticket, or a worker you can follow.
 
-- **Menu bar app** (SwiftUI) handles UI, hotkeys, audio capture, STT, and the on-screen awareness overlay
-- **Python bridge** (`voice_bridge.py`) delivers each turn to the foreground orchestrator and a persistent tool-free messenger, then routes messenger speech to Kokoro
-- **Messenger runtime** (`messenger.py`) keeps Codex Terra/low or Claude Haiku warm, consumes only user turns plus public orchestrator/worker context, and never plans or takes actions
+## What you can do
 
----
+- Speak to an interactive Codex or Claude session and hear replies without sending microphone audio to a speech service.
+- Keep listening, transcription, playback, and permission state visible in a compact macOS overlay.
+- Register Git projects from anywhere on the Mac and start sessions with an explicit project scope.
+- Turn project work into repo-owned Relay tickets, dispatch isolated workers, and review progress in Workspace.
+- Optionally let the active agent manipulate macOS through Relay Actions or inspect the screen through Relay Vision.
 
-## Requirements
+Voice augments the normal CLI session; Relay Runner is not a hosted IDE, a cloud copy of your repositories, or an autonomous release service.
 
-- **macOS 14 (Sonoma) or later**, Apple Silicon recommended (Parakeet uses the ANE)
-- **Codex** installed and authenticated (default) or **[Claude Code](https://docs.claude.com/en/docs/claude-code/setup)** installed and authenticated
-- **Python 3.10+** (usually already present on macOS via Homebrew or Xcode). Used for the TTS worker and bridge; a virtualenv is created on first launch
+## A voice layer and a Workspace
 
----
+The voice layer captures audio, transcribes it with Parakeet, delivers text to the configured agent session, and speaks replies with Kokoro. Listening and playback have visible states, and the overlay recedes when it has nothing to say.
 
-## Install
+Workspace is the project side of the same session. Select a registered local repository, start a project-scoped Codex or Claude terminal, create or inspect tickets, and follow orchestration and worker progress without treating the app's support directory as a project.
 
-1. Download the latest `RelayRunner.dmg` from [Releases](../../releases) (or build from source — see below).
-2. Open the DMG and double-click **Relay Runner.app** in the installer window.
-3. Relay Runner copies itself to **Applications** and launches. It appears in the menu bar (top-right).
-4. Grant **microphone access** when prompted.
-5. First-run downloads:
-    - Parakeet STT model (~600 MB) — on first transcription
-    - Kokoro TTS model (~60 MB) — on first playback
-    - Python venv with dependencies — on first `/relay-bridge` invocation
+![Relay Runner Workspace with one local project and visible ticket progress](docs/images/relay-runner-workspace.png)
 
----
+*Workspace keeps project selection, the active session, tickets, orchestration, and worker review in one native surface.*
 
-## Use it
+A typical project flow is short:
 
-### Quickest path
+1. Add an existing Git repository in Workspace and select it.
+2. Start a Codex or Claude session from the embedded Terminal tab.
+3. Speak conversationally, or refine concrete project work into a visible ticket.
+4. Move a ready ticket into the queue; Relay Runner runs the worker in an isolated worktree and shows its lifecycle through review.
 
-1. Click the Relay Runner menu bar icon → **Start Session…**.
-2. Workspace opens to its embedded **Terminal** tab, runs the configured agent, and auto-starts a voice session.
-3. Tap **Caps Lock** to speak; the agent responds in the embedded terminal and via TTS.
+The repository remains the durable boundary. Relay artifacts live with the registered project; the application-support registry only remembers which projects exist and holds rebuildable runtime state.
 
-The session is a normal Codex or Claude terminal session hosted inside Relay Runner. Closing Workspace leaves it running; **End Session** stops it. The Terminal tab also offers **Open in Terminal.app** as a compatibility fallback. By default, **Start Session…** launches the agent with its permission-bypass flag so voice flow isn't interrupted by per-tool approval prompts. You can turn that off in **Settings → General**.
+## What works today
 
-### From an existing terminal
-
-If you'd rather start from a terminal you already have open, install the commands once via **Settings → General → Install** under *Relay Skills*. This adds:
-
-- `relay-bridge` / `/relay-bridge` — starts a voice session in the current agent window
-- `relay-stop` / `/relay-stop` — ends it
-
-Then run `codex` and ask it to use the relay-bridge skill, or run `claude` and type `/relay-bridge`. This path is identical to **Start Session…** except you decide when (and with what flags) to launch the CLI.
-
-Supported voice entry points are **Start Session…** and the installed relay-bridge skill/command. The older direct `voice_bridge.py` terminal loop is kept only as legacy implementation code, not as a documented launch path.
-
-### Controls
-
-| Action | Default |
+| State | Capabilities |
 | --- | --- |
-| Toggle recording | **Caps Lock** (tap to start, tap again to stop + send) |
-| Change activation key | Settings → STT |
-| Open settings | Menu bar → Settings, or `⌘,` |
-| Quit | Menu bar → Quit |
+| **Shipped** | Native macOS app; Codex and Claude sessions; local Parakeet transcription and Kokoro speech; embedded Terminal; project registry; Workspace tickets; orchestrator and isolated worker runs; visible lifecycle and replay controls. |
+| **Optional** | Relay Actions for clicks, typing, keys, scrolling, project activation, and window inspection; Relay Vision for screenshots. These are installed for both providers and work only with the macOS permissions you grant. |
+| **Evolving** | Artifact-ref storage, synchronization, retention, migration, and staged lifecycle policies have explicit per-project rollout boundaries. The early-release UI and provider model catalog will continue to change. |
+| **Known limits** | The shipped release requires an Apple Silicon Mac running macOS 14 or later; TTS is currently English; provider models and effort levels depend on the user's account; agents can make consequential changes when permission bypass is enabled; the orchestrator stops at reviewed project work and does not release or deploy automatically. |
 
-Tray icon states:
+## What stays local
 
-- Outline R/ — idle
-- Orange R/ — voice session active
+Speech processing is local, but the configured coding agent is still an online provider unless your provider setup says otherwise.
 
----
+| Data | What Relay Runner does |
+| --- | --- |
+| Microphone audio | Captured and transcribed on the Mac. Relay Runner does not upload raw microphone audio. |
+| Spoken replies | Synthesized and played on the Mac. |
+| Transcribed prompts | Sent as text to the active Codex or Claude session, like text typed into that session. |
+| Source and terminal context | Available to the provider CLI under that CLI's permissions and the working directory you selected. |
+| Relay Vision screenshots | Captured only when the tool is invoked, then returned to the requesting agent and therefore may reach its provider. |
+| Project registry and run state | Stored locally. Ticket and artifact files remain in the project repository and travel only when you commit or sync them. |
+| Updates, models, and setup packages | Downloaded over the network from the documented release, model, and package sources. |
 
-## Configuration
+Permissions are deliberately separate:
 
-All settings live in the Settings window. Config is persisted to:
+- **Microphone** is required for voice input.
+- **Accessibility** is optional. It hosts Relay Actions and can observe global shortcuts; without it, voice still works from the menu-bar record control.
+- **Input Monitoring** is an optional listen-only fallback for global shortcuts, including non-Caps-Lock activation keys and the Workspace hotkey.
+- **Screen Recording** is optional and used only by Relay Vision screenshots.
 
-```
-~/Library/Application Support/relay-runner/config.toml
-```
+Relay Runner attributes Accessibility and Screen Recording to **Relay Runner.app**, not to Terminal, Codex, or Claude. See [Privacy and permissions](docs/privacy.md) for storage, network, and permission details.
 
-### General
+## Get started
 
-- **LLM Provider** — Codex (default) or Claude. **Start Session…** launches the selected provider's CLI.
-- **Model** — provider-specific stable choices. Codex offers Sol, Terra, and Luna, then resolves the newest account-visible concrete model from the local Codex catalogue before launch. Claude offers Best, Fable, Opus, Sonnet, and Haiku. Codex family availability and Ultra effort depend on your Codex plan; Fable depends on Claude plan or usage-credit eligibility and is unavailable with zero data retention.
-- **Orchestrator Effort** — provider/model-specific session effort. Codex Sol/Terra support Default through Ultra, Luna supports Default through Max, older named Codex models stop at Extra High, Claude Best/Fable/Opus support Default through Max, Sonnet omits Extra High, and Haiku/default account models omit explicit effort.
-- **Messenger** — enabled by default and selected independently from the orchestrator using the same stable model aliases. Advanced TOML overrides are `messenger_enabled`, `messenger_model`, and `messenger_effort` under `[general]`.
-- **Working directory** — where new voice sessions open
-- **Terminal tab** — hosts the active Codex or Claude session inside Workspace, with Terminal.app available as a fallback
-- **Bypass agent permission prompts** — when on (default), sessions launched from **Start Session…** run with the configured agent's bypass flag so voice flow isn't interrupted. Turn off if you want the agent to ask before each tool use; voice still works, you'll just answer prompts in the terminal.
-- **Auto-start services on app launch**
-- **Relay Skills** — install/reinstall relay-bridge and relay-stop support for Codex and Claude Code
+### Install the signed release
 
-### STT
+You need an Apple Silicon Mac running macOS 14 or later, an internet connection for first-run downloads, and an account that can authenticate either Codex or Claude Code.
 
-- **Model** — Parakeet TDT v2 / v3 (FluidAudio, ANE-accelerated)
-- **Input device** — system default or a specific mic
-- **Input mode** — Caps Lock toggle, push-to-talk, or always-on
-- **Activation key** — Caps Lock by default; any single key or modifier combo
-- **VAD sensitivity** — low / medium / high
+1. Download `RelayRunner.dmg` from the [latest GitHub release](https://github.com/matthewthomas94/relay-runner/releases/latest).
+2. Open the DMG, run **Relay Runner.app**, and let the installer place it in `/Applications`.
+3. In onboarding, choose Codex or Claude, complete that provider's sign-in, and grant Microphone access. Accessibility, Input Monitoring, and Screen Recording remain optional.
+4. Let setup prepare the local Python voice runtime, Relay skills, MCP tools, and speech models. The first setup downloads several hundred megabytes and can take a few minutes.
+5. Add a Git repository in Workspace, select it, and choose **Start Session**.
 
-### TTS
+Relay Runner starts the chosen provider in its embedded terminal and keeps the session alive when Workspace closes. **End Session** stops it. Terminal.app remains available as a compatibility path.
 
-- **Voice** — 11 Kokoro voices (US / UK, male / female)
-- **Auto-play** — speak responses immediately, or queue for replay
-- **Rate** — 0.5× – 2.0×
-- **Chime** — plays before responses (any system sound in `/System/Library/Sounds`)
-- **Show macOS notification**
+### Build from source
 
-### Awareness (on-screen overlay)
-
-- **Screen glow** — ambient particle field during active sessions
-- **Live transcription** — show your words as you speak
-- **Response preview** — shows the agent's response in the pill
-- **Live captions**
-- **Glow intensity** — 0.1 – 1.0
-
----
-
-## Permissions
-
-Relay Runner uses up to four macOS privacy permissions, all optional with graceful fallback except Microphone for voice input:
-
-- **Microphone** — required to capture speech.
-- **Accessibility** — used to pause currently-playing media when you start recording and to host Relay Actions clicks, typing, keys, and scrolling from Codex or Claude. Grant this to Relay Runner, not the agent host.
-- **Input Monitoring** — required only when your activation key is *not* a modifier (Caps Lock / Option / etc.). Caps Lock-based triggering reads `NSEvent` modifier flags directly and doesn't need this permission. If you set the activation key to e.g. `F19`, macOS will ask for Input Monitoring at that point.
-- **Screen Recording** — used by Relay Vision screenshots. Grant this to Relay Runner, not Codex, Claude, Terminal, Warp, or VS Code.
-
-First-launch onboarding asks which coding agent to use, walks through the permissions needed for voice, and bootstraps the bundled Python environment so voice replies work immediately. If TCC ever resets the grants (a macOS update or app reinstall can do this), the Settings → Status tab surfaces a banner explaining what happened.
-
----
-
-## Build from source
+Source builds require Xcode 16 or later, its command-line tools, Git, and a Python installation that can import `dmgbuild`.
 
 ```bash
 git clone https://github.com/matthewthomas94/relay-runner.git
 cd relay-runner
-./scripts/build-dmg.sh          # Release build + DMG in ./dist/
-./scripts/build-dmg.sh --debug  # Debug build
+python3 -m pip install --user --break-system-packages dmgbuild
+RELAY_SKIP_APPLICATIONS_REFRESH=1 ./scripts/build-dmg.sh
 ```
 
-The build script:
+Artifacts are written to `dist/Relay Runner.app`, `dist/RelayRunner.dmg`, and `dist/RelayRunner.zip`. With no Developer ID environment configured, the script creates an ad-hoc-signed build for local testing; it is not a distributable signed release. `RELAY_SKIP_APPLICATIONS_REFRESH=1` prevents the packaging check from replacing an existing `/Applications/Relay Runner.app`.
 
-- Compiles the Swift target via SPM
-- Bundles the app (`dist/Relay Runner.app`) with the asset catalog compiled by `actool`
-- Copies Python services into `Contents/SharedSupport/services/`
-- Ad-hoc code-signs the bundle
-- Packages a guided installer DMG and refreshes `/Applications/Relay Runner.app` if present
+For faster code iteration, use `swift build` and `swift test`. See [Contributing](CONTRIBUTING.md) and [Testing](TESTING.md) for the full clean-checkout path.
 
-For local iteration on the Swift side, `swift build` / `swift run` works, but SwiftUI asset loading requires the full `.app` bundle — run the DMG script when testing UI assets.
+## Codex and Claude, side by side
 
-### Dependencies
+| | Codex | Claude Code |
+| --- | --- | --- |
+| Authentication | `codex login`; Relay Runner detects the local Codex auth file. | `claude /login`; Relay Runner detects the Claude Code keychain entry. |
+| Session launch | The selected stable model family resolves through the installed Codex catalog. Effort is passed as `model_reasoning_effort`. | The selected stable model alias and supported effort are passed with `--model` and `--effort`. |
+| Permission bypass | Optional `--dangerously-bypass-approvals-and-sandbox`. | Optional `--dangerously-skip-permissions`. |
+| Voice and tools | Same onboarding, project scope, Relay skills, local speech, Workspace, Relay Actions, Relay Vision, tickets, and worker lifecycle. | Same. |
 
-Swift (via SPM):
+The bypass setting is on by default for uninterrupted voice flow. Turn it off in **Settings → General** if you want the provider CLI to request its normal per-tool approvals. Provider plans decide which models and effort levels are actually available. See [Provider setup and parity](docs/providers.md) for model choices, manual session entry, and intentional differences.
 
-- [FluidAudio](https://github.com/FluidInference/FluidAudio) — Parakeet STT on the Apple Neural Engine
-- [TOMLKit](https://github.com/LebJe/TOMLKit) — config file parsing
-- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) — embedded terminal emulation and local pseudo-terminal hosting
+## How it fits together
 
-Python (installed into a local venv on first run):
-
-- `kokoro-onnx` — TTS inference
-- `onnxruntime`
-- `numpy`
-
----
-
-## Project layout
-
-```
-Sources/relay-runner/     Swift app
-  App/                    Entry point, AppState
-  STT/                    Audio capture, Parakeet engine, hotkey gesture
-  Overlay/                Awareness pill, particle renderer, state machine
-  Settings/               SwiftUI settings window (tabs)
-  Terminal/               Embedded terminal process ownership and Workspace UI
-  Config/                 TOML config I/O
-  Resources/              Asset catalog (app icon, tray icons)
-services/                 Python voice bridge + Kokoro TTS worker
-scripts/                  build-dmg.sh, relay-bridge entry point
-Info.plist                Bundle metadata
+```text
+microphone → Parakeet STT → foreground Codex or Claude session → provider
+                    │                    │
+                    │                    ├─ optional Relay Actions / Vision
+                    │                    └─ project-scoped tickets and workers
+                    │
+                    └─ tool-free provider messenger → Kokoro TTS → speakers
 ```
 
----
+The Swift app owns audio, Workspace, the embedded terminal, permissions, and the visible overlays. Local Python services coordinate voice, messaging, tickets, and worker lifecycle. Bundled MCP helpers expose Relay Actions, Relay Vision, and the orchestrator to both supported providers. See the [architecture overview](docs/architecture.md) for process and storage boundaries.
 
-## Troubleshooting
+## Go further
 
-- **Tray icon blank** — quit the app fully (menu → Quit) and relaunch after a rebuild; macOS caches menu bar items.
-- **relay-bridge does nothing** — make sure `codex --version` or `claude --version` works in the same terminal, that Relay Skills are installed (Settings → General → Install), and that the Relay Runner app is running (STT happens inside the menu bar app).
-- **First launch is slow** — model downloads and venv setup happen lazily. Subsequent launches are instant.
-- **No audio output** — check Settings → TTS → Auto-play. If off, press the replay hotkey to flush the queue.
+- [Architecture](docs/architecture.md) · [project scope](docs/architecture/project-scope-v2.md) · [registry](docs/architecture/registry-v2.md)
+- [Orchestrator](docs/orchestrator.md) · [ticket schema](docs/specs/orchestrator-tickets.md)
+- [Artifact store](docs/architecture/artifact-store.md) · [lifecycle](docs/architecture/artifact-lifecycle.md) · [sync](docs/architecture/artifact-sync.md) · [retention](docs/architecture/artifact-retention.md)
+- [Relay Actions](docs/specs/relay-actions.md) · [Relay Vision](docs/specs/relay-vision.md)
+- [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md) · [Testing](TESTING.md) · [Release process](docs/release-updates.md)
 
----
+## Project routes
 
-## License
+- Read [Contributing](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md) before opening a change.
+- Use [Support](SUPPORT.md) for questions and bug reports.
+- Report vulnerabilities through the private route in [Security](SECURITY.md), not a public issue.
+- Relay Runner is available under the [MIT License](LICENSE). Third-party code, models, and artwork retain their own terms; see [Third-party notices](THIRD_PARTY_NOTICES.md).
 
-MIT License
-
-Copyright (c) 2026 Matthew Thomas
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
----
-
-## Acknowledgments
-
-- [FluidAudio](https://github.com/FluidInference/FluidAudio) by FluidInference for Parakeet on the ANE
-- [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) for the TTS voices
-- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) by Miguel de Icaza for embedded terminal emulation
-- Codex by OpenAI
-- [Claude Code](https://github.com/anthropics/claude-code) by Anthropic
+Relay Runner builds on FluidAudio and NVIDIA Parakeet for local transcription, Kokoro for local speech, SwiftTerm for the embedded terminal, Sparkle for updates, and the Codex and Claude Code CLIs for provider sessions. Thank you to those maintainers and communities.

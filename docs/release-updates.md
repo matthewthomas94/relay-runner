@@ -30,7 +30,7 @@ Pull requests and normal `main` pushes do not require these secrets. They build 
 
 ## Feed Hosting
 
-The tag workflow attaches `RelayRunner.dmg`, `RelayRunner.zip`, and `appcast.xml` to the private source repo release and to the public update-only repo release. Installed apps read the feed through the public repo's stable latest-release asset URL:
+The tag workflow attaches `RelayRunner.dmg`, `RelayRunner.zip`, and `appcast.xml` to the public source repository release and to the public update-only repository release. Installed apps read the feed through the update repository's stable latest-release asset URL:
 
 ```text
 https://github.com/matthewthomas94/relay-runner-updates/releases/latest/download/appcast.xml

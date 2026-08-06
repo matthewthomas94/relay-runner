@@ -39,6 +39,6 @@
          takes a screenshot for UAT or dashboard automation. Voice features
          work without it. The TCC prompt copies this string verbatim. -->
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Relay Runner can capture the screen for the optional Relay Actions voice tools (UAT walkthroughs and dense-dashboard configuration). Voice transcription and speech work without this permission.</string>
+    <string>Relay Runner uses Screen Recording only when the optional Relay Vision screenshot tool is invoked. Voice transcription, speech, and Relay Actions work without this permission.</string>
 </dict>
 </plist>
