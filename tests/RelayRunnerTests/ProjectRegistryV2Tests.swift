@@ -2,7 +2,7 @@ import XCTest
 @testable import relay_runner
 
 final class ProjectRegistryV2Tests: XCTestCase {
-    func testRegistrationPersistsVersionedMetadataAndKeychainReferenceWithoutBookmarkBytes() throws {
+    func testRegistrationPersistsVersionedMetadataAndBookmarkReferenceWithoutBookmarkBytes() throws {
         let root = try makeTempDirectory(named: "registration")
         defer { try? FileManager.default.removeItem(at: root) }
         let repo = root.appendingPathComponent("source", isDirectory: true)
@@ -44,6 +44,60 @@ final class ProjectRegistryV2Tests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: repo.appendingPathComponent(".orchestrator").path
         ))
+    }
+
+    func testFileBookmarkStorePersistsUnderApplicationSupportAndRemovesData() throws {
+        let root = try makeTempDirectory(named: "file-bookmark-store")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appSupportRoot = root.appendingPathComponent("app-support", isDirectory: true)
+        let store = FileProjectBookmarkStore(appSupportRoot: appSupportRoot)
+        let reference = ProjectBookmarkReference.project("project-file-store")
+        let data = Data("bookmark-data".utf8)
+        let bookmarkURL = appSupportRoot
+            .appendingPathComponent("projects/bookmarks", isDirectory: true)
+            .appendingPathComponent("project-file-store.bookmark")
+
+        XCTAssertNil(try store.load(reference: reference))
+        try store.store(data, reference: reference)
+
+        XCTAssertEqual(try store.load(reference: reference), data)
+        XCTAssertEqual(try Data(contentsOf: bookmarkURL), data)
+
+        try store.remove(reference: reference)
+
+        XCTAssertNil(try store.load(reference: reference))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: bookmarkURL.path))
+    }
+
+    func testDefaultServiceStoresAndRemovesRegularBookmarkFile() throws {
+        let root = try makeTempDirectory(named: "default-file-bookmark")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appSupportRoot = root.appendingPathComponent("app-support", isDirectory: true)
+        let repo = root.appendingPathComponent("source", isDirectory: true)
+        try makeGitRepo(at: repo)
+        let service = try XCTUnwrap(ProjectRegistryV2Service.makeIfEnabled(
+            appSupportRoot: appSupportRoot
+        ))
+
+        let project = try service.register(
+            candidate: service.inspect(selectedURL: repo),
+            displayName: "Source"
+        )
+        let bookmarkURL = appSupportRoot
+            .appendingPathComponent("projects/bookmarks", isDirectory: true)
+            .appendingPathComponent("\(project.projectID).bookmark")
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: bookmarkURL.path))
+        XCTAssertFalse(try Data(contentsOf: bookmarkURL).isEmpty)
+        XCTAssertEqual(
+            try service.refreshAvailability(projectID: project.projectID).availability,
+            .available
+        )
+
+        try service.removeProject(projectID: project.projectID, confirmed: true)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: bookmarkURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path))
     }
 
     func testAtomicStoreRecoversCorruptPrimaryFromLastKnownGoodBackup() throws {
@@ -268,6 +322,53 @@ final class ProjectRegistryV2Tests: XCTestCase {
         XCTAssertEqual(recovered.projectID, "project-availability")
         XCTAssertEqual(recovered.lastResolvedPath, moved.path)
         XCTAssertEqual(recovered.selectedPath, repo.path)
+    }
+
+    func testMissingBookmarkRebuildsFromValidatedRegisteredPath() throws {
+        let root = try makeTempDirectory(named: "missing-bookmark-migration")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("project", isDirectory: true)
+        try makeGitRepo(at: repo)
+        let fixture = makeService(root: root, projectID: "unused")
+        let candidate = try fixture.service.inspect(selectedURL: repo)
+        let project = record(projectID: "project-migration", candidate: candidate)
+        try fixture.store.save(ProjectRegistryV2Document(
+            schemaVersion: ProjectRegistryV2Document.currentSchemaVersion,
+            activeProjectID: nil,
+            projects: [project]
+        ))
+
+        XCTAssertEqual(fixture.grants.storeCount, 0)
+
+        let migrated = try fixture.service.refreshAvailability(projectID: project.projectID)
+
+        XCTAssertEqual(migrated.availability, .available)
+        XCTAssertEqual(fixture.grants.storeCount, 1)
+        XCTAssertEqual(
+            fixture.grants.storedURLs[project.projectID],
+            repo.standardizedFileURL
+        )
+    }
+
+    func testMissingBookmarkDoesNotRebuildForDifferentRepositoryIdentity() throws {
+        let root = try makeTempDirectory(named: "missing-bookmark-identity")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("project", isDirectory: true)
+        try makeGitRepo(at: repo)
+        let fixture = makeService(root: root, projectID: "unused")
+        let candidate = try fixture.service.inspect(selectedURL: repo)
+        var project = record(projectID: "project-mismatch", candidate: candidate)
+        project.gitCommonDirectoryFingerprint = "different-repository"
+        try fixture.store.save(ProjectRegistryV2Document(
+            schemaVersion: ProjectRegistryV2Document.currentSchemaVersion,
+            activeProjectID: nil,
+            projects: [project]
+        ))
+
+        let unresolved = try fixture.service.refreshAvailability(projectID: project.projectID)
+
+        XCTAssertEqual(unresolved.availability, .accessRequiresRegrant)
+        XCTAssertEqual(fixture.grants.storeCount, 0)
     }
 
     func testLocateRequiresMatchingIdentityBeforeReplacingGrant() throws {

@@ -339,7 +339,9 @@ final class ProjectRegistryV2Service {
                     appSupportRoot: appSupportRoot
                 )
             ),
-            accessGrants: ProjectAccessGrantManager(),
+            accessGrants: ProjectAccessGrantManager(
+                store: FileProjectBookmarkStore(appSupportRoot: appSupportRoot)
+            ),
             appSupportRoot: appSupportRoot
         )
     }
@@ -613,7 +615,14 @@ final class ProjectRegistryV2Service {
             throw ServiceError.projectNotFound(projectID)
         }
         var project = document.projects[index]
-        let resolution = accessGrants.resolveGrant(reference: project.bookmarkReference)
+        var resolution = accessGrants.resolveGrant(reference: project.bookmarkReference)
+        if case .requiresRegrant(.missing, _) = resolution,
+           let recoveredURL = try recoverMissingBookmark(
+               for: project,
+               existingProjects: document.projects
+           ) {
+            resolution = .available(recoveredURL)
+        }
         let newAvailability: RegisteredProjectAvailability
 
         switch resolution {
@@ -740,6 +749,38 @@ final class ProjectRegistryV2Service {
                 try fileManager.removeItem(at: target)
             }
         }
+    }
+
+    private func recoverMissingBookmark(
+        for project: RegisteredProjectV2,
+        existingProjects: [RegisteredProjectV2]
+    ) throws -> URL? {
+        var inspectedPaths = Set<String>()
+        for rawPath in [project.selectedPath, project.lastResolvedPath] {
+            let selectedURL = URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL
+            guard inspectedPaths.insert(selectedURL.path).inserted,
+                  let candidate = try? validator.validate(
+                      selectedURL: selectedURL,
+                      existingProjects: existingProjects
+                  ) else {
+                continue
+            }
+            let committedIDMatches = candidate.committedProjectID == project.projectID
+            let commonDirectoryMatches = candidate.gitCommonDirectoryFingerprint
+                == project.gitCommonDirectoryFingerprint
+            guard committedIDMatches || commonDirectoryMatches else { continue }
+
+            let reference = try accessGrants.storeGrant(
+                for: candidate.selectedPath,
+                projectID: project.projectID
+            )
+            guard reference == project.bookmarkReference else {
+                try? accessGrants.releaseGrant(reference: reference)
+                throw ServiceError.invalidBookmarkReference(reference)
+            }
+            return candidate.selectedPath
+        }
+        return nil
     }
 
     private static func isVolumeAvailable(for url: URL, fileManager: FileManager) -> Bool {

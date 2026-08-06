@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 enum ProjectRegistryV2Rollout {
     static let environmentKey = "RELAY_RUNNER_REGISTRY_V2"
@@ -44,6 +43,8 @@ enum RegisteredProjectWorktreeKind: String, Codable, Equatable {
 }
 
 struct ProjectBookmarkReference: Codable, Equatable, Hashable {
+    // Stable schema-v2 namespace. Kept unchanged so existing registry files
+    // remain valid; bookmark bytes are stored in Application Support, not Keychain.
     static let service = "com.relayrunner.project-bookmark"
 
     let serviceName: String
@@ -332,59 +333,57 @@ protocol ProjectBookmarkStoring {
     func remove(reference: ProjectBookmarkReference) throws
 }
 
-struct KeychainProjectBookmarkStore: ProjectBookmarkStoring {
-    enum KeychainError: Error, CustomStringConvertible {
-        case status(OSStatus)
+struct FileProjectBookmarkStore: ProjectBookmarkStoring {
+    enum StoreError: Error {
+        case invalidReference(ProjectBookmarkReference)
+    }
 
-        var description: String {
-            switch self {
-            case .status(let status):
-                return SecCopyErrorMessageString(status, nil) as String?
-                    ?? "Keychain operation failed with status \(status)"
-            }
-        }
+    private let directoryURL: URL
+    private let fileManager: FileManager
+
+    init(
+        appSupportRoot: URL = ProjectRegistryV2Store.defaultAppSupportRoot(),
+        fileManager: FileManager = .default
+    ) {
+        self.directoryURL = appSupportRoot
+            .appendingPathComponent("projects", isDirectory: true)
+            .appendingPathComponent("bookmarks", isDirectory: true)
+        self.fileManager = fileManager
     }
 
     func store(_ data: Data, reference: ProjectBookmarkReference) throws {
-        let query = baseQuery(reference)
-        let status = SecItemUpdate(
-            query as CFDictionary,
-            [kSecValueData as String: data] as CFDictionary
+        let url = try bookmarkURL(reference)
+        try fileManager.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
         )
-        if status == errSecSuccess { return }
-        guard status == errSecItemNotFound else { throw KeychainError.status(status) }
-
-        var attributes = query
-        attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        let addStatus = SecItemAdd(attributes as CFDictionary, nil)
-        guard addStatus == errSecSuccess else { throw KeychainError.status(addStatus) }
+        try data.write(to: url, options: .atomic)
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
     }
 
     func load(reference: ProjectBookmarkReference) throws -> Data? {
-        var query = baseQuery(reference)
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        query[kSecReturnData as String] = true
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw KeychainError.status(status) }
-        return item as? Data
+        let url = try bookmarkURL(reference)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url)
     }
 
     func remove(reference: ProjectBookmarkReference) throws {
-        let status = SecItemDelete(baseQuery(reference) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainError.status(status)
-        }
+        let url = try bookmarkURL(reference)
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        try fileManager.removeItem(at: url)
     }
 
-    private func baseQuery(_ reference: ProjectBookmarkReference) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: reference.serviceName,
-            kSecAttrAccount as String: reference.account,
-        ]
+    private func bookmarkURL(_ reference: ProjectBookmarkReference) throws -> URL {
+        guard reference.serviceName == ProjectBookmarkReference.service,
+              ProjectRegistryV2Identity.isValid(reference.account) else {
+            throw StoreError.invalidReference(reference)
+        }
+        return directoryURL
+            .appendingPathComponent(reference.account)
+            .appendingPathExtension("bookmark")
     }
 }
 
@@ -393,10 +392,10 @@ protocol ProjectBookmarkCoding {
     func resolveBookmark(_ data: Data) throws -> (url: URL, isStale: Bool)
 }
 
-struct SecurityScopedProjectBookmarkCodec: ProjectBookmarkCoding {
+struct RegularProjectBookmarkCodec: ProjectBookmarkCoding {
     func makeBookmark(for url: URL) throws -> Data {
         try url.bookmarkData(
-            options: [.withSecurityScope],
+            options: [],
             includingResourceValuesForKeys: nil,
             relativeTo: nil
         )
@@ -406,7 +405,7 @@ struct SecurityScopedProjectBookmarkCodec: ProjectBookmarkCoding {
         var isStale = false
         let url = try URL(
             resolvingBookmarkData: data,
-            options: [.withSecurityScope, .withoutUI],
+            options: [.withoutUI],
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         )
@@ -434,11 +433,10 @@ protocol ProjectAccessGrantManaging: AnyObject {
 final class ProjectAccessGrantManager: ProjectAccessGrantManaging {
     private let store: ProjectBookmarkStoring
     private let codec: ProjectBookmarkCoding
-    private var accessedURLs: [String: URL] = [:]
 
     init(
-        store: ProjectBookmarkStoring = KeychainProjectBookmarkStore(),
-        codec: ProjectBookmarkCoding = SecurityScopedProjectBookmarkCodec()
+        store: ProjectBookmarkStoring = FileProjectBookmarkStore(),
+        codec: ProjectBookmarkCoding = RegularProjectBookmarkCodec()
     ) {
         self.store = store
         self.codec = codec
@@ -446,9 +444,6 @@ final class ProjectAccessGrantManager: ProjectAccessGrantManaging {
 
     func storeGrant(for url: URL, projectID: String) throws -> ProjectBookmarkReference {
         let reference = ProjectBookmarkReference.project(projectID)
-        if let accessedURL = accessedURLs.removeValue(forKey: projectID) {
-            accessedURL.stopAccessingSecurityScopedResource()
-        }
         try store.store(try codec.makeBookmark(for: url), reference: reference)
         return reference
     }
@@ -457,43 +452,25 @@ final class ProjectAccessGrantManager: ProjectAccessGrantManaging {
         let data: Data
         do {
             guard let stored = try store.load(reference: reference) else {
-                stopAccessing(reference: reference)
                 return .requiresRegrant(.missing, lastKnownURL: nil)
             }
             data = stored
         } catch {
-            stopAccessing(reference: reference)
             return .requiresRegrant(.revokedOrUnreadable, lastKnownURL: nil)
         }
 
         do {
             let result = try codec.resolveBookmark(data)
             guard !result.isStale else {
-                stopAccessing(reference: reference)
                 return .requiresRegrant(.stale, lastKnownURL: result.url)
-            }
-            if accessedURLs[reference.account] != result.url {
-                if let previousURL = accessedURLs.removeValue(forKey: reference.account) {
-                    previousURL.stopAccessingSecurityScopedResource()
-                }
-                _ = result.url.startAccessingSecurityScopedResource()
-                accessedURLs[reference.account] = result.url
             }
             return .available(result.url)
         } catch {
-            stopAccessing(reference: reference)
             return .requiresRegrant(.revokedOrUnreadable, lastKnownURL: nil)
         }
     }
 
     func releaseGrant(reference: ProjectBookmarkReference) throws {
-        stopAccessing(reference: reference)
         try store.remove(reference: reference)
-    }
-
-    private func stopAccessing(reference: ProjectBookmarkReference) {
-        if let url = accessedURLs.removeValue(forKey: reference.account) {
-            url.stopAccessingSecurityScopedResource()
-        }
     }
 }
