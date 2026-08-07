@@ -13,7 +13,7 @@ import json
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Union
 
@@ -53,13 +53,24 @@ TRACE_KINDS = frozenset({
 })
 TRACE_MESSAGE_MAX_LEN = 96
 UPDATE_MODE_MESSAGE_MAX_LEN = 120
+LIFECYCLE_DETAIL_TRACE_KINDS = frozenset({
+    "run-health-warning",
+    "run-review-needed",
+    "run-merged",
+    "run-reconciled",
+    "run-verification-blocked",
+    "run-verification-resumed",
+    "run-succeeded",
+    "run-failed",
+    "run-canceled",
+})
 _COMMAND_LIKE_TRACE_RE = re.compile(
     r"(`|\$\(|&&|\|\||\s;\s|"
     r"\b(?:bash|cat|curl|git|grep|npm|pnpm|python|python3|sh|swift|xcodebuild|yarn|zsh)\s+)",
     re.IGNORECASE,
 )
 _PRIVATE_ACTIVITY_RE = re.compile(
-    r"(transcript|source_text|tool\s+log|hidden\s+reasoning|chain[- ]of[- ]thought|scratchpad|prompt|secret|password|token|api[_ -]?key)",
+    r"(transcript|source_text|tool\s+log|hidden\s+reasoning|chain[- ]of[- ]thought|scratchpad|prompt|secret|credential|password|token|api[_ -]?key)",
     re.IGNORECASE,
 )
 
@@ -97,11 +108,11 @@ def _clip_update_message(message: str) -> str:
     return _clip_public_message(message, limit=UPDATE_MODE_MESSAGE_MAX_LEN)
 
 
-def _public_trace_message(value: str) -> str:
+def _public_trace_detail(value: str) -> str:
     message = _public_message(value)
     if _COMMAND_LIKE_TRACE_RE.search(message) or _PRIVATE_ACTIVITY_RE.search(message):
         raise ValueError("trace messages must not contain raw commands or private details")
-    return _clip_public_message(message)
+    return message
 
 
 def _public_update_activity(value: str | None) -> str | None:
@@ -276,6 +287,7 @@ class OrchestrationTraceEvent:
     command: RelayCommandMetadata | None = None
     run_id: int | None = None
     ticket_id: str | None = None
+    lifecycle_detail: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         kind = self.kind.strip().lower()
@@ -293,9 +305,12 @@ class OrchestrationTraceEvent:
                 run_id=self.run_id,
             )
         )
+        public_detail = _public_trace_detail(message)
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "source", source)
-        object.__setattr__(self, "message", _public_trace_message(message))
+        object.__setattr__(self, "message", _clip_public_message(public_detail))
+        if kind in LIFECYCLE_DETAIL_TRACE_KINDS:
+            object.__setattr__(self, "lifecycle_detail", public_detail)
         if self.ticket_id:
             object.__setattr__(self, "ticket_id", self.ticket_id.upper())
 
@@ -305,6 +320,8 @@ class OrchestrationTraceEvent:
             "message": self.message,
             "source": self.source,
         }
+        if self.lifecycle_detail is not None:
+            data["lifecycle_detail"] = self.lifecycle_detail
         if self.command is not None:
             data["command"] = self.command.to_public_dict()
         if self.run_id is not None:

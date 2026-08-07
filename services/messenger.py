@@ -36,6 +36,7 @@ from codex_model_catalog import (
     resolve_codex_family_from_cli,
 )
 from command_actions import is_relay_runner_self_explanation
+from pm_frontstage import LIFECYCLE_DETAIL_TRACE_KINDS
 
 CODEX_DEFAULT_MODEL = CODEX_MESSENGER_DEFAULT_FAMILY
 CODEX_DEFAULT_EFFORT = CODEX_PROVIDER_DEFAULT_EFFORT
@@ -83,17 +84,7 @@ CLAUDE_CLI_CANDIDATES = (
 _CODEX_MODELS = CODEX_FAMILIES
 _CLAUDE_MODELS = frozenset({"best", "fable", "opus", "sonnet", "haiku"})
 _BASE_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
-_UNSCOPED_LIFECYCLE_KINDS = frozenset({
-    "run-health-warning",
-    "run-review-needed",
-    "run-verification-blocked",
-    "run-verification-resumed",
-    "run-failed",
-    "run-canceled",
-    "run-merged",
-    "run-reconciled",
-    "run-succeeded",
-})
+_UNSCOPED_LIFECYCLE_KINDS = LIFECYCLE_DETAIL_TRACE_KINDS
 _WORK_LIFECYCLE_KINDS = frozenset({"sidecar-outcome"})
 
 
@@ -936,8 +927,10 @@ class MessengerRuntime:
             return False
         command = trace.get("command")
         command_key = _command_key(command if isinstance(command, dict) else None)
-        message = str(trace.get("message") or "").strip()
         kind = str(trace.get("kind") or "progress").strip().lower()
+        summary = str(trace.get("message") or "").strip()
+        detail = str(trace.get("lifecycle_detail") or "").strip()
+        message = detail if kind in LIFECYCLE_DETAIL_TRACE_KINDS and detail else summary
         work_lifecycle = (
             kind in _WORK_LIFECYCLE_KINDS
             and trace.get("work_valid") is True
@@ -1148,7 +1141,14 @@ class MessengerRuntime:
                 event.command_id,
                 display_text=(
                     event.text
-                    if event.kind == "orchestrator_final" or event.work_lifecycle
+                    if (
+                        event.kind == "orchestrator_final"
+                        or event.work_lifecycle
+                        or (
+                            event.kind == "orchestrator_trace"
+                            and event.detail in LIFECYCLE_DETAIL_TRACE_KINDS
+                        )
+                    )
                     else None
                 ),
                 speech_metadata=self._speech_metadata_for(

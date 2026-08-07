@@ -88,6 +88,44 @@ class PMFrontstageTests(unittest.TestCase):
         self.assertEqual(status_event["phase"], "planning")
         self.assertEqual(status_event["message"], payload["message"])
 
+    def test_lifecycle_trace_preserves_validated_detail_beyond_compact_message(self):
+        detail = (
+            "RR-279 verification resumed: Mounted test on the currently running installed "
+            "Relay Runner v0.4.35 after Screen Recording and Accessibility were granted."
+        )
+
+        event = OrchestrationTraceEvent(
+            kind="run-verification-resumed",
+            message=detail,
+            ticket_id="RR-279",
+            run_id=15,
+        )
+
+        payload = event.to_dict()
+        self.assertEqual(payload["lifecycle_detail"], detail)
+        self.assertLessEqual(len(payload["message"]), 96)
+        self.assertTrue(payload["message"].endswith("..."))
+        self.assertNotIn("lifecycle_detail", event.to_status_event_dict() or {})
+
+        progress = OrchestrationTraceEvent(
+            kind="reasoning-summary",
+            message="A" * 120,
+        ).to_dict()
+        self.assertLessEqual(len(progress["message"]), 96)
+        self.assertNotIn("lifecycle_detail", progress)
+
+    def test_lifecycle_detail_uses_the_same_public_content_validation(self):
+        for private_detail in (
+            "RR-279 failed after inspecting a secret token from the transcript",
+            "RR-279 failed because stored credentials were unavailable",
+        ):
+            with self.subTest(private_detail=private_detail):
+                with self.assertRaisesRegex(ValueError, "raw commands or private details"):
+                    OrchestrationTraceEvent(
+                        kind="run-failed",
+                        message=private_detail,
+                    )
+
     def test_foreground_trace_kinds_cover_provider_neutral_main_agent_activity(self):
         command = RelayCommandMetadata.from_dict(relay_command(9, "cmd-9"))
 
