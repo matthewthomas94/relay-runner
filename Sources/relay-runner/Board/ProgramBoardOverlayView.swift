@@ -70,6 +70,13 @@ private enum ProgramTicketPanelStyle {
     static let compactFieldHeight: CGFloat = 34
     static let createDescriptionHeight: CGFloat = 132
     static let modalBackdropOpacity: Double = 0.55
+
+    static func detailSize(fitting availableSize: CGSize) -> CGSize {
+        CGSize(
+            width: min(width, max(0, availableSize.width)),
+            height: min(height, max(0, availableSize.height))
+        )
+    }
 }
 
 struct ProgramBoardOverlayView: View {
@@ -97,7 +104,17 @@ struct ProgramBoardOverlayView: View {
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        GeometryReader { proxy in
+            boardContent(viewportSize: proxy.size)
+        }
+    }
+
+    private func boardContent(viewportSize: CGSize) -> some View {
+        let detailSurfaceSize = CGSize(
+            width: viewportSize.width,
+            height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight)
+        )
+        return ZStack(alignment: .topLeading) {
             ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
                 .fill(Color.black.opacity(ProgramBoardBackdropStyle.backdropOpacity))
                 .frame(maxWidth: .infinity)
@@ -181,14 +198,18 @@ struct ProgramBoardOverlayView: View {
                model.creating == nil,
                model.editing == nil,
                model.spikeFollowupBatch == nil {
-                ProgramBoardModalLayer(onDismiss: model.clearSelectedTicket) {
+                ProgramBoardModalLayer(
+                    onDismiss: model.clearSelectedTicket,
+                    availableHeight: detailSurfaceSize.height
+                ) {
                     ProgramTicketDetailPanel(
                         detail: detail,
                         theme: model.theme,
                         onClose: model.clearSelectedTicket,
                         onEdit: { onEditStart(detail) },
                         onDelete: onDelete,
-                        onSpikeFollowup: { onSpikeFollowupStart(detail) }
+                        onSpikeFollowup: { onSpikeFollowupStart(detail) },
+                        panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
                     )
                 }
                 .transition(.opacity)
@@ -252,6 +273,7 @@ struct ProgramBoardOverlayView: View {
                 .transition(.opacity)
             }
         }
+        .frame(width: viewportSize.width, height: viewportSize.height, alignment: .topLeading)
         .coordinateSpace(name: "programBoard")
         .background(
             ProgramBoardWindowFrameReader { frame in
@@ -291,10 +313,16 @@ private struct ProgramBoardBackdropShape: Shape {
 
 private struct ProgramBoardModalLayer<Content: View>: View {
     let onDismiss: () -> Void
+    let availableHeight: CGFloat?
     @ViewBuilder let content: Content
 
-    init(onDismiss: @escaping () -> Void, @ViewBuilder content: () -> Content) {
+    init(
+        onDismiss: @escaping () -> Void,
+        availableHeight: CGFloat? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
         self.onDismiss = onDismiss
+        self.availableHeight = availableHeight
         self.content = content()
     }
 
@@ -310,7 +338,7 @@ private struct ProgramBoardModalLayer<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity)
-        .frame(height: ProgramBoardBackdropStyle.backdropHeight)
+        .frame(height: availableHeight ?? ProgramBoardBackdropStyle.backdropHeight)
         .frame(maxHeight: .infinity, alignment: .top)
         .zIndex(3)
     }
@@ -1775,6 +1803,7 @@ struct ProgramTicketDetailPanel: View {
     let onEdit: () -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
     let onSpikeFollowup: () -> Void
+    var panelSize: CGSize? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1892,9 +1921,17 @@ struct ProgramTicketDetailPanel: View {
                         ProgramTicketImageSection(attachments: detail.imageAttachments)
                     }
                 }
+                .overlay(alignment: .topLeading) {
+                    ProgramTicketDetailTopBoundaryMarker()
+                        .frame(width: 1, height: 1)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    ProgramTicketDetailBottomBoundaryMarker()
+                        .frame(width: 1, height: 1)
+                }
             }
         }
-        .programTicketPanelChrome(theme: theme)
+        .programTicketPanelChrome(theme: theme, size: panelSize)
     }
 
     private var deleteRequest: ProgramBoardDeleteRequest? {
@@ -1974,14 +2011,15 @@ struct ProgramTicketDetailPanel: View {
 
 private struct ProgramTicketPanelChrome: ViewModifier {
     let theme: ParticleFieldRenderer.Theme?
+    let size: CGSize?
 
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, ProgramTicketPanelStyle.horizontalPadding)
             .padding(.vertical, ProgramTicketPanelStyle.verticalPadding)
             .frame(
-                width: ProgramTicketPanelStyle.width,
-                height: ProgramTicketPanelStyle.height,
+                width: size?.width ?? ProgramTicketPanelStyle.width,
+                height: size?.height ?? ProgramTicketPanelStyle.height,
                 alignment: .topLeading
             )
             .background(
@@ -1995,16 +2033,60 @@ private struct ProgramTicketPanelChrome: ViewModifier {
                 x: 0,
                 y: BoardDarkSurfaceStyle.shadowYOffset
             )
+            .overlay {
+                ProgramTicketPanelBoundsMarker()
+                    .allowsHitTesting(false)
+            }
             .contentShape(Rectangle())
             .onTapGesture { }
     }
 }
 
+final class ProgramTicketPanelBoundsView: NSView {}
+final class ProgramTicketDetailTopBoundaryView: NSView, BoardOverlayScrollBoundaryProviding {
+    let boardOverlayScrollBoundary: BoardOverlayScrollBoundary? = BoardOverlayScrollBoundary(
+        topInset: BoardOverlayScrollContentInsets.standard.top,
+        bottomInset: nil
+    )
+}
+
+final class ProgramTicketDetailBottomBoundaryView: NSView, BoardOverlayScrollBoundaryProviding {
+    let boardOverlayScrollBoundary: BoardOverlayScrollBoundary? = BoardOverlayScrollBoundary(
+        topInset: nil,
+        bottomInset: BoardOverlayScrollContentInsets.standard.bottom
+    )
+}
+
+private struct ProgramTicketPanelBoundsMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> ProgramTicketPanelBoundsView {
+        ProgramTicketPanelBoundsView()
+    }
+
+    func updateNSView(_ nsView: ProgramTicketPanelBoundsView, context: Context) {}
+}
+
+private struct ProgramTicketDetailTopBoundaryMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> ProgramTicketDetailTopBoundaryView {
+        ProgramTicketDetailTopBoundaryView()
+    }
+
+    func updateNSView(_ nsView: ProgramTicketDetailTopBoundaryView, context: Context) {}
+}
+
+private struct ProgramTicketDetailBottomBoundaryMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> ProgramTicketDetailBottomBoundaryView {
+        ProgramTicketDetailBottomBoundaryView()
+    }
+
+    func updateNSView(_ nsView: ProgramTicketDetailBottomBoundaryView, context: Context) {}
+}
+
 private extension View {
     func programTicketPanelChrome(
-        theme: ParticleFieldRenderer.Theme? = nil
+        theme: ParticleFieldRenderer.Theme? = nil,
+        size: CGSize? = nil
     ) -> some View {
-        modifier(ProgramTicketPanelChrome(theme: theme))
+        modifier(ProgramTicketPanelChrome(theme: theme, size: size))
     }
 }
 

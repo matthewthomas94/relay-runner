@@ -1421,6 +1421,92 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertFalse(textValues(in: host).contains("Open Workspace"))
     }
 
+    func testMountedTicketDetailPanelFitsCompactSurfaceAndKeepsStandardMaximum() throws {
+        let compactSize = CGSize(width: 480, height: 520)
+        let compact = mountedTicketDetailSurface(size: compactSize)
+        defer { compact.window.orderOut(nil) }
+
+        let compactBoundsView = try XCTUnwrap(findPanelBoundsView(in: compact.host))
+        let compactFrame = compactBoundsView.convert(compactBoundsView.bounds, to: compact.host)
+        XCTAssertEqual(compactFrame.width, compactSize.width, accuracy: 0.5)
+        XCTAssertEqual(compactFrame.height, compactSize.height, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(compactFrame.minX, -0.5)
+        XCTAssertGreaterThanOrEqual(compactFrame.minY, -0.5)
+        XCTAssertLessThanOrEqual(compactFrame.maxX, compact.host.bounds.maxX + 0.5)
+        XCTAssertLessThanOrEqual(compactFrame.maxY, compact.host.bounds.maxY + 0.5)
+
+        let standardSize = CGSize(width: 800, height: 800)
+        let standard = mountedTicketDetailSurface(size: standardSize)
+        defer { standard.window.orderOut(nil) }
+
+        let standardBoundsView = try XCTUnwrap(findPanelBoundsView(in: standard.host))
+        let standardFrame = standardBoundsView.convert(standardBoundsView.bounds, to: standard.host)
+        XCTAssertEqual(standardFrame.width, 560, accuracy: 0.5)
+        XCTAssertEqual(standardFrame.height, 633, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(standardFrame.minX, -0.5)
+        XCTAssertGreaterThanOrEqual(standardFrame.minY, -0.5)
+        XCTAssertLessThanOrEqual(standardFrame.maxX, standard.host.bounds.maxX + 0.5)
+        XCTAssertLessThanOrEqual(standardFrame.maxY, standard.host.bounds.maxY + 0.5)
+    }
+
+    func testMountedCompactTicketDetailManualInputsReachExactBodyEndpoints() throws {
+        let mounted = mountedTicketDetailSurface(size: CGSize(width: 480, height: 520))
+        defer { mounted.window.orderOut(nil) }
+
+        let container = try XCTUnwrap(findScrollContainer(in: mounted.host))
+        let views = try scrollViews(in: container)
+        let maxOffset = views.documentView.frame.height - views.scrollView.contentView.bounds.height
+        let documentHeight = views.documentView.frame.height
+        let viewportHeight = views.scrollView.contentView.bounds.height
+        XCTAssertGreaterThan(maxOffset, 200)
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
+
+        let topBoundary = try XCTUnwrap(findDetailTopBoundaryView(in: views.hostingView))
+        let firstBodyFrame = topBoundary.convert(topBoundary.bounds, to: views.documentView)
+        XCTAssertGreaterThanOrEqual(
+            firstBodyFrame.minY,
+            views.scrollView.documentVisibleRect.minY + BoardOverlayScrollContentInsets.standard.top - 1
+        )
+        XCTAssertLessThanOrEqual(firstBodyFrame.maxY, views.scrollView.documentVisibleRect.maxY)
+        let topThumb = try XCTUnwrap(thumbView(in: container))
+        XCTAssertEqual(topThumb.frame.minY, 6, accuracy: 0.5)
+
+        sendScrollWheel(
+            deltaY: -48,
+            units: .line,
+            repeats: Int(ceil(maxOffset / 48)) + 12,
+            to: views.scrollView,
+            in: mounted.window
+        )
+        drainMainQueue()
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, maxOffset, accuracy: 0.5)
+        assertFinalDetailContentVisible(views: views)
+        XCTAssertEqual(topThumb.frame.maxY, container.bounds.height - 6, accuracy: 0.5)
+
+        sendHomeKey(to: views.scrollView, in: mounted.window)
+        drainMainQueue()
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
+        XCTAssertEqual(topThumb.frame.minY, 6, accuracy: 0.5)
+
+        sendEndKey(to: views.scrollView, in: mounted.window)
+        drainMainQueue()
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, maxOffset, accuracy: 0.5)
+        assertFinalDetailContentVisible(views: views)
+
+        sendScrollWheel(
+            deltaY: 24,
+            units: .pixel,
+            repeats: Int(ceil(maxOffset / 24)) + 12,
+            to: views.scrollView,
+            in: mounted.window
+        )
+        drainMainQueue()
+        XCTAssertEqual(views.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
+        XCTAssertEqual(topThumb.frame.minY, 6, accuracy: 0.5)
+        XCTAssertEqual(views.documentView.frame.height, documentHeight, accuracy: 0.5)
+        XCTAssertEqual(views.scrollView.contentView.bounds.height, viewportHeight, accuracy: 0.5)
+    }
+
     private func layout(_ container: BoardOverlayScrollContainer, width: CGFloat, height: CGFloat) {
         container.frame = CGRect(x: 0, y: 0, width: width, height: height)
         container.layout()
@@ -1471,6 +1557,42 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         return currentValue + view.subviews.flatMap(findScrollContainers(in:))
     }
 
+    private func findPanelBoundsView(in view: NSView) -> ProgramTicketPanelBoundsView? {
+        if let boundsView = view as? ProgramTicketPanelBoundsView {
+            return boundsView
+        }
+        for subview in view.subviews {
+            if let boundsView = findPanelBoundsView(in: subview) {
+                return boundsView
+            }
+        }
+        return nil
+    }
+
+    private func findDetailTopBoundaryView(in view: NSView) -> ProgramTicketDetailTopBoundaryView? {
+        if let boundaryView = view as? ProgramTicketDetailTopBoundaryView {
+            return boundaryView
+        }
+        for subview in view.subviews {
+            if let boundaryView = findDetailTopBoundaryView(in: subview) {
+                return boundaryView
+            }
+        }
+        return nil
+    }
+
+    private func findDetailBottomBoundaryView(in view: NSView) -> ProgramTicketDetailBottomBoundaryView? {
+        if let boundaryView = view as? ProgramTicketDetailBottomBoundaryView {
+            return boundaryView
+        }
+        for subview in view.subviews {
+            if let boundaryView = findDetailBottomBoundaryView(in: subview) {
+                return boundaryView
+            }
+        }
+        return nil
+    }
+
     private func thumbView(in container: BoardOverlayScrollContainer) -> NSView? {
         container.subviews.first { !($0 is NSScrollView) }
     }
@@ -1478,6 +1600,25 @@ final class BoardOverlayScrollViewTests: XCTestCase {
     private func textValues(in view: NSView) -> [String] {
         let currentValue = (view as? NSTextField).map { [$0.stringValue] } ?? []
         return currentValue + view.subviews.flatMap(textValues(in:))
+    }
+
+    private func assertFinalDetailContentVisible(
+        views: (scrollView: NSScrollView, documentView: NSView, hostingView: NSView),
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let bottomBoundary = findDetailBottomBoundaryView(in: views.hostingView) else {
+            XCTFail("Final ticket detail boundary is not mounted", file: file, line: line)
+            return
+        }
+        let finalFrame = bottomBoundary.convert(bottomBoundary.bounds, to: views.documentView)
+        XCTAssertGreaterThanOrEqual(finalFrame.minY, views.scrollView.documentVisibleRect.minY, file: file, line: line)
+        XCTAssertLessThanOrEqual(
+            finalFrame.maxY,
+            views.scrollView.documentVisibleRect.maxY - BoardOverlayScrollContentInsets.standard.bottom + 1,
+            file: file,
+            line: line
+        )
     }
 
     private func findFirstCardMarker(in view: NSView) -> ProgramLaneFirstCardMarkerView? {
@@ -1665,6 +1806,19 @@ final class BoardOverlayScrollViewTests: XCTestCase {
     }
 
     private func sendHomeKey(to scrollView: NSScrollView, in window: NSWindow) {
+        sendNavigationKey(keyCode: 115, characters: "\u{F729}", to: scrollView, in: window)
+    }
+
+    private func sendEndKey(to scrollView: NSScrollView, in window: NSWindow) {
+        sendNavigationKey(keyCode: 119, characters: "\u{F72B}", to: scrollView, in: window)
+    }
+
+    private func sendNavigationKey(
+        keyCode: UInt16,
+        characters: String,
+        to scrollView: NSScrollView,
+        in window: NSWindow
+    ) {
         window.makeFirstResponder(scrollView)
         guard let event = NSEvent.keyEvent(
             with: .keyDown,
@@ -1676,12 +1830,12 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber,
             context: nil,
-            characters: "\u{F729}",
-            charactersIgnoringModifiers: "\u{F729}",
+            characters: characters,
+            charactersIgnoringModifiers: characters,
             isARepeat: false,
-            keyCode: 115
+            keyCode: keyCode
         ) else {
-            XCTFail("Failed to create home key event")
+            XCTFail("Failed to create navigation key event")
             return
         }
         scrollView.keyDown(with: event)
@@ -1779,6 +1933,98 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         )
         .frame(width: 270, height: BoardSurfaceLayout.columnHeight)
         .coordinateSpace(name: "programBoard")
+    }
+
+    private func mountedTicketDetailSurface(
+        size: CGSize
+    ) -> (host: NSHostingView<AnyView>, window: NSWindow) {
+        let model = ProgramBoardViewModel()
+        model.selectedTicketDetail = ticketDetailFixture()
+        let workspace = WorkspaceViewModel()
+        workspace.configure(
+            showsWorkTab: true,
+            showsTerminalTab: false,
+            showsSettingsTab: false,
+            initialTab: .work
+        )
+        let host = NSHostingView(rootView: AnyView(
+            ProgramBoardOverlayView(
+                model: model,
+                workspace: workspace,
+                settingsContent: nil,
+                terminalContent: { _ in nil },
+                onDismiss: {},
+                onWorkspaceTabChange: { _ in },
+                onRefresh: {},
+                onStartSession: {},
+                onEndSession: {},
+                onCreateStart: { _ in },
+                onCreateCommit: { _ in },
+                onCreateCancel: {},
+                onEditStart: { _ in },
+                onEditCommit: { _ in },
+                onEditCancel: {},
+                onDelete: { _ in },
+                onSpikeFollowupStart: { _ in },
+                onSpikeFollowupReview: { _, _, _, _ in },
+                onSpikeFollowupClose: {},
+                onDrop: { _, _, _ in }
+            )
+        ))
+        let window = NSWindow(
+            contentRect: CGRect(origin: .zero, size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        host.frame = CGRect(origin: .zero, size: size)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        layout(host, width: size.width, height: size.height)
+        drainMainQueue()
+        return (host, window)
+    }
+
+    private func ticketDetailFixture() -> ProgramTicketDetail {
+        let acceptanceCriteria = (0..<48).map { index in
+            "- [ ] Mounted compact detail criterion \(index) stays reachable through every scroll input."
+        }.joined(separator: "\n") + "\n- [ ] FINAL-DETAIL-ENDPOINT"
+        let item = ProgramStatusItem(
+            project: ProgramStatusProject(name: "Relay Runner", path: "/repo/relay-runner"),
+            ticketID: "RR-297",
+            title: "Compact ticket detail endpoints",
+            status: Ticket.Status.inProgress.rawValue,
+            priority: Ticket.Priority.high.rawValue
+        )
+        return ProgramTicketDetail(
+            item: item,
+            identity: ProgramTicketIdentity(item: item),
+            ticket: Ticket(
+                id: "RR-297",
+                title: "Compact ticket detail endpoints",
+                status: .inProgress,
+                priority: .high,
+                dependsOn: [],
+                runId: 17,
+                canceled: false,
+                order: 297,
+                description: "Keep the mounted ticket detail inside compact Workspace surfaces.",
+                body: """
+                ## Description
+
+                Keep the mounted ticket detail inside compact Workspace surfaces.
+
+                ## Acceptance criteria
+
+                \(acceptanceCriteria)
+                """
+            ),
+            ticketPath: "/repo/relay-runner/.orchestrator/RR-297.md",
+            description: "Keep the mounted ticket detail inside compact Workspace surfaces.",
+            acceptanceCriteria: acceptanceCriteria,
+            imageAttachments: [],
+            unavailableMessage: nil
+        )
     }
 
     private func programDashboardSnapshot(

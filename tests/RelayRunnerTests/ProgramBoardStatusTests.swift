@@ -258,7 +258,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("ProgramBoardBackdropStyle.backdropHeight"))
         XCTAssertTrue(contents.contains("ProgramBoardBackdropShape("))
         XCTAssertEqual(
-            contents.components(separatedBy: "ProgramBoardModalLayer(onDismiss:").count - 1,
+            contents.components(separatedBy: "ProgramBoardModalLayer(").count - 1,
             4
         )
         XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.width"))
