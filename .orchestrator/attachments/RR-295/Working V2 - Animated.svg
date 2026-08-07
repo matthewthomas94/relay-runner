@@ -1,0 +1,33 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<style>
+@keyframes kf_Group_32_transform_0 {
+  0% {
+    transform: translateX(8px) translateY(8px) translateX(0px) translateY(0px) translate(4px, 4px) rotate(0rad) translate(-4px, -4px);
+  }
+  100% {
+    transform: translateX(8px) translateY(8px) translateX(0px) translateY(0px) translate(4px, 4px) rotate(-18.85rad) translate(-4px, -4px);
+  }
+}
+#Group_32 {
+  transform-origin: 0 0;
+  animation: kf_Group_32_transform_0 2s linear infinite;
+}
+</style>
+<g id="Working_V2_-_Animated">
+<g clip-path="url(#clip0_1284_8064)">
+<path d="M0 12C0 5.37258 5.37258 0 12 0V0C18.6274 0 24 5.37258 24 12V12C24 18.6274 18.6274 24 12 24V24C5.37258 24 0 18.6274 0 12V12Z" id="Working_V2_-_Animated_bg_0" fill="black">
+</path>
+<g id="Group_32" transform="translate(8 8)">
+<circle id="Ellipse_4" transform="translate(5)" cx="1.5" cy="1.5" r="1.5" fill="white"/>
+<circle id="Ellipse_5" cx="1.5" cy="1.5" r="1.5" fill="white"/>
+<circle id="Ellipse_6" transform="translate(0 5)" cx="1.5" cy="1.5" r="1.5" fill="white"/>
+<circle id="Ellipse_7" transform="translate(5 5)" cx="1.5" cy="1.5" r="1.5" fill="white"/>
+</g>
+</g>
+</g>
+<defs>
+<clipPath id="clip0_1284_8064">
+<path d="M0 12C0 5.37258 5.37258 0 12 0V0C18.6274 0 24 5.37258 24 12V12C24 18.6274 18.6274 24 12 24V24C5.37258 24 0 18.6274 0 12V12Z" fill="white"/>
+</clipPath>
+</defs>
+</svg>
