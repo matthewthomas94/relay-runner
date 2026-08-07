@@ -520,6 +520,38 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_unscoped_lifecycle_uses_full_detail_for_realization_and_display(self):
+        backend = FakeBackend(["RR-279 verification has resumed."])
+        spoken: list[tuple[str, int | None, str | None, str | None]] = []
+        detail = (
+            "RR-279 verification resumed: Mounted test on the currently running installed "
+            "Relay Runner v0.4.35 after Screen Recording and Accessibility were granted."
+        )
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id, display_text: spoken.append(
+                (text, seq, command_id, display_text)
+            ),
+            is_current=lambda seq, command_id: False,
+        )
+        runtime.start()
+        try:
+            accepted = runtime.submit_trace({
+                "kind": "run-verification-resumed",
+                "message": detail[:93] + "...",
+                "lifecycle_detail": detail,
+                "source": "orchestrator",
+                "ticket_id": "RR-279",
+                "run_id": 15,
+            })
+
+            self.assertTrue(accepted)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            self.assertIn(detail, backend.prompts[0])
+            self.assertEqual(spoken[0][3], detail)
+        finally:
+            runtime.shutdown()
+
     def test_unscoped_health_warning_speaks_without_command_metadata(self):
         backend = FakeBackend(["RR-7 is still alive, but it may need attention."])
         spoken: list[tuple[str, int | None, str | None]] = []

@@ -3158,6 +3158,38 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertEqual(messenger.traces, [outcome["payload"]["trace_event"]])
         self.assertEqual(requests, [("/v1/messenger/outcomes/4/delivered", {})])
 
+    def test_pending_messenger_outcome_preserves_full_lifecycle_detail(self):
+        messenger = FakeMessenger()
+        requests: list[tuple[str, dict]] = []
+        detail = (
+            "RR-279 verification resumed: Mounted test on the currently running installed "
+            "Relay Runner v0.4.35 after Screen Recording and Accessibility were granted."
+        )
+        outcome = {
+            "id": 15,
+            "payload": {
+                "trace_event": {
+                    "kind": "run-verification-resumed",
+                    "message": detail[:93] + "...",
+                    "lifecycle_detail": detail,
+                    "source": "orchestrator",
+                    "ticket_id": "RR-279",
+                    "run_id": 15,
+                }
+            },
+        }
+
+        delivered = voice_bridge._deliver_pending_messenger_outcomes_once(
+            orchestrator_session={"repo_path": "/tmp/repo", "provider": "claude"},
+            messenger=messenger,
+            request_get_json=lambda path, params: {"outcomes": [outcome]},
+            request_json=lambda path, payload: requests.append((path, payload)) or {},
+        )
+
+        self.assertEqual(delivered, 1)
+        self.assertEqual(messenger.traces[0]["lifecycle_detail"], detail)
+        self.assertEqual(requests, [("/v1/messenger/outcomes/15/delivered", {})])
+
     def test_pending_messenger_outcome_poll_batches_recovered_backlog(self):
         messenger = FakeMessenger()
         requests: list[tuple[str, dict]] = []

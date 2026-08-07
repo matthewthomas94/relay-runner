@@ -204,6 +204,48 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             self.assertEqual(len(pending), 1)
             self.assertEqual(pending[0]["message"], "RR-7 run 12 awaiting review")
 
+    def test_daemon_persists_full_lifecycle_detail_with_compact_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            daemon = self.make_daemon(root, provider="claude")
+            notifications: list[tuple[str, dict]] = []
+            detail = (
+                "RR-279 verification resumed: Mounted test on the currently running installed "
+                "Relay Runner v0.4.35 after Screen Recording and Accessibility were granted."
+            )
+
+            with patch(
+                "orchestrator._notify_state",
+                lambda state, **payload: notifications.append((state, payload)),
+            ):
+                daemon._emit_lifecycle(
+                    "run-verification-resumed",
+                    ticket_id="RR-279",
+                    run_id=15,
+                    message=detail,
+                    repo_path=str(repo),
+                    provider_key="claude",
+                )
+
+            persisted = MessengerOutcomeStore(root / "messenger_outcomes.db").pending(
+                repo_path=str(repo),
+                provider_key="codex",
+            )
+            compact = notifications[0][1]["text"]
+            self.assertLessEqual(len(compact), 96)
+            self.assertEqual(notifications[0][1]["trace_event"]["message"], compact)
+            self.assertEqual(
+                notifications[0][1]["trace_event"]["lifecycle_detail"],
+                detail,
+            )
+            self.assertEqual(persisted[0]["message"], compact)
+            self.assertEqual(
+                persisted[0]["payload"]["trace_event"]["lifecycle_detail"],
+                detail,
+            )
+
     def test_voice_bridge_registers_heartbeats_and_stops_lifecycle(self):
         requests: list[tuple[str, dict]] = []
 
