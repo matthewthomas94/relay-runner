@@ -24,6 +24,36 @@ Relay Runner adds a voice and coordination layer to the coding agents you alread
 
 Voice augments the normal CLI session; Relay Runner is not a hosted IDE, a cloud copy of your repositories, or an autonomous release service.
 
+## Get started
+
+### Install the signed release
+
+You need an Apple Silicon Mac running macOS 14 or later, an internet connection for first-run downloads, and an account that can authenticate either Codex or Claude Code.
+
+1. Download `RelayRunner.dmg` from the [latest GitHub release](https://github.com/matthewthomas94/relay-runner/releases/latest).
+2. Open the DMG, run **Relay Runner.app**, and let the installer place it in `/Applications`.
+3. In onboarding, choose Codex or Claude, complete that provider's sign-in, and grant Microphone access. Accessibility, Input Monitoring, and Screen Recording remain optional.
+4. Let setup prepare the local Python voice runtime, Relay skills, MCP tools, and speech models. The first setup downloads several hundred megabytes and can take a few minutes.
+5. Add a Git repository in Workspace, select it, and choose **Start Session**.
+
+Relay Runner starts the chosen provider in its embedded terminal and keeps the session alive when Workspace closes. **End Session** stops it. Terminal.app remains available as a compatibility path.
+
+### Build from source
+
+Source builds require Xcode 16 or later, its command-line tools, Git, and a Python installation that can import `dmgbuild`.
+
+```bash
+git clone https://github.com/matthewthomas94/relay-runner.git
+cd relay-runner
+python3 -m pip install --user --break-system-packages dmgbuild
+RELAY_SKIP_APPLICATIONS_REFRESH=1 ./scripts/build-dmg.sh
+```
+
+Artifacts are written to `dist/Relay Runner.app`, `dist/RelayRunner.dmg`, and `dist/RelayRunner.zip`. With no Developer ID environment configured, the script creates an ad-hoc-signed build for local testing; it is not a distributable signed release. `RELAY_SKIP_APPLICATIONS_REFRESH=1` prevents the packaging check from replacing an existing `/Applications/Relay Runner.app`.
+
+For faster code iteration, use `swift build` and `swift test`. See [Contributing](CONTRIBUTING.md) and [Testing](TESTING.md) for the full clean-checkout path.
+
+
 ## A voice layer and a Workspace
 
 The voice layer captures audio, transcribes it with Parakeet, delivers text to the configured agent session, and speaks replies with Kokoro. Listening and playback have visible states, and the overlay recedes when it has nothing to say.
@@ -74,35 +104,6 @@ Permissions are deliberately separate:
 - **Screen Recording** is optional and used only by Relay Vision screenshots.
 
 Relay Runner attributes Accessibility and Screen Recording to **Relay Runner.app**, not to Terminal, Codex, or Claude. See [Privacy and permissions](docs/privacy.md) for storage, network, and permission details.
-
-## Get started
-
-### Install the signed release
-
-You need an Apple Silicon Mac running macOS 14 or later, an internet connection for first-run downloads, and an account that can authenticate either Codex or Claude Code.
-
-1. Download `RelayRunner.dmg` from the [latest GitHub release](https://github.com/matthewthomas94/relay-runner/releases/latest).
-2. Open the DMG, run **Relay Runner.app**, and let the installer place it in `/Applications`.
-3. In onboarding, choose Codex or Claude, complete that provider's sign-in, and grant Microphone access. Accessibility, Input Monitoring, and Screen Recording remain optional.
-4. Let setup prepare the local Python voice runtime, Relay skills, MCP tools, and speech models. The first setup downloads several hundred megabytes and can take a few minutes.
-5. Add a Git repository in Workspace, select it, and choose **Start Session**.
-
-Relay Runner starts the chosen provider in its embedded terminal and keeps the session alive when Workspace closes. **End Session** stops it. Terminal.app remains available as a compatibility path.
-
-### Build from source
-
-Source builds require Xcode 16 or later, its command-line tools, Git, and a Python installation that can import `dmgbuild`.
-
-```bash
-git clone https://github.com/matthewthomas94/relay-runner.git
-cd relay-runner
-python3 -m pip install --user --break-system-packages dmgbuild
-RELAY_SKIP_APPLICATIONS_REFRESH=1 ./scripts/build-dmg.sh
-```
-
-Artifacts are written to `dist/Relay Runner.app`, `dist/RelayRunner.dmg`, and `dist/RelayRunner.zip`. With no Developer ID environment configured, the script creates an ad-hoc-signed build for local testing; it is not a distributable signed release. `RELAY_SKIP_APPLICATIONS_REFRESH=1` prevents the packaging check from replacing an existing `/Applications/Relay Runner.app`.
-
-For faster code iteration, use `swift build` and `swift test`. See [Contributing](CONTRIBUTING.md) and [Testing](TESTING.md) for the full clean-checkout path.
 
 ## Codex and Claude, side by side
 
