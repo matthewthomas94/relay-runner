@@ -717,7 +717,12 @@ class SpeechCoordinator:
                     self._retain_replayable_locked(intent)
                 if state == "completed":
                     self._record_played_coverage_locked(intent)
-                if not self._committed_id and not self._playing_id and not self._speech_stopped:
+                if (
+                    not stopped_attempt
+                    and not self._committed_id
+                    and not self._playing_id
+                    and not self._speech_stopped
+                ):
                     next_intent = self._next_eligible_locked()
                     if next_intent is not None:
                         self._committed_id = next_intent.utterance_id
