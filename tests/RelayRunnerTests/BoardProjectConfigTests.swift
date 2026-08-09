@@ -343,6 +343,47 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertFalse(run.isActive)
     }
 
+    func testIntegrationBlockedRunStaysInProgressWithActionableDetail() {
+        let run = RunState(
+            ticketId: "RR-299",
+            repoPath: "/repo",
+            runId: 21,
+            state: "IntegrationBlocked",
+            lastError: "tracked: Sources/App.swift",
+            activity: nil,
+            activityAt: nil
+        )
+
+        XCTAssertEqual(run.placement(ticketStatus: .ready), .inProgress)
+        XCTAssertEqual(run.pill(ticketStatus: .ready), .integrationBlocked)
+        XCTAssertEqual(run.visibleLastError(ticketStatus: .ready), "tracked: Sources/App.swift")
+        XCTAssertFalse(run.isActive)
+    }
+
+    func testSuccessfulTerminalModelsSuppressStaleErrors() {
+        let mergedRun = RunState(
+            ticketId: "RR-174",
+            repoPath: "/repo",
+            runId: 4,
+            state: "Merged",
+            lastError: "obsolete merge failure",
+            activity: nil,
+            activityAt: nil
+        )
+        let doneItem = ProgramStatusItem(
+            project: ProgramStatusProject(name: "Relay Runner", path: "/repo"),
+            ticketID: "RR-174",
+            title: "Already merged",
+            status: "done",
+            priority: "high",
+            runState: "Merged",
+            lastError: "obsolete merge failure"
+        )
+
+        XCTAssertNil(mergedRun.visibleLastError(ticketStatus: .done))
+        XCTAssertNil(doneItem.visibleLastError)
+    }
+
     func testVerificationBlockedTicketRequiresRunLink() {
         let contents = """
         ---

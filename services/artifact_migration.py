@@ -94,6 +94,7 @@ ACTIVE_RUN_STATES = frozenset(
         "AwaitingReview",
         "Reviewing",
         "MergeConflict",
+        "IntegrationBlocked",
         "Succeeded",
     }
 )

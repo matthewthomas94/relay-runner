@@ -58,6 +58,7 @@ _LIFECYCLE_ROLES_BY_DETAIL = {
     "run-health-warning": "blocker",
     "run-review-needed": "blocker",
     "run-reconciled": "result",
+    "run-integration-blocked": "blocker",
     "run-verification-blocked": "blocker",
     "run-verification-resumed": "decision",
     "run-merged": "result",

@@ -27,6 +27,29 @@ from orchestrator import (  # noqa: E402
 
 
 class QueueDrainTests(unittest.TestCase):
+    def test_merged_run_clears_last_error_in_sqlite_and_board_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_path = root / "runs-index.json"
+            store = RunsStore(root / "runs.db", index_path=index_path)
+            run_id = store.insert(
+                ticket_id="RR-1",
+                repo_path=str(root / "repo"),
+                workspace_path=str(root / "workspace"),
+                branch="relay/rr-1",
+                state="IntegrationBlocked",
+            )
+            store.update(run_id, last_error="old integration blocker")
+
+            store.update(run_id, state="Merged", last_error=None, ended=True)
+
+            with store._conn() as conn:
+                self.assertIsNone(conn.execute(
+                    "SELECT last_error FROM runs WHERE id = ?", (run_id,)
+                ).fetchone()["last_error"])
+            indexed = json.loads(index_path.read_text())["runs"]
+            self.assertIsNone(indexed[0]["last_error"])
+
     def test_verification_blocked_run_remains_in_board_index_after_retention_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -118,6 +141,136 @@ worker_provider_notes: Codex and Claude share the same lifecycle.
             self.assertEqual(item["blocker_owner"], "external_verification")
             self.assertIn("modifier-only physical input", item["reason"])
             self.assertIn("explicitly resume", item["blocker_next_step"])
+
+    def test_dirty_source_before_dispatch_waits_without_spawning_then_dispatches_when_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            tracked = repo / "tracked.txt"
+            tracked.write_text("base\n")
+            self.git(repo, "add", ".orchestrator/RR-1.md", "tracked.txt")
+            self.git(repo, "commit", "-m", "add ticket")
+            tracked.write_text("user change\n")
+            untracked = [repo / f"private-{index}.txt" for index in range(10)]
+            for path in untracked:
+                path.write_text("private contents must not be reported\n")
+            daemon = self.make_daemon(root, provider="codex")
+
+            with patch("orchestrator.create_worktree") as create_worktree, \
+                    patch.object(Worker, "start") as start_worker:
+                direct = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
+                waiting = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
+
+            create_worktree.assert_not_called()
+            start_worker.assert_not_called()
+            self.assertTrue(direct["integration_blocked"])
+            self.assertIsNone(direct["run"])
+            self.assertEqual(daemon.runs.list(), [])
+            skipped = next(item for item in waiting["skipped"] if item["ticket_id"] == "RR-1")
+            self.assertEqual(skipped["reason"], "integration_blocked")
+            self.assertEqual(len(skipped["dirty_paths"]), 8)
+            self.assertNotIn(str(repo), skipped["message"])
+            self.assertNotIn("private contents", skipped["message"])
+            item = waiting["drain"]["items"][0]
+            self.assertEqual(item["state"], "integration_blocked")
+            self.assertEqual(item["blocker_owner"], "source_checkout")
+            self.assertIn("Commit or otherwise resolve", item["blocker_next_step"])
+            self.assertEqual(waiting["drain"]["state"], "waiting")
+
+            self.git(repo, "restore", "tracked.txt")
+            for path in untracked:
+                path.unlink()
+            with patch.object(Worker, "start") as start_worker:
+                dispatched = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="clean")
+
+            start_worker.assert_called_once()
+            self.assertEqual(len(dispatched["dispatched"]), 1)
+            self.assertEqual(len(daemon.runs.list()), 1)
+
+    def test_dirty_after_review_survives_restart_and_reconciliation_merges_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "rr-1"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready", run_id=None, sizing=True)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ticket")
+            self.git(repo, "worktree", "add", "-b", "relay/rr-1", str(workspace), "HEAD")
+            daemon = self.make_daemon(root, provider="claude")
+            daemon.queue_drains.ensure_active(
+                repo_path=str(repo),
+                target_branch="main",
+                provider_key="claude",
+                observed_ticket_ids=["RR-1"],
+                status_message="test drain",
+            )
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo.resolve()),
+                workspace_path=str(workspace),
+                branch="relay/rr-1",
+                state="AwaitingReview",
+                provider_key="claude",
+                model_alias="sonnet",
+            )
+            self.write_ticket(
+                workspace,
+                "RR-1",
+                status="done",
+                run_id=run_id,
+                sizing=True,
+                body=f"## Run log\n\n- **Run {run_id}** reviewed.\n",
+            )
+            (workspace / "code.txt").write_text("worker change\n")
+            self.git(workspace, "add", ".orchestrator/RR-1.md", "code.txt")
+            self.git(workspace, "commit", "-m", "feat: finish RR-1")
+            local_change = repo / "local-only.txt"
+            local_change.write_text("user-owned\n")
+
+            blocked = daemon.accept_worker_run(run_id)
+
+            self.assertFalse(blocked["accepted"])
+            self.assertTrue(blocked["integration_blocked"])
+            self.assertEqual(blocked["run"]["state"], "IntegrationBlocked")
+            self.assertTrue(workspace.exists())
+            self.assertTrue(self.git(repo, "branch", "--list", "relay/rr-1").stdout.strip())
+            self.assertEqual(len(daemon.runs.list()), 1)
+            pending = daemon.pending_messenger_outcomes(repo_path=str(repo), provider="claude")
+            self.assertEqual(pending[-1]["payload"]["trace_event"]["kind"], "run-integration-blocked")
+            self.assertNotIn(
+                "run-failed",
+                [item["payload"]["trace_event"]["kind"] for item in pending],
+            )
+
+            local_change.unlink()
+            restarted = self.make_daemon(root, provider="claude")
+            resumed = restarted.reconcile_queue_drain(repo_path=str(repo), trigger="daemon-startup")
+
+            self.assertEqual(resumed["resumed_integrations"], [{
+                "ticket_id": "RR-1",
+                "run_id": run_id,
+                "accepted": True,
+                "state": "Merged",
+            }])
+            merged = restarted.runs.get(run_id)
+            self.assertEqual(merged["state"], "Merged")
+            self.assertIsNone(merged["last_error"])
+            self.assertEqual(len(restarted.runs.list()), 1)
+            self.assertFalse(workspace.exists())
+            self.assertEqual(self.git(repo, "branch", "--list", "relay/rr-1").stdout.strip(), "")
+            again = restarted.reconcile_queue_drain(repo_path=str(repo), trigger="again")
+            self.assertEqual(again["resumed_integrations"], [])
+            merges = self.git(
+                repo,
+                "log",
+                "--format=%s",
+                "--grep",
+                f"merge RR-1 worker run {run_id}",
+            ).stdout.splitlines()
+            self.assertEqual(len(merges), 1)
 
     def test_done_ticket_uses_canonical_run_after_canceled_retry(self):
         with tempfile.TemporaryDirectory() as tmp:

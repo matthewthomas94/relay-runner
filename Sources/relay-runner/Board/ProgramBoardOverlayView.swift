@@ -1694,7 +1694,7 @@ private struct ProgramWorkCard: View {
                     .multilineTextAlignment(.leading)
             }
 
-            if let lastError = item.lastError, !lastError.isEmpty {
+            if let lastError = item.visibleLastError {
                 Text(lastError)
                     .font(AppTypography.font(.supporting))
                     .foregroundStyle(ProgramBoardStyle.red)
@@ -1766,6 +1766,9 @@ private struct ProgramWorkCard: View {
         if item.isAwaitingMerge {
             labels.append("Awaiting review")
         }
+        if item.isIntegrationBlocked {
+            labels.append("Integration blocked")
+        }
         if item.isVerificationBlocked {
             labels.append("Verification blocked")
         }
@@ -1816,6 +1819,9 @@ struct ProgramTicketDetailPanel: View {
                             .lineLimit(1)
                         if detail.item.isAwaitingMerge {
                             ProgramInlineBadge(label: "Awaiting review")
+                        }
+                        if detail.item.isIntegrationBlocked {
+                            ProgramInlineBadge(label: "Integration blocked")
                         }
                         if detail.item.isVerificationBlocked {
                             ProgramInlineBadge(label: "Verification blocked")
@@ -1978,7 +1984,7 @@ struct ProgramTicketDetailPanel: View {
             rows.append(ProgramDetailRow(label: "Waiting on", value: detail.item.blockedBy.joined(separator: ", ")))
         }
         append("Activity", detail.item.activity, to: &rows, prettify: false)
-        append("Last error", detail.item.lastError, to: &rows, prettify: false)
+        append("Last error", detail.item.visibleLastError, to: &rows, prettify: false)
         if detail.ticket?.canceled == true {
             rows.append(ProgramDetailRow(label: "Canceled", value: "Yes"))
         }

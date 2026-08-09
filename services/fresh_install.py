@@ -26,7 +26,7 @@ from typing import Any, Callable, Mapping
 RESET_ACTIVE_STATES = frozenset(
     {
         "Claimed", "Running", "SpikeResultReady", "AwaitingReview",
-        "Reviewing", "MergeConflict", "Succeeded",
+        "Reviewing", "MergeConflict", "IntegrationBlocked", "Succeeded",
     }
 )
 

@@ -62,6 +62,7 @@ LIVE_RUN_STATES = {
     "Reviewing",
     "Succeeded",
     "MergeConflict",
+    "IntegrationBlocked",
 }
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")

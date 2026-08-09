@@ -40,6 +40,7 @@ TRACE_KINDS = frozenset({
     "run-merging",
     "run-merged",
     "run-reconciled",
+    "run-integration-blocked",
     "run-verification-blocked",
     "run-verification-resumed",
     "run-succeeded",
@@ -58,6 +59,7 @@ LIFECYCLE_DETAIL_TRACE_KINDS = frozenset({
     "run-review-needed",
     "run-merged",
     "run-reconciled",
+    "run-integration-blocked",
     "run-verification-blocked",
     "run-verification-resumed",
     "run-succeeded",
@@ -254,6 +256,7 @@ def default_orchestration_trace_message(
         "run-merging": f"Merging {ticket}{run_suffix}",
         "run-merged": f"{ticket}{run_suffix} merged",
         "run-reconciled": f"{ticket}{run_suffix} history reconciled",
+        "run-integration-blocked": f"{ticket}{run_suffix} waiting for a clean source checkout",
         "run-verification-blocked": f"{ticket}{run_suffix} waiting on external verification",
         "run-verification-resumed": f"{ticket}{run_suffix} verification resumed",
         "run-succeeded": f"{ticket}{run_suffix} succeeded",
@@ -275,6 +278,7 @@ def orchestration_trace_status_phase(kind: str) -> str:
         "run-canceled",
         "run-merged",
         "run-reconciled",
+        "run-integration-blocked",
         "run-verification-blocked",
     } else "planning"
 

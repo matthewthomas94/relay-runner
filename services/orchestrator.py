@@ -177,8 +177,9 @@ SPIKE_COMPLETED_RUN_STATE = "SpikeCompleted"
 VERIFICATION_BLOCKED_STATUS = "verification_blocked"
 VERIFICATION_BLOCKED_RUN_STATE = "VerificationBlocked"
 VERIFICATION_BLOCKER_FIELDS = ("verification_blocker", "verification_resume")
+INTEGRATION_BLOCKED_RUN_STATE = "IntegrationBlocked"
 REVIEW_BLOCKING_STATES = ("AwaitingReview", "Reviewing", "MergeConflict", "Succeeded")
-MERGEABLE_REVIEW_STATES = REVIEW_BLOCKING_STATES
+MERGEABLE_REVIEW_STATES = REVIEW_BLOCKING_STATES + (INTEGRATION_BLOCKED_RUN_STATE,)
 WORKER_MODEL_TIERS = {
     "codex": CODEX_WORKER_TIER_FAMILIES,
     "claude": {
@@ -202,6 +203,7 @@ QUEUE_DRAIN_TERMINAL_STATES = frozenset({"completed", "canceled"})
 QUEUE_DRAIN_QUIESCENCE_SECONDS = 2.0
 QUEUE_DRAIN_MONITOR_INTERVAL_SECONDS = 5.0
 DEFAULT_WORKER_HEALTH_CHECK_SECONDS = 10 * 60.0
+_LAST_ERROR_UNSET = object()
 DETERMINISTIC_FAILURE_PREFIXES = (
     "missing worker sizing metadata",
     "invalid worker_model",
@@ -1731,7 +1733,7 @@ class RunsStore:
     """
 
     ACTIVE_STATES = ("Claimed", "Running", "SpikeResultReady")
-    DURABLE_INDEX_STATES = (VERIFICATION_BLOCKED_RUN_STATE,)
+    DURABLE_INDEX_STATES = (VERIFICATION_BLOCKED_RUN_STATE, INTEGRATION_BLOCKED_RUN_STATE)
     # Completed entries linger in the runs-index file this long after `ended_at`
     # so the board can render review-pending pills across the typical merge gap
     # without flicker, then get pruned.
@@ -1776,6 +1778,10 @@ class RunsStore:
                 c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
             else:
                 c.executescript(self.SCHEMA)
+            c.execute(
+                "UPDATE runs SET last_error = NULL "
+                "WHERE state = 'Merged' AND last_error IS NOT NULL"
+            )
 
     def insert(self, *, ticket_id: str, repo_path: str, workspace_path: str,
                branch: str, state: str, execution_mode: str = "implementation",
@@ -1846,7 +1852,8 @@ class RunsStore:
         return reconciled
 
     def update(self, run_id: int, *, state: str | None = None, pid: int | None = None,
-               exit_code: int | None = None, last_error: str | None = None,
+               exit_code: int | None = None,
+               last_error: str | None | object = _LAST_ERROR_UNSET,
                ended: bool = False) -> None:
         fields, values = [], []
         if state is not None:
@@ -1855,7 +1862,7 @@ class RunsStore:
             fields.append("pid = ?"); values.append(pid)
         if exit_code is not None:
             fields.append("exit_code = ?"); values.append(exit_code)
-        if last_error is not None:
+        if last_error is not _LAST_ERROR_UNSET:
             fields.append("last_error = ?"); values.append(last_error)
         if ended:
             fields.append("ended_at = ?"); values.append(time.time())
@@ -1940,8 +1947,8 @@ class RunsStore:
             return dict(row) if row else None
 
     def find_awaiting_merge(self, ticket_id: str, repo_path: str | None = None) -> dict | None:
-        params: list[Any] = [ticket_id, *REVIEW_BLOCKING_STATES]
-        placeholders = ",".join("?" * len(REVIEW_BLOCKING_STATES))
+        params: list[Any] = [ticket_id, *MERGEABLE_REVIEW_STATES]
+        placeholders = ",".join("?" * len(MERGEABLE_REVIEW_STATES))
         repo_clause = ""
         if repo_path is not None:
             repo_clause = "AND repo_path = ? "
@@ -2907,6 +2914,66 @@ def _git(repo_path: str, *args: str, check: bool = True) -> subprocess.Completed
         ["git", "-C", repo_path, *args],
         capture_output=True, text=True, check=check,
     )
+
+
+def _source_checkout_blocker(
+    repo_path: str,
+    *,
+    max_paths: int = 8,
+    ignore_board_metadata: bool = False,
+) -> dict[str, Any] | None:
+    """Return bounded, repo-relative dirty-source details without reading contents."""
+    status = _git(
+        repo_path,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        check=False,
+    )
+    if status.returncode != 0:
+        return {
+            "reason": "source checkout cleanliness could not be verified",
+            "dirty_paths": [],
+            "next_step": "Restore Git status checks, then recheck integration.",
+        }
+
+    entries = [entry for entry in status.stdout.split("\0") if entry]
+    dirty: list[tuple[str, str]] = []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        code = entry[:2]
+        path = entry[3:] if len(entry) > 3 else ""
+        if ignore_board_metadata and path.startswith(".orchestrator/"):
+            if any(flag in code for flag in "RC"):
+                index += 1
+            index += 1
+            continue
+        if path:
+            safe_path = json.dumps(path, ensure_ascii=True)[1:-1]
+            if len(safe_path) > 160:
+                safe_path = safe_path[:157] + "..."
+            dirty.append(("untracked" if code == "??" else "tracked", safe_path))
+        if any(flag in code for flag in "RC"):
+            index += 1  # porcelain -z includes the second rename/copy path next.
+        index += 1
+
+    if not dirty:
+        return None
+
+    visible = dirty[:max_paths]
+    labels = [f"{kind}: {path}" for kind, path in visible]
+    hidden_count = len(dirty) - len(visible)
+    suffix = f"; +{hidden_count} more" if hidden_count else ""
+    return {
+        "reason": "source checkout has uncommitted changes (" + "; ".join(labels) + suffix + ")",
+        "dirty_paths": [path for _kind, path in visible],
+        "next_step": (
+            "Commit or otherwise resolve the listed source-checkout changes, "
+            "then recheck integration; Relay Runner will not alter them."
+        ),
+    }
 
 
 def _ticket_authoring_pathspecs(repo: Path, paths: list[Path]) -> list[str]:
@@ -3982,6 +4049,7 @@ class ReviewWorker:
             if current.get("state") in {
                 "Merged",
                 "MergeConflict",
+                INTEGRATION_BLOCKED_RUN_STATE,
                 VERIFICATION_BLOCKED_RUN_STATE,
                 "Failed",
             }:
@@ -4077,6 +4145,7 @@ class Daemon:
         # MVP: single concurrency. Held during the dispatch claim → spawn window
         # (release immediately after spawn — the worker runs in its own thread).
         self._dispatch_lock = threading.Lock()
+        self._merge_lock = threading.Lock()
         self._ticket_authoring_lock = threading.Lock()
         self._orchestrator_action_request_ids: set[str] = set()
         self._workers: dict[int, Worker] = {}
@@ -4782,7 +4851,7 @@ Title: {ticket['title']}
             ticket = by_id.get(ticket_id)
             if ticket and ticket.get("status") == "done":
                 continue
-            if state in set(self.runs.ACTIVE_STATES) | set(REVIEW_BLOCKING_STATES):
+            if state in set(self.runs.ACTIVE_STATES) | set(MERGEABLE_REVIEW_STATES):
                 observed.add(ticket_id)
 
         # Dependency predecessors are part of the drain only when an observed
@@ -4818,6 +4887,23 @@ Title: {ticket['title']}
             "unresolved_dependencies": unresolved_dependencies or [],
         }
 
+    @staticmethod
+    def _integration_blocked_item(
+        ticket_id: str,
+        *,
+        blocker: dict[str, Any],
+        run_id: int | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "ticket_id": ticket_id,
+            "state": "integration_blocked",
+            "run_id": run_id,
+            "reason": blocker["reason"],
+            "blocker_owner": "source_checkout",
+            "blocker_next_step": blocker["next_step"],
+            "unresolved_dependencies": [],
+        }
+
     def _classify_queue_drain_item(
         self,
         *,
@@ -4827,6 +4913,8 @@ Title: {ticket['title']}
         all_tickets: list[dict[str, Any]],
         latest_run: dict[str, Any] | None,
         skip: dict[str, Any] | None,
+        source_blocker: dict[str, Any] | None,
+        dispatch_blocker: dict[str, Any] | None,
         drive_reviews: bool,
         now: float,
     ) -> dict[str, Any]:
@@ -4927,6 +5015,17 @@ Title: {ticket['title']}
                 "next_action_at": now if not review_active else None,
                 "unresolved_dependencies": [],
             }
+
+        if run_state == INTEGRATION_BLOCKED_RUN_STATE:
+            blocker = source_blocker or {
+                "reason": str(latest_run.get("last_error") or "integration is ready to resume"),
+                "next_step": "Recheck integration to merge the existing reviewed run.",
+            }
+            return self._integration_blocked_item(
+                ticket_id,
+                run_id=run_id,
+                blocker=blocker,
+            )
 
         if run_state == "MergeConflict":
             return self._blocked_item(
@@ -5038,6 +5137,8 @@ Title: {ticket['title']}
                 )
 
         if ticket.get("status") == "ready":
+            if dispatch_blocker is not None:
+                return self._integration_blocked_item(ticket_id, blocker=dispatch_blocker)
             return {
                 "ticket_id": ticket_id,
                 "state": "scheduled",
@@ -5131,6 +5232,8 @@ Title: {ticket['title']}
             for item in (sweep_result or {}).get("skipped", [])
             if item.get("ticket_id")
         }
+        source_blocker = _source_checkout_blocker(str(repo))
+        dispatch_blocker = _source_checkout_blocker(str(repo), ignore_board_metadata=True)
         items = [
             self._classify_queue_drain_item(
                 repo=repo,
@@ -5139,6 +5242,8 @@ Title: {ticket['title']}
                 all_tickets=tickets,
                 latest_run=runs_by_ticket.get(ticket_id),
                 skip=skip_by_id.get(ticket_id),
+                source_blocker=source_blocker,
+                dispatch_blocker=dispatch_blocker,
                 drive_reviews=drive_reviews,
                 now=time.time(),
             )
@@ -5218,12 +5323,29 @@ Title: {ticket['title']}
         )
         return completed
 
+    def _resume_clean_integration_blocks(self, repo: Path) -> list[dict[str, Any]]:
+        resumed: list[dict[str, Any]] = []
+        for run in self.runs.list(state=INTEGRATION_BLOCKED_RUN_STATE, limit=1000):
+            if str(Path(str(run.get("repo_path") or "")).expanduser().resolve()) != str(repo):
+                continue
+            if _source_checkout_blocker(str(repo)) is not None:
+                continue
+            result = self.accept_worker_run(int(run["id"]))
+            resumed.append({
+                "ticket_id": run["ticket_id"],
+                "run_id": run["id"],
+                "accepted": bool(result.get("accepted")),
+                "state": (result.get("run") or {}).get("state"),
+            })
+        return resumed
+
     def reconcile_queue_drain(self, *, repo_path: str, trigger: str | None = None) -> dict[str, Any]:
         if not repo_path:
             raise ValueError("repo_path is required")
         repo = Path(repo_path).expanduser().resolve()
         if not repo.is_dir() or not (repo / ".git").exists():
             raise ValueError(f"repo_path {repo} is not a git repository")
+        resumed_integrations = self._resume_clean_integration_blocks(repo)
         with self._authoring_mutex():
             sweep = self._sweep_ready_tickets_locked(
                 repo=repo,
@@ -5236,7 +5358,13 @@ Title: {ticket['title']}
                 sweep_result=sweep,
                 drive_reviews=True,
             )
-        return {"repo_path": str(repo), "trigger": trigger, "sweep": sweep, "drain": drain}
+        return {
+            "repo_path": str(repo),
+            "trigger": trigger,
+            "resumed_integrations": resumed_integrations,
+            "sweep": sweep,
+            "drain": drain,
+        }
 
     def reconcile_queue_drains(
         self,
@@ -5515,11 +5643,18 @@ Title: {ticket['title']}
 
             awaiting_merge = self.runs.find_awaiting_merge(ticket_id, repo_path=str(repo))
             if awaiting_merge:
-                reason = (
-                    f"ticket {ticket_id} already has succeeded run "
-                    f"{awaiting_merge['id']} awaiting merge; merge "
-                    f"{awaiting_merge['branch']} or explicitly reset the ticket before retrying"
-                )
+                if awaiting_merge.get("state") == INTEGRATION_BLOCKED_RUN_STATE:
+                    blocker = _source_checkout_blocker(str(repo))
+                    reason = (
+                        f"ticket {ticket_id} run {awaiting_merge['id']} is waiting for integration; "
+                        f"{(blocker or {}).get('next_step') or 'recheck the existing reviewed run'}"
+                    )
+                else:
+                    reason = (
+                        f"ticket {ticket_id} already has succeeded run "
+                        f"{awaiting_merge['id']} awaiting merge; merge "
+                        f"{awaiting_merge['branch']} or explicitly reset the ticket before retrying"
+                    )
                 print(
                     f"[orchestrator] dispatch skipped for {ticket_id} from {source}: {reason}",
                     file=sys.stderr,
@@ -5544,6 +5679,9 @@ Title: {ticket['title']}
                 return {
                     "already_active": True,
                     "awaiting_merge": True,
+                    "integration_blocked": (
+                        awaiting_merge.get("state") == INTEGRATION_BLOCKED_RUN_STATE
+                    ),
                     "reason": reason,
                     "run": awaiting_merge,
                 }
@@ -5564,6 +5702,43 @@ Title: {ticket['title']}
                     drive_reviews=False,
                 )
                 raise RuntimeError(auto_blocker)
+
+            source_blocker = _source_checkout_blocker(str(repo), ignore_board_metadata=True)
+            if source_blocker is not None:
+                message = f"{source_blocker['reason']}. {source_blocker['next_step']}"
+                self._emit_lifecycle(
+                    "run-integration-blocked",
+                    ticket_id=ticket_id,
+                    source="orchestrator",
+                    message=message,
+                    repo_path=str(repo),
+                    provider_key=worker_provider,
+                )
+                self._record_queue_drain_after_event(
+                    repo_path=str(repo),
+                    trigger=f"dispatch-{source}-integration-blocked",
+                    drive_reviews=False,
+                )
+                if relay_command_id and command_store and command_store.get_private(
+                    str(relay_command_id),
+                    intent_id=relay_intent_id,
+                ):
+                    command_store.update_status(
+                        str(relay_command_id),
+                        intent_id=relay_intent_id,
+                        status="blocked",
+                        outcome="integration-blocked",
+                        ticket_id=ticket_id,
+                        status_message=f"{ticket_id} is waiting for a clean source checkout.",
+                    )
+                return {
+                    "already_active": False,
+                    "integration_blocked": True,
+                    "reason": source_blocker["reason"],
+                    "dirty_paths": source_blocker["dirty_paths"],
+                    "next_step": source_blocker["next_step"],
+                    "run": None,
+                }
 
             applied_default_sizing = apply_default_worker_sizing(
                 ticket,
@@ -6326,6 +6501,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         all_tickets = scan_repo(repo)
         dispatched: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
+        source_blocker = _source_checkout_blocker(str(repo), ignore_board_metadata=True)
 
         def skip(ticket: dict[str, Any], reason: str, **extra: Any) -> None:
             entry = {"ticket_id": ticket["id"], "reason": reason}
@@ -6347,6 +6523,16 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 continue
             if not all_deps_done(ticket, all_tickets):
                 skip(ticket, "dependencies_not_done")
+                continue
+
+            if source_blocker is not None:
+                skip(
+                    ticket,
+                    "integration_blocked",
+                    message=source_blocker["reason"],
+                    next_step=source_blocker["next_step"],
+                    dirty_paths=source_blocker["dirty_paths"],
+                )
                 continue
 
             capacity_wait = self._capacity_wait_reason(repo_path=str(repo))
@@ -6391,6 +6577,15 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
 
             run = result.get("run") or {}
             run_id = run.get("id")
+            if result.get("integration_blocked"):
+                skip(
+                    ticket,
+                    "integration_blocked",
+                    message=result.get("reason"),
+                    next_step=result.get("next_step"),
+                    dirty_paths=result.get("dirty_paths") or [],
+                )
+                continue
             if result.get("already_active"):
                 reason = "awaiting_merge" if result.get("awaiting_merge") else "already_active"
                 skip(ticket, reason, run_id=run_id)
@@ -6573,6 +6768,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         }
 
     def accept_worker_run(self, run_id: int) -> dict:
+        with self._merge_mutex():
+            return self._accept_worker_run_locked(run_id)
+
+    def _accept_worker_run_locked(self, run_id: int) -> dict:
         run = self.runs.get(run_id)
         if not run:
             raise ValueError(f"unknown run_id {run_id}")
@@ -6608,26 +6807,20 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     f"run {run_id} ticket status {expected_status!r} is not a reviewable outcome"
                 )
 
-        status = _git(repo_path, "status", "--porcelain", check=False)
-        if status.returncode != 0 or status.stdout.strip():
-            reason = "source repo has uncommitted changes; refusing worker merge"
-            if artifact_lifecycle is not None:
-                try:
-                    artifact_lifecycle.record_merge_conflict(
-                        run_id=run_id,
-                        ticket_id=ticket_id,
-                        provider=str(run.get("provider_key") or ""),
-                        reason=reason,
-                    )
-                except Exception as error:  # noqa: BLE001
-                    reason += f"; artifact conflict publication failed: {error}"
-            self.runs.update(run_id, state="MergeConflict", last_error=reason)
+        source_blocker = _source_checkout_blocker(repo_path)
+        if source_blocker is not None:
+            reason = f"{source_blocker['reason']}. {source_blocker['next_step']}"
+            self.runs.update(
+                run_id,
+                state=INTEGRATION_BLOCKED_RUN_STATE,
+                last_error=reason,
+            )
             self._emit_lifecycle(
-                "run-failed",
+                "run-integration-blocked",
                 ticket_id=ticket_id,
                 run_id=run_id,
                 source="orchestrator",
-                message=f"{ticket_id} run {run_id} merge needs attention",
+                message=reason,
                 repo_path=repo_path,
                 provider_key=run.get("provider_key"),
             )
@@ -6636,7 +6829,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 trigger="merge-blocked-dirty-source",
                 drive_reviews=False,
             )
-            return {"accepted": False, "run": self.runs.get(run_id), "reason": reason}
+            return {
+                "accepted": False,
+                "integration_blocked": True,
+                "run": self.runs.get(run_id),
+                "reason": source_blocker["reason"],
+                "dirty_paths": source_blocker["dirty_paths"],
+                "next_step": source_blocker["next_step"],
+            }
 
         merge = _git(
             repo_path,
@@ -6755,7 +6955,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 last_error=f"verification blocked: {blocker}; resume: {resume}",
             )
         else:
-            self.runs.update(run_id, state="Merged")
+            self.runs.update(run_id, state="Merged", last_error=None)
         self._emit_lifecycle(
             "run-verification-blocked" if verification_blocked else "run-merged",
             ticket_id=ticket_id,
@@ -7662,6 +7862,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         if lock is None:
             lock = threading.Lock()
             self._ticket_authoring_lock = lock
+        return lock
+
+    def _merge_mutex(self) -> threading.Lock:
+        lock = getattr(self, "_merge_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._merge_lock = lock
         return lock
 
     def _action_request_ids(self) -> set[str]:
