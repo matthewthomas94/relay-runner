@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -578,7 +579,7 @@ class ReadySweeperTests(unittest.TestCase):
             }])
 
     def make_repo(self, repo: Path) -> None:
-        (repo / ".git").mkdir(parents=True)
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
         (repo / ".orchestrator").mkdir()
 
     def write_ticket(
