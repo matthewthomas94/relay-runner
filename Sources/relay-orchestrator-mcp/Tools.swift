@@ -137,7 +137,7 @@ struct ListRunsTool: MCPTool {
     let name = "list_runs"
     let description = """
         List orchestrator runs, newest first. Pass `state` to filter by lifecycle state \
-        (Claimed, Running, SpikeCompleted, AwaitingReview, Reviewing, MergeConflict, VerificationBlocked, Merged, Failed, Stalled, Canceled). Default limit: 100.
+        (Claimed, Running, SpikeCompleted, AwaitingReview, Reviewing, IntegrationBlocked, MergeConflict, VerificationBlocked, Merged, Failed, Stalled, Canceled). Default limit: 100.
         """
 
     var inputSchema: [String: Any] {
@@ -146,7 +146,7 @@ struct ListRunsTool: MCPTool {
             "properties": [
                 "state": [
                     "type": "string",
-                    "enum": ["Claimed", "Running", "SpikeCompleted", "AwaitingReview", "Reviewing", "MergeConflict", "VerificationBlocked", "Merged", "Succeeded", "Failed", "Stalled", "Canceled"],
+                    "enum": ["Claimed", "Running", "SpikeCompleted", "AwaitingReview", "Reviewing", "IntegrationBlocked", "MergeConflict", "VerificationBlocked", "Merged", "Succeeded", "Failed", "Stalled", "Canceled"],
                 ],
                 "limit": ["type": "integer", "description": "Max rows to return. Default: 100."],
             ],

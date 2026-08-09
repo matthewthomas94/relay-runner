@@ -735,6 +735,8 @@ def _run_state(raw_state: Any) -> str:
         return "awaiting_review"
     if state in {"merge_conflict", "mergeconflict"}:
         return "merge_conflict"
+    if state in {"integration_blocked", "integrationblocked"}:
+        return "integration_blocked"
     if state == "merged":
         return "merged"
     if state in {"succeeded", "success", "done", "spikecompleted", "spike_completed"}:
@@ -751,7 +753,7 @@ def _run_state(raw_state: Any) -> str:
 
 
 def _program_state(state: str, ticket_node: dict[str, Any] | None) -> str:
-    if state in {"awaiting_review", "merge_conflict"}:
+    if state in {"awaiting_review", "merge_conflict", "integration_blocked"}:
         return state
     if state != "succeeded" or ticket_node is None:
         return state

@@ -10,7 +10,7 @@ struct RunState: Equatable, Decodable {
     let repoPath: String
     let runId: Int
     /// Matches the daemon's run-state enum: Claimed | Running |
-    /// AwaitingReview | Reviewing | MergeConflict | VerificationBlocked |
+    /// AwaitingReview | Reviewing | IntegrationBlocked | MergeConflict | VerificationBlocked |
     /// Succeeded | Merged | Failed | Stalled | Canceled.
     let state: String
     let attempt: Int?
@@ -88,7 +88,7 @@ struct RunState: Equatable, Decodable {
         switch state {
         case "Claimed", "Running", "Reviewing", "Stalled":
             return .inProgress
-        case "AwaitingReview", "Succeeded", "MergeConflict":
+        case "AwaitingReview", "Succeeded", "IntegrationBlocked", "MergeConflict":
             // Worker finished but review/merge has not published the ticket's
             // `done` state to the source branch yet. Manual dispatches can
             // originate from backlog, so the review-pending run state should
@@ -113,6 +113,8 @@ struct RunState: Equatable, Decodable {
             return .failed
         case "AwaitingReview", "Succeeded":
             return .awaitingReview
+        case "IntegrationBlocked":
+            return .integrationBlocked
         case "MergeConflict":
             return .mergeConflict
         case "VerificationBlocked":
@@ -120,6 +122,11 @@ struct RunState: Equatable, Decodable {
         default:
             return nil
         }
+    }
+
+    func visibleLastError(ticketStatus: Ticket.Status) -> String? {
+        guard ticketStatus != .done, state != "Merged" else { return nil }
+        return lastError?.isEmpty == false ? lastError : nil
     }
 }
 
@@ -130,6 +137,7 @@ enum RunPill: Equatable {
     case stalled
     case failed
     case awaitingReview
+    case integrationBlocked
     case mergeConflict
     case verificationBlocked
 }

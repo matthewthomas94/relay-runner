@@ -393,7 +393,7 @@ def _awaiting_merge_tickets(ctx: dict[str, Any], provider: str | None) -> list[d
         and _ticket_matches_provider(ctx, ticket, provider)
     }
     for run in ctx["runs"]:
-        if _run_state(run) in {"awaiting_merge", "awaiting_review", "merge_conflict"} and _run_matches_provider(run, provider):
+        if _run_state(run) in {"awaiting_merge", "awaiting_review", "merge_conflict", "integration_blocked"} and _run_matches_provider(run, provider):
             ticket = ctx["ticket_by_run"].get(run["id"])
             if ticket:
                 ticket_ids.add(ticket["id"])
@@ -521,7 +521,7 @@ def _project_board_state(ctx: dict[str, Any], ticket: dict[str, Any]) -> str:
     run_state = _run_state(latest_run)
     if run_state in {"active", "reviewing", "stalled"}:
         return "in_progress"
-    if run_state in {"awaiting_merge", "awaiting_review", "merge_conflict"}:
+    if run_state in {"awaiting_merge", "awaiting_review", "merge_conflict", "integration_blocked"}:
         return "in_progress"
     if run_state == "verification_blocked":
         return "in_progress"
@@ -550,7 +550,11 @@ def _run_item(ctx: dict[str, Any], run: dict[str, Any], status: str) -> dict[str
         "provider": _run_provider(run),
         "branch": body.get("branch"),
         "activity": body.get("activity"),
-        "last_error": body.get("last_error"),
+        "last_error": (
+            None
+            if _run_state(run) in {"merged", "succeeded"}
+            else body.get("last_error")
+        ),
         "worker_model": body.get("worker_model"),
         "worker_effort": body.get("worker_effort"),
         "worker_sizing_rationale": body.get("worker_sizing_rationale"),
@@ -582,8 +586,12 @@ def _ticket_item(ctx: dict[str, Any], ticket: dict[str, Any], status: str) -> di
         "provider": _run_provider(latest_run) if latest_run else None,
         "branch": latest_run.get("body", {}).get("branch") if latest_run else None,
         "activity": latest_run.get("body", {}).get("activity") if latest_run else None,
-        "last_error": (latest_run.get("body", {}).get("last_error") if latest_run else None)
-            or ticket_sizing_error,
+        "last_error": (
+            None
+            if _project_board_state(ctx, ticket) == "done"
+            else (latest_run.get("body", {}).get("last_error") if latest_run else None)
+                or ticket_sizing_error
+        ),
         "worker_model": _first_present_body(latest_run, ticket, "worker_model"),
         "worker_effort": _first_present_body(latest_run, ticket, "worker_effort"),
         "worker_sizing_rationale": _first_present_body(latest_run, ticket, "worker_sizing_rationale"),
@@ -600,6 +608,7 @@ def _awaiting_review_item(ctx: dict[str, Any], ticket: dict[str, Any]) -> dict[s
     status = {
         "awaiting_review": "awaiting review",
         "merge_conflict": "merge conflict",
+        "integration_blocked": "integration blocked",
     }.get(_run_state(latest_run), "awaiting review")
     return _ticket_item(ctx, ticket, status)
 
@@ -703,7 +712,7 @@ def _item_line(item: dict[str, Any]) -> str:
         details.append(str(item["activity"]))
     if item.get("last_error") and (
         item.get("status") in {"stalled", "failed"}
-        or item.get("run_state") == "failed"
+        or item.get("run_state") in {"failed", "integration_blocked"}
         or item.get("worker_sizing_error")
     ):
         details.append(str(item["last_error"]))

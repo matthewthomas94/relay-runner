@@ -383,6 +383,49 @@ class ProgramStatusTests(unittest.TestCase):
         self.assertIn("RR-1 - Needs review (awaiting review", result["message"])
         self.assertIn("RR-2 - Needs conflict resolution (merge conflict", result["message"])
 
+    def test_integration_blocked_is_awaiting_merge_with_actionable_detail(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        ticket = _ticket(store, project, "RR-1", "Waiting to integrate", "ready")
+        _run(
+            store,
+            project,
+            ticket,
+            101,
+            "integration_blocked",
+            "codex",
+            model="gpt-5",
+            last_error="source checkout has uncommitted changes (tracked: code.py)",
+        )
+
+        awaiting = build_program_status(store, query="awaiting_merge", now=2000.0)
+        in_progress = build_program_status(store, query="in_progress_lane", now=2000.0)
+
+        self.assertEqual(awaiting["items"][0]["status"], "integration blocked")
+        self.assertEqual(awaiting["items"][0]["run_state"], "integration_blocked")
+        self.assertIn("tracked: code.py", awaiting["items"][0]["last_error"])
+        self.assertIn("tracked: code.py", awaiting["message"])
+        self.assertEqual([item["ticket_id"] for item in in_progress["items"]], ["RR-1"])
+
+    def test_done_item_suppresses_historical_run_error(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        ticket = _ticket(store, project, "RR-1", "Already merged", "done")
+        _run(
+            store,
+            project,
+            ticket,
+            101,
+            "merged",
+            "claude",
+            model="sonnet",
+            last_error="obsolete merge failure",
+        )
+
+        result = build_program_status(store, query="done_lane", now=2000.0)
+
+        self.assertIsNone(result["items"][0]["last_error"])
+
 
 def _project(
     store: GraphifyCoreStore,
@@ -441,6 +484,7 @@ def _run(
     *,
     model: str,
     attempt: int = 1,
+    last_error: str | None = None,
 ) -> dict:
     program_state = state
     if state in {"succeeded", "success", "done"} and ticket["body"].get("state") != "done":
@@ -460,6 +504,7 @@ def _run(
             "model_alias": model,
             "branch": f"relay/{ticket['body']['ticket_id'].lower()}",
             "started_at": float(run_id),
+            "last_error": last_error,
         },
     )
     store.upsert_edge(src_id=run["id"], dst_id=ticket["id"], kind=EDGE_EXECUTES)

@@ -939,6 +939,12 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         .joined(separator: "|")
     }
 
+    var visibleLastError: String? {
+        let successfulStates = Set(["done", "closed", "completed", "merged", "succeeded"])
+        guard Set(programStateKeys).isDisjoint(with: successfulStates) else { return nil }
+        return lastError?.isEmpty == false ? lastError : nil
+    }
+
     init(
         project: ProgramStatusProject?,
         ticketID: String?,
@@ -1809,6 +1815,10 @@ extension ProgramStatusItem {
         programStateKeys.contains(Ticket.Status.verificationBlocked.rawValue)
     }
 
+    var isIntegrationBlocked: Bool {
+        programStateKeys.contains("integration_blocked")
+    }
+
     var hasActiveWorker: Bool {
         programStateKeys.contains("active")
     }
@@ -1845,6 +1855,7 @@ extension ProgramStatusItem {
             ticketID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
             !hasActiveWorker &&
             !isAwaitingMerge &&
+            !isIntegrationBlocked &&
             !isVerificationBlocked
     }
 
