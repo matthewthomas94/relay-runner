@@ -98,6 +98,9 @@ struct ProgramBoardOverlayView: View {
     let onEditCommit: (ProgramBoardEditRequest) -> Void
     let onEditCancel: () -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
+    var onChooseTicketImages: (@escaping ([URL]) -> Void) -> Void = { completion in
+        completion(ProgramTicketImagePicker.run())
+    }
     let onSpikeFollowupStart: (ProgramTicketDetail) -> Void
     let onSpikeFollowupReview: (SpikeFollowupBatch, SpikeFollowupProposal, String, [String: Any]?) -> Void
     let onSpikeFollowupClose: () -> Void
@@ -230,7 +233,8 @@ struct ProgramBoardOverlayView: View {
                             )
                         },
                         onCommit: onCreateCommit,
-                        onCancel: onCreateCancel
+                        onCancel: onCreateCancel,
+                        chooseImages: onChooseTicketImages
                     )
                 }
                 .id("\(draft.lane.id)-\(draft.selectedProjectPath ?? "all")")
@@ -254,7 +258,8 @@ struct ProgramBoardOverlayView: View {
                         },
                         onCommit: onEditCommit,
                         onCancel: onEditCancel,
-                        onDelete: onDelete
+                        onDelete: onDelete,
+                        chooseImages: onChooseTicketImages
                     )
                 }
                 .id(draft.id)
@@ -2355,29 +2360,44 @@ private struct ProgramDetailRow: Identifiable {
 private struct ProgramDetailMetadata: View {
     let rows: [ProgramDetailRow]
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10),
-    ]
-
     var body: some View {
         if !rows.isEmpty {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                ForEach(rows) { row in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(row.label)
-                            .font(AppTypography.font(.caption))
-                            .foregroundStyle(ProgramBoardStyle.mutedText)
-                            .lineLimit(1)
-                        Text(row.value)
-                            .font(AppTypography.font(.label))
-                            .foregroundStyle(ProgramBoardStyle.secondaryText)
-                            .lineLimit(2)
+            // The surrounding AppKit scroll document translates its hosted
+            // content to preserve exact endpoints. A lazy grid can cull these
+            // few rows against the untranslated viewport while retaining their
+            // height, which presents as a large blank spacer.
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(rowStartIndices, id: \.self) { index in
+                    HStack(alignment: .top, spacing: 10) {
+                        metadataCell(rows[index])
+                        if rows.indices.contains(index + 1) {
+                            metadataCell(rows[index + 1])
+                        } else {
+                            Spacer(minLength: 0)
+                                .frame(maxWidth: .infinity)
+                        }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
+    }
+
+    private var rowStartIndices: [Int] {
+        Array(stride(from: rows.startIndex, to: rows.endIndex, by: 2))
+    }
+
+    private func metadataCell(_ row: ProgramDetailRow) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(row.label)
+                .font(AppTypography.font(.caption))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .lineLimit(1)
+            Text(row.value)
+                .font(AppTypography.font(.label))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -2453,6 +2473,7 @@ private struct ProgramTicketEditModal: View {
     let onCommit: (ProgramBoardEditRequest) -> Void
     let onCancel: () -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
+    let chooseImages: (@escaping ([URL]) -> Void) -> Void
 
     @State private var title: String
     @State private var status: Ticket.Status
@@ -2474,13 +2495,15 @@ private struct ProgramTicketEditModal: View {
         ) -> ProgramBoardEditRequest?,
         onCommit: @escaping (ProgramBoardEditRequest) -> Void,
         onCancel: @escaping () -> Void,
-        onDelete: @escaping (ProgramBoardDeleteRequest) -> Void
+        onDelete: @escaping (ProgramBoardDeleteRequest) -> Void,
+        chooseImages: @escaping (@escaping ([URL]) -> Void) -> Void
     ) {
         self.draft = draft
         self.makeRequest = makeRequest
         self.onCommit = onCommit
         self.onCancel = onCancel
         self.onDelete = onDelete
+        self.chooseImages = chooseImages
         self._title = State(initialValue: draft.title)
         self._status = State(initialValue: draft.status)
         self._priority = State(initialValue: draft.priority)
@@ -2568,7 +2591,8 @@ private struct ProgramTicketEditModal: View {
 
                 ProgramTicketImageSelector(
                     existingPaths: draft.imageAttachmentPaths,
-                    selectedURLs: $imageURLs
+                    selectedURLs: $imageURLs,
+                    chooseImages: chooseImages
                 )
                 }
             }
@@ -2752,6 +2776,7 @@ private struct ProgramTicketCreateModal: View {
     ) -> ProgramBoardCreateRequest?
     let onCommit: (ProgramBoardCreateRequest) -> Void
     let onCancel: () -> Void
+    let chooseImages: (@escaping ([URL]) -> Void) -> Void
 
     @State private var selectedProjectPath: String?
     @State private var title: String
@@ -2770,13 +2795,15 @@ private struct ProgramTicketCreateModal: View {
             _ imageURLs: [URL]
         ) -> ProgramBoardCreateRequest?,
         onCommit: @escaping (ProgramBoardCreateRequest) -> Void,
-        onCancel: @escaping () -> Void
+        onCancel: @escaping () -> Void,
+        chooseImages: @escaping (@escaping ([URL]) -> Void) -> Void
     ) {
         self.draft = draft
         self.projects = projects
         self.makeRequest = makeRequest
         self.onCommit = onCommit
         self.onCancel = onCancel
+        self.chooseImages = chooseImages
         self._selectedProjectPath = State(initialValue: draft.selectedProjectPath)
         self._title = State(initialValue: "")
         self._description = State(initialValue: "")
@@ -2826,7 +2853,8 @@ private struct ProgramTicketCreateModal: View {
 
                 ProgramTicketImageSelector(
                     existingPaths: [],
-                    selectedURLs: $imageURLs
+                    selectedURLs: $imageURLs,
+                    chooseImages: chooseImages
                 )
             }
 
@@ -2877,13 +2905,8 @@ private struct ProgramExecutionModePicker: View {
             Text("Execution mode")
                 .font(AppTypography.font(.body))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
-            HStack(spacing: 0) {
-                ForEach(Array(Ticket.ExecutionMode.allCases.enumerated()), id: \.element.rawValue) { index, mode in
-                    if index > 0 {
-                        Rectangle()
-                            .fill(BoardDarkSurfaceStyle.border)
-                            .frame(width: 1, height: SharedActionButtonMetrics.controlHeight)
-                    }
+            HStack(spacing: 6) {
+                ForEach(Ticket.ExecutionMode.allCases, id: \.rawValue) { mode in
                     ProgramExecutionModeButton(
                         mode: mode,
                         isSelected: selection == mode,
@@ -2893,13 +2916,6 @@ private struct ProgramExecutionModePicker: View {
             }
             .frame(maxWidth: 360)
             .frame(height: SharedActionButtonMetrics.controlHeight)
-            .background(ProgramTicketFieldBackground())
-            .clipShape(
-                RoundedRectangle(
-                    cornerRadius: SettingsLayout.sidebarCornerRadius,
-                    style: .continuous
-                )
-            )
             Text(selection.explanation)
                 .font(AppTypography.font(.label))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
@@ -2912,63 +2928,75 @@ private struct ProgramExecutionModeButton: View {
     let mode: Ticket.ExecutionMode
     let isSelected: Bool
     let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    private var palette: SharedActionButtonPalette { .settingsSecondary }
+
+    private var presentation: SettingsActionPresentation {
+        SettingsActionPresentation.resolve(
+            isEnabled: true,
+            isHovered: isHovered,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
+        )
+    }
 
     var body: some View {
+        let shape = RoundedRectangle(
+            cornerRadius: SharedActionButtonMetrics.cornerRadius,
+            style: .continuous
+        )
+
         Button(action: action) {
             Text(mode.displayName)
                 .font(AppTypography.font(.action))
-                .foregroundStyle(
-                    isSelected
-                        ? ProgramBoardStyle.primaryText
-                        : ProgramBoardStyle.secondaryText
-                )
+                .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
                 .frame(maxWidth: .infinity, minHeight: SharedActionButtonMetrics.controlHeight)
-                .background(backgroundColor)
-                .contentShape(Rectangle())
+                .background {
+                    ZStack {
+                        if isSelected {
+                            shape.fill(SettingsSurfaceColor.rowFillSelected)
+                        }
+                        SharedActionButtonSurface(
+                            prominence: .secondary,
+                            presentation: presentation,
+                            palette: palette
+                        )
+                    }
+                }
+                .contentShape(shape)
         }
         .buttonStyle(.plain)
+        .focusable(true)
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .focused($isFocused)
         .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
         .programButtonCursor()
         .accessibilityLabel(mode.displayName)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    private var backgroundColor: Color {
-        if isSelected {
-            return SettingsSurfaceColor.rowFillSelected
-        }
-        return isHovered ? SettingsSurfaceColor.rowFillHovered : Color.clear
     }
 }
 
 private struct ProgramTicketImageSelector: View {
     let existingPaths: [String]
     @Binding var selectedURLs: [URL]
+    let chooseImages: (@escaping ([URL]) -> Void) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text("Images")
-                    .font(AppTypography.font(.body))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                Spacer(minLength: 0)
-                ProgramWorkspaceActionButton(
-                    title: "Add images",
-                    systemName: "photo.badge.plus",
-                    accessibilityLabel: "Add ticket images",
-                    help: "Attach design images to this ticket",
-                    action: addImages,
-                    labelFont: .action
-                )
-            }
+            ProgramWorkspaceActionButton(
+                title: "Add images",
+                systemName: "photo.badge.plus",
+                accessibilityLabel: "Add ticket images",
+                help: "Attach design images to this ticket",
+                action: addImages,
+                labelFont: .action
+            )
 
-            if existingPaths.isEmpty && selectedURLs.isEmpty {
-                Text("Attach designs for the implementation worker.")
-                    .font(AppTypography.font(.label))
-                    .foregroundStyle(ProgramBoardStyle.disabledText)
-            } else {
+            if !existingPaths.isEmpty || !selectedURLs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(existingPaths, id: \.self) { path in
@@ -2991,17 +3019,24 @@ private struct ProgramTicketImageSelector: View {
     }
 
     private func addImages() {
+        chooseImages { urls in
+            for url in urls where !selectedURLs.contains(url) {
+                selectedURLs.append(url)
+            }
+        }
+    }
+}
+
+enum ProgramTicketImagePicker {
+    static func run() -> [URL] {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [.image]
         panel.message = "Choose design images to attach to this ticket."
-        guard panel.runModal() == .OK else { return }
-
-        for url in panel.urls where !selectedURLs.contains(url) {
-            selectedURLs.append(url)
-        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        return panel.runModal() == .OK ? panel.urls : []
     }
 }
 
@@ -3320,16 +3355,25 @@ private struct ProgramIconButton: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(AppTypography.symbolFont(size: 12, weight: .semibold))
-                .foregroundStyle(iconColor)
-                .frame(width: size, height: size)
-        }
-        .buttonStyle(.plain)
-        .programControlChrome(shape: .circle)
+        SharedActionButtonChrome(
+            prominence: .icon,
+            isEnabled: true,
+            accessibilityLabel: help,
+            helpText: help,
+            palette: SharedActionButtonPalette(
+                foreground: iconColor,
+                fill: Color.white,
+                stroke: SettingsSurfaceColor.focusRing
+            ),
+            action: action,
+            label: {
+                Image(systemName: systemName)
+                    .font(AppTypography.symbolFont(size: 12, weight: .semibold))
+                    .frame(width: size, height: size)
+                    .accessibilityHidden(true)
+            }
+        )
         .programButtonCursor()
-        .help(help)
     }
 }
 

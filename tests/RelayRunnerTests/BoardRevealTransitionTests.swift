@@ -1,7 +1,14 @@
+import SwiftUI
 import XCTest
 @testable import relay_runner
 
 final class BoardRevealTransitionTests: XCTestCase {
+    func testWorkspaceHostingViewAcceptsTheFirstMouseClick() {
+        let hostingView = BoardOverlayHostingView(rootView: EmptyView())
+
+        XCTAssertTrue(hostingView.acceptsFirstMouse(for: nil))
+    }
+
     func testRevealPlanStartsAsCenteredCompactNotchOnExternalDisplay() {
         let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
 

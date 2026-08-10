@@ -43,6 +43,12 @@ private struct WorkspaceLatencyProbe {
     }
 }
 
+final class BoardOverlayHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
 /// Unified Workspace overlay for single-repo and multi-repo work surfaces.
 /// Ticket mutations resolve through the repo advertised by Program Manager
 /// status, while project scope decides whether the Work tab shows one repo or
@@ -456,7 +462,7 @@ final class ProgramBoardOverlayController {
             cachedContainer.prepareForOpening(startsLoading: opening.startsLoading)
             container = cachedContainer
         } else {
-            let hosting = NSHostingView(rootView: ProgramBoardOverlayView(
+            let hosting = BoardOverlayHostingView(rootView: ProgramBoardOverlayView(
                 model: model,
                 workspace: workspace,
                 settingsContent: settingsContent,
@@ -477,6 +483,9 @@ final class ProgramBoardOverlayController {
                 onEditCommit: { [weak self] request in self?.commitEdit(request) },
                 onEditCancel: { [weak self] in self?.cancelEdit() },
                 onDelete: { [weak self] request in self?.handleDelete(request) },
+                onChooseTicketImages: { [weak self] completion in
+                    self?.chooseTicketImages(completion: completion)
+                },
                 onSpikeFollowupStart: { [weak self] detail in self?.beginSpikeFollowups(detail) },
                 onSpikeFollowupReview: { [weak self] batch, proposal, decision, updates in
                     self?.reviewSpikeFollowup(
@@ -808,6 +817,18 @@ final class ProgramBoardOverlayController {
     private func cancelCreate() {
         model.cancelCreate()
         updatePanelKeyEligibility()
+    }
+
+    private func chooseTicketImages(completion: @escaping ([URL]) -> Void) {
+        suspendForExternalWindowAnimated { [weak self] in
+            let urls = ProgramTicketImagePicker.run()
+            guard let self else {
+                completion(urls)
+                return
+            }
+            completion(urls)
+            _ = self.resumeAfterExternalWindow(initialTab: self.lastSelectedTab)
+        }
     }
 
     private func commitCreate(_ request: ProgramBoardCreateRequest) {

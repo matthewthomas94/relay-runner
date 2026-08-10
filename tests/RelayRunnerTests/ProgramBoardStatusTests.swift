@@ -316,6 +316,33 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
         let executionPicker = String(contents[executionStart.lowerBound..<executionEnd.lowerBound])
         XCTAssertTrue(executionPicker.contains("SharedActionButtonMetrics.controlHeight"))
+        XCTAssertTrue(executionPicker.contains("HStack(spacing: 6)"))
+        XCTAssertTrue(executionPicker.contains("SharedActionButtonSurface("))
+        XCTAssertTrue(executionPicker.contains("SettingsActionPresentation.resolve("))
+        XCTAssertTrue(executionPicker.contains("cornerRadius: SharedActionButtonMetrics.cornerRadius"))
+        XCTAssertFalse(executionPicker.contains("Rectangle()"))
+
+        let imageSelectorStart = executionEnd
+        let imageSelectorEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProgramTicketImageChip: View", range: imageSelectorStart.upperBound..<contents.endIndex)
+        )
+        let imageSelector = String(contents[imageSelectorStart.lowerBound..<imageSelectorEnd.lowerBound])
+        XCTAssertFalse(imageSelector.contains("Text(\"Images\")"))
+        XCTAssertFalse(imageSelector.contains("Attach designs for the implementation worker."))
+        XCTAssertFalse(imageSelector.contains("Spacer(minLength: 0)"))
+        XCTAssertTrue(imageSelector.contains("chooseImages { urls in"))
+        XCTAssertTrue(imageSelector.contains("allowsMultipleSelection = true"))
+        XCTAssertTrue(imageSelector.contains("allowedContentTypes = [.image]"))
+        XCTAssertTrue(imageSelector.contains("NSApplication.shared.activate(ignoringOtherApps: true)"))
+
+        let iconStart = try XCTUnwrap(contents.range(of: "private struct ProgramIconButton: View"))
+        let iconEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProgramCardBackground: View", range: iconStart.upperBound..<contents.endIndex)
+        )
+        let iconButton = String(contents[iconStart.lowerBound..<iconEnd.lowerBound])
+        XCTAssertTrue(iconButton.contains("SharedActionButtonChrome("))
+        XCTAssertTrue(iconButton.contains("prominence: .icon"))
+        XCTAssertFalse(iconButton.contains(".programControlChrome"))
     }
 
     func testNoRegisteredProjectsStateOmitsSubtitleAndRefresh() throws {

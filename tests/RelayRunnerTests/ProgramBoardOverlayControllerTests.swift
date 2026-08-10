@@ -329,4 +329,34 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertTrue(resumeBody.contains("container.animateReveal("))
         XCTAssertTrue(appStateSource.contains("suspendWorkspaceForProjectPicker(ready)"))
     }
+
+    func testTicketImagePickerHandoffDismissesAndRestoresTheSameWorkspaceDraft() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let controllerSource = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/relay-runner/Board/ProgramBoardOverlayController.swift"
+            ),
+            encoding: .utf8
+        )
+
+        let start = try XCTUnwrap(
+            controllerSource.range(of: "private func chooseTicketImages(")
+        )
+        let end = try XCTUnwrap(
+            controllerSource.range(
+                of: "private func commitCreate(",
+                range: start.upperBound..<controllerSource.endIndex
+            )
+        )
+        let body = String(controllerSource[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(controllerSource.contains("onChooseTicketImages:"))
+        XCTAssertTrue(body.contains("suspendForExternalWindowAnimated"))
+        XCTAssertTrue(body.contains("ProgramTicketImagePicker.run()"))
+        XCTAssertTrue(body.contains("completion(urls)"))
+        XCTAssertTrue(body.contains("resumeAfterExternalWindow(initialTab: self.lastSelectedTab)"))
+    }
 }

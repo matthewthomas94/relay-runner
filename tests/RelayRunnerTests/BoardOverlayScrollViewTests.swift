@@ -1994,7 +1994,13 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             ticketID: "RR-297",
             title: "Compact ticket detail endpoints",
             status: Ticket.Status.inProgress.rawValue,
-            priority: Ticket.Priority.high.rawValue
+            priority: Ticket.Priority.high.rawValue,
+            executionMode: Ticket.ExecutionMode.implementation.rawValue,
+            workerModel: "strong",
+            workerEffort: "xhigh",
+            workerSizingRationale: "The regression crosses source-turn versus intent-level reply ownership, provider lifecycle aliases, fallback timing, ordered delivery, and installed Codex and Claude verification.",
+            workerProviderNotes: "Implement a provider-neutral source-turn arbitration contract and verify both supported providers.",
+            dependsOn: ["RR-300"]
         )
         return ProgramTicketDetail(
             item: item,
