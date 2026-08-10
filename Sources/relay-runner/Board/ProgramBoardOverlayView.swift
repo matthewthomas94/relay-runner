@@ -62,6 +62,45 @@ enum ProgramBoardLayout {
     static let sessionToolbarTrailingPadding: CGFloat = 40
 }
 
+enum ProgramWorkspaceDotMatrixStyle {
+    static let backdropOpacity: Double = 0.55
+    static let intensity: Double = 0.72
+    static let layerZIndex: Double = 2.5
+    static let modalContentZIndex: Double = 3
+    static let allowsHitTesting = false
+}
+
+struct ProgramWorkspaceDotMatrixPresentation: Equatable {
+    let isVisible: Bool
+    let surfaceHeight: CGFloat
+    let backdropOpacity: Double
+    let allowsHitTesting: Bool
+    let layerZIndex: Double
+    let modalContentZIndex: Double
+
+    static func resolve(
+        isLoading: Bool,
+        showsTicketDetail: Bool,
+        showsCreateTicket: Bool,
+        showsEditTicket: Bool,
+        showsSpikeFollowup: Bool,
+        viewportHeight: CGFloat
+    ) -> ProgramWorkspaceDotMatrixPresentation {
+        ProgramWorkspaceDotMatrixPresentation(
+            isVisible: isLoading
+                || showsTicketDetail
+                || showsCreateTicket
+                || showsEditTicket
+                || showsSpikeFollowup,
+            surfaceHeight: min(max(0, viewportHeight), ProgramBoardBackdropStyle.backdropHeight),
+            backdropOpacity: ProgramWorkspaceDotMatrixStyle.backdropOpacity,
+            allowsHitTesting: ProgramWorkspaceDotMatrixStyle.allowsHitTesting,
+            layerZIndex: ProgramWorkspaceDotMatrixStyle.layerZIndex,
+            modalContentZIndex: ProgramWorkspaceDotMatrixStyle.modalContentZIndex
+        )
+    }
+}
+
 private enum ProgramTicketPanelStyle {
     static let width: CGFloat = 560
     static let height: CGFloat = 633
@@ -70,8 +109,6 @@ private enum ProgramTicketPanelStyle {
     static let compactFieldHeight: CGFloat = 34
     static let createDescriptionHeight: CGFloat = 132
     static let executionModeDescriptionHeight: CGFloat = 38
-    static let modalBackdropOpacity: Double = 0.55
-
     static func detailSize(fitting availableSize: CGSize) -> CGSize {
         CGSize(
             width: min(width, max(0, availableSize.width)),
@@ -118,6 +155,14 @@ struct ProgramBoardOverlayView: View {
         let detailSurfaceSize = CGSize(
             width: viewportSize.width,
             height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight)
+        )
+        let dotMatrixPresentation = ProgramWorkspaceDotMatrixPresentation.resolve(
+            isLoading: model.workspaceLoadingActive,
+            showsTicketDetail: model.selectedTicketDetail != nil,
+            showsCreateTicket: model.creating != nil,
+            showsEditTicket: model.editing != nil,
+            showsSpikeFollowup: model.spikeFollowupBatch != nil,
+            viewportHeight: viewportSize.height
         )
         return ZStack(alignment: .topLeading) {
             ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
@@ -199,6 +244,11 @@ struct ProgramBoardOverlayView: View {
             }
 
             ProgramDragPreviewLayer(model: model)
+
+            if dotMatrixPresentation.isVisible {
+                ProgramWorkspaceDotMatrixLayer(presentation: dotMatrixPresentation)
+                    .zIndex(dotMatrixPresentation.layerZIndex)
+            }
 
             if let detail = model.selectedTicketDetail,
                model.creating == nil,
@@ -319,6 +369,93 @@ private struct ProgramBoardBackdropShape: Shape {
     }
 }
 
+private struct ProgramWorkspaceDotMatrixLayer: View {
+    let presentation: ProgramWorkspaceDotMatrixPresentation
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
+                .fill(Color.black.opacity(presentation.backdropOpacity))
+
+            ProgramWorkspaceDotMatrixView(reduceMotion: reduceMotion)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: presentation.surfaceHeight)
+        .clipShape(
+            ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
+        )
+        .allowsHitTesting(presentation.allowsHitTesting)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ProgramWorkspaceDotMatrixView: NSViewRepresentable {
+    let reduceMotion: Bool
+
+    func makeNSView(context: Context) -> WorkspaceDotMatrixHostView {
+        WorkspaceDotMatrixHostView(reduceMotion: reduceMotion)
+    }
+
+    func updateNSView(_ nsView: WorkspaceDotMatrixHostView, context: Context) {
+        nsView.update(reduceMotion: reduceMotion)
+    }
+
+    static func dismantleNSView(_ nsView: WorkspaceDotMatrixHostView, coordinator: ()) {
+        nsView.stop()
+    }
+}
+
+final class WorkspaceDotMatrixHostView: NSView {
+    private let renderer = ParticleFieldRenderer(coverage: .fullBounds)
+
+    override var isFlipped: Bool { true }
+
+    init(reduceMotion: Bool) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.masksToBounds = true
+        renderer.attach(to: self)
+        renderer.setIntensity(ProgramWorkspaceDotMatrixStyle.intensity)
+        update(reduceMotion: reduceMotion)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    deinit {
+        stop()
+    }
+
+    override func layout() {
+        super.layout()
+        renderer.layoutInBounds(bounds, backingScale: window?.screen?.backingScaleFactor)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        needsLayout = true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func update(reduceMotion: Bool) {
+        renderer.transition(to: .workspace, reduceMotion: reduceMotion)
+    }
+
+    func stop() {
+        renderer.transition(to: nil)
+    }
+
+    var isAnimationRunning: Bool {
+        renderer.isAnimationRunning
+    }
+}
+
 private struct ProgramBoardModalLayer<Content: View>: View {
     let onDismiss: () -> Void
     let availableHeight: CGFloat?
@@ -337,7 +474,7 @@ private struct ProgramBoardModalLayer<Content: View>: View {
     var body: some View {
         ZStack {
             ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
-                .fill(Color.black.opacity(ProgramTicketPanelStyle.modalBackdropOpacity))
+                .fill(Color.clear)
                 .contentShape(
                     ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
                 )
@@ -348,7 +485,7 @@ private struct ProgramBoardModalLayer<Content: View>: View {
         .frame(maxWidth: .infinity)
         .frame(height: availableHeight ?? ProgramBoardBackdropStyle.backdropHeight)
         .frame(maxHeight: .infinity, alignment: .top)
-        .zIndex(3)
+        .zIndex(ProgramWorkspaceDotMatrixStyle.modalContentZIndex)
     }
 }
 
@@ -3443,7 +3580,7 @@ private struct ProgramBoardColumnChrome: ViewModifier {
 
     static func shadowColor(for theme: ParticleFieldRenderer.Theme?) -> Color {
         switch theme {
-        case .stt, .tts, nil:
+        case .stt, .tts, .workspace, nil:
             return Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity)
         }
     }

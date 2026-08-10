@@ -346,6 +346,8 @@ final class BoardRevealContainerView: NSView {
 
 private final class BoardRevealSurfaceView: NSView {
     private let plan: BoardRevealTransitionPlan
+    private let particleField = ParticleFieldRenderer(coverage: .fullBounds)
+    private let surfaceMaskLayer = CAShapeLayer()
     private var surfaceFrame: CGRect
     private var loading = false
     private var animationTimer: Timer?
@@ -359,6 +361,17 @@ private final class BoardRevealSurfaceView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+        surfaceMaskLayer.fillColor = NSColor.black.cgColor
+        surfaceMaskLayer.actions = [
+            "bounds": NSNull(),
+            "path": NSNull(),
+            "position": NSNull(),
+        ]
+        layer?.mask = surfaceMaskLayer
+        particleField.attach(to: self)
+        particleField.setIntensity(ProgramWorkspaceDotMatrixStyle.intensity)
+        layoutParticleField()
+        updateSurfaceMask()
     }
 
     required init?(coder: NSCoder) {
@@ -366,24 +379,37 @@ private final class BoardRevealSurfaceView: NSView {
     }
 
     deinit {
+        particleField.transition(to: nil)
         cancelAnimation()
+    }
+
+    override func layout() {
+        super.layout()
+        layoutParticleField()
+        updateSurfaceMask()
     }
 
     func showExpanded() {
         cancelAnimation()
         surfaceFrame = plan.expandedFrame
+        updateSurfaceMask()
         needsDisplay = true
     }
 
     func showCompact() {
         cancelAnimation()
         surfaceFrame = plan.compactFrame
+        updateSurfaceMask()
         needsDisplay = true
     }
 
     func setLoading(_ loading: Bool) {
         guard self.loading != loading else { return }
         self.loading = loading
+        particleField.transition(
+            to: loading ? .workspace : nil,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
         needsDisplay = true
     }
 
@@ -460,6 +486,7 @@ private final class BoardRevealSurfaceView: NSView {
             let rawProgress = max(0, min(1, elapsed / duration))
             let progress = Self.easeOutQuart(CGFloat(rawProgress))
             self.surfaceFrame = Self.interpolate(from: startFrame, to: targetFrame, progress: progress)
+            self.updateSurfaceMask()
             self.needsDisplay = true
             if !reportedFirstMotion {
                 reportedFirstMotion = true
@@ -470,6 +497,7 @@ private final class BoardRevealSurfaceView: NSView {
                 timer.invalidate()
                 self.animationTimer = nil
                 self.surfaceFrame = targetFrame
+                self.updateSurfaceMask()
                 self.needsDisplay = true
                 let completion = self.animationCompletion
                 self.animationCompletion = nil
@@ -504,6 +532,25 @@ private final class BoardRevealSurfaceView: NSView {
             return compactPath
         }
         return bottomRoundedPath(in: rect)
+    }
+
+    private func layoutParticleField() {
+        let fieldBounds = CGRect(
+            origin: .zero,
+            size: CGSize(
+                width: bounds.width,
+                height: min(bounds.height, plan.expandedFrame.height)
+            )
+        )
+        particleField.layoutInBounds(
+            fieldBounds,
+            backingScale: window?.screen?.backingScaleFactor
+        )
+    }
+
+    private func updateSurfaceMask() {
+        surfaceMaskLayer.frame = bounds
+        surfaceMaskLayer.path = surfacePath(in: surfaceFrame).cgPath
     }
 
     private func compactNotchCutoutPath(in rect: CGRect) -> NSBezierPath? {
