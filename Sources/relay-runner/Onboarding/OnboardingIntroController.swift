@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import QuartzCore
 import SwiftUI
 
@@ -301,8 +302,8 @@ enum OnboardingCursorBlink {
 }
 
 enum OnboardingPromptTransitionTimeline {
-    static let initialHold: TimeInterval = 0.30
-    static let finalHold: TimeInterval = 0.20
+    static let initialHold: TimeInterval = 0.36
+    static let finalHold: TimeInterval = 0.32
     static let typingInterval = OnboardingIntroTimeline.typingInterval
     static let eraseInterval = OnboardingIntroTimeline.eraseInterval
 
@@ -397,6 +398,17 @@ enum OnboardingPromptTransitionTimeline {
         )
     }
 
+}
+
+enum OnboardingFlowMotion {
+    static let surfaceTransitionDuration: TimeInterval = 0.48
+    static let contentTransitionDuration: TimeInterval = 0.42
+    static let controlsRevealDuration: TimeInterval = 0.36
+    static let completedStepHold: TimeInterval = 0.85
+
+    static var contentAnimation: Animation {
+        .easeInOut(duration: contentTransitionDuration)
+    }
 }
 
 enum OnboardingIntroTextLayout {
@@ -749,6 +761,7 @@ private final class OnboardingIntroRootView: NSView {
 
     private weak var cinematicView: OnboardingIntroCinematicView?
     private var currentContentView: NSView?
+    private let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
     override var isFlipped: Bool { true }
 
@@ -809,14 +822,15 @@ private final class OnboardingIntroRootView: NSView {
 
     func showRuntimePrompt(_ presentation: OnboardingRuntimePromptPresentation,
                            retryAction: @escaping () -> Void) {
-        let view = OnboardingIntroHostedSurfaceView(
+        if let runtimeView = currentContentView as? OnboardingIntroRuntimeSurfaceView {
+            runtimeView.update(presentation: presentation, retryAction: retryAction)
+            return
+        }
+
+        let view = OnboardingIntroRuntimeSurfaceView(
             frame: bounds,
-            rootView: AnyView(
-                OnboardingIntroRuntimePromptView(
-                    presentation: presentation,
-                    retryAction: retryAction
-                )
-            )
+            presentation: presentation,
+            retryAction: retryAction
         )
         view.autoresizingMask = [.width, .height]
         view.layoutFrame = layoutFrame
@@ -884,10 +898,28 @@ private final class OnboardingIntroRootView: NSView {
     }
 
     private func replaceContent(with view: NSView) {
-        currentContentView?.removeFromSuperview()
+        let oldView = currentContentView
         currentContentView = view
+        view.frame = bounds
+        view.alphaValue = oldView == nil || reduceMotion ? 1 : 0
         addSubview(view)
         applyLayout(to: view)
+        view.layoutSubtreeIfNeeded()
+
+        guard let oldView else { return }
+        guard !reduceMotion else {
+            oldView.removeFromSuperview()
+            return
+        }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = OnboardingFlowMotion.surfaceTransitionDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            oldView.animator().alphaValue = 0
+            view.animator().alphaValue = 1
+        } completionHandler: {
+            oldView.removeFromSuperview()
+        }
     }
 
     private func applyLayout(to view: NSView?) {
@@ -896,6 +928,8 @@ private final class OnboardingIntroRootView: NSView {
         } else if let view = view as? OnboardingIntroPermissionSurfaceView {
             view.layoutFrame = layoutFrame
         } else if let view = view as? OnboardingIntroHostedSurfaceView {
+            view.layoutFrame = layoutFrame
+        } else if let view = view as? OnboardingIntroRuntimeSurfaceView {
             view.layoutFrame = layoutFrame
         } else if let view = view as? OnboardingIntroWorkspaceSurfaceView {
             view.layoutFrame = layoutFrame
@@ -1098,6 +1132,7 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
                 at: duration
             )
             showControls()
+            return
         }
 
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
@@ -1122,6 +1157,8 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
         )
         textView.timelineFrame = frame
         guard frame.isComplete else { return }
+        transitionTimer?.invalidate()
+        transitionTimer = nil
         showControls()
     }
 
@@ -1134,8 +1171,8 @@ private final class OnboardingIntroPermissionSurfaceView: NSView {
             return
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.20
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.duration = OnboardingFlowMotion.controlsRevealDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             hostingView.animator().alphaValue = 1
         }
     }
@@ -1167,6 +1204,70 @@ private final class OnboardingIntroHostedSurfaceView: NSView {
     override func layout() {
         super.layout()
         hostingView.frame = layoutFrame
+    }
+}
+
+@Observable
+private final class OnboardingIntroRuntimeSurfaceModel {
+    var presentation: OnboardingRuntimePromptPresentation
+    @ObservationIgnored var retryAction: () -> Void
+
+    init(presentation: OnboardingRuntimePromptPresentation,
+         retryAction: @escaping () -> Void) {
+        self.presentation = presentation
+        self.retryAction = retryAction
+    }
+}
+
+private final class OnboardingIntroRuntimeSurfaceView: NSView {
+    var layoutFrame: NSRect = .zero {
+        didSet { needsLayout = true }
+    }
+
+    private let model: OnboardingIntroRuntimeSurfaceModel
+    private let hostingView: NSHostingView<AnyView>
+
+    override var isFlipped: Bool { true }
+
+    init(frame frameRect: NSRect,
+         presentation: OnboardingRuntimePromptPresentation,
+         retryAction: @escaping () -> Void) {
+        let model = OnboardingIntroRuntimeSurfaceModel(
+            presentation: presentation,
+            retryAction: retryAction
+        )
+        self.model = model
+        hostingView = NSHostingView(
+            rootView: AnyView(OnboardingIntroRuntimePromptView(model: model))
+        )
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        addSubview(hostingView)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        hostingView.frame = layoutFrame
+    }
+
+    func update(presentation: OnboardingRuntimePromptPresentation,
+                retryAction: @escaping () -> Void) {
+        model.retryAction = retryAction
+        guard model.presentation != presentation else { return }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            model.presentation = presentation
+        } else {
+            withAnimation(OnboardingFlowMotion.contentAnimation) {
+                model.presentation = presentation
+            }
+        }
     }
 }
 
@@ -1258,13 +1359,40 @@ struct OnboardingIntroAgentChoicePromptView: View {
     }
 }
 
-struct OnboardingIntroRuntimePromptView: View {
-    let presentation: OnboardingRuntimePromptPresentation
-    let retryAction: () -> Void
+private enum OnboardingRuntimeVisualPhase: Equatable {
+    case idle
+    case indeterminate
+    case determinate
+    case succeeded
+    case failed
+
+    init(status: VenvInstaller.Status) {
+        switch status {
+        case .idle:
+            self = .idle
+        case .running(_, nil):
+            self = .indeterminate
+        case .running(_, .some):
+            self = .determinate
+        case .succeeded:
+            self = .succeeded
+        case .failed:
+            self = .failed
+        }
+    }
+}
+
+private struct OnboardingIntroRuntimePromptView: View {
+    let model: OnboardingIntroRuntimeSurfaceModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var presentation: OnboardingRuntimePromptPresentation {
+        model.presentation
+    }
 
     var body: some View {
         VStack(spacing: 38) {
-            OnboardingBlinkingTitle(title)
+            transitioningTitle
 
             runtimeStatus
 
@@ -1272,13 +1400,22 @@ struct OnboardingIntroRuntimePromptView: View {
                 OnboardingIntroWhiteActionButton(
                     title: "Retry",
                     accessibilityLabel: "Retry \(presentation.provider.displayName) setup",
-                    action: retryAction
+                    action: model.retryAction
                 )
             }
         }
         .frame(maxWidth: .infinity)
         .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
         .accessibilityElement(children: .contain)
+    }
+
+    private var transitioningTitle: some View {
+        ZStack {
+            OnboardingBlinkingTitle(title, reduceMotion: reduceMotion)
+                .id(title)
+                .transition(reduceMotion ? .identity : .opacity)
+        }
+        .animation(reduceMotion ? nil : OnboardingFlowMotion.contentAnimation, value: title)
     }
 
     private var title: String {
@@ -1292,45 +1429,49 @@ struct OnboardingIntroRuntimePromptView: View {
         }
     }
 
-    @ViewBuilder
     private var runtimeStatus: some View {
-        switch presentation.status {
-        case .idle:
-            HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
-                Text("Starting setup...")
-                    .font(AppTypography.font(.body))
-                    .foregroundStyle(.white.opacity(0.72))
-            }
-        case .running(let message, let progress):
-            VStack(spacing: 12) {
+        ZStack {
+            switch presentation.status {
+            case .idle:
+                ProgressView()
+                    .controlSize(.small)
+                    .transition(reduceMotion ? .identity : .opacity)
+            case .running(_, let progress):
                 if let progress {
                     ProgressView(value: progress, total: 1.0)
                         .progressViewStyle(.linear)
                         .frame(maxWidth: 360)
+                        .animation(
+                            reduceMotion ? nil : OnboardingFlowMotion.contentAnimation,
+                            value: progress
+                        )
+                        .transition(reduceMotion ? .identity : .opacity)
                 } else {
-                    ProgressView().controlSize(.small)
+                    ProgressView()
+                        .controlSize(.small)
+                        .transition(reduceMotion ? .identity : .opacity)
                 }
-                Text(message)
+            case .succeeded:
+                Image(systemName: "checkmark.circle.fill")
+                    .font(AppTypography.symbolFont(size: 20, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .transition(reduceMotion ? .identity : .opacity)
+                    .accessibilityLabel("Setup complete")
+            case .failed(let errorMessage):
+                Text(errorMessage)
                     .font(AppTypography.font(.body))
                     .foregroundStyle(.white.opacity(0.72))
                     .multilineTextAlignment(.center)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                    .transition(reduceMotion ? .identity : .opacity)
             }
-        case .succeeded:
-            Text("Runtime and \(presentation.provider.displayName) command are available.")
-                .font(AppTypography.font(.body))
-                .foregroundStyle(.white.opacity(0.72))
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
-        case .failed(let message):
-            Text(message)
-                .font(AppTypography.font(.body))
-                .foregroundStyle(.white.opacity(0.72))
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
         }
+        .frame(minHeight: 24)
+        .animation(
+            reduceMotion ? nil : OnboardingFlowMotion.contentAnimation,
+            value: OnboardingRuntimeVisualPhase(status: presentation.status)
+        )
     }
 
     private var showsRetry: Bool {
@@ -1434,14 +1575,16 @@ struct OnboardingIntroWorkspacePromptView: View {
 
 struct OnboardingBlinkingTitle: View {
     private let text: String
-    private let reduceMotion: Bool
+    private let reduceMotionOverride: Bool?
+    @Environment(\.accessibilityReduceMotion) private var environmentReduceMotion
 
-    init(_ text: String, reduceMotion: Bool = false) {
+    init(_ text: String, reduceMotion: Bool? = nil) {
         self.text = text
-        self.reduceMotion = reduceMotion
+        reduceMotionOverride = reduceMotion
     }
 
     var body: some View {
+        let reduceMotion = reduceMotionOverride ?? environmentReduceMotion
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
             Self.styledText(
                 text,

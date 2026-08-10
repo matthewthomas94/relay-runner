@@ -346,7 +346,6 @@ final class BoardRevealContainerView: NSView {
 
 private final class BoardRevealSurfaceView: NSView {
     private let plan: BoardRevealTransitionPlan
-    private let particleField = ParticleFieldRenderer(coverage: .fullBounds)
     private let surfaceMaskLayer = CAShapeLayer()
     private var surfaceFrame: CGRect
     private var loading = false
@@ -368,9 +367,6 @@ private final class BoardRevealSurfaceView: NSView {
             "position": NSNull(),
         ]
         layer?.mask = surfaceMaskLayer
-        particleField.attach(to: self)
-        particleField.setIntensity(ProgramWorkspaceDotMatrixStyle.intensity)
-        layoutParticleField()
         updateSurfaceMask()
     }
 
@@ -379,13 +375,11 @@ private final class BoardRevealSurfaceView: NSView {
     }
 
     deinit {
-        particleField.transition(to: nil)
         cancelAnimation()
     }
 
     override func layout() {
         super.layout()
-        layoutParticleField()
         updateSurfaceMask()
     }
 
@@ -406,10 +400,6 @@ private final class BoardRevealSurfaceView: NSView {
     func setLoading(_ loading: Bool) {
         guard self.loading != loading else { return }
         self.loading = loading
-        particleField.transition(
-            to: loading ? .workspace : nil,
-            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        )
         needsDisplay = true
     }
 
@@ -532,20 +522,6 @@ private final class BoardRevealSurfaceView: NSView {
             return compactPath
         }
         return bottomRoundedPath(in: rect)
-    }
-
-    private func layoutParticleField() {
-        let fieldBounds = CGRect(
-            origin: .zero,
-            size: CGSize(
-                width: bounds.width,
-                height: min(bounds.height, plan.expandedFrame.height)
-            )
-        )
-        particleField.layoutInBounds(
-            fieldBounds,
-            backingScale: window?.screen?.backingScaleFactor
-        )
     }
 
     private func updateSurfaceMask() {

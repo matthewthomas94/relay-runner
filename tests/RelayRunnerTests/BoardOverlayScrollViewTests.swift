@@ -734,6 +734,12 @@ final class BoardOverlayScrollViewTests: XCTestCase {
 
         XCTAssertEqual(selectionCount, 1)
         XCTAssertEqual(model.selectedTicketDetail?.item.id, firstItem.id)
+        var dismissTransaction = Transaction()
+        dismissTransaction.disablesAnimations = true
+        withTransaction(dismissTransaction) {
+            model.clearSelectedTicket()
+        }
+        drainMainQueue()
 
         let secondMouseMoved = try XCTUnwrap(mouseEvent(.mouseMoved, at: secondCenter, in: panel))
         NSApp.sendEvent(secondMouseMoved)
@@ -762,6 +768,105 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         NSApp.sendEvent(try XCTUnwrap(mouseEvent(.mouseMoved, at: dragPoint, in: panel)))
         drainMainQueue()
         XCTAssertTrue(programWorkCardViews(in: host).allSatisfy { !$0.isPointerInside })
+    }
+
+    func testMountedModalBackdropConsumesTicketClickAndOnlyDismissesModal() throws {
+        let model = ProgramBoardViewModel()
+        let backlogItems = laneTickets(
+            prefix: "RR-MODAL-BACKLOG",
+            status: Ticket.Status.backlog.rawValue,
+            count: 2
+        )
+        let doneItems = laneTickets(
+            prefix: "RR-MODAL-DONE",
+            status: Ticket.Status.done.rawValue,
+            count: 2
+        )
+        model.snapshot = programDashboardSnapshot(
+            backlogItems: backlogItems,
+            doneItems: doneItems
+        )
+        model.selectedTicketDetail = ticketDetailFixture()
+        let workspace = WorkspaceViewModel()
+        workspace.configure(
+            showsWorkTab: true,
+            showsTerminalTab: false,
+            showsSettingsTab: false,
+            initialTab: .work
+        )
+        let host = NSHostingView(rootView: ProgramBoardOverlayView(
+            model: model,
+            workspace: workspace,
+            settingsContent: nil,
+            terminalContent: { _ in nil },
+            onDismiss: {},
+            onWorkspaceTabChange: { _ in },
+            onRefresh: {},
+            onStartSession: {},
+            onEndSession: {},
+            onCreateStart: { _ in },
+            onCreateCommit: { _ in },
+            onCreateCancel: {},
+            onEditStart: { _ in },
+            onEditCommit: { _ in },
+            onEditCancel: {},
+            onDelete: { _ in },
+            onSpikeFollowupStart: { _ in },
+            onSpikeFollowupReview: { _, _, _, _ in },
+            onSpikeFollowupClose: {},
+            onDrop: { _, _, _ in }
+        ))
+        let panelFrame = CGRect(x: 0, y: 0, width: 1_512, height: 800)
+        let panel = BoardOverlayPanel()
+        panel.setFrame(panelFrame, display: false)
+        host.frame = CGRect(origin: .zero, size: panelFrame.size)
+        let revealContainer = BoardRevealContainerView(
+            frame: CGRect(origin: .zero, size: panelFrame.size),
+            contentView: host,
+            displayGeometry: NotchStatusDisplayGeometry(screenFrame: panelFrame),
+            startsLoading: false
+        )
+        panel.contentView = revealContainer
+        panel.orderFrontRegardless()
+        defer { panel.orderOut(nil) }
+        revealContainer.layoutSubtreeIfNeeded()
+        host.layoutSubtreeIfNeeded()
+        let revealed = expectation(description: "Workspace modal revealed")
+        revealContainer.animateReveal {
+            revealed.fulfill()
+        }
+        wait(for: [revealed], timeout: 5)
+        drainMainQueue()
+
+        let doneItem = try XCTUnwrap(model.ticketItems(in: .done).first)
+        let doneCard = try XCTUnwrap(programWorkCardViews(in: host).first {
+            $0.interactionID == "all|Done|\(doneItem.id)"
+        })
+        let cardCenter = doneCard.convert(
+            CGPoint(x: doneCard.bounds.midX, y: doneCard.bounds.midY),
+            to: nil
+        )
+        let contentView = try XCTUnwrap(panel.contentView)
+        let contentPoint = contentView.convert(cardCenter, from: nil)
+
+        var hitView = contentView.hitTest(contentPoint)
+        while hitView != nil, !(hitView is WorkspaceModalBackdropHitView) {
+            hitView = hitView?.superview
+        }
+        XCTAssertTrue(hitView is WorkspaceModalBackdropHitView)
+        XCTAssertNil(mountedProgramWorkCardHit(at: contentPoint, in: contentView))
+
+        var selectionCount = 0
+        doneCard.onSelect = {
+            selectionCount += 1
+            model.selectTicket(doneItem)
+        }
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseDown, at: cardCenter, in: panel)))
+        NSApp.sendEvent(try XCTUnwrap(mouseEvent(.leftMouseUp, at: cardCenter, in: panel)))
+        drainMainQueue()
+
+        XCTAssertEqual(selectionCount, 0)
+        XCTAssertNil(model.selectedTicketDetail)
     }
 
     func testMountedBoardPanelKeepsEveryVisibleBacklogCardAsItsDragSource() throws {

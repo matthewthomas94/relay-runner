@@ -148,7 +148,7 @@ final class OnboardingController {
          onOpenExternalWindow: @escaping () -> Void = {},
          runtimePollInterval: TimeInterval = 0.5,
          authPollInterval: TimeInterval = 1.0,
-         introAdvanceDelay: TimeInterval = 0.4,
+         introAdvanceDelay: TimeInterval = OnboardingFlowMotion.completedStepHold,
          pickWorkspaceDirectory: @escaping (
             _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
             _ completion: @escaping (String?) -> Void
@@ -709,7 +709,8 @@ final class OnboardingController {
         switch venvInstaller.status {
         case .succeeded:
             stopRuntimePolling()
-            DispatchQueue.main.asyncAfter(deadline: .now() + introAdvanceDelay) { [weak self] in
+            let delay = reduceMotion() ? 0 : introAdvanceDelay
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard self?.agentSetupState?.provider == provider else { return }
                 self?.showIntroAgentLogin(message: nil)
             }
@@ -744,7 +745,8 @@ final class OnboardingController {
             signInAction: { [weak self] in self?.startIntroAgentLogin() }
         )
         guard signedIn else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + introAdvanceDelay) { [weak self] in
+        let delay = reduceMotion() ? 0 : introAdvanceDelay
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self,
                   self.agentSetupState?.provider == state.provider,
                   self.isAgentAuthenticated(state.provider) else { return }

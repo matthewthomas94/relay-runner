@@ -9,7 +9,7 @@ final class ParticleFieldRenderer {
     enum Theme: Hashable {
         case stt    // yellow/amber
         case tts    // blue/purple
-        case workspace  // neutral grey
+        case workspace  // modal backdrop navy
 
         var baseHue: CGFloat {
             switch self {
@@ -43,7 +43,7 @@ final class ParticleFieldRenderer {
             switch self {
             case .stt: return (1.000, 0.965, 0.900)
             case .tts: return (0.992, 0.918, 0.859)
-            case .workspace: return (0.620, 0.620, 0.620)
+            case .workspace: return (10.0 / 255.0, 15.0 / 255.0, 25.0 / 255.0)
             }
         }
     }
@@ -71,6 +71,7 @@ final class ParticleFieldRenderer {
     private var startTime: CFTimeInterval = 0
 
     private var bitmapContext: CGContext?
+    private var latestParticleImage: CGImage?
     private var fieldSize: CGSize = .zero
     private var screenSize: CGSize = .zero
     private var screenScale: CGFloat = 2.0
@@ -131,6 +132,9 @@ final class ParticleFieldRenderer {
             screenScale = resolvedScale
             rebuildContext()
             dots.removeAll()
+            if currentTheme != nil, reduceMotion {
+                renderFrame()
+            }
         }
     }
 
@@ -143,10 +147,11 @@ final class ParticleFieldRenderer {
     }
 
     func transition(to theme: Theme?, reduceMotion: Bool = false) {
-        guard theme != currentTheme || reduceMotion != self.reduceMotion else { return }
+        let resolvedReduceMotion = reduceMotion || theme == .workspace
+        guard theme != currentTheme || resolvedReduceMotion != self.reduceMotion else { return }
         let wasHidden = currentTheme == nil
         currentTheme = theme
-        self.reduceMotion = reduceMotion
+        self.reduceMotion = resolvedReduceMotion
 
         guard theme != nil else {
             stopAnimation()
@@ -159,7 +164,7 @@ final class ParticleFieldRenderer {
             return
         }
 
-        if reduceMotion {
+        if resolvedReduceMotion {
             stopAnimation()
             renderFrame()
         } else {
@@ -238,8 +243,10 @@ final class ParticleFieldRenderer {
             let radius = dot.baseRadius * radiusScale
             guard radius > 0.1 else { continue }
 
-            // Subtle alpha modulation from wave
-            let alpha = dot.baseAlpha * (1.0 + wave * 0.1)
+            // Preserve the exact design color for the static workspace matrix.
+            let alpha = theme == .workspace
+                ? dot.baseAlpha
+                : dot.baseAlpha * (1.0 + wave * 0.1)
             guard alpha > 0.02 else { continue }
 
             ctx.setFillColor(red: dot.r, green: dot.g, blue: dot.b, alpha: alpha)
@@ -250,6 +257,7 @@ final class ParticleFieldRenderer {
 
         ctx.restoreGState()
         let image = ctx.makeImage()
+        latestParticleImage = image
         particleLayer.contents = image
     }
 
@@ -301,7 +309,7 @@ final class ParticleFieldRenderer {
                 guard combined > 0.02 else { continue }
 
                 let dotRadius = minDotRadius + (maxDotRadius - minDotRadius) * combined
-                let dotAlpha = 0.2 + 0.6 * combined
+                let dotAlpha = theme == .workspace ? 1.0 : 0.2 + 0.6 * combined
 
                 // Per-dot color variation
                 seed = seed &* 6364136223846793005 &+ 1442695040888963407
@@ -313,10 +321,10 @@ final class ParticleFieldRenderer {
 
                 var cr: CGFloat = 0, cg: CGFloat = 0, cb: CGFloat = 0, ca: CGFloat = 0
                 if theme == .workspace {
-                    let grey = max(0.30, min(0.54, 0.42 + (r3 - 0.5) * 0.20))
-                    cr = grey
-                    cg = grey
-                    cb = grey
+                    let color = theme.baseHighlight
+                    cr = color.r
+                    cg = color.g
+                    cb = color.b
                 } else {
                     let hue = theme.baseHue + (r1 - 0.5) * 0.08
                     let sat = max(0.1, min(1.0, theme.baseSaturation + (r2 - 0.5) * 0.2))
@@ -351,6 +359,7 @@ final class ParticleFieldRenderer {
     // MARK: - Context management
 
     private func rebuildContext() {
+        latestParticleImage = nil
         let w = Int(fieldSize.width * screenScale)
         let h = Int(fieldSize.height * screenScale)
         guard w > 0, h > 0 else {
@@ -375,5 +384,9 @@ final class ParticleFieldRenderer {
 
     var renderedGradientFrame: CGRect {
         gradientLayer.frame
+    }
+
+    var renderedParticleImage: CGImage? {
+        latestParticleImage
     }
 }

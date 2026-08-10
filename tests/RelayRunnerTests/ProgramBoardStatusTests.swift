@@ -257,10 +257,8 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("private struct ProgramBoardModalLayer<Content: View>: View"))
         XCTAssertTrue(contents.contains("ProgramBoardBackdropStyle.backdropHeight"))
         XCTAssertTrue(contents.contains("ProgramBoardBackdropShape("))
-        XCTAssertEqual(
-            contents.components(separatedBy: "ProgramBoardModalLayer(").count - 1,
-            4
-        )
+        let modalLayerReferences = contents.components(separatedBy: "ProgramBoardModalLayer").count - 1
+        XCTAssertEqual(modalLayerReferences - 1, 4) // Exclude the generic type declaration.
         XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.width"))
         XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.height"))
 
@@ -2258,7 +2256,11 @@ final class ProgramBoardStatusTests: XCTestCase {
                 hasRegisteredProjects: false,
                 reloadState: .loading
             ),
-            .empty
+            .settingUp
+        )
+        XCTAssertEqual(
+            ProgramBoardContentPresentation.settingUpTitle,
+            "Setting up your project..."
         )
         XCTAssertEqual(
             ProgramBoardContentPresentation.resolve(
@@ -2301,7 +2303,7 @@ final class ProgramBoardStatusTests: XCTestCase {
                 hasRegisteredProjects: false,
                 reloadState: .loading
             ),
-            .empty
+            .settingUp
         )
         XCTAssertEqual(
             ProgramBoardContentPresentation.resolve(

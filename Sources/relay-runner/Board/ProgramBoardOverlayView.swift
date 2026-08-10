@@ -64,13 +64,37 @@ enum ProgramBoardLayout {
 
 enum ProgramWorkspaceDotMatrixStyle {
     static let backdropOpacity: Double = 0.55
-    static let intensity: Double = 0.72
+    static let backgroundBlurRadius: CGFloat = 6
+    static let intensity: Double = 1
     static let layerZIndex: Double = 2.5
     static let modalContentZIndex: Double = 3
     static let allowsHitTesting = false
 }
 
+enum ProgramWorkspaceModalMotion {
+    static let response: TimeInterval = 0.34
+    static let dampingFraction: CGFloat = 1
+
+    static func animation(reduceMotion: Bool) -> Animation? {
+        guard !reduceMotion else { return nil }
+        return .spring(response: response, dampingFraction: dampingFraction)
+    }
+
+    static func transition(reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .identity : .opacity
+    }
+}
+
+enum ProgramWorkspaceModalKind: Equatable {
+    case none
+    case ticketDetail
+    case createTicket
+    case editTicket
+    case spikeFollowup
+}
+
 struct ProgramWorkspaceDotMatrixPresentation: Equatable {
+    let modalKind: ProgramWorkspaceModalKind
     let isVisible: Bool
     let surfaceHeight: CGFloat
     let backdropOpacity: Double
@@ -79,19 +103,27 @@ struct ProgramWorkspaceDotMatrixPresentation: Equatable {
     let modalContentZIndex: Double
 
     static func resolve(
-        isLoading: Bool,
         showsTicketDetail: Bool,
         showsCreateTicket: Bool,
         showsEditTicket: Bool,
         showsSpikeFollowup: Bool,
         viewportHeight: CGFloat
     ) -> ProgramWorkspaceDotMatrixPresentation {
-        ProgramWorkspaceDotMatrixPresentation(
-            isVisible: isLoading
-                || showsTicketDetail
-                || showsCreateTicket
-                || showsEditTicket
-                || showsSpikeFollowup,
+        let modalKind: ProgramWorkspaceModalKind
+        if showsEditTicket {
+            modalKind = .editTicket
+        } else if showsCreateTicket {
+            modalKind = .createTicket
+        } else if showsSpikeFollowup {
+            modalKind = .spikeFollowup
+        } else if showsTicketDetail {
+            modalKind = .ticketDetail
+        } else {
+            modalKind = .none
+        }
+        return ProgramWorkspaceDotMatrixPresentation(
+            modalKind: modalKind,
+            isVisible: modalKind != .none,
             surfaceHeight: min(max(0, viewportHeight), ProgramBoardBackdropStyle.backdropHeight),
             backdropOpacity: ProgramWorkspaceDotMatrixStyle.backdropOpacity,
             allowsHitTesting: ProgramWorkspaceDotMatrixStyle.allowsHitTesting,
@@ -144,6 +176,7 @@ struct ProgramBoardOverlayView: View {
     let onSpikeFollowupReview: (SpikeFollowupBatch, SpikeFollowupProposal, String, [String: Any]?) -> Void
     let onSpikeFollowupClose: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { proxy in
@@ -157,13 +190,15 @@ struct ProgramBoardOverlayView: View {
             height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight)
         )
         let dotMatrixPresentation = ProgramWorkspaceDotMatrixPresentation.resolve(
-            isLoading: model.workspaceLoadingActive,
             showsTicketDetail: model.selectedTicketDetail != nil,
             showsCreateTicket: model.creating != nil,
             showsEditTicket: model.editing != nil,
             showsSpikeFollowup: model.spikeFollowupBatch != nil,
             viewportHeight: viewportSize.height
         )
+        let backgroundBlurRadius = dotMatrixPresentation.isVisible
+            ? ProgramWorkspaceDotMatrixStyle.backgroundBlurRadius
+            : 0
         return ZStack(alignment: .topLeading) {
             ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
                 .fill(Color.black.opacity(ProgramBoardBackdropStyle.backdropOpacity))
@@ -174,10 +209,8 @@ struct ProgramBoardOverlayView: View {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if model.editing != nil {
-                        onEditCancel()
-                    } else if model.creating != nil {
-                        onCreateCancel()
+                    if dotMatrixPresentation.isVisible {
+                        dismissActiveModal()
                     } else {
                         onDismiss()
                     }
@@ -189,6 +222,8 @@ struct ProgramBoardOverlayView: View {
             )
             .padding(.top, BoardSurfaceLayout.navigationTopPadding)
             .padding(.leading, 20)
+            .blur(radius: backgroundBlurRadius)
+            .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
             HStack(spacing: 0) {
@@ -206,6 +241,8 @@ struct ProgramBoardOverlayView: View {
             }
             .padding(.top, ProgramBoardLayout.sessionToolbarTopPadding)
             .padding(.trailing, ProgramBoardLayout.sessionToolbarTrailingPadding)
+            .blur(radius: backgroundBlurRadius)
+            .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
             if workspace.selectedTab == .terminal,
@@ -217,6 +254,8 @@ struct ProgramBoardOverlayView: View {
                 }
                 .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
                 .frame(maxWidth: .infinity, alignment: .top)
+                .blur(radius: backgroundBlurRadius)
+                .allowsHitTesting(!dotMatrixPresentation.isVisible)
             } else if workspace.selectedTab == .systemSettings, let settingsContent {
                 VStack(spacing: 0) {
                     settingsContent
@@ -225,6 +264,8 @@ struct ProgramBoardOverlayView: View {
                 }
                 .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
                 .frame(maxWidth: .infinity, alignment: .top)
+                .blur(radius: backgroundBlurRadius)
+                .allowsHitTesting(!dotMatrixPresentation.isVisible)
             } else if workspace.showsWorkTab {
                 VStack(spacing: 0) {
                     ProgramBoardContent(
@@ -241,13 +282,18 @@ struct ProgramBoardOverlayView: View {
 
                     Spacer(minLength: 0)
                 }
+                .blur(radius: backgroundBlurRadius)
+                .allowsHitTesting(!dotMatrixPresentation.isVisible)
             }
 
             ProgramDragPreviewLayer(model: model)
+                .blur(radius: backgroundBlurRadius)
+                .allowsHitTesting(!dotMatrixPresentation.isVisible)
 
             if dotMatrixPresentation.isVisible {
                 ProgramWorkspaceDotMatrixLayer(presentation: dotMatrixPresentation)
                     .zIndex(dotMatrixPresentation.layerZIndex)
+                    .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
             }
 
             if let detail = model.selectedTicketDetail,
@@ -268,7 +314,7 @@ struct ProgramBoardOverlayView: View {
                         panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
                     )
                 }
-                .transition(.opacity)
+                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
             }
 
             if let draft = model.creating {
@@ -291,7 +337,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id("\(draft.lane.id)-\(draft.selectedProjectPath ?? "all")")
-                .transition(.opacity)
+                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
             }
 
             if let draft = model.editing {
@@ -316,7 +362,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id(draft.id)
-                .transition(.opacity)
+                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
             }
 
             if let batch = model.spikeFollowupBatch {
@@ -328,7 +374,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id(batch.id)
-                .transition(.opacity)
+                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
             }
         }
         .frame(width: viewportSize.width, height: viewportSize.height, alignment: .topLeading)
@@ -343,6 +389,22 @@ struct ProgramBoardOverlayView: View {
             onWorkspaceTabChange(tab)
         }
         .onPreferenceChange(ProgramColumnFramesKey.self) { model.columnFrames = $0 }
+        .animation(
+            ProgramWorkspaceModalMotion.animation(reduceMotion: reduceMotion),
+            value: dotMatrixPresentation.modalKind
+        )
+    }
+
+    private func dismissActiveModal() {
+        if model.editing != nil {
+            onEditCancel()
+        } else if model.creating != nil {
+            onCreateCancel()
+        } else if model.spikeFollowupBatch != nil {
+            onSpikeFollowupClose()
+        } else if model.selectedTicketDetail != nil {
+            model.clearSelectedTicket()
+        }
     }
 }
 
@@ -454,6 +516,10 @@ final class WorkspaceDotMatrixHostView: NSView {
     var isAnimationRunning: Bool {
         renderer.isAnimationRunning
     }
+
+    var renderedParticleImage: CGImage? {
+        renderer.renderedParticleImage
+    }
 }
 
 private struct ProgramBoardModalLayer<Content: View>: View {
@@ -473,19 +539,65 @@ private struct ProgramBoardModalLayer<Content: View>: View {
 
     var body: some View {
         ZStack {
-            ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
-                .fill(Color.clear)
-                .contentShape(
-                    ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
-                )
-                .onTapGesture(perform: onDismiss)
-
+            ProgramWorkspaceModalClickCatcher(onDismiss: onDismiss)
             content
         }
         .frame(maxWidth: .infinity)
         .frame(height: availableHeight ?? ProgramBoardBackdropStyle.backdropHeight)
         .frame(maxHeight: .infinity, alignment: .top)
         .zIndex(ProgramWorkspaceDotMatrixStyle.modalContentZIndex)
+    }
+}
+
+private struct ProgramWorkspaceModalClickCatcher: NSViewRepresentable {
+    let onDismiss: () -> Void
+
+    func makeNSView(context: Context) -> WorkspaceModalBackdropHitView {
+        WorkspaceModalBackdropHitView(onDismiss: onDismiss)
+    }
+
+    func updateNSView(_ nsView: WorkspaceModalBackdropHitView, context: Context) {
+        nsView.onDismiss = onDismiss
+    }
+}
+
+final class WorkspaceModalBackdropHitView: NSView {
+    var onDismiss: () -> Void
+    private weak var registeredPanel: BoardOverlayPanel?
+
+    init(onDismiss: @escaping () -> Void) {
+        self.onDismiss = onDismiss
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let panel = window as? BoardOverlayPanel
+        guard registeredPanel !== panel else { return }
+        registeredPanel?.unregisterWorkspaceModalBackdrop()
+        registeredPanel = panel
+        panel?.registerWorkspaceModalBackdrop()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Keep the blocker mounted through mouse-up so one click cannot both
+        // dismiss the modal and select content underneath it.
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onDismiss()
     }
 }
 
@@ -729,7 +841,9 @@ enum ProgramBoardContentPresentation: Equatable {
     case board
     case noRegisteredProjects
     case loadFailure
-    case empty
+    case settingUp
+
+    static let settingUpTitle = "Setting up your project..."
 
     static func resolve(
         hasSnapshot: Bool,
@@ -738,7 +852,7 @@ enum ProgramBoardContentPresentation: Equatable {
     ) -> ProgramBoardContentPresentation {
         guard hasSnapshot else {
             if case .failed = reloadState { return .loadFailure }
-            return .empty
+            return .settingUp
         }
         return hasRegisteredProjects ? .board : .noRegisteredProjects
     }
@@ -816,14 +930,17 @@ private struct ProgramBoardContent: View {
                 onDismiss: onDismiss
             )
             .padding(.horizontal, ProgramBoardLayout.statePanelHorizontalPadding)
-        case .empty:
-            emptySurface
+        case .settingUp:
+            settingUpSurface
         }
     }
 
-    private var emptySurface: some View {
-        Color.clear
+    private var settingUpSurface: some View {
+        Text(ProgramBoardContentPresentation.settingUpTitle)
+            .font(AppTypography.font(.programEmptyState))
+            .foregroundStyle(ProgramBoardStyle.disabledText)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
     }
 }
 

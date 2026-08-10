@@ -454,7 +454,6 @@ final class ProgramBoardOverlayController {
         model.setProjectScope(opening.projectScope, selectedProjectPath: opening.selectedProjectPath)
         contentLoadBlocked = opening.contentLoadBlocked
         model.prepareForOpening()
-        model.setWorkspaceLoading(opening.reloadsWork)
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
 
@@ -587,7 +586,6 @@ final class ProgramBoardOverlayController {
         updateCheckTask?.cancel()
         updateCheckTask = nil
         model.cancelReload()
-        model.setWorkspaceLoading(false)
         loadingStateHandler?(false)
         revealContainer?.setUpdateCheckActive(false)
         revealContainer?.setLoading(false)
@@ -674,7 +672,6 @@ final class ProgramBoardOverlayController {
         updateCheckTask?.cancel()
         updateCheckTask = nil
         model.cancelReload()
-        model.setWorkspaceLoading(false)
         contentLoadBlocked = false
         revealContainer?.setLoading(false)
         revealContainer?.setUpdateCheckActive(false)
@@ -752,14 +749,12 @@ final class ProgramBoardOverlayController {
     ) {
         guard workspace.showsWorkTab else {
             contentLoadBlocked = false
-            model.setWorkspaceLoading(false)
             revealContainer?.setLoading(false)
             revealContainer?.setUpdateCheckActive(false)
             loadingStateHandler?(false)
             return
         }
         guard !model.hasReloadInFlight else { return }
-        model.setWorkspaceLoading(true)
         let route = boardRouteResolver()
         let nextScope = Self.projectScope(
             for: route,
@@ -795,7 +790,6 @@ final class ProgramBoardOverlayController {
             } else {
                 self.revealContainer?.setUpdateCheckActive(false)
             }
-            self.model.setWorkspaceLoading(false)
             self.loadingStateHandler?(false)
         }
     }

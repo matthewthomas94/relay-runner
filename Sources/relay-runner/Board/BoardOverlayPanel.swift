@@ -9,6 +9,7 @@ import AppKit
 final class BoardOverlayPanel: NSPanel {
     private weak var hoveredWorkCard: ProgramWorkCardDragEventView?
     private weak var capturedWorkCard: ProgramWorkCardDragEventView?
+    private var workspaceModalBackdropCount = 0
 
     init() {
         super.init(
@@ -47,6 +48,13 @@ final class BoardOverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     override func sendEvent(_ event: NSEvent) {
+        if workspaceModalBackdropCount > 0 {
+            cancelCapturedWorkCard()
+            updateHoveredWorkCard(nil, atWindowLocation: event.locationInWindow)
+            super.sendEvent(event)
+            return
+        }
+
         switch event.type {
         case .mouseMoved:
             let workCard = programWorkCard(atWindowLocation: event.locationInWindow)
@@ -106,6 +114,14 @@ final class BoardOverlayPanel: NSPanel {
 
     func reframe(to screen: NSScreen) {
         setFrame(screen.frame, display: true)
+    }
+
+    func registerWorkspaceModalBackdrop() {
+        workspaceModalBackdropCount += 1
+    }
+
+    func unregisterWorkspaceModalBackdrop() {
+        workspaceModalBackdropCount = max(0, workspaceModalBackdropCount - 1)
     }
 
     private func cancelCapturedWorkCard() {

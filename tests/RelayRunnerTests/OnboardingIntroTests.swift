@@ -2082,6 +2082,37 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(OnboardingIntroTimeline.dotFieldTravel, 4.0, accuracy: 0.001)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 9.2)
         XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 9.8)
+        XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.initialHold, 0.35)
+        XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.finalHold, 0.30)
+        XCTAssertGreaterThanOrEqual(OnboardingFlowMotion.surfaceTransitionDuration, 0.45)
+        XCTAssertGreaterThanOrEqual(OnboardingFlowMotion.controlsRevealDuration, 0.35)
+        XCTAssertGreaterThan(
+            OnboardingFlowMotion.completedStepHold,
+            OnboardingFlowMotion.surfaceTransitionDuration
+        )
+    }
+
+    func testRuntimeInstallSurfaceOmitsTechnicalProgressSubtitlesAndEasesStateChanges() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Onboarding/OnboardingIntroController.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        let runtimeStart = try XCTUnwrap(contents.range(of: "private struct OnboardingIntroRuntimePromptView"))
+        let loginStart = try XCTUnwrap(contents.range(
+            of: "struct OnboardingIntroAgentLoginPromptView",
+            range: runtimeStart.upperBound..<contents.endIndex
+        ))
+        let runtimeSource = String(contents[runtimeStart.lowerBound..<loginStart.lowerBound])
+
+        XCTAssertFalse(runtimeSource.contains("Starting setup..."))
+        XCTAssertFalse(runtimeSource.contains("Runtime and "))
+        XCTAssertFalse(runtimeSource.contains("case .running(let message"))
+        XCTAssertTrue(runtimeSource.contains("case .failed(let errorMessage)"))
+        XCTAssertTrue(runtimeSource.contains("OnboardingFlowMotion.contentAnimation"))
+        XCTAssertTrue(contents.contains("OnboardingIntroRuntimeSurfaceModel"))
+        XCTAssertTrue(contents.contains("CAMediaTimingFunction(name: .easeInEaseOut)"))
     }
 
     func testFreshInteractiveHandoffCanStartAtAgentChoice() {

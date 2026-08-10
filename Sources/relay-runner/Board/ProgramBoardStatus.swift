@@ -1368,7 +1368,6 @@ final class ProgramBoardViewModel {
     var spikeFollowupBatch: SpikeFollowupBatch?
     var creating: ProgramBoardCreateDraft?
     var editing: ProgramBoardEditDraft?
-    var workspaceLoadingActive = false
     var dragItemID: String?
     var dragTarget: ProgramBoardDropTarget?
     var dragPreview: ProgramBoardDragState?
@@ -1405,12 +1404,7 @@ final class ProgramBoardViewModel {
         spikeFollowupBatch = nil
         creating = nil
         editing = nil
-        workspaceLoadingActive = false
         endDrag()
-    }
-
-    func setWorkspaceLoading(_ active: Bool) {
-        workspaceLoadingActive = active
     }
 
     var hasReloadInFlight: Bool {
