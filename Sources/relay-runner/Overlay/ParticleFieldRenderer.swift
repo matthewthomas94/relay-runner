@@ -1,19 +1,21 @@
 import AppKit
 import QuartzCore
 
-/// Renders an animated halftone dot particle field on the bottom portion of the screen.
-/// Dots are arranged in a grid with size varying by distance from bottom-center.
+/// Renders an animated halftone dot particle field.
+/// Dots are arranged in a grid with size varying across the presentation area.
 /// A slow diagonal wave adds subtle organic movement.
 final class ParticleFieldRenderer {
 
     enum Theme: Hashable {
         case stt    // yellow/amber
         case tts    // blue/purple
+        case workspace  // neutral grey
 
         var baseHue: CGFloat {
             switch self {
             case .stt: return 0.04    // deeper blood orange
             case .tts: return 0.68    // blue-purple
+            case .workspace: return 0
             }
         }
 
@@ -21,6 +23,7 @@ final class ParticleFieldRenderer {
             switch self {
             case .stt: return 0.95
             case .tts: return 0.80
+            case .workspace: return 0
             }
         }
 
@@ -29,6 +32,7 @@ final class ParticleFieldRenderer {
             switch self {
             case .stt: return 0.32
             case .tts: return 0.44
+            case .workspace: return 1
             }
         }
 
@@ -39,6 +43,19 @@ final class ParticleFieldRenderer {
             switch self {
             case .stt: return (1.000, 0.965, 0.900)
             case .tts: return (0.992, 0.918, 0.859)
+            case .workspace: return (0.620, 0.620, 0.620)
+            }
+        }
+    }
+
+    enum Coverage {
+        case lowerScreen
+        case fullBounds
+
+        var boundsFraction: CGFloat {
+            switch self {
+            case .lowerScreen: return 0.44
+            case .fullBounds: return 1
             }
         }
     }
@@ -48,6 +65,7 @@ final class ParticleFieldRenderer {
 
     private var currentTheme: Theme?
     private var intensityMultiplier: Double = 0.6
+    private var reduceMotion = false
 
     private var animationTimer: Timer?
     private var startTime: CFTimeInterval = 0
@@ -69,8 +87,10 @@ final class ParticleFieldRenderer {
     private let spacing: CGFloat = 8
     private let maxDotRadius: CGFloat = 3.0
     private let minDotRadius: CGFloat = 0.3
+    private let coverage: Coverage
 
-    init() {
+    init(coverage: Coverage = .lowerScreen) {
+        self.coverage = coverage
         // Dark gradient behind particles: transparent at top, dark at bottom
         gradientLayer.colors = [
             NSColor(white: 0, alpha: 0).cgColor,
@@ -100,7 +120,7 @@ final class ParticleFieldRenderer {
     }
 
     func layoutInBounds(_ bounds: CGRect, backingScale: CGFloat? = nil) {
-        let fieldH = bounds.height * 0.44
+        let fieldH = bounds.height * coverage.boundsFraction
         gradientLayer.frame = bounds
         particleLayer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: fieldH)
 
@@ -122,10 +142,11 @@ final class ParticleFieldRenderer {
         }
     }
 
-    func transition(to theme: Theme?) {
-        guard theme != currentTheme else { return }
+    func transition(to theme: Theme?, reduceMotion: Bool = false) {
+        guard theme != currentTheme || reduceMotion != self.reduceMotion else { return }
         let wasHidden = currentTheme == nil
         currentTheme = theme
+        self.reduceMotion = reduceMotion
 
         guard theme != nil else {
             stopAnimation()
@@ -138,7 +159,12 @@ final class ParticleFieldRenderer {
             return
         }
 
-        startAnimation()
+        if reduceMotion {
+            stopAnimation()
+            renderFrame()
+        } else {
+            startAnimation()
+        }
 
         if wasHidden {
             CATransaction.begin()
@@ -173,7 +199,7 @@ final class ParticleFieldRenderer {
         let size = fieldSize
         guard size.width > 0, size.height > 0 else { return }
 
-        let elapsed = CACurrentMediaTime() - startTime
+        let elapsed = reduceMotion ? 0 : CACurrentMediaTime() - startTime
         let scale = screenScale
 
         // Ensure dots are pre-computed for this theme
@@ -230,12 +256,18 @@ final class ParticleFieldRenderer {
     // MARK: - Dot grid generation
 
     private func buildDotGrid(theme: Theme, size: CGSize) -> [Dot] {
-        let fieldHeight = size.height * (theme.fieldFraction / 0.44)  // scale relative to layer height
+        let fieldHeight = min(
+            size.height,
+            size.height * (theme.fieldFraction / coverage.boundsFraction)
+        )
         let cols = Int(size.width / spacing) + 1
         let rows = Int(fieldHeight / spacing) + 1
 
         let centerX = size.width / 2
         let sigma = size.width * 0.45
+        let workspaceCenterY = fieldHeight / 2
+        let workspaceSigmaX = max(1, size.width * 0.30)
+        let workspaceSigmaY = max(1, fieldHeight * 0.30)
 
         var result: [Dot] = []
         result.reserveCapacity(cols * rows)
@@ -249,12 +281,23 @@ final class ParticleFieldRenderer {
                 let y = CGFloat(row) * spacing + spacing / 2
 
                 let verticalT = CGFloat(row) / CGFloat(max(1, rows - 1))
-                let verticalFactor = pow(1.0 - verticalT, 1.6)
-
-                let dx = x - centerX
-                let horizontalFactor = exp(-(dx * dx) / (2 * sigma * sigma))
-
-                let combined = verticalFactor * horizontalFactor
+                let combined: CGFloat
+                if theme == .workspace {
+                    let dx = x - centerX
+                    let dy = y - workspaceCenterY
+                    let horizontalFactor = exp(
+                        -(dx * dx) / (2 * workspaceSigmaX * workspaceSigmaX)
+                    )
+                    let verticalFactor = exp(
+                        -(dy * dy) / (2 * workspaceSigmaY * workspaceSigmaY)
+                    )
+                    combined = horizontalFactor * verticalFactor
+                } else {
+                    let verticalFactor = pow(1.0 - verticalT, 1.6)
+                    let dx = x - centerX
+                    let horizontalFactor = exp(-(dx * dx) / (2 * sigma * sigma))
+                    combined = verticalFactor * horizontalFactor
+                }
                 guard combined > 0.02 else { continue }
 
                 let dotRadius = minDotRadius + (maxDotRadius - minDotRadius) * combined
@@ -268,14 +311,21 @@ final class ParticleFieldRenderer {
                 seed = seed &* 6364136223846793005 &+ 1442695040888963407
                 let r3 = CGFloat(seed >> 33) / CGFloat(UInt32.max)
 
-                let hue = theme.baseHue + (r1 - 0.5) * 0.08
-                let sat = max(0.1, min(1.0, theme.baseSaturation + (r2 - 0.5) * 0.2))
-                let bri = max(0.4, min(1.0, 0.7 + (r3 - 0.5) * 0.3))
-
-                // Convert HSB to RGB
-                let c = NSColor(hue: hue, saturation: sat, brightness: bri, alpha: 1.0)
                 var cr: CGFloat = 0, cg: CGFloat = 0, cb: CGFloat = 0, ca: CGFloat = 0
-                c.usingColorSpace(.sRGB)?.getRed(&cr, green: &cg, blue: &cb, alpha: &ca)
+                if theme == .workspace {
+                    let grey = max(0.30, min(0.54, 0.42 + (r3 - 0.5) * 0.20))
+                    cr = grey
+                    cg = grey
+                    cb = grey
+                } else {
+                    let hue = theme.baseHue + (r1 - 0.5) * 0.08
+                    let sat = max(0.1, min(1.0, theme.baseSaturation + (r2 - 0.5) * 0.2))
+                    let bri = max(0.4, min(1.0, 0.7 + (r3 - 0.5) * 0.3))
+
+                    // Convert HSB to RGB
+                    let c = NSColor(hue: hue, saturation: sat, brightness: bri, alpha: 1.0)
+                    c.usingColorSpace(.sRGB)?.getRed(&cr, green: &cg, blue: &cb, alpha: &ca)
+                }
 
                 // Lift toward the theme highlight at the base of the field.
                 // row 0 sits at the visible bottom (CG bitmap origin), so low
@@ -313,5 +363,17 @@ final class ParticleFieldRenderer {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )
+    }
+
+    var isAnimationRunning: Bool {
+        animationTimer != nil
+    }
+
+    var renderedParticleFrame: CGRect {
+        particleLayer.frame
+    }
+
+    var renderedGradientFrame: CGRect {
+        gradientLayer.frame
     }
 }
