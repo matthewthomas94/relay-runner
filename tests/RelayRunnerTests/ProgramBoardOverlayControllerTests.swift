@@ -94,6 +94,32 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertTrue(controller.contains("preserveProjectSelection: false"))
     }
 
+    func testProjectCardSelectionPersistsTheRegistryPreference() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appState = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/App/AppState.swift"),
+            encoding: .utf8
+        )
+        let controller = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayController.swift"),
+            encoding: .utf8
+        )
+        let overlayView = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(controller.contains("func setProjectSelectionHandler("))
+        XCTAssertTrue(controller.contains("projectSelectionHandler?(repoPath)"))
+        XCTAssertTrue(overlayView.contains("onSelectProject: onSelectProject"))
+        XCTAssertTrue(appState.contains("programBoardOverlay.setProjectSelectionHandler"))
+        XCTAssertTrue(appState.contains("projectRegistryV2.confirmProject(matching: repoPath)"))
+        XCTAssertTrue(appState.contains("refreshWorkspaceActivity(invalidateRoute: true)"))
+    }
+
     func testWorkspaceRouteOpensWorkspaceAcrossDiscoveredProjects() {
         let opening = ProgramBoardOverlayController.workspaceOpening(
             route: .programBoard,

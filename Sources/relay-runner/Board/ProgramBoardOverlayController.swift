@@ -95,6 +95,7 @@ final class ProgramBoardOverlayController {
     private var loadingStateHandler: ((Bool) -> Void)?
     private var addExistingProjectHandler: (() -> Void)?
     private var createProjectHandler: (() -> Void)?
+    private var projectSelectionHandler: ((String) -> Void)?
     private var startSessionHandler: ((String?) -> Void)?
     private var endSessionHandler: (() -> Void)?
     private var sessionActiveProvider: () -> Bool = { false }
@@ -141,6 +142,10 @@ final class ProgramBoardOverlayController {
     ) {
         addExistingProjectHandler = addExisting
         createProjectHandler = create
+    }
+
+    func setProjectSelectionHandler(_ handler: @escaping (String) -> Void) {
+        projectSelectionHandler = handler
     }
 
     func setStartSessionHandler(_ handler: @escaping (String?) -> Void) {
@@ -474,6 +479,7 @@ final class ProgramBoardOverlayController {
                 onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
                 onAddExistingProject: { [weak self] in self?.addExistingProjectHandler?() },
                 onCreateProject: { [weak self] in self?.createProjectHandler?() },
+                onSelectProject: { [weak self] repoPath in self?.selectProject(repoPath) },
                 onStartSession: { [weak self] in self?.startSession() },
                 onEndSession: { [weak self] in self?.endSession() },
                 onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
@@ -790,6 +796,7 @@ final class ProgramBoardOverlayController {
 
     private func selectProject(_ repoPath: String) {
         model.selectProject(path: repoPath)
+        projectSelectionHandler?(repoPath)
         selectWorkspaceTab(.work)
     }
 

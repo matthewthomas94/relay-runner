@@ -69,6 +69,7 @@ private enum ProgramTicketPanelStyle {
     static let verticalPadding: CGFloat = 18
     static let compactFieldHeight: CGFloat = 34
     static let createDescriptionHeight: CGFloat = 132
+    static let executionModeDescriptionHeight: CGFloat = 38
     static let modalBackdropOpacity: Double = 0.55
 
     static func detailSize(fitting availableSize: CGSize) -> CGSize {
@@ -89,6 +90,7 @@ struct ProgramBoardOverlayView: View {
     let onRefresh: () -> Void
     var onAddExistingProject: () -> Void = {}
     var onCreateProject: () -> Void = {}
+    var onSelectProject: (String) -> Void = { _ in }
     let onStartSession: () -> Void
     let onEndSession: () -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
@@ -186,6 +188,7 @@ struct ProgramBoardOverlayView: View {
                         onDismiss: onDismiss,
                         onAddExistingProject: onAddExistingProject,
                         onCreateProject: onCreateProject,
+                        onSelectProject: onSelectProject,
                         onCreateStart: onCreateStart,
                         onDrop: onDrop
                     )
@@ -610,6 +613,7 @@ private struct ProgramBoardContent: View {
     let onDismiss: () -> Void
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
+    let onSelectProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
@@ -632,7 +636,7 @@ private struct ProgramBoardContent: View {
                         onSelectAll: model.selectAllProjects,
                         onAddExistingProject: onAddExistingProject,
                         onCreateProject: onCreateProject,
-                        onSelectProject: model.selectProject
+                        onSelectProject: onSelectProject
                     )
                     ForEach(ProgramBoardLane.allCases) { lane in
                         ProgramWorkColumnPanel(
@@ -2572,9 +2576,6 @@ private struct ProgramTicketEditModal: View {
 
                 ProgramExecutionModePicker(selection: $executionMode)
 
-                Divider()
-                    .background(BoardDarkSurfaceStyle.border)
-
                 ProgramEditTextArea(
                     title: "Description",
                     text: $description,
@@ -2841,9 +2842,6 @@ private struct ProgramTicketCreateModal: View {
 
                 ProgramExecutionModePicker(selection: $executionMode)
 
-                Divider()
-                    .background(BoardDarkSurfaceStyle.border)
-
                 ProgramEditTextArea(
                     title: "Description",
                     text: $description,
@@ -2905,6 +2903,12 @@ private struct ProgramExecutionModePicker: View {
             Text("Execution mode")
                 .font(AppTypography.font(.body))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
+            Text(selection.explanation)
+                .font(AppTypography.font(.label))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .lineLimit(2)
+                .frame(maxWidth: 360, alignment: .topLeading)
+                .frame(height: ProgramTicketPanelStyle.executionModeDescriptionHeight, alignment: .topLeading)
             HStack(spacing: 6) {
                 ForEach(Ticket.ExecutionMode.allCases, id: \.rawValue) { mode in
                     ProgramExecutionModeButton(
@@ -2916,10 +2920,6 @@ private struct ProgramExecutionModePicker: View {
             }
             .frame(maxWidth: 360)
             .frame(height: SharedActionButtonMetrics.controlHeight)
-            Text(selection.explanation)
-                .font(AppTypography.font(.label))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

@@ -320,7 +320,28 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(executionPicker.contains("SharedActionButtonSurface("))
         XCTAssertTrue(executionPicker.contains("SettingsActionPresentation.resolve("))
         XCTAssertTrue(executionPicker.contains("cornerRadius: SharedActionButtonMetrics.cornerRadius"))
+        let executionTitle = try XCTUnwrap(executionPicker.range(of: "Text(\"Execution mode\")"))
+        let executionDescription = try XCTUnwrap(executionPicker.range(of: "Text(selection.explanation)"))
+        let executionButtons = try XCTUnwrap(executionPicker.range(of: "HStack(spacing: 6)"))
+        XCTAssertLessThan(executionTitle.lowerBound, executionDescription.lowerBound)
+        XCTAssertLessThan(executionDescription.lowerBound, executionButtons.lowerBound)
+        XCTAssertTrue(executionPicker.contains(
+            ".frame(height: ProgramTicketPanelStyle.executionModeDescriptionHeight"
+        ))
         XCTAssertFalse(executionPicker.contains("Rectangle()"))
+        let createExecutionMode = try XCTUnwrap(createModal.range(of: "ProgramExecutionModePicker(selection: $executionMode)"))
+        let createDescription = try XCTUnwrap(
+            createModal.range(of: "ProgramEditTextArea(", range: createExecutionMode.upperBound..<createModal.endIndex)
+        )
+        XCTAssertFalse(createModal[createExecutionMode.upperBound..<createDescription.lowerBound].contains("Divider()"))
+
+        let editStart = try XCTUnwrap(contents.range(of: "private struct ProgramTicketEditModal: View"))
+        let editModal = String(contents[editStart.lowerBound..<createStart.lowerBound])
+        let editExecutionMode = try XCTUnwrap(editModal.range(of: "ProgramExecutionModePicker(selection: $executionMode)"))
+        let editDescription = try XCTUnwrap(
+            editModal.range(of: "ProgramEditTextArea(", range: editExecutionMode.upperBound..<editModal.endIndex)
+        )
+        XCTAssertFalse(editModal[editExecutionMode.upperBound..<editDescription.lowerBound].contains("Divider()"))
 
         let imageSelectorStart = executionEnd
         let imageSelectorEnd = try XCTUnwrap(

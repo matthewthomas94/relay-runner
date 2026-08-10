@@ -499,6 +499,15 @@ final class AppState {
             addExisting: { [weak self] in self?.addExistingProject() },
             create: { [weak self] in self?.createProject() }
         )
+        programBoardOverlay.setProjectSelectionHandler { [weak self] repoPath in
+            guard let self, let projectRegistryV2 = self.projectRegistryV2 else { return }
+            do {
+                _ = try projectRegistryV2.confirmProject(matching: repoPath)
+                self.refreshWorkspaceActivity(invalidateRoute: true)
+            } catch {
+                self.surfaceProjectScopeFailure(String(describing: error))
+            }
+        }
         programBoardOverlay.setRequiresConfirmedProjectProvider { [weak self] in
             self?.projectRegistryV2 != nil
         }
