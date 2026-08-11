@@ -6,6 +6,24 @@ final class RelayRunnerAppDelegate: NSObject, NSApplicationDelegate {
         SettingsPresenter.open()
     }
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        RelayMetricKitSubscriber.shared.start()
+        RelayDiagnostics.shared.record(
+            process: "app",
+            phase: "app_launch",
+            outcome: "ready"
+        )
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        RelayDiagnostics.shared.record(
+            process: "app",
+            phase: "app_launch",
+            outcome: "stopped"
+        )
+        RelayMetricKitSubscriber.shared.stop()
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         return handleDockReopen(activationPolicy: sender.activationPolicy())
     }

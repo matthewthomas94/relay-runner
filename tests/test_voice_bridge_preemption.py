@@ -185,6 +185,49 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
         queue_tts.assert_not_called()
 
+    def test_relay_readiness_waits_for_fifo_initialization(self):
+        worker = FakeTTSWorker()
+        shutdown_event = threading.Event()
+        ready = mock.Mock()
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=None),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text", return_value=True),
+        ):
+            self.assertFalse(voice_bridge._run_relay(worker, shutdown_event, on_ready=ready))
+        ready.assert_not_called()
+
+        shutdown_event.set()
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge.os, "close"),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_queue_tts_text", return_value=True),
+        ):
+            self.assertTrue(voice_bridge._run_relay(worker, shutdown_event, on_ready=ready))
+        ready.assert_called_once_with()
+
+    def test_bridge_readiness_preserves_provider_parity(self):
+        for provider in ("codex", "claude"):
+            with (
+                self.subTest(provider=provider),
+                mock.patch.dict(os.environ, {"RELAY_RUNNER_PROVIDER": provider}),
+                mock.patch.object(voice_bridge, "record_support_event") as record,
+            ):
+                voice_bridge._record_bridge_readiness("ready")
+
+            record.assert_called_once_with(
+                process="shell",
+                phase="bridge_readiness",
+                outcome="ready",
+                provider=provider,
+            )
+
     def test_parse_args_recognizes_tutorial_startup_greeting_suppression(self):
         with mock.patch.object(
             sys,

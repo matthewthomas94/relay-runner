@@ -792,6 +792,7 @@ final class ProcessManager {
         let voiceDelivery: SessionVoiceDelivery
         let sessionEventPath: String?
         let providerSessionID: String?
+        let diagnosticsCorrelationID: String
 
         init(
             executable: String,
@@ -801,7 +802,8 @@ final class ProcessManager {
             target: AgentTarget,
             voiceDelivery: SessionVoiceDelivery,
             sessionEventPath: String? = nil,
-            providerSessionID: String? = nil
+            providerSessionID: String? = nil,
+            diagnosticsCorrelationID: String = UUID().uuidString.lowercased()
         ) {
             self.executable = executable
             self.arguments = arguments
@@ -811,6 +813,7 @@ final class ProcessManager {
             self.voiceDelivery = voiceDelivery
             self.sessionEventPath = sessionEventPath
             self.providerSessionID = providerSessionID
+            self.diagnosticsCorrelationID = diagnosticsCorrelationID
         }
     }
 
@@ -1053,6 +1056,7 @@ final class ProcessManager {
         #!/bin/bash
         \(Self.shellProfileSource())
         \(Self.sessionLifecyclePreamble(eventPath: sessionEventPath))
+        \(Self.supportDiagnosticsPreamble())
         # Ensure venv + deps + speech-model + relay skills are installed. In
         # embedded sessions, also start the bridge daemon before the provider so
         # voice turns can be injected without a blocking bootstrap prompt.
@@ -1079,10 +1083,12 @@ final class ProcessManager {
         ))
         \(cdLine)
         relay_record_session_event launcher_start started
-        # relay-bridge records bridge_socket_readiness at the socket check.
+        # relay-bridge owns bridge readiness. Agent-skill sessions only bootstrap
+        # here; app-owned sessions wait for the Python bridge's socket.
         \(bridgeStartLine)
         \(Self.appOwnedProviderSessionPublish(effectiveProviderSessionID))
         relay_record_session_event provider_spawn started
+        relay_record_support_event provider provider_readiness spawned
         # Interactive agent session with Relay Runner voice mode pre-fired.
         # Replacing this launcher process keeps the PTY child PID aligned with
         # the agent, so End Session terminates the interactive process cleanly.
@@ -1112,6 +1118,101 @@ final class ProcessManager {
                 "$2" "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
                 >> "$RELAY_SESSION_EVENTS" 2>/dev/null || true
             chmod 600 "$RELAY_SESSION_EVENTS" 2>/dev/null || true
+        }
+        """
+    }
+
+    private static func supportDiagnosticsPreamble() -> String {
+        """
+        relay_support_file_mtime() {
+            stat -f '%m' "$1" 2>/dev/null || stat --format='%Y' "$1" 2>/dev/null || echo 0
+        }
+        relay_support_file_size() {
+            stat -f '%z' "$1" 2>/dev/null || stat --format='%s' "$1" 2>/dev/null || echo 0
+        }
+        relay_support_safe_id() {
+            [ "${#1}" -le 64 ] && [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+                || "$1" =~ ^inc-[0-9a-f]{12}$ \
+                || "$1" =~ ^(shell|orchestrator)-[0-9]{10,}-[0-9]+$ ]]
+        }
+        relay_acquire_support_journal_lock() {
+            relay_lock="$1/.journal.lock"
+            relay_lock_attempts=0
+            while ! mkdir "$relay_lock" 2>/dev/null; do
+                relay_now="$(date +%s)"
+                relay_lock_mtime="$(relay_support_file_mtime "$relay_lock")"
+                if [ "$relay_lock_mtime" -gt 0 ] && [ $((relay_now - relay_lock_mtime)) -ge 30 ]; then
+                    relay_stale_lock="$1/.journal.lock.stale-$$-$relay_lock_attempts"
+                    if mv "$relay_lock" "$relay_stale_lock" 2>/dev/null; then
+                        rm -rf "$relay_stale_lock"
+                        continue
+                    fi
+                fi
+                relay_lock_attempts=$((relay_lock_attempts + 1))
+                [ "$relay_lock_attempts" -lt 100 ] || return 1
+                sleep 0.05
+            done
+        }
+        relay_release_support_journal_lock() {
+            rm -rf "$1/.journal.lock"
+        }
+        relay_prune_support_journals() {
+            relay_diagnostics_dir="$1"
+            relay_cutoff=$(($(date +%s) - 604800))
+            for relay_file in "$relay_diagnostics_dir"/events-v1-*.jsonl; do
+                [ -f "$relay_file" ] || continue
+                relay_mtime="$(relay_support_file_mtime "$relay_file")"
+                if [ "$relay_mtime" -lt "$relay_cutoff" ]; then rm -f "$relay_file"; fi
+            done
+            relay_total=0
+            for relay_file in "$relay_diagnostics_dir"/events-v1-*.jsonl; do
+                [ -f "$relay_file" ] || continue
+                relay_size="$(relay_support_file_size "$relay_file")"
+                relay_total=$((relay_total + relay_size))
+            done
+            while [ "$relay_total" -gt 5242880 ]; do
+                relay_oldest=""
+                relay_oldest_mtime=""
+                for relay_file in "$relay_diagnostics_dir"/events-v1-*.jsonl; do
+                    [ -f "$relay_file" ] || continue
+                    relay_mtime="$(relay_support_file_mtime "$relay_file")"
+                    if [ -z "$relay_oldest" ] || [ "$relay_mtime" -lt "$relay_oldest_mtime" ] \
+                        || { [ "$relay_mtime" -eq "$relay_oldest_mtime" ] && [[ "$relay_file" < "$relay_oldest" ]]; }; then
+                        relay_oldest="$relay_file"
+                        relay_oldest_mtime="$relay_mtime"
+                    fi
+                done
+                [ -n "$relay_oldest" ] || break
+                relay_size="$(relay_support_file_size "$relay_oldest")"
+                rm -f "$relay_oldest"
+                relay_total=$((relay_total - relay_size))
+            done
+        }
+        relay_record_support_event() {
+            case "$1:$2:$3" in
+                shell:bridge_readiness:started|shell:bridge_readiness:ready|shell:bridge_readiness:failed|shell:setup:failed|provider:provider_readiness:spawned) ;;
+                *) return 0 ;;
+            esac
+            relay_diagnostics_dir="${RELAY_DIAGNOSTICS_DIR:-$HOME/Library/Application Support/relay-runner/support-diagnostics/v1}"
+            relay_redaction_count=0
+            relay_raw_id="${RELAY_APP_SESSION_ID:-shell-$(date +%s)-$$}"
+            if relay_support_safe_id "$relay_raw_id"; then relay_app_session="$relay_raw_id"; else relay_app_session="redacted-id"; relay_redaction_count=$((relay_redaction_count + 1)); fi
+            relay_raw_id="${RELAY_CORRELATION_ID:-shell-$(date +%s)-$$}"
+            if relay_support_safe_id "$relay_raw_id"; then relay_correlation="$relay_raw_id"; else relay_correlation="redacted-id"; relay_redaction_count=$((relay_redaction_count + 1)); fi
+            case "${RELAY_RUNNER_PROVIDER:-}" in
+                codex|claude) relay_provider_json="\"$RELAY_RUNNER_PROVIDER\"" ;;
+                *) relay_provider_json="null"; [ -z "${RELAY_RUNNER_PROVIDER:-}" ] || relay_redaction_count=$((relay_redaction_count + 1)) ;;
+            esac
+            mkdir -p "$relay_diagnostics_dir" 2>/dev/null || return 0
+            chmod 700 "$relay_diagnostics_dir" 2>/dev/null || true
+            relay_acquire_support_journal_lock "$relay_diagnostics_dir" || return 0
+            printf '{"app_session_id":"%s","attributes":{},"correlation_id":"%s","incident_id":null,"outcome":"%s","phase":"%s","process":"%s","provider":%s,"redaction_count":%s,"retry_attempt":null,"schema_version":1,"summary":null,"timestamp":"%s"}\\n' \\
+                "$relay_app_session" "$relay_correlation" "$3" "$2" "$1" "$relay_provider_json" "$relay_redaction_count" \\
+                "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \\
+                >> "$relay_diagnostics_dir/events-v1-$1-$$.jsonl" 2>/dev/null || true
+            chmod 600 "$relay_diagnostics_dir/events-v1-$1-$$.jsonl" 2>/dev/null || true
+            relay_prune_support_journals "$relay_diagnostics_dir"
+            relay_release_support_journal_lock "$relay_diagnostics_dir"
         }
         """
     }
@@ -1434,7 +1535,7 @@ final class ProcessManager {
                 : ""
             return "\(Self.shellQuoted(relayBridge)) --start-daemon\(greetingFlag) || { echo '[Relay Runner] Voice bridge failed.'; exit 1; }"
         case .agentSkill:
-            return "\(Self.shellQuoted(relayBridge)) --venv-only || { echo '[Relay Runner] Setup failed.'; exit 1; }"
+            return "\(Self.shellQuoted(relayBridge)) --venv-only || { relay_record_support_event shell setup failed; echo '[Relay Runner] Setup failed.'; exit 1; }"
         }
     }
 

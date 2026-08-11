@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct WorkspaceLatencyMetric: Equatable {
     let name: String
@@ -480,6 +481,7 @@ final class ProgramBoardOverlayController {
                 onDismiss: { [weak self] in self?.hide() },
                 onWorkspaceTabChange: { [weak self] tab in self?.workspaceTabDidChange(tab) },
                 onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
+                onCreateDiagnostics: { [weak self] in self?.exportSupportBundle() },
                 onAddExistingProject: { [weak self] in self?.addExistingProjectHandler?() },
                 onCreateProject: { [weak self] in self?.createProjectHandler?() },
                 onSelectProject: { [weak self] repoPath in self?.selectProject(repoPath) },
@@ -550,6 +552,37 @@ final class ProgramBoardOverlayController {
             checkForUpdates(inBackground: true)
         } else {
             loadingStateHandler?(false)
+        }
+    }
+
+    private func exportSupportBundle() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "Relay-Support-\(model.workspaceIncidentID?.prefix(8) ?? "local").zip"
+        panel.message = model.supportBundlePreview?.summary
+            ?? "Creates an allowlisted local event timeline without transcripts, repositories, or credentials."
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do {
+            try RelayDiagnostics.shared.createSupportBundle(at: destination)
+            model.errorMessage = "Diagnostics exported. Incident \(model.workspaceIncidentID ?? "local")."
+            RelayDiagnostics.shared.record(
+                process: "app",
+                phase: "diagnostics_export",
+                outcome: "ready",
+                incidentID: model.workspaceIncidentID,
+                retryAttempt: model.workspaceRetryAttempt > 0 ? model.workspaceRetryAttempt : nil
+            )
+        } catch {
+            model.errorMessage = "Diagnostics export failed. The incident journal remains stored locally."
+            RelayDiagnostics.shared.record(
+                process: "app",
+                phase: "diagnostics_export",
+                outcome: "failed",
+                incidentID: model.workspaceIncidentID,
+                retryAttempt: model.workspaceRetryAttempt > 0 ? model.workspaceRetryAttempt : nil,
+                summary: error.localizedDescription
+            )
         }
     }
 

@@ -157,6 +157,7 @@ struct ProgramBoardOverlayView: View {
     let onDismiss: () -> Void
     let onWorkspaceTabChange: (WorkspaceTab) -> Void
     let onRefresh: () -> Void
+    var onCreateDiagnostics: () -> Void = {}
     var onAddExistingProject: () -> Void = {}
     var onCreateProject: () -> Void = {}
     var onSelectProject: (String) -> Void = { _ in }
@@ -271,6 +272,7 @@ struct ProgramBoardOverlayView: View {
                     ProgramBoardContent(
                         model: model,
                         onRefresh: onRefresh,
+                        onCreateDiagnostics: onCreateDiagnostics,
                         onDismiss: onDismiss,
                         onAddExistingProject: onAddExistingProject,
                         onCreateProject: onCreateProject,
@@ -862,6 +864,7 @@ enum ProgramBoardContentPresentation: Equatable {
 private struct ProgramBoardContent: View {
     @Bindable var model: ProgramBoardViewModel
     let onRefresh: () -> Void
+    let onCreateDiagnostics: () -> Void
     let onDismiss: () -> Void
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
@@ -888,7 +891,9 @@ private struct ProgramBoardContent: View {
                         onSelectAll: model.selectAllProjects,
                         onAddExistingProject: onAddExistingProject,
                         onCreateProject: onCreateProject,
-                        onSelectProject: onSelectProject
+                        onSelectProject: onSelectProject,
+                        onRetry: onRefresh,
+                        onCreateDiagnostics: onCreateDiagnostics
                     )
                     ForEach(ProgramBoardLane.allCases) { lane in
                         ProgramWorkColumnPanel(
@@ -928,7 +933,9 @@ private struct ProgramBoardContent: View {
                 reloadState: model.reloadState,
                 theme: model.theme,
                 onRefresh: onRefresh,
-                onDismiss: onDismiss
+                onDismiss: onDismiss,
+                diagnosticsPreview: model.supportBundlePreview,
+                onCreateDiagnostics: onCreateDiagnostics
             )
             .padding(.horizontal, ProgramBoardLayout.statePanelHorizontalPadding)
         case .settingUp:
@@ -956,6 +963,8 @@ private struct ProgramOverviewColumn: View {
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
     let onSelectProject: (String) -> Void
+    let onRetry: () -> Void
+    let onCreateDiagnostics: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -969,7 +978,11 @@ private struct ProgramOverviewColumn: View {
             )
 
             if let errorMessage {
-                ProgramErrorStrip(message: errorMessage)
+                ProgramErrorStrip(
+                    message: errorMessage,
+                    onRetry: onRetry,
+                    onCreateDiagnostics: onCreateDiagnostics
+                )
                     .padding(.top, ProgramBoardLayout.overviewSectionSpacing)
             }
 
@@ -3369,6 +3382,8 @@ private struct ProgramStatePanel: View {
     var primaryAction: (() -> Void)? = nil
     var secondaryActionTitle: String? = nil
     var secondaryAction: (() -> Void)? = nil
+    var diagnosticsPreview: RelaySupportBundlePreview? = nil
+    var onCreateDiagnostics: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -3413,18 +3428,42 @@ private struct ProgramStatePanel: View {
                     }
                 }
                 if let onRefresh {
-                    Button(action: onRefresh) {
-                        Text("Refresh")
-                            .font(AppTypography.font(.programAction))
-                            .foregroundStyle(ProgramBoardStyle.secondaryText)
-                            .padding(.horizontal, 12)
-                            .frame(height: ProgramBoardLayout.compactControlHeight)
+                    HStack(spacing: 8) {
+                        Button(action: onRefresh) {
+                            Text("Retry")
+                                .font(AppTypography.font(.programAction))
+                                .foregroundStyle(ProgramBoardStyle.secondaryText)
+                                .padding(.horizontal, 12)
+                                .frame(height: ProgramBoardLayout.compactControlHeight)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(reloadState.isLoading)
+                        .programControlChrome(disabled: reloadState.isLoading)
+                        .programButtonCursor(enabled: !reloadState.isLoading)
+                        .help("Retry Workspace readiness")
+
+                        if onCreateDiagnostics != nil {
+                            Button(action: { onCreateDiagnostics?() }) {
+                                Text("Export Diagnostics…")
+                                    .font(AppTypography.font(.programAction))
+                                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+                                    .padding(.horizontal, 12)
+                                    .frame(height: ProgramBoardLayout.compactControlHeight)
+                            }
+                            .buttonStyle(.plain)
+                            .programControlChrome()
+                            .programButtonCursor(enabled: true)
+                            .help("Create a privacy-safe local support bundle")
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .disabled(reloadState.isLoading)
-                    .programControlChrome(disabled: reloadState.isLoading)
-                    .programButtonCursor(enabled: !reloadState.isLoading)
-                    .help("Refresh registered projects")
+                }
+                if let diagnosticsPreview {
+                    Text(diagnosticsPreview.summary)
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(4)
+                        .frame(maxWidth: 620)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -3452,16 +3491,34 @@ private struct ProgramStatePanel: View {
 
 private struct ProgramErrorStrip: View {
     let message: String
+    var onRetry: (() -> Void)? = nil
+    var onCreateDiagnostics: (() -> Void)? = nil
 
     var body: some View {
-        Text(message)
-            .font(AppTypography.font(.supporting))
-            .foregroundStyle(ProgramBoardStyle.red)
-            .lineLimit(2)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ProgramCardBackground(cornerRadius: 12))
+        VStack(alignment: .leading, spacing: 6) {
+            Text(message)
+                .font(AppTypography.font(.supporting))
+                .foregroundStyle(ProgramBoardStyle.red)
+                .lineLimit(2)
+            if onRetry != nil || onCreateDiagnostics != nil {
+                HStack(spacing: 10) {
+                    if let onRetry {
+                        Button("Retry", action: onRetry)
+                            .buttonStyle(.plain)
+                    }
+                    if let onCreateDiagnostics {
+                        Button("Export diagnostics…", action: onCreateDiagnostics)
+                            .buttonStyle(.plain)
+                    }
+                }
+                .font(AppTypography.font(.caption))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ProgramCardBackground(cornerRadius: 12))
     }
 }
 

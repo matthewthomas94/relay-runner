@@ -60,6 +60,7 @@ from sidecar_lane import (
     create_sidecar_executor,
 )
 from speech_coordinator import SpeechCoordinator
+from support_diagnostics import record_event as record_support_event
 from tts_worker import TTS_CONTROL_SOCK, TTSWorker, publish_waiting_preview
 
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
@@ -2966,6 +2967,7 @@ def _run_relay(
     suppress_startup_greeting: bool = False,
     inbox: IntentInbox | None = None,
     sidecar_lane: SidecarLane | None = None,
+    on_ready=None,
 ):
     """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
     suppress_next_messenger_user_reply = suppress_startup_greeting
@@ -2987,7 +2989,7 @@ def _run_relay(
             pass
 
     if not ensure_fifo(TTS_IN_FIFO):
-        return
+        return False
 
     if inbox is not None:
         _start_intent_inbox_pump(inbox, shutdown_event)
@@ -3025,7 +3027,9 @@ def _run_relay(
 
     fifo_fd = open_fifo(VOICE_FIFO)
     if fifo_fd is None:
-        return
+        return False
+    if on_ready is not None:
+        on_ready()
 
     fifo_buf = b""
     try:
@@ -3241,6 +3245,19 @@ def _run_relay(
                 os.unlink(path)
             except OSError:
                 pass
+    return True
+
+
+def _record_bridge_readiness(outcome: str) -> None:
+    provider = os.environ.get("RELAY_RUNNER_PROVIDER")
+    if provider not in {"codex", "claude"}:
+        provider = None
+    record_support_event(
+        process="shell",
+        phase="bridge_readiness",
+        outcome=outcome,
+        provider=provider,
+    )
 
 
 def _write_cmd_file(text: str, path: str = VOICE_CMD_FILE):
@@ -3353,7 +3370,7 @@ def main():
             shutdown_event=shutdown_event,
         )
         try:
-            _run_relay(
+            bridge_completed = _run_relay(
                 tts_worker,
                 shutdown_event,
                 orchestrator_session=orchestrator_session,
@@ -3364,7 +3381,10 @@ def main():
                 ),
                 inbox=intent_inbox,
                 sidecar_lane=sidecar_lane,
+                on_ready=lambda: _record_bridge_readiness("ready"),
             )
+            if not bridge_completed:
+                raise RuntimeError("voice bridge initialization failed")
         finally:
             shutdown_event.set()
             sidecar_lane.shutdown()

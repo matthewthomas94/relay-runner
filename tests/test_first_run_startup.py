@@ -49,6 +49,48 @@ class FirstRunStartupTests(unittest.TestCase):
         self.assertIn("did not become healthy within the bounded startup window", result.stderr)
         self.assertIn("simulated daemon crash", result.stderr)
 
+    def test_orchestrator_run_exports_one_stable_correlation_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scripts = root / "scripts"
+            services = root / "services"
+            home = root / "home"
+            scripts.mkdir()
+            services.mkdir()
+            home.mkdir()
+            launcher = scripts / "relay-orchestrator"
+            shutil.copy2(ROOT / "scripts" / "relay-orchestrator", launcher)
+            self.write_executable(
+                scripts / "relay-bridge",
+                """#!/bin/bash
+set -e
+venv="$HOME/Library/Application Support/relay-runner/services/.venv/bin"
+mkdir -p "$venv"
+cat > "$venv/python" <<'PYTHON_EOF'
+#!/bin/bash
+printf '%s\n' "$RELAY_CORRELATION_ID"
+PYTHON_EOF
+chmod +x "$venv/python"
+""",
+            )
+            (services / "orchestrator.py").write_text("")
+            env = os.environ.copy()
+            env.pop("RELAY_CORRELATION_ID", None)
+            env.update({"HOME": str(home), "PATH": "/usr/bin:/bin"})
+
+            result = subprocess.run(
+                [str(launcher), "--run"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            correlation_ids = [line for line in result.stdout.splitlines() if line.startswith("orchestrator-")]
+            self.assertEqual(len(correlation_ids), 1)
+            self.assertRegex(correlation_ids[0], r"^orchestrator-[0-9]+-[0-9]+$")
+
     def run_launcher(self, *, stale_bootstrap: bool, healthy: bool) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

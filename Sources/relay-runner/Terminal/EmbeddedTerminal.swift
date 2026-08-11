@@ -66,6 +66,8 @@ final class EmbeddedTerminalSession {
     @ObservationIgnored private var process: EmbeddedTerminalProcess?
     @ObservationIgnored private var exitHandler: ((Int32?) -> Void)?
     @ObservationIgnored private var diagnostics: EmbeddedAgentDiagnostics?
+    @ObservationIgnored private var providerKey: String?
+    @ObservationIgnored private var supportCorrelationID: String?
 
     init(processFactory: @escaping ProcessFactory = { SwiftTermEmbeddedProcess() }) {
         self.processFactory = processFactory
@@ -90,6 +92,7 @@ final class EmbeddedTerminalSession {
     ) throws {
         guard !phase.isActive else { throw EmbeddedTerminalProcessError.alreadyRunning }
         self.providerName = providerName
+        self.providerKey = providerKey
         self.workingDirectory = workingDirectory
         terminalTitle = ""
         diagnostics = recordDiagnostics
@@ -103,6 +106,14 @@ final class EmbeddedTerminalSession {
 
     func start(_ launch: ProcessManager.PreparedSessionLaunch) throws {
         guard phase == .preparing else { throw EmbeddedTerminalProcessError.alreadyRunning }
+        supportCorrelationID = launch.diagnosticsCorrelationID
+        RelayDiagnostics.shared.record(
+            process: "provider",
+            phase: "provider_readiness",
+            outcome: "started",
+            correlationID: launch.diagnosticsCorrelationID,
+            provider: providerKey
+        )
 
         let next = processFactory()
         next.onTitle = { [weak self, weak next] title in
@@ -117,6 +128,13 @@ final class EmbeddedTerminalSession {
                       self.phase == .starting else { return }
                 self.diagnostics?.markInteractiveReady()
                 self.phase = .running
+                RelayDiagnostics.shared.record(
+                    process: "provider",
+                    phase: "provider_readiness",
+                    outcome: "ready",
+                    correlationID: self.supportCorrelationID ?? launch.diagnosticsCorrelationID,
+                    provider: self.providerKey
+                )
             }
             if Thread.isMainThread {
                 applyReady()
@@ -146,6 +164,15 @@ final class EmbeddedTerminalSession {
                         rawStatus: rawStatus,
                         bridgeSocketOutcome: bridgeOutcome
                     ))
+                    RelayDiagnostics.shared.record(
+                        process: "provider",
+                        phase: "provider_readiness",
+                        outcome: "failed",
+                        correlationID: self.supportCorrelationID ?? launch.diagnosticsCorrelationID,
+                        provider: self.providerKey,
+                        summary: "launcher exited before provider spawn",
+                        attributes: ["exit_code": exitCode.map(String.init) ?? "unknown"]
+                    )
                 } else if exitedBeforeReadiness {
                     self.diagnostics?.markExited(
                         rawStatus: rawStatus,
@@ -155,6 +182,15 @@ final class EmbeddedTerminalSession {
                         providerName: self.providerName,
                         rawStatus: rawStatus
                     ))
+                    RelayDiagnostics.shared.record(
+                        process: "provider",
+                        phase: "provider_readiness",
+                        outcome: "failed",
+                        correlationID: self.supportCorrelationID ?? launch.diagnosticsCorrelationID,
+                        provider: self.providerKey,
+                        summary: "provider exited before interactive readiness",
+                        attributes: ["exit_code": exitCode.map(String.init) ?? "unknown"]
+                    )
                 } else {
                     self.diagnostics?.markExited(
                         rawStatus: rawStatus,
@@ -187,6 +223,15 @@ final class EmbeddedTerminalSession {
             next.onTitle = nil
             next.terminate()
             diagnostics?.markSetupFailed(message: error.localizedDescription)
+            RelayDiagnostics.shared.record(
+                process: "provider",
+                phase: "provider_readiness",
+                outcome: "failed",
+                correlationID: supportCorrelationID ?? launch.diagnosticsCorrelationID,
+                provider: providerKey,
+                summary: error.localizedDescription,
+                attributes: ["error_code": "process_start_failed"]
+            )
             phase = .failed(error.localizedDescription)
             throw error
         }
@@ -2252,7 +2297,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         localProcess.startProcess(
             executable: launch.executable,
             args: launch.arguments,
-            environment: Self.terminalEnvironment(),
+            environment: Self.terminalEnvironment(correlationID: launch.diagnosticsCorrelationID),
             currentDirectory: launch.workingDirectory
         )
         guard localProcess.running else { throw EmbeddedTerminalProcessError.couldNotStart }
@@ -2385,10 +2430,12 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         }
     }
 
-    private static func terminalEnvironment() -> [String] {
+    private static func terminalEnvironment(correlationID: String) -> [String] {
         var environment = ProcessInfo.processInfo.environment
         environment["TERM"] = "xterm-256color"
         environment["COLORTERM"] = "truecolor"
+        environment["RELAY_APP_SESSION_ID"] = RelayDiagnostics.shared.appSessionID
+        environment["RELAY_CORRELATION_ID"] = correlationID
         return environment.map { "\($0.key)=\($0.value)" }
     }
 }

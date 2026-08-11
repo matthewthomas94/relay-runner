@@ -154,6 +154,7 @@ jobs:
           path: |
             dist/RelayRunner.dmg
             dist/RelayRunner.zip
+            dist/RelayRunner-dSYMs.zip
           if-no-files-found: error
 
       - name: Generate Sparkle appcast

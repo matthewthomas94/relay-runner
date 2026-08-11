@@ -42,7 +42,10 @@ class SkillCleanupTests(unittest.TestCase):
     def test_relay_orchestrator_health_wait_covers_cold_launch(self):
         script = (ROOT / "scripts" / "relay-orchestrator").read_text()
 
-        self.assertIn('HEALTH_WAIT_ATTEMPTS=100', script)
+        self.assertIn(
+            'HEALTH_WAIT_ATTEMPTS="${RELAY_ORCHESTRATOR_HEALTH_WAIT_ATTEMPTS:-100}"',
+            script,
+        )
         self.assertIn('for _ in $(seq 1 "$HEALTH_WAIT_ATTEMPTS"); do', script)
         self.assertIn('sleep 0.2', script)
 
@@ -63,6 +66,14 @@ class SkillCleanupTests(unittest.TestCase):
         self.assertIn('[relay-bridge] Voice bridge ready.', script)
         self.assertIn("nonblocking app-managed transport", script)
         self.assertIn("bridge startup, heartbeat, and PTY delivery", script)
+
+    def test_manual_bridge_records_ready_only_from_python_and_records_launch_failure(self):
+        script = (ROOT / "scripts" / "relay-bridge").read_text()
+        launch = script.split("# -- Start voice bridge --", 1)[1]
+
+        self.assertNotIn("record_support_event shell bridge_readiness ready", launch)
+        self.assertIn('if "$PYTHON" "$SERVICES_BUNDLE/voice_bridge.py"', launch)
+        self.assertIn("record_support_event shell bridge_readiness failed", launch)
 
     def test_shell_installers_prefer_chatgpt_codex_before_legacy_app(self):
         chatgpt = "/Applications/ChatGPT.app/Contents/Resources/codex"

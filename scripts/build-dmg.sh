@@ -75,7 +75,11 @@ submit_notarization() {
 }
 
 echo "==> Building ($CONFIG)..."
-swift build -c "$CONFIG"
+if [ "$CONFIG" = "release" ]; then
+    swift build -c "$CONFIG" -Xswiftc -g
+else
+    swift build -c "$CONFIG"
+fi
 
 echo "==> Creating app bundle..."
 remove_tree "$APP_DIR"
@@ -118,6 +122,27 @@ cp "$BUILD_DIR/relay-vision-mcp" "$APP_DIR/Contents/MacOS/relay-vision-mcp"
 # Python script, but the MCP proxy is the Swift binary registered with the
 # provider CLIs.
 cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"
+
+# Retain private symbols for every shipped Swift executable. The UUID check is
+# the release contract: a dSYM is useful only when its DWARF UUID exactly
+# matches the packaged Mach-O. Symbols are uploaded as a private CI artifact,
+# never added to the public Sparkle release.
+DSYM_DIR="$DIST_DIR/dSYMs"
+remove_tree "$DSYM_DIR"
+mkdir -p "$DSYM_DIR"
+for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-orchestrator-mcp; do
+    binary_path="$APP_DIR/Contents/MacOS/$binary"
+    dsym_path="$DSYM_DIR/$binary.dSYM"
+    xcrun dsymutil "$binary_path" -o "$dsym_path"
+    binary_uuids="$(xcrun dwarfdump --uuid "$binary_path" | awk '{print $2}' | sort)"
+    dsym_uuids="$(xcrun dwarfdump --uuid "$dsym_path" | awk '{print $2}' | sort)"
+    if [ -z "$binary_uuids" ] || [ "$binary_uuids" != "$dsym_uuids" ]; then
+        echo "error: dSYM UUID mismatch for $binary" >&2
+        exit 1
+    fi
+done
+rm -f "$DIST_DIR/RelayRunner-dSYMs.zip"
+ditto -c -k --keepParent "$DSYM_DIR" "$DIST_DIR/RelayRunner-dSYMs.zip"
 
 # App icon: compile AppIcon.iconset into AppIcon.icns via macOS iconutil.
 ICONSET_SRC="$PROJECT_ROOT/assets/AppIcon.iconset"
@@ -211,7 +236,7 @@ for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py co
          artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py \
          artifact_verification.py artifact_verification_cli.py fresh_install.py fresh_install_cli.py \
          followup_tickets.py graphify_core.py graphify_ingest.py orchestrator.py orchestrator_artifact_workflow.md orchestrator_workflow.md \
-         program_artifacts.py program_status.py requirements.txt session_capture.py tickets.py; do
+         program_artifacts.py program_status.py requirements.txt session_capture.py support_diagnostics.py tickets.py; do
     cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"
 done
 find "$APP_DIR/Contents/SharedSupport/services" -name "__pycache__" -type d -prune -exec rm -rf {} +

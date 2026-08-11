@@ -1386,6 +1386,9 @@ final class ProgramBoardViewModel {
     var projectPaths: [String] = []
     var reloadState: ProgramBoardReloadState = .idle
     var errorMessage: String?
+    private(set) var workspaceIncidentID: String?
+    private(set) var workspaceRetryAttempt = 0
+    private(set) var supportBundlePreview: RelaySupportBundlePreview?
     var theme: ParticleFieldRenderer.Theme?
     var hasActiveSession = false
     var selectedProjectPath: String?
@@ -1404,14 +1407,16 @@ final class ProgramBoardViewModel {
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
     @ObservationIgnored private var reloadInFlight = false
     @ObservationIgnored private var fetchDashboard: ([String]) async throws -> ProgramDashboardSnapshot
+    @ObservationIgnored private let diagnostics: RelayDiagnostics
 
     init(fetchDashboard: @escaping ([String]) async throws -> ProgramDashboardSnapshot = { repoPaths in
         if ProjectRegistryV2Rollout.isEnabled(), repoPaths.isEmpty {
             return .empty()
         }
         return try await OrchestratorClient.fetchProgramDashboard(repoPaths: repoPaths)
-    }) {
+    }, diagnostics: RelayDiagnostics = .shared) {
         self.fetchDashboard = fetchDashboard
+        self.diagnostics = diagnostics
     }
 
     convenience init(fetchDashboard: @escaping () async throws -> ProgramDashboardSnapshot) {
@@ -1426,6 +1431,7 @@ final class ProgramBoardViewModel {
         cancelReload()
         reloadState = .idle
         errorMessage = nil
+        supportBundlePreview = nil
         selectedTicketDetail = nil
         spikeFollowupBatch = nil
         creating = nil
@@ -1465,6 +1471,7 @@ final class ProgramBoardViewModel {
     @discardableResult
     func reload() -> Task<Void, Never> {
         cancelReload()
+        let attempt = beginWorkspaceAttempt()
         reloadInFlight = true
         reloadState = .loading
         errorMessage = nil
@@ -1474,11 +1481,11 @@ final class ProgramBoardViewModel {
             do {
                 let snapshot = try await fetchDashboard(projectPaths)
                 guard !Task.isCancelled else { return }
-                await self?.finishReload(snapshot: snapshot)
+                await self?.finishReload(snapshot: snapshot, attempt: attempt)
             } catch {
                 guard !Task.isCancelled else { return }
                 let message = Self.reloadErrorMessage(for: error)
-                await self?.finishReload(errorMessage: message)
+                await self?.finishReload(errorMessage: message, attempt: attempt)
             }
         }
         reloadTask = task
@@ -1488,6 +1495,7 @@ final class ProgramBoardViewModel {
     @discardableResult
     func refreshInBackground() -> Task<Void, Never> {
         cancelReload()
+        let attempt = beginWorkspaceAttempt()
         reloadInFlight = true
         errorMessage = nil
         let fetchDashboard = fetchDashboard
@@ -1496,11 +1504,11 @@ final class ProgramBoardViewModel {
             do {
                 let snapshot = try await fetchDashboard(projectPaths)
                 guard !Task.isCancelled else { return }
-                await self?.finishReload(snapshot: snapshot)
+                await self?.finishReload(snapshot: snapshot, attempt: attempt)
             } catch {
                 guard !Task.isCancelled else { return }
                 let message = Self.reloadErrorMessage(for: error)
-                await self?.finishReload(errorMessage: message)
+                await self?.finishReload(errorMessage: message, attempt: attempt)
             }
         }
         reloadTask = task
@@ -1515,6 +1523,24 @@ final class ProgramBoardViewModel {
             )
         }
         return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+
+    private func beginWorkspaceAttempt() -> (incidentID: String, attempt: Int, correlationID: String) {
+        let incidentID = workspaceIncidentID ?? RelayDiagnostics.makeIncidentID()
+        let attempt = workspaceIncidentID == nil ? 1 : workspaceRetryAttempt + 1
+        let correlationID = UUID().uuidString.lowercased()
+        workspaceIncidentID = incidentID
+        workspaceRetryAttempt = attempt
+        supportBundlePreview = nil
+        diagnostics.record(
+            process: "app",
+            phase: "workspace_readiness",
+            outcome: "started",
+            incidentID: incidentID,
+            retryAttempt: attempt,
+            correlationID: correlationID
+        )
+        return (incidentID, attempt, correlationID)
     }
 
     var isAllSelected: Bool {
@@ -1746,7 +1772,10 @@ final class ProgramBoardViewModel {
     }
 
     @MainActor
-    private func finishReload(snapshot: ProgramDashboardSnapshot) {
+    private func finishReload(
+        snapshot: ProgramDashboardSnapshot,
+        attempt: (incidentID: String, attempt: Int, correlationID: String)
+    ) {
         self.snapshot = snapshot
         if let selectedProjectPath, !snapshot.containsProject(path: selectedProjectPath) {
             self.selectedProjectPath = nil
@@ -1768,14 +1797,39 @@ final class ProgramBoardViewModel {
         reloadState = .succeeded
         reloadTask = nil
         reloadInFlight = false
+        diagnostics.record(
+            process: "app",
+            phase: "workspace_readiness",
+            outcome: "ready",
+            incidentID: attempt.incidentID,
+            retryAttempt: attempt.attempt,
+            correlationID: attempt.correlationID
+        )
+        workspaceIncidentID = nil
+        workspaceRetryAttempt = 0
+        supportBundlePreview = nil
     }
 
     @MainActor
-    private func finishReload(errorMessage: String) {
-        self.errorMessage = errorMessage
-        reloadState = .failed(errorMessage)
+    private func finishReload(
+        errorMessage: String,
+        attempt: (incidentID: String, attempt: Int, correlationID: String)
+    ) {
+        let displayedMessage = "\(errorMessage) Incident \(attempt.incidentID)."
+        self.errorMessage = displayedMessage
+        reloadState = .failed(displayedMessage)
         reloadTask = nil
         reloadInFlight = false
+        diagnostics.record(
+            process: "app",
+            phase: "workspace_readiness",
+            outcome: "failed",
+            incidentID: attempt.incidentID,
+            retryAttempt: attempt.attempt,
+            correlationID: attempt.correlationID,
+            summary: errorMessage
+        )
+        supportBundlePreview = diagnostics.preview()
     }
 }
 

@@ -57,13 +57,141 @@ LEGACY_CODEX_PM_SYNC_DIR="$CODEX_SKILLS_DIR/pm-sync"
 
 # -- Common helpers --
 
+support_file_mtime() {
+    stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || echo 0
+}
+
+support_file_size() {
+    stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null || echo 0
+}
+
+support_safe_id() {
+    [ "${#1}" -le 64 ] && [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+        || "$1" =~ ^inc-[0-9a-f]{12}$ \
+        || "$1" =~ ^(shell|orchestrator)-[0-9]{10,}-[0-9]+$ ]]
+}
+
+acquire_support_journal_lock() {
+    local directory="$1"
+    local lock="$directory/.journal.lock"
+    local attempts=0 now mtime stale
+    while ! mkdir "$lock" 2>/dev/null; do
+        now="$(date +%s)"
+        mtime="$(support_file_mtime "$lock")"
+        if [ "$mtime" -gt 0 ] && [ $((now - mtime)) -ge 30 ]; then
+            stale="$directory/.journal.lock.stale-$$-$attempts"
+            if mv "$lock" "$stale" 2>/dev/null; then
+                rm -rf "$stale"
+                continue
+            fi
+        fi
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 100 ] || return 1
+        sleep 0.05
+    done
+}
+
+release_support_journal_lock() {
+    rm -rf "$1/.journal.lock"
+}
+
+prune_support_journals() {
+    local directory="$1"
+    local cutoff file mtime size total oldest oldest_mtime
+    cutoff=$(($(date +%s) - 604800))
+    for file in "$directory"/events-v1-*.jsonl; do
+        [ -f "$file" ] || continue
+        mtime="$(support_file_mtime "$file")"
+        if [ "$mtime" -lt "$cutoff" ]; then
+            rm -f "$file"
+        fi
+    done
+
+    total=0
+    for file in "$directory"/events-v1-*.jsonl; do
+        [ -f "$file" ] || continue
+        size="$(support_file_size "$file")"
+        total=$((total + size))
+    done
+    while [ "$total" -gt 5242880 ]; do
+        oldest=""
+        oldest_mtime=""
+        for file in "$directory"/events-v1-*.jsonl; do
+            [ -f "$file" ] || continue
+            mtime="$(support_file_mtime "$file")"
+            if [ -z "$oldest" ] || [ "$mtime" -lt "$oldest_mtime" ] \
+                || { [ "$mtime" -eq "$oldest_mtime" ] && [[ "$file" < "$oldest" ]]; }; then
+                oldest="$file"
+                oldest_mtime="$mtime"
+            fi
+        done
+        [ -n "$oldest" ] || break
+        size="$(support_file_size "$oldest")"
+        rm -f "$oldest"
+        total=$((total - size))
+    done
+}
+
+record_support_event() {
+    local process="$1"
+    local phase="$2"
+    local outcome="$3"
+    local provider="${4:-}"
+    local directory="${RELAY_DIAGNOSTICS_DIR:-$USER_DATA_DIR/support-diagnostics/v1}"
+    local app_session correlation provider_json incident_json retry_json raw_id redaction_count=0
+    case "$process:$phase:$outcome" in
+        shell:setup:started|shell:setup:ready|shell:setup:failed) ;;
+        *) return 0 ;;
+    esac
+    raw_id="${RELAY_APP_SESSION_ID:-shell-$(date +%s)-$$}"
+    if support_safe_id "$raw_id"; then app_session="$raw_id"; else app_session="redacted-id"; redaction_count=$((redaction_count + 1)); fi
+    raw_id="${RELAY_CORRELATION_ID:-shell-$(date +%s)-$$}"
+    if support_safe_id "$raw_id"; then correlation="$raw_id"; else correlation="redacted-id"; redaction_count=$((redaction_count + 1)); fi
+    case "$provider" in
+        codex|claude) provider_json="\"$provider\"" ;;
+        *) provider_json="null"; [ -z "$provider" ] || redaction_count=$((redaction_count + 1)) ;;
+    esac
+    incident_json="null"
+    if [ -n "${RELAY_INCIDENT_ID:-}" ]; then
+        if support_safe_id "$RELAY_INCIDENT_ID"; then
+            incident_json="\"$RELAY_INCIDENT_ID\""
+        else
+            incident_json='"redacted-id"'
+            redaction_count=$((redaction_count + 1))
+        fi
+    fi
+    case "${RELAY_RETRY_ATTEMPT:-}" in
+        ''|0) retry_json="null" ;;
+        *[!0-9]*) retry_json="null"; redaction_count=$((redaction_count + 1)) ;;
+        *) retry_json="$RELAY_RETRY_ATTEMPT" ;;
+    esac
+    mkdir -p "$directory" 2>/dev/null || return 0
+    chmod 700 "$directory" 2>/dev/null || true
+    acquire_support_journal_lock "$directory" || return 0
+    printf '{"app_session_id":"%s","attributes":{},"correlation_id":"%s","incident_id":%s,"outcome":"%s","phase":"%s","process":"%s","provider":%s,"redaction_count":%s,"retry_attempt":%s,"schema_version":1,"summary":null,"timestamp":"%s"}\n' \
+        "$app_session" "$correlation" "$incident_json" "$outcome" "$phase" "$process" "$provider_json" "$redaction_count" "$retry_json" \
+        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        >> "$directory/events-v1-$process-$$.jsonl" 2>/dev/null || true
+    chmod 600 "$directory/events-v1-$process-$$.jsonl" 2>/dev/null || true
+    prune_support_journals "$directory"
+    release_support_journal_lock "$directory"
+}
+
+ensure_support_correlation() {
+    if [ -z "${RELAY_CORRELATION_ID:-}" ]; then
+        RELAY_CORRELATION_ID="orchestrator-$(date +%s)-$$"
+    fi
+    support_safe_id "$RELAY_CORRELATION_ID" || RELAY_CORRELATION_ID="redacted-id"
+    export RELAY_CORRELATION_ID
+}
+
 ensure_venv() {
     # Delegate venv bootstrap to relay-bridge. It's already battle-tested for the
     # same Python deps; --venv-only short-circuits before voice features start.
     "$SCRIPT_DIR/relay-bridge" --venv-only
     if [ ! -x "$VENV_PYTHON" ]; then
         echo "[relay-orchestrator] venv bootstrap failed — see relay-bridge output." >&2
-        exit 1
+        return 1
     fi
 }
 
@@ -552,13 +680,19 @@ cmd_status() {
 }
 
 cmd_run() {
+    ensure_support_correlation
     ensure_venv
     mkdir -p "$ORCH_DIR"
     exec "$VENV_PYTHON" "$PROJECT_ROOT/services/orchestrator.py" "$@"
 }
 
 cmd_install() {
-    ensure_venv
+    ensure_support_correlation
+    record_support_event shell setup started
+    if ! ensure_venv; then
+        record_support_event shell setup failed
+        return 1
+    fi
     install_skills if-missing
     register_mcp
     write_plist
@@ -569,8 +703,10 @@ cmd_install() {
     if [ "$restart_rc" -eq 75 ]; then
         echo "[relay-orchestrator] install complete; daemon restart deferred until active workers finish."
     elif [ "$restart_rc" -ne 0 ]; then
+        record_support_event shell setup failed
         return "$restart_rc"
     fi
+    record_support_event shell setup ready
     echo
     echo "[relay-orchestrator] install complete. Try:"
     echo "    relay-orchestrator --status"
