@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
@@ -21,6 +23,15 @@ ALLOWED_ATTRIBUTE_KEYS = frozenset({
     "build", "error_code", "exit_code", "launch_mode", "payload_count", "transport", "version",
 })
 _IDENTIFIER = re.compile(r"^[a-z0-9_]{1,64}$")
+_SAFE_IDS = (
+    re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+    re.compile(r"^inc-[0-9a-f]{12}$"),
+    re.compile(r"^(?:shell|orchestrator)-[0-9]{10,}-[0-9]+$"),
+)
+_REDACTED_ID = "redacted-id"
+_LOCK_NAME = ".journal.lock"
+_LOCK_WAIT_SECONDS = 5.0
+_LOCK_STALE_SECONDS = 30.0
 _REDACTIONS = (
     (re.compile(r"(?i)\b(authorization|token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,;]+"), r"\1=[REDACTED]"),
     (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+"), r"\1 [REDACTED]"),
@@ -31,9 +42,10 @@ _REDACTIONS = (
 _APP_SESSION_ID = os.environ.get("RELAY_APP_SESSION_ID") or str(uuid.uuid4())
 
 
-def _safe_id(value: str) -> str:
-    safe = "".join(character for character in value.lower() if character.isalnum() or character == "-")
-    return (safe or str(uuid.uuid4()))[:64]
+def _safe_id(value: str) -> tuple[str, int]:
+    if len(value) <= 64 and any(pattern.fullmatch(value) for pattern in _SAFE_IDS):
+        return value, 0
+    return _REDACTED_ID, 1
 
 
 def redact(value: str, *, limit: int = 300) -> tuple[str, int]:
@@ -85,13 +97,24 @@ def record_event(
         safe_attributes[key], count = redact(str(value), limit=120)
         redaction_count += count
 
+    safe_app_session_id, count = _safe_id(_APP_SESSION_ID)
+    redaction_count += count
+    safe_incident_id = None
+    if incident_id is not None:
+        safe_incident_id, count = _safe_id(incident_id)
+        redaction_count += count
+    safe_correlation_id, count = _safe_id(
+        correlation_id or os.environ.get("RELAY_CORRELATION_ID") or str(uuid.uuid4())
+    )
+    redaction_count += count
+
     event: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "app_session_id": _safe_id(_APP_SESSION_ID),
-        "incident_id": _safe_id(incident_id) if incident_id else None,
+        "app_session_id": safe_app_session_id,
+        "incident_id": safe_incident_id,
         "retry_attempt": retry_attempt,
-        "correlation_id": _safe_id(correlation_id or os.environ.get("RELAY_CORRELATION_ID") or str(uuid.uuid4())),
+        "correlation_id": safe_correlation_id,
         "process": process,
         "phase": phase,
         "outcome": outcome,
@@ -109,18 +132,46 @@ def _append(event: Mapping[str, object]) -> None:
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         directory.chmod(0o700)
-        _prune(directory)
-        path = directory / f"events-v1-{event['process']}-{os.getpid()}.jsonl"
-        payload = (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        try:
-            os.write(descriptor, payload)
-        finally:
-            os.close(descriptor)
-        path.chmod(0o600)
+        with _journal_lock(directory):
+            path = directory / f"events-v1-{event['process']}-{os.getpid()}.jsonl"
+            payload = (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(descriptor, payload)
+            finally:
+                os.close(descriptor)
+            path.chmod(0o600)
+            _prune(directory)
     except OSError:
         # Diagnostics must never prevent an offline/local service from starting.
         return
+
+
+@contextmanager
+def _journal_lock(directory: Path):
+    """Use the shared mkdir lock: 5s bounded wait, 30s stale recovery."""
+    lock = directory / _LOCK_NAME
+    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    while True:
+        try:
+            lock.mkdir(mode=0o700)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime >= _LOCK_STALE_SECONDS:
+                    stale = directory / f"{_LOCK_NAME}.stale-{os.getpid()}-{uuid.uuid4().hex}"
+                    lock.rename(stale)
+                    shutil.rmtree(stale, ignore_errors=True)
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError("support journal lock timed out")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        shutil.rmtree(lock, ignore_errors=True)
 
 
 def _prune(directory: Path) -> None:

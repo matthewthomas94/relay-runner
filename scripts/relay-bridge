@@ -123,6 +123,36 @@ support_file_size() {
     stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null || echo 0
 }
 
+support_safe_id() {
+    [ "${#1}" -le 64 ] && [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+        || "$1" =~ ^inc-[0-9a-f]{12}$ \
+        || "$1" =~ ^(shell|orchestrator)-[0-9]{10,}-[0-9]+$ ]]
+}
+
+acquire_support_journal_lock() {
+    local directory="$1"
+    local lock="$directory/.journal.lock"
+    local attempts=0 now mtime stale
+    while ! mkdir "$lock" 2>/dev/null; do
+        now="$(date +%s)"
+        mtime="$(support_file_mtime "$lock")"
+        if [ "$mtime" -gt 0 ] && [ $((now - mtime)) -ge 30 ]; then
+            stale="$directory/.journal.lock.stale-$$-$attempts"
+            if mv "$lock" "$stale" 2>/dev/null; then
+                rm -rf "$stale"
+                continue
+            fi
+        fi
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 100 ] || return 1
+        sleep 0.05
+    done
+}
+
+release_support_journal_lock() {
+    rm -rf "$1/.journal.lock"
+}
+
 prune_support_journals() {
     local directory="$1"
     local cutoff file mtime size total oldest oldest_mtime
@@ -166,33 +196,43 @@ record_support_event() {
     local outcome="$3"
     local provider="${4:-${RELAY_RUNNER_PROVIDER:-}}"
     local directory="${RELAY_DIAGNOSTICS_DIR:-$HOME/Library/Application Support/relay-runner/support-diagnostics/v1}"
-    local app_session correlation provider_json incident_json retry_json
+    local app_session correlation provider_json incident_json retry_json raw_id redaction_count=0
     case "$process:$phase:$outcome" in
         shell:setup:started|shell:setup:ready|shell:setup:failed|shell:bridge_readiness:started|shell:bridge_readiness:ready|shell:bridge_readiness:failed) ;;
         *) return 0 ;;
     esac
-    app_session="$(printf '%s' "${RELAY_APP_SESSION_ID:-shell-$(date +%s)-$$}" | tr -cd '[:alnum:]-' | cut -c1-64)"
-    correlation="$(printf '%s' "${RELAY_CORRELATION_ID:-shell-$(date +%s)-$$}" | tr -cd '[:alnum:]-' | cut -c1-64)"
+    raw_id="${RELAY_APP_SESSION_ID:-shell-$(date +%s)-$$}"
+    if support_safe_id "$raw_id"; then app_session="$raw_id"; else app_session="redacted-id"; redaction_count=$((redaction_count + 1)); fi
+    raw_id="${RELAY_CORRELATION_ID:-shell-$(date +%s)-$$}"
+    if support_safe_id "$raw_id"; then correlation="$raw_id"; else correlation="redacted-id"; redaction_count=$((redaction_count + 1)); fi
     case "$provider" in
         codex|claude) provider_json="\"$provider\"" ;;
-        *) provider_json="null" ;;
+        *) provider_json="null"; [ -z "$provider" ] || redaction_count=$((redaction_count + 1)) ;;
     esac
     incident_json="null"
     if [ -n "${RELAY_INCIDENT_ID:-}" ]; then
-        incident_json="\"$(printf '%s' "$RELAY_INCIDENT_ID" | tr -cd '[:alnum:]-' | cut -c1-64)\""
+        if support_safe_id "$RELAY_INCIDENT_ID"; then
+            incident_json="\"$RELAY_INCIDENT_ID\""
+        else
+            incident_json='"redacted-id"'
+            redaction_count=$((redaction_count + 1))
+        fi
     fi
     case "${RELAY_RETRY_ATTEMPT:-}" in
-        ''|*[!0-9]*) retry_json="null" ;;
+        ''|0) retry_json="null" ;;
+        *[!0-9]*) retry_json="null"; redaction_count=$((redaction_count + 1)) ;;
         *) retry_json="$RELAY_RETRY_ATTEMPT" ;;
     esac
     mkdir -p "$directory" 2>/dev/null || return 0
     chmod 700 "$directory" 2>/dev/null || true
-    printf '{"app_session_id":"%s","attributes":{},"correlation_id":"%s","incident_id":%s,"outcome":"%s","phase":"%s","process":"%s","provider":%s,"redaction_count":0,"retry_attempt":%s,"schema_version":1,"summary":null,"timestamp":"%s"}\n' \
-        "$app_session" "$correlation" "$incident_json" "$outcome" "$phase" "$process" "$provider_json" "$retry_json" \
+    acquire_support_journal_lock "$directory" || return 0
+    printf '{"app_session_id":"%s","attributes":{},"correlation_id":"%s","incident_id":%s,"outcome":"%s","phase":"%s","process":"%s","provider":%s,"redaction_count":%s,"retry_attempt":%s,"schema_version":1,"summary":null,"timestamp":"%s"}\n' \
+        "$app_session" "$correlation" "$incident_json" "$outcome" "$phase" "$process" "$provider_json" "$redaction_count" "$retry_json" \
         "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
         >> "$directory/events-v1-$process-$$.jsonl" 2>/dev/null || true
     chmod 600 "$directory/events-v1-$process-$$.jsonl" 2>/dev/null || true
     prune_support_journals "$directory"
+    release_support_journal_lock "$directory"
 }
 
 cleanup_bridge_runtime_files() {
@@ -1003,6 +1043,10 @@ start_voice_bridge_daemon() {
     local relay_bridge="$SCRIPT_DIR/relay-bridge"
     local relay_provider="${RELAY_RUNNER_PROVIDER:-}"
     local relay_provider_session_id="${RELAY_PROVIDER_SESSION_ID:-}"
+    local relay_app_session_id="${RELAY_APP_SESSION_ID:-}"
+    local relay_incident_id="${RELAY_INCIDENT_ID:-}"
+    local relay_retry_attempt="${RELAY_RETRY_ATTEMPT:-}"
+    local relay_correlation_id="${RELAY_CORRELATION_ID:-}"
     local relay_startup_flag=""
     local voice_bridge_log
     if $SUPPRESS_STARTUP_GREETING; then
@@ -1018,7 +1062,7 @@ start_voice_bridge_daemon() {
     launchctl remove com.relay.voicebridge 2>/dev/null || true
     echo "[relay-bridge] launching via launchctl provider=${relay_provider:-none} cwd=$relay_cwd bridge=$relay_bridge" >> "$voice_bridge_log"
     set +e
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$6" ]; then export RELAY_PROVIDER_SESSION_ID="$6"; else unset RELAY_PROVIDER_SESSION_ID; fi; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" "$relay_provider_session_id" >> "$voice_bridge_log" 2>&1
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$6" ]; then export RELAY_PROVIDER_SESSION_ID="$6"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$7" ]; then export RELAY_APP_SESSION_ID="$7"; else unset RELAY_APP_SESSION_ID; fi; if [ -n "$8" ]; then export RELAY_INCIDENT_ID="$8"; else unset RELAY_INCIDENT_ID; fi; if [ -n "$9" ]; then export RELAY_RETRY_ATTEMPT="$9"; else unset RELAY_RETRY_ATTEMPT; fi; if [ -n "${10}" ]; then export RELAY_CORRELATION_ID="${10}"; else unset RELAY_CORRELATION_ID; fi; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" "$relay_provider_session_id" "$relay_app_session_id" "$relay_incident_id" "$relay_retry_attempt" "$relay_correlation_id" >> "$voice_bridge_log" 2>&1
     local submit_status=$?
     set -e
     if [ "$submit_status" -eq 0 ]; then
@@ -1051,7 +1095,7 @@ start_voice_bridge_daemon() {
     [ "$print_status" -eq 0 ] || echo "[relay-bridge] launchctl print exit_status=$print_status" >> "$voice_bridge_log"
     echo "[relay-bridge] falling back to direct background launch." >> "$voice_bridge_log"
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$6" ]; then export RELAY_PROVIDER_SESSION_ID="$6"; else unset RELAY_PROVIDER_SESSION_ID; fi; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" "$relay_provider_session_id" >> "$voice_bridge_log" 2>&1 &
+    nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$6" ]; then export RELAY_PROVIDER_SESSION_ID="$6"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$7" ]; then export RELAY_APP_SESSION_ID="$7"; else unset RELAY_APP_SESSION_ID; fi; if [ -n "$8" ]; then export RELAY_INCIDENT_ID="$8"; else unset RELAY_INCIDENT_ID; fi; if [ -n "$9" ]; then export RELAY_RETRY_ATTEMPT="$9"; else unset RELAY_RETRY_ATTEMPT; fi; if [ -n "${10}" ]; then export RELAY_CORRELATION_ID="${10}"; else unset RELAY_CORRELATION_ID; fi; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" "$relay_provider_session_id" "$relay_app_session_id" "$relay_incident_id" "$relay_retry_attempt" "$relay_correlation_id" >> "$voice_bridge_log" 2>&1 &
     local fallback_pid=$!
     echo "[relay-bridge] direct fallback launched pid=$fallback_pid provider=${relay_provider:-none}" >> "$voice_bridge_log"
     for i in $(seq 1 20); do

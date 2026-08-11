@@ -97,6 +97,8 @@ final class RelayDiagnostics {
     static let shared = RelayDiagnostics()
     static let retentionDays = 7
     static let maximumBytes = 5 * 1_024 * 1_024
+    static let lockWaitSeconds = 5.0
+    static let lockStaleSeconds = 30.0
     static let allowedProcesses = Set(["app", "setup", "shell", "orchestrator", "provider"])
     static let allowedProviders = Set(["codex", "claude"])
     static let allowedAttributeKeys = Set([
@@ -165,6 +167,12 @@ final class RelayDiagnostics {
         }
 
         var redactionCount = 0
+        let safeAppSessionID = Self.safeID(appSessionID)
+        redactionCount += safeAppSessionID.count
+        let safeIncidentID = incidentID.map(Self.safeID)
+        redactionCount += safeIncidentID?.count ?? 0
+        let safeCorrelationID = Self.safeID(correlationID)
+        redactionCount += safeCorrelationID.count
         let safeSummary = summary.map {
             let result = RelayDiagnosticRedactor.redact($0)
             redactionCount += result.count
@@ -179,10 +187,10 @@ final class RelayDiagnostics {
         let event = RelayDiagnosticEvent(
             schemaVersion: RelayDiagnosticEvent.schemaVersion,
             timestamp: Self.timestamp(now()),
-            appSessionID: Self.safeID(appSessionID),
-            incidentID: incidentID.map(Self.safeID),
+            appSessionID: safeAppSessionID.value,
+            incidentID: safeIncidentID?.value,
             retryAttempt: retryAttempt,
-            correlationID: Self.safeID(correlationID),
+            correlationID: safeCorrelationID.value,
             process: process,
             phase: phase,
             outcome: outcome,
@@ -215,43 +223,60 @@ final class RelayDiagnostics {
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
-            try pruneLocked()
-            let url = journalURL(process: event.process)
-            let data = try encoder.encode(event) + Data([0x0a])
-            if !fileManager.fileExists(atPath: url.path) {
-                fileManager.createFile(
-                    atPath: url.path,
-                    contents: nil,
-                    attributes: [.posixPermissions: 0o600]
-                )
+            try withJournalLock {
+                let url = journalURL(process: event.process)
+                let data = try encoder.encode(event) + Data([0x0a])
+                if !fileManager.fileExists(atPath: url.path) {
+                    fileManager.createFile(
+                        atPath: url.path,
+                        contents: nil,
+                        attributes: [.posixPermissions: 0o600]
+                    )
+                }
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try pruneLocked()
             }
-            let handle = try FileHandle(forWritingTo: url)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
         } catch {
             logger.error("local journal write failed error=\(error.localizedDescription, privacy: .private(mask: .hash))")
         }
     }
 
     private func previewLocked() -> RelaySupportBundlePreview {
-        try? pruneLocked()
-        let events = loadEventsLocked()
-        return RelaySupportBundlePreview(
-            eventCount: events.count,
-            sourceFileCount: journalURLs().count,
-            redactionCount: events.reduce(0) { $0 + $1.redactionCount }
-        )
+        (try? fileManager.createDirectory(
+            at: journalDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        ))
+        return (try? withJournalLock {
+            try pruneLocked()
+            let events = loadEventsLocked()
+            return RelaySupportBundlePreview(
+                eventCount: events.count,
+                sourceFileCount: journalURLs().count,
+                redactionCount: events.reduce(0) { $0 + $1.redactionCount }
+            )
+        }) ?? RelaySupportBundlePreview(eventCount: 0, sourceFileCount: 0, redactionCount: 0)
     }
 
     private func createSupportBundleLocked(at destination: URL) throws {
-        try pruneLocked()
-        let events = loadEventsLocked()
-        let preview = RelaySupportBundlePreview(
-            eventCount: events.count,
-            sourceFileCount: journalURLs().count,
-            redactionCount: events.reduce(0) { $0 + $1.redactionCount }
+        try fileManager.createDirectory(
+            at: journalDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
         )
+        let snapshot = try withJournalLock { () -> ([RelayDiagnosticEvent], RelaySupportBundlePreview) in
+            try pruneLocked()
+            let events = loadEventsLocked()
+            return (events, RelaySupportBundlePreview(
+                eventCount: events.count,
+                sourceFileCount: journalURLs().count,
+                redactionCount: events.reduce(0) { $0 + $1.redactionCount }
+            ))
+        }
+        let (events, preview) = snapshot
         let staging = fileManager.temporaryDirectory
             .appendingPathComponent("Relay-Support-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(
@@ -334,6 +359,12 @@ final class RelayDiagnostics {
                     return nil
                 }
                 var redactionCount = event.redactionCount
+                let appSessionID = Self.safeStoredID(event.appSessionID)
+                redactionCount += appSessionID.count
+                let incidentID = event.incidentID.map(Self.safeStoredID)
+                redactionCount += incidentID?.count ?? 0
+                let correlationID = Self.safeStoredID(event.correlationID)
+                redactionCount += correlationID.count
                 let summary = event.summary.map {
                     let result = RelayDiagnosticRedactor.redact($0)
                     redactionCount += result.count
@@ -348,10 +379,10 @@ final class RelayDiagnostics {
                 return RelayDiagnosticEvent(
                     schemaVersion: event.schemaVersion,
                     timestamp: event.timestamp,
-                    appSessionID: Self.safeID(event.appSessionID),
-                    incidentID: event.incidentID.map(Self.safeID),
+                    appSessionID: appSessionID.value,
+                    incidentID: incidentID?.value,
                     retryAttempt: event.retryAttempt,
-                    correlationID: Self.safeID(event.correlationID),
+                    correlationID: correlationID.value,
                     process: event.process,
                     phase: event.phase,
                     outcome: event.outcome,
@@ -394,6 +425,41 @@ final class RelayDiagnostics {
         journalDirectory.appendingPathComponent("events-v1-\(process)-\(getpid()).jsonl")
     }
 
+    private func withJournalLock<T>(_ body: () throws -> T) throws -> T {
+        let lock = journalDirectory.appendingPathComponent(".journal.lock", isDirectory: true)
+        let deadline = Date().addingTimeInterval(Self.lockWaitSeconds)
+        while true {
+            do {
+                try fileManager.createDirectory(
+                    at: lock,
+                    withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                break
+            } catch {
+                if let lockDate = try? lock.resourceValues(
+                    forKeys: [.contentModificationDateKey]
+                ).contentModificationDate,
+                   Date().timeIntervalSince(lockDate) >= Self.lockStaleSeconds {
+                    let stale = journalDirectory.appendingPathComponent(
+                        ".journal.lock.stale-\(getpid())-\(UUID().uuidString)",
+                        isDirectory: true
+                    )
+                    if (try? fileManager.moveItem(at: lock, to: stale)) != nil {
+                        try? fileManager.removeItem(at: stale)
+                        continue
+                    }
+                }
+                guard Date() < deadline else {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+        defer { try? fileManager.removeItem(at: lock) }
+        return try body()
+    }
+
     private func modificationDate(_ url: URL) -> Date {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
     }
@@ -406,9 +472,22 @@ final class RelayDiagnostics {
         value.range(of: #"^[a-z0-9_]{1,64}$"#, options: .regularExpression) != nil
     }
 
-    private static func safeID(_ value: String) -> String {
-        let filtered = value.lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
-        return filtered.isEmpty ? UUID().uuidString.lowercased() : String(filtered.prefix(64))
+    private static func safeID(_ value: String) -> (value: String, count: Int) {
+        isSafeID(value) ? (value, 0) : ("redacted-id", 1)
+    }
+
+    private static func safeStoredID(_ value: String) -> (value: String, count: Int) {
+        value == "redacted-id" ? (value, 0) : safeID(value)
+    }
+
+    private static func isSafeID(_ value: String) -> Bool {
+        guard value.utf8.count <= 64 else { return false }
+        let patterns = [
+            #"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#,
+            #"^inc-[0-9a-f]{12}$"#,
+            #"^(shell|orchestrator)-[0-9]{10,}-[0-9]+$"#,
+        ]
+        return patterns.contains { value.range(of: $0, options: .regularExpression) != nil }
     }
 
     private static func timestamp(_ date: Date) -> String {
