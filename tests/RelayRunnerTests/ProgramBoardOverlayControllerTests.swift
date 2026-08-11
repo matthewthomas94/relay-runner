@@ -385,4 +385,54 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertTrue(body.contains("completion(urls)"))
         XCTAssertTrue(body.contains("resumeAfterExternalWindow(initialTab: self.lastSelectedTab)"))
     }
+
+    func testEditSaveFailureKeepsDraftVisibleAndSuccessfulSaveAvoidsDuplicateRefresh() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let contents = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/relay-runner/Board/ProgramBoardOverlayController.swift"
+            ),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(contents.range(of: "private func commitEdit("))
+        let end = try XCTUnwrap(
+            contents.range(of: "private func handleDelete(", range: start.upperBound..<contents.endIndex)
+        )
+        let body = String(contents[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("model.applyTicket(result.ticket"))
+        XCTAssertTrue(body.contains("model.reportEditFailure(message)"))
+        XCTAssertTrue(body.contains("return"))
+        XCTAssertTrue(body.contains("model.cancelEdit()"))
+        XCTAssertFalse(body.contains("checkForUpdates("))
+        let logLine = try XCTUnwrap(body.split(separator: "\n").first { $0.contains("NSLog(") })
+        XCTAssertFalse(logLine.contains("request.repoPath"))
+    }
+
+    func testEscapeDismissalCapturesTheActiveModalBeforeDispatchingAsync() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let contents = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/relay-runner/Board/ProgramBoardOverlayController.swift"
+            ),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(contents.range(of: "private func handle(_ event: NSEvent)"))
+        let end = try XCTUnwrap(
+            contents.range(of: "deinit {", range: start.upperBound..<contents.endIndex)
+        )
+        let body = String(contents[start.lowerBound..<end.lowerBound])
+        let action = try XCTUnwrap(body.range(of: "let action: () -> Void"))
+        let dispatch = try XCTUnwrap(body.range(of: "DispatchQueue.main.async(execute: action)"))
+
+        XCTAssertLessThan(action.lowerBound, dispatch.lowerBound)
+        XCTAssertTrue(body.contains("model.selectedTicketDetail != nil"))
+        XCTAssertTrue(body.contains("model.spikeFollowupBatch != nil"))
+    }
 }

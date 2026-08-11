@@ -202,6 +202,7 @@ enum TicketWriter {
             verificationBlocker: ticket.verificationBlocker,
             verificationResume: ticket.verificationResume,
             verificationOrigin: ticket.verificationOrigin,
+            preservedFrontmatter: ticket.preservedFrontmatter,
             draft: ticket.draft,
             order: ticket.order,
             description: summary,
@@ -234,6 +235,7 @@ enum TicketWriter {
             verificationBlocker: ticket.verificationBlocker,
             verificationResume: ticket.verificationResume,
             verificationOrigin: ticket.verificationOrigin,
+            preservedFrontmatter: ticket.preservedFrontmatter,
             draft: ticket.draft,
             order: ticket.order,
             description: ticket.description,
@@ -277,6 +279,9 @@ enum TicketWriter {
         }
         if ticket.draft {
             out += "draft: true\n"
+        }
+        for line in ticket.preservedFrontmatter {
+            out += "\(line)\n"
         }
         out += "---\n"
         if !ticket.body.hasPrefix("\n") { out += "\n" }

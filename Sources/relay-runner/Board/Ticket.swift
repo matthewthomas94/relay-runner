@@ -23,6 +23,10 @@ struct Ticket: Identifiable, Equatable {
     /// creating an orchestrator worker run. This keeps an external evidence
     /// gate honest without fabricating a run id.
     let verificationOrigin: String?
+    /// Compatible frontmatter lines not owned by Relay Runner. GUI edits
+    /// preserve these verbatim so newer or project-specific metadata is not
+    /// discarded by an older client.
+    let preservedFrontmatter: [String]
     /// Board-created tickets are written before the editor opens so they get a
     /// real id immediately. While `draft` is true, the daemon must not sweep a
     /// ready ticket into a worker; saving the editor clears the flag.
@@ -59,6 +63,7 @@ struct Ticket: Identifiable, Equatable {
         verificationBlocker: String? = nil,
         verificationResume: String? = nil,
         verificationOrigin: String? = nil,
+        preservedFrontmatter: [String] = [],
         draft: Bool = false,
         order: Int,
         modifiedAt: Date? = nil,
@@ -80,6 +85,7 @@ struct Ticket: Identifiable, Equatable {
         self.verificationBlocker = verificationBlocker
         self.verificationResume = verificationResume
         self.verificationOrigin = verificationOrigin
+        self.preservedFrontmatter = preservedFrontmatter
         self.draft = draft
         self.order = order
         self.modifiedAt = modifiedAt
@@ -264,6 +270,7 @@ enum TicketParser {
             verificationBlocker: verificationBlocker,
             verificationResume: verificationResume,
             verificationOrigin: verificationOrigin,
+            preservedFrontmatter: preservedFrontmatterLines(from: frontmatter),
             draft: try draftRaw.map { try parseBool($0, field: "draft") } ?? false,
             order: parseOrder(fields["order"], fallbackFrom: id),
             modifiedAt: modifiedAt,
@@ -518,6 +525,22 @@ enum TicketParser {
             fields[key] = stripQuotes(value)
         }
         return fields
+    }
+
+    private static func preservedFrontmatterLines(from frontmatter: String) -> [String] {
+        let ownedKeys: Set<String> = [
+            "id", "title", "status", "priority", "execution_mode", "depends_on",
+            "run_id", "canceled", "order", "worker_model", "worker_effort",
+            "worker_sizing_rationale", "worker_provider_notes", "verification_blocker",
+            "verification_resume", "verification_origin", "draft",
+        ]
+        return frontmatter.components(separatedBy: "\n").filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return false }
+            guard let colon = trimmed.firstIndex(of: ":") else { return true }
+            let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces)
+            return !ownedKeys.contains(key)
+        }
     }
 
     private static func stripQuotes(_ s: String) -> String {

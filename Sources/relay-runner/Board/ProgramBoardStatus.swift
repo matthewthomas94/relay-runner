@@ -353,6 +353,7 @@ struct ProgramBoardEditRequest: Equatable {
     let description: String
     let acceptanceCriteria: String
     let imageURLs: [URL]
+    let expectedModifiedAt: Date?
 
     init(
         repoPath: String,
@@ -363,7 +364,8 @@ struct ProgramBoardEditRequest: Equatable {
         executionMode: Ticket.ExecutionMode = .implementation,
         description: String,
         acceptanceCriteria: String,
-        imageURLs: [URL] = []
+        imageURLs: [URL] = [],
+        expectedModifiedAt: Date? = nil
     ) {
         self.repoPath = repoPath
         self.ticketID = ticketID
@@ -374,6 +376,7 @@ struct ProgramBoardEditRequest: Equatable {
         self.description = description
         self.acceptanceCriteria = acceptanceCriteria
         self.imageURLs = imageURLs
+        self.expectedModifiedAt = expectedModifiedAt
     }
 }
 
@@ -506,6 +509,7 @@ enum ProgramBoardTicketMover {
             verificationBlocker: current.verificationBlocker,
             verificationResume: current.verificationResume,
             verificationOrigin: current.verificationOrigin,
+            preservedFrontmatter: current.preservedFrontmatter,
             draft: current.draft,
             order: current.order,
             description: current.description,
@@ -601,6 +605,7 @@ enum ProgramBoardTicketCreator {
             verificationBlocker: withDescription.verificationBlocker,
             verificationResume: withDescription.verificationResume,
             verificationOrigin: withDescription.verificationOrigin,
+            preservedFrontmatter: withDescription.preservedFrontmatter,
             draft: false,
             order: withDescription.order,
             description: withDescription.description,
@@ -664,14 +669,27 @@ enum ProgramBoardEditPolicy {
             executionMode: executionMode,
             description: description,
             acceptanceCriteria: acceptanceCriteria,
-            imageURLs: imageURLs
+            imageURLs: imageURLs,
+            expectedModifiedAt: draft.original.modifiedAt
         )
     }
 }
 
-enum ProgramBoardEditError: Error, Equatable {
+enum ProgramBoardEditError: LocalizedError, Equatable {
     case missingTicketFile(String)
     case ticketIDMismatch(expected: String, found: String)
+    case concurrentlyModified(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingTicketFile:
+            return "The ticket no longer exists. Close the editor and refresh the Workspace."
+        case .ticketIDMismatch:
+            return "The ticket identity changed on disk. Close the editor and refresh before trying again."
+        case .concurrentlyModified:
+            return "The ticket changed outside this editor. Copy your draft, then refresh and try again."
+        }
+    }
 }
 
 enum ProgramBoardTicketEditor {
@@ -692,8 +710,13 @@ enum ProgramBoardTicketEditor {
             throw ProgramBoardEditError.missingTicketFile(ticketURL.path)
         }
 
+        let modifiedAt = try fileManager.attributesOfItem(atPath: ticketURL.path)[.modificationDate] as? Date
+        if let expectedModifiedAt = request.expectedModifiedAt,
+           modifiedAt != expectedModifiedAt {
+            throw ProgramBoardEditError.concurrentlyModified(ticketURL.path)
+        }
         let contents = try String(contentsOf: ticketURL, encoding: .utf8)
-        let current = try TicketParser.parse(contents: contents)
+        let current = try TicketParser.parse(contents: contents, modifiedAt: modifiedAt)
         guard current.id == request.ticketID else {
             throw ProgramBoardEditError.ticketIDMismatch(expected: request.ticketID, found: current.id)
         }
@@ -719,6 +742,7 @@ enum ProgramBoardTicketEditor {
             verificationBlocker: withBody.verificationBlocker,
             verificationResume: withBody.verificationResume,
             verificationOrigin: withBody.verificationOrigin,
+            preservedFrontmatter: withBody.preservedFrontmatter,
             draft: withBody.draft,
             order: withBody.order,
             description: withBody.description,
@@ -1233,7 +1257,8 @@ struct ProgramTicketDetail: Equatable, Identifiable {
 
         do {
             let contents = try String(contentsOfFile: ticketPath, encoding: .utf8)
-            let ticket = try TicketParser.parse(contents: contents)
+            let modifiedAt = try fileManager.attributesOfItem(atPath: ticketPath)[.modificationDate] as? Date
+            let ticket = try TicketParser.parse(contents: contents, modifiedAt: modifiedAt)
             return ProgramTicketDetail(
                 item: item,
                 identity: identity,
@@ -1368,6 +1393,7 @@ final class ProgramBoardViewModel {
     var spikeFollowupBatch: SpikeFollowupBatch?
     var creating: ProgramBoardCreateDraft?
     var editing: ProgramBoardEditDraft?
+    var editingErrorMessage: String?
     var dragItemID: String?
     var dragTarget: ProgramBoardDropTarget?
     var dragPreview: ProgramBoardDragState?
@@ -1404,6 +1430,7 @@ final class ProgramBoardViewModel {
         spikeFollowupBatch = nil
         creating = nil
         editing = nil
+        editingErrorMessage = nil
         endDrag()
     }
 
@@ -1528,6 +1555,7 @@ final class ProgramBoardViewModel {
         }
         if editing?.identity.projectPath != path {
             editing = nil
+            editingErrorMessage = nil
         }
     }
 
@@ -1564,6 +1592,7 @@ final class ProgramBoardViewModel {
     func beginEdit(detail: ProgramTicketDetail) {
         selectedTicketDetail = detail
         creating = nil
+        editingErrorMessage = nil
         guard detail.item.isProgramBoardEditable else {
             editing = nil
             return
@@ -1573,6 +1602,11 @@ final class ProgramBoardViewModel {
 
     func cancelEdit() {
         editing = nil
+        editingErrorMessage = nil
+    }
+
+    func reportEditFailure(_ message: String) {
+        editingErrorMessage = message
     }
 
     func createRequest(

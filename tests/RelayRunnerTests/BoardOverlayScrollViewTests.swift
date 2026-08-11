@@ -869,6 +869,34 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertNil(model.selectedTicketDetail)
     }
 
+    func testMountedModalBackdropLeavesTicketDetailContentInteractive() throws {
+        let mounted = mountedTicketDetailSurface(size: CGSize(width: 800, height: 800))
+        defer { mounted.window.orderOut(nil) }
+
+        let panelBounds = try XCTUnwrap(findPanelBoundsView(in: mounted.host))
+        let panelCenter = panelBounds.convert(
+            CGPoint(x: panelBounds.bounds.midX, y: panelBounds.bounds.midY),
+            to: mounted.host
+        )
+
+        var hitView = mounted.host.hitTest(panelCenter)
+        while hitView != nil, !(hitView is WorkspaceModalBackdropHitView) {
+            hitView = hitView?.superview
+        }
+        XCTAssertNil(hitView, "The modal backdrop must not intercept ticket detail controls")
+    }
+
+    func testMountedTicketEditorFocusesTitleForImmediateKeyboardInput() throws {
+        let mounted = mountedTicketEditSurface(size: CGSize(width: 800, height: 800))
+        defer { mounted.panel.orderOut(nil) }
+
+        let fieldEditor = try XCTUnwrap(mounted.panel.firstResponder as? NSTextView)
+        XCTAssertEqual(fieldEditor.string, mounted.title)
+
+        fieldEditor.insertText("X", replacementRange: fieldEditor.selectedRange())
+        XCTAssertTrue(fieldEditor.string.contains("X"))
+    }
+
     func testMountedBoardPanelKeepsEveryVisibleBacklogCardAsItsDragSource() throws {
         let model = ProgramBoardViewModel()
         let backlogItems = laneTickets(
@@ -2088,6 +2116,55 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         layout(host, width: size.width, height: size.height)
         drainMainQueue()
         return (host, window)
+    }
+
+    private func mountedTicketEditSurface(
+        size: CGSize
+    ) -> (host: NSHostingView<AnyView>, panel: BoardOverlayPanel, title: String) {
+        let model = ProgramBoardViewModel()
+        let detail = ticketDetailFixture()
+        model.beginEdit(detail: detail)
+        let workspace = WorkspaceViewModel()
+        workspace.configure(
+            showsWorkTab: true,
+            showsTerminalTab: false,
+            showsSettingsTab: false,
+            initialTab: .work
+        )
+        let host = NSHostingView(rootView: AnyView(
+            ProgramBoardOverlayView(
+                model: model,
+                workspace: workspace,
+                settingsContent: nil,
+                terminalContent: { _ in nil },
+                onDismiss: {},
+                onWorkspaceTabChange: { _ in },
+                onRefresh: {},
+                onStartSession: {},
+                onEndSession: {},
+                onCreateStart: { _ in },
+                onCreateCommit: { _ in },
+                onCreateCancel: {},
+                onEditStart: { _ in },
+                onEditCommit: { _ in },
+                onEditCancel: {},
+                onDelete: { _ in },
+                onSpikeFollowupStart: { _ in },
+                onSpikeFollowupReview: { _, _, _, _ in },
+                onSpikeFollowupClose: {},
+                onDrop: { _, _, _ in }
+            )
+        ))
+        let panel = BoardOverlayPanel()
+        panel.keyEligible = true
+        panel.setFrame(CGRect(origin: .zero, size: size), display: false)
+        host.frame = CGRect(origin: .zero, size: size)
+        panel.contentView = host
+        panel.makeKeyAndOrderFront(nil)
+        layout(host, width: size.width, height: size.height)
+        drainMainQueue()
+        drainMainQueue()
+        return (host, panel, detail.title)
     }
 
     private func ticketDetailFixture() -> ProgramTicketDetail {

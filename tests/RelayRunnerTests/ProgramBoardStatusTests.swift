@@ -1777,6 +1777,97 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: missingPath))
     }
 
+    func testProgramBoardTicketEditorRejectsConcurrentChangesAndPreservesDraftState() throws {
+        let repo = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try writeTicket(
+            repo: repo,
+            id: "TL-1",
+            title: "Original title",
+            status: "backlog",
+            body: "## Description\n\nOriginal description."
+        )
+        let item = try ticketItem(
+            projectName: "Tools",
+            path: repo.path,
+            ticketID: "TL-1",
+            title: "Original title",
+            status: "backlog"
+        )
+        let model = ProgramBoardViewModel()
+        model.beginEdit(item: item)
+        let originalDraft = try XCTUnwrap(model.editing)
+        let request = try XCTUnwrap(model.editRequest(
+            title: "Draft title",
+            status: .backlog,
+            priority: .medium,
+            description: "Draft description.",
+            acceptanceCriteria: "- [ ] Keep this draft."
+        ))
+
+        let ticketURL = repo.appendingPathComponent(".orchestrator/TL-1.md")
+        var externalContents = try String(contentsOf: ticketURL, encoding: .utf8)
+        externalContents = externalContents.replacingOccurrences(
+            of: "title: Original title",
+            with: "title: External title"
+        )
+        try externalContents.write(to: ticketURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(10)],
+            ofItemAtPath: ticketURL.path
+        )
+
+        XCTAssertThrowsError(try ProgramBoardTicketEditor.save(request)) { error in
+            XCTAssertEqual(error as? ProgramBoardEditError, .concurrentlyModified(ticketURL.path))
+        }
+        model.reportEditFailure("The ticket changed outside this editor.")
+        XCTAssertEqual(model.editing, originalDraft)
+        XCTAssertEqual(model.editingErrorMessage, "The ticket changed outside this editor.")
+        XCTAssertTrue(try String(contentsOf: ticketURL, encoding: .utf8).contains("title: External title"))
+
+        model.cancelEdit()
+        XCTAssertNil(model.editing)
+        XCTAssertNil(model.editingErrorMessage)
+    }
+
+    func testProgramBoardTicketEditorPreservesUnknownFrontmatterAndDispatchesReadyOnce() throws {
+        let repo = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try writeTicket(
+            repo: repo,
+            id: "TL-1",
+            title: "Original title",
+            status: "backlog",
+            body: "## Description\n\nOriginal description."
+        )
+        let ticketURL = repo.appendingPathComponent(".orchestrator/TL-1.md")
+        var contents = try String(contentsOf: ticketURL, encoding: .utf8)
+        contents = contents.replacingOccurrences(
+            of: "canceled: false\n",
+            with: "canceled: false\ncustom_owner: platform-team\n# preserve this note\n"
+        )
+        try contents.write(to: ticketURL, atomically: true, encoding: .utf8)
+
+        let result = try ProgramBoardTicketEditor.save(ProgramBoardEditRequest(
+            repoPath: repo.path,
+            ticketID: "TL-1",
+            title: "Ready title",
+            status: .ready,
+            priority: .high,
+            description: "Updated description.",
+            acceptanceCriteria: "- [ ] Dispatch once."
+        ))
+
+        XCTAssertTrue(result.shouldDispatch)
+        let savedContents = try String(contentsOf: ticketURL, encoding: .utf8)
+        XCTAssertTrue(savedContents.contains("custom_owner: platform-team\n"))
+        XCTAssertTrue(savedContents.contains("# preserve this note\n"))
+        XCTAssertEqual(
+            try TicketParser.parse(contents: savedContents).preservedFrontmatter,
+            ["custom_owner: platform-team", "# preserve this note"]
+        )
+    }
+
     func testProgramBoardTicketDeleterDeletesOnlyOwningChildTicket() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

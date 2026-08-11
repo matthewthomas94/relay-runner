@@ -290,16 +290,19 @@ final class ProgramBoardOverlayController {
                workspace.selectedTab.allowsEscapeDismissal(
                    terminalHasFocus: terminalHasFocusProvider()
                ) {
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    if self.model.editing != nil {
-                        self.cancelEdit()
-                    } else if self.model.creating != nil {
-                        self.cancelCreate()
-                    } else {
-                        self.hide()
-                    }
+                let action: () -> Void
+                if model.editing != nil {
+                    action = { [weak self] in self?.cancelEdit() }
+                } else if model.creating != nil {
+                    action = { [weak self] in self?.cancelCreate() }
+                } else if model.spikeFollowupBatch != nil {
+                    action = { [weak self] in self?.model.spikeFollowupBatch = nil }
+                } else if model.selectedTicketDetail != nil {
+                    action = { [weak self] in self?.model.clearSelectedTicket() }
+                } else {
+                    action = { [weak self] in self?.hide() }
                 }
+                DispatchQueue.main.async(execute: action)
             }
         default:
             break
@@ -928,11 +931,13 @@ final class ProgramBoardOverlayController {
                 )
             }
         } catch {
-            NSLog("[relay-runner] failed to save program ticket \(request.ticketID) in \(request.repoPath): \(error)")
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            NSLog("[relay-runner] failed to save program ticket \(request.ticketID): \(message)")
+            model.reportEditFailure(message)
+            return
         }
         model.cancelEdit()
         updatePanelKeyEligibility()
-        checkForUpdates(inBackground: true)
     }
 
     private func handleDelete(_ request: ProgramBoardDeleteRequest) {
