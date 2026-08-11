@@ -408,8 +408,8 @@ class FreshInstallCoordinator:
             trash_root=expected_trash,
         )
         for item in resources:
-            source = Path(str(item["trashed_path"])).resolve()
-            target = Path(str(item["original_path"])).resolve()
+            source = Path(str(item["trashed_path"]))
+            target = Path(str(item["original_path"]))
             if not (source.exists() or source.is_symlink()) or target.exists() or target.is_symlink():
                 raise FreshInstallError(
                     "Automatic profile restore would overwrite state or use an ambiguous backup.",
@@ -423,8 +423,8 @@ class FreshInstallCoordinator:
             )
         _verify_repository_snapshots(snapshots)
         for item in resources:
-            source = Path(str(item["trashed_path"])).resolve()
-            target = Path(str(item["original_path"])).resolve()
+            source = Path(str(item["trashed_path"]))
+            target = Path(str(item["original_path"]))
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(source, target)
         _verify_repository_snapshots(snapshots)
@@ -837,7 +837,7 @@ def _validate_profile_recovery_resources(
             recovery="Use the original reset-recovery.json inside its Relay profile backup directory.",
         )
     expected = {
-        name: (path.resolve(), (backup_root / f"{index:02d}-{name}").resolve())
+        name: (path.resolve(), backup_root / f"{index:02d}-{name}")
         for index, (name, path) in enumerate(expected_resources)
     }
     seen: set[str] = set()
@@ -855,15 +855,14 @@ def _validate_profile_recovery_resources(
             )
         seen.add(name)
         expected_target, expected_backup = expected[name]
-        backup_resource = Path(str(item.get("trashed_path") or ""))
-        if backup_resource.is_symlink():
-            raise FreshInstallError(
-                "Profile recovery resource must not be a symlink.",
-                recovery="Restore the original untampered Relay profile backup.",
-            )
-        source = backup_resource.resolve()
-        target = Path(str(item.get("original_path") or "")).resolve()
-        if source != expected_backup or target != expected_target:
+        backup_resource = item.get("trashed_path")
+        original_resource = item.get("original_path")
+        if (
+            not isinstance(backup_resource, str)
+            or not isinstance(original_resource, str)
+            or backup_resource != str(expected_backup)
+            or original_resource != str(expected_target)
+        ):
             raise FreshInstallError(
                 "Profile recovery manifest resource paths do not match the declared profile allowlist.",
                 recovery="Restore the original untampered recovery manifest.",
@@ -871,13 +870,13 @@ def _validate_profile_recovery_resources(
 
 
 def _read_recovery_manifest(recovery_manifest: str | os.PathLike[str]) -> tuple[Path, Mapping[str, Any]]:
-    candidate = Path(recovery_manifest).expanduser()
+    candidate = Path(recovery_manifest).expanduser().absolute()
     if candidate.is_symlink():
         raise FreshInstallError(
             "Reset recovery manifest must not be a symlink.",
             recovery="Use the original reset-recovery.json inside the Relay Trash backup directory.",
         )
-    path = candidate.resolve()
+    path = candidate
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:

@@ -238,6 +238,37 @@ class FreshInstallTests(unittest.TestCase):
 
         self.assertTrue(Path(reset.trashed_state).is_dir())
 
+    def test_profile_restore_rejects_a_symlinked_backup_parent(self):
+        model = self.home / ".local/share/kokoro/kokoro-v1.0.onnx"
+        model.parent.mkdir(parents=True)
+        model.write_bytes(b"model")
+        reset = self.coordinator().reset_profile(
+            "voice-models",
+            execute=True,
+            confirm_daemon_stopped=True,
+            confirm_profile="voice-models",
+        )
+        manifest = Path(reset.recovery_manifest)
+        backup = manifest.parent
+        relocated = self.root / "relocated-backup"
+        backup.rename(relocated)
+        backup.symlink_to(relocated, target_is_directory=True)
+
+        with self.assertRaisesRegex(FreshInstallError, "expected Relay Trash backup location"):
+            FreshInstallCoordinator.restore_profile(
+                manifest,
+                execute=True,
+                confirm_daemon_stopped=True,
+                confirm_profile="voice-models",
+                state_root=self.state,
+                home_root=self.home,
+                temporary_root=self.tmp,
+                trash_root=self.trash,
+            )
+
+        self.assertFalse(model.exists())
+        self.assertTrue((relocated / "00-kokoro-model").is_file())
+
     def test_profile_restore_rejects_a_crafted_destination_outside_its_allowlist(self):
         relay_skill = self.home / ".codex/skills/relay-bridge"
         relay_skill.mkdir(parents=True)
@@ -271,7 +302,7 @@ class FreshInstallTests(unittest.TestCase):
         self.assertTrue(unrelated.is_dir())
         self.assertTrue(Path(document["resources"][0]["trashed_path"]).is_dir())
 
-    def test_profile_restore_rejects_a_symlinked_backup_resource_without_moving_its_target(self):
+    def test_profile_restore_moves_an_allowlisted_symlink_leaf_without_following_its_target(self):
         relay_skill = self.home / ".codex/skills/relay-bridge"
         relay_skill.mkdir(parents=True)
         (relay_skill / "SKILL.md").write_text("Relay\n")
@@ -290,21 +321,21 @@ class FreshInstallTests(unittest.TestCase):
         shutil.rmtree(backup)
         backup.symlink_to(external, target_is_directory=True)
 
-        with self.assertRaisesRegex(FreshInstallError, "resource must not be a symlink"):
-            FreshInstallCoordinator.restore_profile(
-                manifest,
-                execute=True,
-                confirm_daemon_stopped=True,
-                confirm_profile="provider-integrations",
-                state_root=self.state,
-                home_root=self.home,
-                temporary_root=self.tmp,
-                trash_root=self.trash,
-            )
+        FreshInstallCoordinator.restore_profile(
+            manifest,
+            execute=True,
+            confirm_daemon_stopped=True,
+            confirm_profile="provider-integrations",
+            state_root=self.state,
+            home_root=self.home,
+            temporary_root=self.tmp,
+            trash_root=self.trash,
+        )
 
-        self.assertTrue(backup.is_symlink())
+        self.assertTrue(relay_skill.is_symlink())
+        self.assertEqual(os.readlink(relay_skill), str(external))
         self.assertEqual(sentinel.read_text(), "safe\n")
-        self.assertFalse(relay_skill.exists())
+        self.assertFalse(backup.exists() or backup.is_symlink())
 
     def test_profiles_require_exact_confirmation_and_never_include_broad_provider_paths(self):
         codex_auth = self.home / ".codex/auth.json"
@@ -390,6 +421,33 @@ class FreshInstallTests(unittest.TestCase):
                 confirm_daemon_stopped=True,
                 confirm_profile="provider-integrations",
             )
+
+        self.assertTrue(command.is_symlink())
+        self.assertEqual(os.readlink(command), str(self.root / "missing-relay-bridge.md"))
+
+    def test_profile_restore_recovers_a_dangling_claude_command_symlink(self):
+        command = self.home / ".claude/commands/relay-bridge.md"
+        command.parent.mkdir(parents=True)
+        command.symlink_to(self.root / "missing-relay-bridge.md")
+
+        reset = self.coordinator().reset_profile(
+            "provider-integrations",
+            execute=True,
+            confirm_daemon_stopped=True,
+            confirm_profile="provider-integrations",
+        )
+
+        self.assertFalse(command.exists() or command.is_symlink())
+        FreshInstallCoordinator.restore_profile(
+            reset.recovery_manifest,
+            execute=True,
+            confirm_daemon_stopped=True,
+            confirm_profile="provider-integrations",
+            state_root=self.state,
+            home_root=self.home,
+            temporary_root=self.tmp,
+            trash_root=self.trash,
+        )
 
         self.assertTrue(command.is_symlink())
         self.assertEqual(os.readlink(command), str(self.root / "missing-relay-bridge.md"))
