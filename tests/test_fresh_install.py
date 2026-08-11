@@ -149,6 +149,21 @@ class FreshInstallTests(unittest.TestCase):
         self.assertEqual(self.tree(self.state), before)
         self.assertFalse(any(self.trash.glob("relay-runner-state-*")))
 
+    def test_profile_journal_write_failure_leaves_state_in_place(self):
+        state_before = self.tree(self.state)
+
+        with mock.patch("fresh_install._write_json_atomic", side_effect=OSError("simulated full disk")):
+            with self.assertRaisesRegex(FreshInstallError, "Could not persist reset recovery journal"):
+                self.coordinator().reset_profile(
+                    "relay-owned",
+                    execute=True,
+                    confirm_daemon_stopped=True,
+                    confirm_profile="relay-owned",
+                )
+
+        self.assertEqual(self.tree(self.state), state_before)
+        self.assertFalse(any(self.trash.iterdir()))
+
     def test_interrupted_app_replacement_restores_prior_app_and_never_changes_state_or_repo(self):
         state_before = self.tree(self.state)
         repo_before = self.repo_snapshot()
@@ -373,7 +388,7 @@ class FreshInstallTests(unittest.TestCase):
         original_run = subprocess.run
 
         def run(command, **kwargs):
-            if command == ["ps", "-axo", "pid=,command="]:
+            if command == ["ps", "-axo", "pid=,ppid=,command="]:
                 return failed_process
             return original_run(command, **kwargs)
 
@@ -389,6 +404,46 @@ class FreshInstallTests(unittest.TestCase):
         self.assertEqual(self.tree(self.state), state_before)
         self.assertEqual(preference.read_text(), "preferences\n")
         self.assertFalse(self.trash.exists())
+
+    def test_cli_reset_uses_default_detector_without_matching_its_own_command_lineage(self):
+        fake_bin = self.root / "fake-bin"
+        fake_bin.mkdir()
+        fake_ps = fake_bin / "ps"
+        fake_ps.write_text(
+            "#!/bin/sh\n"
+            "printf '%s %s %s\\n' \"$PPID\" 7001 'python /workspace/relay-runner/services/fresh_install_cli.py --reset-profile relay-owned'\n"
+            "printf '%s %s %s\\n' 7001 1 '/bin/zsh -lc python /workspace/relay-runner/services/fresh_install_cli.py --reset-profile relay-owned'\n"
+        )
+        fake_ps.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        }
+
+        process = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "services/fresh_install_cli.py"),
+                "--reset-profile", "relay-owned",
+                "--execute",
+                "--confirm-daemon-stopped",
+                "--confirm-profile", "relay-owned",
+                "--state-root", str(self.state),
+                "--trash-root", str(self.trash),
+                "--home-root", str(self.home),
+                "--temporary-root", str(self.tmp),
+            ],
+            cwd=self.root,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertTrue(json.loads(process.stdout)["ok"])
+        self.assertFalse(self.state.exists())
 
     def test_voice_profile_and_evidence_capture_are_explicit_and_source_private(self):
         model = self.home / ".local/share/kokoro/kokoro-v1.0.onnx"

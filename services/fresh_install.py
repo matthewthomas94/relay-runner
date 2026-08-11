@@ -301,6 +301,26 @@ class FreshInstallCoordinator:
         self.trash_root.mkdir(parents=True, exist_ok=True)
         destination = self.trash_root / f"relay-runner-{profile}-{_timestamp()}-{uuid.uuid4().hex[:8]}"
         destination.mkdir(mode=0o700)
+        manifest_path = destination / "reset-recovery.json"
+        manifest: dict[str, Any] = {
+            "schema_version": 3,
+            "action": "reset_profile",
+            "profile": profile,
+            "moved_at": _timestamp(),
+            "resources": [],
+            "registered_repositories": repositories_before,
+            "restore_requires_daemon_stopped": True,
+            "repositories_must_not_be_mutated": True,
+            "machine_state_not_reset": list(UNRESETTABLE_MACHINE_STATE),
+        }
+        try:
+            _write_json_atomic(manifest_path, manifest)
+        except OSError as error:
+            destination.rmdir()
+            raise FreshInstallError(
+                f"Could not persist reset recovery journal: {error}",
+                recovery="Nothing was moved; repair available storage and retry the deliberate reset.",
+            ) from error
         moved: list[dict[str, str]] = []
         try:
             self._inject("before_profile_move")
@@ -308,27 +328,19 @@ class FreshInstallCoordinator:
                 if not (source.exists() or source.is_symlink()):
                     continue
                 target = destination / f"{index:02d}-{name}"
+                resource = {"name": name, "original_path": str(source), "trashed_path": str(target)}
+                manifest["resources"].append(resource)
+                _write_json_atomic(manifest_path, manifest)
                 os.replace(source, target)
-                moved.append({"name": name, "original_path": str(source), "trashed_path": str(target)})
+                moved.append(resource)
                 self._inject(f"after_profile_move:{name}")
         except Exception:
             self._restore_moved_resources(moved)
+            if manifest_path.is_file() and not manifest_path.is_symlink():
+                manifest_path.unlink()
             if destination.exists() and not any(destination.iterdir()):
                 destination.rmdir()
             raise
-        manifest_path = destination / "reset-recovery.json"
-        manifest = {
-            "schema_version": 2,
-            "action": "reset_profile",
-            "profile": profile,
-            "moved_at": _timestamp(),
-            "resources": moved,
-            "registered_repositories": repositories_before,
-            "restore_requires_daemon_stopped": True,
-            "repositories_must_not_be_mutated": True,
-            "machine_state_not_reset": list(UNRESETTABLE_MACHINE_STATE),
-        }
-        _write_json_atomic(manifest_path, manifest)
         self._inject("after_profile_move")
         self._verify_repositories(repositories_before)
         return FreshInstallResult(
@@ -509,7 +521,7 @@ class FreshInstallCoordinator:
             return self.active_process_detector()
         try:
             process = subprocess.run(
-                ["ps", "-axo", "pid=,command="],
+                ["ps", "-axo", "pid=,ppid=,command="],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -525,10 +537,30 @@ class FreshInstallCoordinator:
                 "Cannot inspect Relay processes; refusing to move reset-profile state.",
                 recovery="Restore process inspection access before retrying the profile reset.",
             )
+        processes: dict[int, tuple[int, str]] = {}
+        for line in process.stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                pid_text, parent_text, command = line.strip().split(maxsplit=2)
+                processes[int(pid_text)] = (int(parent_text), command)
+            except ValueError as error:
+                raise FreshInstallError(
+                    "Cannot inspect Relay processes; refusing to move reset-profile state.",
+                    recovery="Restore process inspection access before retrying the profile reset.",
+                ) from error
+        lineage = {os.getpid()}
+        parent = processes.get(os.getpid(), (None, ""))[0]
+        while parent is not None and parent not in lineage:
+            lineage.add(parent)
+            parent = processes.get(parent, (None, ""))[0]
         markers = ("relay-runner", "voice_bridge.py", "orchestrator.py", "tts_worker.py")
+        installer_markers = ("fresh_install_cli.py", "relay-runner-fresh-install")
         return [
-            line.strip() for line in process.stdout.splitlines()
-            if any(marker in line for marker in markers)
+            f"{pid} {parent} {command}"
+            for pid, (parent, command) in processes.items()
+            if any(marker in command for marker in markers)
+            and not (pid in lineage and any(marker in command for marker in installer_markers))
         ]
 
     @staticmethod
@@ -909,9 +941,22 @@ def _verify_repository_snapshots(snapshots: list[Mapping[str, Any]]) -> None:
 
 def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
     temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(dict(value), sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(dict(value), sort_keys=True, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except Exception:
+        if temporary.exists() and temporary.is_file() and not temporary.is_symlink():
+            temporary.unlink()
+        raise
 
 
 def _json_digest(value: Any) -> str:
