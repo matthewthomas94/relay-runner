@@ -174,13 +174,13 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | `services/artifact_migration.py` | Journaled legacy preflight, bootstrap, cutover, Program rebuild, retention preview, and rollback coordinator |
 | `services/artifact_rollout.py` | Evidence-gated per-project/new-project/legacy cohort policy and privacy-safe diagnostics |
 | `services/artifact_verification.py` | Disposable two-device harness and signed installed evidence gate |
-| `services/fresh_install.py` | State-preserving app replacement and recoverable Relay-owned state reset |
+| `services/fresh_install.py` | State-preserving app replacement, profile-gated recoverable reset, and safe evidence capture |
 | `Sources/relay-orchestrator-mcp/` | Swift MCP proxy (HTTP → MCP tools) |
 | `scripts/relay-orchestrator` | Launcher / installer |
 | `scripts/relay-artifact-migrate` | Preview/execute/resume/rollback CLI for RR-270 phase 8 |
 | `scripts/relay-artifact-verify` | RR-289 source harness and signed installed two-device evidence gate |
 | `scripts/relay-artifact-rollout` | Explicit evidence, cohort, and independent kill-switch controls |
-| `scripts/relay-runner-fresh-install` | Preserving reinstall and explicit recoverable reset CLI |
+| `scripts/relay-runner-fresh-install` | Preserving reinstall, explicit profile reset, recovery, and evidence CLI |
 | `<repo>/.orchestrator/<TICKET_ID>.md` | One ticket per file (board source of truth) |
 | `<repo>/.orchestrator/config.toml` | Repo-scoped ticket counter (`prefix`, `next_id`) |
 | `~/Library/Application Support/relay-runner/projects/registry-v2.json` | Opt-in schema-2 project registry; see [registry v2 ownership and recovery](architecture/registry-v2.md) |
