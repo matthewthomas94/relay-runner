@@ -441,6 +441,59 @@ class ReadySweeperTests(unittest.TestCase):
                 ],
             )
 
+    def test_program_sweeper_uses_registry_v2_for_newly_registered_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "new-project"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="ready")
+            legacy_registry = root / "projects.json"
+            legacy_registry.write_text(json.dumps({"projects": []}))
+            registry_v2 = root / "registry-v2.json"
+            registry_v2.write_text(json.dumps({
+                "schema_version": 2,
+                "active_project_id": "project-new",
+                "projects": [
+                    {
+                        "project_id": "project-new",
+                        "last_resolved_path": str(repo.resolve()),
+                        "availability": "available",
+                    },
+                    {
+                        "project_id": "project-offline",
+                        "last_resolved_path": str((root / "offline").resolve()),
+                        "availability": "offline",
+                    },
+                ],
+            }))
+
+            daemon = object.__new__(Daemon)
+            daemon.program_registry_path = legacy_registry
+            daemon.project_registry_v2_path = registry_v2
+            daemon.runs = FakeRuns()
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs) or {
+                "already_active": False,
+                "run": {"id": 1},
+            }
+
+            with patch.dict(os.environ, {"RELAY_RUNNER_REGISTRY_V2": "1"}):
+                result = Daemon.sweep_program_ready_tickets(
+                    daemon,
+                    trigger="program-board-refresh",
+                )
+
+            self.assertEqual(calls, [{
+                "ticket_id": "RR-1",
+                "repo_path": str(repo.resolve()),
+                "source": "ready-sweeper",
+            }])
+            self.assertEqual(result["dispatched"], [{
+                "repo_path": str(repo.resolve()),
+                "ticket_id": "RR-1",
+                "run_id": 1,
+            }])
+
     def test_program_sweeper_limits_dispatch_to_requested_repo_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -15,7 +15,10 @@ import shutil
 import subprocess
 import tempfile
 import time
-import tomllib
+try:
+    from services.toml_compat import tomllib
+except ModuleNotFoundError:
+    from toml_compat import tomllib
 import uuid
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Sequence

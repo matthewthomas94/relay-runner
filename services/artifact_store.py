@@ -23,7 +23,10 @@ import subprocess
 import tempfile
 import threading
 import time
-import tomllib
+try:
+    from services.toml_compat import tomllib
+except ModuleNotFoundError:
+    from toml_compat import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Iterator, Mapping, Sequence
