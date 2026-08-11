@@ -490,7 +490,18 @@ def _activate_turn_record(
     _save_turn_state(path, state)
 
 
-def _find_turn_record(path: str, payload: dict, *, now: float | None = None) -> dict | None:
+def _provider_matches(record: dict, payload: dict) -> bool:
+    record_provider = str(record.get("provider") or "").strip().lower()
+    payload_provider = _provider_name(payload)
+    return not record_provider or not payload_provider or record_provider == payload_provider
+
+
+def _find_turn_record(
+    path: str,
+    payload: dict,
+    *,
+    now: float | None = None,
+) -> tuple[dict | None, str, list[dict]]:
     session_id = _session_id(payload)
     turn_id = _turn_id(payload)
     provider_session_id = _provider_session_id(payload)
@@ -507,17 +518,97 @@ def _find_turn_record(path: str, payload: dict, *, now: float | None = None) -> 
     if turn_id:
         for record in reversed(records):
             if str(record.get("turn_id") or "") == turn_id:
-                return record
-        return None
+                return record, "exact_native_identity", [record]
+        if not provider_session_id:
+            return None, "rejected_provider_session_missing", []
+        candidates = [
+            record
+            for record in state["records"]
+            if (
+                str(record.get("provider_session_id") or "") == provider_session_id
+                and str(record.get("turn_id") or "") == turn_id
+                and _relay_command_key(record) is not None
+                and _provider_matches(record, payload)
+            )
+        ]
+        if len(candidates) == 1:
+            return candidates[0], "provider_identity_reconciled", candidates
+        if len(candidates) > 1:
+            return None, "rejected_ambiguous_provider_identity", candidates
+        return None, "rejected_no_exact_physical_turn", []
     active = [r for r in records if str(r.get("state") or "") == "active"]
     if len(active) == 1:
         return sorted(
             active,
             key=lambda r: float(r.get("updated_at") or r.get("created_at") or 0),
-        )[0]
+        )[0], "exact_native_session", active
     if len(active) > 1:
-        return None
-    return records[-1] if records else None
+        return None, "rejected_ambiguous_native_session", active
+    if records:
+        return records[-1], "exact_native_session", [records[-1]]
+    return None, "rejected_native_identity_mismatch", []
+
+
+def _record_age_ms(record: dict, *, now: float) -> int:
+    created_at = record.get("created_at") or record.get("updated_at") or now
+    try:
+        return max(0, int(round((now - float(created_at)) * 1000)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _emit_completion_correlation_diagnostic(
+    payload: dict,
+    *,
+    candidates: list[dict],
+    decision: str,
+    release_reason: str,
+    now: float,
+    stderr: TextIO,
+) -> None:
+    diagnostic = {
+        "candidate_count": len(candidates),
+        "decision": decision,
+        "event": _hook_event_name(payload),
+        "native_session_id_to": _session_id(payload),
+        "native_turn_id": _turn_id(payload),
+        "provider": _provider_name(payload) or "unknown",
+        "provider_session_id": _provider_session_id(payload),
+        "release_reason": release_reason,
+    }
+    if len(candidates) == 1:
+        record = candidates[0]
+        diagnostic.update({
+            "native_session_id_from": str(record.get("session_id") or "unknown"),
+            "record_age_ms": _record_age_ms(record, now=now),
+            "relay_command_seq": record.get("relay_command_seq"),
+            "relay_command_id": record.get("relay_command_id"),
+        })
+        if record.get("intent_id") is not None:
+            diagnostic["intent_id"] = record["intent_id"]
+    elif candidates:
+        diagnostic["candidate_commands"] = [
+            {
+                "relay_command_seq": record.get("relay_command_seq"),
+                "relay_command_id": record.get("relay_command_id"),
+                "intent_id": record.get("intent_id"),
+                "record_age_ms": _record_age_ms(record, now=now),
+            }
+            for record in candidates
+        ]
+    print(
+        "[relay_completion_hook] completion_correlation "
+        + json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
+        file=stderr,
+    )
+
+
+def _annotate_identity_reconciliation(record: dict, payload: dict, *, now: float) -> dict:
+    annotated = dict(record)
+    annotated["completion_correlation"] = "provider_identity_reconciled"
+    annotated["completion_native_session_id"] = _session_id(payload)
+    annotated["completion_record_age_ms"] = _record_age_ms(record, now=now)
+    return annotated
 
 
 def _command_turn_records(path: str, command: dict, *, now: float | None = None) -> list[dict]:
@@ -702,13 +793,31 @@ def _complete_turn(
     now: float,
     stderr: TextIO,
 ) -> bool:
-    record = _find_turn_record(turns_path, payload, now=now)
+    record, correlation, candidates = _find_turn_record(turns_path, payload, now=now)
     if not record:
+        _emit_completion_correlation_diagnostic(
+            payload,
+            candidates=candidates,
+            decision=correlation,
+            release_reason="completion_not_correlated",
+            now=now,
+            stderr=stderr,
+        )
         print("[relay_completion_hook] ignored provider completion without Relay voice correlation", file=stderr)
         return False
     if str(record.get("state") or "") != "active":
+        if correlation == "provider_identity_reconciled":
+            _emit_completion_correlation_diagnostic(
+                payload,
+                candidates=candidates,
+                decision="rejected_duplicate_provider_completion",
+                release_reason=str(record.get("release_reason") or "already_terminal"),
+                now=now,
+                stderr=stderr,
+            )
         print("[relay_completion_hook] ignored duplicate provider completion", file=stderr)
         return False
+    identity_reconciled = correlation == "provider_identity_reconciled"
     if _relay_command_key(record) is None:
         event = _hook_event_name(payload)
         completed = dict(record)
@@ -719,10 +828,27 @@ def _complete_turn(
         _upsert_turn_record(turns_path, completed, now=now)
         return False
     if not _relay_command_current(record, state_path=state_path):
-        stale_record = dict(record)
+        stale_record = (
+            _annotate_identity_reconciliation(record, payload, now=now)
+            if identity_reconciled
+            else dict(record)
+        )
         stale_record["state"] = "stale"
-        stale_record["release_reason"] = "stale_current_command"
+        stale_record["release_reason"] = (
+            "stale_current_command_identity_reconciled"
+            if identity_reconciled
+            else "stale_current_command"
+        )
         _upsert_turn_record(turns_path, stale_record, now=now)
+        if identity_reconciled:
+            _emit_completion_correlation_diagnostic(
+                payload,
+                candidates=[stale_record],
+                decision="accepted_provider_identity_reconciliation",
+                release_reason=stale_record["release_reason"],
+                now=now,
+                stderr=stderr,
+            )
         print("[relay_completion_hook] dropped stale Relay provider completion", file=stderr)
         return False
 
@@ -753,13 +879,33 @@ def _complete_turn(
         state = completion["completion_status"]
 
     delivered = write_control(completion)
-    next_record = dict(record)
+    next_record = (
+        _annotate_identity_reconciliation(record, payload, now=now)
+        if identity_reconciled
+        else dict(record)
+    )
     next_record["state"] = state
     next_record["delivery"] = "sent" if delivered else "bridge_unavailable"
-    next_record["release_reason"] = (
-        "provider_stop_failure" if event == "StopFailure" else "provider_stop"
-    )
+    if identity_reconciled:
+        next_record["release_reason"] = (
+            "provider_stop_failure_identity_reconciled"
+            if event == "StopFailure"
+            else "provider_stop_identity_reconciled"
+        )
+    else:
+        next_record["release_reason"] = (
+            "provider_stop_failure" if event == "StopFailure" else "provider_stop"
+        )
     _upsert_turn_record(turns_path, next_record, now=now)
+    if identity_reconciled:
+        _emit_completion_correlation_diagnostic(
+            payload,
+            candidates=[next_record],
+            decision="accepted_provider_identity_reconciliation",
+            release_reason=next_record["release_reason"],
+            now=now,
+            stderr=stderr,
+        )
     if not delivered:
         print(
             "[relay_completion_hook] Relay bridge unavailable; provider completion was not spoken. "

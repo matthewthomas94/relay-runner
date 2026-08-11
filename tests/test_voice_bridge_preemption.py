@@ -1892,6 +1892,342 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 self.assertEqual(records[-1]["release_reason"], "provider_stop")
                 self.assertEqual([item["relay_command_id"] for item in delivered], ["cmd-51"])
 
+    def test_completion_hook_reconciles_single_submit_stop_identity_drift(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                claim = {
+                    "relay_command_seq": 52,
+                    "relay_command_id": "cmd-52",
+                    "intent_id": "cmd-52:item:1",
+                    "agent_prompt": "Private Relay prompt",
+                    "provider": provider,
+                }
+                Path(state_path).write_text(json.dumps(claim))
+                Path(claim_path).write_text(json.dumps(claim))
+                provider_session_id = f"embedded-{provider}"
+
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    {
+                        "hook_event_name": "UserPromptSubmit",
+                        "session_id": f"{provider}-transient",
+                        "turn_id": "physical-turn-52",
+                        "provider_session_id": provider_session_id,
+                        "provider": provider,
+                        "prompt": claim["agent_prompt"],
+                    },
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=100,
+                    stderr=io.StringIO(),
+                ))
+
+                errors = io.StringIO()
+                delivered: list[dict] = []
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    {
+                        "hook_event_name": "Stop",
+                        "session_id": f"{provider}-persisted",
+                        "turn_id": "physical-turn-52",
+                        "provider_session_id": provider_session_id,
+                        "provider": provider,
+                        "last_assistant_message": "Private final",
+                    },
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    write_control=lambda payload: delivered.append(payload) or True,
+                    now=100.2,
+                    stderr=errors,
+                ))
+
+                record = json.loads(Path(turns_path).read_text())["records"][0]
+                self.assertEqual(record["state"], "completed_final")
+                self.assertEqual(record["release_reason"], "provider_stop_identity_reconciled")
+                self.assertEqual(record["completion_correlation"], "provider_identity_reconciled")
+                self.assertEqual(record["completion_native_session_id"], f"{provider}-persisted")
+                self.assertEqual(record["completion_record_age_ms"], 200)
+                self.assertEqual([item["relay_command_id"] for item in delivered], ["cmd-52"])
+                diagnostic = errors.getvalue()
+                self.assertIn('"decision":"accepted_provider_identity_reconciliation"', diagnostic)
+                self.assertIn('"native_session_id_from":"' + provider + '-transient"', diagnostic)
+                self.assertIn('"native_session_id_to":"' + provider + '-persisted"', diagnostic)
+                self.assertIn('"relay_command_id":"cmd-52"', diagnostic)
+                self.assertIn('"intent_id":"cmd-52:item:1"', diagnostic)
+                self.assertNotIn("Private Relay prompt", Path(turns_path).read_text())
+                self.assertNotIn("Private final", diagnostic)
+
+                self.assertFalse(relay_completion_hook.handle_hook_payload(
+                    {
+                        "hook_event_name": "Stop",
+                        "session_id": f"{provider}-persisted",
+                        "turn_id": "physical-turn-52",
+                        "provider_session_id": provider_session_id,
+                        "provider": provider,
+                        "last_assistant_message": "Private duplicate final",
+                    },
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    write_control=lambda payload: delivered.append(payload) or True,
+                    now=100.3,
+                    stderr=errors,
+                ))
+                self.assertEqual([item["relay_command_id"] for item in delivered], ["cmd-52"])
+                self.assertIn('"decision":"rejected_duplicate_provider_completion"', errors.getvalue())
+                self.assertNotIn("Private duplicate final", errors.getvalue())
+
+    def test_completion_hook_reconciles_claude_stop_failure_identity_drift(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            claim = {
+                "relay_command_seq": 59,
+                "relay_command_id": "cmd-59",
+                "agent_prompt": "Private failing prompt",
+                "provider": "claude",
+            }
+            Path(state_path).write_text(json.dumps(claim))
+            Path(claim_path).write_text(json.dumps(claim))
+            relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "claude-transient",
+                    "turn_id": "physical-turn-59",
+                    "provider_session_id": "embedded-claude",
+                    "provider": "claude",
+                    "prompt": claim["agent_prompt"],
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=150,
+                stderr=io.StringIO(),
+            )
+            errors = io.StringIO()
+
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "StopFailure",
+                    "session_id": "claude-persisted",
+                    "turn_id": "physical-turn-59",
+                    "provider_session_id": "embedded-claude",
+                    "provider": "claude",
+                    "error": "private provider failure",
+                },
+                state_path=state_path,
+                turns_path=turns_path,
+                write_control=lambda _payload: True,
+                now=150.1,
+                stderr=errors,
+            ))
+
+            record = json.loads(Path(turns_path).read_text())["records"][0]
+            self.assertEqual(record["state"], "failed")
+            self.assertEqual(
+                record["release_reason"],
+                "provider_stop_failure_identity_reconciled",
+            )
+            self.assertNotIn("private provider failure", Path(turns_path).read_text())
+            self.assertNotIn("private provider failure", errors.getvalue())
+
+    def test_completion_hook_reconciled_stop_releases_stale_current_without_final(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            claim = {
+                "relay_command_seq": 53,
+                "relay_command_id": "cmd-53",
+                "intent_id": "cmd-53:item:1",
+                "agent_prompt": "Private stale prompt",
+                "provider": "codex",
+            }
+            Path(state_path).write_text(json.dumps(claim))
+            Path(claim_path).write_text(json.dumps(claim))
+            relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "codex-transient",
+                    "turn_id": "physical-turn-53",
+                    "provider_session_id": "embedded-codex",
+                    "provider": "codex",
+                    "prompt": claim["agent_prompt"],
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=200,
+                stderr=io.StringIO(),
+            )
+            Path(state_path).write_text(json.dumps({
+                **claim,
+                "relay_command_seq": 54,
+                "relay_command_id": "cmd-54",
+                "intent_id": "cmd-54:item:1",
+            }))
+            delivered: list[dict] = []
+            errors = io.StringIO()
+
+            self.assertFalse(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": "codex-persisted",
+                    "turn_id": "physical-turn-53",
+                    "provider_session_id": "embedded-codex",
+                    "provider": "codex",
+                    "last_assistant_message": "Private stale final",
+                },
+                state_path=state_path,
+                turns_path=turns_path,
+                write_control=lambda payload: delivered.append(payload) or True,
+                now=200.1,
+                stderr=errors,
+            ))
+
+            record = json.loads(Path(turns_path).read_text())["records"][0]
+            self.assertEqual(record["state"], "stale")
+            self.assertEqual(record["release_reason"], "stale_current_command_identity_reconciled")
+            self.assertEqual(delivered, [])
+            self.assertIn('"decision":"accepted_provider_identity_reconciliation"', errors.getvalue())
+            self.assertNotIn("Private stale final", errors.getvalue())
+
+    def test_completion_hook_rejects_ambiguous_identity_drift(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            Path(turns_path).write_text(json.dumps({
+                "records": [
+                    {
+                        "state": "active",
+                        "session_id": "transient-one",
+                        "turn_id": "ambiguous-turn",
+                        "provider_session_id": "embedded-codex",
+                        "provider": "codex",
+                        "relay_command_seq": 55,
+                        "relay_command_id": "cmd-55",
+                        "created_at": 300,
+                        "updated_at": 300,
+                    },
+                    {
+                        "state": "active",
+                        "session_id": "transient-two",
+                        "turn_id": "ambiguous-turn",
+                        "provider_session_id": "embedded-codex",
+                        "provider": "codex",
+                        "relay_command_seq": 56,
+                        "relay_command_id": "cmd-56",
+                        "created_at": 300,
+                        "updated_at": 300,
+                    },
+                ],
+            }))
+            errors = io.StringIO()
+
+            self.assertFalse(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": "persisted-session",
+                    "turn_id": "ambiguous-turn",
+                    "provider_session_id": "embedded-codex",
+                    "provider": "codex",
+                    "last_assistant_message": "Private ambiguous final",
+                },
+                state_path=os.path.join(temp_dir, "missing-state.json"),
+                turns_path=turns_path,
+                write_control=lambda _payload: True,
+                now=300.1,
+                stderr=errors,
+            ))
+
+            records = json.loads(Path(turns_path).read_text())["records"]
+            self.assertTrue(all(record["state"] == "active" for record in records))
+            diagnostic = errors.getvalue()
+            self.assertIn('"decision":"rejected_ambiguous_provider_identity"', diagnostic)
+            self.assertIn('"candidate_count":2', diagnostic)
+            self.assertIn("ignored provider completion without Relay voice correlation", diagnostic)
+            self.assertNotIn("Private ambiguous final", diagnostic)
+
+    def test_late_identity_drifted_stop_cannot_release_newer_manual_or_other_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            claim = {
+                "relay_command_seq": 57,
+                "relay_command_id": "cmd-57",
+                "agent_prompt": "Private Relay prompt",
+                "provider": "codex",
+            }
+            Path(state_path).write_text(json.dumps(claim))
+            Path(claim_path).write_text(json.dumps(claim))
+            relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "transient-old",
+                    "turn_id": "old-turn",
+                    "provider_session_id": "embedded-codex",
+                    "provider": "codex",
+                    "prompt": claim["agent_prompt"],
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=400,
+                stderr=io.StringIO(),
+            )
+            relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "persisted-session",
+                    "turn_id": "manual-turn",
+                    "provider_session_id": "embedded-codex",
+                    "provider": "codex",
+                    "prompt": "Private manual prompt",
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                now=401,
+                stderr=io.StringIO(),
+            )
+            turn_state = json.loads(Path(turns_path).read_text())
+            turn_state["records"].append({
+                    "state": "active",
+                    "session_id": "other-native-session",
+                    "turn_id": "old-turn",
+                    "provider_session_id": "other-embedded-session",
+                    "provider": "codex",
+                    "relay_command_seq": 58,
+                    "relay_command_id": "cmd-58",
+                    "created_at": 401,
+                    "updated_at": 401,
+            })
+            Path(turns_path).write_text(json.dumps(turn_state))
+
+            self.assertFalse(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": "persisted-session",
+                    "turn_id": "old-turn",
+                    "provider_session_id": "embedded-codex",
+                    "provider": "codex",
+                    "last_assistant_message": "Private late final",
+                },
+                state_path=state_path,
+                turns_path=turns_path,
+                write_control=lambda _payload: True,
+                now=402,
+                stderr=io.StringIO(),
+            ))
+
+            records = json.loads(Path(turns_path).read_text())["records"]
+            old_relay, manual, other_session = records
+            self.assertEqual(old_relay["state"], "orphaned")
+            self.assertEqual(manual["state"], "active")
+            self.assertEqual(other_session["state"], "active")
+
     def test_completion_hook_preserves_exact_manual_barrier_after_relay_turn(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:

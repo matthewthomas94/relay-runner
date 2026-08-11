@@ -1665,6 +1665,65 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         }
     }
 
+    func testIdentityReconciledStopReleasesNextCommandWithinPollingBoundary() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let providerSessionID = "embedded-\(provider)"
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-92\",\"relay_command_seq\":92}"
+            try "Queued after reconciled stop\n".write(
+                to: fixture.command,
+                atomically: true,
+                encoding: .utf8
+            )
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            var currentTime = Date(timeIntervalSince1970: 500.0)
+            try writeProviderTurnRecords([[
+                "state": "active",
+                "provider": provider,
+                "provider_session_id": providerSessionID,
+                "session_id": "transient-session",
+                "turn_id": "physical-turn",
+                "relay_command_seq": 91,
+                "relay_command_id": "cmd-91",
+                "created_at": 499.0,
+                "updated_at": 499.0,
+            ]], to: fixture.providerTurns)
+            var sent: [String] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+                schedule: { _, _, _ in },
+                isRunning: { true },
+                now: { currentTime },
+                providerSessionID: providerSessionID
+            )
+
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            currentTime = Date(timeIntervalSince1970: 500.2)
+            try writeProviderTurnRecords([[
+                "state": "completed_final",
+                "provider": provider,
+                "provider_session_id": providerSessionID,
+                "session_id": "transient-session",
+                "turn_id": "physical-turn",
+                "relay_command_seq": 91,
+                "relay_command_id": "cmd-91",
+                "created_at": 499.0,
+                "updated_at": 500.2,
+                "release_reason": "provider_stop_identity_reconciled",
+                "completion_correlation": "provider_identity_reconciled",
+                "completion_native_session_id": "persisted-session",
+            ]], to: fixture.providerTurns)
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent, ["Queued after reconciled stop"], provider)
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertTrue(events.contains(#""provider_turn_release_reason":"provider_stop_identity_reconciled""#), provider)
+            XCTAssertTrue(events.contains(#""event":"safe_boundary_verified""#), provider)
+        }
+    }
+
     func testProviderTeardownReleasesOnlyItsScopedActiveRecord() throws {
         let fixture = try makeFixture()
         try writeProviderTurnRecords([
