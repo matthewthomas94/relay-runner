@@ -36,6 +36,12 @@ final class VenvInstaller {
     @ObservationIgnored
     private var diagnosticTail: [String] = []
 
+    @ObservationIgnored
+    private var setupIncidentID: String?
+
+    @ObservationIgnored
+    private var setupRetryAttempt = 0
+
     /// Last progress fraction we surfaced to the UI. Tracked separately
     /// from `status` so out-of-order or repeated pip "Collecting" lines
     /// can never make the bar go backwards (jittery progress is worse
@@ -193,19 +199,61 @@ final class VenvInstaller {
         // gated by the same alreadyInstalled check on the caller side,
         // so on a re-run with a healthy venv nothing ever advanced
         // status off .idle and the screen sat stuck).
+        let incidentID = setupIncidentID ?? RelayDiagnostics.makeIncidentID()
+        let retryAttempt = setupIncidentID == nil ? 1 : setupRetryAttempt + 1
+        let correlationID = UUID().uuidString.lowercased()
+        setupIncidentID = incidentID
+        setupRetryAttempt = retryAttempt
+        RelayDiagnostics.shared.record(
+            process: "setup",
+            phase: "setup",
+            outcome: "started",
+            incidentID: incidentID,
+            retryAttempt: retryAttempt,
+            correlationID: correlationID,
+            provider: provider?.rawValue
+        )
         let alreadyReady = provider.map { Self.alreadyInstalled(for: $0) } ?? Self.alreadyInstalled
         if alreadyReady {
             status = .succeeded
+            RelayDiagnostics.shared.record(
+                process: "setup",
+                phase: "setup",
+                outcome: "ready",
+                incidentID: incidentID,
+                retryAttempt: retryAttempt,
+                correlationID: correlationID,
+                provider: provider?.rawValue
+            )
+            setupIncidentID = nil
+            setupRetryAttempt = 0
             return
         }
         guard let scriptPath = relayOrchestratorScriptPath() else {
-            status = .failed(message: "Couldn't locate relay-orchestrator in the app bundle.")
+            status = .failed(message: "Couldn't locate relay-orchestrator in the app bundle. Incident \(incidentID).")
+            RelayDiagnostics.shared.record(
+                process: "setup",
+                phase: "setup",
+                outcome: "failed",
+                incidentID: incidentID,
+                retryAttempt: retryAttempt,
+                correlationID: correlationID,
+                provider: provider?.rawValue,
+                summary: "bundled launcher unavailable",
+                attributes: ["error_code": "launcher_missing"]
+            )
             return
         }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: scriptPath)
         proc.arguments = ["--install"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["RELAY_APP_SESSION_ID"] = RelayDiagnostics.shared.appSessionID
+        environment["RELAY_CORRELATION_ID"] = correlationID
+        environment["RELAY_INCIDENT_ID"] = incidentID
+        environment["RELAY_RETRY_ATTEMPT"] = String(retryAttempt)
+        proc.environment = environment
         // Inherit env (PATH for Homebrew etc.) but null stdin so any
         // stray prompts don't hang the install indefinitely.
         proc.standardInput = FileHandle.nullDevice
@@ -244,15 +292,48 @@ final class VenvInstaller {
                 if proc.terminationStatus == 0 {
                     if let provider, !Self.alreadyInstalled(for: provider) {
                         self.status = .failed(
-                            message: "\(provider.displayName) setup finished, but the \(provider.displayName) command is still missing."
+                            message: "\(provider.displayName) setup finished, but the \(provider.displayName) command is still missing. Incident \(incidentID)."
+                        )
+                        RelayDiagnostics.shared.record(
+                            process: "setup",
+                            phase: "provider_readiness",
+                            outcome: "failed",
+                            incidentID: incidentID,
+                            retryAttempt: retryAttempt,
+                            correlationID: correlationID,
+                            provider: provider.rawValue,
+                            summary: "provider command unavailable",
+                            attributes: ["error_code": "provider_missing"]
                         )
                         return
                     }
                     self.status = .succeeded
+                    RelayDiagnostics.shared.record(
+                        process: "setup",
+                        phase: "setup",
+                        outcome: "ready",
+                        incidentID: incidentID,
+                        retryAttempt: retryAttempt,
+                        correlationID: correlationID,
+                        provider: provider?.rawValue
+                    )
+                    self.setupIncidentID = nil
+                    self.setupRetryAttempt = 0
                 } else {
                     let diagnostic = self.diagnosticTail.last.map { " Last step: \($0)" } ?? ""
                     self.status = .failed(
-                        message: "Setup exited with code \(proc.terminationStatus).\(diagnostic) Retry setup or run relay-orchestrator --status."
+                        message: "Setup exited with code \(proc.terminationStatus).\(diagnostic) Incident \(incidentID). Retry setup or run relay-orchestrator --status."
+                    )
+                    RelayDiagnostics.shared.record(
+                        process: "setup",
+                        phase: "setup",
+                        outcome: "failed",
+                        incidentID: incidentID,
+                        retryAttempt: retryAttempt,
+                        correlationID: correlationID,
+                        provider: provider?.rawValue,
+                        summary: "setup process exited",
+                        attributes: ["exit_code": String(proc.terminationStatus)]
                     )
                 }
             }
@@ -271,7 +352,18 @@ final class VenvInstaller {
             self.process = nil
             self.outputPipe?.fileHandleForReading.readabilityHandler = nil
             self.outputPipe = nil
-            status = .failed(message: "Couldn't launch setup: \(error.localizedDescription)")
+            status = .failed(message: "Couldn't launch setup. Incident \(incidentID).")
+            RelayDiagnostics.shared.record(
+                process: "setup",
+                phase: "setup",
+                outcome: "failed",
+                incidentID: incidentID,
+                retryAttempt: retryAttempt,
+                correlationID: correlationID,
+                provider: provider?.rawValue,
+                summary: error.localizedDescription,
+                attributes: ["error_code": "launch_failed"]
+            )
         }
     }
 

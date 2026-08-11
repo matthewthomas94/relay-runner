@@ -957,8 +957,12 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         XCTAssertEqual(spy.callCount, 1)
         XCTAssertEqual(model.snapshot, previous)
-        XCTAssertEqual(model.errorMessage, "daemon unavailable")
-        XCTAssertEqual(model.reloadState, .failed("daemon unavailable"))
+        let incidentID = try XCTUnwrap(model.workspaceIncidentID)
+        let expectedMessage = "daemon unavailable Incident \(incidentID)."
+        XCTAssertEqual(model.errorMessage, expectedMessage)
+        XCTAssertEqual(model.reloadState, .failed(expectedMessage))
+        XCTAssertEqual(model.workspaceRetryAttempt, 1)
+        XCTAssertNotNil(model.supportBundlePreview)
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
     }
 

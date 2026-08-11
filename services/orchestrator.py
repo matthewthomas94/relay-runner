@@ -108,6 +108,7 @@ from relay_authorization import (
     validate_and_mark_mutation,
 )
 from session_capture import capture_session_review
+from support_diagnostics import record_event as record_support_event
 from tickets import (
     TicketParseError,
     parse as parse_ticket,
@@ -9215,6 +9216,12 @@ def serve(daemon: Daemon) -> None:
     daemon.port = port
     _write_port_file(port)
     print(f"[orchestrator] listening on http://127.0.0.1:{port}", file=sys.stderr)
+    record_support_event(
+        process="orchestrator",
+        phase="orchestrator_launch",
+        outcome="ready",
+        attributes={"transport": "loopback_http"},
+    )
 
     stop = threading.Event()
 
@@ -9261,6 +9268,11 @@ def serve(daemon: Daemon) -> None:
     finally:
         daemon.shutdown()
         _clear_port_file()
+        record_support_event(
+            process="orchestrator",
+            phase="orchestrator_launch",
+            outcome="stopped",
+        )
         print("[orchestrator] stopped", file=sys.stderr)
 
 
@@ -9273,13 +9285,28 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args = _parse_args()
-    cfg = load_config(args.config) if args.config else load_config()
-    daemon = Daemon(cfg)
-    if args.print_port:
-        # Print early — port file still gets written by serve().
-        print(daemon.port)
-    serve(daemon)
+    record_support_event(
+        process="orchestrator",
+        phase="orchestrator_launch",
+        outcome="started",
+    )
+    try:
+        args = _parse_args()
+        cfg = load_config(args.config) if args.config else load_config()
+        daemon = Daemon(cfg)
+        if args.print_port:
+            # Print early — port file still gets written by serve().
+            print(daemon.port)
+        serve(daemon)
+    except Exception as error:
+        record_support_event(
+            process="orchestrator",
+            phase="orchestrator_launch",
+            outcome="failed",
+            summary=str(error),
+            attributes={"error_code": type(error).__name__},
+        )
+        raise
 
 
 if __name__ == "__main__":

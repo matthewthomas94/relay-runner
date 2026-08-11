@@ -46,6 +46,8 @@ Registered repositories can live anywhere on the Mac. Removing a project from Re
 
 Temporary voice coordination uses named pipes, sockets, and bounded state files under `/tmp`. Temporary audio is for local synthesis and playback. Diagnostic logs may contain filenames, provider errors, or status details; inspect and redact them before sharing.
 
+For the shareable allowlisted journal, retention, exclusions, and support-bundle workflow, see [Local support diagnostics](support-diagnostics.md). Raw operational logs are not included in that bundle.
+
 The repository's supported fresh-install/reset tool previews its scope unless `--execute` is explicitly supplied. Each reset profile also requires its exact `--confirm-profile` value and retains a recovery manifest. Review that preview before changing recoverable application state; see [fresh-install validation](fresh-install.md).
 
 ## Sensitive project content
