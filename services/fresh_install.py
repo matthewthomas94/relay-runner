@@ -202,8 +202,6 @@ class FreshInstallCoordinator:
         destination = self.trash_root / (
             f"relay-runner-state-{_timestamp()}-{uuid.uuid4().hex[:8]}"
         )
-        self._inject("before_state_move")
-        os.replace(self.state_root, destination)
         manifest_path = destination.with_name(destination.name + ".reset-recovery.json")
         manifest = {
             "schema_version": 1,
@@ -216,7 +214,15 @@ class FreshInstallCoordinator:
             "restore_requires_daemon_stopped": True,
             "repositories_must_not_be_mutated": True,
         }
-        _write_json_atomic(manifest_path, manifest)
+        try:
+            _write_json_atomic(manifest_path, manifest)
+        except OSError as error:
+            raise FreshInstallError(
+                f"Could not persist reset recovery journal: {error}",
+                recovery="Nothing was moved; repair available storage and retry the deliberate reset.",
+            ) from error
+        self._inject("before_state_move")
+        os.replace(self.state_root, destination)
         self._inject("after_state_move")
         self._verify_repositories(repositories_before)
         return FreshInstallResult(
@@ -471,9 +477,22 @@ def _verify_repository_snapshots(snapshots: list[Mapping[str, Any]]) -> None:
 
 def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
     temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(dict(value), sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(dict(value), sort_keys=True, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except Exception:
+        if temporary.exists() and temporary.is_file() and not temporary.is_symlink():
+            temporary.unlink()
+        raise
 
 
 def _json_digest(value: Any) -> str:

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services"))
@@ -128,6 +129,19 @@ class FreshInstallTests(unittest.TestCase):
             )
 
         self.assertEqual(self.tree(self.state), before)
+        self.assertFalse(any(self.trash.glob("relay-runner-state-*")))
+
+    def test_reset_journal_write_failure_leaves_state_in_place(self):
+        state_before = self.tree(self.state)
+
+        with patch("fresh_install._write_json_atomic", side_effect=OSError("simulated full disk")):
+            with self.assertRaisesRegex(FreshInstallError, "Could not persist reset recovery journal"):
+                self.coordinator().reset_state(
+                    execute=True,
+                    confirm_daemon_stopped=True,
+                )
+
+        self.assertEqual(self.tree(self.state), state_before)
         self.assertFalse(any(self.trash.glob("relay-runner-state-*")))
 
     def test_interrupted_app_replacement_restores_prior_app_and_never_changes_state_or_repo(self):
