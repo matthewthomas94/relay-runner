@@ -106,6 +106,7 @@ enum TicketImageStore {
             verificationBlocker: ticket.verificationBlocker,
             verificationResume: ticket.verificationResume,
             verificationOrigin: ticket.verificationOrigin,
+            preservedFrontmatter: ticket.preservedFrontmatter,
             draft: ticket.draft,
             order: ticket.order,
             modifiedAt: ticket.modifiedAt,

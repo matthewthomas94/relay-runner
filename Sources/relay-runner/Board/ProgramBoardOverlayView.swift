@@ -358,6 +358,7 @@ struct ProgramBoardOverlayView: View {
                         onCommit: onEditCommit,
                         onCancel: onEditCancel,
                         onDelete: onDelete,
+                        errorMessage: model.editingErrorMessage,
                         chooseImages: onChooseTicketImages
                     )
                 }
@@ -2731,6 +2732,7 @@ private struct ProgramTicketEditModal: View {
     let onCommit: (ProgramBoardEditRequest) -> Void
     let onCancel: () -> Void
     let onDelete: (ProgramBoardDeleteRequest) -> Void
+    let errorMessage: String?
     let chooseImages: (@escaping ([URL]) -> Void) -> Void
 
     @State private var title: String
@@ -2754,6 +2756,7 @@ private struct ProgramTicketEditModal: View {
         onCommit: @escaping (ProgramBoardEditRequest) -> Void,
         onCancel: @escaping () -> Void,
         onDelete: @escaping (ProgramBoardDeleteRequest) -> Void,
+        errorMessage: String?,
         chooseImages: @escaping (@escaping ([URL]) -> Void) -> Void
     ) {
         self.draft = draft
@@ -2761,6 +2764,7 @@ private struct ProgramTicketEditModal: View {
         self.onCommit = onCommit
         self.onCancel = onCancel
         self.onDelete = onDelete
+        self.errorMessage = errorMessage
         self.chooseImages = chooseImages
         self._title = State(initialValue: draft.title)
         self._status = State(initialValue: draft.status)
@@ -2852,6 +2856,11 @@ private struct ProgramTicketEditModal: View {
                 }
             }
 
+            if let errorMessage {
+                ProgramErrorStrip(message: errorMessage)
+                    .accessibilityLabel("Ticket save failed. \(errorMessage)")
+            }
+
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
                 ProgramWorkspaceActionButton(
@@ -2936,7 +2945,11 @@ private struct ProgramTicketTitleField: View {
                 .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
                 .background(ProgramTicketFieldBackground())
         }
-        .onAppear { isFocused = true }
+        .onAppear {
+            DispatchQueue.main.async {
+                isFocused = true
+            }
+        }
     }
 }
 
