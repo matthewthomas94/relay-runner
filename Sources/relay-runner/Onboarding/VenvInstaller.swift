@@ -1,12 +1,10 @@
 import Foundation
 import Observation
 
-/// Drives the Python venv bootstrap from inside the app, by invoking
-/// `relay-bridge --venv-only` and streaming its output. Reusing the
-/// shell script (rather than reimplementing in Swift) keeps the
-/// onboarding flow on the same battle-tested path that interactive
-/// `/relay-bridge` sessions use, including Homebrew auto-install,
-/// Python version bounds, and dep-import re-checks.
+/// Drives first-run service bootstrap from inside the app by invoking
+/// `relay-orchestrator --install` and streaming its output. That launcher
+/// delegates Python setup to relay-bridge, then installs and health-checks
+/// the launchd daemon and provider tools before reporting success.
 @Observable
 final class VenvInstaller {
 
@@ -34,6 +32,9 @@ final class VenvInstaller {
 
     @ObservationIgnored
     private var outputPipe: Pipe?
+
+    @ObservationIgnored
+    private var diagnosticTail: [String] = []
 
     /// Last progress fraction we surfaced to the UI. Tracked separately
     /// from `status` so out-of-order or repeated pip "Collecting" lines
@@ -87,6 +88,7 @@ final class VenvInstaller {
             && fm.fileExists(atPath: stopSkillPath)
             && fm.fileExists(atPath: codexBridgeSkillPath)
             && fm.fileExists(atPath: codexStopSkillPath)
+            && orchestratorReady
     }
 
     private static var anyAgentCLIInstalled: Bool {
@@ -132,6 +134,49 @@ final class VenvInstaller {
             .appendingPathComponent(".codex/skills/relay-stop/SKILL.md")
     }
 
+    private static var orchestratorReady: Bool {
+        let fm = FileManager.default
+        let plist = (NSHomeDirectory() as NSString)
+            .appendingPathComponent("Library/LaunchAgents/com.relay.orchestrator.plist")
+        guard fm.fileExists(atPath: plist), launchdJobLoaded else { return false }
+
+        let portFile = "/tmp/relay_orchestrator.port"
+        guard let rawPort = try? String(contentsOfFile: portFile, encoding: .utf8),
+              let port = Int(rawPort.trimmingCharacters(in: .whitespacesAndNewlines)),
+              port > 0,
+              let url = URL(string: "http://127.0.0.1:\(port)/v1/health") else {
+            return false
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 0.5
+        let semaphore = DispatchSemaphore(value: 0)
+        var healthy = false
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            healthy = (response as? HTTPURLResponse)?.statusCode == 200
+            semaphore.signal()
+        }.resume()
+        guard semaphore.wait(timeout: .now() + 0.75) == .success else { return false }
+        return healthy
+    }
+
+    private static var launchdJobLoaded: Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = [
+            "print",
+            "gui/\(getuid())/com.relay.orchestrator",
+        ]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
     /// Begin the bootstrap if it isn't already running. Idempotent —
     /// safe to call from `.onAppear` even if the user navigates back
     /// and forward across the step.
@@ -153,14 +198,14 @@ final class VenvInstaller {
             status = .succeeded
             return
         }
-        guard let scriptPath = relayBridgeScriptPath() else {
-            status = .failed(message: "Couldn't locate relay-bridge in the app bundle.")
+        guard let scriptPath = relayOrchestratorScriptPath() else {
+            status = .failed(message: "Couldn't locate relay-orchestrator in the app bundle.")
             return
         }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: scriptPath)
-        proc.arguments = ["--venv-only"]
+        proc.arguments = ["--install"]
         // Inherit env (PATH for Homebrew etc.) but null stdin so any
         // stray prompts don't hang the install indefinitely.
         proc.standardInput = FileHandle.nullDevice
@@ -205,8 +250,9 @@ final class VenvInstaller {
                     }
                     self.status = .succeeded
                 } else {
+                    let diagnostic = self.diagnosticTail.last.map { " Last step: \($0)" } ?? ""
                     self.status = .failed(
-                        message: "Setup exited with code \(proc.terminationStatus). See Console.app for details."
+                        message: "Setup exited with code \(proc.terminationStatus).\(diagnostic) Retry setup or run relay-orchestrator --status."
                     )
                 }
             }
@@ -216,6 +262,7 @@ final class VenvInstaller {
         // Retry must start from 0% even if a prior attempt got partway
         // through — reset before kicking off the new subprocess.
         lastProgress = 0
+        diagnosticTail = []
         status = .running(message: "Starting setup…", progress: nil)
 
         do {
@@ -246,6 +293,12 @@ final class VenvInstaller {
         guard case .running(let currentMessage, _) = status else { return }
         var message = currentMessage
         for line in lines {
+            let boundedLine = String(line.prefix(300))
+            diagnosticTail.append(boundedLine)
+            if diagnosticTail.count > 12 {
+                diagnosticTail.removeFirst(diagnosticTail.count - 12)
+            }
+            NSLog("[VenvInstaller] %@", boundedLine)
             if let marker = parseProgressMarker(line) {
                 lastProgress = max(lastProgress, marker.percent / 100.0)
                 message = marker.label
@@ -294,16 +347,16 @@ final class VenvInstaller {
             .path
     }
 
-    /// Resolve the relay-bridge script. Prefer the bundled copy at
-    /// Contents/SharedSupport/scripts/relay-bridge; fall back to the
+    /// Resolve the orchestrator installer. Prefer the bundled copy at
+    /// Contents/SharedSupport/scripts/relay-orchestrator; fall back to the
     /// repo's scripts/ dir for `swift run`-style local iteration.
-    private func relayBridgeScriptPath() -> String? {
+    private func relayOrchestratorScriptPath() -> String? {
         let fm = FileManager.default
         let bundled = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/SharedSupport/scripts/relay-bridge")
+            .appendingPathComponent("Contents/SharedSupport/scripts/relay-orchestrator")
             .path
         if fm.isExecutableFile(atPath: bundled) { return bundled }
-        let repoLocal = fm.currentDirectoryPath + "/scripts/relay-bridge"
+        let repoLocal = fm.currentDirectoryPath + "/scripts/relay-orchestrator"
         if fm.isExecutableFile(atPath: repoLocal) { return repoLocal }
         return nil
     }

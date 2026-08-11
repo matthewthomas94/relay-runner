@@ -13,7 +13,10 @@ import re
 import shutil
 import subprocess
 import threading
-import tomllib
+try:
+    from services.toml_compat import tomllib
+except ModuleNotFoundError:
+    from toml_compat import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath

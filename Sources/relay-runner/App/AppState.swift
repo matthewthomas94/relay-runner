@@ -315,7 +315,10 @@ final class AppState {
         notchStatusController.clearWorkingActivity()
     }
 
-    private func refreshWorkspaceActivity(invalidateRoute: Bool = false) {
+    private func refreshWorkspaceActivity(
+        invalidateRoute: Bool = false,
+        completion: (() -> Void)? = nil
+    ) {
         if invalidateRoute {
             workspaceActivityRefreshID += 1
             workspaceActivityTask?.cancel()
@@ -351,6 +354,7 @@ final class AppState {
             } else {
                 self.programBoardOverlay.refreshRouteIfNeeded()
             }
+            completion?()
         }
     }
 
@@ -1299,20 +1303,20 @@ final class AppState {
             },
             completion: { [weak self] path in
                 guard let self else { return }
-                defer { self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings) }
-                guard let path else { return }
-                do {
+                guard let path else {
+                    self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings)
+                    return
+                }
+                self.performProjectRegistration(
+                    resumeInSettings: resumeInSettings,
+                    completion: completion
+                ) {
                     let url = URL(fileURLWithPath: path, isDirectory: true)
                     let candidate = try projectRegistryV2.inspect(selectedURL: url)
-                    let project = try projectRegistryV2.register(
+                    return try projectRegistryV2.register(
                         candidate: candidate,
                         displayName: candidate.repoPath.lastPathComponent
                     )
-                    self.refreshWorkspaceActivity(invalidateRoute: true)
-                    completion?(.success(project))
-                } catch {
-                    self.surfaceProjectManagementFailure(error)
-                    completion?(.failure(error))
                 }
             }
         )
@@ -1332,17 +1336,47 @@ final class AppState {
             panel.nameFieldStringValue = "New Project"
             panel.canCreateDirectories = true
             let selectedURL = WorkspaceDirectoryPicker.runAppKitPanel(panel)
-            defer { self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings) }
-            guard let selectedURL else { return }
-            do {
-                let project = try projectRegistryV2.createProject(at: selectedURL)
-                self.refreshWorkspaceActivity(invalidateRoute: true)
-                completion?(.success(project))
-            } catch {
+            guard let selectedURL else {
+                self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings)
+                return
+            }
+            self.performProjectRegistration(
+                resumeInSettings: resumeInSettings,
+                completion: completion
+            ) {
+                try projectRegistryV2.createProject(at: selectedURL)
+            }
+        }
+    }
+
+    private func performProjectRegistration(
+        resumeInSettings: Bool,
+        completion: ((Result<RegisteredProjectV2, Error>) -> Void)?,
+        operation: @escaping () throws -> RegisteredProjectV2
+    ) {
+        Task { @MainActor [weak self] in
+            let result = await Self.performProjectRegistrationWork(operation)
+            guard let self else { return }
+            switch result {
+            case .success(let project):
+                self.refreshWorkspaceActivity(invalidateRoute: true) {
+                    self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings)
+                    completion?(.success(project))
+                }
+            case .failure(let error):
                 self.surfaceProjectManagementFailure(error)
+                self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings)
                 completion?(.failure(error))
             }
         }
+    }
+
+    static func performProjectRegistrationWork<T>(
+        _ operation: @escaping () throws -> T
+    ) async -> Result<T, Error> {
+        await Task.detached(priority: .utility) {
+            Result { try operation() }
+        }.value
     }
 
     func locateRegisteredProject(

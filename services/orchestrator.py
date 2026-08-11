@@ -31,7 +31,10 @@ import subprocess
 import sys
 import threading
 import time
-import tomllib
+try:
+    from services.toml_compat import tomllib
+except ModuleNotFoundError:
+    from toml_compat import tomllib
 import uuid
 from datetime import datetime, timezone
 from contextlib import contextmanager
@@ -368,6 +371,7 @@ def _registered_project_repo_paths(registry_path: Path) -> list[str]:
     if not isinstance(projects, list):
         return []
 
+    registry_v2 = payload.get("schema_version") == 2
     active_project = str(payload.get("activeProjectID") or "").strip()
     active_project_path = str(Path(active_project).expanduser().resolve()) if active_project else None
     active_workspace_root = str(payload.get("activeWorkspaceRootID") or "").strip()
@@ -383,7 +387,13 @@ def _registered_project_repo_paths(registry_path: Path) -> list[str]:
     for record in projects:
         if not isinstance(record, dict):
             continue
-        raw = record.get("repoPath") or record.get("id")
+        if registry_v2 and record.get("availability") != "available":
+            continue
+        raw = (
+            record.get("last_resolved_path")
+            if registry_v2
+            else record.get("repoPath") or record.get("id")
+        )
         repo_path = str(raw or "").strip()
         if not repo_path:
             continue
@@ -4183,6 +4193,12 @@ class Daemon:
         except Exception as e:  # noqa: BLE001 - daemon startup must still finish.
             print(f"[orchestrator] queue-drain startup reconcile failed: {e}", file=sys.stderr)
 
+    def _registered_projects_path(self) -> Path:
+        registry_v2 = getattr(self, "project_registry_v2_path", None)
+        if _project_registry_v2_enabled() and registry_v2 is not None:
+            return registry_v2
+        return self.program_registry_path
+
     def artifact_rollout_status(self) -> dict[str, Any]:
         """Expose bounded cohort/recovery diagnostics without project identities."""
         try:
@@ -5379,7 +5395,7 @@ Title: {ticket['title']}
             if str(path).strip()
         ]
         if not requested:
-            requested = _registered_project_repo_paths(self.program_registry_path)
+            requested = _registered_project_repo_paths(self._registered_projects_path())
             if store is not None:
                 requested.extend(store.active_repo_paths())
         seen: set[str] = set()
@@ -6630,7 +6646,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         projects: list[dict[str, Any]] = []
         dispatched: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
-        registered_repo_paths = _registered_project_repo_paths(self.program_registry_path)
+        registered_repo_paths = _registered_project_repo_paths(self._registered_projects_path())
         if repo_paths is not None:
             requested_repo_paths = {
                 str(Path(path).expanduser().resolve())
@@ -7900,7 +7916,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
 
     def _followup_target_repo(self, origin_repo: Path, value: str) -> Path:
         target = Path(value).expanduser().resolve()
-        registered = {Path(path).resolve() for path in _registered_project_repo_paths(self.program_registry_path)}
+        registered = {
+            Path(path).resolve()
+            for path in _registered_project_repo_paths(self._registered_projects_path())
+        }
         if target != origin_repo and target not in registered:
             raise ValueError(
                 "ambiguous project ownership: select one registered target project before accepting"
@@ -8570,9 +8589,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         limit: int = 8,
     ) -> dict:
         store = GraphifyCoreStore(self.graphify_path)
+        registry_path = self._registered_projects_path()
         counts = ingest_registered_projects(
             store,
-            registry_path=self.program_registry_path,
+            registry_path=registry_path,
             runs_db_path=self.runs.path,
             index_files=False,
         )
@@ -8581,7 +8601,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 "query": query or "summary",
                 "provider": provider,
                 "message": (
-                    f"No registered projects found at {self.program_registry_path}. "
+                    f"No registered projects found at {registry_path}. "
                     "Activate a project by path or start a Relay bridge in a git repo, then ask again."
                 ),
                 "items": [],
@@ -8607,11 +8627,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             repo_paths=repo_paths,
         )
         store = GraphifyCoreStore(self.graphify_path)
-        registry_path = (
-            self.project_registry_v2_path
-            if _project_registry_v2_enabled()
-            else self.program_registry_path
-        )
+        registry_path = self._registered_projects_path()
         ingest_registered_projects(
             store,
             registry_path=registry_path,
@@ -8641,7 +8657,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         store = GraphifyCoreStore(self.graphify_path)
         counts = ingest_registered_projects(
             store,
-            registry_path=self.program_registry_path,
+            registry_path=self._registered_projects_path(),
             runs_db_path=self.runs.path,
             index_files=False,
         )

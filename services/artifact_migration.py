@@ -22,7 +22,10 @@ import sqlite3
 import subprocess
 import tempfile
 import time
-import tomllib
+try:
+    from services.toml_compat import tomllib
+except ModuleNotFoundError:
+    from toml_compat import tomllib
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath

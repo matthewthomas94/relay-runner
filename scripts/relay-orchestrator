@@ -26,10 +26,10 @@ VENV_PYTHON="$SERVICES_DIR/.venv/bin/python"
 export PYTHONDONTWRITEBYTECODE=1
 
 ORCH_DIR="$USER_DATA_DIR/orchestrator"
-LOG_FILE="/tmp/relay_orchestrator.log"
-ERR_FILE="/tmp/relay_orchestrator.err"
-PORT_FILE="/tmp/relay_orchestrator.port"
-HEALTH_WAIT_ATTEMPTS=100
+LOG_FILE="${RELAY_ORCHESTRATOR_LOG_FILE:-/tmp/relay_orchestrator.log}"
+ERR_FILE="${RELAY_ORCHESTRATOR_ERR_FILE:-/tmp/relay_orchestrator.err}"
+PORT_FILE="${RELAY_ORCHESTRATOR_PORT_FILE:-/tmp/relay_orchestrator.port}"
+HEALTH_WAIT_ATTEMPTS="${RELAY_ORCHESTRATOR_HEALTH_WAIT_ATTEMPTS:-100}"
 
 PLIST_LABEL="com.relay.orchestrator"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
@@ -408,13 +408,25 @@ launchctl_load() {
         echo "[relay-orchestrator] no plist at $PLIST_PATH — run --install first." >&2
         return 1
     fi
-    # bootstrap is the modern replacement for `load -w`. Errors when already loaded;
-    # fall back to a quiet kickstart in that case.
+    # bootstrap is the modern replacement for `load -w`. A failed bootstrap
+    # can mean either an already-loaded job or a stale launchd registration;
+    # distinguish those cases so failures never masquerade as readiness.
     if launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null; then
         echo "[relay-orchestrator] daemon loaded via launchctl bootstrap."
-    else
-        launchctl kickstart -k "gui/$(id -u)/${PLIST_LABEL}" >/dev/null 2>&1 || true
+    elif launchctl_loaded; then
+        if ! launchctl kickstart -k "$LAUNCHCTL_SERVICE" >/dev/null 2>&1; then
+            echo "[relay-orchestrator] launchd job is loaded but could not be restarted." >&2
+            return 1
+        fi
         echo "[relay-orchestrator] daemon already loaded — restarted via kickstart."
+    else
+        launchctl bootout "$LAUNCHCTL_SERVICE" >/dev/null 2>&1 || true
+        if ! launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null; then
+            echo "[relay-orchestrator] launchd could not load $PLIST_PATH." >&2
+            echo "[relay-orchestrator] Run --status and inspect $ERR_FILE before retrying setup." >&2
+            return 1
+        fi
+        echo "[relay-orchestrator] repaired stale launchd registration."
     fi
 }
 
@@ -466,6 +478,13 @@ wait_for_health() {
         fi
         sleep 0.2
     done
+    echo "[relay-orchestrator] daemon did not become healthy within the bounded startup window." >&2
+    if launchctl_loaded; then
+        echo "[relay-orchestrator] launchd job is loaded; recent daemon diagnostics:" >&2
+    else
+        echo "[relay-orchestrator] launchd job is not loaded; retry --install after checking launchd." >&2
+    fi
+    tail -8 "$ERR_FILE" 2>/dev/null | sed 's/^/[relay-orchestrator]   /' >&2 || true
     return 1
 }
 
@@ -490,7 +509,10 @@ launchctl_restart_if_idle() {
         return 75
     fi
 
-    launchctl kickstart -k "$LAUNCHCTL_SERVICE" >/dev/null 2>&1 || true
+    if ! launchctl kickstart -k "$LAUNCHCTL_SERVICE" >/dev/null 2>&1; then
+        echo "[relay-orchestrator] loaded daemon could not be restarted via launchd." >&2
+        return 1
+    fi
     echo "[relay-orchestrator] daemon restarted via kickstart."
     wait_for_health
 }
@@ -514,6 +536,17 @@ cmd_status() {
         echo "  (absent)"
     fi
     echo "Plist: $([ -f "$PLIST_PATH" ] && echo installed || echo missing)"
+    echo "Launchd job: $(launchctl_loaded && echo loaded || echo not-loaded)"
+    local status_port=""
+    if [ -f "$PORT_FILE" ]; then
+        status_port="$(cat "$PORT_FILE" 2>/dev/null || true)"
+    fi
+    if [ -n "$status_port" ] \
+       && curl -fsS --max-time 1 "http://127.0.0.1:${status_port}/v1/health" >/dev/null 2>&1; then
+        echo "Health endpoint: healthy"
+    else
+        echo "Health endpoint: unavailable"
+    fi
     echo "Recent stderr ($ERR_FILE):"
     tail -5 "$ERR_FILE" 2>/dev/null | sed 's/^/  /' || echo "  (no log yet)"
 }

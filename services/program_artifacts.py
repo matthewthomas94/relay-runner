@@ -15,7 +15,10 @@ import json
 import math
 import os
 import subprocess
-import tomllib
+try:
+    from services.toml_compat import tomllib
+except ModuleNotFoundError:
+    from toml_compat import tomllib
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping

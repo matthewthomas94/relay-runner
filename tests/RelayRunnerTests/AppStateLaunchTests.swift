@@ -2,6 +2,14 @@ import XCTest
 @testable import relay_runner
 
 final class AppStateLaunchTests: XCTestCase {
+    func testColdProjectRegistrationWorkRunsOffMainThread() async throws {
+        let result = await AppState.performProjectRegistrationWork {
+            Thread.isMainThread
+        }
+
+        XCTAssertFalse(try result.get())
+    }
+
     func testLaunchPlanStartsOverlayWithoutMicrophonePermission() {
         let plan = AppState.launchPlan(for: .denied)
 
