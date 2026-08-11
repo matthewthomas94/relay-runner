@@ -374,6 +374,26 @@ class FreshInstallTests(unittest.TestCase):
         self.assertTrue(self.state.is_dir())
         self.assertEqual(preference.read_text(), "preferences\n")
 
+    def test_interrupted_profile_reset_restores_a_dangling_claude_command_symlink(self):
+        command = self.home / ".claude/commands/relay-bridge.md"
+        command.parent.mkdir(parents=True)
+        command.symlink_to(self.root / "missing-relay-bridge.md")
+
+        def fail(stage: str) -> None:
+            if stage == "after_profile_move:claude-relay-bridge-command":
+                raise RuntimeError("simulated interruption")
+
+        with self.assertRaises(FreshInstallInjectedFailure):
+            self.coordinator(failure_injector=fail).reset_profile(
+                "provider-integrations",
+                execute=True,
+                confirm_daemon_stopped=True,
+                confirm_profile="provider-integrations",
+            )
+
+        self.assertTrue(command.is_symlink())
+        self.assertEqual(os.readlink(command), str(self.root / "missing-relay-bridge.md"))
+
     def test_profile_refuses_to_move_state_when_process_inspection_fails(self):
         preference = self.home / "Library/Preferences/com.relayrunner.app.plist"
         preference.parent.mkdir(parents=True)

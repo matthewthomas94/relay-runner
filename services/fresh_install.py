@@ -568,7 +568,7 @@ class FreshInstallCoordinator:
         for item in reversed(moved):
             source = Path(item["trashed_path"])
             target = Path(item["original_path"])
-            if source.exists() and not target.exists():
+            if (source.exists() or source.is_symlink()) and not (target.exists() or target.is_symlink()):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(source, target)
 
