@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import shutil
 import stat
@@ -35,6 +36,180 @@ class FirstRunStartupTests(unittest.TestCase):
         self.assertIn('proc.arguments = ["--install"]', source)
         self.assertIn("relayOrchestratorScriptPath", source)
         self.assertIn("orchestratorReady", source)
+
+    def test_retained_unsupported_venv_is_recreated_before_dependency_short_circuit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scripts = root / "scripts"
+            services = root / "services"
+            fake_bin = root / "bin"
+            home = root / "home"
+            scripts.mkdir()
+            services.mkdir()
+            fake_bin.mkdir()
+            home.mkdir()
+
+            source = (ROOT / "scripts" / "relay-bridge").read_text()
+            start = source.index("find_codex_bin() {")
+            end = source.index("\n}\n", start) + 3
+            source = source[:start] + 'find_codex_bin() {\n    echo ""\n}\n' + source[end:]
+            source = source.replace(
+                "/opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13",
+                "python3.13",
+            )
+            launcher = scripts / "relay-bridge"
+            launcher.write_text(source)
+            launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+            (services / "requirements.txt").write_text("placeholder\n")
+
+            for relative in (
+                ".claude/commands/relay-bridge.md",
+                ".claude/commands/relay-stop.md",
+                ".claude/commands/relay-dispatch.md",
+                ".claude/commands/relay-workflow.md",
+                ".codex/skills/relay-bridge/SKILL.md",
+                ".codex/skills/relay-stop/SKILL.md",
+                ".codex/skills/relay-dispatch/SKILL.md",
+                ".codex/skills/relay-workflow/SKILL.md",
+                ".local/share/kokoro/kokoro-v1.0.onnx",
+                ".local/share/kokoro/voices-v1.0.bin",
+                "Library/LaunchAgents/com.relay.orchestrator.plist",
+            ):
+                path = home / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("ready\n")
+            (home / ".local/bin").mkdir(parents=True, exist_ok=True)
+            self.write_executable(home / ".local/bin/claude", "#!/bin/bash\nexit 0\n")
+
+            venv_bin = home / "Library/Application Support/relay-runner/services/.venv/bin"
+            venv_bin.mkdir(parents=True)
+            self.write_executable(
+                venv_bin / "python3",
+                """#!/bin/bash
+case "${2:-}" in
+  *'sys.exit(0 if (3,10)'*) exit 1 ;;
+  *'print(".".join'*) echo 3.9; exit 0 ;;
+  *'import numpy'*) exit 0 ;;
+esac
+exit 0
+""",
+            )
+
+            created = root / "venv-created"
+            self.write_executable(
+                fake_bin / "python3.13",
+                """#!/bin/bash
+if [ "${1:-}" = "--version" ]; then echo 'Python 3.13.7'; exit 0; fi
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
+  mkdir -p "$3/bin"
+  cp "$0" "$3/bin/python3"
+  cp "$0" "$3/bin/python"
+  printf '#!/bin/bash\nexit 0\n' > "$3/bin/pip"
+  chmod +x "$3/bin/python3" "$3/bin/python" "$3/bin/pip"
+  touch "$FAKE_VENV_CREATED"
+  exit 0
+fi
+exit 0
+""",
+            )
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "FAKE_VENV_CREATED": str(created),
+                "RELAY_DIAGNOSTICS_DIR": str(root / "diagnostics"),
+            }
+
+            result = subprocess.run(
+                [str(launcher), "--venv-only"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(created.exists(), result.stdout + result.stderr)
+            self.assertIn("Existing venv uses Python 3.9", result.stdout)
+            self.assertIn("Venv ready (--venv-only)", result.stdout)
+
+    def test_pre_main_import_failure_is_safe_and_stops_launchd_retry_churn(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scripts = root / "scripts"
+            services = root / "services"
+            home = root / "home"
+            diagnostics = root / "diagnostics"
+            scripts.mkdir()
+            services.mkdir()
+            home.mkdir()
+            launcher = scripts / "relay-orchestrator"
+            shutil.copy2(ROOT / "scripts" / "relay-orchestrator", launcher)
+            self.write_executable(
+                scripts / "relay-bridge",
+                """#!/bin/bash
+set -e
+venv="$HOME/Library/Application Support/relay-runner/services/.venv/bin"
+mkdir -p "$venv"
+cat > "$venv/python" <<'PYTHON_EOF'
+#!/bin/bash
+if [ "${1:-}" = "-c" ]; then echo '3.9.18'; exit 0; fi
+if [ "${1:-}" = "-" ]; then cat >/dev/null; echo 'ModuleNotFoundError'; exit 1; fi
+touch "$FAKE_DAEMON_EXECUTED"
+PYTHON_EOF
+chmod +x "$venv/python"
+""",
+            )
+            (services / "orchestrator.py").write_text("")
+            daemon_executed = root / "daemon-executed"
+            result = subprocess.run(
+                [str(launcher), "--run"],
+                env={
+                    **os.environ,
+                    "HOME": str(home),
+                    "PATH": "/usr/bin:/bin",
+                    "FAKE_DAEMON_EXECUTED": str(daemon_executed),
+                    "RELAY_DIAGNOSTICS_DIR": str(diagnostics),
+                    "RELAY_CORRELATION_ID": "22222222-2222-4222-8222-222222222222",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(daemon_executed.exists())
+            self.assertIn(
+                "orchestrator import preflight failed under Python 3.9.18 (ModuleNotFoundError)",
+                result.stderr,
+            )
+            rows = [
+                json.loads(line)
+                for path in diagnostics.glob("events-v1-shell-*.jsonl")
+                for line in path.read_text().splitlines()
+            ]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["phase"], "orchestrator_preflight")
+            self.assertEqual(rows[0]["outcome"], "failed")
+            self.assertEqual(rows[0]["attributes"]["version"], "3.9.18")
+            self.assertEqual(rows[0]["attributes"]["error_code"], "ModuleNotFoundError")
+            self.assertLessEqual(len(rows[0]["summary"]), 80)
+
+    def test_preflight_imports_the_complete_shipped_orchestrator_module(self):
+        source = (ROOT / "scripts" / "relay-orchestrator").read_text()
+        bridge = (ROOT / "scripts" / "relay-bridge").read_text()
+        orchestrator = (SERVICES / "orchestrator.py").read_text()
+
+        self.assertIn('importlib.import_module("services.orchestrator")', source)
+        self.assertIn("RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED=1", source)
+        self.assertIn('if [ -z "${RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED:-}" ]', bridge)
+        self.assertLess(
+            source.index('importlib.import_module("services.orchestrator")'),
+            source.index("record_support_event shell setup ready"),
+        )
+        self.assertIn("ArtifactLifecycleCoordinator", orchestrator)
+        self.assertIn("ArtifactRolloutStore", orchestrator)
+        self.assertIn("ArtifactStore", orchestrator)
 
     def test_stale_unloaded_launch_agent_is_repaired(self):
         result = self.run_launcher(stale_bootstrap=True, healthy=True)

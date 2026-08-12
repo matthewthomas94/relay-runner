@@ -1144,7 +1144,9 @@ if $INSTALL_SKILLS_ONLY; then
     exit 0
 fi
 
-record_support_event shell setup started
+if [ -z "${RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED:-}" ]; then
+    record_support_event shell setup started
+fi
 
 # -- Kill any existing bridge (only one voice session at a time) --
 # Skipped under --venv-only so onboarding doesn't tear down a running
@@ -1187,6 +1189,16 @@ PYTHON="$SERVICES_DIR/.venv/bin/python3"
 KOKORO_DIR="$HOME/.local/share/kokoro"
 KOKORO_MODEL_FILE="$KOKORO_DIR/kokoro-v1.0.onnx"
 KOKORO_VOICES_FILE="$KOKORO_DIR/voices-v1.0.bin"
+
+# Check the retained interpreter before dependency imports can short-circuit
+# setup. Older releases accepted Python 3.9 venvs; their voice dependencies may
+# still import even though the current orchestrator's artifact modules cannot.
+if [ -x "$PYTHON" ] && \
+   ! "$PYTHON" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
+    retained_version="$("$PYTHON" -c 'import sys; print(".".join(map(str, sys.version_info[:2])))' 2>/dev/null || echo unknown)"
+    echo "[Relay Runner] Existing venv uses Python $retained_version, which Relay Runner doesn't support. Recreating with a 3.10–3.13 interpreter."
+    rm -rf "$SERVICES_DIR/.venv"
+fi
 
 PYTHON_DEPS_OK=false
 "$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1 && PYTHON_DEPS_OK=true
@@ -1398,14 +1410,6 @@ if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $AGENT_CLI_OK || ! $RELAY_SKILL
         echo "$RELOCATABLE_PYTHON"
     }
     if ! $PYTHON_DEPS_OK; then
-        # If an existing venv was built with an out-of-range Python (e.g.
-        # 3.14, which kokoro-onnx doesn't support), wipe it so the block
-        # below creates a fresh venv with a supported interpreter.
-        if [ -x "$PYTHON" ] && \
-           ! "$PYTHON" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
-            echo "[Relay Runner] Existing venv uses $("$PYTHON" -c 'import sys; print(".".join(map(str, sys.version_info[:2])))'), which kokoro-onnx doesn't support. Recreating with a 3.10–3.13 interpreter."
-            rm -rf "$SERVICES_DIR/.venv"
-        fi
         # Only create a new venv if one isn't already on disk; if the venv
         # exists but deps are missing, we fall through to reinstall into the
         # existing interpreter.
@@ -1559,7 +1563,9 @@ PYEOF
 fi
 
 # -- Onboarding short-circuit: bootstrap is done, no voice bridge needed --
-record_support_event shell setup ready
+if [ -z "${RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED:-}" ]; then
+    record_support_event shell setup ready
+fi
 
 if $VENV_ONLY; then
     # Emit a terminal 100% marker so the SwiftUI bar fills regardless of
