@@ -101,6 +101,133 @@ final class SupportDiagnosticsTests: XCTestCase {
         XCTAssertTrue(diagnostics.preview().summary.contains("excludes transcripts"))
     }
 
+    func testFailedAndCanceledExportsPreserveDestinationAndCleanStaging() throws {
+        enum InjectedFailure: Error { case archive }
+
+        let root = temporaryDirectory()
+        let journal = root.appendingPathComponent("journal", isDirectory: true)
+        let destination = root.appendingPathComponent("support.zip")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("existing archive".utf8).write(to: destination)
+        var observedStaging: URL?
+        var observedArchive: URL?
+        let diagnostics = RelayDiagnostics(
+            directory: journal,
+            archiveCreator: { staging, archive in
+                observedStaging = staging
+                observedArchive = archive
+                try Data("partial archive".utf8).write(to: archive)
+                throw InjectedFailure.archive
+            }
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let failedAttempt = try diagnostics.beginSupportBundleExport()
+        XCTAssertThrowsError(try diagnostics.createSupportBundle(at: destination, attempt: failedAttempt))
+        XCTAssertEqual(try Data(contentsOf: destination), Data("existing archive".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(observedStaging).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(observedArchive).path))
+
+        let canceledAttempt = try diagnostics.beginSupportBundleExport()
+        diagnostics.cancelSupportBundleExport(canceledAttempt)
+        let lifecycle = try journalEvents(in: journal)
+            .filter { $0["phase"] as? String == "diagnostics_export" }
+        XCTAssertEqual(
+            lifecycle.compactMap { $0["outcome"] as? String },
+            ["started", "failed", "started", "canceled"]
+        )
+        XCTAssertEqual(
+            lifecycle.compactMap { $0["correlation_id"] as? String },
+            [failedAttempt.id, failedAttempt.id, canceledAttempt.id, canceledAttempt.id]
+        )
+    }
+
+    func testInterruptedAttemptIsReportedByTheNextExport() throws {
+        let root = temporaryDirectory()
+        let journal = root.appendingPathComponent("journal", isDirectory: true)
+        let destination = root.appendingPathComponent("support.zip")
+        let extracted = root.appendingPathComponent("extracted", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let interruptedDiagnostics = RelayDiagnostics(directory: journal)
+        let interrupted = try interruptedDiagnostics.beginSupportBundleExport()
+        let relaunchedDiagnostics = RelayDiagnostics(directory: journal)
+        try relaunchedDiagnostics.createSupportBundle(at: destination)
+        try extractZip(destination, to: extracted)
+
+        let manifest = try supportBundleManifest(in: extracted)
+        XCTAssertEqual(
+            manifest["interrupted_diagnostics_export_attempt_ids"] as? [String],
+            [interrupted.id]
+        )
+    }
+
+    @MainActor
+    func testLargeConcurrentExportRemainsResponsiveRejectsDuplicateAndValidatesArchive() async throws {
+        let root = temporaryDirectory()
+        let journal = root.appendingPathComponent("journal", isDirectory: true)
+        let destination = root.appendingPathComponent("support.zip")
+        let extracted = root.appendingPathComponent("extracted", isDirectory: true)
+        try FileManager.default.createDirectory(at: journal, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSyntheticJournals(count: 650, eventsPerFile: 2, to: journal)
+
+        let archiveStarted = expectation(description: "archive started")
+        let writerFinished = expectation(description: "concurrent writer finished")
+        let exportFinished = expectation(description: "export finished")
+        let mainActorProbe = expectation(description: "main actor remained responsive")
+        let allowArchive = DispatchSemaphore(value: 0)
+        let diagnostics = RelayDiagnostics(
+            directory: journal,
+            archiveCreator: { staging, archive in
+                archiveStarted.fulfill()
+                guard allowArchive.wait(timeout: .now() + 5) == .success else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try Self.createZip(from: staging, to: archive)
+            }
+        )
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let attempt = try diagnostics.beginSupportBundleExport()
+                try diagnostics.createSupportBundle(at: destination, attempt: attempt)
+            } catch {
+                XCTFail("Large export failed: \(error)")
+            }
+            exportFinished.fulfill()
+        }
+        DispatchQueue.main.async { mainActorProbe.fulfill() }
+        await fulfillment(of: [mainActorProbe, archiveStarted], timeout: 5)
+
+        XCTAssertThrowsError(try diagnostics.beginSupportBundleExport()) { error in
+            guard case RelayDiagnosticsExportError.exportInProgress = error else {
+                return XCTFail("Unexpected duplicate-export error: \(error)")
+            }
+        }
+        DispatchQueue.global(qos: .utility).async {
+            diagnostics.record(
+                process: "app",
+                phase: "workspace_readiness",
+                outcome: "started"
+            )
+            writerFinished.fulfill()
+            allowArchive.signal()
+        }
+        await fulfillment(of: [writerFinished, exportFinished], timeout: 10)
+
+        try extractZip(destination, to: extracted)
+        let manifest = try supportBundleManifest(in: extracted)
+        XCTAssertGreaterThanOrEqual(manifest["source_file_count"] as? Int ?? 0, 650)
+        XCTAssertGreaterThanOrEqual(manifest["event_count"] as? Int ?? 0, 1_300)
+        let bundleText = try supportBundleText(in: extracted)
+        XCTAssertFalse(bundleText.contains("raw_transcript"))
+        XCTAssertFalse(bundleText.contains("raw_prompt"))
+        XCTAssertFalse(bundleText.contains("repository_contents"))
+        XCTAssertFalse(bundleText.contains("native_crash_report"))
+    }
+
     func testProviderLaunchersDeferBridgeReadinessForBothProviders() {
         for provider in [GeneralConfig.AgentProvider.codex, .claude] {
             var config = AppConfig()
@@ -300,5 +427,84 @@ final class SupportDiagnosticsTests: XCTestCase {
                     return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                 }
             }
+    }
+
+    private func writeSyntheticJournals(
+        count: Int,
+        eventsPerFile: Int,
+        to directory: URL
+    ) throws {
+        let event: [String: Any] = [
+            "schema_version": 1,
+            "timestamp": "2026-08-12T07:30:10Z",
+            "app_session_id": "11111111-1111-4111-8111-111111111111",
+            "correlation_id": "22222222-2222-4222-8222-222222222222",
+            "process": "shell",
+            "phase": "provider_readiness",
+            "outcome": "started",
+            "attributes": [:],
+            "redaction_count": 0,
+            "raw_transcript": "raw_transcript",
+            "prompt": "raw_prompt",
+            "repository_content": "repository_contents",
+            "crash_report": "native_crash_report",
+        ]
+        let line = try JSONSerialization.data(withJSONObject: event, options: [.sortedKeys])
+        var contents = Data()
+        for _ in 0..<eventsPerFile {
+            contents.append(line)
+            contents.append(0x0a)
+        }
+        for index in 0..<count {
+            try contents.write(
+                to: directory.appendingPathComponent("events-v1-shell-synthetic-\(index).jsonl")
+            )
+        }
+    }
+
+    private static func createZip(from source: URL, to destination: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-c", "-k", "--keepParent", source.path, destination.path]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+
+    private func extractZip(_ archive: URL, to destination: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-x", "-k", archive.path, destination.path]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+    }
+
+    private func supportBundleManifest(in root: URL) throws -> [String: Any] {
+        let manifest = try XCTUnwrap(files(in: root).first { $0.lastPathComponent == "manifest.json" })
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
+        )
+    }
+
+    private func supportBundleText(in root: URL) throws -> String {
+        try files(in: root)
+            .filter { ["json", "jsonl", "txt"].contains($0.pathExtension) }
+            .map { try String(contentsOf: $0, encoding: .utf8) }
+            .joined(separator: "\n")
+    }
+
+    private func files(in root: URL) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return [] }
+        return enumerator.compactMap { $0 as? URL }.filter {
+            (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
     }
 }

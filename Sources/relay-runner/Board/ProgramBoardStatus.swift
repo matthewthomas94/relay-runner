@@ -1386,6 +1386,7 @@ final class ProgramBoardViewModel {
     var projectPaths: [String] = []
     var reloadState: ProgramBoardReloadState = .idle
     var errorMessage: String?
+    var isDiagnosticsExporting = false
     private(set) var workspaceIncidentID: String?
     private(set) var workspaceRetryAttempt = 0
     private(set) var supportBundlePreview: RelaySupportBundlePreview?
