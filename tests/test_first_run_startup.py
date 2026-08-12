@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -17,6 +18,66 @@ SERVICES = ROOT / "services"
 
 
 class FirstRunStartupTests(unittest.TestCase):
+    def test_canonical_app_bundle_imports_orchestrator_from_neutral_directory(self):
+        build_script = (ROOT / "scripts" / "build-dmg.sh").read_text()
+        service_copy_block = build_script.split("# Python services", 1)[1].split(
+            "; do", 1
+        )[0]
+        service_names = shlex.split(
+            service_copy_block.split("for f in", 1)[1].replace("\\\n", " ")
+        )
+        supported_python = next(
+            (
+                path
+                for path in (
+                    shutil.which("python3.13"),
+                    shutil.which("python3.12"),
+                    shutil.which("python3.11"),
+                    shutil.which("python3.10"),
+                )
+                if path
+            ),
+            None,
+        )
+        self.assertIsNotNone(supported_python, "Python 3.10-3.13 is required")
+
+        with tempfile.TemporaryDirectory() as temp:
+            temp_root = Path(temp)
+            shared_support = (
+                temp_root / "Relay Runner.app" / "Contents" / "SharedSupport"
+            )
+            bundled_services = shared_support / "services"
+            neutral_directory = temp_root / "neutral"
+            bundled_services.mkdir(parents=True)
+            neutral_directory.mkdir()
+            for name in service_names:
+                shutil.copy2(SERVICES / name, bundled_services / name)
+
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(shared_support)
+            env["PYTHONSAFEPATH"] = "1"
+            result = subprocess.run(
+                [
+                    supported_python,
+                    "-s",
+                    "-c",
+                    "import services.orchestrator; "
+                    "import services.toml_compat; "
+                    "print(services.toml_compat.__file__)",
+                ],
+                cwd=neutral_directory,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                Path(result.stdout.strip()).resolve(),
+                (bundled_services / "toml_compat.py").resolve(),
+            )
+
     def test_toml_compat_parses_with_current_supported_runtime(self):
         sys.path.insert(0, str(SERVICES))
         try:

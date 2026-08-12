@@ -236,7 +236,7 @@ for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py co
          artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py \
          artifact_verification.py artifact_verification_cli.py fresh_install.py fresh_install_cli.py \
          followup_tickets.py graphify_core.py graphify_ingest.py orchestrator.py orchestrator_artifact_workflow.md orchestrator_workflow.md \
-         program_artifacts.py program_status.py requirements.txt session_capture.py support_diagnostics.py tickets.py; do
+         program_artifacts.py program_status.py requirements.txt session_capture.py support_diagnostics.py tickets.py toml_compat.py; do
     cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"
 done
 find "$APP_DIR/Contents/SharedSupport/services" -name "__pycache__" -type d -prune -exec rm -rf {} +
