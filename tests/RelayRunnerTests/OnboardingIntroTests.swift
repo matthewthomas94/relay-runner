@@ -1913,31 +1913,45 @@ final class OnboardingIntroTests: XCTestCase {
             at: OnboardingIntroTimeline.initialBrandHold
                 + brandTypeDuration
                 + OnboardingIntroTimeline.dotFieldTravel
+                + OnboardingIntroTimeline.brandSettle
                 + firstCount * OnboardingIntroTimeline.eraseInterval
                 - 0.001
         )
-        XCTAssertEqual(erased.text, "/")
+        XCTAssertEqual(erased.text, "R/")
         XCTAssertFalse(erased.isComplete)
     }
 
-    func testBrandEraseFramesMatchDesignWithoutSeparatorSpace() {
+    func testBrandSettlesThenErasesAtTheSamePerGraphemeCadenceAsItsEntrance() {
         let brandPhrase = OnboardingIntroTimeline.phrases[0]
         let brandCount = Double(Array(brandPhrase).count)
-        let eraseStart = OnboardingIntroTimeline.initialBrandHold
+        let settleStart = OnboardingIntroTimeline.initialBrandHold
             + (brandCount - 1) * OnboardingIntroTimeline.typingInterval
             + OnboardingIntroTimeline.dotFieldTravel
+        let eraseStart = settleStart + OnboardingIntroTimeline.brandSettle
 
-        let rOnly = OnboardingIntroTimeline.frame(
-            at: eraseStart + brandCount * OnboardingIntroTimeline.eraseInterval * 0.75
+        XCTAssertEqual(
+            OnboardingIntroTimeline.frame(
+                at: settleStart + OnboardingIntroTimeline.brandSettle - 0.001
+            ).text,
+            "Relay Runner /"
         )
-        let slashOnly = OnboardingIntroTimeline.frame(
-            at: eraseStart + brandCount * OnboardingIntroTimeline.eraseInterval * 0.95
+        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, OnboardingIntroTimeline.typingInterval)
+        XCTAssertEqual(
+            OnboardingIntroTimeline.frame(at: eraseStart).text,
+            "Relay Runner /"
         )
-
-        XCTAssertEqual(rOnly.text, "R/")
-        XCTAssertFalse(rOnly.isComplete)
-        XCTAssertEqual(slashOnly.text, "/")
-        XCTAssertFalse(slashOnly.isComplete)
+        XCTAssertEqual(
+            OnboardingIntroTimeline.frame(
+                at: eraseStart + OnboardingIntroTimeline.eraseInterval + 0.001
+            ).text,
+            "Relay Runne /"
+        )
+        XCTAssertEqual(
+            OnboardingIntroTimeline.frame(
+                at: eraseStart + brandCount * OnboardingIntroTimeline.eraseInterval - 0.001
+            ).text,
+            "R/"
+        )
     }
 
     func testCursorBlinksWhileHoldingCopy() {
@@ -2073,15 +2087,114 @@ final class OnboardingIntroTests: XCTestCase {
         )
     }
 
+    func testOnlyTutorialUsesOpacityPromptTransitions() {
+        let opacityPhases = OnboardingPromptPhase.allCases.filter {
+            $0.transitionPolicy == .opacity
+        }
+
+        XCTAssertEqual(opacityPhases, [.tutorial])
+        for phase in OnboardingPromptPhase.allCases where phase != .tutorial {
+            XCTAssertEqual(phase.transitionPolicy, .cursorLed)
+        }
+    }
+
+    func testPromptTransitionPreservesUnicodeGraphemesAcrossInterruptionAndReentry() {
+        let source = "Preparing 👩🏽‍💻 /"
+        let target = "Codex is ready /"
+        XCTAssertEqual(
+            OnboardingPromptTransitionTimeline.phrase(from: source),
+            Array("Preparing 👩🏽‍💻")
+        )
+
+        let interrupted = OnboardingPromptTransitionTimeline.frame(
+            from: source,
+            to: target,
+            at: OnboardingPromptTransitionTimeline.duration(from: source, to: target) * 0.45
+        )
+        let reentered = OnboardingPromptTransitionTimeline.frame(
+            from: interrupted.text,
+            to: "Choose your workspace /",
+            at: 0
+        )
+        XCTAssertEqual(reentered.text, interrupted.text)
+
+        let complete = OnboardingPromptTransitionTimeline.frame(
+            from: interrupted.text,
+            to: "Choose your workspace /",
+            at: OnboardingPromptTransitionTimeline.duration(
+                from: interrupted.text,
+                to: "Choose your workspace /"
+            ) + 0.001
+        )
+        XCTAssertEqual(complete.text, "Choose your workspace /")
+        XCTAssertTrue(complete.isComplete)
+    }
+
+    func testReduceMotionResolvesPromptTransitionDirectlyToFinalCopy() {
+        let source = "Preparing Codex /"
+        let target = "Codex is ready /"
+
+        let animated = OnboardingPromptTransitionTimeline.presentationFrame(
+            from: source,
+            to: target,
+            at: 0,
+            reduceMotion: false
+        )
+        let reduced = OnboardingPromptTransitionTimeline.presentationFrame(
+            from: source,
+            to: target,
+            at: 0,
+            reduceMotion: true
+        )
+
+        XCTAssertEqual(animated.text, source)
+        XCTAssertFalse(animated.isComplete)
+        XCTAssertEqual(reduced.text, target)
+        XCTAssertTrue(reduced.isComplete)
+    }
+
+    func testRuntimeAndLoginPromptCopyUsesTheSamePolicyForCodexAndClaude() {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            let preparing = OnboardingIntroPromptCopy.runtime(
+                OnboardingRuntimePromptPresentation(provider: provider, status: .idle)
+            )
+            let ready = OnboardingIntroPromptCopy.runtime(
+                OnboardingRuntimePromptPresentation(provider: provider, status: .succeeded)
+            )
+            let failed = OnboardingIntroPromptCopy.runtime(
+                OnboardingRuntimePromptPresentation(
+                    provider: provider,
+                    status: .failed(message: "Unavailable")
+                )
+            )
+            let login = OnboardingIntroPromptCopy.agentLogin(
+                OnboardingAgentLoginPromptPresentation(
+                    provider: provider,
+                    signedIn: false,
+                    message: nil
+                )
+            )
+
+            XCTAssertEqual(preparing, "Preparing \(provider.displayName) /")
+            XCTAssertEqual(ready, "\(provider.displayName) is ready /")
+            XCTAssertEqual(failed, "\(provider.displayName) setup needs attention /")
+            XCTAssertEqual(login, "Sign in to \(provider.displayName) /")
+        }
+    }
+
     func testTimelineUsesReadablePacingTargets() {
         XCTAssertEqual(OnboardingIntroTimeline.typingInterval, 0.065 / 2.25, accuracy: 0.001)
-        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, 0.045 / 2.25, accuracy: 0.001)
+        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, OnboardingIntroTimeline.typingInterval)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.initialBrandHold, 0.65)
+        XCTAssertEqual(
+            OnboardingIntroTimeline.brandSettle,
+            OnboardingPromptTransitionTimeline.initialHold
+        )
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.phraseHold, 1.0)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.finalPhraseHold, 1.4)
         XCTAssertEqual(OnboardingIntroTimeline.dotFieldTravel, 4.0, accuracy: 0.001)
-        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 9.2)
-        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 9.8)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 10.0)
+        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 10.4)
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.initialHold, 0.35)
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.finalHold, 0.30)
         XCTAssertGreaterThanOrEqual(OnboardingFlowMotion.surfaceTransitionDuration, 0.45)
@@ -2111,7 +2224,15 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(runtimeSource.contains("case .running(let message"))
         XCTAssertTrue(runtimeSource.contains("case .failed(let errorMessage)"))
         XCTAssertTrue(runtimeSource.contains("OnboardingFlowMotion.contentAnimation"))
+        XCTAssertFalse(runtimeSource.contains("transitioningTitle"))
+        XCTAssertFalse(runtimeSource.contains(".id(title)"))
         XCTAssertTrue(contents.contains("OnboardingIntroRuntimeSurfaceModel"))
+        XCTAssertTrue(contents.contains("OnboardingIntroPromptSurfaceView"))
+        XCTAssertTrue(
+            contents.contains(
+                "policy: OnboardingPromptPhase.tutorial.transitionPolicy"
+            )
+        )
         XCTAssertTrue(contents.contains("CAMediaTimingFunction(name: .easeInEaseOut)"))
     }
 
@@ -2196,6 +2317,7 @@ final class OnboardingIntroTests: XCTestCase {
         let travelStart = OnboardingIntroTimeline.initialBrandHold
             + (firstCount - 1) * OnboardingIntroTimeline.typingInterval
         let eraseStart = travelStart + OnboardingIntroTimeline.dotFieldTravel
+            + OnboardingIntroTimeline.brandSettle
         let eraseDuration = firstCount * OnboardingIntroTimeline.eraseInterval
 
         let hidden = OnboardingIntroTimeline.frame(at: travelStart)
