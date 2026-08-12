@@ -1,6 +1,105 @@
 import Foundation
 import Observation
 
+/// Incrementally decodes installer output and owns the progress shown while the
+/// outer `relay-orchestrator --install` process is active. Shell phases may
+/// report 100% for their own work, but the final fraction remains reserved for
+/// the outer process result.
+struct VenvInstallProgressState {
+    static let maximumRunningProgress = 0.98
+
+    private(set) var message = "Starting setup…"
+    private(set) var progress: Double?
+    private(set) var diagnosticLines: [String] = []
+
+    private var pendingOutput = Data()
+    private var lastProgress: Double = 0
+    private let collectingTickPercent: Double = 0.02
+    private let collectingCapPercent: Double = 0.78
+
+    mutating func reset() {
+        message = "Starting setup…"
+        progress = nil
+        diagnosticLines = []
+        pendingOutput = Data()
+        lastProgress = 0
+    }
+
+    /// Consume arbitrary pipe chunks. A progress marker may be split across
+    /// reads, so only complete lines are parsed until `flush` is requested.
+    @discardableResult
+    mutating func consume(_ data: Data, flush: Bool = false) -> [String] {
+        pendingOutput.append(data)
+        var lines: [String] = []
+
+        while let delimiter = pendingOutput.firstIndex(where: { $0 == 10 || $0 == 13 }) {
+            let lineData = pendingOutput.prefix(upTo: delimiter)
+            pendingOutput.removeSubrange(...delimiter)
+            if let line = decodedLine(lineData), !line.isEmpty {
+                lines.append(line)
+            }
+        }
+
+        if flush, !pendingOutput.isEmpty {
+            if let line = decodedLine(pendingOutput), !line.isEmpty {
+                lines.append(line)
+            }
+            pendingOutput.removeAll(keepingCapacity: false)
+        }
+
+        consume(lines: lines)
+        return lines
+    }
+
+    private func decodedLine(_ data: Data.SubSequence) -> String? {
+        String(data: Data(data), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    private mutating func consume(lines: [String]) {
+        for line in lines {
+            let boundedLine = String(line.prefix(300))
+            diagnosticLines.append(boundedLine)
+            if diagnosticLines.count > 12 {
+                diagnosticLines.removeFirst(diagnosticLines.count - 12)
+            }
+
+            if let marker = Self.parseProgressMarker(line) {
+                let runningProgress = min(
+                    Self.maximumRunningProgress,
+                    marker.percent / 100.0
+                )
+                lastProgress = max(lastProgress, runningProgress)
+                progress = lastProgress
+                message = marker.label
+            } else if line.hasPrefix("Collecting ") {
+                let next = min(
+                    collectingCapPercent,
+                    lastProgress + collectingTickPercent
+                )
+                lastProgress = max(lastProgress, next)
+                progress = lastProgress
+                message = line
+            } else {
+                message = line
+            }
+        }
+    }
+
+    /// Tolerate malformed percentages by rejecting non-numbers and clamping
+    /// numeric values to the shell protocol's 0–100 range.
+    private static func parseProgressMarker(_ line: String) -> (percent: Double, label: String)? {
+        let prefix = "RELAY_PROGRESS:"
+        guard line.hasPrefix(prefix) else { return nil }
+        let rest = line.dropFirst(prefix.count)
+        guard let colon = rest.firstIndex(of: ":") else { return nil }
+        let percentString = String(rest[..<colon])
+        let label = String(rest[rest.index(after: colon)...])
+        guard let raw = Double(percentString) else { return nil }
+        return (min(100, max(0, raw)), label)
+    }
+}
+
 /// Drives first-run service bootstrap from inside the app by invoking
 /// `relay-orchestrator --install` and streaming its output. That launcher
 /// delegates Python setup to relay-bridge, then installs and health-checks
@@ -12,10 +111,9 @@ final class VenvInstaller {
         /// Not started yet — entered when the onboarding step is reached.
         case idle
         /// Installer is running. `message` is the most recent line
-        /// emitted by relay-bridge; surface it as live status text.
-        /// `progress` is 0.0–1.0 when relay-bridge has emitted a
-        /// `RELAY_PROGRESS:` marker, or nil if the bar should stay
-        /// indeterminate (we haven't seen one yet).
+        /// emitted by the outer workflow; surface it as live status text.
+        /// `progress` is below 1.0 when a trustworthy `RELAY_PROGRESS:`
+        /// marker has arrived, or nil while activity is indeterminate.
         case running(message: String, progress: Double?)
         /// Bootstrap finished cleanly; venv exists and deps import.
         case succeeded
@@ -34,30 +132,13 @@ final class VenvInstaller {
     private var outputPipe: Pipe?
 
     @ObservationIgnored
-    private var diagnosticTail: [String] = []
+    private var progressState = VenvInstallProgressState()
 
     @ObservationIgnored
     private var setupIncidentID: String?
 
     @ObservationIgnored
     private var setupRetryAttempt = 0
-
-    /// Last progress fraction we surfaced to the UI. Tracked separately
-    /// from `status` so out-of-order or repeated pip "Collecting" lines
-    /// can never make the bar go backwards (jittery progress is worse
-    /// than no progress).
-    @ObservationIgnored
-    private var lastProgress: Double = 0
-
-    /// Each pip "Collecting <pkg>" line during the dep install phase
-    /// bumps the bar by this much, capped at `collectingCapPercent`.
-    /// That's where the perceived "hang" lives — pip goes silent for
-    /// 5–15s per wheel download, so making the bar tick per package
-    /// is what keeps the install feeling alive. Cap stops short of
-    /// the 80% phase marker for the speech-model download so the bar
-    /// has somewhere to go when that next phase starts.
-    private let collectingTickPercent: Double = 0.02
-    private let collectingCapPercent: Double = 0.78
 
     /// True when every runtime dependency a session needs is on disk:
     /// the venv interpreter, the Kokoro speech-model files, an agent CLI,
@@ -265,21 +346,8 @@ final class VenvInstaller {
 
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty,
-                  let chunk = String(data: data, encoding: .utf8) else { return }
-            // relay-bridge can emit multi-line bursts (e.g. pip output).
-            // Walk every line in order so structured `RELAY_PROGRESS:`
-            // markers and informational lines both update state, then
-            // pick the most recent non-empty informational line as the
-            // visible message. The full transcript still goes to Console
-            // via the inherited stdout/stderr fds when run from a terminal.
-            let lines = chunk
-                .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
-            guard !lines.isEmpty else { return }
             DispatchQueue.main.async { [weak self] in
-                self?.consume(lines: lines)
+                self?.consume(data: data, flush: data.isEmpty)
             }
         }
 
@@ -289,11 +357,17 @@ final class VenvInstaller {
                 self.outputPipe?.fileHandleForReading.readabilityHandler = nil
                 self.outputPipe = nil
                 self.process = nil
+                self.consume(data: Data(), flush: true)
+                let providerReady = provider.map { Self.alreadyInstalled(for: $0) } ?? true
+                self.status = Self.terminalStatus(
+                    terminationStatus: proc.terminationStatus,
+                    provider: provider,
+                    providerReady: providerReady,
+                    diagnostic: self.progressState.diagnosticLines.last,
+                    incidentID: incidentID
+                )
                 if proc.terminationStatus == 0 {
-                    if let provider, !Self.alreadyInstalled(for: provider) {
-                        self.status = .failed(
-                            message: "\(provider.displayName) setup finished, but the \(provider.displayName) command is still missing. Incident \(incidentID)."
-                        )
+                    if let provider, !providerReady {
                         RelayDiagnostics.shared.record(
                             process: "setup",
                             phase: "provider_readiness",
@@ -307,7 +381,6 @@ final class VenvInstaller {
                         )
                         return
                     }
-                    self.status = .succeeded
                     RelayDiagnostics.shared.record(
                         process: "setup",
                         phase: "setup",
@@ -320,10 +393,6 @@ final class VenvInstaller {
                     self.setupIncidentID = nil
                     self.setupRetryAttempt = 0
                 } else {
-                    let diagnostic = self.diagnosticTail.last.map { " Last step: \($0)" } ?? ""
-                    self.status = .failed(
-                        message: "Setup exited with code \(proc.terminationStatus).\(diagnostic) Incident \(incidentID). Retry setup or run relay-orchestrator --status."
-                    )
                     RelayDiagnostics.shared.record(
                         process: "setup",
                         phase: "setup",
@@ -340,10 +409,9 @@ final class VenvInstaller {
         }
 
         process = proc
-        // Retry must start from 0% even if a prior attempt got partway
-        // through — reset before kicking off the new subprocess.
-        lastProgress = 0
-        diagnosticTail = []
+        // Retry must start indeterminate even if a prior attempt reached a
+        // nested phase's terminal marker.
+        progressState.reset()
         status = .running(message: "Starting setup…", progress: nil)
 
         do {
@@ -369,58 +437,40 @@ final class VenvInstaller {
 
     // MARK: - Output parsing
 
-    /// Apply a batch of output lines to `status`. Must run on the main
-    /// queue — caller dispatches.
-    ///
-    /// Two kinds of lines drive the bar:
-    ///   1. `RELAY_PROGRESS:<percent>:<label>` — explicit phase markers
-    ///      emitted by relay-bridge. Set the bar to that percent (clamped
-    ///      monotonic) and adopt the label as the visible message.
-    ///   2. `Collecting <pkg>` — pip download phase signal. Each one
-    ///      bumps the bar by `collectingTickPercent` so the user sees
-    ///      motion during the otherwise-silent download. Capped so we
-    ///      never overshoot the next phase marker.
-    /// Anything else updates the visible message only.
-    private func consume(lines: [String]) {
-        guard case .running(let currentMessage, _) = status else { return }
-        var message = currentMessage
-        for line in lines {
-            let boundedLine = String(line.prefix(300))
-            diagnosticTail.append(boundedLine)
-            if diagnosticTail.count > 12 {
-                diagnosticTail.removeFirst(diagnosticTail.count - 12)
-            }
-            NSLog("[VenvInstaller] %@", boundedLine)
-            if let marker = parseProgressMarker(line) {
-                lastProgress = max(lastProgress, marker.percent / 100.0)
-                message = marker.label
-            } else if line.hasPrefix("Collecting ") {
-                let next = min(
-                    collectingCapPercent,
-                    lastProgress + collectingTickPercent
-                )
-                lastProgress = max(lastProgress, next)
-                message = line
-            } else {
-                message = line
-            }
+    static func terminalStatus(
+        terminationStatus: Int32,
+        provider: GeneralConfig.AgentProvider?,
+        providerReady: Bool,
+        diagnostic: String?,
+        incidentID: String
+    ) -> Status {
+        guard terminationStatus == 0 else {
+            let detail = diagnostic.map { " Last step: \($0)" } ?? ""
+            return .failed(
+                message: "Setup exited with code \(terminationStatus).\(detail) Incident \(incidentID). Retry setup or run relay-orchestrator --status."
+            )
         }
-        status = .running(message: message, progress: lastProgress > 0 ? lastProgress : nil)
+        if let provider, !providerReady {
+            return .failed(
+                message: "\(provider.displayName) setup finished, but the \(provider.displayName) command is still missing. Incident \(incidentID)."
+            )
+        }
+        return .succeeded
     }
 
-    /// Parse a `RELAY_PROGRESS:<percent>:<label>` marker, or nil if the
-    /// line isn't one. Tolerant of malformed percent values (clamped
-    /// 0–100) so a typo in the bash script can't crash the installer.
-    private func parseProgressMarker(_ line: String) -> (percent: Double, label: String)? {
-        let prefix = "RELAY_PROGRESS:"
-        guard line.hasPrefix(prefix) else { return nil }
-        let rest = line.dropFirst(prefix.count)
-        guard let colon = rest.firstIndex(of: ":") else { return nil }
-        let percentStr = String(rest[..<colon])
-        let label = String(rest[rest.index(after: colon)...])
-        guard let raw = Double(percentStr) else { return nil }
-        let clamped = min(100, max(0, raw))
-        return (clamped, label)
+    /// Apply a raw pipe chunk to the running status. Decoding lives in
+    /// `VenvInstallProgressState` so chunk boundaries cannot corrupt markers.
+    private func consume(data: Data, flush: Bool = false) {
+        guard case .running = status else { return }
+        let lines = progressState.consume(data, flush: flush)
+        for line in lines {
+            NSLog("[VenvInstaller] %@", String(line.prefix(300)))
+        }
+        guard !lines.isEmpty else { return }
+        status = .running(
+            message: progressState.message,
+            progress: progressState.progress
+        )
     }
 
     // MARK: - Path resolution
