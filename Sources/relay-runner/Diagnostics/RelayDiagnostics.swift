@@ -506,15 +506,6 @@ final class RelayMetricKitSubscriber: NSObject, MXMetricManagerSubscriber {
         MXMetricManager.shared.remove(self)
     }
 
-    func didReceive(_ payloads: [MXMetricPayload]) {
-        RelayDiagnostics.shared.record(
-            process: "app",
-            phase: "metrickit_delivery",
-            outcome: "metrics_received",
-            attributes: ["payload_count": String(payloads.count)]
-        )
-    }
-
     func didReceive(_ payloads: [MXDiagnosticPayload]) {
         RelayDiagnostics.shared.record(
             process: "app",
