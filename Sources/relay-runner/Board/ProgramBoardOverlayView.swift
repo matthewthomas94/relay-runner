@@ -886,6 +886,7 @@ private struct ProgramBoardContent: View {
                         selectedProjectPath: model.selectedProjectPath,
                         selectedScopeTitle: model.selectedScopeTitle,
                         errorMessage: model.errorMessage,
+                        isDiagnosticsExporting: model.isDiagnosticsExporting,
                         theme: model.theme,
                         usesProjectRegistryV2: ProjectRegistryV2Rollout.isEnabled(),
                         onSelectAll: model.selectAllProjects,
@@ -935,6 +936,7 @@ private struct ProgramBoardContent: View {
                 onRefresh: onRefresh,
                 onDismiss: onDismiss,
                 diagnosticsPreview: model.supportBundlePreview,
+                isDiagnosticsExporting: model.isDiagnosticsExporting,
                 onCreateDiagnostics: onCreateDiagnostics
             )
             .padding(.horizontal, ProgramBoardLayout.statePanelHorizontalPadding)
@@ -957,6 +959,7 @@ private struct ProgramOverviewColumn: View {
     let selectedProjectPath: String?
     let selectedScopeTitle: String
     let errorMessage: String?
+    let isDiagnosticsExporting: Bool
     let theme: ParticleFieldRenderer.Theme?
     let usesProjectRegistryV2: Bool
     let onSelectAll: () -> Void
@@ -980,6 +983,7 @@ private struct ProgramOverviewColumn: View {
             if let errorMessage {
                 ProgramErrorStrip(
                     message: errorMessage,
+                    isDiagnosticsExporting: isDiagnosticsExporting,
                     onRetry: onRetry,
                     onCreateDiagnostics: onCreateDiagnostics
                 )
@@ -3383,6 +3387,7 @@ private struct ProgramStatePanel: View {
     var secondaryActionTitle: String? = nil
     var secondaryAction: (() -> Void)? = nil
     var diagnosticsPreview: RelaySupportBundlePreview? = nil
+    var isDiagnosticsExporting = false
     var onCreateDiagnostics: (() -> Void)? = nil
 
     var body: some View {
@@ -3444,15 +3449,16 @@ private struct ProgramStatePanel: View {
 
                         if onCreateDiagnostics != nil {
                             Button(action: { onCreateDiagnostics?() }) {
-                                Text("Export Diagnostics…")
+                                Text(isDiagnosticsExporting ? "Exporting…" : "Export Diagnostics…")
                                     .font(AppTypography.font(.programAction))
                                     .foregroundStyle(ProgramBoardStyle.secondaryText)
                                     .padding(.horizontal, 12)
                                     .frame(height: ProgramBoardLayout.compactControlHeight)
                             }
                             .buttonStyle(.plain)
-                            .programControlChrome()
-                            .programButtonCursor(enabled: true)
+                            .disabled(isDiagnosticsExporting)
+                            .programControlChrome(disabled: isDiagnosticsExporting)
+                            .programButtonCursor(enabled: !isDiagnosticsExporting)
                             .help("Create a privacy-safe local support bundle")
                         }
                     }
@@ -3491,6 +3497,7 @@ private struct ProgramStatePanel: View {
 
 private struct ProgramErrorStrip: View {
     let message: String
+    var isDiagnosticsExporting = false
     var onRetry: (() -> Void)? = nil
     var onCreateDiagnostics: (() -> Void)? = nil
 
@@ -3507,8 +3514,12 @@ private struct ProgramErrorStrip: View {
                             .buttonStyle(.plain)
                     }
                     if let onCreateDiagnostics {
-                        Button("Export diagnostics…", action: onCreateDiagnostics)
+                        Button(
+                            isDiagnosticsExporting ? "Exporting…" : "Export diagnostics…",
+                            action: onCreateDiagnostics
+                        )
                             .buttonStyle(.plain)
+                            .disabled(isDiagnosticsExporting)
                     }
                 }
                 .font(AppTypography.font(.caption))

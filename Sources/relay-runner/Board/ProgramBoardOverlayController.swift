@@ -88,7 +88,8 @@ final class ProgramBoardOverlayController {
     private var localMonitor: Any?
     private var updateCheckTask: Task<Void, Never>?
     private var contentLoadBlocked = false
-    private let model = ProgramBoardViewModel()
+    private let diagnostics: RelayDiagnostics
+    private let model: ProgramBoardViewModel
     private let workspace = WorkspaceViewModel()
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     private var projectScopeProvider: () -> [String] = { [] }
@@ -113,8 +114,13 @@ final class ProgramBoardOverlayController {
     private var statusPollTimer: Timer?
     private var boardRouteResolver: () -> ProjectResolver.BoardRoute
 
-    init(boardRouteResolver: @escaping () -> ProjectResolver.BoardRoute = ProjectResolver.resolveBoardRoute) {
+    init(
+        boardRouteResolver: @escaping () -> ProjectResolver.BoardRoute = ProjectResolver.resolveBoardRoute,
+        diagnostics: RelayDiagnostics = .shared
+    ) {
         self.boardRouteResolver = boardRouteResolver
+        self.diagnostics = diagnostics
+        model = ProgramBoardViewModel(diagnostics: diagnostics)
     }
 
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
@@ -556,33 +562,50 @@ final class ProgramBoardOverlayController {
     }
 
     private func exportSupportBundle() {
+        guard !model.isDiagnosticsExporting else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.zip]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = "Relay-Support-\(model.workspaceIncidentID?.prefix(8) ?? "local").zip"
         panel.message = model.supportBundlePreview?.summary
             ?? "Creates an allowlisted local event timeline without transcripts, repositories, or credentials."
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        do {
-            try RelayDiagnostics.shared.createSupportBundle(at: destination)
-            model.errorMessage = "Diagnostics exported. Incident \(model.workspaceIncidentID ?? "local")."
-            RelayDiagnostics.shared.record(
-                process: "app",
-                phase: "diagnostics_export",
-                outcome: "ready",
-                incidentID: model.workspaceIncidentID,
-                retryAttempt: model.workspaceRetryAttempt > 0 ? model.workspaceRetryAttempt : nil
-            )
-        } catch {
-            model.errorMessage = "Diagnostics export failed. The incident journal remains stored locally."
-            RelayDiagnostics.shared.record(
-                process: "app",
-                phase: "diagnostics_export",
-                outcome: "failed",
-                incidentID: model.workspaceIncidentID,
-                retryAttempt: model.workspaceRetryAttempt > 0 ? model.workspaceRetryAttempt : nil,
-                summary: error.localizedDescription
-            )
+        model.isDiagnosticsExporting = true
+        let incidentID = model.workspaceIncidentID
+        let retryAttempt = model.workspaceRetryAttempt > 0 ? model.workspaceRetryAttempt : nil
+        guard panel.runModal() == .OK, let destination = panel.url else {
+            model.isDiagnosticsExporting = false
+            DispatchQueue.global(qos: .utility).async { [diagnostics] in
+                guard let attempt = try? diagnostics.beginSupportBundleExport(
+                    incidentID: incidentID,
+                    retryAttempt: retryAttempt
+                ) else { return }
+                diagnostics.cancelSupportBundleExport(attempt)
+            }
+            return
+        }
+        model.errorMessage = "Exporting diagnostics…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, diagnostics] in
+            let result: Result<Void, Error>
+            do {
+                let attempt = try diagnostics.beginSupportBundleExport(
+                    incidentID: incidentID,
+                    retryAttempt: retryAttempt
+                )
+                try diagnostics.createSupportBundle(at: destination, attempt: attempt)
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.model.isDiagnosticsExporting = false
+                switch result {
+                case .success:
+                    self.model.errorMessage = "Diagnostics exported. Incident \(incidentID ?? "local")."
+                case .failure:
+                    self.model.errorMessage = "Diagnostics export failed. The incident journal remains stored locally."
+                }
+            }
         }
     }
 
