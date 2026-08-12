@@ -25,6 +25,14 @@ RELOCATABLE_PYTHON="$USER_DATA_DIR/python/bin/python3"
 VENV_PYTHON="$SERVICES_DIR/.venv/bin/python"
 export PYTHONDONTWRITEBYTECODE=1
 
+# Progress emitted here belongs to the complete install workflow. Nested
+# relay-bridge progress is mapped into the first 80% by ensure_venv; later
+# markers describe real outer phases. Successful process exit, not a marker,
+# remains the Swift installer's completion signal.
+emit_progress() {
+    echo "RELAY_PROGRESS:$1:$2" >&2
+}
+
 ORCH_DIR="$USER_DATA_DIR/orchestrator"
 LOG_FILE="${RELAY_ORCHESTRATOR_LOG_FILE:-/tmp/relay_orchestrator.log}"
 ERR_FILE="${RELAY_ORCHESTRATOR_ERR_FILE:-/tmp/relay_orchestrator.err}"
@@ -201,12 +209,19 @@ ensure_support_correlation() {
 }
 
 ensure_venv() {
+    local nested_progress_max="${1:-100}"
     # Delegate venv bootstrap to relay-bridge. It's already battle-tested for the
     # same Python deps; --venv-only short-circuits before voice features start.
-    RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED=1 "$SCRIPT_DIR/relay-bridge" --venv-only
+    # Reserve the remaining progress range for validation, provider tooling,
+    # launchd installation, and the daemon health gate owned by this process.
+    RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED=1 RELAY_PROGRESS_MAX_PERCENT="$nested_progress_max" \
+        "$SCRIPT_DIR/relay-bridge" --venv-only
     if [ ! -x "$VENV_PYTHON" ]; then
         echo "[relay-orchestrator] venv bootstrap failed — see relay-bridge output." >&2
         return 1
+    fi
+    if [ "$nested_progress_max" -lt 100 ]; then
+        emit_progress 82 "Validating runtime..."
     fi
     orchestrator_import_preflight
 }
@@ -738,13 +753,17 @@ cmd_run() {
 cmd_install() {
     ensure_support_correlation
     record_support_event shell setup started
-    if ! ensure_venv; then
+    if ! ensure_venv 80; then
         record_support_event shell setup failed
         return 1
     fi
+    emit_progress 85 "Installing Relay skills..."
     install_skills if-missing
+    emit_progress 88 "Registering provider tools..."
     register_mcp
+    emit_progress 92 "Installing background service..."
     write_plist
+    emit_progress 95 "Starting and checking background service..."
     set +e
     launchctl_restart_if_idle
     local restart_rc=$?
@@ -755,6 +774,7 @@ cmd_install() {
         record_support_event shell setup failed
         return "$restart_rc"
     fi
+    emit_progress 98 "Finalizing setup..."
     record_support_event shell setup ready
     echo
     echo "[relay-orchestrator] install complete. Try:"

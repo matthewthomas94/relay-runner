@@ -327,6 +327,103 @@ chmod +x "$venv/python"
             self.assertEqual(len(correlation_ids), 1)
             self.assertRegex(correlation_ids[0], r"^orchestrator-[0-9]+-[0-9]+$")
 
+    def test_bridge_progress_cap_maps_nested_completion_into_parent_band(self):
+        source = (ROOT / "scripts" / "relay-bridge").read_text()
+        start = source.index("emit_progress() {")
+        end = source.index("\n}\n", start) + 3
+        probe = source[start:end] + '\nemit_progress 100 "Nested complete."\n'
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", probe],
+            env={**os.environ, "RELAY_PROGRESS_MAX_PERCENT": "80"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.strip(), "RELAY_PROGRESS:80:Nested complete.")
+
+    def test_outer_install_owns_ordered_progress_and_never_emits_full_marker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scripts = root / "scripts"
+            fake_bin = root / "bin"
+            home = root / "home"
+            scripts.mkdir()
+            fake_bin.mkdir()
+            home.mkdir()
+
+            launcher_source = (ROOT / "scripts" / "relay-orchestrator").read_text()
+            launcher_source = launcher_source.replace(
+                "/Applications/ChatGPT.app/Contents/Resources/codex",
+                str(root / "missing-chatgpt-codex"),
+            ).replace(
+                "/Applications/Codex.app/Contents/Resources/codex",
+                str(root / "missing-codex"),
+            )
+            launcher = scripts / "relay-orchestrator"
+            self.write_executable(launcher, launcher_source)
+            self.write_executable(
+                scripts / "relay-bridge",
+                """#!/bin/bash
+set -e
+max_percent="${RELAY_PROGRESS_MAX_PERCENT:-100}"
+echo "RELAY_PROGRESS:$((100 * max_percent / 100)):Nested runtime ready." >&2
+venv="$HOME/Library/Application Support/relay-runner/services/.venv/bin"
+mkdir -p "$venv"
+cat > "$venv/python" <<'PYTHON_EOF'
+#!/bin/bash
+if [ "${1:-}" = "-c" ]; then echo '3.13.7'; exit 0; fi
+if [ "${1:-}" = "-" ]; then cat >/dev/null; exit 0; fi
+exit 0
+PYTHON_EOF
+chmod +x "$venv/python"
+""",
+            )
+
+            launch_state = root / "launchd-state"
+            self.write_executable(
+                fake_bin / "launchctl",
+                """#!/bin/bash
+case "$1" in
+  print) [ -f "$FAKE_LAUNCH_STATE" ] ;;
+  bootstrap) touch "$FAKE_LAUNCH_STATE" ;;
+  bootout) rm -f "$FAKE_LAUNCH_STATE" ;;
+  kickstart) [ -f "$FAKE_LAUNCH_STATE" ] ;;
+esac
+""",
+            )
+            self.write_executable(fake_bin / "curl", "#!/bin/bash\nexit 0\n")
+            port_file = root / "orchestrator.port"
+            port_file.write_text("7634\n")
+
+            result = subprocess.run(
+                [str(launcher), "--install"],
+                env={
+                    **os.environ,
+                    "HOME": str(home),
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "FAKE_LAUNCH_STATE": str(launch_state),
+                    "RELAY_ORCHESTRATOR_PORT_FILE": str(port_file),
+                    "RELAY_ORCHESTRATOR_ERR_FILE": str(root / "orchestrator.err"),
+                    "RELAY_ORCHESTRATOR_LOG_FILE": str(root / "orchestrator.log"),
+                    "RELAY_DIAGNOSTICS_DIR": str(root / "diagnostics"),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            markers = [
+                line for line in result.stderr.splitlines()
+                if line.startswith("RELAY_PROGRESS:")
+            ]
+            percentages = [int(line.split(":", 2)[1]) for line in markers]
+            self.assertEqual(percentages, [80, 82, 85, 88, 92, 95, 98])
+            self.assertNotIn(100, percentages)
+
     def run_launcher(self, *, stale_bootstrap: bool, healthy: bool) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

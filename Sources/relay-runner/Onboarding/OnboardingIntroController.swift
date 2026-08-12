@@ -1464,6 +1464,68 @@ private enum OnboardingRuntimeVisualPhase: Equatable {
     }
 }
 
+enum OnboardingRuntimeAccessibility {
+    static func label(for presentation: OnboardingRuntimePromptPresentation) -> String {
+        switch presentation.status {
+        case .idle, .running:
+            return "\(presentation.provider.displayName) setup in progress"
+        case .succeeded:
+            return "\(presentation.provider.displayName) setup complete"
+        case .failed:
+            return "\(presentation.provider.displayName) setup failed"
+        }
+    }
+
+    static func value(for status: VenvInstaller.Status) -> String {
+        switch status {
+        case .idle, .running(_, nil):
+            return "In progress"
+        case .running(_, let progress?):
+            return "\(Int((progress * 100).rounded())) percent, in progress"
+        case .succeeded:
+            return "Complete"
+        case .failed(let message):
+            return message
+        }
+    }
+}
+
+struct OnboardingRuntimeProgressView: View {
+    let progress: Double?
+    let reduceMotion: Bool
+
+    var body: some View {
+        if let progress {
+            HStack(spacing: 10) {
+                ProgressView(value: progress, total: 1.0)
+                    .progressViewStyle(.linear)
+                    .animation(
+                        reduceMotion ? nil : OnboardingFlowMotion.contentAnimation,
+                        value: progress
+                    )
+                ongoingActivityIndicator
+            }
+            .frame(maxWidth: 360)
+        } else {
+            ongoingActivityIndicator
+        }
+    }
+
+    @ViewBuilder
+    private var ongoingActivityIndicator: some View {
+        if reduceMotion {
+            Image(systemName: "ellipsis")
+                .font(AppTypography.symbolFont(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.72))
+                .accessibilityHidden(true)
+        } else {
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 private struct OnboardingIntroRuntimePromptView: View {
     let model: OnboardingIntroRuntimeSurfaceModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1493,24 +1555,11 @@ private struct OnboardingIntroRuntimePromptView: View {
         ZStack {
             switch presentation.status {
             case .idle:
-                ProgressView()
-                    .controlSize(.small)
+                OnboardingRuntimeProgressView(progress: nil, reduceMotion: reduceMotion)
                     .transition(reduceMotion ? .identity : .opacity)
             case .running(_, let progress):
-                if let progress {
-                    ProgressView(value: progress, total: 1.0)
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: 360)
-                        .animation(
-                            reduceMotion ? nil : OnboardingFlowMotion.contentAnimation,
-                            value: progress
-                        )
-                        .transition(reduceMotion ? .identity : .opacity)
-                } else {
-                    ProgressView()
-                        .controlSize(.small)
-                        .transition(reduceMotion ? .identity : .opacity)
-                }
+                OnboardingRuntimeProgressView(progress: progress, reduceMotion: reduceMotion)
+                    .transition(reduceMotion ? .identity : .opacity)
             case .succeeded:
                 Image(systemName: "checkmark.circle.fill")
                     .font(AppTypography.symbolFont(size: 20, weight: .semibold))
@@ -1532,6 +1581,9 @@ private struct OnboardingIntroRuntimePromptView: View {
             reduceMotion ? nil : OnboardingFlowMotion.contentAnimation,
             value: OnboardingRuntimeVisualPhase(status: presentation.status)
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(OnboardingRuntimeAccessibility.label(for: presentation))
+        .accessibilityValue(OnboardingRuntimeAccessibility.value(for: presentation.status))
     }
 
     private var showsRetry: Bool {

@@ -1,8 +1,162 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import relay_runner
 
 final class OnboardingProgressTests: XCTestCase {
+
+    func testRuntimeProgressParsesChunkedAndMultilineOutput() {
+        var state = VenvInstallProgressState()
+
+        XCTAssertTrue(state.consume(Data("RELAY_PRO".utf8)).isEmpty)
+        XCTAssertNil(state.progress)
+
+        let lines = state.consume(Data("GRESS:65:Installing dependencies...\nCollecting numpy\r\n".utf8))
+
+        XCTAssertEqual(lines, [
+            "RELAY_PROGRESS:65:Installing dependencies...",
+            "Collecting numpy",
+        ])
+        XCTAssertEqual(state.progress ?? -1, 0.67, accuracy: 0.001)
+        XCTAssertEqual(state.message, "Collecting numpy")
+    }
+
+    func testNestedCompletionReservesOuterCapacityAndProgressStaysMonotonic() {
+        var state = VenvInstallProgressState()
+
+        state.consume(Data("RELAY_PROGRESS:80:Runtime ready.\n".utf8))
+        state.consume(Data("RELAY_PROGRESS:100:Nested setup complete.\n".utf8))
+        XCTAssertEqual(
+            state.progress ?? -1,
+            VenvInstallProgressState.maximumRunningProgress,
+            accuracy: 0.001
+        )
+        XCTAssertLessThan(state.progress ?? 1, 1)
+
+        state.consume(Data("RELAY_PROGRESS:70:Out-of-order phase.\nStill checking readiness\n".utf8))
+        XCTAssertEqual(
+            state.progress ?? -1,
+            VenvInstallProgressState.maximumRunningProgress,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(state.message, "Still checking readiness")
+    }
+
+    func testRuntimeProgressStartsIndeterminateAndRetryResetsPriorCompletion() {
+        var state = VenvInstallProgressState()
+        XCTAssertNil(state.progress)
+
+        state.consume(Data("RELAY_PROGRESS:100:Nested setup complete.\n".utf8))
+        XCTAssertNotNil(state.progress)
+
+        state.reset()
+        XCTAssertNil(state.progress)
+        XCTAssertEqual(state.message, "Starting setup…")
+
+        state.consume(Data("RELAY_PROGRESS:0:Locating Python...\n".utf8))
+        XCTAssertEqual(state.progress, 0)
+    }
+
+    func testOuterProcessOwnsSuccessFailureAndProviderReadiness() {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            XCTAssertEqual(
+                VenvInstaller.terminalStatus(
+                    terminationStatus: 0,
+                    provider: provider,
+                    providerReady: true,
+                    diagnostic: "RELAY_PROGRESS:100:Nested complete.",
+                    incidentID: "incident"
+                ),
+                .succeeded
+            )
+
+            guard case .failed(let missingProvider) = VenvInstaller.terminalStatus(
+                terminationStatus: 0,
+                provider: provider,
+                providerReady: false,
+                diagnostic: nil,
+                incidentID: "incident"
+            ) else {
+                return XCTFail("Missing provider readiness must fail")
+            }
+            XCTAssertTrue(missingProvider.contains(provider.displayName))
+
+            guard case .failed(let processFailure) = VenvInstaller.terminalStatus(
+                terminationStatus: 9,
+                provider: provider,
+                providerReady: true,
+                diagnostic: "Health check failed",
+                incidentID: "incident"
+            ) else {
+                return XCTFail("Outer process failure must fail")
+            }
+            XCTAssertTrue(processFailure.contains("Health check failed"))
+        }
+    }
+
+    func testRuntimeAccessibilityReportsEquivalentProviderProgressSemantics() {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            let running = OnboardingRuntimePromptPresentation(
+                provider: provider,
+                status: .running(message: "Finalizing setup...", progress: 0.98)
+            )
+            XCTAssertEqual(
+                OnboardingRuntimeAccessibility.label(for: running),
+                "\(provider.displayName) setup in progress"
+            )
+            XCTAssertEqual(
+                OnboardingRuntimeAccessibility.value(for: running.status),
+                "98 percent, in progress"
+            )
+
+            let succeeded = OnboardingRuntimePromptPresentation(
+                provider: provider,
+                status: .succeeded
+            )
+            XCTAssertEqual(
+                OnboardingRuntimeAccessibility.label(for: succeeded),
+                "\(provider.displayName) setup complete"
+            )
+            XCTAssertEqual(
+                OnboardingRuntimeAccessibility.value(for: succeeded.status),
+                "Complete"
+            )
+        }
+    }
+
+    @MainActor
+    func testMountedRuntimeProgressShowsReservedBarWithOngoingActivity() {
+        let host = NSHostingView(rootView:
+            OnboardingRuntimeProgressView(progress: nil, reduceMotion: false)
+        )
+        host.frame = CGRect(x: 0, y: 0, width: 420, height: 120)
+        host.layoutSubtreeIfNeeded()
+
+        let initialIndicators = descendants(of: NSProgressIndicator.self, in: host)
+        XCTAssertEqual(initialIndicators.filter(\.isIndeterminate).count, 1)
+        XCTAssertFalse(initialIndicators.contains { !$0.isIndeterminate })
+
+        host.rootView = OnboardingRuntimeProgressView(progress: 0.98, reduceMotion: false)
+        host.layoutSubtreeIfNeeded()
+
+        let indicators = descendants(of: NSProgressIndicator.self, in: host)
+        XCTAssertTrue(indicators.contains { !$0.isIndeterminate })
+        XCTAssertTrue(indicators.contains { $0.isIndeterminate })
+        XCTAssertFalse(indicators.contains { !$0.isIndeterminate && $0.doubleValue >= $0.maxValue })
+    }
+
+    @MainActor
+    func testMountedReduceMotionProgressUsesStaticOngoingStatus() {
+        let host = NSHostingView(rootView:
+            OnboardingRuntimeProgressView(progress: 0.98, reduceMotion: true)
+        )
+        host.frame = CGRect(x: 0, y: 0, width: 420, height: 120)
+        host.layoutSubtreeIfNeeded()
+
+        let indicators = descendants(of: NSProgressIndicator.self, in: host)
+        XCTAssertTrue(indicators.contains { !$0.isIndeterminate })
+        XCTAssertFalse(indicators.contains { $0.isIndeterminate })
+    }
 
     func testTutorialRecordingGateRequiresStartSpeechSendAndResponseInOrder() {
         var gate = OnboardingSessionControlsTutorial.RecordingGate.waitingForStart
@@ -32,6 +186,14 @@ final class OnboardingProgressTests: XCTestCase {
 
         gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .responseReady)
         XCTAssertEqual(gate, .complete)
+    }
+
+    @MainActor
+    private func descendants<T: NSView>(of type: T.Type, in root: NSView) -> [T] {
+        root.subviews.flatMap { view -> [T] in
+            let current = (view as? T).map { [$0] } ?? []
+            return current + descendants(of: type, in: view)
+        }
     }
 
     func testTutorialPlaybackGateAcceptsCancelWhileReplayIsWaitingOrPlaying() {
