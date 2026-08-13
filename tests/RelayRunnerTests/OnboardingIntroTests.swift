@@ -271,6 +271,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in false },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             reduceMotion: { true }
         )
 
@@ -305,6 +306,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in false },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             reduceMotion: { true }
         )
 
@@ -342,6 +344,7 @@ final class OnboardingIntroTests: XCTestCase {
             },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             reduceMotion: { true }
         )
 
@@ -355,6 +358,44 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(intro.events.filter { $0.hasPrefix("workspace") }.count, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+    }
+
+    func testAuthenticatedLoginDwellStartsAfterPromptIsFullyRendered() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let intro = CapturingIntroPresenter()
+        intro.automaticallyCompletesLoginPresentation = false
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: OnboardingFlagURLs.testURLs(in: directory),
+            getWorkingDirectory: { "/Users/example/current" },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            loginPromptDwell: 0.5,
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+
+        XCTAssertEqual(intro.loginPrompts.last?.signedIn, true)
+        XCTAssertTrue(intro.workspacePromptPaths.isEmpty)
+
+        intro.completeLoginPresentation()
+        waitForMainQueue(after: 0.05)
+        XCTAssertTrue(intro.workspacePromptPaths.isEmpty)
+
+        waitForMainQueue(after: 0.5)
+        XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
     }
 
     func testRegistryV2FreshOnboardingSkipsWorkspaceFolderAndAllowsEmptyRegistry() throws {
@@ -378,6 +419,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             reduceMotion: { true }
         )
 
@@ -419,6 +461,7 @@ final class OnboardingIntroTests: XCTestCase {
             runtimeAlreadyInstalled: { _ in true },
             isAgentAuthenticated: { _ in true },
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             reduceMotion: { false }
         )
 
@@ -487,6 +530,7 @@ final class OnboardingIntroTests: XCTestCase {
             runtimePollInterval: 0.01,
             authPollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             reduceMotion: { true }
         )
 
@@ -545,6 +589,7 @@ final class OnboardingIntroTests: XCTestCase {
             runtimePollInterval: 0.01,
             authPollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare {
                     events.append("picker")
@@ -937,6 +982,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/dev") }
             },
@@ -991,6 +1037,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare {
                     events.append("picker")
@@ -1059,6 +1106,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/dev") }
             },
@@ -1120,6 +1168,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/dev") }
             },
@@ -1177,6 +1226,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/dev") }
             },
@@ -1253,6 +1303,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare {
                     completion(nil)
@@ -1294,6 +1345,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { _, _ in pickerCalls += 1 },
             reduceMotion: { true }
         )
@@ -1333,6 +1385,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { _, _ in pickerCalls += 1 },
             reduceMotion: { true }
         )
@@ -1400,6 +1453,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             reduceMotion: { true }
         )
 
@@ -1531,6 +1585,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/new-workspace") }
             },
@@ -1620,6 +1675,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/recovered-workspace") }
             },
@@ -1756,6 +1812,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/workspace") }
             },
@@ -1921,7 +1978,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(erased.isComplete)
     }
 
-    func testBrandSettlesThenErasesAtTheSamePerGraphemeCadenceAsItsEntrance() {
+    func testBrandSettlesThenErasesAtTheSharedDoubleSpeedCadence() {
         let brandPhrase = OnboardingIntroTimeline.phrases[0]
         let brandCount = Double(Array(brandPhrase).count)
         let settleStart = OnboardingIntroTimeline.initialBrandHold
@@ -1935,7 +1992,10 @@ final class OnboardingIntroTests: XCTestCase {
             ).text,
             "Relay Runner /"
         )
-        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, OnboardingIntroTimeline.typingInterval)
+        XCTAssertEqual(
+            OnboardingIntroTimeline.eraseInterval,
+            OnboardingIntroTimeline.typingInterval / 2
+        )
         XCTAssertEqual(
             OnboardingIntroTimeline.frame(at: eraseStart).text,
             "Relay Runner /"
@@ -2053,6 +2113,14 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(backspacing.text.hasSuffix(" /"))
         XCTAssertLessThan(backspacing.text.count, source.count)
 
+        let firstTypedFrame = OnboardingPromptTransitionTimeline.frame(
+            from: source,
+            to: target,
+            at: typeStart
+        )
+        XCTAssertEqual(firstTypedFrame.text, "L /")
+        XCTAssertNotEqual(firstTypedFrame.text, "/")
+
         let typing = OnboardingPromptTransitionTimeline.frame(
             from: source,
             to: target,
@@ -2130,6 +2198,27 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(complete.isComplete)
     }
 
+    func testPromptTransitionQueueFinishesTheActivePhraseThenCoalescesToLatestState() {
+        var queue = OnboardingPromptTransitionQueue(activeTarget: "Preparing Codex /")
+
+        queue.request("Codex is ready /")
+        queue.request("Sign in to Codex /")
+
+        let pending = queue.beginPendingTransition()
+        XCTAssertEqual(pending?.source, "Preparing Codex /")
+        XCTAssertEqual(pending?.target, "Sign in to Codex /")
+        XCTAssertNil(queue.pendingTarget)
+    }
+
+    func testPromptTransitionQueueCancelsStalePendingStateWhenActiveStateReturns() {
+        var queue = OnboardingPromptTransitionQueue(activeTarget: "Preparing Claude /")
+
+        queue.request("Claude is ready /")
+        queue.request("Preparing Claude /")
+
+        XCTAssertNil(queue.beginPendingTransition())
+    }
+
     func testReduceMotionResolvesPromptTransitionDirectlyToFinalCopy() {
         let source = "Preparing Codex /"
         let target = "Codex is ready /"
@@ -2184,7 +2273,10 @@ final class OnboardingIntroTests: XCTestCase {
 
     func testTimelineUsesReadablePacingTargets() {
         XCTAssertEqual(OnboardingIntroTimeline.typingInterval, 0.065 / 2.25, accuracy: 0.001)
-        XCTAssertEqual(OnboardingIntroTimeline.eraseInterval, OnboardingIntroTimeline.typingInterval)
+        XCTAssertEqual(
+            OnboardingIntroTimeline.eraseInterval,
+            OnboardingIntroTimeline.typingInterval / 2
+        )
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.initialBrandHold, 0.65)
         XCTAssertEqual(
             OnboardingIntroTimeline.brandSettle,
@@ -2193,8 +2285,8 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.phraseHold, 1.0)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.finalPhraseHold, 1.4)
         XCTAssertEqual(OnboardingIntroTimeline.dotFieldTravel, 4.0, accuracy: 0.001)
-        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 10.0)
-        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 10.4)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 9.5)
+        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 10.0)
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.initialHold, 0.35)
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.finalHold, 0.30)
         XCTAssertGreaterThanOrEqual(OnboardingFlowMotion.surfaceTransitionDuration, 0.45)
@@ -2202,6 +2294,12 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertGreaterThan(
             OnboardingFlowMotion.completedStepHold,
             OnboardingFlowMotion.surfaceTransitionDuration
+        )
+        XCTAssertEqual(OnboardingPromptTiming.agentLoginDwell, 1.25)
+        XCTAssertEqual(OnboardingTutorialPromptTransition.blurRadius, 6)
+        XCTAssertEqual(
+            OnboardingTutorialPromptTransition.animatedBlurRadius(reduceMotion: true),
+            0
         )
     }
 
@@ -2399,6 +2497,7 @@ final class OnboardingIntroTests: XCTestCase {
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
+            loginPromptDwell: 0,
             pickWorkspaceDirectory: { prepare, completion in
                 prepare { completion("/Users/example/dev") }
             },
@@ -2456,9 +2555,11 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private var claudeAction: (() -> Void)?
     private var runtimeRetryAction: (() -> Void)?
     private var loginAction: (() -> Void)?
+    private var loginRenderedCompletion: (() -> Void)?
     private var workspaceContinueAction: (() -> Void)?
     private var workspaceAction: (() -> Void)?
     var onDismiss: (() -> Void)?
+    var automaticallyCompletesLoginPresentation = true
 
     func present(completion: @escaping () -> Void) {
         presentCallCount += 1
@@ -2490,10 +2591,16 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     }
 
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 fullyRendered: @escaping () -> Void,
                                  signInAction: @escaping () -> Void) {
         events.append("login:\(presentation.provider.rawValue):\(presentation.signedIn)")
         loginPrompts.append(presentation)
         loginAction = signInAction
+        if automaticallyCompletesLoginPresentation {
+            fullyRendered()
+        } else {
+            loginRenderedCompletion = fullyRendered
+        }
     }
 
     func presentWorkspacePrompt(currentPath: String,
@@ -2540,6 +2647,11 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
 
     func performLoginAction() {
         loginAction?()
+    }
+
+    func completeLoginPresentation() {
+        loginRenderedCompletion?()
+        loginRenderedCompletion = nil
     }
 
     func performWorkspaceContinueAction() {
@@ -2601,7 +2713,10 @@ private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
                               retryAction: @escaping () -> Void) {}
 
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
-                                 signInAction: @escaping () -> Void) {}
+                                 fullyRendered: @escaping () -> Void,
+                                 signInAction: @escaping () -> Void) {
+        fullyRendered()
+    }
 
     func presentWorkspacePrompt(currentPath: String,
                                 continueAction: @escaping () -> Void,
