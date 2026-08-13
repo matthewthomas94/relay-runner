@@ -1288,7 +1288,7 @@ final class AppState {
     ) {
         guard let projectRegistryV2 else { return }
         WorkspaceDirectoryPicker.pick(
-            message: "Choose an existing Git repository",
+            message: "Choose an existing project folder",
             onPrepareExternalWindow: { [weak self] ready in
                 guard let self else {
                     ready()
@@ -1298,7 +1298,7 @@ final class AppState {
             },
             chooseDirectory: {
                 WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
-                    message: "Choose an existing Git repository"
+                    message: "Choose an existing project folder"
                 )
             },
             completion: { [weak self] path in
@@ -1312,11 +1312,7 @@ final class AppState {
                     completion: completion
                 ) {
                     let url = URL(fileURLWithPath: path, isDirectory: true)
-                    let candidate = try projectRegistryV2.inspect(selectedURL: url)
-                    return try projectRegistryV2.register(
-                        candidate: candidate,
-                        displayName: candidate.repoPath.lastPathComponent
-                    )
+                    return try projectRegistryV2.registerExistingProject(at: url)
                 }
             }
         )
