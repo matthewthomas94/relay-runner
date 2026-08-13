@@ -1933,7 +1933,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(complete, skip)
     }
 
-    func testTimelineTypesHoldsAndErasesFirstPhrase() {
+    func testTimelineTypesOnlyTitleThenCrossfadesCompleteLaterPhrases() {
         let first = OnboardingIntroTimeline.phrases[0]
         let firstCount = Double(Array(first).count)
         let brandTypeDuration = (firstCount - 1) * OnboardingIntroTimeline.typingInterval
@@ -1966,25 +1966,45 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(holding.dotFieldProgress, 0.5, accuracy: 0.01)
         XCTAssertEqual(holding.dotFieldOpacity, 0.5, accuracy: 0.01)
 
-        let erased = OnboardingIntroTimeline.frame(
+        let fadingOut = OnboardingIntroTimeline.frame(
             at: OnboardingIntroTimeline.initialBrandHold
                 + brandTypeDuration
                 + OnboardingIntroTimeline.dotFieldTravel
                 + OnboardingIntroTimeline.brandSettle
-                + firstCount * OnboardingIntroTimeline.eraseInterval
-                - 0.001
+                + OnboardingPostTitleTransition.fadeOutDuration / 2
         )
-        XCTAssertEqual(erased.text, "R/")
-        XCTAssertFalse(erased.isComplete)
+        XCTAssertEqual(fadingOut.text, "Relay Runner /")
+        XCTAssertEqual(fadingOut.textOpacity, 0.5, accuracy: 0.01)
+        XCTAssertEqual(
+            fadingOut.textBlurRadius,
+            OnboardingPostTitleTransition.blurRadius / 2,
+            accuracy: 0.01
+        )
+
+        let fadingIn = OnboardingIntroTimeline.frame(
+            at: OnboardingIntroTimeline.initialBrandHold
+                + brandTypeDuration
+                + OnboardingIntroTimeline.dotFieldTravel
+                + OnboardingIntroTimeline.brandSettle
+                + OnboardingPostTitleTransition.fadeOutDuration
+                + OnboardingPostTitleTransition.fadeInDuration / 2
+        )
+        XCTAssertEqual(fadingIn.text, "First thing’s first /")
+        XCTAssertEqual(fadingIn.textOpacity, 0.5, accuracy: 0.01)
+        XCTAssertEqual(
+            fadingIn.textBlurRadius,
+            OnboardingPostTitleTransition.blurRadius / 2,
+            accuracy: 0.01
+        )
     }
 
-    func testBrandSettlesThenErasesAtTheSharedDoubleSpeedCadence() {
+    func testBrandSettlesThenFadesAndBlursWithoutErasing() {
         let brandPhrase = OnboardingIntroTimeline.phrases[0]
         let brandCount = Double(Array(brandPhrase).count)
         let settleStart = OnboardingIntroTimeline.initialBrandHold
             + (brandCount - 1) * OnboardingIntroTimeline.typingInterval
             + OnboardingIntroTimeline.dotFieldTravel
-        let eraseStart = settleStart + OnboardingIntroTimeline.brandSettle
+        let fadeStart = settleStart + OnboardingIntroTimeline.brandSettle
 
         XCTAssertEqual(
             OnboardingIntroTimeline.frame(
@@ -1993,25 +2013,15 @@ final class OnboardingIntroTests: XCTestCase {
             "Relay Runner /"
         )
         XCTAssertEqual(
-            OnboardingIntroTimeline.eraseInterval,
-            OnboardingIntroTimeline.typingInterval / 2
-        )
-        XCTAssertEqual(
-            OnboardingIntroTimeline.frame(at: eraseStart).text,
+            OnboardingIntroTimeline.frame(at: fadeStart).text,
             "Relay Runner /"
         )
-        XCTAssertEqual(
-            OnboardingIntroTimeline.frame(
-                at: eraseStart + OnboardingIntroTimeline.eraseInterval + 0.001
-            ).text,
-            "Relay Runne /"
+        let nearlyGone = OnboardingIntroTimeline.frame(
+            at: fadeStart + OnboardingPostTitleTransition.fadeOutDuration - 0.001
         )
-        XCTAssertEqual(
-            OnboardingIntroTimeline.frame(
-                at: eraseStart + brandCount * OnboardingIntroTimeline.eraseInterval - 0.001
-            ).text,
-            "R/"
-        )
+        XCTAssertEqual(nearlyGone.text, "Relay Runner /")
+        XCTAssertLessThan(nearlyGone.textOpacity, 0.01)
+        XCTAssertGreaterThan(nearlyGone.textBlurRadius, 5.9)
     }
 
     func testCursorBlinksWhileHoldingCopy() {
@@ -2034,7 +2044,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(hidden.cursorOpacity, 0.5)
     }
 
-    func testCursorKeepsBlinkingWhileTypingAndBackspacing() {
+    func testCursorKeepsBlinkingWhileTitleTypesAndLaterCopyFades() {
         let typingStart = OnboardingIntroTimeline.initialBrandHold
         let typedVisible = OnboardingIntroTimeline.frame(at: typingStart + 0.01)
         let typedHidden = OnboardingIntroTimeline.frame(
@@ -2044,18 +2054,20 @@ final class OnboardingIntroTests: XCTestCase {
 
         let source = "I need a few permissions /"
         let target = "Let’s start with your mic /"
-        let eraseStart = OnboardingPromptTransitionTimeline.initialHold
-        let erasedVisible = OnboardingPromptTransitionTimeline.frame(
+        let fadeStart = OnboardingPromptTransitionTimeline.initialHold
+        let fadingVisible = OnboardingPromptTransitionTimeline.frame(
             from: source,
             to: target,
-            at: eraseStart + 0.01
+            at: fadeStart + 0.01
         )
-        let erasedHidden = OnboardingPromptTransitionTimeline.frame(
+        let fadingHidden = OnboardingPromptTransitionTimeline.frame(
             from: source,
             to: target,
-            at: eraseStart + OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
+            at: fadeStart + OnboardingIntroTimeline.cursorBlinkPeriod / 2 + 0.01
         )
-        XCTAssertNotEqual(erasedVisible.cursorVisible, erasedHidden.cursorVisible)
+        XCTAssertTrue([source, target].contains(fadingVisible.text))
+        XCTAssertTrue([source, target].contains(fadingHidden.text))
+        XCTAssertNotEqual(fadingVisible.cursorVisible, fadingHidden.cursorVisible)
     }
 
     func testHostedOnboardingTitlesBlinkTheirSlashWithoutChangingCopy() {
@@ -2093,44 +2105,35 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(complete.isComplete)
     }
 
-    func testPermissionPromptTransitionBackspacesThenTypesOnTheHeroBaseline() {
+    func testPermissionPromptTransitionSwapsCompleteStringsAtBlurredBoundary() {
         let source = "I need a few permissions /"
         let target = "Let’s start with your mic /"
-        let sourceCount = Double(OnboardingPromptTransitionTimeline.phrase(from: source).count)
-        let eraseStart = OnboardingPromptTransitionTimeline.initialHold
-        let typeStart = eraseStart + sourceCount * OnboardingPromptTransitionTimeline.eraseInterval
+        let fadeStart = OnboardingPromptTransitionTimeline.initialHold
+        let swap = fadeStart + OnboardingPostTitleTransition.fadeOutDuration
 
         XCTAssertEqual(
             OnboardingPromptTransitionTimeline.frame(from: source, to: target, at: 0).text,
             source
         )
 
-        let backspacing = OnboardingPromptTransitionTimeline.frame(
+        let outgoing = OnboardingPromptTransitionTimeline.frame(
             from: source,
             to: target,
-            at: eraseStart + OnboardingPromptTransitionTimeline.eraseInterval + 0.001
+            at: fadeStart + OnboardingPostTitleTransition.fadeOutDuration / 2
         )
-        XCTAssertTrue(backspacing.text.hasSuffix(" /"))
-        XCTAssertLessThan(backspacing.text.count, source.count)
+        XCTAssertEqual(outgoing.text, source)
+        XCTAssertEqual(outgoing.textOpacity, 0.5, accuracy: 0.01)
+        XCTAssertEqual(outgoing.textBlurRadius, 3, accuracy: 0.01)
 
-        let firstTypedFrame = OnboardingPromptTransitionTimeline.frame(
+        let incoming = OnboardingPromptTransitionTimeline.frame(
             from: source,
             to: target,
-            at: typeStart
+            at: swap
         )
-        XCTAssertEqual(firstTypedFrame.text, "L /")
-        XCTAssertNotEqual(firstTypedFrame.text, "/")
-
-        let typing = OnboardingPromptTransitionTimeline.frame(
-            from: source,
-            to: target,
-            at: typeStart
-                + Double(OnboardingPromptTransitionTimeline.phrase(from: target).count)
-                * OnboardingPromptTransitionTimeline.typingInterval
-                * 0.60
-        )
-        XCTAssertTrue(typing.text.hasPrefix("Let’s"))
-        XCTAssertFalse(typing.isComplete)
+        XCTAssertEqual(incoming.text, target)
+        XCTAssertEqual(incoming.textOpacity, 0, accuracy: 0.001)
+        XCTAssertEqual(incoming.textBlurRadius, 6, accuracy: 0.001)
+        XCTAssertNotEqual(incoming.text, "/")
 
         let complete = OnboardingPromptTransitionTimeline.frame(
             from: source,
@@ -2155,15 +2158,44 @@ final class OnboardingIntroTests: XCTestCase {
         )
     }
 
-    func testOnlyTutorialUsesOpacityPromptTransitions() {
-        let opacityPhases = OnboardingPromptPhase.allCases.filter {
-            $0.transitionPolicy == .opacity
+    func testEveryPostTitlePhaseUsesSharedFadeBlurPolicy() {
+        for phase in OnboardingPromptPhase.allCases {
+            XCTAssertEqual(phase.transitionPolicy, .fadeBlur)
+        }
+    }
+
+    func testTutorialContentTransitionRetainsIncomingViewAndDrainsQueuedReplacement() {
+        let completed = expectation(description: "Queued tutorial content replacement completes")
+
+        DispatchQueue.main.async {
+            let root = OnboardingIntroRootView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+            let outgoing = NSView(frame: root.bounds)
+            root.replaceContent(with: outgoing, policy: .immediate)
+
+            var incoming: NSView? = NSView(frame: root.bounds)
+            weak let weakIncoming = incoming
+            root.replaceContent(with: incoming!, policy: .fadeBlur)
+            incoming = nil
+
+            XCTAssertNotNil(weakIncoming)
+
+            let queued = NSView(frame: root.bounds)
+            root.replaceContent(with: queued, policy: .fadeBlur)
+
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + OnboardingPostTitleTransition.duration * 2 + 0.2
+            ) {
+                XCTAssertTrue(root.subviews.last === queued)
+                XCTAssertEqual(queued.alphaValue, 1, accuracy: 0.001)
+
+                let final = NSView(frame: root.bounds)
+                root.replaceContent(with: final, policy: .immediate)
+                XCTAssertTrue(root.subviews.last === final)
+                completed.fulfill()
+            }
         }
 
-        XCTAssertEqual(opacityPhases, [.tutorial])
-        for phase in OnboardingPromptPhase.allCases where phase != .tutorial {
-            XCTAssertEqual(phase.transitionPolicy, .cursorLed)
-        }
+        wait(for: [completed], timeout: 2)
     }
 
     func testPromptTransitionPreservesUnicodeGraphemesAcrossInterruptionAndReentry() {
@@ -2179,6 +2211,7 @@ final class OnboardingIntroTests: XCTestCase {
             to: target,
             at: OnboardingPromptTransitionTimeline.duration(from: source, to: target) * 0.45
         )
+        XCTAssertTrue([source, target].contains(interrupted.text))
         let reentered = OnboardingPromptTransitionTimeline.frame(
             from: interrupted.text,
             to: "Choose your workspace /",
@@ -2273,10 +2306,6 @@ final class OnboardingIntroTests: XCTestCase {
 
     func testTimelineUsesReadablePacingTargets() {
         XCTAssertEqual(OnboardingIntroTimeline.typingInterval, 0.065 / 2.25, accuracy: 0.001)
-        XCTAssertEqual(
-            OnboardingIntroTimeline.eraseInterval,
-            OnboardingIntroTimeline.typingInterval / 2
-        )
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.initialBrandHold, 0.65)
         XCTAssertEqual(
             OnboardingIntroTimeline.brandSettle,
@@ -2285,20 +2314,23 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.phraseHold, 1.0)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.finalPhraseHold, 1.4)
         XCTAssertEqual(OnboardingIntroTimeline.dotFieldTravel, 4.0, accuracy: 0.001)
-        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 9.5)
-        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 10.0)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 8.5)
+        XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 9.0)
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.initialHold, 0.35)
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.finalHold, 0.30)
-        XCTAssertGreaterThanOrEqual(OnboardingFlowMotion.surfaceTransitionDuration, 0.45)
+        XCTAssertEqual(
+            OnboardingFlowMotion.surfaceTransitionDuration,
+            OnboardingPostTitleTransition.duration
+        )
         XCTAssertGreaterThanOrEqual(OnboardingFlowMotion.controlsRevealDuration, 0.35)
         XCTAssertGreaterThan(
             OnboardingFlowMotion.completedStepHold,
             OnboardingFlowMotion.surfaceTransitionDuration
         )
         XCTAssertEqual(OnboardingPromptTiming.agentLoginDwell, 1.25)
-        XCTAssertEqual(OnboardingTutorialPromptTransition.blurRadius, 6)
+        XCTAssertEqual(OnboardingPostTitleTransition.blurRadius, 6)
         XCTAssertEqual(
-            OnboardingTutorialPromptTransition.animatedBlurRadius(reduceMotion: true),
+            OnboardingPostTitleTransition.animatedBlurRadius(reduceMotion: true),
             0
         )
     }
@@ -2331,6 +2363,7 @@ final class OnboardingIntroTests: XCTestCase {
                 "policy: OnboardingPromptPhase.tutorial.transitionPolicy"
             )
         )
+        XCTAssertTrue(contents.contains("OnboardingPostTitleTransition.blurRadius"))
         XCTAssertTrue(contents.contains("CAMediaTimingFunction(name: .easeInEaseOut)"))
     }
 
@@ -2414,15 +2447,18 @@ final class OnboardingIntroTests: XCTestCase {
         let firstCount = Double(Array(OnboardingIntroTimeline.phrases[0]).count)
         let travelStart = OnboardingIntroTimeline.initialBrandHold
             + (firstCount - 1) * OnboardingIntroTimeline.typingInterval
-        let eraseStart = travelStart + OnboardingIntroTimeline.dotFieldTravel
+        let fadeStart = travelStart + OnboardingIntroTimeline.dotFieldTravel
             + OnboardingIntroTimeline.brandSettle
-        let eraseDuration = firstCount * OnboardingIntroTimeline.eraseInterval
 
         let hidden = OnboardingIntroTimeline.frame(at: travelStart)
         let appearing = OnboardingIntroTimeline.frame(at: travelStart + OnboardingIntroTimeline.dotFieldTravel * 0.25)
-        let visible = OnboardingIntroTimeline.frame(at: eraseStart)
-        let disappearing = OnboardingIntroTimeline.frame(at: eraseStart + eraseDuration * 0.50)
-        let gone = OnboardingIntroTimeline.frame(at: eraseStart + eraseDuration + 0.001)
+        let visible = OnboardingIntroTimeline.frame(at: fadeStart)
+        let disappearing = OnboardingIntroTimeline.frame(
+            at: fadeStart + OnboardingPostTitleTransition.fadeOutDuration * 0.50
+        )
+        let gone = OnboardingIntroTimeline.frame(
+            at: fadeStart + OnboardingPostTitleTransition.fadeOutDuration + 0.001
+        )
 
         XCTAssertEqual(hidden.dotFieldOpacity, 0, accuracy: 0.001)
         XCTAssertGreaterThan(appearing.dotFieldOpacity, 0)
