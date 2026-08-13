@@ -897,7 +897,7 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
     }
 }
 
-private final class OnboardingIntroRootView: NSView {
+final class OnboardingIntroRootView: NSView {
     var layoutFrame: NSRect = .zero {
         didSet {
             applyLayout(to: currentContentView)
@@ -1100,7 +1100,7 @@ private final class OnboardingIntroRootView: NSView {
         replaceContent(with: view, policy: .immediate)
     }
 
-    private func replaceContent(with view: NSView, policy: OnboardingPromptTransitionPolicy) {
+    func replaceContent(with view: NSView, policy: OnboardingPromptTransitionPolicy) {
         if contentTransitionInProgress {
             pendingContentReplacement = (view, policy)
             return
@@ -1134,8 +1134,8 @@ private final class OnboardingIntroRootView: NSView {
             context.duration = OnboardingPostTitleTransition.fadeOutDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             oldView.animator().alphaValue = 0
-        } completionHandler: { [weak self, weak oldView, weak view] in
-            guard let self, let view else { return }
+        } completionHandler: { [weak self, weak oldView] in
+            guard let self else { return }
             oldView?.removeFromSuperview()
             oldView?.layer?.filters = nil
             self.currentContentView = view

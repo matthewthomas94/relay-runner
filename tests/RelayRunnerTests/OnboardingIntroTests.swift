@@ -2164,6 +2164,40 @@ final class OnboardingIntroTests: XCTestCase {
         }
     }
 
+    func testTutorialContentTransitionRetainsIncomingViewAndDrainsQueuedReplacement() {
+        let completed = expectation(description: "Queued tutorial content replacement completes")
+
+        DispatchQueue.main.async {
+            let root = OnboardingIntroRootView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+            let outgoing = NSView(frame: root.bounds)
+            root.replaceContent(with: outgoing, policy: .immediate)
+
+            var incoming: NSView? = NSView(frame: root.bounds)
+            weak let weakIncoming = incoming
+            root.replaceContent(with: incoming!, policy: .fadeBlur)
+            incoming = nil
+
+            XCTAssertNotNil(weakIncoming)
+
+            let queued = NSView(frame: root.bounds)
+            root.replaceContent(with: queued, policy: .fadeBlur)
+
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + OnboardingPostTitleTransition.duration * 2 + 0.2
+            ) {
+                XCTAssertTrue(root.subviews.last === queued)
+                XCTAssertEqual(queued.alphaValue, 1, accuracy: 0.001)
+
+                let final = NSView(frame: root.bounds)
+                root.replaceContent(with: final, policy: .immediate)
+                XCTAssertTrue(root.subviews.last === final)
+                completed.fulfill()
+            }
+        }
+
+        wait(for: [completed], timeout: 2)
+    }
+
     func testPromptTransitionPreservesUnicodeGraphemesAcrossInterruptionAndReentry() {
         let source = "Preparing 👩🏽‍💻 /"
         let target = "Codex is ready /"
