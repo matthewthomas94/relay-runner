@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import Observation
 import QuartzCore
 import SwiftUI
@@ -69,6 +70,7 @@ protocol OnboardingIntroPresenting: AnyObject {
     func presentRuntimePrompt(_ presentation: OnboardingRuntimePromptPresentation,
                               retryAction: @escaping () -> Void)
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 fullyRendered: @escaping () -> Void,
                                  signInAction: @escaping () -> Void)
     func presentWorkspacePrompt(currentPath: String,
                                 continueAction: @escaping () -> Void,
@@ -129,9 +131,10 @@ enum OnboardingIntroPromptCopy {
 
 enum OnboardingPromptTiming {
     static let typingInterval: TimeInterval = 0.065 / 2.25
-    static let eraseInterval = typingInterval
+    static let eraseInterval = typingInterval / 2
     static let initialHold: TimeInterval = 0.36
     static let finalHold: TimeInterval = 0.32
+    static let agentLoginDwell: TimeInterval = 1.25
 }
 
 enum OnboardingIntroTimeline {
@@ -399,8 +402,7 @@ enum OnboardingPromptTransitionTimeline {
 
         let eraseDuration = Double(sourcePhrase.count) * eraseInterval
         if cursor < eraseDuration {
-            let phase = OnboardingIntroTimeline.easeInOut(cursor / eraseDuration)
-            let erasedCount = min(sourcePhrase.count, Int(phase * Double(sourcePhrase.count)) + 1)
+            let erasedCount = min(sourcePhrase.count, Int(cursor / eraseInterval))
             return makeFrame(
                 phrase: sourcePhrase,
                 visible: Array(sourcePhrase.prefix(max(0, sourcePhrase.count - erasedCount))),
@@ -411,8 +413,7 @@ enum OnboardingPromptTransitionTimeline {
 
         let typeDuration = Double(targetPhrase.count) * typingInterval
         if cursor < typeDuration {
-            let phase = OnboardingIntroTimeline.easeInOut(cursor / typeDuration)
-            let visibleCount = min(targetPhrase.count, Int(phase * Double(targetPhrase.count)))
+            let visibleCount = min(targetPhrase.count, 1 + Int(cursor / typingInterval))
             return makeFrame(
                 phrase: targetPhrase,
                 visible: Array(targetPhrase.prefix(visibleCount)),
@@ -475,6 +476,27 @@ enum OnboardingPromptTransitionTimeline {
 
 }
 
+struct OnboardingPromptTransitionQueue: Equatable {
+    private(set) var activeTarget: String
+    private(set) var pendingTarget: String?
+
+    mutating func request(_ target: String) {
+        if target == activeTarget {
+            pendingTarget = nil
+        } else {
+            pendingTarget = target
+        }
+    }
+
+    mutating func beginPendingTransition() -> (source: String, target: String)? {
+        guard let pendingTarget else { return nil }
+        let transition = (source: activeTarget, target: pendingTarget)
+        activeTarget = pendingTarget
+        self.pendingTarget = nil
+        return transition
+    }
+}
+
 enum OnboardingFlowMotion {
     static let surfaceTransitionDuration: TimeInterval = 0.48
     static let contentTransitionDuration: TimeInterval = 0.42
@@ -483,6 +505,14 @@ enum OnboardingFlowMotion {
 
     static var contentAnimation: Animation {
         .easeInOut(duration: contentTransitionDuration)
+    }
+}
+
+enum OnboardingTutorialPromptTransition {
+    static let blurRadius: CGFloat = 6
+
+    static func animatedBlurRadius(reduceMotion: Bool) -> CGFloat {
+        reduceMotion ? 0 : blurRadius
     }
 }
 
@@ -656,6 +686,7 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
     }
 
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 fullyRendered: @escaping () -> Void,
                                  signInAction: @escaping () -> Void) {
         timelineTimer?.invalidate()
         timelineTimer = nil
@@ -666,6 +697,7 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         surface.rootView.showAgentLoginPrompt(
             presentation,
             transitionFrom: lastPromptText,
+            fullyRendered: fullyRendered,
             signInAction: signInAction
         )
         lastPromptText = prompt
@@ -968,6 +1000,7 @@ private final class OnboardingIntroRootView: NSView {
 
     func showAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
                               transitionFrom: String,
+                              fullyRendered: @escaping () -> Void,
                               signInAction: @escaping () -> Void) {
         runtimeModel = nil
         showPrompt(
@@ -979,7 +1012,8 @@ private final class OnboardingIntroRootView: NSView {
                     presentation: presentation,
                     signInAction: signInAction
                 )
-            )
+            ),
+            completion: fullyRendered
         )
     }
 
@@ -1034,11 +1068,12 @@ private final class OnboardingIntroRootView: NSView {
         phase: OnboardingPromptPhase,
         title: String,
         transitionFrom: String,
-        content: AnyView
+        content: AnyView,
+        completion: (() -> Void)? = nil
     ) {
         cinematicView = nil
         if let promptView = currentContentView as? OnboardingIntroPromptSurfaceView {
-            promptView.update(title: title, content: content)
+            promptView.update(title: title, content: content, completion: completion)
             return
         }
 
@@ -1046,7 +1081,8 @@ private final class OnboardingIntroRootView: NSView {
             frame: bounds,
             title: title,
             transitionFrom: transitionFrom,
-            content: content
+            content: content,
+            completion: completion
         )
         view.autoresizingMask = [.width, .height]
         view.layoutFrame = layoutFrame
@@ -1073,6 +1109,14 @@ private final class OnboardingIntroRootView: NSView {
             return
         }
 
+        let blurRadius = OnboardingTutorialPromptTransition.animatedBlurRadius(
+            reduceMotion: reduceMotion
+        )
+        configureTutorialBlur(on: oldView, radius: 0)
+        configureTutorialBlur(on: view, radius: blurRadius)
+        animateTutorialBlur(on: oldView, from: 0, to: blurRadius)
+        animateTutorialBlur(on: view, from: blurRadius, to: 0)
+
         NSAnimationContext.runAnimationGroup { context in
             context.duration = OnboardingFlowMotion.surfaceTransitionDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -1080,7 +1124,27 @@ private final class OnboardingIntroRootView: NSView {
             view.animator().alphaValue = 1
         } completionHandler: {
             oldView.removeFromSuperview()
+            view.layer?.filters = nil
         }
+    }
+
+    private func configureTutorialBlur(on view: NSView, radius: CGFloat) {
+        guard let blur = CIFilter(name: "CIGaussianBlur") else { return }
+        blur.name = "onboardingTutorialBlur"
+        blur.setValue(radius, forKey: kCIInputRadiusKey)
+        view.wantsLayer = true
+        view.layer?.filters = [blur]
+    }
+
+    private func animateTutorialBlur(on view: NSView, from: CGFloat, to: CGFloat) {
+        let keyPath = "filters.onboardingTutorialBlur.inputRadius"
+        let animation = CABasicAnimation(keyPath: keyPath)
+        animation.fromValue = from
+        animation.toValue = to
+        animation.duration = OnboardingFlowMotion.surfaceTransitionDuration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        view.layer?.add(animation, forKey: keyPath)
+        view.layer?.setValue(to, forKeyPath: keyPath)
     }
 
     private func applyLayout(to view: NSView?) {
@@ -1213,6 +1277,9 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
     private let reduceMotion: Bool
     private var transitionTimer: Timer?
     private var transitionStartedAt: CFTimeInterval?
+    private var transitionCompletion: (() -> Void)?
+    private var transitionQueue: OnboardingPromptTransitionQueue
+    private var pendingCompletion: (() -> Void)?
     private var controlsVisible = false
 
     override var isFlipped: Bool { true }
@@ -1220,9 +1287,12 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
     init(frame frameRect: NSRect,
          title: String,
          transitionFrom: String,
-         content: AnyView) {
+         content: AnyView,
+         completion: (() -> Void)? = nil) {
         transitionSource = transitionFrom
         transitionTarget = title
+        transitionCompletion = completion
+        transitionQueue = OnboardingPromptTransitionQueue(activeTarget: title)
         reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         super.init(frame: frameRect)
         wantsLayer = true
@@ -1267,10 +1337,18 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
         hostingView.frame = layoutFrame
     }
 
-    func update(title: String, content: AnyView) {
+    func update(title: String, content: AnyView, completion: (() -> Void)? = nil) {
         hostingView.rootView = content
         textView.setAccessibilityLabel(String(OnboardingPromptTransitionTimeline.phrase(from: title)))
         if transitionTarget == title, transitionTimer != nil {
+            transitionQueue.request(title)
+            pendingCompletion = nil
+            transitionCompletion = completion ?? transitionCompletion
+            return
+        }
+        if transitionTimer != nil {
+            transitionQueue.request(title)
+            pendingCompletion = completion
             return
         }
 
@@ -1279,6 +1357,7 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
                 != OnboardingPromptTransitionTimeline.phrase(from: title) else {
             transitionSource = title
             transitionTarget = title
+            transitionQueue = OnboardingPromptTransitionQueue(activeTarget: title)
             textView.reservePhrases = [title]
             textView.timelineFrame = OnboardingPromptTransitionTimeline.presentationFrame(
                 from: title,
@@ -1287,14 +1366,17 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
                 reduceMotion: reduceMotion
             )
             showControls()
+            completion?()
             return
         }
 
         transitionTimer?.invalidate()
         transitionTimer = nil
-        transitionStartedAt = nil
+        self.transitionStartedAt = nil
         transitionSource = source
         transitionTarget = title
+        transitionQueue = OnboardingPromptTransitionQueue(activeTarget: title)
+        transitionCompletion = completion
         textView.reservePhrases = [source, title]
         textView.timelineFrame = OnboardingPromptTransitionTimeline.presentationFrame(
             from: source,
@@ -1323,6 +1405,10 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
                 reduceMotion: reduceMotion
             )
             showControls()
+            transitionStartedAt = nil
+            let completion = transitionCompletion
+            transitionCompletion = nil
+            completion?()
             return
         }
 
@@ -1347,7 +1433,21 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
         guard frame.isComplete else { return }
         transitionTimer?.invalidate()
         transitionTimer = nil
+        self.transitionStartedAt = nil
+        if let pending = transitionQueue.beginPendingTransition() {
+            let pendingCompletion = self.pendingCompletion
+            self.pendingCompletion = nil
+            transitionSource = pending.source
+            transitionTarget = pending.target
+            transitionCompletion = pendingCompletion
+            textView.reservePhrases = [pending.source, pending.target]
+            startTransitionIfNeeded()
+            return
+        }
         showControls()
+        let completion = transitionCompletion
+        transitionCompletion = nil
+        completion?()
     }
 
     private func showControls() {

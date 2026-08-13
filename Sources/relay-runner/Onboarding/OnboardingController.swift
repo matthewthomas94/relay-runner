@@ -85,6 +85,7 @@ final class OnboardingController {
     private let runtimePollInterval: TimeInterval
     private let authPollInterval: TimeInterval
     private let introAdvanceDelay: TimeInterval
+    private let loginPromptDwell: TimeInterval
     private let pickWorkspaceDirectory: (
         _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
         _ completion: @escaping (String?) -> Void
@@ -149,6 +150,7 @@ final class OnboardingController {
          runtimePollInterval: TimeInterval = 0.5,
          authPollInterval: TimeInterval = 1.0,
          introAdvanceDelay: TimeInterval = OnboardingFlowMotion.completedStepHold,
+         loginPromptDwell: TimeInterval = OnboardingPromptTiming.agentLoginDwell,
          pickWorkspaceDirectory: @escaping (
             _ onPrepareExternalWindow: @escaping (@escaping () -> Void) -> Void,
             _ completion: @escaping (String?) -> Void
@@ -193,6 +195,7 @@ final class OnboardingController {
         self.runtimePollInterval = runtimePollInterval
         self.authPollInterval = authPollInterval
         self.introAdvanceDelay = introAdvanceDelay
+        self.loginPromptDwell = loginPromptDwell
         self.pickWorkspaceDirectory = pickWorkspaceDirectory
         self.reduceMotion = reduceMotion
         self.prepareTutorialSpeech = prepareTutorialSpeech
@@ -742,16 +745,17 @@ final class OnboardingController {
                 signedIn: signedIn,
                 message: message
             ),
+            fullyRendered: { [weak self] in
+                guard signedIn else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + (self?.loginPromptDwell ?? 0)) {
+                    guard let self,
+                          self.agentSetupState?.provider == state.provider,
+                          self.isAgentAuthenticated(state.provider) else { return }
+                    self.completeAuthenticatedProvider(state.provider, introDismissed: false)
+                }
+            },
             signInAction: { [weak self] in self?.startIntroAgentLogin() }
         )
-        guard signedIn else { return }
-        let delay = reduceMotion() ? 0 : introAdvanceDelay
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self,
-                  self.agentSetupState?.provider == state.provider,
-                  self.isAgentAuthenticated(state.provider) else { return }
-            self.completeAuthenticatedProvider(state.provider, introDismissed: false)
-        }
     }
 
     private func startIntroAgentLogin() {
