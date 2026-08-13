@@ -270,6 +270,7 @@ final class ProjectRegistryV2Service {
         case staleScope(String)
         case createTargetExists(String)
         case createFailed(String)
+        case initializeExistingFailed(String)
 
         var description: String {
             switch self {
@@ -297,6 +298,8 @@ final class ProjectRegistryV2Service {
                 return "new project target already exists: \(path)"
             case .createFailed(let message):
                 return "could not create project: \(message)"
+            case .initializeExistingFailed(let message):
+                return "could not initialize the selected folder as a Git repository: \(message)"
             }
         }
     }
@@ -308,6 +311,7 @@ final class ProjectRegistryV2Service {
     private let now: () -> Date
     private let makeProjectID: () -> String
     private let fileManager: FileManager
+    private let gitRunner: ([String], URL) throws -> (status: Int32, stderr: String)
 
     init(
         store: ProjectRegistryV2Store,
@@ -316,7 +320,8 @@ final class ProjectRegistryV2Service {
         appSupportRoot: URL,
         fileManager: FileManager = .default,
         now: @escaping () -> Date = Date.init,
-        makeProjectID: @escaping () -> String = { UUID().uuidString.lowercased() }
+        makeProjectID: @escaping () -> String = { UUID().uuidString.lowercased() },
+        gitRunner: (([String], URL) throws -> (status: Int32, stderr: String))? = nil
     ) {
         self.store = store
         self.validator = validator
@@ -325,6 +330,7 @@ final class ProjectRegistryV2Service {
         self.fileManager = fileManager
         self.now = now
         self.makeProjectID = makeProjectID
+        self.gitRunner = gitRunner ?? Self.runGit
     }
 
     static func makeIfEnabled(
@@ -474,6 +480,34 @@ final class ProjectRegistryV2Service {
         return try validator.validate(selectedURL: selectedURL, existingProjects: document.projects)
     }
 
+    /// Registers a folder selected through Add Existing. Only this explicit UI
+    /// path may initialize a non-Git directory; all other callers use inspect.
+    @discardableResult
+    func registerExistingProject(at selectedURL: URL) throws -> RegisteredProjectV2 {
+        let selected = selectedURL.standardizedFileURL
+        guard !isAppHomeTarget(selected.path) else {
+            throw ServiceError.appHomeTarget(selected.path)
+        }
+
+        let candidate: ProjectRegistrationCandidate
+        do {
+            candidate = try inspect(selectedURL: selected)
+        } catch ProjectRegistrationValidator.ValidationError.notGitRepository {
+            do {
+                let result = try gitRunner(["init", "--initial-branch=main"], selected)
+                guard result.status == 0 else {
+                    throw ServiceError.initializeExistingFailed(result.stderr)
+                }
+            } catch let error as ServiceError {
+                throw error
+            } catch {
+                throw ServiceError.initializeExistingFailed(error.localizedDescription)
+            }
+            candidate = try inspect(selectedURL: selected)
+        }
+        return try register(candidate: candidate, displayName: candidate.repoPath.lastPathComponent)
+    }
+
     /// Creates a new, otherwise empty Git repository and immediately registers
     /// it. A failed registration removes only the directory created by this
     /// operation; existing files and repositories are never adopted or removed.
@@ -494,7 +528,7 @@ final class ProjectRegistryV2Service {
         do {
             try fileManager.createDirectory(at: target, withIntermediateDirectories: false)
             createdDirectory = true
-            let result = try runGit(["init", "--initial-branch=main"], in: target)
+            let result = try gitRunner(["init", "--initial-branch=main"], target)
             guard result.status == 0 else {
                 throw ServiceError.createFailed(result.stderr)
             }
@@ -804,7 +838,7 @@ final class ProjectRegistryV2Service {
         return candidate == root || candidate.hasPrefix(prefix)
     }
 
-    private func runGit(
+    private static func runGit(
         _ arguments: [String],
         in directory: URL
     ) throws -> (status: Int32, stderr: String) {

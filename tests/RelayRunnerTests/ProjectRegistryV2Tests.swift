@@ -2,6 +2,81 @@ import XCTest
 @testable import relay_runner
 
 final class ProjectRegistryV2Tests: XCTestCase {
+    func testAddExistingInitializesSelectedNonGitFolderAndRegistersIt() throws {
+        let root = try makeTempDirectory(named: "add-existing")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("keep\n".utf8).write(to: folder.appendingPathComponent("keep.txt"))
+        let fixture = makeService(root: root, projectID: "project-add-existing")
+
+        XCTAssertThrowsError(try fixture.service.inspect(selectedURL: folder)) {
+            XCTAssertEqual(
+                $0 as? ProjectRegistrationValidator.ValidationError,
+                .notGitRepository(folder.path)
+            )
+        }
+
+        let project = try fixture.service.registerExistingProject(at: folder)
+
+        XCTAssertEqual(project.projectID, "project-add-existing")
+        XCTAssertEqual(project.selectedPath, folder.path)
+        XCTAssertEqual(project.lastResolvedPath, folder.path)
+        XCTAssertEqual(try runGitOutput(["branch", "--show-current"], in: folder), "main\n")
+        XCTAssertEqual(try runGitOutput(["status", "--porcelain=v1"], in: folder), "?? keep.txt\n")
+        XCTAssertEqual(try runGitOutput(["rev-list", "--count", "HEAD"], in: folder, allowedStatuses: [128]), "")
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("keep.txt")), Data("keep\n".utf8))
+        XCTAssertEqual(try fixture.service.load().document.activeProjectID, project.projectID)
+        XCTAssertEqual(fixture.grants.storeCount, 1)
+    }
+
+    func testAddExistingDoesNotReinitializeExistingRepositoryOrNestedSelection() throws {
+        let root = try makeTempDirectory(named: "add-existing-repository")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = root.appendingPathComponent("repository", isDirectory: true)
+        let nested = repository.appendingPathComponent("nested", isDirectory: true)
+        try makeCommittedGitRepo(at: repository)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let before = try repositorySnapshot(repository)
+        let fixture = makeService(root: root, projectID: "project-existing")
+
+        let project = try fixture.service.registerExistingProject(at: nested)
+
+        XCTAssertEqual(project.selectedPath, nested.path)
+        XCTAssertEqual(project.lastResolvedPath, repository.path)
+        XCTAssertEqual(try repositorySnapshot(repository), before)
+    }
+
+    func testAddExistingInitializationFailureDoesNotRegisterOrGrantAccess() throws {
+        let root = try makeTempDirectory(named: "add-existing-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("keep\n".utf8).write(to: folder.appendingPathComponent("keep.txt"))
+        let store = makeStore(root: root)
+        let grants = FakeAccessGrantManager()
+        let service = ProjectRegistryV2Service(
+            store: store,
+            validator: ProjectRegistrationValidator(relayWorktreeRoots: []),
+            accessGrants: grants,
+            appSupportRoot: root.appendingPathComponent("app-support"),
+            makeProjectID: { "project-failure" },
+            gitRunner: { _, _ in (status: 1, stderr: "permission denied") }
+        )
+
+        XCTAssertThrowsError(try service.registerExistingProject(at: folder)) {
+            XCTAssertEqual(
+                $0 as? ProjectRegistryV2Service.ServiceError,
+                .initializeExistingFailed("permission denied")
+            )
+        }
+        XCTAssertTrue(try service.load().document.projects.isEmpty)
+        XCTAssertNil(try service.load().document.activeProjectID)
+        XCTAssertEqual(grants.storeCount, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".git").path))
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("keep.txt")), Data("keep\n".utf8))
+    }
+
     func testRegistrationPersistsVersionedMetadataAndBookmarkReferenceWithoutBookmarkBytes() throws {
         let root = try makeTempDirectory(named: "registration")
         defer { try? FileManager.default.removeItem(at: root) }
