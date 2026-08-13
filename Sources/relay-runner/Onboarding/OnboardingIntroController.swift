@@ -8,6 +8,8 @@ struct OnboardingIntroFrame: Equatable {
     let activePhrase: String
     let text: String
     let cursorVisible: Bool
+    let textOpacity: CGFloat
+    let textBlurRadius: CGFloat
     let dotFieldProgress: CGFloat
     let dotFieldOpacity: CGFloat
     let isComplete: Bool
@@ -92,8 +94,8 @@ struct OnboardingAgentLoginPromptPresentation: Equatable {
 }
 
 enum OnboardingPromptTransitionPolicy: Equatable {
-    case cursorLed
-    case opacity
+    case immediate
+    case fadeBlur
 }
 
 enum OnboardingPromptPhase: CaseIterable, Equatable {
@@ -105,7 +107,7 @@ enum OnboardingPromptPhase: CaseIterable, Equatable {
     case tutorial
 
     var transitionPolicy: OnboardingPromptTransitionPolicy {
-        self == .tutorial ? .opacity : .cursorLed
+        .fadeBlur
     }
 }
 
@@ -131,10 +133,23 @@ enum OnboardingIntroPromptCopy {
 
 enum OnboardingPromptTiming {
     static let typingInterval: TimeInterval = 0.065 / 2.25
-    static let eraseInterval = typingInterval / 2
     static let initialHold: TimeInterval = 0.36
     static let finalHold: TimeInterval = 0.32
     static let agentLoginDwell: TimeInterval = 1.25
+}
+
+enum OnboardingPostTitleTransition {
+    static let fadeOutDuration: TimeInterval = 0.24
+    static let fadeInDuration: TimeInterval = 0.24
+    static let blurRadius: CGFloat = 6
+
+    static var duration: TimeInterval {
+        fadeOutDuration + fadeInDuration
+    }
+
+    static func animatedBlurRadius(reduceMotion: Bool) -> CGFloat {
+        reduceMotion ? 0 : blurRadius
+    }
 }
 
 enum OnboardingIntroTimeline {
@@ -145,7 +160,6 @@ enum OnboardingIntroTimeline {
     ]
     static let initialBrandHold: TimeInterval = 0.70
     static let typingInterval = OnboardingPromptTiming.typingInterval
-    static let eraseInterval = OnboardingPromptTiming.eraseInterval
     static let brandSettle = OnboardingPromptTiming.initialHold
     static let phraseHold: TimeInterval = 1.05
     static let dotFieldTravel: TimeInterval = 4.00
@@ -154,17 +168,13 @@ enum OnboardingIntroTimeline {
 
     static var duration: TimeInterval {
         let brandCount = Double(phraseGraphemes(phrases[0]).count)
-        let firstCopyCount = Double(phraseGraphemes(phrases[1]).count)
-        let finalCopyCount = Double(phraseGraphemes(phrases[2]).count)
         return initialBrandHold
             + max(0, brandCount - 1) * typingInterval
             + dotFieldTravel
             + brandSettle
-            + brandCount * eraseInterval
-            + firstCopyCount * typingInterval
+            + OnboardingPostTitleTransition.duration
             + phraseHold
-            + firstCopyCount * eraseInterval
-            + finalCopyCount * typingInterval
+            + OnboardingPostTitleTransition.duration
             + finalPhraseHold
     }
 
@@ -232,34 +242,33 @@ enum OnboardingIntroTimeline {
         }
         cursor -= brandSettle
 
-        let brandEraseDuration = Double(brandGraphemes.count) * eraseInterval
-        if cursor < brandEraseDuration {
-            let erasedCount = min(brandGraphemes.count, Int(cursor / eraseInterval))
-            let remainingCount = max(0, brandGraphemes.count - erasedCount)
+        if cursor < OnboardingPostTitleTransition.fadeOutDuration {
+            let phase = CGFloat(easeInOut(cursor / OnboardingPostTitleTransition.fadeOutDuration))
             return frame(
                 phrase: brand,
-                visible: Array(brandGraphemes.prefix(remainingCount)),
-                compactCursor: remainingCount == 1,
+                visible: brandGraphemes,
                 cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                textOpacity: 1 - phase,
+                textBlurRadius: phase * OnboardingPostTitleTransition.blurRadius,
                 dotFieldProgress: 1,
-                dotFieldOpacity: CGFloat(1 - easeInOut(cursor / brandEraseDuration))
+                dotFieldOpacity: 1 - phase
             )
         }
-        cursor -= brandEraseDuration
+        cursor -= OnboardingPostTitleTransition.fadeOutDuration
 
         let firstCopy = phrases[1]
         let firstCopyGraphemes = phraseGraphemes(firstCopy)
-        let firstTypeDuration = Double(firstCopyGraphemes.count) * typingInterval
-        if cursor < firstTypeDuration {
-            let phase = easeInOut(cursor / firstTypeDuration)
-            let visibleCount = min(firstCopyGraphemes.count, Int(phase * Double(firstCopyGraphemes.count)))
+        if cursor < OnboardingPostTitleTransition.fadeInDuration {
+            let phase = CGFloat(easeInOut(cursor / OnboardingPostTitleTransition.fadeInDuration))
             return frame(
                 phrase: firstCopy,
-                visible: Array(firstCopyGraphemes.prefix(visibleCount)),
-                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
+                visible: firstCopyGraphemes,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                textOpacity: phase,
+                textBlurRadius: (1 - phase) * OnboardingPostTitleTransition.blurRadius
             )
         }
-        cursor -= firstTypeDuration
+        cursor -= OnboardingPostTitleTransition.fadeInDuration
 
         if cursor < phraseHold {
             return frame(
@@ -270,32 +279,31 @@ enum OnboardingIntroTimeline {
         }
         cursor -= phraseHold
 
-        let firstEraseDuration = Double(firstCopyGraphemes.count) * eraseInterval
-        if cursor < firstEraseDuration {
-            let phase = easeInOut(cursor / firstEraseDuration)
-            let erasedCount = min(firstCopyGraphemes.count, Int(phase * Double(firstCopyGraphemes.count)) + 1)
-            let remainingCount = max(0, firstCopyGraphemes.count - erasedCount)
+        if cursor < OnboardingPostTitleTransition.fadeOutDuration {
+            let phase = CGFloat(easeInOut(cursor / OnboardingPostTitleTransition.fadeOutDuration))
             return frame(
                 phrase: firstCopy,
-                visible: Array(firstCopyGraphemes.prefix(remainingCount)),
-                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
+                visible: firstCopyGraphemes,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                textOpacity: 1 - phase,
+                textBlurRadius: phase * OnboardingPostTitleTransition.blurRadius
             )
         }
-        cursor -= firstEraseDuration
+        cursor -= OnboardingPostTitleTransition.fadeOutDuration
 
         let finalCopy = phrases[2]
         let finalCopyGraphemes = phraseGraphemes(finalCopy)
-        let finalTypeDuration = Double(finalCopyGraphemes.count) * typingInterval
-        if cursor < finalTypeDuration {
-            let phase = easeInOut(cursor / finalTypeDuration)
-            let visibleCount = min(finalCopyGraphemes.count, Int(phase * Double(finalCopyGraphemes.count)))
+        if cursor < OnboardingPostTitleTransition.fadeInDuration {
+            let phase = CGFloat(easeInOut(cursor / OnboardingPostTitleTransition.fadeInDuration))
             return frame(
                 phrase: finalCopy,
-                visible: Array(finalCopyGraphemes.prefix(visibleCount)),
-                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
+                visible: finalCopyGraphemes,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                textOpacity: phase,
+                textBlurRadius: (1 - phase) * OnboardingPostTitleTransition.blurRadius
             )
         }
-        cursor -= finalTypeDuration
+        cursor -= OnboardingPostTitleTransition.fadeInDuration
 
         return frame(
             phrase: finalCopy,
@@ -309,6 +317,8 @@ enum OnboardingIntroTimeline {
         visible: [Character],
         compactCursor: Bool = false,
         cursorVisible: Bool = true,
+        textOpacity: CGFloat = 1,
+        textBlurRadius: CGFloat = 0,
         dotFieldProgress: CGFloat = 0,
         dotFieldOpacity: CGFloat = 0,
         isComplete: Bool = false
@@ -325,6 +335,8 @@ enum OnboardingIntroTimeline {
             activePhrase: phrase,
             text: text,
             cursorVisible: cursorVisible,
+            textOpacity: min(max(textOpacity, 0), 1),
+            textBlurRadius: max(textBlurRadius, 0),
             dotFieldProgress: min(max(dotFieldProgress, 0), 1),
             dotFieldOpacity: min(max(dotFieldOpacity, 0), 1),
             isComplete: isComplete
@@ -364,16 +376,11 @@ enum OnboardingCursorBlink {
 enum OnboardingPromptTransitionTimeline {
     static let initialHold = OnboardingPromptTiming.initialHold
     static let finalHold = OnboardingPromptTiming.finalHold
-    static let typingInterval = OnboardingPromptTiming.typingInterval
-    static let eraseInterval = OnboardingPromptTiming.eraseInterval
 
     static func duration(from source: String, to target: String) -> TimeInterval {
-        let sourceCount = Double(phrase(from: source).count)
-        let targetCount = Double(phrase(from: target).count)
-        guard sourceCount > 0 || targetCount > 0 else { return 0 }
+        guard !phrase(from: source).isEmpty || !phrase(from: target).isEmpty else { return 0 }
         return initialHold
-            + sourceCount * eraseInterval
-            + targetCount * typingInterval
+            + OnboardingPostTitleTransition.duration
             + finalHold
     }
 
@@ -400,27 +407,33 @@ enum OnboardingPromptTransitionTimeline {
         }
         cursor -= initialHold
 
-        let eraseDuration = Double(sourcePhrase.count) * eraseInterval
-        if cursor < eraseDuration {
-            let erasedCount = min(sourcePhrase.count, Int(cursor / eraseInterval))
+        if cursor < OnboardingPostTitleTransition.fadeOutDuration {
+            let phase = CGFloat(OnboardingIntroTimeline.easeInOut(
+                cursor / OnboardingPostTitleTransition.fadeOutDuration
+            ))
             return makeFrame(
                 phrase: sourcePhrase,
-                visible: Array(sourcePhrase.prefix(max(0, sourcePhrase.count - erasedCount))),
-                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
+                visible: sourcePhrase,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                textOpacity: 1 - phase,
+                textBlurRadius: phase * OnboardingPostTitleTransition.blurRadius
             )
         }
-        cursor -= eraseDuration
+        cursor -= OnboardingPostTitleTransition.fadeOutDuration
 
-        let typeDuration = Double(targetPhrase.count) * typingInterval
-        if cursor < typeDuration {
-            let visibleCount = min(targetPhrase.count, 1 + Int(cursor / typingInterval))
+        if cursor < OnboardingPostTitleTransition.fadeInDuration {
+            let phase = CGFloat(OnboardingIntroTimeline.easeInOut(
+                cursor / OnboardingPostTitleTransition.fadeInDuration
+            ))
             return makeFrame(
                 phrase: targetPhrase,
-                visible: Array(targetPhrase.prefix(visibleCount)),
-                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed)
+                visible: targetPhrase,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                textOpacity: phase,
+                textBlurRadius: (1 - phase) * OnboardingPostTitleTransition.blurRadius
             )
         }
-        cursor -= typeDuration
+        cursor -= OnboardingPostTitleTransition.fadeInDuration
 
         return makeFrame(
             phrase: targetPhrase,
@@ -461,6 +474,8 @@ enum OnboardingPromptTransitionTimeline {
         phrase: [Character],
         visible: [Character],
         cursorVisible: Bool = true,
+        textOpacity: CGFloat = 1,
+        textBlurRadius: CGFloat = 0,
         isComplete: Bool = false
     ) -> OnboardingIntroFrame {
         let prefix = String(visible)
@@ -468,6 +483,8 @@ enum OnboardingPromptTransitionTimeline {
             activePhrase: String(phrase),
             text: prefix.isEmpty ? "/" : "\(prefix) /",
             cursorVisible: cursorVisible,
+            textOpacity: min(max(textOpacity, 0), 1),
+            textBlurRadius: max(textBlurRadius, 0),
             dotFieldProgress: 0,
             dotFieldOpacity: 0,
             isComplete: isComplete
@@ -498,21 +515,13 @@ struct OnboardingPromptTransitionQueue: Equatable {
 }
 
 enum OnboardingFlowMotion {
-    static let surfaceTransitionDuration: TimeInterval = 0.48
+    static let surfaceTransitionDuration = OnboardingPostTitleTransition.duration
     static let contentTransitionDuration: TimeInterval = 0.42
     static let controlsRevealDuration: TimeInterval = 0.36
     static let completedStepHold: TimeInterval = 0.85
 
     static var contentAnimation: Animation {
         .easeInOut(duration: contentTransitionDuration)
-    }
-}
-
-enum OnboardingTutorialPromptTransition {
-    static let blurRadius: CGFloat = 6
-
-    static func animatedBlurRadius(reduceMotion: Bool) -> CGFloat {
-        reduceMotion ? 0 : blurRadius
     }
 }
 
@@ -904,6 +913,8 @@ private final class OnboardingIntroRootView: NSView {
 
     private weak var cinematicView: OnboardingIntroCinematicView?
     private var currentContentView: NSView?
+    private var contentTransitionInProgress = false
+    private var pendingContentReplacement: (view: NSView, policy: OnboardingPromptTransitionPolicy)?
     private var runtimeModel: OnboardingIntroRuntimeSurfaceModel?
     private let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
@@ -928,7 +939,7 @@ private final class OnboardingIntroRootView: NSView {
         view.timelineFrame = timelineFrame
         cinematicView = view
         runtimeModel = nil
-        replaceContent(with: view, policy: .cursorLed)
+        replaceContent(with: view, policy: .immediate)
     }
 
     func showPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
@@ -1065,7 +1076,7 @@ private final class OnboardingIntroRootView: NSView {
     }
 
     private func showPrompt(
-        phase: OnboardingPromptPhase,
+        phase _: OnboardingPromptPhase,
         title: String,
         transitionFrom: String,
         content: AnyView,
@@ -1086,62 +1097,102 @@ private final class OnboardingIntroRootView: NSView {
         )
         view.autoresizingMask = [.width, .height]
         view.layoutFrame = layoutFrame
-        replaceContent(with: view, policy: phase.transitionPolicy)
+        replaceContent(with: view, policy: .immediate)
     }
 
     private func replaceContent(with view: NSView, policy: OnboardingPromptTransitionPolicy) {
-        let oldView = currentContentView
-        currentContentView = view
-        view.frame = bounds
-        view.alphaValue = policy == .opacity && oldView != nil && !reduceMotion ? 0 : 1
-        oldView.flatMap { $0 as? OnboardingIntroCinematicView }?.stopAnimations()
-
-        if policy == .cursorLed {
-            oldView?.removeFromSuperview()
-        }
-        addSubview(view)
-        applyLayout(to: view)
-        view.layoutSubtreeIfNeeded()
-
-        guard policy == .opacity, let oldView else { return }
-        guard !reduceMotion else {
-            oldView.removeFromSuperview()
+        if contentTransitionInProgress {
+            pendingContentReplacement = (view, policy)
             return
         }
 
-        let blurRadius = OnboardingTutorialPromptTransition.animatedBlurRadius(
-            reduceMotion: reduceMotion
+        let oldView = currentContentView
+        view.frame = bounds
+        oldView.flatMap { $0 as? OnboardingIntroCinematicView }?.stopAnimations()
+
+        guard policy == .fadeBlur, let oldView, !reduceMotion else {
+            oldView?.removeFromSuperview()
+            currentContentView = view
+            view.alphaValue = 1
+            addSubview(view)
+            applyLayout(to: view)
+            view.layoutSubtreeIfNeeded()
+            return
+        }
+
+        contentTransitionInProgress = true
+        view.alphaValue = 0
+        configureFadeBlur(on: oldView, radius: 0)
+        animateFadeBlur(
+            on: oldView,
+            from: 0,
+            to: OnboardingPostTitleTransition.blurRadius,
+            duration: OnboardingPostTitleTransition.fadeOutDuration
         )
-        configureTutorialBlur(on: oldView, radius: 0)
-        configureTutorialBlur(on: view, radius: blurRadius)
-        animateTutorialBlur(on: oldView, from: 0, to: blurRadius)
-        animateTutorialBlur(on: view, from: blurRadius, to: 0)
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = OnboardingFlowMotion.surfaceTransitionDuration
+            context.duration = OnboardingPostTitleTransition.fadeOutDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             oldView.animator().alphaValue = 0
-            view.animator().alphaValue = 1
-        } completionHandler: {
-            oldView.removeFromSuperview()
-            view.layer?.filters = nil
+        } completionHandler: { [weak self, weak oldView, weak view] in
+            guard let self, let view else { return }
+            oldView?.removeFromSuperview()
+            oldView?.layer?.filters = nil
+            self.currentContentView = view
+            self.addSubview(view)
+            self.applyLayout(to: view)
+            view.layoutSubtreeIfNeeded()
+
+            let blurRadius = OnboardingPostTitleTransition.animatedBlurRadius(
+                reduceMotion: self.reduceMotion
+            )
+            self.configureFadeBlur(on: view, radius: blurRadius)
+            self.animateFadeBlur(
+                on: view,
+                from: blurRadius,
+                to: 0,
+                duration: OnboardingPostTitleTransition.fadeInDuration
+            )
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = OnboardingPostTitleTransition.fadeInDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                view.animator().alphaValue = 1
+            } completionHandler: { [weak self, weak view] in
+                view?.layer?.filters = nil
+                self?.finishContentTransition()
+            }
         }
     }
 
-    private func configureTutorialBlur(on view: NSView, radius: CGFloat) {
+    private func finishContentTransition() {
+        contentTransitionInProgress = false
+        guard let pendingContentReplacement else { return }
+        self.pendingContentReplacement = nil
+        replaceContent(
+            with: pendingContentReplacement.view,
+            policy: pendingContentReplacement.policy
+        )
+    }
+
+    private func configureFadeBlur(on view: NSView, radius: CGFloat) {
         guard let blur = CIFilter(name: "CIGaussianBlur") else { return }
-        blur.name = "onboardingTutorialBlur"
+        blur.name = "onboardingFadeBlur"
         blur.setValue(radius, forKey: kCIInputRadiusKey)
         view.wantsLayer = true
         view.layer?.filters = [blur]
     }
 
-    private func animateTutorialBlur(on view: NSView, from: CGFloat, to: CGFloat) {
-        let keyPath = "filters.onboardingTutorialBlur.inputRadius"
+    private func animateFadeBlur(
+        on view: NSView,
+        from: CGFloat,
+        to: CGFloat,
+        duration: TimeInterval
+    ) {
+        let keyPath = "filters.onboardingFadeBlur.inputRadius"
         let animation = CABasicAnimation(keyPath: keyPath)
         animation.fromValue = from
         animation.toValue = to
-        animation.duration = OnboardingFlowMotion.surfaceTransitionDuration
+        animation.duration = duration
         animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         view.layer?.add(animation, forKey: keyPath)
         view.layer?.setValue(to, forKeyPath: keyPath)
@@ -1917,7 +1968,10 @@ private final class OnboardingIntroTextView: NSView {
     }
 
     var timelineFrame = OnboardingIntroTimeline.frame(at: 0) {
-        didSet { needsDisplay = true }
+        didSet {
+            updatePresentation()
+            needsDisplay = true
+        }
     }
 
     var reservePhrases: [String] = [] {
@@ -1931,12 +1985,33 @@ private final class OnboardingIntroTextView: NSView {
         layoutFrame = frameRect
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+        updatePresentation()
         setAccessibilityElement(true)
         setAccessibilityLabel("Relay Runner setup is getting started")
     }
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    private func updatePresentation() {
+        alphaValue = timelineFrame.textOpacity
+        guard timelineFrame.textBlurRadius > 0 else {
+            layer?.filters = nil
+            return
+        }
+        let blur: CIFilter
+        if let existing = layer?.filters?.first(where: {
+            ($0 as? CIFilter)?.name == "onboardingTextBlur"
+        }) as? CIFilter {
+            blur = existing
+        } else {
+            guard let created = CIFilter(name: "CIGaussianBlur") else { return }
+            created.name = "onboardingTextBlur"
+            layer?.filters = [created]
+            blur = created
+        }
+        blur.setValue(timelineFrame.textBlurRadius, forKey: kCIInputRadiusKey)
     }
 
     override func draw(_ dirtyRect: NSRect) {
