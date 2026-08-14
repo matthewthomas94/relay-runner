@@ -103,6 +103,7 @@ actor StateEventBus {
                 let text = json["text"] as? String
                 let tutorial = json["tutorial"] as? Bool ?? false
                 let autoDismiss = json["auto_dismiss_seconds"] as? Double
+                let presentation = SpeechPresentation(json)
 
                 NSLog("[StateEventBus] \(source):\(state)\(text.map { " text=\($0.prefix(40))" } ?? "")")
 
@@ -115,7 +116,8 @@ actor StateEventBus {
                         source: source,
                         newState: state,
                         text: text,
-                        autoDismiss: autoDismiss
+                        autoDismiss: autoDismiss,
+                        presentation: presentation
                     )
                     onServiceEvent(source, state, text, tutorial)
                 }

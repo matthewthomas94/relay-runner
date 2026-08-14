@@ -49,7 +49,8 @@ class FakeTTSWorker:
         self.eligibility = eligibility
         self.observer = observer
 
-    def stop_playback(self):
+    def stop_playback(self, *, reason="user_stop"):
+        self.stop_reason = reason
         self.calls.append("stop_playback")
 
     def skip(self):
@@ -4557,6 +4558,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
             self.assertTrue(handled)
             self.assertEqual(worker.calls, ["stop_playback"])
+            self.assertEqual(worker.stop_reason, "interrupt")
             self.assertEqual(messenger.interrupt_count, 1)
             self.assertEqual(claim_ready_command(command_path), "__INTERRUPT__")
             current = json.loads(Path(state_path).read_text())
