@@ -14,6 +14,56 @@ struct ConfirmationPrompt: Equatable {
     let requestId: String
 }
 
+enum SpeechPresentationMode: String, Equatable {
+    case newDelivery = "new_delivery"
+    case retainedReplay = "retained_replay"
+    case explicitReplay = "explicit_replay"
+}
+
+struct SpeechPresentation: Equatable {
+    let utteranceID: String
+    let originalUtteranceID: String
+    let replayOf: String?
+    let mode: SpeechPresentationMode
+    let stopReason: String?
+    let commandSequence: Int?
+    let commandID: String?
+
+    init?(_ payload: [String: Any]) {
+        guard let modeValue = payload["presentation_mode"] as? String,
+              let mode = SpeechPresentationMode(rawValue: modeValue),
+              let utteranceID = payload["utterance_id"] as? String,
+              !utteranceID.isEmpty else { return nil }
+        self.utteranceID = utteranceID
+        self.originalUtteranceID =
+            (payload["original_utterance_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? utteranceID
+        self.replayOf = (payload["replay_of"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        self.mode = mode
+        self.stopReason = (payload["stop_reason"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        self.commandSequence = payload["relay_command_seq"] as? Int
+        self.commandID = (payload["relay_command_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    init(
+        utteranceID: String,
+        originalUtteranceID: String,
+        replayOf: String? = nil,
+        mode: SpeechPresentationMode,
+        stopReason: String? = nil,
+        commandSequence: Int? = nil,
+        commandID: String? = nil
+    ) {
+        self.utteranceID = utteranceID
+        self.originalUtteranceID = originalUtteranceID
+        self.replayOf = replayOf
+        self.mode = mode
+        self.stopReason = stopReason
+        self.commandSequence = commandSequence
+        self.commandID = commandID
+    }
+}
+
 /// Possible overlay states, driven by STT engine (in-process) and Python services (via socket).
 enum OverlayState: Equatable {
     case idle
@@ -29,6 +79,7 @@ enum OverlayState: Equatable {
     case processing
     case acknowledgement(text: String, autoDismiss: TimeInterval)
     case messageWaiting(preview: String?)
+    case replayWaiting(preview: String?)
     case preparing
     case speaking
     case speechFailed
@@ -48,7 +99,8 @@ enum OverlayState: Equatable {
     /// around the screen edges by PerimeterOverlay, not at the bottom.
     var particleTheme: ParticleFieldRenderer.Theme? {
         switch self {
-        case .idle, .paused, .sent, .cancelled(_), .acknowledgement, .speechFailed,
+        case .idle, .paused, .sent, .cancelled(_), .acknowledgement, .replayWaiting,
+             .speechFailed,
              .sessionPrompt, .actionGlow:
             return nil
         case .listening, .recording:
@@ -65,7 +117,8 @@ enum OverlayState: Equatable {
             return .stt
         case .cancelled(.tts):
             return .tts
-        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking,
+        case .processing, .acknowledgement, .messageWaiting, .replayWaiting,
+             .preparing, .speaking,
              .speechFailed, .sessionReady, .programStatus, .actionGlow:
             return .tts
         default:
@@ -92,6 +145,7 @@ final class StateMachine: @unchecked Sendable {
     private(set) var partialTranscription: String = ""
     private(set) var messagePreview: String?
     private(set) var replayRetained = false
+    private(set) var speechPresentation: SpeechPresentation?
     private(set) var workingProgress: String?
     private(set) var workingProgressUpdatedAt: Date?
 
@@ -100,6 +154,7 @@ final class StateMachine: @unchecked Sendable {
     private var lastIdleTransitionTime: Date = .distantPast
     private var sentEnteredAt: Date?
     private var pendingAcknowledgement: PendingAcknowledgement?
+    private var presentedDeliveryIDs: [String] = []
 
     init(now: @escaping () -> Date = Date.init) {
         self.now = now
@@ -110,6 +165,7 @@ final class StateMachine: @unchecked Sendable {
         partialTranscription = partial
 
         if isRecording {
+            clearReplayPresentation()
             state = .recording
         } else if case .recording = state {
             // Stopped recording — show brief "Sent" confirmation.
@@ -120,15 +176,40 @@ final class StateMachine: @unchecked Sendable {
     }
 
     /// Called by StateEventBus when Python services send state updates.
-    func handleServiceEvent(source: String, newState: String, text: String?, autoDismiss: TimeInterval? = nil) {
+    func handleServiceEvent(
+        source: String,
+        newState: String,
+        text: String?,
+        autoDismiss: TimeInterval? = nil,
+        presentation: SpeechPresentation? = nil
+    ) {
         switch (source, newState) {
         case ("tts", "message_waiting"):
             pendingAcknowledgement = nil
             clearWorkingProgress()
-            replayRetained = false
             let preview = normalizedMessagePreview(text) ?? messagePreview
             guard preview != nil else { break }
+            if let presentation, presentation.mode == .newDelivery {
+                let alreadyPresented = presentedDeliveryIDs.contains(
+                    presentation.originalUtteranceID
+                )
+                if alreadyPresented {
+                    guard speechPresentation?.originalUtteranceID
+                            == presentation.originalUtteranceID,
+                          speechPresentation?.mode == .newDelivery else { break }
+                    messagePreview = preview
+                    break
+                }
+                recordPresentedDelivery(presentation.originalUtteranceID)
+            }
+            speechPresentation = presentation ?? speechPresentation
             messagePreview = preview
+            if let mode = presentation?.mode, mode != .newDelivery {
+                replayRetained = mode == .retainedReplay
+                state = .replayWaiting(preview: preview)
+                break
+            }
+            replayRetained = false
             switch state {
             case .preparing, .speaking:
                 break
@@ -137,27 +218,33 @@ final class StateMachine: @unchecked Sendable {
             }
 
         case ("tts", "preparing"):
+            guard !isLateOriginalPlaybackEvent(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
             replayRetained = false
+            speechPresentation = presentation ?? speechPresentation
             if let preview = normalizedMessagePreview(text) {
                 messagePreview = preview
             }
             state = .preparing
 
         case ("tts", "speaking"):
+            guard !isLateOriginalPlaybackEvent(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
             replayRetained = false
+            speechPresentation = presentation ?? speechPresentation
             if let preview = normalizedMessagePreview(text) {
                 messagePreview = preview
             }
             state = .speaking
 
         case ("tts", "failed"):
+            guard !isLateOriginalPlaybackEvent(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
             replayRetained = false
+            speechPresentation = presentation ?? speechPresentation
             if let preview = normalizedMessagePreview(text) {
                 messagePreview = preview
             }
@@ -170,6 +257,7 @@ final class StateMachine: @unchecked Sendable {
                 lastIdleTransitionTime = now()
                 state = .idle
                 messagePreview = nil
+                speechPresentation = nil
             default:
                 break
             }
@@ -181,13 +269,32 @@ final class StateMachine: @unchecked Sendable {
                 messagePreview = preview
             }
             guard messagePreview != nil else { break }
+            speechPresentation = presentation ?? speechPresentation
             replayRetained = true
-            state = .cancelled(.tts)
+            state = .replayWaiting(preview: messagePreview)
+
+        case ("tts", "replay_invalidated"):
+            guard replayRetained || speechPresentation?.mode == .retainedReplay else { break }
+            if let presentation,
+               let current = speechPresentation,
+               presentation.originalUtteranceID != current.originalUtteranceID {
+                break
+            }
+            clearReplayPresentation()
+            switch state {
+            case .replayWaiting, .cancelled(.tts):
+                state = .idle
+            default:
+                break
+            }
 
         case ("bridge", "processing"):
             switch state {
             case .recording, .cancelled(_):
                 break  // don't override these transient states
+            case .replayWaiting:
+                clearReplayPresentation()
+                state = .processing
             default:
                 // .sent → .processing is intentional: surfaces "Thinking…" the
                 // moment STT finalizes, instead of waiting on the .sent timer.
@@ -242,13 +349,12 @@ final class StateMachine: @unchecked Sendable {
         case .sent:
             state = .idle
             sentEnteredAt = nil
-        case .cancelled(.tts) where replayRetained && messagePreview != nil:
-            state = .messageWaiting(preview: messagePreview)
         case .cancelled(_):
             replayRetained = false
             state = .idle
             sentEnteredAt = nil
             messagePreview = nil
+            speechPresentation = nil
         default:
             break
         }
@@ -279,7 +385,7 @@ final class StateMachine: @unchecked Sendable {
         if case .messageWaiting = state {
             replayRetained = false
             state = .preparing
-        } else if case .cancelled(.tts) = state, replayRetained {
+        } else if case .replayWaiting = state, replayRetained {
             replayRetained = false
             state = .preparing
         }
@@ -292,7 +398,7 @@ final class StateMachine: @unchecked Sendable {
         case .idle, .processing, .acknowledgement:
             applyAcknowledgement((pendingAcknowledgement.text, pendingAcknowledgement.autoDismiss))
             self.pendingAcknowledgement = nil
-        case .messageWaiting, .preparing, .speaking:
+        case .messageWaiting, .replayWaiting, .preparing, .speaking:
             self.pendingAcknowledgement = nil
         default:
             break
@@ -301,7 +407,7 @@ final class StateMachine: @unchecked Sendable {
 
     /// User cancelled the current recording or TTS.
     func setCancelled() {
-        if case .cancelled(.tts) = state, replayRetained {
+        if case .replayWaiting = state, replayRetained {
             return
         }
         let referenceState: OverlayState
@@ -320,7 +426,8 @@ final class StateMachine: @unchecked Sendable {
         switch referenceState {
         case .recording:
             source = .stt
-        case .processing, .acknowledgement, .messageWaiting, .preparing, .speaking,
+        case .processing, .acknowledgement, .messageWaiting, .replayWaiting,
+             .preparing, .speaking,
              .speechFailed:
             source = .tts
         default:
@@ -364,6 +471,7 @@ final class StateMachine: @unchecked Sendable {
         partialTranscription = ""
         messagePreview = nil
         replayRetained = false
+        speechPresentation = nil
     }
 
     func dismissProgramStatus() {
@@ -407,6 +515,7 @@ final class StateMachine: @unchecked Sendable {
         partialTranscription = ""
         messagePreview = nil
         replayRetained = false
+        speechPresentation = nil
         clearWorkingProgress()
         sentEnteredAt = nil
         pendingAcknowledgement = nil
@@ -498,10 +607,34 @@ final class StateMachine: @unchecked Sendable {
         )
         partialTranscription = ""
         messagePreview = nil
+        speechPresentation = nil
     }
 
     private func normalizedMessagePreview(_ text: String?) -> String? {
         let preview = text?.trimmingCharacters(in: .whitespacesAndNewlines)
         return preview.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    private func recordPresentedDelivery(_ deliveryID: String) {
+        guard !presentedDeliveryIDs.contains(deliveryID) else { return }
+        presentedDeliveryIDs.append(deliveryID)
+        if presentedDeliveryIDs.count > 256 {
+            presentedDeliveryIDs.removeFirst(presentedDeliveryIDs.count - 128)
+        }
+    }
+
+    private func clearReplayPresentation() {
+        replayRetained = false
+        messagePreview = nil
+        speechPresentation = nil
+    }
+
+    private func isLateOriginalPlaybackEvent(_ presentation: SpeechPresentation?) -> Bool {
+        guard replayRetained,
+              let retained = speechPresentation,
+              retained.mode == .retainedReplay,
+              let presentation else { return false }
+        return presentation.utteranceID == retained.utteranceID
+            && presentation.mode == .newDelivery
     }
 }
