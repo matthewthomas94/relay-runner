@@ -269,6 +269,17 @@ final class OverlayController {
         return actionHint
     }
 
+    static func waitingActionHint(for state: OverlayState) -> String? {
+        switch state {
+        case .messageWaiting:
+            return "Double tap Option to play"
+        case .replayWaiting:
+            return "Double tap Option to replay previous response"
+        default:
+            return nil
+        }
+    }
+
     static func previewBody(
         for state: OverlayState,
         messagePreview: String?,
@@ -277,7 +288,8 @@ final class OverlayController {
         _ = messagePreviewEnabled
         guard let messagePreview else { return nil }
         switch state {
-        case .messageWaiting, .preparing, .speaking, .speechFailed, .cancelled(.tts):
+        case .messageWaiting, .replayWaiting, .preparing, .speaking, .speechFailed,
+             .cancelled(.tts):
             return messagePreview
         default:
             return nil
@@ -386,7 +398,24 @@ final class OverlayController {
                 messagePreviewEnabled: config.message_preview
             ) {
                 if preview != lastPreview || state != lastAppliedState,
-                   let title = Self.fullPillTitle(for: state, actionHint: "Double tap Option to play") {
+                   let actionHint = Self.waitingActionHint(for: state),
+                   let title = Self.fullPillTitle(for: state, actionHint: actionHint) {
+                    pill.showFull(title: title, body: preview, theme: .tts)
+                }
+            } else if state != lastAppliedState,
+                      let title = Self.compactPillTitle(for: state, suffix: "...") {
+                pill.showCompact(title: title, theme: .tts)
+            }
+
+        case .replayWaiting:
+            if let preview = Self.previewBody(
+                for: state,
+                messagePreview: preview,
+                messagePreviewEnabled: config.message_preview
+            ) {
+                if preview != lastPreview || state != lastAppliedState,
+                   let actionHint = Self.waitingActionHint(for: state),
+                   let title = Self.fullPillTitle(for: state, actionHint: actionHint) {
                     pill.showFull(title: title, body: preview, theme: .tts)
                 }
             } else if state != lastAppliedState,

@@ -2673,12 +2673,12 @@ def _handle_relay_control_message(
 ) -> bool:
     """Handle provider-neutral relay controls before command publication."""
     if text == "__TTS_STOP__":
-        # Kill TTS playback only; preserve queued text for double-tap play.
-        tts_worker.stop_playback()
+        # Recording barge-in stops audio without resurfacing it as replay history.
+        tts_worker.stop_playback(reason="recording_barge_in")
         return True
 
     if text == "__INTERRUPT__":
-        tts_worker.stop_playback()
+        tts_worker.stop_playback(reason="interrupt")
         if messenger is not None:
             messenger.interrupt()
         relay_command = _begin_relay_command(
@@ -3712,12 +3712,12 @@ def main():
                     continue
 
                 if text == "__TTS_STOP__":
-                    tts_worker.stop_playback()
+                    tts_worker.stop_playback(reason="recording_barge_in")
                     continue
 
                 if text == "__INTERRUPT__":
                     bridge.interrupt()
-                    tts_worker.stop_playback()
+                    tts_worker.stop_playback(reason="interrupt")
                     continue
 
                 if text == "__CANCEL__":
@@ -3757,7 +3757,7 @@ def main():
                 # Interrupt any in-progress legacy Claude request, stop TTS audio
                 # (but don't discard pending text — user may still want to play it)
                 bridge.interrupt()
-                tts_worker.stop_playback()
+                tts_worker.stop_playback(reason="newer_command")
                 request_queue.put(text)
 
     except KeyboardInterrupt:

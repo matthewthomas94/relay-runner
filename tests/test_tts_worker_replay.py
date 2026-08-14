@@ -268,7 +268,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
         with patch.object(
             tts_worker,
             "publish_waiting_preview",
-            side_effect=lambda text: order.append(("preview", text)),
+            side_effect=lambda text, _intent=None: order.append(("preview", text)),
         ):
             collector = threading.Thread(
                 target=worker._handle_collected_chunk,
@@ -443,6 +443,36 @@ class TTSWorkerReplayTests(unittest.TestCase):
 
         self.assertEqual(worker.played_texts, ["Short spoken result."])
         self.assertEqual(worker.played_displays, ["Authoritative **provider** result."])
+
+    def test_speech_presentation_identity_is_published_without_response_metadata(self):
+        worker = self.make_worker()
+        worker._start_speculation = lambda text: None
+        speech_intent = {
+            "utterance_id": "replay-2",
+            "original_utterance_id": "original-1",
+            "replay_of": "original-1",
+            "command_seq": 7,
+            "command_id": "command-7",
+        }
+
+        with patch.object(tts_worker, "_notify_state") as notify_state:
+            worker._handle_collected_chunk({
+                "text": "Private response text.",
+                "display_text": "Visible response.",
+                "_speech_intent": speech_intent,
+            })
+            worker._last_response_display_text = "Visible response."
+            worker.publish_replay_retained(speech_intent, stop_reason="user_stop")
+
+        waiting = notify_state.call_args_list[0]
+        self.assertEqual(waiting.args, ("message_waiting",))
+        self.assertEqual(waiting.kwargs["presentation_mode"], "explicit_replay")
+        self.assertEqual(waiting.kwargs["original_utterance_id"], "original-1")
+        self.assertNotIn("spoken_text", waiting.kwargs)
+        retained = notify_state.call_args_list[-1]
+        self.assertEqual(retained.args, ("replay_retained",))
+        self.assertEqual(retained.kwargs["presentation_mode"], "retained_replay")
+        self.assertEqual(retained.kwargs["stop_reason"], "user_stop")
 
     def test_sentence_chunks_preserve_sentence_boundaries_and_tail(self):
         chunks = tts_worker._sentence_chunks(" First sentence. Second? Tail without punctuation ")
@@ -691,7 +721,9 @@ class TTSWorkerReplayTests(unittest.TestCase):
         with patch.object(tts_worker, "_notify_state") as notify_state:
             worker._speak_chunks(["Visible result."], 1, intent)
 
-        notify_state.assert_called_with("failed", text="Visible result.")
+        self.assertEqual(notify_state.call_args.args, ("failed",))
+        self.assertEqual(notify_state.call_args.kwargs["text"], "Visible result.")
+        self.assertEqual(notify_state.call_args.kwargs["utterance_id"], "speech-1")
         self.assertEqual(events, ["failed"])
 
     def test_failed_first_wav_synthesis_surfaces_explicit_failure_state(self):
@@ -706,7 +738,9 @@ class TTSWorkerReplayTests(unittest.TestCase):
         with patch.object(tts_worker, "_notify_state") as notify_state:
             worker._speak_chunks(["Visible result."], 1, intent)
 
-        notify_state.assert_called_with("failed", text="Visible result.")
+        self.assertEqual(notify_state.call_args.args, ("failed",))
+        self.assertEqual(notify_state.call_args.kwargs["text"], "Visible result.")
+        self.assertEqual(notify_state.call_args.kwargs["utterance_id"], "speech-1")
         self.assertEqual(events, ["failed"])
 
     def test_worker_init_defaults_rate_to_one_point_three_when_missing(self):

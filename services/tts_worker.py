@@ -67,10 +67,41 @@ def _notify_state(state: str, **kwargs):
         pass
 
 
-def publish_waiting_preview(text: str) -> None:
+def _presentation_fields(
+    speech_intent: dict | None,
+    *,
+    presentation_mode: str | None = None,
+    stop_reason: str | None = None,
+) -> dict[str, object]:
+    if not isinstance(speech_intent, dict):
+        return {}
+    utterance_id = str(speech_intent.get("utterance_id") or "").strip()
+    original_id = str(
+        speech_intent.get("original_utterance_id") or utterance_id
+    ).strip()
+    replay_of = str(speech_intent.get("replay_of") or "").strip() or None
+    mode = presentation_mode or (
+        "explicit_replay" if replay_of else "new_delivery"
+    )
+    return {
+        "utterance_id": utterance_id or None,
+        "original_utterance_id": original_id or None,
+        "replay_of": replay_of,
+        "presentation_mode": mode,
+        "stop_reason": stop_reason,
+        "relay_command_seq": speech_intent.get("command_seq"),
+        "relay_command_id": speech_intent.get("command_id"),
+    }
+
+
+def publish_waiting_preview(text: str, speech_intent: dict | None = None) -> None:
     preview = str(text or "").strip()
     if preview:
-        _notify_state("message_waiting", text=preview[:2000])
+        _notify_state(
+            "message_waiting",
+            text=preview[:2000],
+            **_presentation_fields(speech_intent),
+        )
 
 
 def _normalize_audio_rms(rms: float) -> float:
@@ -396,7 +427,7 @@ class TTSWorker:
             # response grows. Deferred-playback overlays should render the latest
             # response body before playback starts, not wait for a later preparing
             # or speaking event to repopulate the pill.
-            publish_waiting_preview(preview_text)
+            publish_waiting_preview(preview_text, speech_intent)
 
             # Kick off speculative TTS in parallel with the pill so audio is
             # ready by the time the user double-taps Option.
@@ -507,7 +538,11 @@ class TTSWorker:
         self._last_response_display_text = preview_text
         generation = self._begin_playback()
         self._current_speech_intent = speech_intent
-        _notify_state("preparing", text=preview_text[:2000])
+        _notify_state(
+            "preparing",
+            text=preview_text[:2000],
+            **_presentation_fields(speech_intent),
+        )
         self._observe_speech("preparing", speech_intent)
 
         t = threading.Thread(
@@ -539,9 +574,10 @@ class TTSWorker:
             proc.terminate()
         self._playing = False
 
-    def stop_playback(self):
+    def stop_playback(self, *, reason: str = "user_stop"):
         """Stop current audio playback without clearing pending text.
         Used by __TTS_STOP__ to kill audio while preserving queued TTS."""
+        del reason
         with self._play_request_lock:
             self._playback_generation = getattr(self, "_playback_generation", 0) + 1
             proc = self._current_proc
@@ -562,10 +598,39 @@ class TTSWorker:
             self._current_speech_intent = None
             self._observe_speech("cancelled", intent)
 
-    def publish_replay_retained(self):
+    def publish_replay_retained(
+        self,
+        speech_intent: dict | None = None,
+        *,
+        stop_reason: str | None = None,
+    ):
         """Tell the app that a stopped attempt remains available to replay."""
         preview = self._last_response_display_text or self._last_response_text
-        _notify_state("replay_retained", text=preview[:2000])
+        _notify_state(
+            "replay_retained",
+            text=preview[:2000],
+            **_presentation_fields(
+                speech_intent,
+                presentation_mode="retained_replay",
+                stop_reason=stop_reason,
+            ),
+        )
+
+    def publish_replay_invalidated(
+        self,
+        speech_intent: dict | None = None,
+        *,
+        reason: str,
+    ):
+        """Clear a retained replay presentation without republishing its text."""
+        _notify_state(
+            "replay_invalidated",
+            **_presentation_fields(
+                speech_intent,
+                presentation_mode="retained_replay",
+                stop_reason=reason,
+            ),
+        )
 
     def skip(self):
         """Stop playback AND discard pending text."""
@@ -641,7 +706,10 @@ class TTSWorker:
 
     def _play_wav_blocking(self, wav_path: str):
         """Play a single WAV file with afplay."""
-        _notify_state("speaking")
+        _notify_state(
+            "speaking",
+            **_presentation_fields(self._current_speech_intent),
+        )
         cmd = ["afplay", wav_path]
         if self._rate != 1.0:
             cmd.extend(["-r", str(self._rate)])
@@ -948,13 +1016,21 @@ class TTSWorker:
             self._paused = False
             if failed:
                 preview = self._last_response_display_text or self._last_response_text
-                _notify_state("failed", text=preview[:2000])
+                _notify_state(
+                    "failed",
+                    text=preview[:2000],
+                    **_presentation_fields(speech_intent),
+                )
             else:
                 _notify_state("idle")
         elif not self._playing:
             if failed:
                 preview = self._last_response_display_text or self._last_response_text
-                _notify_state("failed", text=preview[:2000])
+                _notify_state(
+                    "failed",
+                    text=preview[:2000],
+                    **_presentation_fields(speech_intent),
+                )
             else:
                 _notify_state("idle")
         intent_was_current = getattr(self, "_current_speech_intent", None) == speech_intent

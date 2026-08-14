@@ -2,6 +2,26 @@ import XCTest
 @testable import relay_runner
 
 final class StateMachineAcknowledgementTests: XCTestCase {
+    func testSpeechPresentationParsesPrivacySafeReplayIdentity() throws {
+        let presentation = try XCTUnwrap(SpeechPresentation([
+            "utterance_id": "replay-2",
+            "original_utterance_id": "original-1",
+            "replay_of": "original-1",
+            "presentation_mode": "explicit_replay",
+            "stop_reason": "user_stop",
+            "relay_command_seq": 7,
+            "relay_command_id": "command-7",
+        ]))
+
+        XCTAssertEqual(presentation.utteranceID, "replay-2")
+        XCTAssertEqual(presentation.originalUtteranceID, "original-1")
+        XCTAssertEqual(presentation.replayOf, "original-1")
+        XCTAssertEqual(presentation.mode, .explicitReplay)
+        XCTAssertEqual(presentation.stopReason, "user_stop")
+        XCTAssertEqual(presentation.commandSequence, 7)
+        XCTAssertEqual(presentation.commandID, "command-7")
+    }
+
     func testAcknowledgementStateUsesNotchOnlyPresentation() {
         let state = OverlayState.acknowledgement(text: "Got it: add tests.", autoDismiss: 3.25)
 
@@ -24,6 +44,14 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         let messageWaiting = OverlayState.messageWaiting(preview: "Done.")
         XCTAssertEqual(NotchActivityLabelPlanner.label(for: messageWaiting), "Response ready")
         XCTAssertEqual(messageWaiting.particleTheme, .tts)
+
+        let replayWaiting = OverlayState.replayWaiting(preview: "Done.")
+        XCTAssertEqual(NotchActivityLabelPlanner.label(for: replayWaiting), "Replay available")
+        XCTAssertNil(replayWaiting.particleTheme)
+        XCTAssertEqual(
+            NotchSessionStatus.resolve(for: replayWaiting, hasActivityLabels: true),
+            .notWorking
+        )
 
         XCTAssertEqual(NotchActivityLabelPlanner.label(for: OverlayState.preparing), "Preparing speech")
         XCTAssertEqual(OverlayState.preparing.particleTheme, .tts)
@@ -77,6 +105,10 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(
             OverlayController.fullPillTitle(for: .messageWaiting(preview: "Done."), actionHint: "Double tap Option to play"),
             "Double tap Option to play"
+        )
+        XCTAssertEqual(
+            OverlayController.waitingActionHint(for: .replayWaiting(preview: "Done.")),
+            "Double tap Option to replay previous response"
         )
         XCTAssertEqual(
             OverlayController.fullPillTitle(for: .speaking, actionHint: "Double tap Control to cancel"),
@@ -428,24 +460,49 @@ final class StateMachineAcknowledgementTests: XCTestCase {
 
     func testStoppedPlaybackKeepsReplayVisibleAndOptionRestartsPreparing() {
         let stateMachine = StateMachine()
+        let original = SpeechPresentation(
+            utteranceID: "original-1",
+            originalUtteranceID: "original-1",
+            mode: .newDelivery,
+            commandSequence: 1,
+            commandID: "command-1"
+        )
         stateMachine.handleServiceEvent(
             source: "tts",
             newState: "speaking",
             text: "Replay this response.",
-            autoDismiss: nil
+            autoDismiss: nil,
+            presentation: original
         )
 
         stateMachine.setCancelled()
+        let retained = SpeechPresentation(
+            utteranceID: "original-1",
+            originalUtteranceID: "original-1",
+            mode: .retainedReplay,
+            stopReason: "user_stop",
+            commandSequence: 1,
+            commandID: "command-1"
+        )
         stateMachine.handleServiceEvent(
             source: "tts",
             newState: "replay_retained",
             text: "Replay this response.",
-            autoDismiss: nil
+            autoDismiss: nil,
+            presentation: retained
         )
 
-        XCTAssertEqual(stateMachine.state, .cancelled(.tts))
+        XCTAssertEqual(stateMachine.state, .replayWaiting(preview: "Replay this response."))
         XCTAssertTrue(stateMachine.replayRetained)
+        XCTAssertEqual(stateMachine.speechPresentation, retained)
         XCTAssertEqual(stateMachine.messagePreview, "Replay this response.")
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "idle",
+            text: nil
+        )
+        XCTAssertEqual(stateMachine.state, .replayWaiting(preview: "Replay this response."))
 
         stateMachine.setPlaybackRequested()
 
@@ -454,7 +511,7 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(stateMachine.messagePreview, "Replay this response.")
     }
 
-    func testStoppedPlaybackDismissesToReplayWaitingState() {
+    func testStoppedPlaybackRemainsInDistinctReplayWaitingState() {
         let stateMachine = StateMachine()
         stateMachine.handleServiceEvent(
             source: "tts",
@@ -467,9 +524,150 @@ final class StateMachineAcknowledgementTests: XCTestCase {
 
         XCTAssertEqual(
             stateMachine.state,
-            .messageWaiting(preview: "Replay this response.")
+            .replayWaiting(preview: "Replay this response.")
         )
         XCTAssertTrue(stateMachine.replayRetained)
+    }
+
+    func testDuplicateOriginalPreviewCannotResurfaceRetainedReplayAsNewDelivery() {
+        let stateMachine = StateMachine()
+        let original = SpeechPresentation(
+            utteranceID: "original-1",
+            originalUtteranceID: "original-1",
+            mode: .newDelivery
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Original response.",
+            presentation: original
+        )
+        let retained = SpeechPresentation(
+            utteranceID: "original-1",
+            originalUtteranceID: "original-1",
+            mode: .retainedReplay,
+            stopReason: "user_stop"
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "replay_retained",
+            text: "Original response.",
+            presentation: retained
+        )
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Original response.",
+            presentation: original
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "preparing",
+            text: "Original response.",
+            presentation: original
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "speaking",
+            text: "Original response.",
+            presentation: original
+        )
+
+        XCTAssertEqual(stateMachine.state, .replayWaiting(preview: "Original response."))
+        XCTAssertTrue(stateMachine.replayRetained)
+        XCTAssertEqual(stateMachine.speechPresentation, retained)
+    }
+
+    func testNewerTurnProcessingSupersedesRetainedReplayImmediately() {
+        let stateMachine = StateMachine()
+        let retained = SpeechPresentation(
+            utteranceID: "original-1",
+            originalUtteranceID: "original-1",
+            mode: .retainedReplay,
+            stopReason: "user_stop"
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "replay_retained",
+            text: "Old response.",
+            presentation: retained
+        )
+
+        stateMachine.handleServiceEvent(
+            source: "bridge",
+            newState: "processing",
+            text: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .processing)
+        XCTAssertNil(stateMachine.messagePreview)
+        XCTAssertNil(stateMachine.speechPresentation)
+        XCTAssertFalse(stateMachine.replayRetained)
+    }
+
+    func testCoordinatorInvalidationClearsOnlyMatchingRetainedReplay() {
+        let stateMachine = StateMachine()
+        let retained = SpeechPresentation(
+            utteranceID: "original-1",
+            originalUtteranceID: "original-1",
+            mode: .retainedReplay,
+            stopReason: "user_stop"
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "replay_retained",
+            text: "Old response.",
+            presentation: retained
+        )
+        let unrelated = SpeechPresentation(
+            utteranceID: "original-2",
+            originalUtteranceID: "original-2",
+            mode: .retainedReplay,
+            stopReason: "newer_command"
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "replay_invalidated",
+            text: nil,
+            presentation: unrelated
+        )
+        XCTAssertEqual(stateMachine.state, .replayWaiting(preview: "Old response."))
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "replay_invalidated",
+            text: nil,
+            presentation: retained
+        )
+        XCTAssertEqual(stateMachine.state, .idle)
+        XCTAssertNil(stateMachine.messagePreview)
+    }
+
+    func testExplicitReplayKeepsOriginalAndAttemptIdentityDistinct() {
+        let stateMachine = StateMachine()
+        let replay = SpeechPresentation(
+            utteranceID: "replay-2",
+            originalUtteranceID: "original-1",
+            replayOf: "original-1",
+            mode: .explicitReplay,
+            commandSequence: 1,
+            commandID: "command-1"
+        )
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "preparing",
+            text: "Original response.",
+            presentation: replay
+        )
+
+        XCTAssertEqual(stateMachine.state, .preparing)
+        XCTAssertEqual(stateMachine.speechPresentation, replay)
+        XCTAssertNotEqual(
+            stateMachine.speechPresentation?.utteranceID,
+            stateMachine.speechPresentation?.originalUtteranceID
+        )
     }
 
     func testCancelledUnstartedMessageDoesNotClaimReplayAvailability() {

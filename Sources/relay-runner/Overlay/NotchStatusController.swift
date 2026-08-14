@@ -72,7 +72,10 @@ enum NotchSessionStatus: String, Equatable {
             return .listening
         case .messageWaiting, .preparing, .speaking:
             return .playing
-        case .sent, .processing, .acknowledgement, .sessionPrompt, .sessionReady, .programStatus, .actionGlow:
+        case .replayWaiting:
+            return .notWorking
+        case .sent, .processing, .acknowledgement, .sessionPrompt,
+             .sessionReady, .programStatus, .actionGlow:
             return .working
         default:
             return hasActivityLabels || boardIsLoading ? .working : .notWorking
@@ -552,6 +555,8 @@ enum NotchVisualLabelAllowlist {
             label = "Acknowledged"
         case .messageWaiting:
             label = "Response ready"
+        case .replayWaiting:
+            label = "Replay available"
         case .preparing:
             label = "Preparing speech"
         case .speaking:
@@ -648,6 +653,8 @@ enum NotchActivityLabelPlanner {
             return "Acknowledged"
         case .messageWaiting:
             return "Response ready"
+        case .replayWaiting:
+            return "Replay available"
         case .preparing:
             return "Preparing speech"
         case .speaking:
