@@ -105,6 +105,30 @@ final class AppStateLaunchTests: XCTestCase {
         ))
     }
 
+    func testFinalTutorialWorkspaceToggleIsConsumedBeforeOrdinaryWorkspaceRouting() {
+        var events: [String] = []
+
+        AppState.routeWorkspaceToggleRequest(
+            consumeForTutorial: true,
+            toggleWorkspace: { events.append("toggleWorkspace") },
+            completeTutorial: { events.append("completeTutorial") }
+        )
+
+        XCTAssertEqual(events, ["completeTutorial"])
+    }
+
+    func testWorkspaceToggleOutsideTutorialPreservesOrdinaryRouting() {
+        var events: [String] = []
+
+        AppState.routeWorkspaceToggleRequest(
+            consumeForTutorial: false,
+            toggleWorkspace: { events.append("toggleWorkspace") },
+            completeTutorial: { events.append("completeTutorial") }
+        )
+
+        XCTAssertEqual(events, ["toggleWorkspace"])
+    }
+
     func testCompletedSetupOverridesStaleCompilingStatus() {
         let readiness = AppState.setupRuntimeReadiness(
             engineStatusMessage: "Compiling parakeet-tdt-v2...",

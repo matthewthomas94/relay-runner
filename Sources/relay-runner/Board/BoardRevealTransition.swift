@@ -193,6 +193,13 @@ final class BoardRevealContainerView: NSView {
         BoardRevealTransitionPlanner.plan(for: displayGeometry) == plan
     }
 
+    var isPreparedForOpening: Bool {
+        !revealExpanded
+            && !contentVisible
+            && contentContainerView.isHidden
+            && revealView.isCompact
+    }
+
     func prepareForOpening(startsLoading: Bool) {
         revealView.cancelAnimation()
         revealView.showCompact()
@@ -372,6 +379,10 @@ private final class BoardRevealSurfaceView: NSView {
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    var isCompact: Bool {
+        animationTimer == nil && surfaceFrame == plan.compactFrame
     }
 
     deinit {

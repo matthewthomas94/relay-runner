@@ -109,6 +109,7 @@ final class OnboardingController {
     private var tutorialIntroAdvance: DispatchWorkItem?
     private var workspaceOpenScheduled = false
     private var workspaceOpenedAfterTutorial = false
+    private var tutorialWorkspaceHandoffInProgress = false
 
     private struct FreshPermissionState {
         var activePermission: PermissionKind?
@@ -875,6 +876,7 @@ final class OnboardingController {
         if screen == .intro {
             workspaceOpenScheduled = false
             workspaceOpenedAfterTutorial = false
+            tutorialWorkspaceHandoffInProgress = false
         }
         let intro = introController ?? makeIntroController()
         introController = intro
@@ -960,6 +962,10 @@ final class OnboardingController {
 
     var isAwaitingTutorialWorkspaceToggle: Bool {
         OnboardingResumeState.load()?.step == .tutorialWorkspace
+    }
+
+    var shouldConsumeWorkspaceToggleRequest: Bool {
+        isAwaitingTutorialWorkspaceToggle || tutorialWorkspaceHandoffInProgress
     }
 
     var isSessionControlsTutorialActive: Bool {
@@ -1076,7 +1082,9 @@ final class OnboardingController {
     }
 
     func noteTutorialWorkspaceToggled() {
-        guard OnboardingResumeState.load()?.step == .tutorialWorkspace else { return }
+        guard OnboardingResumeState.load()?.step == .tutorialWorkspace,
+              !tutorialWorkspaceHandoffInProgress else { return }
+        tutorialWorkspaceHandoffInProgress = true
         finish { [weak self] in
             self?.scheduleWorkspaceOpenAfterTutorialDismissalOnce()
         }
@@ -1089,6 +1097,7 @@ final class OnboardingController {
             guard !workspaceOpenedAfterTutorial else { return }
             self.workspaceOpenedAfterTutorial = true
             self.openWorkspaceAfterCompletion()
+            self.tutorialWorkspaceHandoffInProgress = false
         }
     }
 

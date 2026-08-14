@@ -271,6 +271,18 @@ final class AppState {
         !firstRunExperienceActive && !sharedOnboardingInProgress
     }
 
+    static func routeWorkspaceToggleRequest(
+        consumeForTutorial: Bool,
+        toggleWorkspace: () -> Void,
+        completeTutorial: () -> Void
+    ) {
+        if consumeForTutorial {
+            completeTutorial()
+        } else {
+            toggleWorkspace()
+        }
+    }
+
     private var allowsAppShellAccess: Bool {
         Self.allowsAppShellAccess(
             firstRunExperienceActive: isFirstRunExperienceActive,
@@ -1227,11 +1239,8 @@ final class AppState {
     /// Show or hide the unified Workspace overlay. Single-repo sessions scope
     /// Work to that repo; workspace sessions aggregate discovered child repos.
     @discardableResult
-    func toggleBoard(
-        allowDuringFirstRun: Bool = false,
-        recognizedAt: CFTimeInterval? = nil
-    ) -> Bool {
-        guard allowsAppShellAccess || allowDuringFirstRun else { return false }
+    func toggleBoard(recognizedAt: CFTimeInterval? = nil) -> Bool {
+        guard allowsAppShellAccess else { return false }
         return programBoardOverlay.toggle(recognizedAt: recognizedAt)
     }
 
@@ -2083,14 +2092,15 @@ final class AppState {
                 let recognizedAt = engine.boardToggleRequestedAt ?? CACurrentMediaTime()
                 engine.boardToggleRequested = false
                 engine.boardToggleRequestedAt = nil
-                let allowDuringOnboarding = self.onboarding.isAwaitingTutorialWorkspaceToggle
-                if self.toggleBoard(
-                    allowDuringFirstRun: allowDuringOnboarding,
-                    recognizedAt: recognizedAt
-                ),
-                   allowDuringOnboarding {
-                    self.onboarding.noteTutorialWorkspaceToggled()
-                }
+                Self.routeWorkspaceToggleRequest(
+                    consumeForTutorial: self.onboarding.shouldConsumeWorkspaceToggleRequest,
+                    toggleWorkspace: {
+                        _ = self.toggleBoard(recognizedAt: recognizedAt)
+                    },
+                    completeTutorial: {
+                        self.onboarding.noteTutorialWorkspaceToggled()
+                    }
+                )
             }
 
             // Session prompt: handle responses
