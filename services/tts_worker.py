@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import re
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import time
 import wave
+from array import array
 
 import numpy as np
 
@@ -100,6 +102,65 @@ def publish_waiting_preview(text: str, speech_intent: dict | None = None) -> Non
             text=preview[:2000],
             **_presentation_fields(speech_intent),
         )
+
+
+def _normalize_audio_rms(rms: float) -> float:
+    """Map PCM RMS to the same bounded -55...-12 dBFS envelope as the app."""
+    if not math.isfinite(rms) or rms <= 0:
+        return 0.0
+    decibels = 20.0 * math.log10(max(rms, 0.000_001))
+    return min(max((decibels + 55.0) / 43.0, 0.0), 1.0)
+
+
+def _pcm16_audio_level(frames: bytes) -> float:
+    if not frames:
+        return 0.0
+    samples = array("h")
+    samples.frombytes(frames)
+    if sys.byteorder == "big":
+        samples.byteswap()
+    if not samples:
+        return 0.0
+    sum_squares = sum(float(sample) * float(sample) for sample in samples)
+    rms = math.sqrt(sum_squares / len(samples)) / 32768.0
+    return _normalize_audio_rms(rms)
+
+
+def _stream_playback_levels(
+    wav_path: str,
+    rate: float,
+    stop_event: threading.Event,
+) -> None:
+    """Publish one normalized envelope value per 50 ms of rendered audio.
+
+    This reads the same WAV consumed by afplay and keeps no sample or level
+    history. It is a pacing thread, not an audio callback, so disk/socket work
+    cannot delay playback.
+    """
+    try:
+        with wave.open(wav_path, "rb") as wav_file:
+            if wav_file.getsampwidth() != 2 or wav_file.getframerate() <= 0:
+                return
+            playback_rate = max(float(rate), 0.01)
+            frames_per_update = max(
+                1,
+                int(wav_file.getframerate() * playback_rate / 20.0),
+            )
+            while not stop_event.is_set():
+                frames = wav_file.readframes(frames_per_update)
+                if not frames:
+                    return
+                _notify_state("audio_level", level=_pcm16_audio_level(frames))
+                source_duration = (
+                    len(frames)
+                    / wav_file.getsampwidth()
+                    / wav_file.getnchannels()
+                    / wav_file.getframerate()
+                )
+                if stop_event.wait(source_duration / playback_rate):
+                    return
+    except (OSError, EOFError, wave.Error, ValueError):
+        return
 
 
 def _resolve_chime(name: str) -> str:
@@ -659,10 +720,21 @@ class TTSWorker:
         )
         with self._lock:
             self._current_proc = proc
+        level_stop = threading.Event()
+        level_thread = threading.Thread(
+            target=_stream_playback_levels,
+            args=(wav_path, self._rate, level_stop),
+            daemon=True,
+        )
+        level_thread.start()
         self._observe_speech("afplay_started", self._current_speech_intent)
         try:
             proc.wait()
         finally:
+            level_stop.set()
+            if hasattr(level_thread, "join"):
+                level_thread.join(timeout=0.2)
+            _notify_state("audio_level", level=0.0)
             with self._lock:
                 if self._current_proc is proc:
                     self._current_proc = None

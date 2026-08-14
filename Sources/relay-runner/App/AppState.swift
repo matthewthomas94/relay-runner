@@ -201,6 +201,7 @@ final class AppState {
     private var observedSpeechDetectedSerial = 0
     private var observedDeliveredTranscriptSerial = 0
     private var observedTutorialTranscriptSerial = 0
+    private var playbackAudioLevel = 0.0
     /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
     private var sessionPromptCapsState = false
     private var sessionPromptGate = SessionPromptGate()
@@ -448,14 +449,27 @@ final class AppState {
             bridgeStartingUp: bridgeStartingUp,
             boardIsLoading: boardIsLoading
         )
+        let status = NotchSessionStatus.resolve(
+            for: stateMachine.state,
+            hasActivityLabels: hasActiveWork,
+            boardIsLoading: boardIsLoading
+        )
+        let audioLevel: Double
+        switch stateMachine.state {
+        case .listening, .recording:
+            audioLevel = sttEngine?.isRecording == true
+                ? NotchAudioLevelPolicy.normalize(rms: sttEngine?.recordingAudioRMS() ?? 0)
+                : 0
+        case .speaking:
+            audioLevel = playbackAudioLevel
+        default:
+            audioLevel = 0
+        }
         notchStatusController.setPresentation(
-            status: NotchSessionStatus.resolve(
-                for: stateMachine.state,
-                hasActivityLabels: hasActiveWork,
-                boardIsLoading: boardIsLoading
-            ),
+            status: status,
             activityLabels: labels,
-            workingProgressLabel: hoverActivityLabel
+            workingProgressLabel: hoverActivityLabel,
+            audioLevel: audioLevel
         )
     }
 
@@ -1982,6 +1996,15 @@ final class AppState {
                     text: text,
                     tutorial: tutorial
                 )
+                if source == "tts" {
+                    self?.playbackAudioLevel = 0
+                    self?.syncNotchActivitySurface()
+                }
+            },
+            onAudioLevel: { [weak self] source, level, _ in
+                guard source == "tts" else { return }
+                self?.playbackAudioLevel = level
+                self?.syncNotchActivitySurface()
             }
         )
         eventBus = bus

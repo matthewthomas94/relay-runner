@@ -59,11 +59,7 @@ enum NotchSessionStatus: String, Equatable {
     }
 
     var animatesGlyphMotion: Bool {
-        self != .notWorking
-    }
-
-    var usesGlyphShimmer: Bool {
-        self == .listening || self == .playing
+        self == .working
     }
 
     static func resolve(
@@ -145,11 +141,57 @@ enum NotchStatusDotColor: Equatable {
     case blue
 }
 
+enum NotchAudioLevelPolicy {
+    static let updateFrequency: Double = 20
+    static let attackDuration: TimeInterval = 0.07
+    static let releaseDuration: TimeInterval = 0.24
+    static let silenceDecibels = -55.0
+    static let peakDecibels = -12.0
+
+    static func normalize(rms: Double) -> Double {
+        guard rms.isFinite, rms > 0 else { return 0 }
+        let decibels = 20 * Darwin.log10(max(rms, 0.000_001))
+        return min(max((decibels - silenceDecibels) / (peakDecibels - silenceDecibels), 0), 1)
+    }
+
+    static func presentedLevel(
+        _ level: Double,
+        status: NotchSessionStatus,
+        reduceMotion: Bool
+    ) -> Double {
+        guard !reduceMotion, status == .listening || status == .playing else { return 0 }
+        return min(max(level.isFinite ? level : 0, 0), 1)
+    }
+}
+
+struct NotchAudioLevelSmoother {
+    private(set) var level = 0.0
+    private var lastUpdate: CFTimeInterval?
+
+    mutating func update(_ target: Double, at now: CFTimeInterval = CACurrentMediaTime()) -> Double {
+        let clampedTarget = min(max(target.isFinite ? target : 0, 0), 1)
+        let elapsed = lastUpdate.map { min(max(now - $0, 0), 0.25) }
+            ?? (1 / NotchAudioLevelPolicy.updateFrequency)
+        let duration = clampedTarget > level
+            ? NotchAudioLevelPolicy.attackDuration
+            : NotchAudioLevelPolicy.releaseDuration
+        let coefficient = Darwin.exp(-elapsed / duration)
+        level = clampedTarget + (level - clampedTarget) * coefficient
+        lastUpdate = now
+        return level
+    }
+
+    mutating func reset() {
+        level = 0
+        lastUpdate = nil
+    }
+}
+
 enum NotchStatusGlyphMotion {
     static let duration: TimeInterval = 0.6
+    static let maximumAudioReactiveOffset: CGFloat = 1.25
 
     private static let artworkCenter = CGPoint(x: 12, y: 12)
-    private static let accentKeyframe: CGFloat = 0.6667
     private static let rotationKeyframe: CGFloat = 0.6683
     private static let quarterTurn: CGFloat = .pi / 2
     private static let halfStepTurn: CGFloat = .pi / 4
@@ -170,7 +212,7 @@ enum NotchStatusGlyphMotion {
     }
 
     static func coreRotation(for status: NotchSessionStatus, phase: CGFloat) -> CGFloat {
-        guard status.animatesGlyphMotion else { return 0 }
+        guard status == .working else { return 0 }
         if phase <= rotationKeyframe {
             return halfStepTurn * svgEase(phase / rotationKeyframe)
         }
@@ -178,35 +220,28 @@ enum NotchStatusGlyphMotion {
         return halfStepTurn + halfStepTurn * svgEase(remainingProgress)
     }
 
-    static func accentOffset(for dot: NotchStatusGlyphDot, status: NotchSessionStatus, phase: CGFloat) -> CGPoint {
-        guard status == .listening || status == .playing,
-              dot.color != .white else {
-            return .zero
-        }
-        let vector = accentVector(for: dot)
-        let amount: CGFloat
-        if phase <= accentKeyframe {
-            amount = svgEase(phase / accentKeyframe)
-        } else {
-            amount = 1 - svgEase((phase - accentKeyframe) / (1 - accentKeyframe))
-        }
-        return CGPoint(x: vector.x * amount, y: vector.y * amount)
-    }
-
     static func transformedCenter(
         for dot: NotchStatusGlyphDot,
         status: NotchSessionStatus,
         phase: CGFloat
     ) -> CGPoint {
-        var center = CGPoint(x: dot.x, y: dot.y)
-        if dot.color == .white {
-            center = rotated(center, by: coreRotation(for: status, phase: phase))
-        } else {
-            let offset = accentOffset(for: dot, status: status, phase: phase)
-            center.x += offset.x
-            center.y += offset.y
+        rotated(
+            CGPoint(x: dot.x, y: dot.y),
+            by: coreRotation(for: status, phase: phase)
+        )
+    }
+
+    static func audioReactiveCenter(
+        for dot: NotchStatusGlyphDot,
+        status: NotchSessionStatus,
+        level: Double
+    ) -> CGPoint {
+        guard status == .listening || status == .playing else {
+            return CGPoint(x: dot.x, y: dot.y)
         }
-        return center
+        let clampedLevel = CGFloat(min(max(level.isFinite ? level : 0, 0), 1))
+        let offset = waveWeight(forX: dot.x) * maximumAudioReactiveOffset * clampedLevel
+        return CGPoint(x: dot.x, y: dot.y + offset)
     }
 
     private static func svgEase(_ progress: CGFloat) -> CGFloat {
@@ -222,18 +257,18 @@ enum NotchStatusGlyphMotion {
         return lower + (upper - lower) * fraction
     }
 
-    private static func accentVector(for dot: NotchStatusGlyphDot) -> CGPoint {
-        switch (dot.x, dot.y) {
-        case (19.5, _):
-            return CGPoint(x: 1, y: 0)
-        case (4.5, _):
-            return CGPoint(x: -1, y: 0)
-        case (_, 4.5):
-            return CGPoint(x: 0, y: -1)
-        case (_, 19.5):
-            return CGPoint(x: 0, y: 1)
+    private static func waveWeight(forX x: CGFloat) -> CGFloat {
+        switch x {
+        case 4.5:
+            return -0.45
+        case 9.5:
+            return 0.8
+        case 14.5:
+            return -1
+        case 19.5:
+            return 0.55
         default:
-            return .zero
+            return 0
         }
     }
 
@@ -1110,6 +1145,8 @@ final class NotchStatusController {
     private var lastPlacement: NotchStatusPlacement?
     private var placementAnimationGeneration = 0
     private var loggedMissingNotch = false
+    private var audioLevelSmoother = NotchAudioLevelSmoother()
+    private var audioLevel = 0.0
 
     init() {
         pillView.onWorkingGlyphHoverChanged = { [weak self] hovered in
@@ -1159,14 +1196,16 @@ final class NotchStatusController {
     func setPresentation(
         status nextStatus: NotchSessionStatus,
         activityLabels labels: [String],
-        workingProgressLabel label: String?
+        workingProgressLabel label: String?,
+        audioLevel targetAudioLevel: Double = 0
     ) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
                 self?.setPresentation(
                     status: nextStatus,
                     activityLabels: labels,
-                    workingProgressLabel: label
+                    workingProgressLabel: label,
+                    audioLevel: targetAudioLevel
                 )
             }
             return
@@ -1178,6 +1217,18 @@ final class NotchStatusController {
         let statusChanged = status != nextStatus
         let activityLabelsChanged = activityLabels != compactLabels
         let workingProgressChanged = workingProgressLabel != progress
+        if statusChanged {
+            audioLevelSmoother.reset()
+        }
+        let nextAudioLevel: Double
+        if nextStatus == .listening || nextStatus == .playing {
+            nextAudioLevel = audioLevelSmoother.update(targetAudioLevel)
+        } else {
+            audioLevelSmoother.reset()
+            nextAudioLevel = 0
+        }
+        let audioLevelChanged = audioLevel != nextAudioLevel
+        audioLevel = nextAudioLevel
         let plan = NotchStatusPresentationUpdatePolicy.plan(
             statusChanged: statusChanged,
             activityLabelsChanged: activityLabelsChanged,
@@ -1188,6 +1239,9 @@ final class NotchStatusController {
         )
 
         guard statusChanged || activityLabelsChanged || workingProgressChanged else {
+            if audioLevelChanged {
+                pillView.setAudioLevel(audioLevel)
+            }
             if active {
                 updatePlacement(animated: false)
             } else {
@@ -1362,6 +1416,7 @@ final class NotchStatusController {
             notchSpacerWidth: lastPlacement?.notchSpacerWidth ?? 0,
             glyphScreenX: lastPlacement?.glyphScreenX
         )
+        pillView.setAudioLevel(audioLevel)
     }
 
     private func updateCarousel() {
@@ -1655,6 +1710,7 @@ final class NotchStatusPillContentView: NSView {
     private var hoverTrackingArea: NSTrackingArea?
     private var glyphHovered = false
     private var glyphHoverStartedAt: CFTimeInterval?
+    private var audioLevel = 0.0
     var onWorkingGlyphHoverChanged: ((Bool) -> Void)?
     var onGlyphClicked: (() -> Void)?
     private static let glyphHoverSlop: CGFloat = 8
@@ -1727,6 +1783,13 @@ final class NotchStatusPillContentView: NSView {
         }
         RunLoop.main.add(timer, forMode: .common)
         frameAnimationTimer = timer
+    }
+
+    func setAudioLevel(_ level: Double) {
+        let clamped = min(max(level.isFinite ? level : 0, 0), 1)
+        guard audioLevel != clamped else { return }
+        audioLevel = clamped
+        needsDisplay = true
     }
 
     override func viewDidMoveToWindow() {
@@ -1937,7 +2000,6 @@ final class NotchStatusPillContentView: NSView {
             y: glyphFrame.minY + (glyphSize.height - NotchStatusGlyph.artworkSize.height) / 2
         )
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let activeShimmer = status.usesGlyphShimmer && !reduceMotion
         let time = CACurrentMediaTime()
         let shouldAnimateMotion = shouldAnimateGlyphMotion(reduceMotion: reduceMotion)
         let motionPhase = shouldAnimateMotion ? NotchStatusGlyphMotion.phase(at: time) : 0
@@ -1949,21 +2011,36 @@ final class NotchStatusPillContentView: NSView {
             ).fill()
         }
 
-        for (index, dot) in glyph.dots.enumerated() {
-            let shimmer = activeShimmer
-                ? 0.72 + 0.28 * ((Darwin.sin(time * 5.2 + Double(index) * 0.62) + 1) / 2)
-                : 1
+        for dot in glyph.dots {
             let diameter = dot.diameter
-            let center = reduceMotion
-                ? CGPoint(x: dot.x, y: dot.y)
-                : NotchStatusGlyphMotion.transformedCenter(for: dot, status: status, phase: motionPhase)
+            let presentedAudioLevel = NotchAudioLevelPolicy.presentedLevel(
+                audioLevel,
+                status: status,
+                reduceMotion: reduceMotion
+            )
+            let center: CGPoint
+            if status == .listening || status == .playing {
+                center = NotchStatusGlyphMotion.audioReactiveCenter(
+                    for: dot,
+                    status: status,
+                    level: presentedAudioLevel
+                )
+            } else if reduceMotion {
+                center = CGPoint(x: dot.x, y: dot.y)
+            } else {
+                center = NotchStatusGlyphMotion.transformedCenter(
+                    for: dot,
+                    status: status,
+                    phase: motionPhase
+                )
+            }
             let rect = NSRect(
                 x: dotOrigin.x + center.x - diameter / 2,
                 y: dotOrigin.y + center.y - diameter / 2,
                 width: diameter,
                 height: diameter
             )
-            dot.color.nsColor.withAlphaComponent(dot.opacity * shimmer).setFill()
+            dot.color.nsColor.withAlphaComponent(dot.opacity).setFill()
             NSBezierPath(ovalIn: rect).fill()
         }
     }
@@ -1997,7 +2074,7 @@ final class NotchStatusPillContentView: NSView {
         case .working:
             return true
         case .listening, .playing:
-            return true
+            return false
         case .notWorking:
             return false
         }

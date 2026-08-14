@@ -19,6 +19,11 @@ actor StateEventBus {
         _ text: String?,
         _ tutorial: Bool
     ) -> Void
+    private let onAudioLevel: @MainActor (
+        _ source: String,
+        _ level: Double,
+        _ tutorial: Bool
+    ) -> Void
 
     init(
         stateMachine: StateMachine,
@@ -31,11 +36,17 @@ actor StateEventBus {
             _ state: String,
             _ text: String?,
             _ tutorial: Bool
-        ) -> Void = { _, _, _, _ in }
+        ) -> Void = { _, _, _, _ in },
+        onAudioLevel: @escaping @MainActor (
+            _ source: String,
+            _ level: Double,
+            _ tutorial: Bool
+        ) -> Void = { _, _, _ in }
     ) {
         self.stateMachine = stateMachine
         self.shouldHandleServiceEvent = shouldHandleServiceEvent
         self.onServiceEvent = onServiceEvent
+        self.onAudioLevel = onAudioLevel
     }
 
     func start() {
@@ -104,6 +115,16 @@ actor StateEventBus {
                 let tutorial = json["tutorial"] as? Bool ?? false
                 let autoDismiss = json["auto_dismiss_seconds"] as? Double
                 let presentation = SpeechPresentation(json)
+
+                if state == "audio_level", let level = json["level"] as? Double {
+                    let shouldHandleServiceEvent = await self.shouldHandleServiceEvent
+                    let onAudioLevel = await self.onAudioLevel
+                    await MainActor.run {
+                        guard shouldHandleServiceEvent(source, tutorial) else { return }
+                        onAudioLevel(source, min(max(level.isFinite ? level : 0, 0), 1), tutorial)
+                    }
+                    continue
+                }
 
                 NSLog("[StateEventBus] \(source):\(state)\(text.map { " text=\($0.prefix(40))" } ?? "")")
 
