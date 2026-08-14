@@ -3,6 +3,16 @@ import XCTest
 @testable import relay_runner
 
 final class ProgramBoardStatusTests: XCTestCase {
+    func testWorkspaceSetupLoadingMatchesUpdateCheckPresentation() {
+        XCTAssertEqual(ProgramBoardContentPresentation.settingUpFontRole, .sectionHeading)
+        XCTAssertEqual(ProgramBoardContentPresentation.settingUpForegroundOpacity, 0.92, accuracy: 0.001)
+        XCTAssertEqual(ProgramBoardContentPresentation.settingUpTitle, "Setting up your project...")
+        let updateCheckDefinition = AppTypography.definition(for: .sectionHeading)
+        XCTAssertEqual(updateCheckDefinition.face, .ppMoriSemibold)
+        XCTAssertEqual(updateCheckDefinition.size, 13)
+        XCTAssertEqual(updateCheckDefinition.fallbackWeight, .semibold)
+    }
+
     func testProgramBoardUsesSolidDarkFigmaSurfaces() {
         let panelFill = BoardDarkSurfaceStyle.panelFillNSColor.usingColorSpace(.sRGB)
         let border = BoardDarkSurfaceStyle.borderNSColor.usingColorSpace(.sRGB)
