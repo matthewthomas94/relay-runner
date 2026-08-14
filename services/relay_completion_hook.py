@@ -469,6 +469,8 @@ def _activate_turn_record(
 
     state = _load_turn_state(path, now=now)
     key = _record_key(record)
+    successor_command = _relay_command_key(record)
+    successor_origin = str(record.get("origin") or "relay").strip() or "relay"
     records = []
     for existing in state["records"]:
         if _record_key(existing) == key:
@@ -480,6 +482,24 @@ def _activate_turn_record(
             existing = dict(existing)
             existing["state"] = "orphaned"
             existing["release_reason"] = release_reason
+            existing_command = _relay_command_key(existing)
+            if existing_command is not None:
+                if (
+                    release_reason == "provider_identity_rebound"
+                    and _relay_intent_matches(existing, record)
+                ):
+                    disposition = "continued"
+                elif existing_command == successor_command:
+                    disposition = (
+                        "continued"
+                        if _relay_intent_matches(existing, record)
+                        else "sibling_superseded"
+                    )
+                else:
+                    disposition = "source_superseded"
+                existing["provider_ownership_disposition"] = disposition
+                existing["successor_record_key"] = key
+                existing["successor_origin"] = successor_origin
             existing["updated_at"] = now
         records.append(existing)
     record = dict(record)

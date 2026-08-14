@@ -1247,6 +1247,58 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertEqual(scheduled.count, 3)
     }
 
+    func testOrderedSiblingClaimsUseExactIntentIdentityForCodexAndClaude() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let firstMetadata = """
+            {"provider":"\(provider)","relay_command_id":"multi","relay_command_seq":1,"intent_id":"multi:item:1","within_turn_order":1}
+            """
+            let secondMetadata = """
+            {"provider":"\(provider)","relay_command_id":"multi","relay_command_seq":1,"intent_id":"multi:item:2","within_turn_order":2}
+            """
+            try "First sibling\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try firstMetadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try firstMetadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            var sent: [String] = []
+            var scheduled: [() -> Void] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+                schedule: { _, _, work in scheduled.append(work) },
+                isRunning: { true }
+            )
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            scheduled[0]()
+            try writeProviderTurns([
+                providerTurn(
+                    seq: 1,
+                    id: "multi",
+                    provider: provider,
+                    state: "empty",
+                    intentID: "multi:item:1"
+                ),
+            ], to: fixture.providerTurns)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+
+            try "Second sibling\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try secondMetadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try secondMetadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            scheduled[2]()
+
+            XCTAssertEqual(
+                sent,
+                ["First sibling", "\r", "Second sibling", "\r"],
+                provider
+            )
+            XCTAssertEqual(try String(contentsOf: fixture.claimed), secondMetadata, provider)
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertEqual(countEvent("claimed", in: events), 2, provider)
+            XCTAssertEqual(countEvent("provider_acknowledged", in: events), 1, provider)
+        }
+    }
+
     func testStaleProviderAcknowledgementCannotCompleteNewerPendingCommand() throws {
         let fixture = try makeFixture()
         let metadata = #"{"provider":"claude","relay_command_id":"cmd-2","relay_command_seq":2}"#

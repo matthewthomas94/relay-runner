@@ -391,6 +391,33 @@ class IntentInbox:
     def deliverable_commands(self) -> list[dict[str, Any]]:
         return self.state_snapshot()[1]
 
+    def source_command_intents(self, command: dict[str, Any] | None) -> list[dict[str, Any]]:
+        """Return privacy-safe lifecycle state for every sibling in one source turn."""
+        key = _key(command)
+        if key is None:
+            return []
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT command_seq, command_id, within_turn_order, intent_id, route, state
+                  FROM intents
+                 WHERE command_seq=? AND command_id=?
+                 ORDER BY within_turn_order, ordinal
+                """,
+                key,
+            ).fetchall()
+        return [
+            {
+                "relay_command_seq": int(row["command_seq"]),
+                "relay_command_id": str(row["command_id"]),
+                "within_turn_order": int(row["within_turn_order"]),
+                "intent_id": str(row["intent_id"]),
+                "route": str(row["route"]),
+                "state": str(row["state"]),
+            }
+            for row in rows
+        ]
+
     def state_snapshot(self) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
         """Return the latest durable command and deliverable queue from one snapshot."""
         with self._lock:
@@ -458,6 +485,7 @@ def sync_deliverable_state(state_path: str, inbox: IntentInbox) -> None:
     payload["intent_inbox_version"] = SCHEMA_VERSION
     payload["deliverable_commands"] = deliverable
     payload["cancelled_intent_ids"] = inbox.cancelled_intent_ids()
+    payload["source_command_intents"] = inbox.source_command_intents(payload)
     tmp = state_path + ".tmp"
     Path(tmp).write_text(json.dumps(payload, sort_keys=True))
     os.replace(tmp, state_path)
