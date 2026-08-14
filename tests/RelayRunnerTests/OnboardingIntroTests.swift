@@ -597,6 +597,7 @@ final class OnboardingIntroTests: XCTestCase {
                 }
             },
             reduceMotion: { true },
+            scheduleWorkspaceOpenAfterTutorialDismissal: { $0() },
             openWorkspaceAfterCompletion: {
                 events.append("workspaceOpen")
                 workspaceOpenCount += 1
@@ -1045,6 +1046,7 @@ final class OnboardingIntroTests: XCTestCase {
                 }
             },
             reduceMotion: { true },
+            scheduleWorkspaceOpenAfterTutorialDismissal: { $0() },
             openWorkspaceAfterCompletion: { events.append("workspaceOpen") }
         )
 
@@ -1111,6 +1113,7 @@ final class OnboardingIntroTests: XCTestCase {
                 prepare { completion("/Users/example/dev") }
             },
             reduceMotion: { false },
+            scheduleWorkspaceOpenAfterTutorialDismissal: { $0() },
             openWorkspaceAfterCompletion: { events.append("workspaceOpen") }
         )
 
@@ -1173,6 +1176,7 @@ final class OnboardingIntroTests: XCTestCase {
                 prepare { completion("/Users/example/dev") }
             },
             reduceMotion: { false },
+            scheduleWorkspaceOpenAfterTutorialDismissal: { $0() },
             openWorkspaceAfterCompletion: { events.append("workspaceOpen") }
         )
 
@@ -1212,6 +1216,7 @@ final class OnboardingIntroTests: XCTestCase {
 
         let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
         var events: [String] = []
+        var scheduledWorkspaceOpen: (() -> Void)?
         let presenterFactory = DeferredDismissIntroPresenterFactory { events.append($0) }
         let controller = OnboardingController(
             permissions: PermissionsManager(),
@@ -1231,6 +1236,7 @@ final class OnboardingIntroTests: XCTestCase {
                 prepare { completion("/Users/example/dev") }
             },
             reduceMotion: { true },
+            scheduleWorkspaceOpenAfterTutorialDismissal: { scheduledWorkspaceOpen = $0 },
             openWorkspaceAfterCompletion: { events.append("workspaceOpen") }
         )
 
@@ -1276,8 +1282,25 @@ final class OnboardingIntroTests: XCTestCase {
             "dismiss",
             "notch:false",
             "firstRun:false",
-            "workspaceOpen",
             "deinit",
+        ])
+        XCTAssertNotNil(scheduledWorkspaceOpen)
+        XCTAssertFalse(events.contains("workspaceOpen"))
+
+        scheduledWorkspaceOpen?()
+        scheduledWorkspaceOpen?()
+        drainMainQueue()
+
+        XCTAssertEqual(events, [
+            "dismiss",
+            "notch:false",
+            "persist:/Users/example/dev",
+            "notch:true",
+            "dismiss",
+            "notch:false",
+            "firstRun:false",
+            "deinit",
+            "workspaceOpen",
         ])
         XCTAssertNil(presenterFactory.presenter)
     }
@@ -2539,6 +2562,7 @@ final class OnboardingIntroTests: XCTestCase {
             },
             reduceMotion: { true },
             prepareTutorialSpeech: prepareTutorialSpeech,
+            scheduleWorkspaceOpenAfterTutorialDismissal: { $0() },
             openWorkspaceAfterCompletion: workspaceOpen
         )
     }

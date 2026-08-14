@@ -94,6 +94,7 @@ final class OnboardingController {
     private let prepareTutorialSpeech: () -> Bool
     private let stopTutorialSpeech: () -> Void
     private let openWorkspaceAfterCompletion: () -> Void
+    private let scheduleWorkspaceOpenAfterTutorialDismissal: (@escaping () -> Void) -> Void
     private var freshPermissionState: FreshPermissionState?
     private var freshWorkspaceSelectionInFlight = false
     private var permissionGrantObserver: NSObjectProtocol?
@@ -106,6 +107,8 @@ final class OnboardingController {
     private var forceWorkspaceSelectionAfterIntro = false
     private var tutorialState: TutorialState?
     private var tutorialIntroAdvance: DispatchWorkItem?
+    private var workspaceOpenScheduled = false
+    private var workspaceOpenedAfterTutorial = false
 
     private struct FreshPermissionState {
         var activePermission: PermissionKind?
@@ -169,6 +172,9 @@ final class OnboardingController {
          reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
          prepareTutorialSpeech: @escaping () -> Bool = { true },
          stopTutorialSpeech: @escaping () -> Void = {},
+         scheduleWorkspaceOpenAfterTutorialDismissal: @escaping (@escaping () -> Void) -> Void = { action in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: action)
+         },
          openWorkspaceAfterCompletion: @escaping () -> Void = {}) {
         self.presentation = presentation
         self.flagURLs = flagURLs
@@ -200,6 +206,7 @@ final class OnboardingController {
         self.reduceMotion = reduceMotion
         self.prepareTutorialSpeech = prepareTutorialSpeech
         self.stopTutorialSpeech = stopTutorialSpeech
+        self.scheduleWorkspaceOpenAfterTutorialDismissal = scheduleWorkspaceOpenAfterTutorialDismissal
         self.openWorkspaceAfterCompletion = openWorkspaceAfterCompletion
     }
 
@@ -865,6 +872,10 @@ final class OnboardingController {
     }
 
     private func beginSessionControlsTutorial(screen: OnboardingTutorialScreen) {
+        if screen == .intro {
+            workspaceOpenScheduled = false
+            workspaceOpenedAfterTutorial = false
+        }
         let intro = introController ?? makeIntroController()
         introController = intro
         setOnboardingNotchOverrideActive(true)
@@ -1066,7 +1077,17 @@ final class OnboardingController {
 
     func noteTutorialWorkspaceToggled() {
         guard OnboardingResumeState.load()?.step == .tutorialWorkspace else { return }
-        finish {
+        finish { [weak self] in
+            self?.scheduleWorkspaceOpenAfterTutorialDismissalOnce()
+        }
+    }
+
+    private func scheduleWorkspaceOpenAfterTutorialDismissalOnce() {
+        guard !workspaceOpenScheduled else { return }
+        workspaceOpenScheduled = true
+        scheduleWorkspaceOpenAfterTutorialDismissal { [self] in
+            guard !workspaceOpenedAfterTutorial else { return }
+            self.workspaceOpenedAfterTutorial = true
             self.openWorkspaceAfterCompletion()
         }
     }
