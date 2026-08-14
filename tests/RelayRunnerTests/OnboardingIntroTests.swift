@@ -1270,6 +1270,7 @@ final class OnboardingIntroTests: XCTestCase {
             "dismiss",
         ])
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        XCTAssertTrue(controller.shouldConsumeWorkspaceToggleRequest)
 
         presenterFactory.presenter?.completeDismissal()
         drainMainQueue()
@@ -1286,6 +1287,7 @@ final class OnboardingIntroTests: XCTestCase {
         ])
         XCTAssertNotNil(scheduledWorkspaceOpen)
         XCTAssertFalse(events.contains("workspaceOpen"))
+        XCTAssertTrue(controller.shouldConsumeWorkspaceToggleRequest)
 
         scheduledWorkspaceOpen?()
         scheduledWorkspaceOpen?()
@@ -1303,6 +1305,7 @@ final class OnboardingIntroTests: XCTestCase {
             "workspaceOpen",
         ])
         XCTAssertNil(presenterFactory.presenter)
+        XCTAssertFalse(controller.shouldConsumeWorkspaceToggleRequest)
     }
 
     func testWorkspaceCancelRestoresFinalIntroStepWithoutPersisting() throws {
@@ -1898,6 +1901,66 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(contents.contains("let p = BoardOverlayPanel()"))
         XCTAssertTrue(contents.contains("p.keyEligible = true"))
         XCTAssertTrue(contents.contains("p.makeKey()"))
+    }
+
+    func testMountedTutorialPanelOrdersOutBeforeWorkspaceStartsClosed() throws {
+        let application = NSApplication.shared
+        let existingWindows = Set(application.windows.map(ObjectIdentifier.init))
+        let intro = OnboardingIntroController()
+        intro.presentTutorial(
+            OnboardingTutorialPresentation(
+                screen: .workspace,
+                reduceMotion: false,
+                message: nil
+            ),
+            retryAction: {}
+        )
+        drainMainQueue()
+
+        let tutorialPanel = try XCTUnwrap(
+            application.windows.compactMap { $0 as? BoardOverlayPanel }.first {
+                !existingWindows.contains(ObjectIdentifier($0))
+            }
+        )
+        XCTAssertTrue(tutorialPanel.isVisible)
+
+        let workspace = ProgramBoardOverlayController(boardRouteResolver: { .programBoard })
+        workspace.setRequiresConfirmedProjectProvider { false }
+        let dismissalCompleted = expectation(description: "Tutorial panel ordered out")
+
+        intro.dismiss {
+            XCTAssertFalse(tutorialPanel.isVisible)
+            XCTAssertNil(tutorialPanel.contentView)
+            XCTAssertFalse(workspace.isVisible)
+            XCTAssertTrue(
+                application.windows.compactMap { $0 as? BoardOverlayPanel }.filter {
+                    !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
+                }.isEmpty
+            )
+
+            XCTAssertTrue(workspace.showWork())
+            guard let workspacePanel = application.windows.compactMap({ $0 as? BoardOverlayPanel }).first(where: {
+                $0 !== tutorialPanel
+                    && !existingWindows.contains(ObjectIdentifier($0))
+                    && $0.isVisible
+            }) else {
+                XCTFail("Workspace did not mount a separate visible panel")
+                dismissalCompleted.fulfill()
+                return
+            }
+            guard let container = workspacePanel.contentView as? BoardRevealContainerView else {
+                XCTFail("Workspace panel did not mount its reveal container")
+                workspacePanel.orderOut(nil)
+                dismissalCompleted.fulfill()
+                return
+            }
+
+            XCTAssertTrue(container.isPreparedForOpening)
+            workspacePanel.orderOut(nil)
+            dismissalCompleted.fulfill()
+        }
+
+        wait(for: [dismissalCompleted], timeout: 3)
     }
 
     func testOnboardingControllerDoesNotConstructSettingsHostedOnboarding() throws {
