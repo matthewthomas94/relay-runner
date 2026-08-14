@@ -80,6 +80,7 @@ PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS = float(os.environ.get("PROVIDER_COMPLET
 
 _FOREGROUND_REPLY_LOCK = threading.Lock()
 _FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
+_FOREGROUND_REPLY_IN_FLIGHT: set[tuple[int, str]] = set()
 _VOICE_STATE_LOCK = threading.RLock()
 _RELAY_CONTROL_TYPE_RE = re.compile(r"^__[A-Z][A-Z0-9_]*__$")
 _RAW_RELAY_CONTROL_TYPE_RE = re.compile(
@@ -1821,6 +1822,185 @@ def _any_provider_turn_active(
     )
 
 
+def _provider_record_key(record: dict) -> str:
+    session_id = str(record.get("session_id") or "unknown")
+    turn_id = str(record.get("turn_id") or "").strip()
+    if turn_id:
+        return f"{session_id}:{turn_id}"
+    local_turn_seq = record.get("local_turn_seq")
+    if local_turn_seq is not None:
+        return f"{session_id}:local:{local_turn_seq}"
+    return session_id
+
+
+def _source_turn_reply_arbitration(
+    relay_command: dict,
+    *,
+    state_path: str,
+    turns_path: str,
+    command_path: str,
+    meta_path: str,
+    provider_session_id: str = PROVIDER_SESSION_ID,
+) -> dict:
+    """Decide a missing-final once from every intent in the current source turn."""
+    key = _relay_command_key(relay_command)
+    if key is None:
+        return {"decision": "cancel", "reason": "missing_source_identity", "siblings": []}
+
+    with _VOICE_STATE_LOCK:
+        state = _read_json_file(state_path)
+    cancelled = {
+        str(value)
+        for value in state.get("cancelled_intent_ids", [])
+        if str(value)
+    } if isinstance(state.get("cancelled_intent_ids"), list) else set()
+
+    inbox_items: dict[str, dict] = {}
+    candidates = []
+    for name in ("deliverable_commands", "source_command_intents"):
+        values = state.get(name)
+        if isinstance(values, list):
+            candidates.extend(value for value in values if isinstance(value, dict))
+    if os.path.exists(command_path):
+        ready = _read_json_file(meta_path)
+        if ready:
+            candidates.append({**ready, "state": str(ready.get("state") or "delivered")})
+    for item in candidates:
+        if _relay_command_key(item) != key:
+            continue
+        intent_id = str(item.get("intent_id") or "").strip()
+        try:
+            order = int(item.get("within_turn_order") or 0)
+        except (TypeError, ValueError):
+            order = 0
+        identity = intent_id or f"order:{order}"
+        inbox_items[identity] = {
+            "intent_id": intent_id or None,
+            "within_turn_order": order or None,
+            "state": str(item.get("state") or "recognized").strip() or "recognized",
+        }
+
+    turn_data = _read_json_file(turns_path)
+    raw_records = turn_data.get("records") if isinstance(turn_data, dict) else None
+    source_records = [
+        record
+        for record in (raw_records if isinstance(raw_records, list) else [])
+        if (
+            isinstance(record, dict)
+            and _relay_command_key(record) == key
+            and (
+                not provider_session_id
+                or str(record.get("provider_session_id") or "") == provider_session_id
+            )
+            and str(record.get("intent_id") or "") not in cancelled
+        )
+    ]
+    scoped_records = [
+        record
+        for record in (raw_records if isinstance(raw_records, list) else [])
+        if (
+            isinstance(record, dict)
+            and (
+                not provider_session_id
+                or str(record.get("provider_session_id") or "") == provider_session_id
+            )
+        )
+    ]
+
+    record_states: dict[str, list[str]] = {}
+    for record in source_records:
+        intent_id = str(record.get("intent_id") or "").strip()
+        try:
+            order = int(record.get("within_turn_order") or 0)
+        except (TypeError, ValueError):
+            order = 0
+        identity = intent_id or f"order:{order}"
+        state_name = str(record.get("state") or "unknown").strip() or "unknown"
+        record_states.setdefault(identity, []).append(state_name)
+        inbox_items.setdefault(identity, {
+            "intent_id": intent_id or None,
+            "within_turn_order": order or None,
+            "state": None,
+        })
+
+    siblings = []
+    for identity, item in sorted(
+        inbox_items.items(),
+        key=lambda entry: (entry[1].get("within_turn_order") or 0, entry[0]),
+    ):
+        sibling = dict(item)
+        sibling["provider_states"] = sorted(set(record_states.get(identity, [])))
+        siblings.append(sibling)
+
+    result = {
+        "decision": "eligible",
+        "reason": "all_siblings_terminal_empty",
+        "siblings": siblings,
+        "provider_session_id": provider_session_id or None,
+    }
+    noncancelled_items = [
+        item for item in inbox_items.values()
+        if not item.get("intent_id") or item["intent_id"] not in cancelled
+    ]
+    if inbox_items and not noncancelled_items:
+        return {**result, "decision": "cancel", "reason": "source_cancelled"}
+    pending_states = {"recognized", "pending", "delivered", "claimed", "queued", "leased"}
+    if any(item.get("state") in pending_states for item in noncancelled_items):
+        return {**result, "decision": "defer", "reason": "sibling_pending"}
+    if any(str(record.get("state") or "") == "active" for record in scoped_records):
+        return {**result, "decision": "defer", "reason": "provider_turn_active"}
+
+    records_by_key = {_provider_record_key(record): record for record in scoped_records}
+    ignored_orphans: set[int] = set()
+    superseded_intent_ids: set[str] = set()
+    for index, record in enumerate(source_records):
+        if str(record.get("state") or "") != "orphaned":
+            continue
+        disposition = str(record.get("provider_ownership_disposition") or "").strip()
+        if disposition == "source_superseded":
+            return {**result, "decision": "cancel", "reason": "source_superseded"}
+        if disposition == "sibling_superseded":
+            ignored_orphans.add(index)
+            intent_id = str(record.get("intent_id") or "").strip()
+            if intent_id:
+                superseded_intent_ids.add(intent_id)
+            continue
+        if disposition == "continued":
+            successor = records_by_key.get(str(record.get("successor_record_key") or ""))
+            if successor is None:
+                return {**result, "decision": "defer", "reason": "ownership_continuation_missing"}
+            ignored_orphans.add(index)
+            continue
+        return {**result, "decision": "defer", "reason": "orphaned_ownership_ambiguous"}
+
+    relevant_records = [
+        record for index, record in enumerate(source_records) if index not in ignored_orphans
+    ]
+    if any(str(record.get("state") or "") == "completed_final" for record in relevant_records):
+        return {**result, "decision": "cancel", "reason": "provider_final_observed"}
+    if any(str(record.get("state") or "") == "stale" for record in relevant_records):
+        return {**result, "decision": "cancel", "reason": "source_stale"}
+
+    terminal_states = {"empty", "failed", "terminated", "cancelled", "abandoned"}
+    for item in noncancelled_items:
+        intent_id = str(item.get("intent_id") or "").strip()
+        if intent_id in superseded_intent_ids:
+            continue
+        matching = [
+            record for record in relevant_records
+            if str(record.get("intent_id") or "").strip() == intent_id
+        ]
+        if not matching and len(noncancelled_items) == 1:
+            matching = [record for record in relevant_records if not record.get("intent_id")]
+        if item.get("state") == "acked" and not matching:
+            return {**result, "decision": "defer", "reason": "awaiting_correlated_terminal"}
+        if any(str(record.get("state") or "") not in terminal_states for record in matching):
+            return {**result, "decision": "defer", "reason": "sibling_not_terminal"}
+    if any(str(record.get("state") or "") not in terminal_states for record in relevant_records):
+        return {**result, "decision": "defer", "reason": "source_not_terminal"}
+    return result
+
+
 def _command_pending_delivery(
     relay_command: dict | None,
     *,
@@ -2044,7 +2224,31 @@ def _foreground_reply_delivered(command: dict | None) -> bool:
     if key is None:
         return False
     with _FOREGROUND_REPLY_LOCK:
-        return key in _FOREGROUND_REPLIED_COMMANDS
+        return key in _FOREGROUND_REPLIED_COMMANDS or key in _FOREGROUND_REPLY_IN_FLIGHT
+
+
+def _reserve_foreground_reply_delivery(command: dict | None) -> bool:
+    key = _relay_command_key(command)
+    if key is None:
+        return False
+    with _FOREGROUND_REPLY_LOCK:
+        if key in _FOREGROUND_REPLIED_COMMANDS or key in _FOREGROUND_REPLY_IN_FLIGHT:
+            return False
+        _FOREGROUND_REPLY_IN_FLIGHT.add(key)
+        return True
+
+
+def _finish_foreground_reply_delivery(command: dict | None, *, delivered: bool) -> None:
+    key = _relay_command_key(command)
+    if key is None:
+        return
+    with _FOREGROUND_REPLY_LOCK:
+        _FOREGROUND_REPLY_IN_FLIGHT.discard(key)
+        if delivered:
+            _FOREGROUND_REPLIED_COMMANDS.add(key)
+            if len(_FOREGROUND_REPLIED_COMMANDS) > 100:
+                for old in list(_FOREGROUND_REPLIED_COMMANDS)[:50]:
+                    _FOREGROUND_REPLIED_COMMANDS.discard(old)
 
 
 def _mark_foreground_reply_delivered(command: dict | None) -> None:
@@ -2061,6 +2265,7 @@ def _mark_foreground_reply_delivered(command: dict | None) -> None:
 def _reset_foreground_reply_delivery_for_tests() -> None:
     with _FOREGROUND_REPLY_LOCK:
         _FOREGROUND_REPLIED_COMMANDS.clear()
+        _FOREGROUND_REPLY_IN_FLIGHT.clear()
 
 
 def _parse_args() -> dict:
@@ -2613,14 +2818,16 @@ def _deliver_missing_foreground_reply(
     tts_worker: TTSWorker,
     messenger: MessengerRuntime | None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
-) -> bool:
+) -> bool | None:
     key = _relay_command_key(relay_command)
     if key is None:
         return False
     if _foreground_reply_delivered(relay_command):
-        return True
+        return None
     if not _relay_command_current(key[0], key[1], state_path=state_path):
         return False
+    if not _reserve_foreground_reply_delivery(relay_command):
+        return None
     payload = {
         "text": _missing_foreground_reply_text_for_kind(action_kind),
         "relay_command_seq": key[0],
@@ -2646,7 +2853,9 @@ def _deliver_missing_foreground_reply(
             replayable=True,
         )
     if delivered:
-        _mark_foreground_reply_delivered(relay_command)
+        _finish_foreground_reply_delivery(relay_command, delivered=True)
+    else:
+        _finish_foreground_reply_delivery(relay_command, delivered=False)
     return delivered
 
 
@@ -2656,17 +2865,36 @@ def _log_foreground_reply_fallback_event(
     relay_command: dict,
     turns_path: str,
     reason: str | None = None,
+    arbitration: dict | None = None,
 ) -> None:
     key = _relay_command_key(relay_command)
     fields = [f"event={event}"]
     if key is not None:
         fields.append(f"relay_command_seq={key[0]}")
         fields.append(f"relay_command_id={key[1]}")
+    intent_id = str(relay_command.get("intent_id") or "").strip()
+    if intent_id:
+        fields.append(f"intent_id={intent_id}")
+    if relay_command.get("within_turn_order") is not None:
+        fields.append(f"within_turn_order={relay_command['within_turn_order']}")
     state = _provider_turn_state(relay_command, turns_path=turns_path) or "none"
     fields.append(f"provider_turn_state={state}")
     provider = str(relay_command.get("provider") or "").strip()
     if provider:
         fields.append(f"provider={provider}")
+    if arbitration:
+        decision = str(arbitration.get("decision") or "").strip()
+        if decision:
+            fields.append(f"decision={decision}")
+        provider_session_id = str(arbitration.get("provider_session_id") or "").strip()
+        if provider_session_id:
+            fields.append(f"provider_session_id={provider_session_id}")
+        siblings = arbitration.get("siblings")
+        if isinstance(siblings, list):
+            fields.append(
+                "aggregate_sibling_states="
+                + json.dumps(siblings, sort_keys=True, separators=(",", ":"))
+            )
     if reason:
         fields.append(f"reason={reason}")
     print("[voice_bridge] foreground_reply_fallback " + " ".join(fields), file=sys.stderr)
@@ -2720,41 +2948,40 @@ def _schedule_foreground_reply_fallback(
                     reason="superseded",
                 )
                 return
-            if _command_pending_delivery(
+            arbitration = _source_turn_reply_arbitration(
                 relay_command,
+                state_path=state_path,
+                turns_path=turns_path,
                 command_path=command_path,
                 meta_path=meta_path,
-            ):
+            )
+            decision = arbitration["decision"]
+            reason = str(arbitration.get("reason") or "source_not_terminal")
+            if decision == "defer":
                 _log_foreground_reply_fallback_event(
                     "deferred",
                     relay_command=relay_command,
                     turns_path=turns_path,
-                    reason="pending_delivery",
+                    reason=reason,
+                    arbitration=arbitration,
                 )
                 sleep_for = max(0.25, PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS)
                 continue
-            if _provider_turn_active(relay_command, turns_path=turns_path):
+            if decision == "cancel":
                 _log_foreground_reply_fallback_event(
-                    "deferred",
+                    "cancelled",
                     relay_command=relay_command,
                     turns_path=turns_path,
-                    reason="correlated_turn_active",
+                    reason=reason,
+                    arbitration=arbitration,
                 )
-                sleep_for = max(0.25, PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS)
-                continue
-            if _any_provider_turn_active(turns_path=turns_path):
-                _log_foreground_reply_fallback_event(
-                    "deferred",
-                    relay_command=relay_command,
-                    turns_path=turns_path,
-                    reason="provider_turn_active",
-                )
-                sleep_for = max(0.25, PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS)
-                continue
+                return
             _log_foreground_reply_fallback_event(
                 "eligible",
                 relay_command=relay_command,
                 turns_path=turns_path,
+                reason=reason,
+                arbitration=arbitration,
             )
             delivered = _deliver_missing_foreground_reply(
                 relay_command=relay_command,
@@ -2763,6 +2990,15 @@ def _schedule_foreground_reply_fallback(
                 messenger=messenger,
                 state_path=state_path,
             )
+            if delivered is None:
+                _log_foreground_reply_fallback_event(
+                    "cancelled",
+                    relay_command=relay_command,
+                    turns_path=turns_path,
+                    reason="source_reply_deduplicated",
+                    arbitration=arbitration,
+                )
+                return
             _log_foreground_reply_fallback_event(
                 "emitted" if delivered else "delivery_failed",
                 relay_command=relay_command,
@@ -2900,6 +3136,8 @@ def _handle_orchestrator_reply_control(
             file=sys.stderr,
         )
         return False
+    if not _reserve_foreground_reply_delivery(command):
+        return True
     payload = {"text": reply}
     if data.get("speech_source"):
         payload["speech_source"] = str(data["speech_source"])
@@ -2912,7 +3150,7 @@ def _handle_orchestrator_reply_control(
     if _arm_authoritative_playback(tts_worker, command_key[0], command_key[1]):
         _publish_authoritative_preview(reply)
     if messenger is not None and messenger.submit_final(payload):
-        _mark_foreground_reply_delivered(command)
+        _finish_foreground_reply_delivery(command, delivered=True)
         return True
 
     # A missing or out-of-sync messenger must not swallow a current outcome.
@@ -2939,7 +3177,9 @@ def _handle_orchestrator_reply_control(
         replayable=True,
     )
     if delivered:
-        _mark_foreground_reply_delivered(command)
+        _finish_foreground_reply_delivery(command, delivered=True)
+    else:
+        _finish_foreground_reply_delivery(command, delivered=False)
     return delivered
 
 

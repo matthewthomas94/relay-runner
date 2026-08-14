@@ -1661,6 +1661,381 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual(len(messenger.finals), 1)
             self.assertIn("did not send a spoken final reply", messenger.finals[0]["text"])
 
+    def test_multi_item_orphaned_sibling_cancels_missing_final_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                voice_bridge._reset_foreground_reply_delivery_for_tests()
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                first = {
+                    "relay_command_seq": 318,
+                    "relay_command_id": f"{provider}-multi",
+                    "intent_id": f"{provider}-multi:item:1",
+                    "within_turn_order": 1,
+                    "provider": provider,
+                }
+                second = {
+                    **first,
+                    "intent_id": f"{provider}-multi:item:2",
+                    "within_turn_order": 2,
+                }
+                Path(state_path).write_text(json.dumps({
+                    **second,
+                    "source_command_intents": [
+                        {**first, "state": "acked"},
+                        {**second, "state": "acked"},
+                    ],
+                    "deliverable_commands": [],
+                    "cancelled_intent_ids": [],
+                }))
+                Path(turns_path).write_text(json.dumps({
+                    "records": [
+                        {
+                            **first,
+                            "session_id": f"{provider}-first",
+                            "turn_id": "turn-1",
+                            "state": "empty",
+                        },
+                        {
+                            **second,
+                            "session_id": f"{provider}-second",
+                            "turn_id": "turn-2",
+                            "state": "orphaned",
+                            "release_reason": "superseded_by_prompt_submit",
+                            "provider_ownership_disposition": "source_superseded",
+                            "successor_record_key": f"{provider}-manual:manual-turn",
+                        },
+                        {
+                            "provider": provider,
+                            "origin": "manual",
+                            "session_id": f"{provider}-manual",
+                            "turn_id": "manual-turn",
+                            "state": "completed_manual",
+                            "release_reason": "provider_stop",
+                        },
+                    ],
+                }))
+                messenger = FakeMessenger()
+                errors = io.StringIO()
+
+                with mock.patch.object(voice_bridge.sys, "stderr", errors):
+                    self.assertTrue(voice_bridge._handle_provider_completion_control(
+                        json.dumps({**first, "completion_status": "empty"}),
+                        tts_worker=FakeTTSWorker(),
+                        messenger=messenger,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        fallback_delay_seconds=0,
+                    ))
+                    time.sleep(0.05)
+
+                self.assertEqual(messenger.finals, [])
+                diagnostic = errors.getvalue()
+                self.assertIn("decision=cancel", diagnostic)
+                self.assertIn("reason=source_superseded", diagnostic)
+                self.assertIn(f"intent_id={first['intent_id']}", diagnostic)
+                self.assertNotIn("private", diagnostic)
+
+    def test_missing_final_waits_for_pending_sibling_then_warns_when_it_is_cancelled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            first = {
+                "relay_command_seq": 319,
+                "relay_command_id": "multi-pending",
+                "intent_id": "multi-pending:item:1",
+                "within_turn_order": 1,
+                "provider": "codex",
+            }
+            second = {
+                **first,
+                "intent_id": "multi-pending:item:2",
+                "within_turn_order": 2,
+            }
+            state = {
+                **second,
+                "source_command_intents": [
+                    {**first, "state": "acked"},
+                    {**second, "state": "pending"},
+                ],
+                "deliverable_commands": [{**second, "state": "pending"}],
+                "cancelled_intent_ids": [],
+            }
+            Path(state_path).write_text(json.dumps(state))
+            Path(turns_path).write_text(json.dumps({
+                "records": [{**first, "state": "empty"}],
+            }))
+            messenger = FakeMessenger()
+
+            with mock.patch.object(voice_bridge, "PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS", 0.01):
+                thread = voice_bridge._schedule_foreground_reply_fallback(
+                    relay_command=first,
+                    tts_worker=FakeTTSWorker(),
+                    messenger=messenger,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    command_path=os.path.join(temp_dir, "missing-ready"),
+                    meta_path=os.path.join(temp_dir, "missing-meta"),
+                    delay_seconds=0,
+                )
+                time.sleep(0.05)
+                self.assertEqual(messenger.finals, [])
+                state["source_command_intents"][1]["state"] = "cancelled"
+                state["deliverable_commands"] = []
+                state["cancelled_intent_ids"] = [second["intent_id"]]
+                Path(state_path).write_text(json.dumps(state))
+                thread.join(timeout=1)
+
+            self.assertEqual(len(messenger.finals), 1)
+            self.assertIn("did not send a spoken final reply", messenger.finals[0]["text"])
+
+    def test_manual_takeover_records_explicit_source_supersession_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                claim = {
+                    "relay_command_seq": 320,
+                    "relay_command_id": f"{provider}-takeover",
+                    "intent_id": f"{provider}-takeover:item:2",
+                    "within_turn_order": 2,
+                    "agent_prompt": "Private Relay prompt",
+                    "provider": provider,
+                }
+                Path(state_path).write_text(json.dumps(claim))
+                Path(claim_path).write_text(json.dumps(claim))
+                base = {
+                    "provider": provider,
+                    "provider_session_id": f"embedded-{provider}",
+                }
+                relay_submit = {
+                    **base,
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-relay",
+                    "turn_id": "relay-turn",
+                    "prompt": claim["agent_prompt"],
+                }
+                manual_submit = {
+                    **base,
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-manual",
+                    "turn_id": "manual-turn",
+                    "prompt": "Private manual prompt",
+                }
+                if provider == "claude":
+                    relay_submit.pop("turn_id")
+                    manual_submit.pop("turn_id")
+
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    relay_submit,
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=10,
+                    stderr=io.StringIO(),
+                ))
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    manual_submit,
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=11,
+                    stderr=io.StringIO(),
+                ))
+
+                records = json.loads(Path(turns_path).read_text())["records"]
+                relay_record, manual_record = records
+                self.assertEqual(relay_record["state"], "orphaned")
+                self.assertEqual(
+                    relay_record["provider_ownership_disposition"],
+                    "source_superseded",
+                )
+                self.assertEqual(
+                    relay_record["successor_record_key"],
+                    (
+                        f"{provider}-manual:manual-turn"
+                        if provider == "codex"
+                        else f"{provider}-manual:local:1"
+                    ),
+                )
+                self.assertEqual(manual_record["origin"], "manual")
+                stored = Path(turns_path).read_text()
+                self.assertNotIn("Private Relay prompt", stored)
+                self.assertNotIn("Private manual prompt", stored)
+
+    def test_duplicate_empty_sibling_completions_emit_one_source_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            first = {
+                "relay_command_seq": 321,
+                "relay_command_id": "multi-empty",
+                "intent_id": "multi-empty:item:1",
+                "within_turn_order": 1,
+                "provider": "codex",
+            }
+            second = {
+                **first,
+                "intent_id": "multi-empty:item:2",
+                "within_turn_order": 2,
+            }
+            Path(state_path).write_text(json.dumps({
+                **second,
+                "source_command_intents": [
+                    {**first, "state": "acked"},
+                    {**second, "state": "acked"},
+                ],
+            }))
+            Path(turns_path).write_text(json.dumps({
+                "records": [
+                    {**first, "state": "empty"},
+                    {**second, "state": "empty"},
+                ],
+            }))
+            messenger = FakeMessenger()
+            worker = FakeTTSWorker()
+            errors = io.StringIO()
+
+            with mock.patch.object(voice_bridge.sys, "stderr", errors):
+                for completion in (first, second):
+                    self.assertTrue(voice_bridge._handle_provider_completion_control(
+                        json.dumps({**completion, "completion_status": "empty"}),
+                        tts_worker=worker,
+                        messenger=messenger,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        fallback_delay_seconds=0,
+                    ))
+                deadline = time.time() + 1
+                while len(messenger.finals) < 1 and time.time() < deadline:
+                    time.sleep(0.01)
+
+            self.assertEqual(len(messenger.finals), 1)
+            self.assertEqual(messenger.finals[0]["relay_command_id"], "multi-empty")
+            self.assertEqual(errors.getvalue().count("event=emitted"), 1)
+
+    def test_source_arbitration_ignores_other_embedded_provider_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            command = {
+                "relay_command_seq": 322,
+                "relay_command_id": "scoped-empty",
+                "intent_id": "scoped-empty:item:1",
+                "within_turn_order": 1,
+            }
+            Path(state_path).write_text(json.dumps({
+                **command,
+                "source_command_intents": [{**command, "state": "acked"}],
+            }))
+            Path(turns_path).write_text(json.dumps({
+                "records": [
+                    {
+                        **command,
+                        "state": "empty",
+                        "provider_session_id": "current-session",
+                    },
+                    {
+                        "state": "active",
+                        "origin": "manual",
+                        "provider_session_id": "other-session",
+                    },
+                ],
+            }))
+
+            arbitration = voice_bridge._source_turn_reply_arbitration(
+                command,
+                state_path=state_path,
+                turns_path=turns_path,
+                command_path=os.path.join(temp_dir, "missing-ready"),
+                meta_path=os.path.join(temp_dir, "missing-meta"),
+                provider_session_id="current-session",
+            )
+
+            self.assertEqual(arbitration["decision"], "eligible")
+            self.assertEqual(arbitration["provider_session_id"], "current-session")
+
+    def test_sibling_takeover_terminalizes_only_the_replaced_intent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            first = {
+                "relay_command_seq": 323,
+                "relay_command_id": "sibling-takeover",
+                "intent_id": "sibling-takeover:item:1",
+                "within_turn_order": 1,
+            }
+            second = {
+                **first,
+                "intent_id": "sibling-takeover:item:2",
+                "within_turn_order": 2,
+            }
+            Path(state_path).write_text(json.dumps({
+                **second,
+                "source_command_intents": [
+                    {**first, "state": "acked"},
+                    {**second, "state": "acked"},
+                ],
+            }))
+            Path(turns_path).write_text(json.dumps({
+                "records": [
+                    {
+                        **first,
+                        "session_id": "first-session",
+                        "turn_id": "first-turn",
+                        "state": "orphaned",
+                        "provider_ownership_disposition": "sibling_superseded",
+                        "successor_record_key": "second-session:second-turn",
+                    },
+                    {
+                        **second,
+                        "session_id": "second-session",
+                        "turn_id": "second-turn",
+                        "state": "empty",
+                    },
+                ],
+            }))
+
+            arbitration = voice_bridge._source_turn_reply_arbitration(
+                first,
+                state_path=state_path,
+                turns_path=turns_path,
+                command_path=os.path.join(temp_dir, "missing-ready"),
+                meta_path=os.path.join(temp_dir, "missing-meta"),
+            )
+
+            self.assertEqual(arbitration["decision"], "eligible")
+            self.assertEqual(arbitration["reason"], "all_siblings_terminal_empty")
+
+    def test_fully_cancelled_source_turn_never_emits_missing_final(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            command = {
+                "relay_command_seq": 324,
+                "relay_command_id": "cancelled-source",
+                "intent_id": "cancelled-source:item:1",
+                "within_turn_order": 1,
+            }
+            Path(state_path).write_text(json.dumps({
+                **command,
+                "source_command_intents": [{**command, "state": "cancelled"}],
+                "cancelled_intent_ids": [command["intent_id"]],
+            }))
+
+            arbitration = voice_bridge._source_turn_reply_arbitration(
+                command,
+                state_path=state_path,
+                turns_path=os.path.join(temp_dir, "missing-turns"),
+                command_path=os.path.join(temp_dir, "missing-ready"),
+                meta_path=os.path.join(temp_dir, "missing-meta"),
+            )
+
+            self.assertEqual(arbitration["decision"], "cancel")
+            self.assertEqual(arbitration["reason"], "source_cancelled")
+
     def test_completion_hook_binds_exact_claimed_prompt_without_storing_text(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "voice_command_state.json")

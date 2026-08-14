@@ -275,6 +275,36 @@ class IntentInboxTests(unittest.TestCase):
                 ["one", "two"],
             )
 
+    def test_state_lists_all_current_source_siblings_after_ack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = IntentInbox(Path(directory) / "inbox.sqlite3")
+            state = Path(directory) / "state.json"
+            first = inbox.enqueue(
+                "first",
+                item_metadata(7, "multi", 1, target="login"),
+                "queue_project_work",
+            )
+            inbox.enqueue(
+                "second",
+                item_metadata(7, "multi", 2, target="search"),
+                "queue_project_work",
+            )
+            inbox.observe_claim(first, provider_turn_seen=True)
+
+            sync_deliverable_state(str(state), inbox)
+
+            payload = json.loads(state.read_text())
+            self.assertEqual(
+                [item["intent_id"] for item in payload["source_command_intents"]],
+                ["multi:item:1", "multi:item:2"],
+            )
+            self.assertEqual(
+                [item["state"] for item in payload["source_command_intents"]],
+                ["acked", "pending"],
+            )
+            self.assertNotIn("source_text", payload["source_command_intents"][0])
+            inbox.close()
+
     def test_state_recovers_latest_durable_command_without_regressing_newer_turn(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = IntentInbox(Path(directory) / "inbox.sqlite3")
