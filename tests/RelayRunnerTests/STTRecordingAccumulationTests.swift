@@ -79,6 +79,18 @@ final class STTRecordingAccumulationTests: XCTestCase {
         XCTAssertEqual(buffer.get(), [3])
     }
 
+    func testRealtimeAudioLevelMeterKeepsOnlyLatestRMSAndExpiresStaleInput() {
+        let meter = RealtimeAudioLevelMeter()
+
+        meter.ingest([0.5, -0.5], now: 10)
+        XCTAssertEqual(meter.latestRMS(now: 10.1), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(meter.latestRMS(now: 10.3), 0)
+
+        meter.ingest([1, -1], now: 11)
+        meter.reset()
+        XCTAssertEqual(meter.latestRMS(now: 11), 0)
+    }
+
     func testTutorialVoiceOutputNeverPublishesToTheVoiceFIFO() {
         var published: [String] = []
 
