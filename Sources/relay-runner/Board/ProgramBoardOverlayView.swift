@@ -847,6 +847,8 @@ enum ProgramBoardContentPresentation: Equatable {
     case settingUp
 
     static let settingUpTitle = "Setting up your project..."
+    static let settingUpFontRole: AppTypography.Role = .sectionHeading
+    static let settingUpForegroundOpacity = 0.92
 
     static func resolve(
         hasSnapshot: Bool,
@@ -947,8 +949,8 @@ private struct ProgramBoardContent: View {
 
     private var settingUpSurface: some View {
         Text(ProgramBoardContentPresentation.settingUpTitle)
-            .font(AppTypography.font(.programEmptyState))
-            .foregroundStyle(ProgramBoardStyle.disabledText)
+            .font(AppTypography.font(ProgramBoardContentPresentation.settingUpFontRole))
+            .foregroundStyle(Color.white.opacity(ProgramBoardContentPresentation.settingUpForegroundOpacity))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
     }
