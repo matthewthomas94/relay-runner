@@ -2853,6 +2853,9 @@ def _deliver_missing_foreground_reply(
         if not reservation.accepted:
             if reservation.reason == "duplicate":
                 return None
+            if reservation.reason == "turn_revoked":
+                _finish_foreground_reply_delivery(relay_command, delivered=False)
+                return False
             if PROVIDER_TURN_BROKER_MODE != "dual_write":
                 return False
         else:
@@ -3195,6 +3198,9 @@ def _handle_orchestrator_reply_control(
         if not reservation.accepted:
             if reservation.reason == "duplicate":
                 return True
+            if reservation.reason == "turn_revoked":
+                _finish_foreground_reply_delivery(command, delivered=False)
+                return False
             if PROVIDER_TURN_BROKER_MODE != "dual_write":
                 return False
         else:

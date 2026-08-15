@@ -4073,6 +4073,91 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                             broker.close()
                             inbox.close()
 
+    def test_real_delivery_paths_reject_revocation_before_reservation(self):
+        for provider in ("codex", "claude"):
+            for relationship in ("cancellation", "replacement"):
+                for delivery_path in ("orchestrator_reply", "missing_reply"):
+                    with self.subTest(
+                        provider=provider,
+                        relationship=relationship,
+                        delivery_path=delivery_path,
+                    ), tempfile.TemporaryDirectory() as temp_dir:
+                        database = os.path.join(temp_dir, "inbox.sqlite3")
+                        state_path = os.path.join(temp_dir, "voice_command_state.json")
+                        command = {
+                            **self.foreground_ownership(),
+                            "relay_command_seq": 1,
+                            "relay_command_id": f"{provider}-{relationship}-{delivery_path}",
+                            "intent_id": f"intent-{provider}-{relationship}-{delivery_path}",
+                            "provider": provider,
+                        }
+                        Path(state_path).write_text(json.dumps(command))
+                        inbox = voice_bridge.IntentInbox(database)
+                        broker = ProviderTurnBroker(database)
+                        try:
+                            inbox.enqueue("private prompt", command, "continue_current")
+                            turn = {
+                                **command,
+                                "origin": "relay",
+                                "provider_session_id": f"provider-session-{provider}",
+                                "session_id": f"native-session-{provider}",
+                                "turn_id": f"native-turn-{relationship}-{delivery_path}",
+                            }
+                            self.assertTrue(broker.activate(turn))
+                            self.assertTrue(broker.transition(
+                                turn,
+                                to_state="completed_final",
+                                event_type="provider_completed",
+                                release_reason="provider_stop",
+                            ))
+                            if relationship == "cancellation":
+                                cancelled = inbox.cancel_scoped({
+                                    "intent_id": "cancel-current",
+                                    "cancellation_scope": "item",
+                                    "target_intent_ids": [command["intent_id"]],
+                                })
+                                self.assertEqual(cancelled, [command["intent_id"]])
+                            else:
+                                self.assertEqual(inbox.cancel_pending_before(
+                                    2,
+                                    reason="replaced_by_newer_command",
+                                ), 1)
+
+                            voice_bridge._reset_foreground_reply_delivery_for_tests()
+                            messenger = FakeMessenger()
+                            worker = FakeTTSWorker()
+                            with mock.patch.object(
+                                voice_bridge,
+                                "PROVIDER_TURN_BROKER_MODE",
+                                "dual_write",
+                            ), mock.patch.object(voice_bridge, "_queue_tts_text") as queue_tts:
+                                if delivery_path == "orchestrator_reply":
+                                    delivered = voice_bridge._handle_orchestrator_reply_control(
+                                        json.dumps({**command, "text": "late final"}),
+                                        tts_worker=worker,
+                                        messenger=messenger,
+                                        state_path=state_path,
+                                        provider_turn_broker=broker,
+                                    )
+                                else:
+                                    delivered = voice_bridge._deliver_missing_foreground_reply(
+                                        relay_command=command,
+                                        tts_worker=worker,
+                                        messenger=messenger,
+                                        state_path=state_path,
+                                        provider_turn_broker=broker,
+                                    )
+
+                            self.assertFalse(delivered)
+                            self.assertEqual(messenger.finals, [])
+                            queue_tts.assert_not_called()
+                            self.assertTrue(worker.input_queue.empty())
+                            self.assertFalse(voice_bridge._foreground_reply_delivered(command))
+                            self.assertEqual(broker.table_records("provider_turn_effects"), [])
+                        finally:
+                            broker.close()
+                            inbox.close()
+
     def test_provider_completion_control_arms_missing_final_after_terminal_event(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             voice_bridge._reset_foreground_reply_delivery_for_tests()
