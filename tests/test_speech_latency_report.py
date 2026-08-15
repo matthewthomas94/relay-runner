@@ -39,6 +39,7 @@ class SpeechLatencyReportTests(unittest.TestCase):
 
         self.assertEqual(report["sample_count"], 3)
         self.assertEqual(report["option_to_ack_p95_ms"], 50.0)
+        self.assertEqual(report["ack_to_first_audio_p95_ms"], 2_850.0)
         self.assertEqual(report["option_to_first_audio_p95_ms"], 2_900.0)
         self.assertEqual(report["samples"][0]["intent_wait_ms"], 70.0)
         self.assertNotIn("text", report["samples"][0])
@@ -54,7 +55,41 @@ class SpeechLatencyReportTests(unittest.TestCase):
         ])
 
         self.assertEqual(report["sample_count"], 0)
+        self.assertIsNone(report["ack_to_first_audio_p95_ms"])
         self.assertIsNone(report["option_to_first_audio_p95_ms"])
+
+    def test_report_measures_normal_path_acknowledgement_to_playback_budget(self):
+        records = []
+        for index, latency_ms in enumerate((180, 220, 300, 420), start=1):
+            base = 2_000.0 + index
+            identifiers = {
+                "relay_command_seq": index,
+                "relay_command_id": f"cmd-{index}",
+                "play_request_id": f"play-{index}",
+                "utterance_id": f"utterance-{index}",
+            }
+            records.extend([
+                {
+                    "event": "option_detected",
+                    "at": base - 0.05,
+                    **identifiers,
+                },
+                {
+                    "event": "visual_play_acknowledged",
+                    "at": base,
+                    **identifiers,
+                },
+                {
+                    "event": "afplay_started",
+                    "at": base + latency_ms / 1_000,
+                    **identifiers,
+                },
+            ])
+
+        report = speech_latency_report.build_report(records)
+
+        self.assertEqual(report["ack_to_first_audio_p95_ms"], 420.0)
+        self.assertLessEqual(report["ack_to_first_audio_p95_ms"], 500.0)
 
 
 if __name__ == "__main__":

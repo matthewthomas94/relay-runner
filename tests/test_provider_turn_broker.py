@@ -292,6 +292,39 @@ class ProviderTurnBrokerTests(unittest.TestCase):
                 finally:
                     broker.close()
 
+    def test_codex_and_claude_revocation_rejects_effect_after_completion(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                database = os.path.join(temp_dir, "inbox.sqlite3")
+                projection = os.path.join(temp_dir, "provider-turns-v2.json")
+                inbox = IntentInbox(database, provider_turn_projection_path=projection)
+                broker = ProviderTurnBroker(database, projection_path=projection)
+                try:
+                    record = turn_record(provider)
+                    inbox.enqueue("private prompt", record, "continue_current")
+                    self.assertTrue(broker.activate(record, now=100.0))
+                    self.assertTrue(broker.transition(
+                        record,
+                        to_state="completed_final",
+                        event_type="provider_completed",
+                        release_reason="provider_stop",
+                        now=101.0,
+                    ))
+                    self.assertEqual(inbox.cancel_scoped({
+                        "intent_id": "cancel-current",
+                        "cancellation_scope": "item",
+                        "target_intent_ids": [record["intent_id"]],
+                    }), [record["intent_id"]])
+
+                    reservation = broker.reserve_effect(record, now=102.0)
+
+                    self.assertFalse(reservation.accepted)
+                    self.assertEqual(reservation.reason, "turn_revoked")
+                    self.assertEqual(broker.table_records("provider_turn_effects"), [])
+                finally:
+                    broker.close()
+                    inbox.close()
+
 
 if __name__ == "__main__":
     unittest.main()

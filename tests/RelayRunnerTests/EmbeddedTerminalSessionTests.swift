@@ -265,6 +265,9 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
                 sessionEventPath: fixture.events.path,
                 providerSessionID: providerSessionID
             ))
+            let host = EmbeddedTerminalHostNSView()
+            host.install(session.hostedView)
+            XCTAssertTrue(process.terminalView.superview === host, providerName)
 
             let bootstrapWindow = expectation(
                 description: "\(providerName) bootstrap retains queued command"
@@ -284,11 +287,26 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
 
             XCTAssertEqual(session.phase, .running)
             XCTAssertFalse(FileManager.default.fileExists(atPath: paths.command))
+            let rendered = expectation(description: "\(providerName) rendered accepted input")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                rendered.fulfill()
+            }
+            wait(for: [rendered], timeout: 1)
             let terminalText = String(
                 data: process.terminalView.getTerminal().getBufferAsData(),
                 encoding: .utf8
             )
             XCTAssertTrue(terminalText?.contains("input accepted") == true)
+            let events = try String(contentsOfFile: paths.deliveryEvents, encoding: .utf8)
+            XCTAssertEqual(countEvent("claimed", in: events), 1, providerName)
+            XCTAssertEqual(countEvent("claim_published", in: events), 1, providerName)
+            XCTAssertTrue(events.contains(#""relay_command_seq":1"#), providerName)
+            XCTAssertTrue(events.contains(#""relay_command_id":"cmd-1""#), providerName)
+            XCTAssertTrue(
+                events.contains("\"provider\":\"\(providerName.lowercased())\""),
+                providerName
+            )
+            XCTAssertFalse(events.contains("ping"), providerName)
             session.end()
         }
     }

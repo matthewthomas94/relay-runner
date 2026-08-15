@@ -1,0 +1,44 @@
+# Provider-turn fault matrix
+
+Run the deterministic lifecycle matrix from the repository root:
+
+```sh
+python3 services/provider_turn_fault_harness.py
+```
+
+The matrix runs Codex and Claude through the same ownership contract. It injects
+Messenger, foreground-provider, daemon, bridge, and Swift consumer restarts at
+accepted, delivered, claimed, acknowledged, terminal, and effect-reserved
+boundaries. It also duplicates terminal callbacks and competing outputs, then
+revokes turns through cancellation and replacement before attempting a late
+effect.
+
+The harness fails unless each normal turn has one claim, one terminal inbox
+acknowledgement, one provider-terminal transition, and one delivered effect.
+Diagnostics are capped at 100 records and allowlist only provider, component,
+boundary, invariant, expected, and observed values. Fixture prompt text and
+filesystem paths are never reported.
+
+Codex and Claude intentionally differ only at their native hook adapters. Once
+an adapter supplies native session and turn identity plus the shared foreground
+ownership envelope, both providers use the same broker, restart, cancellation,
+effect, and latency assertions.
+
+## Mounted acceptance
+
+The deterministic matrix does not replace a signed-app run with the real Codex
+and Claude clients. For each provider, accept one current voice turn, play its
+retained authoritative result, then preserve the privacy-safe terminal delivery
+and speech event logs. The accepted playback must correlate one command
+sequence/id, one play-request id, one utterance id, one `provider_acknowledged`,
+and one `afplay_started` event, with no second authoritative effect.
+
+Measure the mounted acknowledgement-to-playback latency from the speech log:
+
+```sh
+python3 scripts/speech-latency-report.py /tmp/relay_speech_events.jsonl --json
+```
+
+The mounted gate passes only when both providers have complete correlated
+samples, no duplicate accepted effect, and
+`ack_to_first_audio_p95_ms <= 500`.

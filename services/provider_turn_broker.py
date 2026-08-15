@@ -43,6 +43,7 @@ TERMINAL_STATES = frozenset({
 ALLOWED_TRANSITIONS = {
     "active": TERMINAL_STATES,
 }
+EFFECT_REVOKED_TURN_STATES = frozenset({"cancelled", "orphaned", "stale", "terminated"})
 
 
 def _text(value: Any) -> str:
@@ -517,7 +518,7 @@ class ProviderTurnBroker:
                 if intent_id:
                     row = self._connection.execute(
                         """
-                        SELECT turn_id FROM provider_turns
+                        SELECT turn_id, state FROM provider_turns
                          WHERE owner_id=? AND intent_id=?
                          ORDER BY updated_at DESC LIMIT 1
                         """,
@@ -527,7 +528,7 @@ class ProviderTurnBroker:
                 else:
                     row = self._connection.execute(
                         """
-                        SELECT turn_id FROM provider_turns
+                        SELECT turn_id, state FROM provider_turns
                          WHERE owner_id=? AND command_seq=? AND command_id=?
                          ORDER BY updated_at DESC LIMIT 1
                         """,
@@ -537,6 +538,12 @@ class ProviderTurnBroker:
                 if row is None:
                     self._finish(commit=True)
                     return EffectReservation(False, reason="turn_missing")
+                if str(row["state"]) in EFFECT_REVOKED_TURN_STATES:
+                    self._finish(commit=True)
+                    return EffectReservation(False, reason="turn_revoked")
+                if intent_id and self._intent_cancelled(intent_id):
+                    self._finish(commit=True)
+                    return EffectReservation(False, reason="turn_revoked")
                 turn_id = str(row["turn_id"])
                 authority_key = stable_event_id(
                     "authority",
@@ -561,6 +568,18 @@ class ProviderTurnBroker:
         if cursor.rowcount != 1:
             return EffectReservation(False, effect_id=effect_id, reason="duplicate")
         return EffectReservation(True, effect_id=effect_id)
+
+    def _intent_cancelled(self, intent_id: str) -> bool:
+        table = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='intents'"
+        ).fetchone()
+        if table is None:
+            return False
+        row = self._connection.execute(
+            "SELECT state FROM intents WHERE intent_id=?",
+            (intent_id,),
+        ).fetchone()
+        return row is not None and str(row["state"]) == "cancelled"
 
     def finish_effect(self, effect_id: str, *, delivered: bool, now: float | None = None) -> None:
         now = time.time() if now is None else now

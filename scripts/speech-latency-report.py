@@ -86,6 +86,11 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
             "commit_to_preparing_ms": _delta(timeline, "intent_committed", "tts_preparing"),
             "preparing_to_wav_ms": _delta(timeline, "tts_preparing", "first_wav_ready"),
             "wav_to_afplay_ms": _delta(timeline, "first_wav_ready", "afplay_started"),
+            "ack_to_first_audio_ms": _delta(
+                timeline,
+                "visual_play_acknowledged",
+                "afplay_started",
+            ),
             "option_to_first_audio_ms": _delta(timeline, "option_detected", "afplay_started"),
         }
         samples.append({**sample, **durations})
@@ -96,10 +101,16 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
         for sample in samples
         if sample["option_to_ack_ms"] is not None
     ]
+    acknowledgement_to_audio = [
+        sample["ack_to_first_audio_ms"]
+        for sample in samples
+        if sample["ack_to_first_audio_ms"] is not None
+    ]
     return {
         "sample_count": len(samples),
         "option_to_first_audio_p95_ms": _percentile(audio, 95),
         "option_to_ack_p95_ms": _percentile(acknowledgements, 95),
+        "ack_to_first_audio_p95_ms": _percentile(acknowledgement_to_audio, 95),
         "samples": samples,
     }
 
@@ -123,6 +134,7 @@ def main() -> int:
     else:
         print(f"samples: {report['sample_count']}")
         print(f"Option to acknowledgement p95: {report['option_to_ack_p95_ms']} ms")
+        print(f"Acknowledgement to first audio p95: {report['ack_to_first_audio_p95_ms']} ms")
         print(f"Option to first audio p95: {report['option_to_first_audio_p95_ms']} ms")
         for sample in report["samples"]:
             print(json.dumps(sample, sort_keys=True))
