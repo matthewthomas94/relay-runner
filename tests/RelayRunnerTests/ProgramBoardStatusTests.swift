@@ -13,6 +13,11 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(updateCheckDefinition.fallbackWeight, .semibold)
     }
 
+    func testWorkspaceSetupLoaderIsNotShiftedByWorkContentOffset() {
+        XCTAssertFalse(ProgramBoardContentPresentation.settingUpUsesWorkspaceContentTopOffset)
+        XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 47)
+    }
+
     func testProgramBoardUsesSolidDarkFigmaSurfaces() {
         let panelFill = BoardDarkSurfaceStyle.panelFillNSColor.usingColorSpace(.sRGB)
         let border = BoardDarkSurfaceStyle.borderNSColor.usingColorSpace(.sRGB)
