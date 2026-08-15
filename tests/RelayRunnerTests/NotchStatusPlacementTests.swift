@@ -1075,84 +1075,68 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(NotchStatusGlyph.playing.dots.map(\.y), NotchStatusGlyph.listening.dots.map(\.y))
     }
 
-    func testNotchGlyphMotionKeepsWorkingLoopAndUsesBoundedAudioEnvelope() throws {
+    func testNotchGlyphMotionMatchesAnimatedSVGKeyframesForBothActiveStates() throws {
         XCTAssertFalse(NotchSessionStatus.notWorking.animatesGlyphMotion)
         XCTAssertTrue(NotchSessionStatus.working.animatesGlyphMotion)
-        XCTAssertFalse(NotchSessionStatus.listening.animatesGlyphMotion)
-        XCTAssertFalse(NotchSessionStatus.playing.animatesGlyphMotion)
+        XCTAssertTrue(NotchSessionStatus.listening.animatesGlyphMotion)
+        XCTAssertTrue(NotchSessionStatus.playing.animatesGlyphMotion)
+        XCTAssertTrue(NotchSessionStatus.listening.usesGlyphShimmer)
+        XCTAssertTrue(NotchSessionStatus.playing.usesGlyphShimmer)
+        XCTAssertFalse(NotchSessionStatus.working.usesGlyphShimmer)
         XCTAssertEqual(NotchStatusGlyphMotion.duration, 0.6, accuracy: 0.0001)
 
         XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .notWorking, phase: 0.6683), 0)
-        XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .working, phase: 0), 0, accuracy: 0.0001)
-        XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .working, phase: 0.6683), .pi / 4, accuracy: 0.0001)
-        XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .working, phase: 1), .pi / 2, accuracy: 0.0001)
-
-        XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .listening, phase: 0.5), 0)
-        XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .playing, phase: 0.5), 0)
+        for status in [NotchSessionStatus.working, .listening, .playing] {
+            XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: status, phase: 0), 0, accuracy: 0.0001)
+            XCTAssertEqual(
+                NotchStatusGlyphMotion.coreRotation(for: status, phase: 0.6683),
+                .pi / 4,
+                accuracy: 0.0001
+            )
+            XCTAssertEqual(
+                NotchStatusGlyphMotion.coreRotation(for: status, phase: 1),
+                .pi / 2,
+                accuracy: 0.0001
+            )
+        }
 
         for status in [NotchSessionStatus.listening, .playing] {
-            for dot in status.glyph.dots {
-                let calm = NotchStatusGlyphMotion.audioReactiveCenter(
+            let rightDot = try XCTUnwrap(status.glyph.dots.first { $0.x == 19.5 && $0.y == 9.5 })
+            XCTAssertEqual(NotchStatusGlyphMotion.accentOffset(for: rightDot, status: status, phase: 0).x, 0, accuracy: 0.0001)
+            XCTAssertEqual(NotchStatusGlyphMotion.accentOffset(for: rightDot, status: status, phase: 0.6667).x, 1, accuracy: 0.0001)
+            XCTAssertEqual(NotchStatusGlyphMotion.accentOffset(for: rightDot, status: status, phase: 1).x, 0, accuracy: 0.0001)
+
+            let topDot = try XCTUnwrap(status.glyph.dots.first { $0.x == 14.5 && $0.y == 4.5 })
+            XCTAssertEqual(NotchStatusGlyphMotion.accentOffset(for: topDot, status: status, phase: 0.6667).y, -1, accuracy: 0.0001)
+
+            for dot in status.glyph.dots where dot.color != .white {
+                let center = NotchStatusGlyphMotion.transformedCenter(
                     for: dot,
                     status: status,
-                    level: 0
+                    phase: 0.6667
                 )
-                let peak = NotchStatusGlyphMotion.audioReactiveCenter(
-                    for: dot,
-                    status: status,
-                    level: 1
-                )
-                XCTAssertEqual(calm, CGPoint(x: dot.x, y: dot.y))
-                XCTAssertGreaterThanOrEqual(peak.x - dot.diameter / 2, 0)
-                XCTAssertLessThanOrEqual(peak.x + dot.diameter / 2, 24)
-                XCTAssertGreaterThanOrEqual(peak.y - dot.diameter / 2, 0)
-                XCTAssertLessThanOrEqual(peak.y + dot.diameter / 2, 24)
+                XCTAssertGreaterThanOrEqual(center.x - dot.diameter / 2, 0)
+                XCTAssertLessThanOrEqual(center.x + dot.diameter / 2, 24)
+                XCTAssertGreaterThanOrEqual(center.y - dot.diameter / 2, 0)
+                XCTAssertLessThanOrEqual(center.y + dot.diameter / 2, 24)
             }
         }
 
         let coreDot = try XCTUnwrap(NotchStatusGlyph.neutral.dots.first)
-        let rotated = NotchStatusGlyphMotion.transformedCenter(for: coreDot, status: .working, phase: 0.6683)
-        XCTAssertEqual(rotated.x, 15.5355, accuracy: 0.0001)
-        XCTAssertEqual(rotated.y, 12, accuracy: 0.0001)
+        for status in [NotchSessionStatus.working, .listening, .playing] {
+            let rotated = NotchStatusGlyphMotion.transformedCenter(for: coreDot, status: status, phase: 0.6683)
+            XCTAssertEqual(rotated.x, 15.5355, accuracy: 0.0001)
+            XCTAssertEqual(rotated.y, 12, accuracy: 0.0001)
+        }
     }
 
-    func testNotchAudioEnvelopeNormalizesSmoothsResetsAndHonorsReduceMotion() {
-        XCTAssertEqual(NotchAudioLevelPolicy.normalize(rms: 0), 0)
-        XCTAssertEqual(
-            NotchAudioLevelPolicy.normalize(rms: Darwin.pow(10, -55.0 / 20)),
-            0,
-            accuracy: 0.0001
-        )
-        XCTAssertEqual(
-            NotchAudioLevelPolicy.normalize(rms: Darwin.pow(10, -12.0 / 20)),
-            1,
-            accuracy: 0.0001
-        )
-        XCTAssertEqual(NotchAudioLevelPolicy.normalize(rms: 2), 1)
-
-        var smoother = NotchAudioLevelSmoother()
-        XCTAssertEqual(smoother.update(0, at: 10), 0)
-        let attacked = smoother.update(1, at: 10.05)
-        XCTAssertGreaterThan(attacked, 0)
-        XCTAssertLessThan(attacked, 1)
-        let released = smoother.update(0, at: 10.10)
-        XCTAssertGreaterThan(released, 0)
-        XCTAssertLessThan(released, attacked)
-        smoother.reset()
-        XCTAssertEqual(smoother.level, 0)
-
-        XCTAssertEqual(
-            NotchAudioLevelPolicy.presentedLevel(1, status: .listening, reduceMotion: true),
-            0
-        )
-        XCTAssertEqual(
-            NotchAudioLevelPolicy.presentedLevel(1, status: .playing, reduceMotion: false),
-            1
-        )
-        XCTAssertEqual(
-            NotchAudioLevelPolicy.presentedLevel(1, status: .working, reduceMotion: false),
-            0
-        )
+    func testNotchGlyphMotionHonorsReduceMotionWithoutChangingStateArtwork() {
+        for status in [NotchSessionStatus.listening, .playing] {
+            XCTAssertTrue(NotchStatusGlyphMotion.shouldAnimate(status: status, reduceMotion: false))
+            XCTAssertFalse(NotchStatusGlyphMotion.shouldAnimate(status: status, reduceMotion: true))
+        }
+        XCTAssertTrue(NotchStatusGlyphMotion.shouldAnimate(status: .working, reduceMotion: false))
+        XCTAssertFalse(NotchStatusGlyphMotion.shouldAnimate(status: .notWorking, reduceMotion: false))
     }
 
     func testWorkerActivityIsGlyphOnlyAcrossProviders() {
