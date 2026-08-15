@@ -455,19 +455,45 @@ def _check_revocation_case(
     scenario = _Scenario(root, provider, f"revoked-{boundary}")
     try:
         _advance_to(scenario, boundary)
+        reserved = (
+            scenario.reserve_effect(checkpoint=True)
+            if boundary == "effect_reserved"
+            else None
+        )
         cancelled = scenario.inbox.cancel_scoped({
             "intent_id": f"cancel-{provider}-{boundary}",
             "cancellation_scope": "item",
             "target_intent_ids": [scenario.command["intent_id"]],
         })
-        reservation = scenario.broker.reserve_effect(scenario._recovered_command(), now=104.0)
+        if reserved is not None and reserved.effect_id is not None:
+            scenario.finish_effect(reserved.effect_id)
+        reservation = (
+            reserved
+            if reserved is not None
+            else scenario.broker.reserve_effect(scenario._recovered_command(), now=104.0)
+        )
         effects = scenario.broker.table_records("provider_turn_effects")
         checks = {
             "revocation_applied": ([scenario.command["intent_id"]], cancelled),
-            "late_effect_rejected": (False, reservation.accepted),
-            "late_effect_reason": ("turn_revoked", reservation.reason),
-            "no_revoked_effect": (0, len(effects)),
         }
+        if boundary == "effect_reserved":
+            checks.update({
+                "effect_reserved_before_revocation": (True, reservation.accepted),
+                "revoked_reserved_effect_failed": (
+                    "failed",
+                    effects[0]["state"] if effects else None,
+                ),
+                "no_revoked_delivered_effect": (
+                    0,
+                    sum(effect["state"] == "delivered" for effect in effects),
+                ),
+            })
+        else:
+            checks.update({
+                "late_effect_rejected": (False, reservation.accepted),
+                "late_effect_reason": ("turn_revoked", reservation.reason),
+                "no_revoked_effect": (0, len(effects)),
+            })
         return [
             _diagnostic(
                 provider=provider,
@@ -484,27 +510,70 @@ def _check_revocation_case(
         scenario.close()
 
 
-def _check_replacement_case(root: Path, provider: str) -> list[dict[str, Any]]:
-    scenario = _Scenario(root, provider, "replaced")
+def _check_replacement_case(
+    root: Path,
+    provider: str,
+    boundary: str,
+) -> list[dict[str, Any]]:
+    scenario = _Scenario(root, provider, f"replaced-{boundary}")
     try:
-        cancelled_count = scenario.inbox.cancel_pending_before(
-            2,
-            reason="replaced_by_newer_command",
+        _advance_to(scenario, boundary)
+        reserved = (
+            scenario.reserve_effect(checkpoint=True)
+            if boundary == "effect_reserved"
+            else None
         )
-        reservation = scenario.broker.reserve_effect(
-            scenario._recovered_command(),
-            now=104.0,
+        cancelled_count = (
+            len(scenario.inbox.cancel_scoped({
+                "intent_id": f"replacement-{provider}-{boundary}",
+                "cancellation_scope": "item",
+                "target_intent_ids": [scenario.command["intent_id"]],
+            }))
+            if boundary == "effect_reserved"
+            else scenario.inbox.cancel_pending_before(
+                2,
+                reason="replaced_by_newer_command",
+            )
         )
+        if reserved is not None and reserved.effect_id is not None:
+            scenario.finish_effect(reserved.effect_id)
+        reservation = (
+            reserved
+            if reserved is not None
+            else scenario.broker.reserve_effect(
+                scenario._recovered_command(),
+                now=104.0,
+            )
+        )
+        effects = scenario.broker.table_records("provider_turn_effects")
         checks = {
             "replacement_revoked_older_turn": (1, cancelled_count),
-            "replaced_turn_late_effect_rejected": (False, reservation.accepted),
-            "replaced_turn_reason": ("turn_revoked", reservation.reason),
         }
+        if boundary == "effect_reserved":
+            checks.update({
+                "replacement_effect_reserved_before_revocation": (
+                    True,
+                    reservation.accepted,
+                ),
+                "replacement_reserved_effect_failed": (
+                    "failed",
+                    effects[0]["state"] if effects else None,
+                ),
+                "replacement_has_no_delivered_effect": (
+                    0,
+                    sum(effect["state"] == "delivered" for effect in effects),
+                ),
+            })
+        else:
+            checks.update({
+                "replaced_turn_late_effect_rejected": (False, reservation.accepted),
+                "replaced_turn_reason": ("turn_revoked", reservation.reason),
+            })
         return [
             _diagnostic(
                 provider=provider,
                 component="replacement",
-                boundary="accepted",
+                boundary=boundary,
                 invariant=invariant,
                 expected=expected,
                 observed=observed,
@@ -548,9 +617,10 @@ def run_fault_matrix(root: Path) -> dict[str, Any]:
                 if latency is not None:
                     latencies.append(latency)
                 restart_recovery_count += int(restart_recovered)
-        for boundary in LIFECYCLE_BOUNDARIES[:-1]:
+        for boundary in LIFECYCLE_BOUNDARIES:
             violations.extend(_check_revocation_case(root, provider, boundary))
-        violations.extend(_check_replacement_case(root, provider))
+        for boundary in ("accepted", "effect_reserved"):
+            violations.extend(_check_replacement_case(root, provider, boundary))
 
     if len(latencies) != normal_scenario_count:
         violations.append(_diagnostic(
@@ -581,8 +651,8 @@ def run_fault_matrix(root: Path) -> dict[str, Any]:
         "normal_scenario_count": normal_scenario_count,
         "restart_recovery_count": restart_recovery_count,
         "delayed_acknowledgement_scenario_count": len(PROVIDERS) * len(RESTART_COMPONENTS),
-        "revocation_scenario_count": len(PROVIDERS) * (len(LIFECYCLE_BOUNDARIES) - 1),
-        "replacement_scenario_count": len(PROVIDERS),
+        "revocation_scenario_count": len(PROVIDERS) * len(LIFECYCLE_BOUNDARIES),
+        "replacement_scenario_count": len(PROVIDERS) * 2,
         "acknowledgement_to_playback_sample_count": len(latencies),
         "acknowledgement_to_playback_p95_ms": p95_ms,
         "passed": not violations,

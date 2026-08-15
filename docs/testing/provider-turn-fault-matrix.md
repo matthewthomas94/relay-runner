@@ -13,7 +13,8 @@ and effect-reserved boundaries. Every component owns a distinct file-backed
 runtime generation and must recover the same durable turn identity before the
 scenario can continue. The matrix also duplicates terminal callbacks and
 competing outputs, then revokes turns through cancellation and replacement
-before attempting a late effect.
+before attempting a late effect and after reserving an effect but before
+delivery. A revoked reservation must persist as failed, never delivered.
 
 The harness fails unless each normal turn has one claim, one terminal inbox
 acknowledgement, one provider-terminal transition, and one delivered effect.

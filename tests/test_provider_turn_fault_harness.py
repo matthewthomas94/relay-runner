@@ -41,9 +41,9 @@ class ProviderTurnFaultHarnessTests(unittest.TestCase):
         )
         self.assertEqual(
             report["revocation_scenario_count"],
-            len(PROVIDERS) * (len(LIFECYCLE_BOUNDARIES) - 1),
+            len(PROVIDERS) * len(LIFECYCLE_BOUNDARIES),
         )
-        self.assertEqual(report["replacement_scenario_count"], len(PROVIDERS))
+        self.assertEqual(report["replacement_scenario_count"], len(PROVIDERS) * 2)
         self.assertEqual(
             report["acknowledgement_to_playback_sample_count"],
             report["normal_scenario_count"],

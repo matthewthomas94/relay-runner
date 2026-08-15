@@ -583,11 +583,36 @@ class ProviderTurnBroker:
 
     def finish_effect(self, effect_id: str, *, delivered: bool, now: float | None = None) -> None:
         now = time.time() if now is None else now
-        with self._lock, self._connection:
-            self._connection.execute(
-                "UPDATE provider_turn_effects SET state=?, updated_at=? WHERE effect_id=?",
-                ("delivered" if delivered else "failed", now, effect_id),
-            )
+        with self._lock:
+            self._begin()
+            try:
+                row = self._connection.execute(
+                    """
+                    SELECT effects.state AS effect_state,
+                           effects.intent_id AS intent_id,
+                           turns.state AS turn_state
+                      FROM provider_turn_effects AS effects
+                      JOIN provider_turns AS turns ON turns.turn_id=effects.turn_id
+                     WHERE effects.effect_id=?
+                    """,
+                    (effect_id,),
+                ).fetchone()
+                if row is None or str(row["effect_state"]) != "reserved":
+                    self._finish(commit=True)
+                    return
+                intent_id = _text(row["intent_id"])
+                revoked = (
+                    str(row["turn_state"]) in EFFECT_REVOKED_TURN_STATES
+                    or bool(intent_id and self._intent_cancelled(intent_id))
+                )
+                self._connection.execute(
+                    "UPDATE provider_turn_effects SET state=?, updated_at=? WHERE effect_id=?",
+                    ("delivered" if delivered and not revoked else "failed", now, effect_id),
+                )
+                self._finish(commit=True)
+            except Exception:
+                self._finish(commit=False)
+                raise
 
     def project(self) -> None:
         if not self.projection_path:
