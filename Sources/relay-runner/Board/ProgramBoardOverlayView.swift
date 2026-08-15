@@ -280,7 +280,12 @@ struct ProgramBoardOverlayView: View {
                         onCreateStart: onCreateStart,
                         onDrop: onDrop
                     )
-                    .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                    .padding(
+                        .top,
+                        showsSettingUpPresentation
+                            ? 0
+                            : BoardSurfaceLayout.columnTopPadding
+                    )
 
                     Spacer(minLength: 0)
                 }
@@ -408,6 +413,14 @@ struct ProgramBoardOverlayView: View {
         } else if model.selectedTicketDetail != nil {
             model.clearSelectedTicket()
         }
+    }
+
+    private var showsSettingUpPresentation: Bool {
+        ProgramBoardContentPresentation.resolve(
+            hasSnapshot: model.snapshot != nil,
+            hasRegisteredProjects: model.snapshot?.hasRegisteredProjects ?? false,
+            reloadState: model.reloadState
+        ) == .settingUp
     }
 }
 
@@ -849,6 +862,7 @@ enum ProgramBoardContentPresentation: Equatable {
     static let settingUpTitle = "Setting up your project..."
     static let settingUpFontRole: AppTypography.Role = .sectionHeading
     static let settingUpForegroundOpacity = 0.92
+    static let settingUpUsesWorkspaceContentTopOffset = false
 
     static func resolve(
         hasSnapshot: Bool,
