@@ -40,6 +40,7 @@ from intent_arbitration import (
     resolve_intent_disposition,
 )
 from intent_inbox import IntentInbox, sync_deliverable_state
+from provider_turn_broker import ProviderTurnBroker
 from relay_authorization import (
     allowed_mutations_for_metadata,
     command_relationship,
@@ -95,6 +96,7 @@ _RELAY_CONTROL_TYPE_LABELS = {
     "__TRACE__": "trace",
     "__ORCHESTRATOR_REPLY__": "orchestrator_reply",
     "__RELAY_COMPLETION__": "relay_completion",
+    "__PROVIDER_TURN_EVENT__": "provider_turn_event",
     "__STATUS__": "status",
 }
 
@@ -347,6 +349,14 @@ VOICE_COMMAND_AUTHORIZATION_FILE = os.environ.get(
     "/tmp/voice_command_authorizations.json",
 )
 VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
+VOICE_PROVIDER_TURN_PROJECTION_FILE = os.environ.get(
+    "VOICE_PROVIDER_TURN_PROJECTION_FILE",
+    "/tmp/voice_provider_turns_v2.json",
+)
+PROVIDER_TURN_BROKER_MODE = os.environ.get(
+    "RELAY_PROVIDER_TURN_BROKER_MODE",
+    "dual_write",
+).strip()
 PROVIDER_SESSION_ID = os.environ.get("RELAY_PROVIDER_SESSION_ID", "").strip()
 VOICE_COMMAND_EVENT_LOG = os.environ.get(
     "VOICE_COMMAND_EVENT_LOG",
@@ -2670,6 +2680,7 @@ def _handle_relay_control_message(
     event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
     messenger: MessengerRuntime | None = None,
     inbox: IntentInbox | None = None,
+    provider_turn_broker: ProviderTurnBroker | None = None,
 ) -> bool:
     """Handle provider-neutral relay controls before command publication."""
     if text == "__TTS_STOP__":
@@ -2755,6 +2766,7 @@ def _handle_relay_control_message(
             tts_worker=tts_worker,
             messenger=messenger,
             state_path=state_path,
+            provider_turn_broker=provider_turn_broker,
         )
         return True
 
@@ -2764,6 +2776,14 @@ def _handle_relay_control_message(
             tts_worker=tts_worker,
             messenger=messenger,
             state_path=state_path,
+            provider_turn_broker=provider_turn_broker,
+        )
+        return True
+
+    if text.startswith("__PROVIDER_TURN_EVENT__:"):
+        _handle_provider_turn_event_control(
+            text[len("__PROVIDER_TURN_EVENT__:"):],
+            provider_turn_broker=provider_turn_broker,
         )
         return True
 
@@ -2818,6 +2838,7 @@ def _deliver_missing_foreground_reply(
     tts_worker: TTSWorker,
     messenger: MessengerRuntime | None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    provider_turn_broker: ProviderTurnBroker | None = None,
 ) -> bool | None:
     key = _relay_command_key(relay_command)
     if key is None:
@@ -2826,7 +2847,19 @@ def _deliver_missing_foreground_reply(
         return None
     if not _relay_command_current(key[0], key[1], state_path=state_path):
         return False
+    effect_id = None
+    if provider_turn_broker is not None:
+        reservation = provider_turn_broker.reserve_effect(relay_command)
+        if not reservation.accepted:
+            if reservation.reason == "duplicate":
+                return None
+            if PROVIDER_TURN_BROKER_MODE != "dual_write":
+                return False
+        else:
+            effect_id = reservation.effect_id
     if not _reserve_foreground_reply_delivery(relay_command):
+        if effect_id is not None:
+            provider_turn_broker.finish_effect(effect_id, delivered=False)
         return None
     payload = {
         "text": _missing_foreground_reply_text_for_kind(action_kind),
@@ -2856,6 +2889,8 @@ def _deliver_missing_foreground_reply(
         _finish_foreground_reply_delivery(relay_command, delivered=True)
     else:
         _finish_foreground_reply_delivery(relay_command, delivered=False)
+    if effect_id is not None:
+        provider_turn_broker.finish_effect(effect_id, delivered=delivered)
     return delivered
 
 
@@ -2912,6 +2947,7 @@ def _schedule_foreground_reply_fallback(
     command_path: str = VOICE_CMD_FILE,
     meta_path: str = VOICE_CMD_META_FILE,
     delay_seconds: float | None = None,
+    provider_turn_broker: ProviderTurnBroker | None = None,
 ) -> threading.Thread | None:
     key = _relay_command_key(relay_command)
     if key is None:
@@ -2989,6 +3025,7 @@ def _schedule_foreground_reply_fallback(
                 tts_worker=tts_worker,
                 messenger=messenger,
                 state_path=state_path,
+                provider_turn_broker=provider_turn_broker,
             )
             if delivered is None:
                 _log_foreground_reply_fallback_event(
@@ -3025,6 +3062,7 @@ def _handle_provider_completion_control(
     command_path: str = VOICE_CMD_FILE,
     meta_path: str = VOICE_CMD_META_FILE,
     fallback_delay_seconds: float | None = None,
+    provider_turn_broker: ProviderTurnBroker | None = None,
 ) -> bool:
     """Route provider Stop hook completion through the authoritative reply path."""
     text = raw.strip()
@@ -3060,11 +3098,21 @@ def _handle_provider_completion_control(
             "relay_command_id": key[1],
             "speech_source": "completion",
         }
+        for field in (
+            "intent_id",
+            "app_session_id",
+            "recovery_generation",
+            "actor_role",
+            "foreground_gate_handle",
+        ):
+            if data.get(field) is not None:
+                payload[field] = data[field]
         return _handle_orchestrator_reply_control(
             json.dumps(payload),
             tts_worker=tts_worker,
             messenger=messenger,
             state_path=state_path,
+            provider_turn_broker=provider_turn_broker,
         )
 
     thread = _schedule_foreground_reply_fallback(
@@ -3077,6 +3125,7 @@ def _handle_provider_completion_control(
         meta_path=meta_path,
         action_kind=str(data.get("action") or ""),
         delay_seconds=fallback_delay_seconds,
+        provider_turn_broker=provider_turn_broker,
     )
     return thread is not None
 
@@ -3087,6 +3136,7 @@ def _handle_orchestrator_reply_control(
     tts_worker: TTSWorker,
     messenger: MessengerRuntime | None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    provider_turn_broker: ProviderTurnBroker | None = None,
 ) -> bool:
     """Route the foreground agent's authoritative reply through the messenger."""
     text = raw.strip()
@@ -3136,7 +3186,19 @@ def _handle_orchestrator_reply_control(
             file=sys.stderr,
         )
         return False
+    effect_id = None
+    if provider_turn_broker is not None:
+        reservation = provider_turn_broker.reserve_effect(command)
+        if not reservation.accepted:
+            if reservation.reason == "duplicate":
+                return True
+            if PROVIDER_TURN_BROKER_MODE != "dual_write":
+                return False
+        else:
+            effect_id = reservation.effect_id
     if not _reserve_foreground_reply_delivery(command):
+        if effect_id is not None:
+            provider_turn_broker.finish_effect(effect_id, delivered=False)
         return True
     payload = {"text": reply}
     if data.get("speech_source"):
@@ -3151,6 +3213,8 @@ def _handle_orchestrator_reply_control(
         _publish_authoritative_preview(reply)
     if messenger is not None and messenger.submit_final(payload):
         _finish_foreground_reply_delivery(command, delivered=True)
+        if effect_id is not None:
+            provider_turn_broker.finish_effect(effect_id, delivered=True)
         return True
 
     # A missing or out-of-sync messenger must not swallow a current outcome.
@@ -3180,7 +3244,40 @@ def _handle_orchestrator_reply_control(
         _finish_foreground_reply_delivery(command, delivered=True)
     else:
         _finish_foreground_reply_delivery(command, delivered=False)
+    if effect_id is not None:
+        provider_turn_broker.finish_effect(effect_id, delivered=delivered)
     return delivered
+
+
+def _handle_provider_turn_event_control(
+    raw: str,
+    *,
+    provider_turn_broker: ProviderTurnBroker | None,
+) -> bool:
+    if provider_turn_broker is None:
+        return PROVIDER_TURN_BROKER_MODE == "legacy"
+    try:
+        payload = json.loads(raw.strip())
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(payload, dict) or payload.get("event") != "provider_terminated":
+        return False
+    release_reason = str(payload.get("release_reason") or "")
+    if release_reason not in {
+        "app_teardown",
+        "provider_process_terminated",
+        "provider_process_exit",
+    }:
+        return False
+    event_id = str(payload.get("event_id") or "").strip()
+    provider_session_id = str(payload.get("provider_session_id") or "").strip()
+    provider_turn_broker.terminate_owner(
+        payload,
+        provider_session_id=provider_session_id,
+        release_reason=release_reason,
+        event_id=event_id,
+    )
+    return True
 
 
 def _tts_fifo_reader(tts_queue: queue.Queue, shutdown_event: threading.Event):
@@ -3206,6 +3303,7 @@ def _run_relay(
     messenger: MessengerRuntime | None = None,
     suppress_startup_greeting: bool = False,
     inbox: IntentInbox | None = None,
+    provider_turn_broker: ProviderTurnBroker | None = None,
     sidecar_lane: SidecarLane | None = None,
     on_ready=None,
 ):
@@ -3320,6 +3418,7 @@ def _run_relay(
                     authorization_path=VOICE_COMMAND_AUTHORIZATION_FILE,
                     messenger=messenger,
                     inbox=inbox,
+                    provider_turn_broker=provider_turn_broker,
                 ):
                     continue
 
@@ -3529,6 +3628,7 @@ def main():
     tts_executor = TTSWorker(tts_queue, start_control_socket=not relay_mode)
     tts_worker = tts_executor
     intent_inbox: IntentInbox | None = None
+    provider_turn_broker: ProviderTurnBroker | None = None
     if relay_mode:
         tts_worker = SpeechCoordinator(
             tts_executor,
@@ -3539,7 +3639,21 @@ def main():
             event_log_path=SPEECH_EVENT_LOG,
             control_socket_path=TTS_CONTROL_SOCK,
         )
-        intent_inbox = IntentInbox(VOICE_INTENT_INBOX)
+        projection_path = (
+            None
+            if PROVIDER_TURN_BROKER_MODE == "legacy"
+            else VOICE_PROVIDER_TURN_PROJECTION_FILE
+        )
+        intent_inbox = IntentInbox(
+            VOICE_INTENT_INBOX,
+            provider_turn_projection_path=projection_path,
+        )
+        if projection_path is not None:
+            provider_turn_broker = ProviderTurnBroker(
+                VOICE_INTENT_INBOX,
+                projection_path=projection_path,
+            )
+            provider_turn_broker.project()
 
     shutdown_event = threading.Event()
 
@@ -3620,6 +3734,7 @@ def main():
                     False,
                 ),
                 inbox=intent_inbox,
+                provider_turn_broker=provider_turn_broker,
                 sidecar_lane=sidecar_lane,
                 on_ready=lambda: _record_bridge_readiness("ready"),
             )
@@ -3637,6 +3752,8 @@ def main():
             tts_worker.shutdown()
             if intent_inbox is not None:
                 intent_inbox.close()
+            if provider_turn_broker is not None:
+                provider_turn_broker.close()
             try:
                 os.unlink(BRIDGE_CONTROL_SOCK)
             except OSError:

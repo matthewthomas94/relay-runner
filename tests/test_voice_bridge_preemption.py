@@ -25,6 +25,7 @@ sys.modules.setdefault(
 
 import voice_bridge  # noqa: E402
 import relay_completion_hook  # noqa: E402
+from provider_turn_broker import ProviderTurnBroker  # noqa: E402
 from speech_coordinator import SpeechIntent  # noqa: E402
 
 
@@ -3766,6 +3767,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             ))
 
             self.assertEqual(delivered, [{
+                **self.foreground_ownership(),
                 "event": "Stop",
                 "relay_command_seq": 8,
                 "relay_command_id": "cmd-8",
@@ -3824,6 +3826,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             )
 
             self.assertEqual(delivered, [{
+                **self.foreground_ownership(),
                 "event": "Stop",
                 "relay_command_seq": 9,
                 "relay_command_id": "cmd-9",
@@ -3918,6 +3921,68 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertEqual(len(messenger.finals), 1)
             self.assertIn("worker updates will still be announced", messenger.finals[0]["text"])
+
+    def test_durable_broker_deduplicates_authoritative_effect_after_bridge_restart(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = os.path.join(temp_dir, "inbox.sqlite3")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            ownership = self.foreground_ownership()
+            command = {
+                **ownership,
+                "relay_command_seq": 324,
+                "relay_command_id": "broker-effect",
+                "intent_id": "broker-effect:item:1",
+            }
+            Path(state_path).write_text(json.dumps(command))
+            broker = ProviderTurnBroker(database)
+            self.addCleanup(broker.close)
+            broker.activate({
+                **command,
+                "origin": "relay",
+                "provider": "codex",
+                "provider_session_id": "provider-session",
+                "session_id": "native-session",
+                "turn_id": "native-turn",
+            })
+            raw = json.dumps({**command, "text": "one authoritative effect"})
+            first_messenger = FakeMessenger()
+            second_messenger = FakeMessenger()
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+
+            self.assertTrue(voice_bridge._handle_orchestrator_reply_control(
+                raw,
+                tts_worker=FakeTTSWorker(),
+                messenger=first_messenger,
+                state_path=state_path,
+                provider_turn_broker=broker,
+            ))
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            self.assertTrue(voice_bridge._handle_orchestrator_reply_control(
+                raw,
+                tts_worker=FakeTTSWorker(),
+                messenger=second_messenger,
+                state_path=state_path,
+                provider_turn_broker=broker,
+            ))
+
+            self.assertEqual(len(first_messenger.finals), 1)
+            self.assertEqual(second_messenger.finals, [])
+            effects = broker.table_records("provider_turn_effects")
+            self.assertEqual(len(effects), 1)
+            self.assertEqual(effects[0]["state"], "delivered")
+
+            termination = json.dumps({
+                **ownership,
+                "event": "provider_terminated",
+                "event_id": "broker-teardown",
+                "release_reason": "app_teardown",
+                "provider_session_id": "provider-session",
+            })
+            self.assertTrue(voice_bridge._handle_provider_turn_event_control(
+                termination,
+                provider_turn_broker=broker,
+            ))
+            self.assertEqual(broker.table_records("provider_turns")[0]["state"], "terminated")
 
     def test_provider_completion_control_arms_missing_final_after_terminal_event(self):
         with tempfile.TemporaryDirectory() as temp_dir:

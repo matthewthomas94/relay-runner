@@ -10,6 +10,12 @@ import threading
 import time
 from typing import Any
 
+from provider_turn_broker import (
+    ProviderTurnBroker,
+    ensure_broker_schema,
+    record_intent_events,
+)
+
 
 SCHEMA_VERSION = 4
 
@@ -28,8 +34,19 @@ def _key(payload: dict[str, Any] | None) -> tuple[int, str] | None:
 class IntentInbox:
     """SQLite-backed FIFO with stable intent, delivery, claim, and ack identity."""
 
-    def __init__(self, path: str | os.PathLike[str]):
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        provider_turn_projection_path: str | os.PathLike[str] | None = None,
+    ):
         self.path = str(path)
+        self.provider_turn_projection_path = (
+            str(provider_turn_projection_path)
+            if provider_turn_projection_path is not None
+            else None
+        )
+        self.provider_turn_events_enabled = self.provider_turn_projection_path is not None
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
@@ -90,6 +107,15 @@ class IntentInbox:
                 "INSERT OR REPLACE INTO inbox_meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
+            recovered = (
+                self._connection.execute(
+                    "SELECT intent_id FROM intents WHERE state IN ('delivered', 'claimed')"
+                ).fetchall()
+                if self.provider_turn_events_enabled
+                else []
+            )
+            if self.provider_turn_events_enabled:
+                ensure_broker_schema(self._connection)
             self._connection.execute(
                 """
                 UPDATE intents
@@ -98,6 +124,27 @@ class IntentInbox:
                 """,
                 (time.time(),),
             )
+            if self.provider_turn_events_enabled:
+                record_intent_events(
+                    self._connection,
+                    (str(row["intent_id"]) for row in recovered),
+                    event_type="inbox_recovered",
+                    event_scope=f"startup:{time.time_ns()}",
+                    occurred_at=time.time(),
+                )
+        self._project_provider_turns()
+
+    def _project_provider_turns(self) -> None:
+        if not self.provider_turn_projection_path:
+            return
+        broker = ProviderTurnBroker(
+            self.path,
+            projection_path=self.provider_turn_projection_path,
+        )
+        try:
+            broker.project()
+        finally:
+            broker.close()
 
     def close(self) -> None:
         with self._lock:
@@ -162,6 +209,15 @@ class IntentInbox:
         del reason  # The route is diagnostic; private transcript text is never logged here.
         now = time.time()
         with self._lock, self._connection:
+            rows = self._connection.execute(
+                """
+                SELECT intent_id FROM intents
+                 WHERE command_seq < ?
+                   AND route != 'run_sidecar'
+                   AND state IN ('pending', 'delivered', 'claimed')
+                """,
+                (int(command_seq),),
+            ).fetchall()
             cursor = self._connection.execute(
                 """
                 UPDATE intents
@@ -172,7 +228,19 @@ class IntentInbox:
                 """,
                 (now, int(command_seq)),
             )
-            return int(cursor.rowcount)
+            if self.provider_turn_events_enabled:
+                record_intent_events(
+                    self._connection,
+                    (str(row["intent_id"]) for row in rows),
+                    event_type="intent_cancelled",
+                    event_scope=f"before:{int(command_seq)}",
+                    occurred_at=now,
+                    terminal_state="cancelled",
+                    release_reason="intent_cancelled_before_newer_command",
+                )
+            cancelled = int(cursor.rowcount)
+        self._project_provider_turns()
+        return cancelled
 
     @staticmethod
     def _cancellation_fields(metadata: dict[str, Any]) -> tuple[str, list[str], str | None]:
@@ -255,6 +323,16 @@ class IntentInbox:
                 f"WHERE intent_id IN ({placeholders})",
                 (time.time(), *matched_ids),
             )
+            if self.provider_turn_events_enabled:
+                record_intent_events(
+                    self._connection,
+                    matched_ids,
+                    event_type="intent_cancelled",
+                    event_scope=str(metadata.get("intent_id") or metadata.get("relay_command_id") or "scoped"),
+                    occurred_at=time.time(),
+                    terminal_state="cancelled",
+                    release_reason=f"intent_{scope}_cancelled",
+                )
 
         if command_path and metadata_path and os.path.exists(metadata_path):
             leased = {}
@@ -268,6 +346,7 @@ class IntentInbox:
                         os.unlink(path)
                     except OSError:
                         pass
+        self._project_provider_turns()
         return matched_ids
 
     def materialize_next(
@@ -280,6 +359,7 @@ class IntentInbox:
         """Atomically lease the oldest pending intent into the compatibility mailbox."""
         if os.path.exists(command_path) or os.path.exists(metadata_path):
             return None
+        materialized: dict[str, Any] | None = None
         with self._lock, self._connection:
             unacked = self._connection.execute(
                 """
@@ -321,7 +401,17 @@ class IntentInbox:
                 """,
                 (time.time(), transport, int(row["ordinal"])),
             )
-            return metadata
+            projection_changed = self.provider_turn_events_enabled and bool(record_intent_events(
+                    self._connection,
+                    [str(row["intent_id"])],
+                    event_type="intent_delivered",
+                    event_scope=str(row["delivery_id"]),
+                    occurred_at=time.time(),
+                ))
+            materialized = metadata
+        if projection_changed:
+            self._project_provider_turns()
+        return materialized
 
     def observe_claim(self, claimed: dict[str, Any], *, provider_turn_seen: bool) -> bool:
         key = _key(claimed)
@@ -329,6 +419,8 @@ class IntentInbox:
             return False
         intent_id = str(claimed.get("intent_id") or "").strip()
         now = time.time()
+        observed = False
+        projection_changed = False
         with self._lock, self._connection:
             if intent_id:
                 row = self._connection.execute(
@@ -357,6 +449,14 @@ class IntentInbox:
                     """,
                     (claim_id, ack_id, now, resolved_intent_id),
                 )
+                if self.provider_turn_events_enabled:
+                    projection_changed = bool(record_intent_events(
+                        self._connection,
+                        [resolved_intent_id],
+                        event_type="intent_claimed",
+                        event_scope=claim_id,
+                        occurred_at=now,
+                    )) or projection_changed
                 state = "claimed"
             if provider_turn_seen and state == "claimed":
                 self._connection.execute(
@@ -366,7 +466,18 @@ class IntentInbox:
                     """,
                     (ack_id, now, resolved_intent_id),
                 )
-            return True
+                if self.provider_turn_events_enabled:
+                    projection_changed = bool(record_intent_events(
+                        self._connection,
+                        [resolved_intent_id],
+                        event_type="intent_acknowledged",
+                        event_scope=ack_id,
+                        occurred_at=now,
+                    )) or projection_changed
+            observed = True
+        if projection_changed:
+            self._project_provider_turns()
+        return observed
 
     def pending_for_route(self, route: str) -> list[dict[str, Any]]:
         """Return durable work owned by a non-mailbox execution lane."""

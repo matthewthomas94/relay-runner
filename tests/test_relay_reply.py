@@ -54,8 +54,12 @@ class RelayReplyTests(unittest.TestCase):
             line = os.read(reader, 4096).decode()
             self.assertEqual(
                 line,
-                '__ORCHESTRATOR_REPLY__:{"relay_command_id": "cmd-17", '
-                '"relay_command_seq": 17, "text": "Dispatched RR-247."}\n',
+                '__ORCHESTRATOR_REPLY__:{"actor_role": "foreground_pm", '
+                '"app_session_id": "test-app-session", '
+                '"foreground_gate_handle": "test-gate", '
+                '"recovery_generation": "test-generation", '
+                '"relay_command_id": "cmd-17", "relay_command_seq": 17, '
+                '"text": "Dispatched RR-247."}\n',
             )
             self.assertNotIn("source_text", line)
 

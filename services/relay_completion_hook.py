@@ -17,9 +17,20 @@ import sys
 import time
 from typing import Callable, TextIO
 
+from provider_turn_broker import ProviderTurnBroker
+
 VOICE_COMMAND_STATE_FILE = os.environ.get("VOICE_COMMAND_STATE_FILE", "/tmp/voice_command_state.json")
 VOICE_COMMAND_CLAIM_FILE = os.environ.get("VOICE_COMMAND_CLAIM_FILE", "/tmp/voice_cmd_claimed.json")
 VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
+VOICE_PROVIDER_TURN_PROJECTION_FILE = os.environ.get(
+    "VOICE_PROVIDER_TURN_PROJECTION_FILE",
+    "/tmp/voice_provider_turns_v2.json",
+)
+VOICE_INTENT_INBOX = os.environ.get("VOICE_INTENT_INBOX", "/tmp/relay_intent_inbox.sqlite3")
+PROVIDER_TURN_BROKER_MODE = os.environ.get(
+    "RELAY_PROVIDER_TURN_BROKER_MODE",
+    "dual_write",
+).strip()
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 PROVIDER_SESSION_ID = os.environ.get("RELAY_PROVIDER_SESSION_ID", "").strip()
 PROVIDER_TURN_TTL_SECONDS = float(os.environ.get("VOICE_PROVIDER_TURN_TTL_SECONDS", "3600"))
@@ -471,6 +482,54 @@ def _save_turn_state(path: str, state: dict) -> None:
     _atomic_write_json(path, state)
 
 
+def _open_turn_broker(turns_path: str) -> ProviderTurnBroker | None:
+    if PROVIDER_TURN_BROKER_MODE == "legacy":
+        return None
+    if turns_path == VOICE_PROVIDER_TURNS_FILE:
+        database_path = VOICE_INTENT_INBOX
+        projection_path = VOICE_PROVIDER_TURN_PROJECTION_FILE
+    else:
+        database_path = turns_path + ".sqlite3"
+        projection_path = turns_path + ".v2.json"
+    return ProviderTurnBroker(database_path, projection_path=projection_path)
+
+
+def _activate_broker_turn(
+    broker: ProviderTurnBroker | None,
+    record: dict,
+    *,
+    now: float,
+    release_reason: str = "superseded_by_prompt_submit",
+) -> None:
+    if broker is not None:
+        broker.activate(record, now=now, release_reason=release_reason)
+
+
+def _transition_broker_turn(
+    broker: ProviderTurnBroker | None,
+    record: dict,
+    *,
+    to_state: str,
+    event_type: str,
+    release_reason: str,
+    now: float,
+) -> bool:
+    if broker is None:
+        return True
+    previous = broker.state_for(record)
+    if previous is None:
+        # During the dual-write release, a turn accepted before the upgrade can
+        # finish through the v1 ledger. New turns always exist in the broker.
+        return True
+    return broker.transition(
+        record,
+        to_state=to_state,
+        event_type=event_type,
+        release_reason=release_reason,
+        now=now,
+    )
+
+
 def _upsert_turn_record(path: str, record: dict, *, now: float | None = None) -> None:
     now = time.time() if now is None else now
     state = _load_turn_state(path, now=now)
@@ -728,6 +787,7 @@ def _bind_prompt_submit(
     claim_path: str,
     state_path: str,
     turns_path: str,
+    broker: ProviderTurnBroker | None,
     now: float,
 ) -> bool:
     ownership = _foreground_ownership()
@@ -775,6 +835,12 @@ def _bind_prompt_submit(
                 session_id=record["session_id"],
                 now=now,
             )
+        _activate_broker_turn(
+            broker,
+            record,
+            now=now,
+            release_reason="provider_identity_rebound",
+        )
         _activate_turn_record(
             turns_path,
             record,
@@ -810,6 +876,7 @@ def _bind_prompt_submit(
         if provider_session_id:
             record["provider_session_id"] = provider_session_id
         record.update(ownership)
+        _activate_broker_turn(broker, record, now=now)
         _activate_turn_record(turns_path, record, now=now)
         return True
 
@@ -839,6 +906,7 @@ def _bind_prompt_submit(
     action = claim.get("action")
     if action:
         record["action"] = action
+    _activate_broker_turn(broker, record, now=now)
     _activate_turn_record(turns_path, record, now=now)
     return True
 
@@ -848,6 +916,7 @@ def _complete_turn(
     *,
     state_path: str,
     turns_path: str,
+    broker: ProviderTurnBroker | None,
     write_control: Callable[[dict], bool],
     now: float,
     stderr: TextIO,
@@ -884,6 +953,16 @@ def _complete_turn(
         completed["release_reason"] = (
             "provider_stop_failure" if event == "StopFailure" else "provider_stop"
         )
+        if not _transition_broker_turn(
+            broker,
+            record,
+            to_state=completed["state"],
+            event_type="provider_completed",
+            release_reason=completed["release_reason"],
+            now=now,
+        ):
+            print("[relay_completion_hook] ignored duplicate provider completion", file=stderr)
+            return False
         _upsert_turn_record(turns_path, completed, now=now)
         return False
     if not _relay_command_current(record, state_path=state_path):
@@ -898,6 +977,16 @@ def _complete_turn(
             if identity_reconciled
             else "stale_current_command"
         )
+        if not _transition_broker_turn(
+            broker,
+            record,
+            to_state="stale",
+            event_type="provider_completion_stale",
+            release_reason=stale_record["release_reason"],
+            now=now,
+        ):
+            print("[relay_completion_hook] ignored duplicate provider completion", file=stderr)
+            return False
         _upsert_turn_record(turns_path, stale_record, now=now)
         if identity_reconciled:
             _emit_completion_correlation_diagnostic(
@@ -924,6 +1013,9 @@ def _complete_turn(
     for field in ("intent_id", "within_turn_order", "target", "disposition", "cancellation_scope"):
         if record.get(field) is not None:
             completion[field] = record[field]
+    for field in FOREGROUND_OWNERSHIP_FIELDS:
+        if record.get(field) is not None:
+            completion[field] = record[field]
     if record.get("turn_id"):
         completion["turn_id"] = record["turn_id"]
     if record.get("provider"):
@@ -937,6 +1029,26 @@ def _complete_turn(
         completion["completion_status"] = "failed" if event == "StopFailure" else "empty"
         state = completion["completion_status"]
 
+    release_reason = (
+        "provider_stop_failure_identity_reconciled"
+        if identity_reconciled and event == "StopFailure"
+        else "provider_stop_identity_reconciled"
+        if identity_reconciled
+        else "provider_stop_failure"
+        if event == "StopFailure"
+        else "provider_stop"
+    )
+    if not _transition_broker_turn(
+        broker,
+        record,
+        to_state=state,
+        event_type="provider_completed",
+        release_reason=release_reason,
+        now=now,
+    ):
+        print("[relay_completion_hook] ignored duplicate provider completion", file=stderr)
+        return False
+
     delivered = write_control(completion)
     next_record = (
         _annotate_identity_reconciliation(record, payload, now=now)
@@ -945,16 +1057,7 @@ def _complete_turn(
     )
     next_record["state"] = state
     next_record["delivery"] = "sent" if delivered else "bridge_unavailable"
-    if identity_reconciled:
-        next_record["release_reason"] = (
-            "provider_stop_failure_identity_reconciled"
-            if event == "StopFailure"
-            else "provider_stop_identity_reconciled"
-        )
-    else:
-        next_record["release_reason"] = (
-            "provider_stop_failure" if event == "StopFailure" else "provider_stop"
-        )
+    next_record["release_reason"] = release_reason
     _upsert_turn_record(turns_path, next_record, now=now)
     if identity_reconciled:
         _emit_completion_correlation_diagnostic(
@@ -992,29 +1095,36 @@ def handle_hook_payload(
             file=stderr,
         )
         return False
-    _record_compaction_diagnostic(payload, now=now)
-    if event == "UserPromptSubmit":
-        return _bind_prompt_submit(
-            payload,
-            claim_path=claim_path,
-            state_path=state_path,
-            turns_path=turns_path,
-            now=now,
-        )
-    if event in {"Stop", "StopFailure"}:
-        if payload.get("stop_hook_active"):
+    broker = _open_turn_broker(turns_path)
+    try:
+        _record_compaction_diagnostic(payload, now=now)
+        if event == "UserPromptSubmit":
+            return _bind_prompt_submit(
+                payload,
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                broker=broker,
+                now=now,
+            )
+        if event in {"Stop", "StopFailure"}:
+            if payload.get("stop_hook_active"):
+                return False
+            return _complete_turn(
+                payload,
+                state_path=state_path,
+                turns_path=turns_path,
+                broker=broker,
+                write_control=write_control,
+                now=now,
+                stderr=stderr,
+            )
+        if event in {"PreCompact", "PostCompact"}:
             return False
-        return _complete_turn(
-            payload,
-            state_path=state_path,
-            turns_path=turns_path,
-            write_control=write_control,
-            now=now,
-            stderr=stderr,
-        )
-    if event in {"PreCompact", "PostCompact"}:
         return False
-    return False
+    finally:
+        if broker is not None:
+            broker.close()
 
 
 def main() -> int:

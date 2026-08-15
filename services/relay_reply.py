@@ -67,6 +67,14 @@ def encode_orchestrator_reply(text: str, command: dict) -> str:
         "relay_command_seq": key[0],
         "text": reply,
     }
+    if command.get("intent_id") is not None:
+        payload["intent_id"] = command["intent_id"]
+    payload.update({
+        "app_session_id": os.environ.get("RELAY_APP_SESSION_ID", "").strip(),
+        "recovery_generation": os.environ.get("RELAY_RECOVERY_GENERATION", "").strip(),
+        "actor_role": os.environ.get("RELAY_ACTOR_ROLE", "").strip(),
+        "foreground_gate_handle": os.environ.get("RELAY_FOREGROUND_GATE_HANDLE", "").strip(),
+    })
     return ORCHESTRATOR_REPLY_PREFIX + json.dumps(payload, sort_keys=True)
 
 

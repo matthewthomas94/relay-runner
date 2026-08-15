@@ -93,7 +93,7 @@ final class BridgeConsumerLivenessTests: XCTestCase {
         try writeJSON(metadata, to: fixture.meta)
         try writeJSON(metadata, to: fixture.state)
         try writeJSON([
-            "version": 1,
+            "schema_version": 2,
             "records": [[
                 "relay_command_seq": 9,
                 "relay_command_id": "cmd-9",

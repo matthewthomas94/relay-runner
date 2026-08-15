@@ -233,6 +233,7 @@ final class SleepPreventionControllerTests: XCTestCase {
         }
         try """
         {
+          "schema_version": 2,
           "records": [
             { "state": "completed_final", "provider": "codex", "provider_session_id": "current" },
             { "state": "active", "provider": "claude", "provider_session_id": "other" }

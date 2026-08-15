@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import SwiftTerm
 import XCTest
 @testable import relay_runner
@@ -232,7 +233,7 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
                 encoding: .utf8
             )
             try """
-            {"records":[{"state":"active","origin":"manual","provider_session_id":"orphaned-previous-session","session_id":"startup-identity","turn_id":"startup-turn"}]}
+            {"schema_version":2,"records":[{"state":"active","origin":"manual","provider_session_id":"orphaned-previous-session","session_id":"startup-identity","turn_id":"startup-turn"}]}
             """.write(toFile: paths.providerTurns, atomically: true, encoding: .utf8)
 
             let process = SwiftTermEmbeddedProcess(
@@ -1521,7 +1522,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         let metadata = #"{"relay_command_id":"cmd-2","relay_command_seq":2}"#
         try "Second request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
         try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
-        try #"{"records":[{"relay_command_id":"cmd-1","relay_command_seq":1,"state":"active"}]}"#
+        try #"{"schema_version":2,"records":[{"relay_command_id":"cmd-1","relay_command_seq":1,"state":"active"}]}"#
             .write(to: fixture.providerTurns, atomically: true, encoding: .utf8)
         let oldDate = Date(timeIntervalSinceReferenceDate: 1)
         try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: fixture.command.path)
@@ -1860,39 +1861,59 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
 
     func testProviderTeardownReleasesOnlyItsScopedActiveRecord() throws {
         let fixture = try makeFixture()
+        let ownership: [String: Any] = [
+            "app_session_id": "app-session",
+            "recovery_generation": "generation",
+            "actor_role": "foreground_pm",
+            "foreground_gate_handle": "gate",
+        ]
         try writeProviderTurnRecords([
-            [
+            ownership.merging([
                 "state": "active",
                 "provider_session_id": "current-session",
                 "session_id": "native-current",
                 "turn_id": "current-turn",
                 "created_at": 100.0,
                 "updated_at": 100.0,
-            ],
-            [
+            ]) { _, new in new },
+            ownership.merging([
                 "state": "active",
                 "provider_session_id": "other-session",
                 "session_id": "native-other",
                 "turn_id": "other-turn",
                 "created_at": 100.0,
                 "updated_at": 100.0,
-            ],
+            ]) { _, new in new },
         ], to: fixture.providerTurns)
+        XCTAssertEqual(Darwin.mkfifo(fixture.voiceInput.path, 0o600), 0)
+        let reader = Darwin.open(fixture.voiceInput.path, O_RDONLY | O_NONBLOCK)
+        XCTAssertGreaterThanOrEqual(reader, 0)
+        defer { Darwin.close(reader) }
         let delivery = RelayVoiceCommandDelivery(
             paths: fixture.paths,
             send: { _ in },
             isRunning: { false },
             now: { Date(timeIntervalSince1970: 101.0) },
-            providerSessionID: "current-session"
+            providerSessionID: "current-session",
+            appSessionID: "app-session",
+            recoveryGeneration: "generation",
+            foregroundGateHandle: "gate"
         )
 
         delivery.providerProcessTerminated(releaseReason: "app_teardown")
 
-        let data = try Data(contentsOf: fixture.providerTurns)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let count = Darwin.read(reader, &buffer, buffer.count)
+        XCTAssertGreaterThan(count, 0)
+        let control = String(decoding: buffer.prefix(max(0, count)), as: UTF8.self)
+        XCTAssertTrue(control.hasPrefix("__PROVIDER_TURN_EVENT__:"))
+        XCTAssertTrue(control.contains(#""event":"provider_terminated""#))
+        XCTAssertFalse(control.contains("native-current"))
+
+        let projectionData = try Data(contentsOf: fixture.providerTurns)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: projectionData) as? [String: Any])
         let records = try XCTUnwrap(object["records"] as? [[String: Any]])
-        XCTAssertEqual(records[0]["state"] as? String, "terminated")
-        XCTAssertEqual(records[0]["release_reason"] as? String, "app_teardown")
+        XCTAssertEqual(records[0]["state"] as? String, "active")
         XCTAssertEqual(records[1]["state"] as? String, "active")
     }
 
@@ -1902,7 +1923,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         try "__INTERRUPT__\n".write(to: fixture.command, atomically: true, encoding: .utf8)
         try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
         try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
-        try #"{"records":[{"relay_command_id":"cmd-1","relay_command_seq":1,"state":"active"}]}"#
+        try #"{"schema_version":2,"records":[{"relay_command_id":"cmd-1","relay_command_seq":1,"state":"active"}]}"#
             .write(to: fixture.providerTurns, atomically: true, encoding: .utf8)
         var sent: [[UInt8]] = []
         let delivery = RelayVoiceCommandDelivery(
@@ -2191,7 +2212,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
 
     private func writeProviderTurnRecords(_ records: [[String: Any]], to url: URL) throws {
         let payload: [String: Any] = [
-            "version": 1,
+            "schema_version": 2,
             "records": records,
         ]
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
