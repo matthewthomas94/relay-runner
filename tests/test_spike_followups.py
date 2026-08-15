@@ -108,6 +108,7 @@ class SpikeFollowupTests(unittest.TestCase):
             accepted = daemon.review_spike_followup(
                 batch_id=batch["id"], proposal_id=proposal["id"], decision="accept"
             )
+            self.assertEqual(accepted["authorization_source"], "foreground_pm")
             ticket_id = accepted["committed"][0]["ticket_id"]
             ticket = read_ticket(repo / ".orchestrator" / f"{ticket_id}.md")
             self.assertEqual(ticket["status"], "backlog")
@@ -260,6 +261,50 @@ class SpikeFollowupTests(unittest.TestCase):
             self.assertEqual(result["batch"]["proposals"][0]["state"], "draft")
             self.assertIn("RR-404", result["batch"]["proposals"][0]["error"])
             self.assertEqual(self.config_next_id(repo), 2)
+
+    def test_acceptance_rejects_incomplete_user_authorization_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self.make_spike_repo(root / "repo")
+            daemon = self.make_daemon(root / "followups.db", root / "registry.json")
+            batch = daemon.propose_spike_followups(
+                origin_repo_path=str(repo), origin_ticket_id="RR-1", origin_run_id=7
+            )["batch"]
+
+            with self.assertRaisesRegex(ValueError, "complete Relay authorization metadata"):
+                daemon.review_spike_followup(
+                    batch_id=batch["id"],
+                    proposal_id=batch["proposals"][0]["id"],
+                    decision="accept",
+                    relay_command_seq=4,
+                )
+
+            self.assertFalse((repo / ".orchestrator/RR-2.md").exists())
+
+    def test_acceptance_blocks_dirty_board_overlap_without_touching_unrelated_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self.make_spike_repo(root / "repo")
+            daemon = self.make_daemon(root / "followups.db", root / "registry.json")
+            batch = daemon.propose_spike_followups(
+                origin_repo_path=str(repo), origin_ticket_id="RR-1", origin_run_id=7
+            )["batch"]
+            proposal = batch["proposals"][0]
+            config = repo / ".orchestrator/config.toml"
+            config.write_text('prefix = "RR"\nnext_id = 99\n')
+            unrelated = repo / "notes.txt"
+            unrelated.write_text("keep me dirty\n")
+
+            result = daemon.review_spike_followup(
+                batch_id=batch["id"], proposal_id=proposal["id"], decision="accept"
+            )
+
+            self.assertTrue(result["partial"])
+            self.assertIn("existing changes to .orchestrator/config.toml", result["not_committed"][0]["error"])
+            self.assertFalse((repo / ".orchestrator/RR-2.md").exists())
+            self.assertEqual(config.read_text(), 'prefix = "RR"\nnext_id = 99\n')
+            self.assertEqual(unrelated.read_text(), "keep me dirty\n")
+            self.assertEqual(result["batch"]["proposals"][0]["state"], "draft")
 
     def make_daemon(self, store_path: Path, registry_path: Path) -> Daemon:
         daemon = object.__new__(Daemon)
