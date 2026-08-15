@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import sys
@@ -15,6 +16,9 @@ from provider_turn_fault_harness import (  # noqa: E402
     LIFECYCLE_BOUNDARIES,
     PROVIDERS,
     RESTART_COMPONENTS,
+    _observed_latency_ms,
+    _percentile,
+    _same_invariant_value,
     run_fault_matrix,
 )
 
@@ -30,13 +34,37 @@ class ProviderTurnFaultHarnessTests(unittest.TestCase):
             report["normal_scenario_count"],
             len(PROVIDERS) * len(RESTART_COMPONENTS) * len(LIFECYCLE_BOUNDARIES),
         )
+        self.assertEqual(report["restart_recovery_count"], report["normal_scenario_count"])
+        self.assertEqual(
+            report["delayed_acknowledgement_scenario_count"],
+            len(PROVIDERS) * len(RESTART_COMPONENTS),
+        )
         self.assertEqual(
             report["revocation_scenario_count"],
             len(PROVIDERS) * (len(LIFECYCLE_BOUNDARIES) - 1),
         )
         self.assertEqual(report["replacement_scenario_count"], len(PROVIDERS))
+        self.assertEqual(
+            report["acknowledgement_to_playback_sample_count"],
+            report["normal_scenario_count"],
+        )
+        self.assertEqual(report["acknowledgement_to_playback_p95_ms"], 360.0)
         self.assertLessEqual(report["acknowledgement_to_playback_p95_ms"], 500)
         self.assertEqual(report["violations"], [])
+
+    def test_invariant_counts_reject_boolean_values(self):
+        self.assertFalse(_same_invariant_value(1, True))
+        self.assertFalse(_same_invariant_value(0, False))
+        self.assertTrue(_same_invariant_value(1, 1))
+
+    def test_latency_rejects_boolean_and_non_finite_timestamps(self):
+        self.assertIsNone(_observed_latency_ms(True, 2.0))
+        self.assertIsNone(_observed_latency_ms(1.0, False))
+        for invalid in (math.nan, math.inf, -math.inf):
+            with self.subTest(invalid=invalid):
+                self.assertIsNone(_observed_latency_ms(invalid, 2.0))
+                self.assertIsNone(_observed_latency_ms(1.0, invalid))
+                self.assertIsNone(_percentile([100.0, invalid], 95))
 
     def test_failure_diagnostics_have_a_bounded_privacy_safe_shape(self):
         with tempfile.TemporaryDirectory() as temp_dir:

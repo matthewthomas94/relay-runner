@@ -17,9 +17,22 @@ DEFAULT_LOG = os.environ.get("SPEECH_EVENT_LOG", "/tmp/relay_speech_events.jsonl
 def _percentile(values: list[float], percentile: float) -> float | None:
     if not values:
         return None
-    ordered = sorted(values)
+    parsed = [_finite_float(value) for value in values]
+    if any(value is None for value in parsed):
+        return None
+    ordered = sorted(value for value in parsed if value is not None)
     index = max(0, math.ceil((percentile / 100) * len(ordered)) - 1)
     return round(ordered[index], 3)
+
+
+def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -29,12 +42,13 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
     for record in records:
         event = str(record.get("event") or "")
         at = record.get("at")
-        try:
-            at = float(at)
-        except (TypeError, ValueError):
+        at = _finite_float(at)
+        if at is None:
             continue
         command_key = None
         try:
+            if isinstance(record["relay_command_seq"], bool):
+                raise ValueError("boolean command sequence")
             command_key = (
                 int(record["relay_command_seq"]),
                 str(record["relay_command_id"]),
@@ -67,6 +81,8 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
         "afplay_started",
     )
     for sample in by_utterance.values():
+        if sample.get("command_key") is None or not sample.get("play_request_id"):
+            continue
         command = by_command.get(sample.get("command_key"), {})
         request = by_play_request.get(sample.get("play_request_id"), {})
         timeline = {
@@ -93,7 +109,8 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "option_to_first_audio_ms": _delta(timeline, "option_detected", "afplay_started"),
         }
-        samples.append({**sample, **durations})
+        if durations["option_to_first_audio_ms"] is not None:
+            samples.append({**sample, **durations})
 
     audio = [sample["option_to_first_audio_ms"] for sample in samples]
     acknowledgements = [
@@ -116,9 +133,12 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _delta(timeline: dict[str, float | None], start: str, end: str) -> float | None:
-    if timeline[start] is None or timeline[end] is None:
+    started_at = _finite_float(timeline[start])
+    ended_at = _finite_float(timeline[end])
+    if started_at is None or ended_at is None or ended_at < started_at:
         return None
-    return round((timeline[end] - timeline[start]) * 1000, 3)
+    delta = (ended_at - started_at) * 1000
+    return round(delta, 3) if math.isfinite(delta) else None
 
 
 def main() -> int:

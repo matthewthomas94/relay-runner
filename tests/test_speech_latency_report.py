@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import unittest
 
@@ -90,6 +91,45 @@ class SpeechLatencyReportTests(unittest.TestCase):
 
         self.assertEqual(report["ack_to_first_audio_p95_ms"], 420.0)
         self.assertLessEqual(report["ack_to_first_audio_p95_ms"], 500.0)
+
+    def test_report_rejects_boolean_command_sequence_and_timestamp(self):
+        identifiers = {
+            "relay_command_seq": True,
+            "relay_command_id": "cmd-bool",
+            "play_request_id": "play-bool",
+            "utterance_id": "utterance-bool",
+        }
+        records = [
+            {"event": "option_detected", "at": 10.0, **identifiers},
+            {"event": "visual_play_acknowledged", "at": 10.1, **identifiers},
+            {"event": "afplay_started", "at": 10.2, **identifiers},
+        ]
+        self.assertEqual(speech_latency_report.build_report(records)["sample_count"], 0)
+
+        for record in records:
+            record["relay_command_seq"] = 1
+        records[0]["at"] = True
+        self.assertEqual(speech_latency_report.build_report(records)["sample_count"], 0)
+
+    def test_report_rejects_non_finite_lifecycle_samples(self):
+        identifiers = {
+            "relay_command_seq": 1,
+            "relay_command_id": "cmd-invalid",
+            "play_request_id": "play-invalid",
+            "utterance_id": "utterance-invalid",
+        }
+        for invalid in (math.nan, math.inf, -math.inf):
+            with self.subTest(invalid=invalid):
+                report = speech_latency_report.build_report([
+                    {"event": "option_detected", "at": 10.0, **identifiers},
+                    {"event": "visual_play_acknowledged", "at": 10.1, **identifiers},
+                    {"event": "afplay_started", "at": invalid, **identifiers},
+                ])
+                self.assertEqual(report["sample_count"], 0)
+                self.assertIsNone(report["ack_to_first_audio_p95_ms"])
+                self.assertIsNone(
+                    speech_latency_report._percentile([100.0, invalid], 95)
+                )
 
 
 if __name__ == "__main__":

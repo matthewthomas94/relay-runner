@@ -8,16 +8,21 @@ python3 services/provider_turn_fault_harness.py
 
 The matrix runs Codex and Claude through the same ownership contract. It injects
 Messenger, foreground-provider, daemon, bridge, and Swift consumer restarts at
-accepted, delivered, claimed, acknowledged, terminal, and effect-reserved
-boundaries. It also duplicates terminal callbacks and competing outputs, then
-revokes turns through cancellation and replacement before attempting a late
-effect.
+accepted, delivered, claimed, acknowledgement-delayed, acknowledged, terminal,
+and effect-reserved boundaries. Every component owns a distinct file-backed
+runtime generation and must recover the same durable turn identity before the
+scenario can continue. The matrix also duplicates terminal callbacks and
+competing outputs, then revokes turns through cancellation and replacement
+before attempting a late effect.
 
 The harness fails unless each normal turn has one claim, one terminal inbox
 acknowledgement, one provider-terminal transition, and one delivered effect.
 Diagnostics are capped at 100 records and allowlist only provider, component,
 boundary, invariant, expected, and observed values. Fixture prompt text and
-filesystem paths are never reported.
+filesystem paths are never reported. The deterministic p95 uses only finite
+timestamps observed in the durable acknowledged intent and delivered effect
+records; missing, boolean, NaN, or infinite values fail the sample-count
+invariant instead of being synthesized or coerced.
 
 Codex and Claude intentionally differ only at their native hook adapters. Once
 an adapter supplies native session and turn identity plus the shared foreground

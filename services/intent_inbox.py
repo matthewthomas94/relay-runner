@@ -413,12 +413,18 @@ class IntentInbox:
             self._project_provider_turns()
         return materialized
 
-    def observe_claim(self, claimed: dict[str, Any], *, provider_turn_seen: bool) -> bool:
+    def observe_claim(
+        self,
+        claimed: dict[str, Any],
+        *,
+        provider_turn_seen: bool,
+        now: float | None = None,
+    ) -> bool:
         key = _key(claimed)
         if key is None:
             return False
         intent_id = str(claimed.get("intent_id") or "").strip()
-        now = time.time()
+        now = time.time() if now is None else now
         observed = False
         projection_changed = False
         with self._lock, self._connection:
