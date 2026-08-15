@@ -14,7 +14,9 @@ runtime generation and must recover the same durable turn identity before the
 scenario can continue. The matrix also duplicates terminal callbacks and
 competing outputs, then revokes turns through cancellation and replacement
 before attempting a late effect and after reserving an effect but before
-delivery. A revoked reservation must persist as failed, never delivered.
+delivery authorization. A revoked reservation must persist as failed without a
+Messenger or TTS submission. Once delivery authorization commits, later
+revocation is too late and the external submission can be finalized truthfully.
 
 The harness fails unless each normal turn has one claim, one terminal inbox
 acknowledgement, one provider-terminal transition, and one delivered effect.

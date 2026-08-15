@@ -307,6 +307,7 @@ class _Scenario:
             raise AssertionError("effect cannot play without a finite acknowledgement")
         self.clock = max(self.clock + 0.01, acknowledged_at + 0.36)
         self._recovered_command()
+        self.broker.authorize_effect_delivery(effect_id, now=self.clock)
         self.broker.finish_effect(effect_id, delivered=True, now=self.clock)
 
     def observed_latency_ms(self) -> float | None:

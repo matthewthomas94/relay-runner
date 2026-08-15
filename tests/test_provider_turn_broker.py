@@ -354,6 +354,47 @@ class ProviderTurnBrokerTests(unittest.TestCase):
                             "target_intent_ids": [record["intent_id"]],
                         }), [record["intent_id"]])
 
+                        self.assertFalse(broker.authorize_effect_delivery(
+                            reservation.effect_id or "",
+                            now=103.0,
+                        ))
+                        broker.finish_effect(
+                            reservation.effect_id or "",
+                            delivered=True,
+                            now=104.0,
+                        )
+
+                        effects = broker.table_records("provider_turn_effects")
+                        self.assertEqual(len(effects), 1)
+                        self.assertEqual(effects[0]["state"], "failed")
+                    finally:
+                        broker.close()
+                        inbox.close()
+
+    def test_codex_and_claude_authorization_wins_the_revocation_race(self):
+        for provider in ("codex", "claude"):
+            for relationship in ("cancellation", "replacement"):
+                with self.subTest(provider=provider, relationship=relationship), \
+                        tempfile.TemporaryDirectory() as temp_dir:
+                    database = os.path.join(temp_dir, "inbox.sqlite3")
+                    inbox = IntentInbox(database)
+                    broker = ProviderTurnBroker(database)
+                    try:
+                        record = turn_record(provider)
+                        inbox.enqueue("private prompt", record, "continue_current")
+                        self.assertTrue(broker.activate(record, now=100.0))
+                        reservation = broker.reserve_effect(record, now=101.0)
+                        self.assertTrue(reservation.accepted)
+                        self.assertTrue(broker.authorize_effect_delivery(
+                            reservation.effect_id or "",
+                            now=102.0,
+                        ))
+                        self.assertEqual(inbox.cancel_scoped({
+                            "intent_id": f"{relationship}-current",
+                            "cancellation_scope": "item",
+                            "target_intent_ids": [record["intent_id"]],
+                        }), [record["intent_id"]])
+
                         broker.finish_effect(
                             reservation.effect_id or "",
                             delivered=True,
@@ -362,7 +403,7 @@ class ProviderTurnBrokerTests(unittest.TestCase):
 
                         effects = broker.table_records("provider_turn_effects")
                         self.assertEqual(len(effects), 1)
-                        self.assertEqual(effects[0]["state"], "failed")
+                        self.assertEqual(effects[0]["state"], "delivered")
                     finally:
                         broker.close()
                         inbox.close()

@@ -581,7 +581,13 @@ class ProviderTurnBroker:
         ).fetchone()
         return row is not None and str(row["state"]) == "cancelled"
 
-    def finish_effect(self, effect_id: str, *, delivered: bool, now: float | None = None) -> None:
+    def authorize_effect_delivery(
+        self,
+        effect_id: str,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Linearize revocation against the first external delivery attempt."""
         now = time.time() if now is None else now
         with self._lock:
             self._begin()
@@ -599,7 +605,7 @@ class ProviderTurnBroker:
                 ).fetchone()
                 if row is None or str(row["effect_state"]) != "reserved":
                     self._finish(commit=True)
-                    return
+                    return False
                 intent_id = _text(row["intent_id"])
                 revoked = (
                     str(row["turn_state"]) in EFFECT_REVOKED_TURN_STATES
@@ -607,7 +613,34 @@ class ProviderTurnBroker:
                 )
                 self._connection.execute(
                     "UPDATE provider_turn_effects SET state=?, updated_at=? WHERE effect_id=?",
-                    ("delivered" if delivered and not revoked else "failed", now, effect_id),
+                    ("failed" if revoked else "authorized", now, effect_id),
+                )
+                self._finish(commit=True)
+            except Exception:
+                self._finish(commit=False)
+                raise
+        return not revoked
+
+    def finish_effect(self, effect_id: str, *, delivered: bool, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        with self._lock:
+            self._begin()
+            try:
+                row = self._connection.execute(
+                    """
+                    SELECT state AS effect_state
+                      FROM provider_turn_effects
+                     WHERE effect_id=?
+                    """,
+                    (effect_id,),
+                ).fetchone()
+                if row is None or str(row["effect_state"]) not in {"reserved", "authorized"}:
+                    self._finish(commit=True)
+                    return
+                authorized = str(row["effect_state"]) == "authorized"
+                self._connection.execute(
+                    "UPDATE provider_turn_effects SET state=?, updated_at=? WHERE effect_id=?",
+                    ("delivered" if delivered and authorized else "failed", now, effect_id),
                 )
                 self._finish(commit=True)
             except Exception:

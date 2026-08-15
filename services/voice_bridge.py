@@ -2867,6 +2867,9 @@ def _deliver_missing_foreground_reply(
         "relay_command_id": key[1],
         "speech_source": "fallback",
     }
+    if effect_id is not None and not provider_turn_broker.authorize_effect_delivery(effect_id):
+        _finish_foreground_reply_delivery(relay_command, delivered=False)
+        return False
     if _arm_authoritative_playback(tts_worker, key[0], key[1]):
         _publish_authoritative_preview(payload["text"])
     delivered = False
@@ -3209,6 +3212,9 @@ def _handle_orchestrator_reply_control(
         if key in command:
             payload[key] = command[key]
 
+    if effect_id is not None and not provider_turn_broker.authorize_effect_delivery(effect_id):
+        _finish_foreground_reply_delivery(command, delivered=False)
+        return False
     if _arm_authoritative_playback(tts_worker, command_key[0], command_key[1]):
         _publish_authoritative_preview(reply)
     if messenger is not None and messenger.submit_final(payload):
