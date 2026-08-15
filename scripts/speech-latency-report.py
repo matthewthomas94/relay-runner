@@ -73,7 +73,7 @@ def build_report(
     by_command: dict[tuple[int, str], dict[str, float]] = {}
     by_play_request: dict[str, dict[str, float]] = {}
     by_utterance: dict[str, dict[str, Any]] = {}
-    playback_counts: dict[tuple[tuple[int, str], str, str], int] = {}
+    playback_counts: dict[tuple[int, str], int] = {}
     for record in speech_records:
         event = str(record.get("event") or "")
         at = record.get("at")
@@ -95,8 +95,7 @@ def build_report(
             if play_request_id:
                 sample["play_request_id"] = play_request_id
             if event == "afplay_started" and command_key is not None and play_request_id:
-                playback_key = (command_key, play_request_id, utterance_id)
-                playback_counts[playback_key] = playback_counts.get(playback_key, 0) + 1
+                playback_counts[command_key] = playback_counts.get(command_key, 0) + 1
 
     samples: list[dict[str, Any]] = []
     stages = (
@@ -116,12 +115,7 @@ def build_report(
         command = by_command.get(command_key, {})
         request = by_play_request.get(sample.get("play_request_id"), {})
         terminal_acknowledgements = acknowledgements.get(command_key, [])
-        playback_key = (
-            command_key,
-            sample["play_request_id"],
-            sample["utterance_id"],
-        )
-        if len(terminal_acknowledgements) != 1 or playback_counts.get(playback_key) != 1:
+        if len(terminal_acknowledgements) != 1 or playback_counts.get(command_key) != 1:
             continue
         timeline = {
             stage: sample.get(stage, request.get(stage, command.get(stage)))

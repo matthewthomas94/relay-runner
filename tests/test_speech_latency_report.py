@@ -129,6 +129,42 @@ class SpeechLatencyReportTests(unittest.TestCase):
                     speech_latency_report._percentile([100.0, invalid], 95)
                 )
 
+    def test_report_rejects_distinct_playback_identities_for_one_command(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                command = {
+                    "relay_command_seq": 1,
+                    "relay_command_id": f"cmd-{provider}",
+                }
+                acknowledgement = {
+                    "event": "provider_acknowledged",
+                    "timestamp": 10.0,
+                    "provider": provider,
+                    **command,
+                }
+                playbacks = [
+                    {
+                        "event": "afplay_started",
+                        "at": 10.2 + index / 10,
+                        "play_request_id": f"play-{provider}-{index}",
+                        "utterance_id": f"utterance-{provider}-{index}",
+                        **command,
+                    }
+                    for index in range(2)
+                ]
+
+                report = speech_latency_report.build_report(
+                    playbacks,
+                    [acknowledgement],
+                )
+
+                self.assertEqual(report["sample_count"], 0)
+                self.assertEqual(
+                    report["provider_sample_counts"],
+                    {"codex": 0, "claude": 0},
+                )
+                self.assertIsNone(report["ack_to_first_audio_p95_ms"])
+
     def test_report_rejects_boolean_command_sequence_and_unknown_provider(self):
         speech = [{
             "event": "afplay_started",
