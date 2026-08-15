@@ -604,7 +604,7 @@ final class RelayVoiceCommandDelivery {
         var claimed = "/tmp/voice_cmd_claimed.json"
         var consumerAcknowledgement = "/tmp/voice_cmd_manual_ack.json"
         var commandState = "/tmp/voice_command_state.json"
-        var providerTurns = "/tmp/voice_provider_turns.json"
+        var providerTurns = "/tmp/voice_provider_turns_v2.json"
         var deliveryEvents = "/tmp/relay_terminal_delivery_events.jsonl"
         var actionJournal = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -1441,7 +1441,8 @@ final class RelayVoiceCommandDelivery {
     private func providerTurnRecords() -> [[String: Any]] {
         let turnsURL = URL(fileURLWithPath: paths.providerTurns)
         guard let data = try? Data(contentsOf: turnsURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["schema_version"] as? NSNumber)?.intValue == 2 else {
             return []
         }
         let records = object["records"] as? [[String: Any]] ?? []
@@ -1513,27 +1514,30 @@ final class RelayVoiceCommandDelivery {
     }
 
     private func releaseActiveProviderTurns(reason: String) {
-        let turnsURL = URL(fileURLWithPath: paths.providerTurns)
-        guard let data = try? Data(contentsOf: turnsURL),
-              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              var records = object["records"] as? [[String: Any]] else { return }
-        var changed = false
-        for index in records.indices where (records[index]["state"] as? String) == "active" {
-            if !recordBelongsToForegroundOwner(records[index]) {
-                continue
-            }
-            records[index]["state"] = "terminated"
-            records[index]["release_reason"] = reason
-            records[index]["updated_at"] = now().timeIntervalSince1970
-            changed = true
-        }
-        guard changed else { return }
-        object["records"] = records
-        object["updated_at"] = now().timeIntervalSince1970
-        guard let updated = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
-            return
-        }
-        try? updated.write(to: turnsURL, options: .atomic)
+        guard let providerSessionID, !providerSessionID.isEmpty,
+              let appSessionID, !appSessionID.isEmpty,
+              let recoveryGeneration, !recoveryGeneration.isEmpty,
+              let foregroundGateHandle, !foregroundGateHandle.isEmpty else { return }
+        let eventID = [
+            "termination",
+            appSessionID,
+            recoveryGeneration,
+            providerSessionID,
+            reason,
+        ].joined(separator: ":")
+        let payload: [String: Any] = [
+            "event": "provider_terminated",
+            "event_id": eventID,
+            "release_reason": reason,
+            "provider_session_id": providerSessionID,
+            "app_session_id": appSessionID,
+            "recovery_generation": recoveryGeneration,
+            "actor_role": "foreground_pm",
+            "foreground_gate_handle": foregroundGateHandle,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        _ = writeBridgeControlLine("__PROVIDER_TURN_EVENT__:\(json)")
     }
 
     private func providerTurnState(for key: RelayCommandKey) -> String? {
@@ -1649,7 +1653,14 @@ final class RelayVoiceCommandDelivery {
 
     @discardableResult
     private func writeOrchestratorReply(_ payload: [String: Any]) -> Bool {
-        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+        var ownedPayload = payload
+        if let appSessionID { ownedPayload["app_session_id"] = appSessionID }
+        if let recoveryGeneration { ownedPayload["recovery_generation"] = recoveryGeneration }
+        if let foregroundGateHandle {
+            ownedPayload["foreground_gate_handle"] = foregroundGateHandle
+        }
+        ownedPayload["actor_role"] = "foreground_pm"
+        guard let data = try? JSONSerialization.data(withJSONObject: ownedPayload, options: [.sortedKeys]),
               let json = String(data: data, encoding: .utf8) else {
             return false
         }

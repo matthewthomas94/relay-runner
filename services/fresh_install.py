@@ -77,6 +77,7 @@ RELAY_TEMPORARY_ARTIFACTS = (
     "voice_in.fifo",
     "voice_provider_session_id",
     "voice_provider_turns.json",
+    "voice_provider_turns_v2.json",
     "voice_state.sock",
 )
 
