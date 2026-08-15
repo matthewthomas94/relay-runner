@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report privacy-safe Option-to-audio timing from Relay speech diagnostics."""
+"""Correlate terminal delivery acknowledgement to real audio playback."""
 
 from __future__ import annotations
 
@@ -12,6 +12,10 @@ from typing import Any
 
 
 DEFAULT_LOG = os.environ.get("SPEECH_EVENT_LOG", "/tmp/relay_speech_events.jsonl")
+DEFAULT_DELIVERY_LOG = os.environ.get(
+    "RELAY_TERMINAL_DELIVERY_EVENTS",
+    "/tmp/relay_terminal_delivery_events.jsonl",
+)
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
@@ -35,26 +39,48 @@ def _finite_float(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _command_key(record: dict[str, Any]) -> tuple[int, str] | None:
+    try:
+        sequence = record["relay_command_seq"]
+        if isinstance(sequence, bool):
+            return None
+        command_id = str(record["relay_command_id"] or "").strip()
+        if not command_id:
+            return None
+        return int(sequence), command_id
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def build_report(
+    speech_records: list[dict[str, Any]],
+    delivery_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    acknowledgements: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    for record in delivery_records:
+        if str(record.get("event") or "") != "provider_acknowledged":
+            continue
+        command_key = _command_key(record)
+        acknowledged_at = _finite_float(record.get("timestamp"))
+        provider = str(record.get("provider") or "").strip().lower()
+        if command_key is None or acknowledged_at is None or provider not in {"codex", "claude"}:
+            continue
+        acknowledgements.setdefault(command_key, []).append({
+            "provider": provider,
+            "provider_acknowledged": acknowledged_at,
+        })
+
     by_command: dict[tuple[int, str], dict[str, float]] = {}
     by_play_request: dict[str, dict[str, float]] = {}
     by_utterance: dict[str, dict[str, Any]] = {}
-    for record in records:
+    playback_counts: dict[tuple[tuple[int, str], str, str], int] = {}
+    for record in speech_records:
         event = str(record.get("event") or "")
         at = record.get("at")
         at = _finite_float(at)
         if at is None:
             continue
-        command_key = None
-        try:
-            if isinstance(record["relay_command_seq"], bool):
-                raise ValueError("boolean command sequence")
-            command_key = (
-                int(record["relay_command_seq"]),
-                str(record["relay_command_id"]),
-            )
-        except (KeyError, TypeError, ValueError):
-            pass
+        command_key = _command_key(record)
         if command_key is not None:
             by_command.setdefault(command_key, {})[event] = at
         play_request_id = str(record.get("play_request_id") or "")
@@ -68,6 +94,9 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
                 sample["command_key"] = command_key
             if play_request_id:
                 sample["play_request_id"] = play_request_id
+            if event == "afplay_started" and command_key is not None and play_request_id:
+                playback_key = (command_key, play_request_id, utterance_id)
+                playback_counts[playback_key] = playback_counts.get(playback_key, 0) + 1
 
     samples: list[dict[str, Any]] = []
     stages = (
@@ -83,13 +112,25 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
     for sample in by_utterance.values():
         if sample.get("command_key") is None or not sample.get("play_request_id"):
             continue
-        command = by_command.get(sample.get("command_key"), {})
+        command_key = sample["command_key"]
+        command = by_command.get(command_key, {})
         request = by_play_request.get(sample.get("play_request_id"), {})
+        terminal_acknowledgements = acknowledgements.get(command_key, [])
+        playback_key = (
+            command_key,
+            sample["play_request_id"],
+            sample["utterance_id"],
+        )
+        if len(terminal_acknowledgements) != 1 or playback_counts.get(playback_key) != 1:
+            continue
         timeline = {
             stage: sample.get(stage, request.get(stage, command.get(stage)))
             for stage in stages
         }
-        if timeline["option_detected"] is None or timeline["afplay_started"] is None:
+        timeline["provider_acknowledged"] = terminal_acknowledgements[0][
+            "provider_acknowledged"
+        ]
+        if timeline["afplay_started"] is None:
             continue
         durations = {
             "option_to_ack_ms": _delta(timeline, "option_detected", "visual_play_acknowledged"),
@@ -104,15 +145,24 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
             "wav_to_afplay_ms": _delta(timeline, "first_wav_ready", "afplay_started"),
             "ack_to_first_audio_ms": _delta(
                 timeline,
-                "visual_play_acknowledged",
+                "provider_acknowledged",
                 "afplay_started",
             ),
             "option_to_first_audio_ms": _delta(timeline, "option_detected", "afplay_started"),
         }
-        if durations["option_to_first_audio_ms"] is not None:
-            samples.append({**sample, **durations})
+        if durations["ack_to_first_audio_ms"] is not None:
+            samples.append({
+                **sample,
+                "provider": terminal_acknowledgements[0]["provider"],
+                "provider_acknowledged": timeline["provider_acknowledged"],
+                **durations,
+            })
 
-    audio = [sample["option_to_first_audio_ms"] for sample in samples]
+    audio = [
+        sample["option_to_first_audio_ms"]
+        for sample in samples
+        if sample["option_to_first_audio_ms"] is not None
+    ]
     acknowledgements = [
         sample["option_to_ack_ms"]
         for sample in samples
@@ -123,8 +173,13 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
         for sample in samples
         if sample["ack_to_first_audio_ms"] is not None
     ]
+    provider_sample_counts = {
+        provider: sum(sample["provider"] == provider for sample in samples)
+        for provider in ("codex", "claude")
+    }
     return {
         "sample_count": len(samples),
+        "provider_sample_counts": provider_sample_counts,
         "option_to_first_audio_p95_ms": _percentile(audio, 95),
         "option_to_ack_p95_ms": _percentile(acknowledgements, 95),
         "ack_to_first_audio_p95_ms": _percentile(acknowledgement_to_audio, 95),
@@ -143,12 +198,19 @@ def _delta(timeline: dict[str, float | None], start: str, end: str) -> float | N
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("log", nargs="?", default=DEFAULT_LOG)
+    parser.add_argument("speech_log", nargs="?", default=DEFAULT_LOG)
+    parser.add_argument("--delivery-log", default=DEFAULT_DELIVERY_LOG)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    path = Path(args.log)
-    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    report = build_report(records)
+    speech_path = Path(args.speech_log)
+    delivery_path = Path(args.delivery_log)
+    speech_records = [
+        json.loads(line) for line in speech_path.read_text().splitlines() if line.strip()
+    ]
+    delivery_records = [
+        json.loads(line) for line in delivery_path.read_text().splitlines() if line.strip()
+    ]
+    report = build_report(speech_records, delivery_records)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
