@@ -19,6 +19,19 @@ VOICE_COMMAND_CLAIM_FILE = os.environ.get("VOICE_COMMAND_CLAIM_FILE", "/tmp/voic
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 
 ORCHESTRATOR_REPLY_PREFIX = "__ORCHESTRATOR_REPLY__:"
+FOREGROUND_ACTOR_ROLES = frozenset({"foreground_pm", "foreground_manual"})
+
+
+def _has_foreground_reply_ownership() -> bool:
+    role = os.environ.get("RELAY_ACTOR_ROLE", "").strip()
+    return role in FOREGROUND_ACTOR_ROLES and all(
+        os.environ.get(key, "").strip()
+        for key in (
+            "RELAY_APP_SESSION_ID",
+            "RELAY_RECOVERY_GENERATION",
+            "RELAY_FOREGROUND_GATE_HANDLE",
+        )
+    )
 
 
 def _read_json_file(path: str) -> dict:
@@ -66,6 +79,9 @@ def publish_current_reply(
     stderr: TextIO = sys.stderr,
 ) -> bool:
     """Write one canonical reply only when the claimed command is still current."""
+    if not _has_foreground_reply_ownership():
+        print("[relay_reply] reply not emitted: foreground ownership unavailable", file=stderr)
+        return False
     claim = _read_json_file(claim_path)
     key = _relay_command_key(claim)
     if key is None:

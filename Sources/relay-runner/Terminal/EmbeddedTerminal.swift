@@ -709,6 +709,9 @@ final class RelayVoiceCommandDelivery {
     private let fileManager: FileManager
     private let now: () -> Date
     private let providerSessionID: String?
+    private let appSessionID: String?
+    private let recoveryGeneration: String?
+    private let foregroundGateHandle: String?
     private let queue = DispatchQueue(label: "relay-runner.voice-command-delivery")
     private let queueKey = DispatchSpecificKey<UUID>()
     private let queueIdentity = UUID()
@@ -733,7 +736,10 @@ final class RelayVoiceCommandDelivery {
         isRunning: @escaping () -> Bool,
         fileManager: FileManager = .default,
         now: @escaping () -> Date = Date.init,
-        providerSessionID: String? = nil
+        providerSessionID: String? = nil,
+        appSessionID: String? = nil,
+        recoveryGeneration: String? = nil,
+        foregroundGateHandle: String? = nil
     ) {
         self.paths = paths
         self.send = send
@@ -750,6 +756,9 @@ final class RelayVoiceCommandDelivery {
         self.fileManager = fileManager
         self.now = now
         self.providerSessionID = providerSessionID
+        self.appSessionID = appSessionID
+        self.recoveryGeneration = recoveryGeneration
+        self.foregroundGateHandle = foregroundGateHandle
         queue.setSpecific(key: queueKey, value: queueIdentity)
     }
 
@@ -1412,7 +1421,9 @@ final class RelayVoiceCommandDelivery {
               let records = turns["records"] as? [[String: Any]] else {
             return false
         }
-        let active = records.filter { ($0["state"] as? String) == "active" }
+        let active = records.filter {
+            ($0["state"] as? String) == "active" && recordBelongsToForegroundOwner($0)
+        }
         let current = active.max { lhs, rhs in
             let lhsUpdated = (lhs["updated_at"] as? NSNumber)?.doubleValue ?? 0
             let rhsUpdated = (rhs["updated_at"] as? NSNumber)?.doubleValue ?? 0
@@ -1434,10 +1445,28 @@ final class RelayVoiceCommandDelivery {
             return []
         }
         let records = object["records"] as? [[String: Any]] ?? []
-        guard let providerSessionID, !providerSessionID.isEmpty else { return records }
-        return records.filter {
-            ($0["provider_session_id"] as? String) == providerSessionID
+        return records.filter { recordBelongsToForegroundOwner($0) }
+    }
+
+    private func recordBelongsToForegroundOwner(_ record: [String: Any]) -> Bool {
+        if let providerSessionID, !providerSessionID.isEmpty,
+           (record["provider_session_id"] as? String) != providerSessionID {
+            return false
         }
+        let ownership = [appSessionID, recoveryGeneration, foregroundGateHandle]
+        if ownership.allSatisfy({ $0 == nil }) {
+            return true
+        }
+        guard let appSessionID, !appSessionID.isEmpty,
+              let recoveryGeneration, !recoveryGeneration.isEmpty,
+              let foregroundGateHandle, !foregroundGateHandle.isEmpty else {
+            return false
+        }
+        let actorRole = record["actor_role"] as? String
+        return (record["app_session_id"] as? String) == appSessionID
+            && (record["recovery_generation"] as? String) == recoveryGeneration
+            && (actorRole == "foreground_pm" || actorRole == "foreground_manual")
+            && (record["foreground_gate_handle"] as? String) == foregroundGateHandle
     }
 
     private func providerTurnDiagnosticFields(activeOnly: Bool) -> [String: Any] {
@@ -1457,6 +1486,10 @@ final class RelayVoiceCommandDelivery {
         let mappings = [
             ("provider", "provider_turn_provider"),
             ("origin", "provider_turn_origin"),
+            ("app_session_id", "provider_turn_app_session_id"),
+            ("recovery_generation", "provider_turn_recovery_generation"),
+            ("actor_role", "provider_turn_actor_role"),
+            ("foreground_gate_handle", "provider_turn_gate_handle"),
             ("provider_session_id", "provider_session_id"),
             ("session_id", "provider_native_session_id"),
             ("turn_id", "provider_native_turn_id"),
@@ -1486,8 +1519,7 @@ final class RelayVoiceCommandDelivery {
               var records = object["records"] as? [[String: Any]] else { return }
         var changed = false
         for index in records.indices where (records[index]["state"] as? String) == "active" {
-            if let providerSessionID,
-               (records[index]["provider_session_id"] as? String) != providerSessionID {
+            if !recordBelongsToForegroundOwner(records[index]) {
                 continue
             }
             records[index]["state"] = "terminated"
@@ -1795,6 +1827,10 @@ final class RelayVoiceCommandDelivery {
             "elapsed_ms",
             "pending_byte_count",
             "provider_turn_state",
+            "provider_turn_app_session_id",
+            "provider_turn_recovery_generation",
+            "provider_turn_actor_role",
+            "provider_turn_gate_handle",
             "provider_session_id",
             "provider_native_session_id",
             "provider_native_turn_id",
@@ -2319,7 +2355,10 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
                 isRunning: { [weak self] in
                     self?.localProcess.running == true
                 },
-                providerSessionID: launch.providerSessionID
+                providerSessionID: launch.providerSessionID,
+                appSessionID: launch.appSessionID,
+                recoveryGeneration: launch.recoveryGeneration,
+                foregroundGateHandle: launch.foregroundGateHandle
             )
             voiceDelivery = delivery
         }

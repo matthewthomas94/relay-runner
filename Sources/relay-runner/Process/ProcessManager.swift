@@ -650,7 +650,7 @@ final class ProcessManager {
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
-        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$5" ]; then export RELAY_PROVIDER_SESSION_ID="$5"; else unset RELAY_PROVIDER_SESSION_ID; fi; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" "$RELAY_PROVIDER_SESSION_ID" >> "$VOICE_BRIDGE_LOG" 2>&1
+        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$5" ]; then export RELAY_PROVIDER_SESSION_ID="$5"; else unset RELAY_PROVIDER_SESSION_ID; fi; export RELAY_ACTOR_ROLE=voice_bridge; unset RELAY_FOREGROUND_GATE_HANDLE RELAY_RECOVERY_GENERATION RELAY_REPLY_HELPER RELAY_SESSION_EVENTS RELAY_CONTEXT_COMPACTION_EVENTS; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" "$RELAY_PROVIDER_SESSION_ID" >> "$VOICE_BRIDGE_LOG" 2>&1
         submit_status=$?
         [ -n "$RELAY_PROVIDER_SESSION_ID" ] && printf '%s\n' "$RELAY_PROVIDER_SESSION_ID" > /tmp/voice_provider_session_id
         if [ "$submit_status" -eq 0 ]; then
@@ -677,7 +677,7 @@ final class ProcessManager {
         [ "$print_status" -eq 0 ] || echo "[relay-runner] app watchdog launchctl print exit_status=$print_status" >> "$VOICE_BRIDGE_LOG"
         echo "[relay-runner] app watchdog falling back to direct background launch." >> "$VOICE_BRIDGE_LOG"
         launchctl remove com.relay.voicebridge 2>/dev/null || true
-        nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$5" ]; then export RELAY_PROVIDER_SESSION_ID="$5"; else unset RELAY_PROVIDER_SESSION_ID; fi; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" "$RELAY_PROVIDER_SESSION_ID" >> "$VOICE_BRIDGE_LOG" 2>&1 &
+        nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$5" ]; then export RELAY_PROVIDER_SESSION_ID="$5"; else unset RELAY_PROVIDER_SESSION_ID; fi; export RELAY_ACTOR_ROLE=voice_bridge; unset RELAY_FOREGROUND_GATE_HANDLE RELAY_RECOVERY_GENERATION RELAY_REPLY_HELPER RELAY_SESSION_EVENTS RELAY_CONTEXT_COMPACTION_EVENTS; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" "$RELAY_PROVIDER_SESSION_ID" >> "$VOICE_BRIDGE_LOG" 2>&1 &
         fallback_pid=$!
         echo "[relay-runner] app watchdog direct fallback launched pid=$fallback_pid provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         for _ in $(seq 1 20); do
@@ -792,6 +792,9 @@ final class ProcessManager {
         let voiceDelivery: SessionVoiceDelivery
         let sessionEventPath: String?
         let providerSessionID: String?
+        let appSessionID: String?
+        let recoveryGeneration: String?
+        let foregroundGateHandle: String?
         let diagnosticsCorrelationID: String
 
         init(
@@ -803,6 +806,9 @@ final class ProcessManager {
             voiceDelivery: SessionVoiceDelivery,
             sessionEventPath: String? = nil,
             providerSessionID: String? = nil,
+            appSessionID: String? = nil,
+            recoveryGeneration: String? = nil,
+            foregroundGateHandle: String? = nil,
             diagnosticsCorrelationID: String = UUID().uuidString.lowercased()
         ) {
             self.executable = executable
@@ -813,6 +819,9 @@ final class ProcessManager {
             self.voiceDelivery = voiceDelivery
             self.sessionEventPath = sessionEventPath
             self.providerSessionID = providerSessionID
+            self.appSessionID = appSessionID
+            self.recoveryGeneration = recoveryGeneration
+            self.foregroundGateHandle = foregroundGateHandle
             self.diagnosticsCorrelationID = diagnosticsCorrelationID
         }
     }
@@ -929,6 +938,15 @@ final class ProcessManager {
         let providerSessionID = voiceDelivery == .appOwned
             ? UUID().uuidString.lowercased()
             : nil
+        let appSessionID = voiceDelivery == .appOwned
+            ? RelayDiagnostics.shared.appSessionID
+            : nil
+        let recoveryGeneration = voiceDelivery == .appOwned
+            ? UUID().uuidString.lowercased()
+            : nil
+        let foregroundGateHandle = voiceDelivery == .appOwned
+            ? UUID().uuidString.lowercased()
+            : nil
         let script = Self.launchScript(
             relayBridge: relayBridge,
             target: target,
@@ -938,6 +956,9 @@ final class ProcessManager {
             suppressStartupGreeting: suppressStartupGreeting,
             sessionEventPath: sessionEventPath,
             providerSessionID: providerSessionID,
+            appSessionID: appSessionID,
+            recoveryGeneration: recoveryGeneration,
+            foregroundGateHandle: foregroundGateHandle,
             resolvedCodexModel: codexSelection?.resolvedModel,
             resolvedCodexEffort: codexSelection?.resolvedEffort,
             projectScopeToken: projectScopeToken
@@ -966,7 +987,10 @@ final class ProcessManager {
             target: target,
             voiceDelivery: voiceDelivery,
             sessionEventPath: sessionEventPath,
-            providerSessionID: providerSessionID
+            providerSessionID: providerSessionID,
+            appSessionID: appSessionID,
+            recoveryGeneration: recoveryGeneration,
+            foregroundGateHandle: foregroundGateHandle
         )
     }
 
@@ -1010,12 +1034,24 @@ final class ProcessManager {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         sessionEventPath: String? = nil,
         providerSessionID: String? = nil,
+        appSessionID: String? = nil,
+        recoveryGeneration: String? = nil,
+        foregroundGateHandle: String? = nil,
         resolvedCodexModel: String? = nil,
         resolvedCodexEffort: String? = nil,
         projectScopeToken: ConfirmedProjectScopeToken? = nil
     ) -> String {
         let effectiveProviderSessionID = voiceDelivery == .appOwned
             ? (providerSessionID ?? UUID().uuidString.lowercased())
+            : nil
+        let effectiveAppSessionID = voiceDelivery == .appOwned
+            ? (appSessionID ?? RelayDiagnostics.shared.appSessionID)
+            : nil
+        let effectiveRecoveryGeneration = voiceDelivery == .appOwned
+            ? (recoveryGeneration ?? UUID().uuidString.lowercased())
+            : nil
+        let effectiveForegroundGateHandle = voiceDelivery == .appOwned
+            ? (foregroundGateHandle ?? UUID().uuidString.lowercased())
             : nil
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
         let modelFlag = Self.modelFlag(config.general.model, target: target, resolvedCodexModel: resolvedCodexModel)
@@ -1071,6 +1107,11 @@ final class ProcessManager {
         # process enumeration may not see the Relay Runner host. This marker is
         # advisory session context, not a security boundary.
         export RELAY_RUNNER_APP_SESSION=1
+        \(Self.appOwnedForegroundOwnershipEnvironment(
+            appSessionID: effectiveAppSessionID,
+            recoveryGeneration: effectiveRecoveryGeneration,
+            foregroundGateHandle: effectiveForegroundGateHandle
+        ))
         \(Self.appOwnedProviderSessionExport(effectiveProviderSessionID))
         \(Self.appOwnedAutomaticCompactionEnvironment(
             target: target,
@@ -1413,6 +1454,20 @@ final class ProcessManager {
     private static func appOwnedProviderSessionExport(_ providerSessionID: String?) -> String {
         guard let providerSessionID else { return "" }
         return "export RELAY_PROVIDER_SESSION_ID=" + Self.shellQuoted(providerSessionID)
+    }
+
+    private static func appOwnedForegroundOwnershipEnvironment(
+        appSessionID: String?,
+        recoveryGeneration: String?,
+        foregroundGateHandle: String?
+    ) -> String {
+        guard let appSessionID, let recoveryGeneration, let foregroundGateHandle else { return "" }
+        return """
+        export RELAY_APP_SESSION_ID=\(shellQuoted(appSessionID))
+        export RELAY_RECOVERY_GENERATION=\(shellQuoted(recoveryGeneration))
+        export RELAY_ACTOR_ROLE=foreground_pm
+        export RELAY_FOREGROUND_GATE_HANDLE=\(shellQuoted(foregroundGateHandle))
+        """
     }
 
     private static func appOwnedProviderSessionPublish(_ providerSessionID: String?) -> String {

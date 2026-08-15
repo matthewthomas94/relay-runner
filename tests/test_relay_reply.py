@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
@@ -16,6 +17,16 @@ import relay_reply  # noqa: E402
 
 
 class RelayReplyTests(unittest.TestCase):
+    def setUp(self):
+        ownership = mock.patch.dict(os.environ, {
+            "RELAY_APP_SESSION_ID": "test-app-session",
+            "RELAY_RECOVERY_GENERATION": "test-generation",
+            "RELAY_ACTOR_ROLE": "foreground_pm",
+            "RELAY_FOREGROUND_GATE_HANDLE": "test-gate",
+        })
+        ownership.start()
+        self.addCleanup(ownership.stop)
+
     def test_current_claim_is_encoded_and_written_as_canonical_control_line(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
@@ -80,6 +91,19 @@ class RelayReplyTests(unittest.TestCase):
             self.assertIn("claimed command is not current", diagnostic)
             for private_value in ("secret-command-id", "private prompt", "private final"):
                 self.assertNotIn(private_value, diagnostic)
+
+    def test_non_foreground_actor_cannot_publish_authoritative_reply(self):
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"RELAY_ACTOR_ROLE": "messenger"}):
+            self.assertFalse(relay_reply.publish_current_reply(
+                "must not escape",
+                claim_path="/missing/claim",
+                state_path="/missing/state",
+                fifo_path="/missing/fifo",
+                stderr=stderr,
+            ))
+        self.assertIn("foreground ownership unavailable", stderr.getvalue())
+        self.assertNotIn("must not escape", stderr.getvalue())
 
 
 if __name__ == "__main__":

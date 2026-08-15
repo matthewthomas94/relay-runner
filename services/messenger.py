@@ -88,6 +88,19 @@ _BASE_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
 _UNSCOPED_LIFECYCLE_KINDS = LIFECYCLE_DETAIL_TRACE_KINDS
 _WORK_LIFECYCLE_KINDS = frozenset({"sidecar-outcome"})
 
+FOREGROUND_ONLY_ENVIRONMENT_KEYS = frozenset({
+    "RELAY_CONTEXT_COMPACTION_EVENTS",
+    "RELAY_FOREGROUND_GATE_HANDLE",
+    "RELAY_PROVIDER_SESSION_ID",
+    "RELAY_RECOVERY_GENERATION",
+    "RELAY_REPLY_HELPER",
+    "RELAY_RUNNER_APP_SESSION",
+    "RELAY_SESSION_EVENTS",
+    "VOICE_COMMAND_CLAIM_FILE",
+    "VOICE_COMMAND_STATE_FILE",
+    "VOICE_PROVIDER_TURNS_FILE",
+})
+
 
 MESSENGER_SYSTEM_PROMPT = """You are Relay Runner's persistent voice messenger.
 
@@ -287,6 +300,19 @@ def resolve_messenger_command(
     return None
 
 
+def provider_child_environment(
+    actor_role: str,
+    *,
+    parent: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a provider environment without foreground voice authority."""
+    environment = dict(os.environ if parent is None else parent)
+    for key in FOREGROUND_ONLY_ENVIRONMENT_KEYS:
+        environment.pop(key, None)
+    environment["RELAY_ACTOR_ROLE"] = actor_role
+    return environment
+
+
 class MessengerBackend(Protocol):
     def start(self) -> None: ...
     def ask(self, prompt: str, timeout: float = 60.0) -> str: ...
@@ -296,6 +322,8 @@ class MessengerBackend(Protocol):
 
 class CodexMessengerBackend:
     """Warm Codex app-server process with one ephemeral messenger thread."""
+
+    actor_role = "messenger"
 
     def __init__(
         self,
@@ -364,6 +392,7 @@ class CodexMessengerBackend:
                     text=True,
                     bufsize=1,
                     cwd=self.config.cwd,
+                    env=provider_child_environment(self.actor_role),
                 )
             except OSError as exc:
                 raise MessengerError(f"could not start Codex messenger: {exc}") from exc
@@ -634,6 +663,8 @@ def _last_agent_message(items) -> str:
 class ClaudeMessengerBackend:
     """Warm Claude stream-json process with tools and MCP disabled."""
 
+    actor_role = "messenger"
+
     def __init__(
         self,
         config: MessengerConfig,
@@ -684,6 +715,7 @@ class ClaudeMessengerBackend:
                     text=True,
                     bufsize=1,
                     cwd=self.config.cwd,
+                    env=provider_child_environment(self.actor_role),
                 )
             except OSError as exc:
                 raise MessengerError(f"could not start Claude messenger: {exc}") from exc

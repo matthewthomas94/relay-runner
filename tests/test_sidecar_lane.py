@@ -117,6 +117,7 @@ class SidecarLaneTests(unittest.TestCase):
             cwd="/tmp",
         )
         codex = CodexSidecarBackend(codex_config)
+        self.assertEqual(codex.actor_role, "sidecar")
         codex_command = codex.spawn_command()
         codex_params = codex.thread_start_params()
         self.assertIn("tools.web_search=true", codex_command)
@@ -133,7 +134,9 @@ class SidecarLaneTests(unittest.TestCase):
             effort="high",
             cwd="/tmp",
         )
-        claude_command = ClaudeSidecarBackend(claude_config).spawn_command()
+        claude = ClaudeSidecarBackend(claude_config)
+        self.assertEqual(claude.actor_role, "sidecar")
+        claude_command = claude.spawn_command()
         self.assertIn("WebSearch,WebFetch", claude_command)
         self.assertIn("--safe-mode", claude_command)
         self.assertIn("--no-chrome", claude_command)

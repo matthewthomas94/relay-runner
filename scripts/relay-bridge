@@ -602,7 +602,12 @@ fi
 Then send your authoritative user-facing response through Relay's canonical reply helper. It binds and checks the claimed Relay command metadata, owns the `__ORCHESTRATOR_REPLY__:<json>` framing, and uses a nonblocking FIFO write. Do not write reply JSON to the voice FIFO yourself:
 
 ```bash
-printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | /usr/bin/python3 '__RELAY_REPLY_HELPER__'
+printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | \
+    RELAY_APP_SESSION_ID="${RELAY_APP_SESSION_ID:-manual-${PPID:-$$}}" \
+    RELAY_RECOVERY_GENERATION="${RELAY_RECOVERY_GENERATION:-manual-${PPID:-$$}}" \
+    RELAY_ACTOR_ROLE="${RELAY_ACTOR_ROLE:-foreground_manual}" \
+    RELAY_FOREGROUND_GATE_HANDLE="${RELAY_FOREGROUND_GATE_HANDLE:-manual-${PPID:-$$}}" \
+    /usr/bin/python3 '__RELAY_REPLY_HELPER__'
 ```
 
 Important: Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not send a stale reply; handle the newer message instead.
@@ -904,7 +909,12 @@ fi
 Send the authoritative user-facing response through Relay's canonical reply helper. It binds and checks the claimed Relay command metadata, owns the `__ORCHESTRATOR_REPLY__:<json>` framing, and uses a nonblocking FIFO write. Do not write reply JSON to the voice FIFO yourself:
 
 ```bash
-printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | /usr/bin/python3 '__RELAY_REPLY_HELPER__'
+printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | \
+    RELAY_APP_SESSION_ID="${RELAY_APP_SESSION_ID:-manual-${PPID:-$$}}" \
+    RELAY_RECOVERY_GENERATION="${RELAY_RECOVERY_GENERATION:-manual-${PPID:-$$}}" \
+    RELAY_ACTOR_ROLE="${RELAY_ACTOR_ROLE:-foreground_manual}" \
+    RELAY_FOREGROUND_GATE_HANDLE="${RELAY_FOREGROUND_GATE_HANDLE:-manual-${PPID:-$$}}" \
+    /usr/bin/python3 '__RELAY_REPLY_HELPER__'
 ```
 
 Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not send a stale reply; handle the newer message instead.
@@ -1071,7 +1081,7 @@ start_voice_bridge_daemon() {
     launchctl remove com.relay.voicebridge 2>/dev/null || true
     echo "[relay-bridge] launching via launchctl provider=${relay_provider:-none} cwd=$relay_cwd bridge=$relay_bridge" >> "$voice_bridge_log"
     set +e
-    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$6" ]; then export RELAY_PROVIDER_SESSION_ID="$6"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$7" ]; then export RELAY_APP_SESSION_ID="$7"; else unset RELAY_APP_SESSION_ID; fi; if [ -n "$8" ]; then export RELAY_INCIDENT_ID="$8"; else unset RELAY_INCIDENT_ID; fi; if [ -n "$9" ]; then export RELAY_RETRY_ATTEMPT="$9"; else unset RELAY_RETRY_ATTEMPT; fi; if [ -n "${10}" ]; then export RELAY_CORRELATION_ID="${10}"; else unset RELAY_CORRELATION_ID; fi; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" "$relay_provider_session_id" "$relay_app_session_id" "$relay_incident_id" "$relay_retry_attempt" "$relay_correlation_id" >> "$voice_bridge_log" 2>&1
+    launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$6" ]; then export RELAY_PROVIDER_SESSION_ID="$6"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$7" ]; then export RELAY_APP_SESSION_ID="$7"; else unset RELAY_APP_SESSION_ID; fi; if [ -n "$8" ]; then export RELAY_INCIDENT_ID="$8"; else unset RELAY_INCIDENT_ID; fi; if [ -n "$9" ]; then export RELAY_RETRY_ATTEMPT="$9"; else unset RELAY_RETRY_ATTEMPT; fi; if [ -n "${10}" ]; then export RELAY_CORRELATION_ID="${10}"; else unset RELAY_CORRELATION_ID; fi; export RELAY_ACTOR_ROLE=voice_bridge; unset RELAY_FOREGROUND_GATE_HANDLE RELAY_RECOVERY_GENERATION RELAY_REPLY_HELPER RELAY_SESSION_EVENTS RELAY_CONTEXT_COMPACTION_EVENTS; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" "$relay_provider_session_id" "$relay_app_session_id" "$relay_incident_id" "$relay_retry_attempt" "$relay_correlation_id" >> "$voice_bridge_log" 2>&1
     local submit_status=$?
     set -e
     if [ "$submit_status" -eq 0 ]; then
@@ -1104,7 +1114,7 @@ start_voice_bridge_daemon() {
     [ "$print_status" -eq 0 ] || echo "[relay-bridge] launchctl print exit_status=$print_status" >> "$voice_bridge_log"
     echo "[relay-bridge] falling back to direct background launch." >> "$voice_bridge_log"
     launchctl remove com.relay.voicebridge 2>/dev/null || true
-    nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$6" ]; then export RELAY_PROVIDER_SESSION_ID="$6"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$7" ]; then export RELAY_APP_SESSION_ID="$7"; else unset RELAY_APP_SESSION_ID; fi; if [ -n "$8" ]; then export RELAY_INCIDENT_ID="$8"; else unset RELAY_INCIDENT_ID; fi; if [ -n "$9" ]; then export RELAY_RETRY_ATTEMPT="$9"; else unset RELAY_RETRY_ATTEMPT; fi; if [ -n "${10}" ]; then export RELAY_CORRELATION_ID="${10}"; else unset RELAY_CORRELATION_ID; fi; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" "$relay_provider_session_id" "$relay_app_session_id" "$relay_incident_id" "$relay_retry_attempt" "$relay_correlation_id" >> "$voice_bridge_log" 2>&1 &
+    nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$6" ]; then export RELAY_PROVIDER_SESSION_ID="$6"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$7" ]; then export RELAY_APP_SESSION_ID="$7"; else unset RELAY_APP_SESSION_ID; fi; if [ -n "$8" ]; then export RELAY_INCIDENT_ID="$8"; else unset RELAY_INCIDENT_ID; fi; if [ -n "$9" ]; then export RELAY_RETRY_ATTEMPT="$9"; else unset RELAY_RETRY_ATTEMPT; fi; if [ -n "${10}" ]; then export RELAY_CORRELATION_ID="${10}"; else unset RELAY_CORRELATION_ID; fi; export RELAY_ACTOR_ROLE=voice_bridge; unset RELAY_FOREGROUND_GATE_HANDLE RELAY_RECOVERY_GENERATION RELAY_REPLY_HELPER RELAY_SESSION_EVENTS RELAY_CONTEXT_COMPACTION_EVENTS; "$2" --relay ${5:+"$5"} >> "$4" 2>&1; status=$?; echo "[relay-bridge] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$relay_cwd" "$relay_bridge" "$relay_provider" "$voice_bridge_log" "$relay_startup_flag" "$relay_provider_session_id" "$relay_app_session_id" "$relay_incident_id" "$relay_retry_attempt" "$relay_correlation_id" >> "$voice_bridge_log" 2>&1 &
     local fallback_pid=$!
     echo "[relay-bridge] direct fallback launched pid=$fallback_pid provider=${relay_provider:-none}" >> "$voice_bridge_log"
     for i in $(seq 1 20); do

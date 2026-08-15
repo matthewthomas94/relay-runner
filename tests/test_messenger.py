@@ -21,6 +21,7 @@ from messenger import (  # noqa: E402
     CodexMessengerBackend,
     MessengerConfig,
     MessengerRuntime,
+    provider_child_environment,
     resolve_messenger_catalog_selection,
     resolve_messenger_command,
 )
@@ -205,6 +206,30 @@ class MessengerConfigTests(unittest.TestCase):
 
 
 class MessengerBackendContractTests(unittest.TestCase):
+    def test_provider_children_remove_foreground_voice_ownership(self):
+        parent = {
+            "PATH": "/usr/bin",
+            "RELAY_APP_SESSION_ID": "app-session",
+            "RELAY_PROVIDER_SESSION_ID": "provider-session",
+            "RELAY_REPLY_HELPER": "/tmp/reply.py",
+            "RELAY_SESSION_EVENTS": "/tmp/events.jsonl",
+            "RELAY_CONTEXT_COMPACTION_EVENTS": "/tmp/compaction.jsonl",
+            "RELAY_RUNNER_APP_SESSION": "1",
+            "RELAY_RECOVERY_GENERATION": "generation",
+            "RELAY_FOREGROUND_GATE_HANDLE": "gate",
+            "VOICE_COMMAND_CLAIM_FILE": "/tmp/claim.json",
+            "VOICE_COMMAND_STATE_FILE": "/tmp/state.json",
+            "VOICE_PROVIDER_TURNS_FILE": "/tmp/turns.json",
+        }
+
+        for role in ("messenger", "sidecar"):
+            child = provider_child_environment(role, parent=parent)
+            self.assertEqual(child["RELAY_ACTOR_ROLE"], role)
+            self.assertEqual(child["RELAY_APP_SESSION_ID"], "app-session")
+            self.assertEqual(child["PATH"], "/usr/bin")
+            for key in parent.keys() - {"PATH", "RELAY_APP_SESSION_ID"}:
+                self.assertNotIn(key, child)
+
     def test_codex_backend_uses_persistent_app_server_without_tools(self):
         config = MessengerConfig(
             enabled=True,
