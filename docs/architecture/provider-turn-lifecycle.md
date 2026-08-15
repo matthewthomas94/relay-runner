@@ -20,8 +20,12 @@ Four broker tables separate durable concerns:
   events are written in the same SQLite transaction as their inbox changes.
 - `provider_turn_effects` reserves one authoritative effect per owner and
   intent (or source-command identity when an old intent has none). The bridge
-  reserves before forwarding a final to speech, so duplicate or late Codex and
-  Claude completions cannot create a second authoritative effect.
+  reserves before forwarding a final to speech, then atomically authorizes
+  delivery immediately before the first Messenger or TTS submission. A
+  cancellation or replacement committed first fails the reservation without
+  submission; authorization committed first is the too-late boundary and its
+  external result is finalized as delivered or failed. Duplicate or late Codex
+  and Claude completions cannot create a second authoritative effect.
 
 Swift reads `/tmp/voice_provider_turns_v2.json`, a sorted schema-v2 projection
 written from a committed database snapshot under an interprocess lock. Swift

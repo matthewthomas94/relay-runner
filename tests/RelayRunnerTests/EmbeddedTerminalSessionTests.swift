@@ -265,6 +265,9 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
                 sessionEventPath: fixture.events.path,
                 providerSessionID: providerSessionID
             ))
+            let host = EmbeddedTerminalHostNSView()
+            host.install(session.hostedView)
+            XCTAssertTrue(process.terminalView.superview === host, providerName)
 
             let bootstrapWindow = expectation(
                 description: "\(providerName) bootstrap retains queued command"
@@ -284,11 +287,26 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
 
             XCTAssertEqual(session.phase, .running)
             XCTAssertFalse(FileManager.default.fileExists(atPath: paths.command))
+            let rendered = expectation(description: "\(providerName) rendered accepted input")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                rendered.fulfill()
+            }
+            wait(for: [rendered], timeout: 1)
             let terminalText = String(
                 data: process.terminalView.getTerminal().getBufferAsData(),
                 encoding: .utf8
             )
             XCTAssertTrue(terminalText?.contains("input accepted") == true)
+            let events = try String(contentsOfFile: paths.deliveryEvents, encoding: .utf8)
+            XCTAssertEqual(countEvent("claimed", in: events), 1, providerName)
+            XCTAssertEqual(countEvent("claim_published", in: events), 1, providerName)
+            XCTAssertTrue(events.contains(#""relay_command_seq":1"#), providerName)
+            XCTAssertTrue(events.contains(#""relay_command_id":"cmd-1""#), providerName)
+            XCTAssertTrue(
+                events.contains("\"provider\":\"\(providerName.lowercased())\""),
+                providerName
+            )
+            XCTAssertFalse(events.contains("ping"), providerName)
             session.end()
         }
     }
@@ -2117,6 +2135,100 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             XCTAssertEqual(sent, [], provider)
             XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path), provider)
             XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.claimed.path), provider)
+        }
+    }
+
+    func testRestartFaultMatrixEmitsEvidence() throws {
+        let providers = ["codex", "claude"]
+        let boundaries = [
+            "accepted",
+            "delivered",
+            "claimed",
+            "acknowledgement_delayed",
+            "acknowledged",
+            "terminal",
+            "effect_reserved",
+        ]
+        var cases: [[String: Any]] = []
+
+        for provider in providers {
+            for boundary in boundaries {
+                let fixture = try makeFixture()
+                let commandID = "swift-\(provider)-\(boundary)"
+                let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"\(commandID)\",\"relay_command_seq\":1}"
+                try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+                if boundary == "accepted" || boundary == "delivered" {
+                    try "Restart-safe prompt\n".write(
+                        to: fixture.command,
+                        atomically: true,
+                        encoding: .utf8
+                    )
+                    try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+                } else {
+                    try metadata.write(to: fixture.claimed, atomically: true, encoding: .utf8)
+                    let state = boundary == "terminal" || boundary == "effect_reserved"
+                        ? "completed_final"
+                        : "active"
+                    try writeProviderTurns([
+                        providerTurn(
+                            seq: 1,
+                            id: commandID,
+                            provider: provider,
+                            state: state
+                        ),
+                    ], to: fixture.providerTurns)
+                }
+
+                var scheduled: [() -> Void] = []
+                var sent: [String] = []
+                let original = RelayVoiceCommandDelivery(
+                    paths: fixture.paths,
+                    send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+                    schedule: { _, _, work in scheduled.append(work) },
+                    isRunning: { true }
+                )
+                let restarted = RelayVoiceCommandDelivery(
+                    paths: fixture.paths,
+                    send: { data in sent.append(String(decoding: data, as: UTF8.self)) },
+                    schedule: { _, _, work in scheduled.append(work) },
+                    isRunning: { true }
+                )
+
+                XCTAssertFalse(original === restarted, "\(provider) \(boundary)")
+                let shouldClaim = boundary == "accepted" || boundary == "delivered"
+                XCTAssertEqual(
+                    restarted.claimAndSendIfPossible(),
+                    shouldClaim,
+                    "\(provider) \(boundary)"
+                )
+                if shouldClaim {
+                    XCTAssertEqual(sent, ["Restart-safe prompt"], "\(provider) \(boundary)")
+                    XCTAssertEqual(scheduled.count, 1, "\(provider) \(boundary)")
+                    scheduled[0]()
+                    XCTAssertEqual(sent, ["Restart-safe prompt", "\r"], "\(provider) \(boundary)")
+                } else {
+                    XCTAssertEqual(sent, [], "\(provider) \(boundary)")
+                }
+                cases.append([
+                    "provider": provider,
+                    "lifecycle_boundary": boundary,
+                    "instance_replaced": true,
+                    "recovered": true,
+                ])
+            }
+        }
+
+        if let evidencePath = ProcessInfo.processInfo.environment["RR325_SWIFT_EVIDENCE_PATH"] {
+            let evidence: [String: Any] = [
+                "adapter": "RelayVoiceCommandDelivery",
+                "providers": providers,
+                "lifecycle_boundaries": boundaries,
+                "case_count": cases.count,
+                "passed": cases.allSatisfy { $0["recovered"] as? Bool == true },
+                "cases": cases,
+            ]
+            let data = try JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys])
+            try data.write(to: URL(fileURLWithPath: evidencePath), options: .atomic)
         }
     }
 

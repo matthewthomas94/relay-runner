@@ -43,6 +43,7 @@ TERMINAL_STATES = frozenset({
 ALLOWED_TRANSITIONS = {
     "active": TERMINAL_STATES,
 }
+EFFECT_REVOKED_TURN_STATES = frozenset({"cancelled", "orphaned", "stale", "terminated"})
 
 
 def _text(value: Any) -> str:
@@ -517,7 +518,7 @@ class ProviderTurnBroker:
                 if intent_id:
                     row = self._connection.execute(
                         """
-                        SELECT turn_id FROM provider_turns
+                        SELECT turn_id, state FROM provider_turns
                          WHERE owner_id=? AND intent_id=?
                          ORDER BY updated_at DESC LIMIT 1
                         """,
@@ -527,7 +528,7 @@ class ProviderTurnBroker:
                 else:
                     row = self._connection.execute(
                         """
-                        SELECT turn_id FROM provider_turns
+                        SELECT turn_id, state FROM provider_turns
                          WHERE owner_id=? AND command_seq=? AND command_id=?
                          ORDER BY updated_at DESC LIMIT 1
                         """,
@@ -537,6 +538,12 @@ class ProviderTurnBroker:
                 if row is None:
                     self._finish(commit=True)
                     return EffectReservation(False, reason="turn_missing")
+                if str(row["state"]) in EFFECT_REVOKED_TURN_STATES:
+                    self._finish(commit=True)
+                    return EffectReservation(False, reason="turn_revoked")
+                if intent_id and self._intent_cancelled(intent_id):
+                    self._finish(commit=True)
+                    return EffectReservation(False, reason="turn_revoked")
                 turn_id = str(row["turn_id"])
                 authority_key = stable_event_id(
                     "authority",
@@ -562,13 +569,83 @@ class ProviderTurnBroker:
             return EffectReservation(False, effect_id=effect_id, reason="duplicate")
         return EffectReservation(True, effect_id=effect_id)
 
+    def _intent_cancelled(self, intent_id: str) -> bool:
+        table = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='intents'"
+        ).fetchone()
+        if table is None:
+            return False
+        row = self._connection.execute(
+            "SELECT state FROM intents WHERE intent_id=?",
+            (intent_id,),
+        ).fetchone()
+        return row is not None and str(row["state"]) == "cancelled"
+
+    def authorize_effect_delivery(
+        self,
+        effect_id: str,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Linearize revocation against the first external delivery attempt."""
+        now = time.time() if now is None else now
+        with self._lock:
+            self._begin()
+            try:
+                row = self._connection.execute(
+                    """
+                    SELECT effects.state AS effect_state,
+                           effects.intent_id AS intent_id,
+                           turns.state AS turn_state
+                      FROM provider_turn_effects AS effects
+                      JOIN provider_turns AS turns ON turns.turn_id=effects.turn_id
+                     WHERE effects.effect_id=?
+                    """,
+                    (effect_id,),
+                ).fetchone()
+                if row is None or str(row["effect_state"]) != "reserved":
+                    self._finish(commit=True)
+                    return False
+                intent_id = _text(row["intent_id"])
+                revoked = (
+                    str(row["turn_state"]) in EFFECT_REVOKED_TURN_STATES
+                    or bool(intent_id and self._intent_cancelled(intent_id))
+                )
+                self._connection.execute(
+                    "UPDATE provider_turn_effects SET state=?, updated_at=? WHERE effect_id=?",
+                    ("failed" if revoked else "authorized", now, effect_id),
+                )
+                self._finish(commit=True)
+            except Exception:
+                self._finish(commit=False)
+                raise
+        return not revoked
+
     def finish_effect(self, effect_id: str, *, delivered: bool, now: float | None = None) -> None:
         now = time.time() if now is None else now
-        with self._lock, self._connection:
-            self._connection.execute(
-                "UPDATE provider_turn_effects SET state=?, updated_at=? WHERE effect_id=?",
-                ("delivered" if delivered else "failed", now, effect_id),
-            )
+        with self._lock:
+            self._begin()
+            try:
+                row = self._connection.execute(
+                    """
+                    SELECT state AS effect_state
+                      FROM provider_turn_effects
+                     WHERE effect_id=?
+                    """,
+                    (effect_id,),
+                ).fetchone()
+                if row is None or str(row["effect_state"]) not in {"reserved", "authorized"}:
+                    self._finish(commit=True)
+                    return
+                authorized = str(row["effect_state"]) == "authorized"
+                self._connection.execute(
+                    "UPDATE provider_turn_effects SET state=?, updated_at=? WHERE effect_id=?",
+                    ("delivered" if delivered and authorized else "failed", now, effect_id),
+                )
+                self._finish(commit=True)
+            except Exception:
+                self._finish(commit=False)
+                raise
 
     def project(self) -> None:
         if not self.projection_path:
