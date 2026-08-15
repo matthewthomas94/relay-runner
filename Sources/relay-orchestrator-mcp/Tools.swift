@@ -470,8 +470,9 @@ struct ReviewSpikeFollowupTool: MCPTool {
     let name = "review_spike_followup"
     let description = """
         Edit, accept, or reject one proposed spike follow-up. Edit changes only the recoverable draft. Accept \
-        atomically allocates and commits one backlog ticket on the selected canonical project board; it never \
-        promotes or dispatches the ticket. Reject leaves other proposals untouched.
+        requires an explicit current foreground PM action or authorized Relay user command, then atomically \
+        allocates and commits one backlog ticket on the selected canonical project board; it never promotes or \
+        dispatches the ticket. Individual review remains the default, and reject leaves other proposals untouched.
         """
 
     var inputSchema: [String: Any] {

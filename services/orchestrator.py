@@ -1999,8 +1999,9 @@ class RunsStore:
             placeholders = ",".join("?" * len(abandoned))
             c.execute(
                 f"UPDATE runs SET state = 'Stalled', ended_at = ?, "
-                "last_error = CASE WHEN execution_mode = 'spike' "
-                "THEN 'Spike stopped during daemon restart; retry is available' "
+                "last_error = CASE WHEN execution_mode = 'spike' AND state = 'SpikeResultReady' "
+                "THEN 'Spike terminal result ready before daemon restart' "
+                "WHEN execution_mode = 'spike' THEN 'Spike stopped during daemon restart; retry is available' "
                 "ELSE 'Worker process was no longer running when daemon restarted' END "
                 f"WHERE id IN ({placeholders})",
                 (time.time(), *abandoned),
@@ -3007,7 +3008,13 @@ def _ensure_ticket_authoring_paths_clean(repo: Path, paths: list[Path]) -> None:
         )
 
 
-def _commit_ticket_authorship(repo: Path, paths: list[Path], ticket_ids: list[str]) -> None:
+def _commit_ticket_authorship(
+    repo: Path,
+    paths: list[Path],
+    ticket_ids: list[str],
+    *,
+    message: str | None = None,
+) -> None:
     pathspecs = _ticket_authoring_pathspecs(repo, paths)
     status = _git(str(repo), "status", "--porcelain", "--untracked-files=all", check=False)
     if status.returncode != 0:
@@ -3027,7 +3034,9 @@ def _commit_ticket_authorship(repo: Path, paths: list[Path], ticket_ids: list[st
         str(repo),
         "commit",
         "-m",
-        f"chore: author {', '.join(ticket_ids)} ticket{'s' if len(ticket_ids) != 1 else ''}",
+        message or f"chore: author {', '.join(ticket_ids)} ticket{'s' if len(ticket_ids) != 1 else ''}",
+        "--",
+        *pathspecs,
         check=False,
     )
     if commit.returncode != 0:
@@ -3098,23 +3107,41 @@ SPIKE_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "conclusions": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "conclusions": {
+            "type": "array",
+            "items": {"type": "string", "pattern": r"\S", "maxLength": 600},
+            "minItems": 1,
+            "maxItems": 12,
+        },
         "evidence": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "source": {"type": "string"},
-                    "finding": {"type": "string"},
+                    "source": {"type": "string", "pattern": r"\S", "maxLength": 300},
+                    "finding": {"type": "string", "pattern": r"\S", "maxLength": 600},
                 },
                 "required": ["source", "finding"],
             },
             "minItems": 1,
+            "maxItems": 12,
         },
-        "uncertainties": {"type": "array", "items": {"type": "string"}},
-        "recommended_next_steps": {"type": "array", "items": {"type": "string"}},
-        "mutation_attempts": {"type": "array", "items": {"type": "string"}},
+        "uncertainties": {
+            "type": "array",
+            "items": {"type": "string", "pattern": r"\S", "maxLength": 600},
+            "maxItems": 12,
+        },
+        "recommended_next_steps": {
+            "type": "array",
+            "items": {"type": "string", "pattern": r"\S", "maxLength": 600},
+            "maxItems": 12,
+        },
+        "mutation_attempts": {
+            "type": "array",
+            "items": {"type": "string", "pattern": r"\S", "maxLength": 600},
+            "maxItems": 12,
+        },
     },
     "required": [
         "conclusions",
@@ -3206,10 +3233,14 @@ def remove_spike_workspace(workspace_path: Path) -> tuple[bool, str | None]:
 
 
 def _spike_text(value: Any, *, field: str, max_length: int = 600) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not isinstance(value, str):
+        raise ValueError(f"spike result {field} must be a string")
+    if len(value) > max_length:
+        raise ValueError(f"spike result {field} exceeds {max_length} characters")
+    text = re.sub(r"\s+", " ", value).strip()
     if not text:
         raise ValueError(f"spike result {field} contains an empty value")
-    return text[:max_length]
+    return text
 
 
 def validate_spike_result(value: Any) -> dict[str, Any]:
@@ -3254,8 +3285,8 @@ def validate_spike_result(value: Any) -> dict[str, Any]:
 
 
 def extract_spike_result(log_path: Path) -> dict[str, Any]:
-    candidates: list[Any] = []
-    last_error: ValueError | None = None
+    terminal_candidate: Any = None
+    found_candidate = False
     try:
         lines = log_path.read_text(errors="replace").splitlines()
     except OSError as e:
@@ -3267,27 +3298,26 @@ def extract_spike_result(log_path: Path) -> dict[str, Any]:
             continue
         if not isinstance(event, dict):
             continue
-        if isinstance(event.get("structured_output"), dict):
-            candidates.append(event["structured_output"])
+        if "structured_output" in event:
+            terminal_candidate = event.get("structured_output")
+            found_candidate = True
+            continue
+        if event.get("type") == "result":
+            terminal_candidate = event.get("result")
+            found_candidate = True
+            continue
         item = event.get("item")
         if isinstance(item, dict) and item.get("type") == "agent_message":
-            candidates.append(item.get("text"))
-        if event.get("type") == "result":
-            candidates.append(event.get("result"))
-    for candidate in reversed(candidates):
-        if isinstance(candidate, str):
-            try:
-                candidate = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
+            terminal_candidate = item.get("text")
+            found_candidate = True
+    if not found_candidate:
+        raise ValueError("provider returned no structured spike result")
+    if isinstance(terminal_candidate, str):
         try:
-            return validate_spike_result(candidate)
-        except ValueError as e:
-            last_error = e
-            continue
-    if last_error is not None:
-        raise last_error
-    raise ValueError("provider returned no valid structured spike result")
+            terminal_candidate = json.loads(terminal_candidate)
+        except json.JSONDecodeError as e:
+            raise ValueError("terminal structured spike result is not valid JSON") from e
+    return validate_spike_result(terminal_candidate)
 
 
 def _replace_markdown_section(body: str, heading: str, content: str) -> str:
@@ -3328,17 +3358,18 @@ def commit_daemon_ticket_update(
     *, repo: Path, ticket_path: Path, ticket: dict[str, Any], message: str
 ) -> None:
     original = ticket_path.read_text()
-    write_ticket(ticket_path, ticket)
-    rel = str(ticket_path.resolve().relative_to(repo.resolve()))
-    commit = _git(
-        str(repo), "commit", "--only", "-m", message, "--", rel, check=False,
-    )
-    if commit.returncode == 0:
-        return
-    ticket_path.write_text(original)
-    raise RuntimeError(
-        f"daemon ticket-only commit failed: {(commit.stderr or commit.stdout).strip()}"
-    )
+    try:
+        _ensure_ticket_authoring_paths_clean(repo, [ticket_path])
+        write_ticket(ticket_path, ticket)
+        _commit_ticket_authorship(
+            repo,
+            [ticket_path],
+            [str(ticket["id"])],
+            message=message,
+        )
+    except (OSError, ValueError) as error:
+        ticket_path.write_text(original)
+        raise RuntimeError(f"daemon ticket-only commit failed: {error}") from error
 
 
 def _git_head(repo_path: str) -> str | None:
@@ -4575,6 +4606,8 @@ Investigate the bounded question in ticket {ticket['id']} and return only the st
 - Read-only detached snapshot: {workspace_path}
 - Allowed evidence: files and Git history inside the snapshot, plus the refined ticket and dispatcher context below.
 - Forbidden: edits, file creation, Git mutations, network access, desktop/app control, messages, purchases, deletion, or any other external side effect.
+- The designated terminal structured result is the only permitted output. It is not a source or board mutation: the daemon validates it and is the sole process allowed to persist the canonical spike report.
+- You may recommend implementation work, but you may not draft or accept canonical tickets. After the report is committed, the foreground PM may create recoverable drafts and may accept individually reviewed drafts into backlog.
 - Do not expose chain-of-thought, raw provider transcript, credentials, or unrelated private data.
 - If you try a forbidden mutation, record it in `mutation_attempts`; the daemon will fail the run visibly.
 - Conclusions must cite concise local evidence and separate uncertainties from recommendations.
@@ -5771,7 +5804,7 @@ Title: {ticket['title']}
                         fields=raw_fields,
                     )
                     ticket = read_ticket(ticket_file)
-                else:
+                elif execution_mode != SPIKE_EXECUTION_MODE:
                     write_ticket(ticket_file, ticket)
 
             try:
@@ -6080,9 +6113,11 @@ Title: {ticket['title']}
         *,
         result: dict[str, Any] | None,
         incomplete_reason: str | None = None,
+        recovered: bool = False,
     ) -> None:
         repo = Path(str(run["repo_path"])).expanduser().resolve()
         ticket_path = repo / ".orchestrator" / f"{run['ticket_id']}.md"
+        _ensure_ticket_authoring_paths_clean(repo, [ticket_path])
         ticket = read_ticket(ticket_path)
         if ticket.get("execution_mode") != SPIKE_EXECUTION_MODE:
             raise RuntimeError("canonical ticket no longer has spike execution mode")
@@ -6098,12 +6133,22 @@ Title: {ticket['title']}
                 attempt=int(run.get("attempt") or 1),
                 provider=str(run.get("provider_key") or "unknown"),
             )
+            if recovered:
+                report = (
+                    report.split("\n\n", 1)[0]
+                    + "\n- **Recovery:** Restored from the terminal structured result after daemon restart.\n\n"
+                    + report.split("\n\n", 1)[1]
+                )
             ticket["body"] = _replace_markdown_section(
                 str(ticket.get("body") or ""), "Spike report", report
             )
             log_entry = (
                 f"- **Run {run['id']}** (attempt {run.get('attempt') or 1}) - "
-                "branchless spike completed; findings persisted by the daemon."
+                + (
+                    "branchless spike recovered; terminal findings persisted by the daemon."
+                    if recovered
+                    else "branchless spike completed; findings persisted by the daemon."
+                )
             )
             ticket["status"] = "done"
             message = f"docs({run['ticket_id']}): record spike run {run['id']}"
@@ -6135,11 +6180,30 @@ Title: {ticket['title']}
             if run.get("execution_mode") != SPIKE_EXECUTION_MODE:
                 continue
             try:
-                self._spike_ticket_update(
-                    run,
-                    result=None,
-                    incomplete_reason=str(run.get("last_error") or "Spike stopped during daemon restart."),
-                )
+                recovered_result = None
+                if run.get("last_error") == "Spike terminal result ready before daemon restart":
+                    log_path = Path(str(run.get("log_path") or ""))
+                    try:
+                        recovered_result = extract_spike_result(log_path)
+                    except ValueError:
+                        pass
+                if recovered_result is not None:
+                    self._spike_ticket_update(
+                        run,
+                        result=recovered_result,
+                        recovered=True,
+                    )
+                    self.runs.update(
+                        int(run["id"]),
+                        state=SPIKE_COMPLETED_RUN_STATE,
+                        last_error="",
+                    )
+                else:
+                    self._spike_ticket_update(
+                        run,
+                        result=None,
+                        incomplete_reason=str(run.get("last_error") or "Spike stopped during daemon restart."),
+                    )
             except (OSError, RuntimeError, TicketParseError, ValueError) as e:
                 self.runs.update(run["id"], last_error=f"{run.get('last_error')}; recovery: {e}")
             remove_spike_workspace(Path(str(run.get("workspace_path") or "")))
@@ -8010,6 +8074,25 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         if proposal["state"] != "draft":
             return {"batch": batch, "duplicate": True}
 
+        normalized_decision = str(decision or "").strip().lower()
+        if normalized_decision not in {"edit", "accept", "reject"}:
+            raise ValueError("decision must be 'edit', 'accept', or 'reject'")
+        authorization_source: str | None = None
+        if normalized_decision == "accept":
+            has_relay_authorization = relay_command_seq is not None or bool(relay_command_id)
+            if has_relay_authorization and (relay_command_seq is None or not relay_command_id):
+                raise ValueError("spike follow-up acceptance requires complete Relay authorization metadata")
+            authorization_source = "authorized_user_command" if has_relay_authorization else "foreground_pm"
+            _validate_relay_command(
+                relay_command_seq,
+                relay_command_id,
+                relay_intent_id=relay_intent_id,
+                mutation=_relay_mutation_metadata(
+                    "spike_followup_accept",
+                    request_id=f"{batch_id}:{proposal_id}",
+                ),
+            )
+
         origin_repo, _ = self._completed_spike(
             batch["origin_repo_path"], batch["origin_ticket_id"], batch["origin_run_id"]
         )
@@ -8023,7 +8106,6 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             self._followup_target_repo(origin_repo, draft["target_repo_path"])
             batch = self.followup_proposals.update_draft(batch_id, proposal_id, draft)
 
-        normalized_decision = str(decision or "").strip().lower()
         if normalized_decision == "edit":
             if updates is None:
                 raise ValueError("edit requires updates")
@@ -8035,19 +8117,6 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 ),
                 "rejected": proposal_id,
             }
-        if normalized_decision != "accept":
-            raise ValueError("decision must be 'edit', 'accept', or 'reject'")
-
-        _validate_relay_command(
-            relay_command_seq,
-            relay_command_id,
-            relay_intent_id=relay_intent_id,
-            mutation=_relay_mutation_metadata(
-                "spike_followup_accept",
-                request_id=f"{batch_id}:{proposal_id}",
-            ),
-        )
-
         try:
             ticket_id, duplicate = self._accept_spike_followup(
                 batch=batch, proposal_id=proposal_id, draft=draft
@@ -8059,6 +8128,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 "partial": True,
                 "committed": [],
                 "not_committed": [{"proposal_id": proposal_id, "error": str(error)}],
+                "authorization_source": authorization_source,
             }
         accepted = self.followup_proposals.set_result(
             batch_id, proposal_id, state="accepted", ticket_id=ticket_id
@@ -8068,6 +8138,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             "committed": [{"proposal_id": proposal_id, "ticket_id": ticket_id}],
             "not_committed": [],
             "duplicate": duplicate,
+            "authorization_source": authorization_source,
         }
 
     def _accept_spike_followup(
@@ -8155,17 +8226,12 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         try:
             _write_ticket_config_next_id(config_path, config_text, ticket_number + 1)
             write_ticket(ticket_path, ticket)
-            paths = _ticket_authoring_pathspecs(target, [config_path, ticket_path])
-            added = _git(str(target), "add", "--", *paths, check=False)
-            if added.returncode != 0:
-                raise RuntimeError((added.stderr or added.stdout).strip())
-            commit = _git(
-                str(target), "commit", "-m",
-                f"chore: author {ticket_id} from {batch['origin_ticket_id']} spike",
-                "--", *paths, check=False,
+            _commit_ticket_authorship(
+                target,
+                [config_path, ticket_path],
+                [ticket_id],
+                message=f"chore: author {ticket_id} from {batch['origin_ticket_id']} spike",
             )
-            if commit.returncode != 0:
-                raise RuntimeError((commit.stderr or commit.stdout).strip())
         except Exception as error:
             _git(
                 str(target), "restore", "--staged", "--",

@@ -84,6 +84,17 @@ class SpikeExecutionTests(unittest.TestCase):
         self.assertIn("--strict-mcp-config", claude)
         self.assertNotIn("--dangerously-skip-permissions", claude)
 
+        prompt = Daemon._build_spike_prompt(
+            ticket={"id": "RR-1", "title": "Research", "body": "Evidence only."},
+            repo_path="/repo",
+            workspace_path="/snapshot",
+            attempt=1,
+            run_id=7,
+        )
+        self.assertIn("designated terminal structured result", prompt)
+        self.assertIn("daemon validates it and is the sole process allowed", prompt)
+        self.assertIn("may not draft or accept canonical tickets", prompt)
+
     def test_spike_workspace_is_detached_branchless_read_only_and_removable(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -150,6 +161,10 @@ class SpikeExecutionTests(unittest.TestCase):
             self.assertIn("## Spike report", ticket["body"])
             self.assertIn("**Conclusions**", ticket["body"])
             self.assertNotIn("chain-of-thought", ticket["body"])
+            self.assertEqual(
+                self.git(repo, "show", "-s", "--format=%s", "HEAD").stdout.strip(),
+                f"docs(RR-1): record spike run {run['id']}",
+            )
 
             daemon._promote_unblocked_dependents(repo_path=str(repo))
             self.assertEqual(read_ticket(repo / ".orchestrator/RR-2.md")["status"], "backlog")
@@ -201,6 +216,36 @@ class SpikeExecutionTests(unittest.TestCase):
             }) + "\n")
             self.assertEqual(extract_spike_result(log)["conclusions"], payload["conclusions"])
 
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            valid = self.result()
+            oversized = self.result()
+            oversized["recommended_next_steps"] = [f"step {index}" for index in range(13)]
+            log.write_text("\n".join([
+                json.dumps({
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": json.dumps(valid)},
+                }),
+                json.dumps({
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": json.dumps(oversized)},
+                }),
+            ]) + "\n")
+            with self.assertRaisesRegex(ValueError, "recommended_next_steps exceeds 12 items"):
+                extract_spike_result(log)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            log.write_text("\n".join([
+                json.dumps({"structured_output": self.result()}),
+                json.dumps({
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "not-json"},
+                }),
+            ]) + "\n")
+            with self.assertRaisesRegex(ValueError, "terminal structured spike result is not valid JSON"):
+                extract_spike_result(log)
+
         payload = self.result()
         payload["mutation_attempts"] = ["touch source.txt was blocked"]
         with self.assertRaisesRegex(ValueError, "blocked mutation"):
@@ -230,6 +275,45 @@ class SpikeExecutionTests(unittest.TestCase):
                 "item": {"id": "1", "type": "command_execution", "command": "touch source.txt"},
             }), 0)
             self.assertEqual(worker._spike_violation, "spike attempted a mutating or external command")
+
+    def test_schema_and_validator_share_structured_result_limits(self):
+        schema = orchestrator.SPIKE_RESULT_SCHEMA["properties"]
+        for field in ("conclusions", "evidence", "uncertainties", "recommended_next_steps"):
+            self.assertEqual(schema[field]["maxItems"], 12)
+        self.assertEqual(schema["conclusions"]["items"]["maxLength"], 600)
+        self.assertEqual(schema["evidence"]["items"]["properties"]["source"]["maxLength"], 300)
+        oversized = self.result()
+        oversized["conclusions"] = ["x" * 601]
+        with self.assertRaisesRegex(ValueError, "conclusions exceeds 600 characters"):
+            validate_spike_result(oversized)
+
+    def test_spike_report_persistence_blocks_dirty_ticket_overlap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", mode="spike", status="in_progress")
+            ticket_path = repo / ".orchestrator/RR-1.md"
+            ticket_path.write_text(ticket_path.read_text().replace("run_id: null", "run_id: 1"))
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "claim spike")
+            ticket_path.write_text(ticket_path.read_text() + "\nUncommitted PM note.\n")
+            daemon = self.make_daemon(root)
+
+            with self.assertRaisesRegex(ValueError, "ticket authoring blocked by existing changes"):
+                daemon._spike_ticket_update(
+                    {
+                        "id": 1,
+                        "ticket_id": "RR-1",
+                        "repo_path": str(repo),
+                        "attempt": 1,
+                        "provider_key": "codex",
+                    },
+                    result=self.result(),
+                )
+
+            self.assertIn("Uncommitted PM note.", ticket_path.read_text())
+            self.assertEqual(self.git(repo, "show", "-s", "--format=%s", "HEAD").stdout.strip(), "claim spike")
 
     def test_version_four_run_ledger_migrates_without_losing_history(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,6 +365,48 @@ class SpikeExecutionTests(unittest.TestCase):
             ticket = read_ticket(ticket_path)
             self.assertEqual(ticket["status"], "backlog")
             self.assertIsNone(ticket["run_id"])
+            self.assertFalse(workspace.exists())
+
+    def test_restart_recovery_commits_terminal_report_before_marking_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            workspace = root / "workspaces" / "spike-1"
+            log_path = root / "run.log"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", mode="spike", status="in_progress")
+            ticket_path = repo / ".orchestrator/RR-1.md"
+            ticket_path.write_text(ticket_path.read_text().replace("run_id: null", "run_id: 1"))
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "claim spike")
+            workspace.mkdir(parents=True)
+            log_path.write_text(json.dumps({
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": json.dumps(self.result())},
+            }) + "\n")
+            daemon = self.make_daemon(root)
+            run_id = daemon.runs.insert(
+                ticket_id="RR-1",
+                repo_path=str(repo),
+                workspace_path=str(workspace),
+                branch="",
+                execution_mode="spike",
+                state="SpikeResultReady",
+                log_path=str(log_path),
+            )
+            self.assertEqual(run_id, 1)
+
+            self.assertEqual(daemon.runs.reconcile_on_startup(), 1)
+            daemon._recover_stalled_spikes()
+
+            ticket = read_ticket(ticket_path)
+            self.assertEqual(ticket["status"], "done")
+            self.assertIn("**Recovery:** Restored from the terminal structured result", ticket["body"])
+            self.assertEqual(daemon.runs.get(run_id)["state"], "SpikeCompleted")
+            self.assertEqual(
+                self.git(repo, "show", "-s", "--format=%s", "HEAD").stdout.strip(),
+                "docs(RR-1): record spike run 1",
+            )
             self.assertFalse(workspace.exists())
 
     @staticmethod
