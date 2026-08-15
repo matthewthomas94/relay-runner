@@ -37,6 +37,13 @@ except ValueError:
 TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
 
 RELAY_COMPLETION_PREFIX = "__RELAY_COMPLETION__:"
+FOREGROUND_ACTOR_ROLES = frozenset({"foreground_pm", "foreground_manual"})
+FOREGROUND_OWNERSHIP_FIELDS = (
+    "app_session_id",
+    "recovery_generation",
+    "actor_role",
+    "foreground_gate_handle",
+)
 
 
 def _read_json_file(path: str) -> dict:
@@ -365,6 +372,29 @@ def _hook_event_name(payload: dict) -> str:
     return str(payload.get("hook_event_name") or payload.get("hookEventName") or "").strip()
 
 
+def _foreground_ownership() -> dict | None:
+    ownership = {
+        "app_session_id": os.environ.get("RELAY_APP_SESSION_ID", "").strip(),
+        "recovery_generation": os.environ.get("RELAY_RECOVERY_GENERATION", "").strip(),
+        "actor_role": os.environ.get("RELAY_ACTOR_ROLE", "").strip(),
+        "foreground_gate_handle": os.environ.get("RELAY_FOREGROUND_GATE_HANDLE", "").strip(),
+    }
+    if ownership["actor_role"] not in FOREGROUND_ACTOR_ROLES:
+        return None
+    if any(not ownership[field] for field in FOREGROUND_OWNERSHIP_FIELDS):
+        return None
+    return ownership
+
+
+def _same_foreground_owner(lhs: dict, rhs: dict) -> bool:
+    return all(lhs.get(field) == rhs.get(field) for field in FOREGROUND_OWNERSHIP_FIELDS)
+
+
+def _record_matches_current_foreground(record: dict) -> bool:
+    ownership = _foreground_ownership()
+    return ownership is not None and _same_foreground_owner(record, ownership)
+
+
 def _provider_name(payload: dict, claim: dict | None = None) -> str | None:
     for value in (
         os.environ.get("RELAY_RUNNER_PROVIDER"),
@@ -398,7 +428,7 @@ def _provider_session_id(payload: dict) -> str | None:
         value = str(payload.get(key) or "").strip()
         if value:
             return value
-    return PROVIDER_SESSION_ID or None
+    return os.environ.get("RELAY_PROVIDER_SESSION_ID", "").strip() or PROVIDER_SESSION_ID or None
 
 
 def _record_key(record: dict) -> str:
@@ -478,6 +508,7 @@ def _activate_turn_record(
         if (
             str(existing.get("provider_session_id") or "") == provider_session_id
             and str(existing.get("state") or "") == "active"
+            and _same_foreground_owner(existing, record)
         ):
             existing = dict(existing)
             existing["state"] = "orphaned"
@@ -530,6 +561,7 @@ def _find_turn_record(
         r
         for r in state["records"]
         if str(r.get("session_id") or "") == session_id
+        and _record_matches_current_foreground(r)
         and (
             not provider_session_id
             or str(r.get("provider_session_id") or "") == provider_session_id
@@ -546,6 +578,7 @@ def _find_turn_record(
             for record in state["records"]
             if (
                 str(record.get("provider_session_id") or "") == provider_session_id
+                and _record_matches_current_foreground(record)
                 and str(record.get("turn_id") or "") == turn_id
                 and _relay_command_key(record) is not None
                 and _provider_matches(record, payload)
@@ -641,6 +674,7 @@ def _command_turn_records(path: str, command: dict, *, now: float | None = None)
         for record in state["records"]
         if (
             isinstance(record, dict)
+            and _record_matches_current_foreground(record)
             and _relay_intent_matches(record, command)
             and str(record.get("state") or "") != "stale"
         )
@@ -696,6 +730,9 @@ def _bind_prompt_submit(
     turns_path: str,
     now: float,
 ) -> bool:
+    ownership = _foreground_ownership()
+    if ownership is None:
+        return False
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt:
         return False
@@ -772,6 +809,7 @@ def _bind_prompt_submit(
             record["provider"] = provider
         if provider_session_id:
             record["provider_session_id"] = provider_session_id
+        record.update(ownership)
         _activate_turn_record(turns_path, record, now=now)
         return True
 
@@ -797,6 +835,7 @@ def _bind_prompt_submit(
         record["provider"] = provider
     if provider_session_id:
         record["provider_session_id"] = provider_session_id
+    record.update(ownership)
     action = claim.get("action")
     if action:
         record["action"] = action
@@ -947,6 +986,12 @@ def handle_hook_payload(
 ) -> bool:
     now = time.time() if now is None else now
     event = _hook_event_name(payload)
+    if event in {"UserPromptSubmit", "Stop", "StopFailure"} and _foreground_ownership() is None:
+        print(
+            "[relay_completion_hook] ignored lifecycle event without foreground ownership",
+            file=stderr,
+        )
+        return False
     _record_compaction_diagnostic(payload, now=now)
     if event == "UserPromptSubmit":
         return _bind_prompt_submit(

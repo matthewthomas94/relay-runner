@@ -47,6 +47,8 @@ class SidecarLifecycleEvent:
 class CodexSidecarBackend(CodexMessengerBackend):
     """Codex app-server with web search enabled and every mutation tool disabled."""
 
+    actor_role = "sidecar"
+
     def spawn_command(self) -> list[str]:
         command = _command_prefix(self.config.command)
         command.extend([
@@ -74,6 +76,8 @@ class CodexSidecarBackend(CodexMessengerBackend):
 
 class ClaudeSidecarBackend(ClaudeMessengerBackend):
     """Claude print session restricted to public web read tools."""
+
+    actor_role = "sidecar"
 
     def spawn_command(self) -> list[str]:
         command = _command_prefix(self.config.command)

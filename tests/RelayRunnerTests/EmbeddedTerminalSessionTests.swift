@@ -1654,6 +1654,88 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         }
     }
 
+    func testDeliveryRequiresCurrentForegroundOwnershipEnvelope() throws {
+        let expected = (
+            providerSessionID: "provider-session",
+            appSessionID: "app-session",
+            recoveryGeneration: "generation-2",
+            foregroundGateHandle: "gate-2"
+        )
+        let mismatches = [
+            ("app_session_id", "previous-app"),
+            ("recovery_generation", "generation-1"),
+            ("actor_role", "messenger"),
+            ("foreground_gate_handle", "gate-1"),
+        ]
+
+        for provider in ["codex", "claude"] {
+            for (field, staleValue) in mismatches {
+                let fixture = try makeFixture()
+                let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-ownership\",\"relay_command_seq\":323}"
+                try "Ownership isolated\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+                try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+                try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+                var record: [String: Any] = [
+                    "state": "active",
+                    "origin": "manual",
+                    "provider": provider,
+                    "provider_session_id": expected.providerSessionID,
+                    "app_session_id": expected.appSessionID,
+                    "recovery_generation": expected.recoveryGeneration,
+                    "actor_role": "foreground_pm",
+                    "foreground_gate_handle": expected.foregroundGateHandle,
+                    "session_id": "native-session",
+                    "turn_id": "competing-turn",
+                ]
+                record[field] = staleValue
+                try writeProviderTurnRecords([record], to: fixture.providerTurns)
+                var sent: [String] = []
+                let delivery = RelayVoiceCommandDelivery(
+                    paths: fixture.paths,
+                    send: { sent.append(String(decoding: $0, as: UTF8.self)) },
+                    schedule: { _, _, _ in },
+                    isRunning: { true },
+                    providerSessionID: expected.providerSessionID,
+                    appSessionID: expected.appSessionID,
+                    recoveryGeneration: expected.recoveryGeneration,
+                    foregroundGateHandle: expected.foregroundGateHandle
+                )
+
+                XCTAssertTrue(delivery.claimAndSendIfPossible(), "\(provider) \(field)")
+                XCTAssertEqual(sent, ["Ownership isolated"], "\(provider) \(field)")
+            }
+
+            let fixture = try makeFixture()
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-current\",\"relay_command_seq\":324}"
+            try "Wait for current owner\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            try writeProviderTurnRecords([[
+                "state": "active",
+                "origin": "manual",
+                "provider": provider,
+                "provider_session_id": expected.providerSessionID,
+                "app_session_id": expected.appSessionID,
+                "recovery_generation": expected.recoveryGeneration,
+                "actor_role": "foreground_pm",
+                "foreground_gate_handle": expected.foregroundGateHandle,
+                "session_id": "native-session",
+                "turn_id": "current-turn",
+            ]], to: fixture.providerTurns)
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { _ in XCTFail("matching foreground turn must hold delivery") },
+                schedule: { _, _, _ in },
+                isRunning: { true },
+                providerSessionID: expected.providerSessionID,
+                appSessionID: expected.appSessionID,
+                recoveryGeneration: expected.recoveryGeneration,
+                foregroundGateHandle: expected.foregroundGateHandle
+            )
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+        }
+    }
+
     func testGenuineScopedManualTurnBlocksUntilExactReleaseWithSafeDiagnostics() throws {
         for provider in ["codex", "claude"] {
             let fixture = try makeFixture()

@@ -204,6 +204,12 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(claudeScript.contains(
             "export RELAY_REPLY_HELPER='/Relay Runner/services/relay_reply.py'"
         ))
+        for script in [codexScript, claudeScript] {
+            XCTAssertTrue(script.contains("export RELAY_APP_SESSION_ID="))
+            XCTAssertTrue(script.contains("export RELAY_RECOVERY_GENERATION="))
+            XCTAssertTrue(script.contains("export RELAY_ACTOR_ROLE=foreground_pm"))
+            XCTAssertTrue(script.contains("export RELAY_FOREGROUND_GATE_HANDLE="))
+        }
         XCTAssertFalse(codexScript.contains("handle the newest intent"))
         XCTAssertFalse(claudeScript.contains("handle the newest intent"))
         XCTAssertFalse(codexScript.contains("Use the relay-bridge skill now."))

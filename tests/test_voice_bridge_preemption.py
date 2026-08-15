@@ -147,6 +147,101 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         patcher = mock.patch.object(voice_bridge, "publish_waiting_preview")
         self.publish_waiting_preview = patcher.start()
         self.addCleanup(patcher.stop)
+        ownership = mock.patch.dict(os.environ, {
+            "RELAY_APP_SESSION_ID": "test-app-session",
+            "RELAY_RECOVERY_GENERATION": "test-generation",
+            "RELAY_ACTOR_ROLE": "foreground_pm",
+            "RELAY_FOREGROUND_GATE_HANDLE": "test-gate",
+        })
+        ownership.start()
+        self.addCleanup(ownership.stop)
+
+    @staticmethod
+    def foreground_ownership():
+        return {
+            "app_session_id": "test-app-session",
+            "recovery_generation": "test-generation",
+            "actor_role": "foreground_pm",
+            "foreground_gate_handle": "test-gate",
+        }
+
+    def test_completion_hook_requires_matching_foreground_owner_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                command = {
+                    "relay_command_seq": 1,
+                    "relay_command_id": f"{provider}-command",
+                    "agent_prompt": "bounded prompt",
+                    "provider": provider,
+                }
+                Path(state_path).write_text(json.dumps(command))
+                Path(claim_path).write_text(json.dumps(command))
+                prompt = {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-session",
+                    "turn_id": f"{provider}-turn",
+                    "prompt": "bounded prompt",
+                }
+
+                with mock.patch.dict(os.environ, {
+                    "RELAY_ACTOR_ROLE": "messenger",
+                    "RELAY_RUNNER_PROVIDER": provider,
+                }):
+                    self.assertFalse(relay_completion_hook.handle_hook_payload(
+                        prompt,
+                        claim_path=claim_path,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        stderr=io.StringIO(),
+                    ))
+                self.assertFalse(Path(turns_path).exists())
+
+                with mock.patch.dict(os.environ, {"RELAY_RUNNER_PROVIDER": provider}):
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        prompt,
+                        claim_path=claim_path,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        stderr=io.StringIO(),
+                    ))
+                record = json.loads(Path(turns_path).read_text())["records"][0]
+                self.assertEqual(record["app_session_id"], "test-app-session")
+                self.assertEqual(record["recovery_generation"], "test-generation")
+                self.assertEqual(record["actor_role"], "foreground_pm")
+                self.assertEqual(record["foreground_gate_handle"], "test-gate")
+
+                delivered = []
+                stop = {
+                    "hook_event_name": "Stop",
+                    "session_id": f"{provider}-session",
+                    "turn_id": f"{provider}-turn",
+                    "last_assistant_message": "authoritative final",
+                }
+                with mock.patch.dict(os.environ, {
+                    "RELAY_FOREGROUND_GATE_HANDLE": "competing-gate",
+                    "RELAY_RUNNER_PROVIDER": provider,
+                }):
+                    self.assertFalse(relay_completion_hook.handle_hook_payload(
+                        stop,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        write_control=lambda payload: delivered.append(payload) or True,
+                        stderr=io.StringIO(),
+                    ))
+                self.assertEqual(delivered, [])
+
+                with mock.patch.dict(os.environ, {"RELAY_RUNNER_PROVIDER": provider}):
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        stop,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        write_control=lambda payload: delivered.append(payload) or True,
+                        stderr=io.StringIO(),
+                    ))
+                self.assertEqual(delivered[0]["text"], "authoritative final")
 
     def test_relay_startup_queues_greeting_once(self):
         worker = FakeTTSWorker()
@@ -1940,6 +2035,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                         "provider_session_id": "current-session",
                     },
                     {
+                        **self.foreground_ownership(),
                         "state": "active",
                         "origin": "manual",
                         "provider_session_id": "other-session",
@@ -2519,6 +2615,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             Path(turns_path).write_text(json.dumps({
                 "records": [
                     {
+                        **self.foreground_ownership(),
                         "state": "active",
                         "session_id": "transient-one",
                         "turn_id": "ambiguous-turn",
@@ -2530,6 +2627,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                         "updated_at": 300,
                     },
                     {
+                        **self.foreground_ownership(),
                         "state": "active",
                         "session_id": "transient-two",
                         "turn_id": "ambiguous-turn",
@@ -3563,6 +3661,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     "version": 1,
                     "records": [
                         {
+                            **self.foreground_ownership(),
                             "state": "active",
                             "session_id": f"{provider}-session",
                             "turn_id": "turn-1",
@@ -3575,6 +3674,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                             "updated_at": 1.0,
                         },
                         {
+                            **self.foreground_ownership(),
                             "state": "active",
                             "session_id": f"{provider}-session",
                             "turn_id": "turn-2",
@@ -5041,12 +5141,10 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertNotIn("python3 - <<'PY' > /tmp/tts_in.fifo", script)
         self.assertNotIn('print("__ORCHESTRATOR_REPLY__:" + json.dumps(payload)', script)
         self.assertEqual(
-            script.count(
-                "printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | "
-                "/usr/bin/python3 '__RELAY_REPLY_HELPER__'"
-            ),
+            script.count("RELAY_ACTOR_ROLE=\"${RELAY_ACTOR_ROLE:-foreground_manual}\""),
             2,
         )
+        self.assertEqual(script.count("/usr/bin/python3 '__RELAY_REPLY_HELPER__'"), 2)
         self.assertEqual(
             script.count('-e "s|__RELAY_REPLY_HELPER__|$relay_reply_helper_path|g"'),
             2,
