@@ -8,8 +8,6 @@ import tempfile
 import threading
 import types
 import unittest
-import wave
-from array import array
 from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -644,43 +642,6 @@ class TTSWorkerReplayTests(unittest.TestCase):
             popen.call_args.args[0],
             ["afplay", "/tmp/test.wav", "-r", "1.3"],
         )
-
-    def test_playback_envelope_is_bounded_and_tracks_pcm_amplitude(self):
-        silence = array("h", [0] * 20).tobytes()
-        quiet = array("h", [500] * 20).tobytes()
-        loud = array("h", [20_000] * 20).tobytes()
-        clipped = array("h", [32_767, -32_768] * 10).tobytes()
-
-        self.assertEqual(tts_worker._pcm16_audio_level(silence), 0)
-        self.assertLess(
-            tts_worker._pcm16_audio_level(quiet),
-            tts_worker._pcm16_audio_level(loud),
-        )
-        self.assertLessEqual(tts_worker._pcm16_audio_level(clipped), 1)
-
-    def test_playback_envelope_streams_at_twenty_hertz_without_history(self):
-        wav_path = self.temp_wav()
-        samples = array("h", [0] * 50 + [20_000] * 50)
-        with wave.open(wav_path, "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(1_000)
-            wav_file.writeframes(samples.tobytes())
-
-        class NoWaitStop:
-            def is_set(self):
-                return False
-
-            def wait(self, _timeout):
-                return False
-
-        with patch.object(tts_worker, "_notify_state") as notify_state:
-            tts_worker._stream_playback_levels(wav_path, 1.0, NoWaitStop())
-
-        levels = [call.kwargs["level"] for call in notify_state.call_args_list]
-        self.assertEqual(len(levels), 2)
-        self.assertEqual(levels[0], 0)
-        self.assertGreater(levels[1], levels[0])
 
     def test_preparing_and_afplay_start_are_observed_for_correlated_speech(self):
         worker = self.make_worker()

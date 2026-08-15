@@ -1,51 +1,6 @@
-import Darwin
 import FluidAudio
 import Foundation
 import QuartzCore
-
-/// Stores only the latest microphone RMS value. Audio callbacks use a try-lock
-/// so level metering can never wait behind the UI reader; a contended update is
-/// simply dropped and the next capture buffer replaces it.
-final class RealtimeAudioLevelMeter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var rms: Double = 0
-    private var updatedAt: CFTimeInterval = 0
-
-    func ingest(_ samples: [Float], now: CFTimeInterval = CACurrentMediaTime()) {
-        guard !samples.isEmpty else { return }
-
-        var sumSquares = 0.0
-        samples.withUnsafeBufferPointer { buffer in
-            for sample in buffer {
-                let value = Double(sample)
-                sumSquares += value * value
-            }
-        }
-        let nextRMS = Darwin.sqrt(sumSquares / Double(samples.count))
-
-        guard lock.try() else { return }
-        rms = nextRMS.isFinite ? nextRMS : 0
-        updatedAt = now
-        lock.unlock()
-    }
-
-    func latestRMS(
-        now: CFTimeInterval = CACurrentMediaTime(),
-        maximumAge: TimeInterval = 0.25
-    ) -> Double {
-        lock.lock()
-        defer { lock.unlock() }
-        guard updatedAt > 0, now - updatedAt <= maximumAge else { return 0 }
-        return rms
-    }
-
-    func reset() {
-        lock.lock()
-        rms = 0
-        updatedAt = 0
-        lock.unlock()
-    }
-}
 
 /// FluidAudio Parakeet STT engine. Ported from stt-sidecar/Sources/VoiceListen/main.swift.
 /// Runs audio capture, VAD, transcription, and gesture detection in a background task.
@@ -96,7 +51,6 @@ final class STTEngine: @unchecked Sendable {
     // MARK: - Internal state
 
     private let audioBuffer = AudioBuffer()
-    @ObservationIgnored private let audioLevelMeter = RealtimeAudioLevelMeter()
     private var asrManager: AsrManager?
     private var processingTask: Task<Void, Error>?
     private let gesture: CapsLockGesture
@@ -108,7 +62,6 @@ final class STTEngine: @unchecked Sendable {
     @ObservationIgnored private lazy var audioCapture: AudioCaptureLifecycle = AudioCaptureLifecycle(
         sampleHandler: { [weak self] samples in
             self?.audioBuffer.append(samples)
-            self?.audioLevelMeter.ingest(samples)
         },
         isRecording: { [weak self] in
             guard let self else { return false }
@@ -204,10 +157,6 @@ final class STTEngine: @unchecked Sendable {
         gesture.toggleActivation()
     }
 
-    func recordingAudioRMS() -> Double {
-        audioLevelMeter.latestRMS()
-    }
-
     /// Cancel an in-progress recording externally (e.g. no session to send to).
     func cancelRecording() {
         guard isRecording else { return }
@@ -241,13 +190,11 @@ final class STTEngine: @unchecked Sendable {
         audioBuffer.accepting = false
         audioBuffer.clear()
         audioBuffer.setMaxSamples(AudioBuffer.defaultMaxSamples)
-        audioLevelMeter.reset()
     }
 
     private func prepareForCaptureReconfiguration(_ interruption: AudioCaptureInterruption) {
         audioBuffer.accepting = false
         audioBuffer.clear()
-        audioLevelMeter.reset()
         captureInterruptionLock.lock()
         captureInterruptionEpoch &+= 1
         captureReady = false
