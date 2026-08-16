@@ -14,7 +14,23 @@ final class ProgramBoardStatusTests: XCTestCase {
     }
 
     func testWorkspaceSetupLoaderIsNotShiftedByWorkContentOffset() {
-        XCTAssertFalse(ProgramBoardContentPresentation.settingUpUsesWorkspaceContentTopOffset)
+        XCTAssertTrue(ProgramBoardContentPresentation.settingUp.fillsWorkspace)
+        XCTAssertFalse(ProgramBoardContentPresentation.settingUp.usesTrailingSpacer)
+        XCTAssertEqual(ProgramBoardContentPresentation.settingUp.workspaceTopPadding, 0)
+        XCTAssertEqual(
+            ProgramBoardLayout.workspaceContentHeight,
+            ProgramBoardBackdropStyle.backdropHeight
+        )
+        XCTAssertEqual(
+            ProgramBoardLayout.workspaceContentCenterY,
+            ProgramBoardBackdropStyle.backdropHeight / 2
+        )
+        XCTAssertFalse(ProgramBoardContentPresentation.board.fillsWorkspace)
+        XCTAssertTrue(ProgramBoardContentPresentation.board.usesTrailingSpacer)
+        XCTAssertEqual(
+            ProgramBoardContentPresentation.board.workspaceTopPadding,
+            BoardSurfaceLayout.columnTopPadding
+        )
         XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 47)
     }
 

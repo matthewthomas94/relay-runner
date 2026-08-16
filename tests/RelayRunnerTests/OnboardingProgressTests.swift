@@ -146,6 +146,46 @@ final class OnboardingProgressTests: XCTestCase {
     }
 
     @MainActor
+    func testTutorialIntroLoaderMatchesRuntimeSetupLoaderSize() throws {
+        let runtimeHost = NSHostingView(rootView:
+            OnboardingRuntimeProgressView(progress: nil, reduceMotion: false)
+        )
+        runtimeHost.frame = CGRect(x: 0, y: 0, width: 640, height: 320)
+        runtimeHost.layoutSubtreeIfNeeded()
+
+        let tutorialHost = NSHostingView(rootView:
+            OnboardingTutorialView(
+                presentation: OnboardingTutorialPresentation(
+                    screen: .intro,
+                    reduceMotion: false,
+                    message: nil
+                ),
+                retryAction: {}
+            )
+        )
+        tutorialHost.frame = CGRect(x: 0, y: 0, width: 640, height: 320)
+        tutorialHost.layoutSubtreeIfNeeded()
+
+        let runtimeLoader = try XCTUnwrap(
+            descendants(of: NSProgressIndicator.self, in: runtimeHost).first(where: \.isIndeterminate)
+        )
+        let tutorialLoader = try XCTUnwrap(
+            descendants(of: NSProgressIndicator.self, in: tutorialHost).first(where: \.isIndeterminate)
+        )
+
+        XCTAssertEqual(
+            tutorialLoader.intrinsicContentSize.width,
+            runtimeLoader.intrinsicContentSize.width,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            tutorialLoader.intrinsicContentSize.height,
+            runtimeLoader.intrinsicContentSize.height,
+            accuracy: 0.001
+        )
+    }
+
+    @MainActor
     func testMountedReduceMotionProgressUsesStaticOngoingStatus() {
         let host = NSHostingView(rootView:
             OnboardingRuntimeProgressView(progress: 0.98, reduceMotion: true)

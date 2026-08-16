@@ -160,7 +160,7 @@ struct OnboardingTutorialView: View {
                 )
                 if presentation.screen.showsLoadingIndicator {
                     ProgressView()
-                        .controlSize(.regular)
+                        .controlSize(OnboardingSetupActivityIndicatorStyle.controlSize)
                         .tint(.white)
                         .offset(y: 72)
                         .accessibilityLabel("Preparing voice session")

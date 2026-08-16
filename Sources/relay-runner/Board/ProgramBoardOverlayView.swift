@@ -60,6 +60,12 @@ enum ProgramBoardLayout {
     static let statePanelHorizontalPadding: CGFloat = BoardSurfaceLayout.horizontalPadding
     static let sessionToolbarTopPadding: CGFloat = BoardSurfaceLayout.navigationTopPadding
     static let sessionToolbarTrailingPadding: CGFloat = 40
+    static var workspaceContentHeight: CGFloat {
+        ProgramBoardBackdropStyle.backdropHeight
+    }
+    static var workspaceContentCenterY: CGFloat {
+        workspaceContentHeight / 2
+    }
 }
 
 enum ProgramWorkspaceDotMatrixStyle {
@@ -268,6 +274,7 @@ struct ProgramBoardOverlayView: View {
                 .blur(radius: backgroundBlurRadius)
                 .allowsHitTesting(!dotMatrixPresentation.isVisible)
             } else if workspace.showsWorkTab {
+                let contentPresentation = boardContentPresentation
                 VStack(spacing: 0) {
                     ProgramBoardContent(
                         model: model,
@@ -280,15 +287,17 @@ struct ProgramBoardOverlayView: View {
                         onCreateStart: onCreateStart,
                         onDrop: onDrop
                     )
-                    .padding(
-                        .top,
-                        showsSettingUpPresentation
-                            ? 0
-                            : BoardSurfaceLayout.columnTopPadding
-                    )
+                    .padding(.top, contentPresentation.workspaceTopPadding)
 
-                    Spacer(minLength: 0)
+                    if contentPresentation.usesTrailingSpacer {
+                        Spacer(minLength: 0)
+                    }
                 }
+                .frame(maxWidth: .infinity)
+                .frame(
+                    height: ProgramBoardLayout.workspaceContentHeight,
+                    alignment: contentPresentation.fillsWorkspace ? .center : .top
+                )
                 .blur(radius: backgroundBlurRadius)
                 .allowsHitTesting(!dotMatrixPresentation.isVisible)
             }
@@ -415,12 +424,12 @@ struct ProgramBoardOverlayView: View {
         }
     }
 
-    private var showsSettingUpPresentation: Bool {
+    private var boardContentPresentation: ProgramBoardContentPresentation {
         ProgramBoardContentPresentation.resolve(
             hasSnapshot: model.snapshot != nil,
             hasRegisteredProjects: model.snapshot?.hasRegisteredProjects ?? false,
             reloadState: model.reloadState
-        ) == .settingUp
+        )
     }
 }
 
@@ -862,7 +871,12 @@ enum ProgramBoardContentPresentation: Equatable {
     static let settingUpTitle = "Setting up your project..."
     static let settingUpFontRole: AppTypography.Role = .sectionHeading
     static let settingUpForegroundOpacity = 0.92
-    static let settingUpUsesWorkspaceContentTopOffset = false
+
+    var fillsWorkspace: Bool { self == .settingUp }
+    var usesTrailingSpacer: Bool { !fillsWorkspace }
+    var workspaceTopPadding: CGFloat {
+        fillsWorkspace ? 0 : BoardSurfaceLayout.columnTopPadding
+    }
 
     static func resolve(
         hasSnapshot: Bool,

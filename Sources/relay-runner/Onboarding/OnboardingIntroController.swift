@@ -1641,6 +1641,10 @@ enum OnboardingRuntimeAccessibility {
     }
 }
 
+enum OnboardingSetupActivityIndicatorStyle {
+    static let controlSize: ControlSize = .small
+}
+
 struct OnboardingRuntimeProgressView: View {
     let progress: Double?
     let reduceMotion: Bool
@@ -1671,7 +1675,7 @@ struct OnboardingRuntimeProgressView: View {
                 .accessibilityHidden(true)
         } else {
             ProgressView()
-                .controlSize(.small)
+                .controlSize(OnboardingSetupActivityIndicatorStyle.controlSize)
                 .accessibilityHidden(true)
         }
     }
