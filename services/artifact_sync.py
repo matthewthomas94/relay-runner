@@ -109,6 +109,16 @@ class ArtifactSyncResult:
 
 
 @dataclasses.dataclass(frozen=True)
+class ArtifactRemoteProof:
+    """One archived object that must survive an independent remote fetch."""
+
+    source_commit: str
+    path: str
+    blob_id: str
+    sha256: str
+
+
+@dataclasses.dataclass(frozen=True)
 class _RemoteSnapshot:
     head: str | None
     quarantine: Path | None
@@ -229,6 +239,201 @@ class ArtifactSyncEngine:
             local_head,
             transitions=(ArtifactSyncState.AHEAD, ArtifactSyncState.SYNCING, ArtifactSyncState.CLEAN),
         )
+
+    def publish_prepared(
+        self,
+        candidate_head: str,
+        *,
+        expected_remote_head: str,
+        proofs: Sequence[ArtifactRemoteProof],
+    ) -> ArtifactSyncResult:
+        """Normally publish a prepared descendant, then independently refetch it.
+
+        The local artifact ref is deliberately left at ``expected_remote_head``.
+        A caller may advance it only after this method returns ``CLEAN``.  A
+        failed or indeterminate push is always resolved by another exact-ref
+        quarantine fetch rather than by trusting the push process exit status.
+        """
+        if self.mode != ArtifactSyncMode.ENABLED:
+            raise ArtifactValidationError("prepared publication requires enabled remote sync")
+        with self.store._writer_lock():
+            local_head = self.store._head()
+            if local_head != expected_remote_head:
+                raise ArtifactConcurrentUpdate(
+                    "local artifact authority changed before prepared publication"
+                )
+            self._validate_configuration(local_head)
+            self.store._validate_artifact_head(candidate_head)
+            if self.store._first_parent(candidate_head) != expected_remote_head:
+                raise ArtifactValidationError(
+                    "prepared artifact commit is not a direct descendant of the verified base"
+                )
+            blocked = self._validate_local_commits(expected_remote_head, candidate_head)
+            if blocked:
+                return self._finish(
+                    ArtifactSyncState.LOCAL_AHEAD_BLOCKED,
+                    ArtifactSyncState.AHEAD,
+                    0,
+                    candidate_head,
+                    None,
+                    recovery=blocked,
+                    transitions=(ArtifactSyncState.AHEAD, ArtifactSyncState.LOCAL_AHEAD_BLOCKED),
+                )
+
+            with self._remote_snapshot() as before:
+                if before.error_state:
+                    return self._remote_error_result(before, candidate_head, attempts=1)
+                assert before.head is not None and before.quarantine is not None
+                if self._quarantine_is_ancestor(
+                    before.quarantine, candidate_head, before.head
+                ):
+                    return self._verified_prepared_result(
+                        before, candidate_head, proofs, attempts=1
+                    )
+                if before.head != expected_remote_head:
+                    observed = self._relationship(expected_remote_head, before.head)
+                    return self._finish(
+                        observed,
+                        observed,
+                        1,
+                        candidate_head,
+                        before.head,
+                        recovery=(
+                            "The configured artifact ref changed before archival publication; "
+                            "reconcile and retry without force."
+                        ),
+                        transitions=(observed,),
+                    )
+
+            self._inject("before_prepared_push")
+            push_error = self._push(candidate_head)
+            self._inject("after_prepared_push")
+
+            # This is intentionally a new quarantine, not the snapshot used for
+            # preflight.  It resolves indeterminate pushes and remote races.
+            with self._remote_snapshot() as after:
+                if after.error_state:
+                    return self._remote_error_result(after, candidate_head, attempts=1)
+                assert after.head is not None and after.quarantine is not None
+                if self._quarantine_is_ancestor(
+                    after.quarantine, candidate_head, after.head
+                ):
+                    return self._verified_prepared_result(
+                        after, candidate_head, proofs, attempts=1
+                    )
+                if push_error is not None:
+                    state, recovery = push_error
+                    return self._finish(
+                        state,
+                        ArtifactSyncState.AHEAD,
+                        1,
+                        candidate_head,
+                        after.head,
+                        recovery=recovery,
+                        transitions=(ArtifactSyncState.AHEAD, ArtifactSyncState.SYNCING, state),
+                    )
+                return self._finish(
+                    ArtifactSyncState.FAILED,
+                    ArtifactSyncState.AHEAD,
+                    1,
+                    candidate_head,
+                    after.head,
+                    recovery=(
+                        "The remote did not retain the prepared artifact commit after push; "
+                        "the local materialization remains authoritative."
+                    ),
+                    transitions=(
+                        ArtifactSyncState.AHEAD,
+                        ArtifactSyncState.SYNCING,
+                        ArtifactSyncState.FAILED,
+                    ),
+                )
+
+    def recover_exact_ref(
+        self,
+        *,
+        validate_head: Callable[[str], None] | None = None,
+    ) -> ArtifactSyncResult:
+        """Import only the configured artifact ref for a fresh or second device."""
+        if self.mode != ArtifactSyncMode.ENABLED:
+            raise ArtifactValidationError("remote recovery requires enabled remote sync")
+        with self.store._writer_lock():
+            current = self.store._head()
+            if current:
+                self._validate_configuration(current)
+            elif self.store.materialized_path.exists() or self.store.materialized_path.is_symlink():
+                return self._finish(
+                    ArtifactSyncState.FAILED,
+                    ArtifactSyncState.FAILED,
+                    0,
+                    None,
+                    None,
+                    recovery=(
+                        "Fresh artifact recovery will not replace an existing .orchestrator tree; "
+                        "review or migrate it explicitly."
+                    ),
+                    transitions=(ArtifactSyncState.FAILED,),
+                )
+
+            with self._remote_snapshot() as remote:
+                if remote.error_state:
+                    return self._remote_error_result(remote, current, attempts=1)
+                assert remote.head is not None
+                try:
+                    if validate_head:
+                        validate_head(remote.head)
+                except (ArtifactStoreError, ValueError) as error:
+                    return self._finish(
+                        ArtifactSyncState.FAILED,
+                        ArtifactSyncState.FAILED,
+                        1,
+                        current,
+                        remote.head,
+                        recovery=f"Remote artifact recovery validation failed: {error}",
+                        transitions=(ArtifactSyncState.SYNCING, ArtifactSyncState.FAILED),
+                    )
+                if current and current != remote.head:
+                    if not self._is_ancestor(current, remote.head):
+                        return self._finish(
+                            ArtifactSyncState.CONFLICT,
+                            ArtifactSyncState.CONFLICT,
+                            1,
+                            current,
+                            remote.head,
+                            recovery=(
+                                "Local and remote artifact authorities diverged; reconcile them "
+                                "explicitly before second-device recovery."
+                            ),
+                            transitions=(ArtifactSyncState.CONFLICT,),
+                        )
+                if current != remote.head:
+                    update = self.store._git(
+                        "update-ref",
+                        self.store.artifact_ref,
+                        remote.head,
+                        current or self.store._zero_oid(),
+                        allowed_statuses={0, 128},
+                    )
+                    if update.returncode != 0:
+                        return self._finish(
+                            ArtifactSyncState.AHEAD,
+                            ArtifactSyncState.AHEAD,
+                            1,
+                            self.store._head(),
+                            remote.head,
+                            recovery="Local artifact authority changed during recovery; retry.",
+                            transitions=(ArtifactSyncState.AHEAD,),
+                        )
+                self._inject("after_recovery_ref_update")
+                self.store._materialize(remote.head, force=True)
+                return self._finish(
+                    ArtifactSyncState.CLEAN,
+                    ArtifactSyncState.CLEAN,
+                    1,
+                    remote.head,
+                    remote.head,
+                    transitions=(ArtifactSyncState.SYNCING, ArtifactSyncState.CLEAN),
+                )
 
     def resolve_conflict(
         self,
@@ -938,6 +1143,92 @@ class ArtifactSyncEngine:
             )
         if document.get("artifact_ref") != self.store.artifact_ref:
             raise ArtifactValidationError("remote artifact config names another ref")
+        if document.get("remote_sync") != ArtifactSyncMode.ENABLED.value:
+            raise ArtifactValidationError("remote artifact config is not enabled for synchronization")
+        if document.get("remote_name") != self.remote_name:
+            raise ArtifactValidationError("remote artifact config names another selected remote")
+
+    def _verified_prepared_result(
+        self,
+        remote: _RemoteSnapshot,
+        candidate_head: str,
+        proofs: Sequence[ArtifactRemoteProof],
+        *,
+        attempts: int,
+    ) -> ArtifactSyncResult:
+        assert remote.head is not None and remote.quarantine is not None
+        try:
+            self._verify_remote_proofs(remote.quarantine, remote.head, proofs)
+        except ArtifactValidationError as error:
+            return self._finish(
+                ArtifactSyncState.FAILED,
+                ArtifactSyncState.FAILED,
+                attempts,
+                candidate_head,
+                remote.head,
+                recovery=f"Published artifact integrity verification failed: {error}",
+                transitions=(ArtifactSyncState.SYNCING, ArtifactSyncState.FAILED),
+            )
+        return self._finish(
+            ArtifactSyncState.CLEAN,
+            ArtifactSyncState.AHEAD,
+            attempts,
+            candidate_head,
+            remote.head,
+            transitions=(ArtifactSyncState.AHEAD, ArtifactSyncState.SYNCING, ArtifactSyncState.CLEAN),
+        )
+
+    def _verify_remote_proofs(
+        self,
+        repository: Path,
+        remote_head: str,
+        proofs: Sequence[ArtifactRemoteProof],
+    ) -> None:
+        for proof in proofs:
+            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", proof.source_commit):
+                raise ArtifactValidationError("archive proof has an invalid source commit")
+            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", proof.blob_id):
+                raise ArtifactValidationError("archive proof has an invalid blob ID")
+            if not re.fullmatch(r"[0-9a-f]{64}", proof.sha256):
+                raise ArtifactValidationError("archive proof has an invalid SHA-256 digest")
+            if not self._quarantine_is_ancestor(repository, proof.source_commit, remote_head):
+                raise ArtifactValidationError(
+                    f"archive source commit is unreachable for {proof.path}"
+                )
+            try:
+                actual_blob = self._quarantine_git(
+                    repository, "rev-parse", f"{proof.source_commit}:{proof.path}"
+                )
+                content = self._quarantine_git_bytes(
+                    repository, "cat-file", "blob", proof.blob_id
+                )
+            except ArtifactStoreError as error:
+                raise ArtifactValidationError(
+                    f"published archive object is unavailable for {proof.path}"
+                ) from error
+            if actual_blob != proof.blob_id:
+                raise ArtifactValidationError(
+                    f"published archive blob identity changed for {proof.path}"
+                )
+            if hashlib.sha256(content).hexdigest() != proof.sha256:
+                raise ArtifactValidationError(
+                    f"published archive digest changed for {proof.path}"
+                )
+
+    def _quarantine_is_ancestor(
+        self,
+        repository: Path,
+        ancestor: str,
+        descendant: str,
+    ) -> bool:
+        process = subprocess.run(
+            ["git", "-C", str(repository), "merge-base", "--is-ancestor", ancestor, descendant],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self.store._git_environment(),
+            check=False,
+        )
+        return process.returncode == 0
 
     def _push(self, local_head: str) -> tuple[ArtifactSyncState, str] | None:
         assert self.remote_name is not None
@@ -1155,6 +1446,7 @@ class ArtifactSyncEngine:
 __all__ = [
     "ArtifactConflict",
     "ArtifactConflictReport",
+    "ArtifactRemoteProof",
     "ArtifactSyncEngine",
     "ArtifactSyncMode",
     "ArtifactSyncResult",

@@ -6,6 +6,8 @@ This is RR-273 phase 4 and implements the [RR-270 synchronization state machine]
 
 Synchronization is opt-in per project. A project configuration records either `remote_sync = "local_only"` with no remote, or `remote_sync = "enabled"` with the exact name of an already configured Git remote. Relay never guesses, adds, renames, or rewrites remotes. A missing remote artifact ref requires a separate confirmed first normal push; Local only performs no network operation.
 
+Retention publication has a stricter prepared-commit entry point. It leaves the local artifact authority unchanged, normally pushes one exact artifact refspec, then performs a second quarantine fetch and verifies caller-supplied source-commit/path/blob/SHA-256 proofs. Push success alone is never durability evidence. Fresh-device recovery likewise fetches only the configured artifact ref, validates a caller-supplied retention-layout predicate before adoption, and refuses to replace an existing unowned materialization or overwrite divergent local artifact history.
+
 Remote inspection happens in a temporary bare quarantine repository. Relay fetches exactly `refs/heads/relay/artifacts`, without tags, source refs, pull-request refs, or submodules, then verifies orphan-rooted linear history, the path and mode allowlist, canonical content, and the immutable project ID. Only verified artifact objects are imported through a temporary local scratch ref. A foreign or mislabeled ref is rejected before its ordinary source history can enter the source repository's object database.
 
 ## State machine

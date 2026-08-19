@@ -17,6 +17,7 @@ from services.artifact_store import (
     TicketWrite,
 )
 from services.artifact_sync import (
+    ArtifactRemoteProof,
     ArtifactSyncEngine,
     ArtifactSyncMode,
     ArtifactSyncState,
@@ -115,6 +116,84 @@ class ArtifactSyncTests(unittest.TestCase):
         self.assertEqual(
             self.run_git(other_remote, "rev-parse", ARTIFACT_REF),
             published.local_head,
+        )
+
+    def test_prepared_publication_refetches_proofs_before_local_ref_moves(self):
+        base = self.device_a.store._head()
+        content = self.ticket_bytes("RR-prepared", "Prepared", "artifact-RR-prepared")
+        prepared = self.device_a.store.prepare_mutation(
+            self.mutation(
+                self.device_a,
+                "prepared-ticket",
+                TicketWrite("RR-prepared", "artifact-RR-prepared", content),
+                expected_base=base,
+            )
+        )
+        proof = ArtifactRemoteProof(
+            source_commit=prepared.commit_id,
+            path=".orchestrator/RR-prepared.md",
+            blob_id=self.device_a.store._tree_entries(prepared.commit_id)[
+                ".orchestrator/RR-prepared.md"
+            ].oid,
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
+
+        failed = self.engine(self.device_a).publish_prepared(
+            prepared.commit_id,
+            expected_remote_head=base,
+            proofs=(dataclasses.replace(proof, sha256="0" * 64),),
+        )
+
+        self.assertEqual(failed.state, ArtifactSyncState.FAILED)
+        self.assertEqual(self.device_a.store._head(), base)
+        self.assertNotIn(".orchestrator/RR-prepared.md", self.device_a.store.snapshot().files)
+        self.assertEqual(self.run_git(self.remote, "rev-parse", ARTIFACT_REF), prepared.commit_id)
+
+        verified = self.engine(self.device_a).publish_prepared(
+            prepared.commit_id,
+            expected_remote_head=base,
+            proofs=(proof,),
+        )
+        self.assertEqual(verified.state, ArtifactSyncState.CLEAN)
+        self.assertEqual(verified.remote_head, prepared.commit_id)
+        self.assertEqual(self.device_a.store._head(), base)
+
+    def test_fresh_device_recovers_only_exact_remote_artifact_ref(self):
+        remote_head = self.write_ticket(
+            self.device_a, "recovery-ticket", "RR-recovery", "Recovered"
+        )
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        fresh_repo = self.root / "fresh-device"
+        fresh_repo.mkdir()
+        self.run_git(fresh_repo, "init", "--initial-branch=main", "--quiet")
+        (fresh_repo / "source.txt").write_text("fresh source\n")
+        self.commit_source(fresh_repo, "fresh source")
+        self.run_git(fresh_repo, "remote", "add", "origin", str(self.remote))
+        fresh = Device(
+            "fresh",
+            fresh_repo,
+            self.root / "state-fresh",
+            ArtifactStore(
+                fresh_repo,
+                "project-sync",
+                self.root / "state-fresh",
+                enabled=True,
+            ),
+        )
+        validated = []
+
+        result = self.engine(fresh).recover_exact_ref(
+            validate_head=lambda head: validated.append(head)
+        )
+
+        self.assertEqual(result.state, ArtifactSyncState.CLEAN)
+        self.assertEqual(result.local_head, remote_head)
+        self.assertEqual(validated, [remote_head])
+        self.assertIn(".orchestrator/RR-recovery.md", fresh.store.snapshot().files)
+        refs = self.run_git(fresh_repo, "for-each-ref", "--format=%(refname)").splitlines()
+        self.assertEqual(
+            refs,
+            ["refs/heads/main", ARTIFACT_REF],
         )
 
     def test_two_devices_rebase_unrelated_offline_events_and_preserve_source_state(self):
