@@ -252,6 +252,68 @@ class ContinuityIntegrationTests(unittest.TestCase):
         adapter.sample(observed_at=301)
         self.assertEqual(emitted, [])
 
+    def test_production_recording_status_does_not_arm_silent_capture_deadline(self):
+        emitted = []
+        adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+        posted = []
+
+        def post(source, event, _metadata=None, **_kwargs):
+            posted.append((source, event))
+            return adapter.observe({
+                "source": source,
+                "event": event,
+                "session_id": "silent-recording-session",
+                "provider": "codex",
+                "observed_at": 100,
+            })
+
+        with patch.object(voice_bridge, "_post_continuity_event", side_effect=post):
+            self.assertTrue(voice_bridge._handle_relay_control_message(
+                "__STATUS__:recording...",
+                SimpleNamespace(),
+            ))
+
+        for observed_at in (105, 106, 130, 131, 300, 301):
+            adapter.sample(observed_at=observed_at)
+
+        self.assertEqual(posted, [])
+        self.assertEqual(emitted, [])
+
+    def test_production_stt_controls_classify_dropped_capture_and_transcription(self):
+        cases = (
+            ("capture_failed", "speech_capture"),
+            ("transcription_started", "transcription"),
+            ("transcription_failed", "transcription"),
+        )
+        for signal, expected_component in cases:
+            with self.subTest(signal=signal):
+                emitted = []
+                adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+
+                def post(source, event, _metadata=None, **_kwargs):
+                    return adapter.observe({
+                        "source": source,
+                        "event": event,
+                        "session_id": f"{signal}-session",
+                        "provider": "claude",
+                        "observed_at": 100,
+                    })
+
+                with patch.object(voice_bridge, "_post_continuity_event", side_effect=post):
+                    self.assertTrue(voice_bridge._handle_relay_control_message(
+                        f"__CONTINUITY__:{signal}",
+                        SimpleNamespace(),
+                    ))
+
+                adapter.sample(observed_at=130)
+                self.assertEqual(emitted, [])
+                adapter.sample(observed_at=131)
+                self.assertEqual(
+                    [item["component"] for item in emitted],
+                    [expected_component],
+                )
+                self.assertEqual(emitted[0]["provider"], "none")
+
     def test_codex_and_claude_prompt_hooks_arm_provider_deadlines(self):
         for provider, expected_signal in (("codex", "turn_started"), ("claude", "stream_started")):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:

@@ -618,12 +618,19 @@ def _post_continuity_event(
 
 def _observe_stt_status(status: str) -> None:
     normalized = str(status or "").strip().lower()
-    if normalized.startswith("recording"):
-        _post_continuity_event("stt", "capture_started")
-    elif normalized.startswith("(refining)") or normalized.startswith("refining"):
+    if normalized.startswith("(refining)") or normalized.startswith("refining"):
         _post_continuity_event("stt", "transcription_started")
-    elif any(marker in normalized for marker in ("error", "failed", "unavailable")):
-        _post_continuity_event("stt", "transcription_failed")
+
+
+def _observe_stt_continuity_signal(signal: str) -> None:
+    normalized = str(signal or "").strip().lower()
+    event = {
+        "capture_failed": "capture_failed",
+        "transcription_started": "transcription_started",
+        "transcription_failed": "transcription_failed",
+    }.get(normalized)
+    if event is not None:
+        _post_continuity_event("stt", event)
 
 
 def _bridge_provider(cfg: dict) -> str:
@@ -2859,6 +2866,10 @@ def _handle_relay_control_message(
         _observe_stt_status(text[len("__STATUS__:"):])
         return True
 
+    if text.startswith("__CONTINUITY__:"):
+        _observe_stt_continuity_signal(text[len("__CONTINUITY__:"):])
+        return True
+
     if _quarantine_raw_relay_control_object(text):
         return True
 
@@ -3997,6 +4008,10 @@ def main():
                     _observe_stt_status(status_msg)
                     print(f"\033[2m  [{status_msg}]\033[0m")
                     sys.stdout.flush()
+                    continue
+
+                if text.startswith("__CONTINUITY__:"):
+                    _observe_stt_continuity_signal(text[len("__CONTINUITY__:"):])
                     continue
 
                 # Convert "slash <command>" to "/<command>"

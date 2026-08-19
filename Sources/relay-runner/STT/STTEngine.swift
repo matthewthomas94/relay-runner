@@ -134,12 +134,17 @@ final class STTEngine: @unchecked Sendable {
         audioCapture.onRecovery = { [weak self] recovery in
             self?.captureDidRecover(recovery)
         }
-        if let route = try audioCapture.start() {
-            setCaptureReady(true)
-            NSLog(
-                "[STTEngine] Audio capture started. device=\(route.deviceID) " +
-                "format=\(route.sampleRate)Hz/\(route.channelCount)ch mode=\(inputMode)"
-            )
+        do {
+            if let route = try audioCapture.start() {
+                setCaptureReady(true)
+                NSLog(
+                    "[STTEngine] Audio capture started. device=\(route.deviceID) " +
+                    "format=\(route.sampleRate)Hz/\(route.channelCount)ch mode=\(inputMode)"
+                )
+            }
+        } catch {
+            FIFOWriter.write("__CONTINUITY__:capture_failed")
+            throw error
         }
 
         // Start processing loop
@@ -257,6 +262,7 @@ final class STTEngine: @unchecked Sendable {
             setCaptureReady(false)
             audioBuffer.accepting = false
             statusMessage = error.localizedDescription
+            writeVoiceOutput("__CONTINUITY__:capture_failed")
             FIFOWriter.write("__STATUS__:\(error.localizedDescription)")
             NSLog(
                 "[STTEngine] Audio route recovery failed. " +
@@ -303,7 +309,15 @@ final class STTEngine: @unchecked Sendable {
 
             guard let manager = asrManager else { continue }
             let captureEpoch = currentCaptureEpoch()
-            let result = try await manager.transcribe(audio, source: .microphone)
+            FIFOWriter.write("__CONTINUITY__:transcription_started")
+            let result = try await {
+                do {
+                    return try await manager.transcribe(audio, source: .microphone)
+                } catch {
+                    FIFOWriter.write("__CONTINUITY__:transcription_failed")
+                    throw error
+                }
+            }()
             guard captureEpochIsCurrent(captureEpoch) else { continue }
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
@@ -363,6 +377,7 @@ final class STTEngine: @unchecked Sendable {
                         gesture.reset()
                         isRecording = false
                         partialTranscription = ""
+                        writeVoiceOutput("__CONTINUITY__:capture_failed")
                         let message = statusMessage.isEmpty
                             ? "Microphone input is recovering. Try again in a moment."
                             : statusMessage
@@ -520,7 +535,18 @@ final class STTEngine: @unchecked Sendable {
 
     private func transcribeMeaningfulText(_ audio: [Float]) async throws -> String? {
         guard let manager = asrManager else { return nil }
-        let result = try await manager.transcribe(audio, source: .microphone)
+        let rms = sqrt(audio.map { $0 * $0 }.reduce(0, +) / Float(audio.count))
+        if rms >= vadThreshold {
+            writeVoiceOutput("__CONTINUITY__:transcription_started")
+        }
+        let result = try await {
+            do {
+                return try await manager.transcribe(audio, source: .microphone)
+            } catch {
+                writeVoiceOutput("__CONTINUITY__:transcription_failed")
+                throw error
+            }
+        }()
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
 

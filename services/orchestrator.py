@@ -181,6 +181,7 @@ ORCHESTRATOR_COMMAND_TERMINAL_STATUSES = frozenset({
 
 _CONTINUITY_LIFECYCLE_EVENTS = {
     ("stt", "capture_started"): ("speech_capture", "capture", "healthy", False),
+    ("stt", "capture_failed"): ("speech_capture", "capture", "unavailable", False),
     ("stt", "transcription_started"): ("transcription", "transcription", "healthy", False),
     ("stt", "transcription_failed"): ("transcription", "transcription", "unavailable", False),
     ("bridge", "command_received"): ("command", "command_processing", "healthy", False),
