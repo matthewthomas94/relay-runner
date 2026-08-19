@@ -5,7 +5,9 @@ import os
 import sys
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -16,7 +18,7 @@ sys.modules.setdefault(
 )
 
 from messenger import MessengerRuntime  # noqa: E402
-from orchestrator import ContinuityLifecycleAdapter  # noqa: E402
+from orchestrator import ContinuityLifecycleAdapter, Daemon  # noqa: E402
 from voice_bridge import _post_continuity_event  # noqa: E402
 
 
@@ -130,6 +132,96 @@ class ContinuityIntegrationTests(unittest.TestCase):
         serialized = json.dumps(failures)
         self.assertNotIn("raw-error-secret", serialized)
         self.assertNotIn("private user transcript", serialized)
+
+    def test_periodic_sampler_classifies_one_shot_production_failures_for_both_providers(self):
+        provider_incidents = {}
+        for provider in ("codex", "claude"):
+            emitted = []
+            adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+
+            def post(source, event, session_id, command_id=None):
+                _post_continuity_event(
+                    source,
+                    event,
+                    {
+                        "session_id": session_id,
+                        "relay_command_id": command_id,
+                        "provider": provider,
+                    },
+                    observed_at=100,
+                    request_json=lambda _path, payload: adapter.observe(payload),
+                )
+
+            post("stt", "transcription_failed", f"{provider}-stt")
+            post("bridge", "delivery_failed", f"{provider}-bridge", "bridge-command")
+            post("provider", "process_exit", f"{provider}-provider", "provider-command")
+
+            daemon = Daemon.__new__(Daemon)
+            daemon.workspace_root = Path(ROOT)
+            daemon.agent_kind = provider
+            daemon.continuity = adapter
+            with patch("orchestrator.time.time", return_value=100):
+                daemon._observe_command_continuity({
+                    "session_id": f"{provider}-command",
+                    "relay_command_id": "accepted-command",
+                    "provider_key": provider,
+                    "repo_path": ROOT,
+                }, "accepted")
+
+            for observed_at in (110, 111, 115, 116, 130, 131):
+                daemon.sample_continuity(observed_at=observed_at)
+
+            self.assertEqual(
+                {item["component"] for item in emitted},
+                {"transcription", "bridge", "foreground_provider", "command"},
+            )
+            self.assertTrue(all(item["timing"]["post_grace_samples"] == 2 for item in emitted))
+            provider_incidents[provider] = emitted
+
+        self.assertEqual(len(provider_incidents["codex"]), 4)
+        self.assertEqual(len(provider_incidents["claude"]), 4)
+        self.assertEqual(
+            [item["component"] for item in provider_incidents["codex"]],
+            [item["component"] for item in provider_incidents["claude"]],
+        )
+
+    def test_periodic_sampler_honors_session_and_completed_command_suppression(self):
+        for terminal_event in ("explicit_stop", "update", "reset"):
+            emitted = []
+            adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+            adapter.observe({
+                "source": "bridge",
+                "event": "delivery_failed",
+                "session_id": "suppressed-session",
+                "relay_command_id": "suppressed-command",
+                "provider": "codex",
+                "observed_at": 100,
+            })
+            adapter.observe({
+                "source": "session",
+                "event": terminal_event,
+                "session_id": "suppressed-session",
+                "provider": "codex",
+                "observed_at": 101,
+            })
+            adapter.sample(observed_at=200)
+            adapter.sample(observed_at=201)
+            self.assertEqual(emitted, [])
+
+        emitted = []
+        adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+        for event, observed_at in (("accepted", 100), ("completed", 101)):
+            adapter.observe({
+                "source": "command",
+                "event": event,
+                "session_id": "completed-session",
+                "relay_command_id": "completed-command",
+                "provider": "claude",
+                "observed_at": observed_at,
+            })
+        adapter.sample(observed_at=200)
+        adapter.sample(observed_at=201)
+        self.assertEqual(emitted, [])
 
 
 if __name__ == "__main__":

@@ -302,6 +302,26 @@ class ContinuityIncidentDetector:
         self._cooldown_until: dict[str, float] = {}
         self._completed_commands: set[str] = set()
 
+    def suppress_session(self, session_id: str) -> None:
+        """Discard unresolved evidence when the owning session is intentionally stopped."""
+        _validate_opaque(session_id, "session")
+        for key in tuple(self._episodes):
+            if key[1] == session_id:
+                self._episodes.pop(key, None)
+
+    def resolve_related(self, observation: Observation) -> None:
+        """Clear component evidence resolved by a matching healthy observation."""
+        fingerprint = self.fingerprint(observation)
+        for key in tuple(self._episodes):
+            episode_fingerprint, session_id, command_id, generation = key
+            if (
+                episode_fingerprint == fingerprint
+                and session_id == observation.session_id
+                and generation == observation.recovery_generation
+                and (command_id == observation.command_id or command_id is None)
+            ):
+                self._episodes.pop(key, None)
+
     @staticmethod
     def fingerprint(observation: Observation) -> str:
         material = json.dumps(

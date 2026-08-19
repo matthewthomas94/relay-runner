@@ -140,6 +140,10 @@ ORCHESTRATOR_SESSION_STATES = frozenset({
     "stale",
 })
 ORCHESTRATOR_SESSION_STALE_AFTER_SECONDS = 30.0
+CONTINUITY_SAMPLE_INTERVAL_SECONDS = max(
+    0.1,
+    float(os.environ.get("CONTINUITY_SAMPLE_INTERVAL_SECONDS", "1")),
+)
 ORCHESTRATOR_COMMAND_STATUSES = frozenset({
     "received",
     "classified",
@@ -190,6 +194,7 @@ _CONTINUITY_LIFECYCLE_EVENTS = {
     ("command", "planning"): ("command", "command_processing", "healthy", False),
     ("command", "completed"): ("command", "command_processing", "completed", False),
     ("command", "failed"): ("command", "command_processing", "recovery_failed", True),
+    ("session", "started"): ("session", "session_liveness", "healthy", False),
     ("session", "explicit_stop"): ("session", "session_liveness", "unavailable", False),
     ("session", "update"): ("session", "session_liveness", "unavailable", False),
     ("session", "reset"): ("session", "session_liveness", "unavailable", False),
@@ -206,6 +211,61 @@ class ContinuityLifecycleAdapter:
         detector: ContinuityIncidentDetector | None = None,
     ) -> None:
         self.detector = detector or ContinuityIncidentDetector(emit=emit)
+        self._lock = threading.RLock()
+        self._watches: dict[
+            tuple[str, str | None, str, str, int, str], Observation
+        ] = {}
+        self._suppressed_sessions: dict[str, str] = {}
+
+    @staticmethod
+    def _watch_key(
+        observation: Observation,
+    ) -> tuple[str, str | None, str, str, int, str]:
+        return (
+            observation.session_id,
+            observation.command_id,
+            observation.component,
+            observation.provider,
+            observation.recovery_generation,
+            observation.phase,
+        )
+
+    @staticmethod
+    def _at(observation: Observation, observed_at: float) -> Observation:
+        return Observation(
+            session_id=observation.session_id,
+            command_id=observation.command_id,
+            component=observation.component,
+            provider=observation.provider,
+            recovery_generation=observation.recovery_generation,
+            phase=observation.phase,
+            health=observation.health,
+            observed_at=observed_at,
+            native_recovery_failed=observation.native_recovery_failed,
+        )
+
+    def _clear_recovered_watches(self, observation: Observation) -> None:
+        for key, watched in tuple(self._watches.items()):
+            if (
+                watched.session_id == observation.session_id
+                and watched.component == observation.component
+                and watched.provider == observation.provider
+                and watched.recovery_generation == observation.recovery_generation
+                and (
+                    watched.command_id == observation.command_id
+                    or watched.command_id is None
+                )
+            ):
+                self._watches.pop(key, None)
+        self.detector.resolve_related(observation)
+
+    def _watch_transient(self, observation: Observation) -> None:
+        result = self.detector.observe(observation)
+        key = self._watch_key(observation)
+        if result.state == "transient":
+            self._watches[key] = observation
+        else:
+            self._watches.pop(key, None)
 
     def observe(self, event: dict[str, Any]):
         source = str(event.get("source") or "").strip().lower()
@@ -242,27 +302,84 @@ class ContinuityLifecycleAdapter:
                 recovery_generation=generation,
                 observed_at=observed_at,
             )
-            return self.detector.observe(observation)
+        else:
+            try:
+                component, phase, health, failed_recovery = _CONTINUITY_LIFECYCLE_EVENTS[
+                    (source, name)
+                ]
+            except KeyError as error:
+                raise ValueError("unsupported continuity lifecycle event") from error
+            observation = Observation(
+                session_id=session_id,
+                command_id=command_id,
+                component=component,
+                provider=provider if component in {"messenger", "command"} else "none",
+                recovery_generation=generation,
+                phase=phase,
+                health=health,
+                observed_at=observed_at,
+                native_recovery_failed=failed_recovery,
+            )
 
-        try:
-            component, phase, health, failed_recovery = _CONTINUITY_LIFECYCLE_EVENTS[
-                (source, name)
-            ]
-        except KeyError as error:
-            raise ValueError("unsupported continuity lifecycle event") from error
-        observation = Observation(
-            session_id=session_id,
-            command_id=command_id,
-            component=component,
-            provider=provider if component in {"messenger", "command"} else "none",
-            recovery_generation=generation,
-            phase=phase,
-            health=health,
-            observed_at=observed_at,
-            native_recovery_failed=failed_recovery,
+        suppression = (
+            name
+            if source == "session" and name in {"explicit_stop", "update", "reset"}
+            else None
         )
-        suppression = name if source == "session" else None
-        return self.detector.observe(observation, suppression=suppression)
+        with self._lock:
+            if suppression is not None:
+                self._suppressed_sessions[session_id] = suppression
+                self.detector.suppress_session(session_id)
+                for key, watched in tuple(self._watches.items()):
+                    if watched.session_id == session_id:
+                        self._watches.pop(key, None)
+                return self.detector.observe(observation, suppression=suppression)
+
+            suppressed = self._suppressed_sessions.get(session_id)
+            if suppressed is not None:
+                if source != "session" or name != "started":
+                    return self.detector.observe(observation, suppression=suppressed)
+                self._suppressed_sessions.pop(session_id, None)
+
+            if observation.health in {"healthy", "completed"}:
+                self._clear_recovered_watches(observation)
+            result = self.detector.observe(observation)
+
+            if observation.health in {"unavailable", "recovery_failed"}:
+                key = self._watch_key(observation)
+                if result.state == "transient":
+                    self._watches[key] = observation
+                else:
+                    self._watches.pop(key, None)
+            elif source == "command" and name in {"accepted", "planning"}:
+                inactivity = Observation(
+                    session_id=session_id,
+                    command_id=command_id,
+                    component="command",
+                    provider=provider,
+                    recovery_generation=generation,
+                    phase="command_processing",
+                    health="unavailable",
+                    observed_at=observed_at,
+                )
+                self._watch_transient(inactivity)
+            return result
+
+    def sample(self, *, observed_at: float | None = None) -> list[Any]:
+        """Re-observe unresolved failures so one-shot native events can qualify."""
+        now = time.time() if observed_at is None else float(observed_at)
+        results = []
+        with self._lock:
+            for key, watched in tuple(self._watches.items()):
+                if watched.session_id in self._suppressed_sessions:
+                    self._watches.pop(key, None)
+                    continue
+                sample = self._at(watched, now)
+                result = self.detector.observe(sample)
+                results.append(result)
+                if result.state not in {"transient"}:
+                    self._watches.pop(key, None)
+        return results
 
 WORKER_SIZING_FIELDS = (
     "worker_model",
@@ -4345,6 +4462,20 @@ class Daemon:
             "incident": result.envelope.as_dict() if result.envelope is not None else None,
         }
 
+    def sample_continuity(self, *, observed_at: float | None = None) -> list[dict[str, Any]]:
+        continuity = getattr(self, "continuity", None)
+        if continuity is None:
+            return []
+        return [
+            {
+                "state": result.state,
+                "fingerprint": result.fingerprint,
+                "suppression_reason": result.suppression_reason,
+                "incident": result.envelope.as_dict() if result.envelope is not None else None,
+            }
+            for result in continuity.sample(observed_at=observed_at)
+        ]
+
     def _observe_command_continuity(self, command: dict[str, Any], event: str) -> None:
         session_id = command.get("session_id") or OrchestratorSessionStore.session_key(
             str(command.get("repo_path") or self.workspace_root)
@@ -7643,6 +7774,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             pid=pid,
             state=state,
         )
+        for continuity_session_id in (result["session_key"], result["id"]):
+            self.observe_continuity_event({
+                "source": "session",
+                "event": "started",
+                "session_id": continuity_session_id,
+                "provider": result["provider_key"],
+                "observed_at": result["updated_at"],
+            })
         reconciliation = self.reconcile_orchestrator_command_states(
             repo_path=str(repo),
             command_states=command_action_states,
@@ -7699,13 +7838,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         )
         if result is None:
             raise ValueError("orchestrator session not found")
-        self.observe_continuity_event({
-            "source": "session",
-            "event": "explicit_stop",
-            "session_id": result["session_key"],
-            "provider": result["provider_key"],
-            "observed_at": result["updated_at"],
-        })
+        for continuity_session_id in (result["session_key"], result["id"]):
+            self.observe_continuity_event({
+                "source": "session",
+                "event": "explicit_stop",
+                "session_id": continuity_session_id,
+                "provider": result["provider_key"],
+                "observed_at": result["updated_at"],
+            })
         return {"orchestrator_session": result}
 
     def record_orchestrator_command(
@@ -9482,6 +9622,19 @@ def serve(daemon: Daemon) -> None:
                 print(f"[orchestrator] command processing loop failed: {e}", file=sys.stderr)
 
     threading.Thread(target=_command_loop, name="orchestrator-command-loop", daemon=True).start()
+
+    def _continuity_loop():
+        while not stop.wait(CONTINUITY_SAMPLE_INTERVAL_SECONDS):
+            try:
+                daemon.sample_continuity()
+            except Exception as e:  # noqa: BLE001 - keep the HTTP daemon alive.
+                print(f"[orchestrator] continuity sampler failed: {e}", file=sys.stderr)
+
+    threading.Thread(
+        target=_continuity_loop,
+        name="continuity-incident-sampler",
+        daemon=True,
+    ).start()
 
     def _queue_drain_loop():
         while not stop.wait(QUEUE_DRAIN_MONITOR_INTERVAL_SECONDS):
