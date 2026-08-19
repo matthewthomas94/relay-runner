@@ -1935,6 +1935,63 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertEqual(records[1]["state"] as? String, "active")
     }
 
+    func testProviderOutputPublishesThrottledSafeProgressForCodexAndClaude() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let ownership: [String: Any] = [
+                "app_session_id": "app-session",
+                "recovery_generation": "4",
+                "actor_role": "foreground_pm",
+                "foreground_gate_handle": "gate",
+            ]
+            try writeProviderTurnRecords([ownership.merging([
+                "state": "active",
+                "provider": provider,
+                "provider_session_id": "provider-session",
+                "relay_command_id": "private-command-id",
+                "relay_command_seq": 7,
+                "session_id": "private-native-session",
+                "turn_id": "private-native-turn",
+                "updated_at": 100.0,
+            ]) { _, new in new }], to: fixture.providerTurns)
+            XCTAssertEqual(Darwin.mkfifo(fixture.voiceInput.path, 0o600), 0)
+            let reader = Darwin.open(fixture.voiceInput.path, O_RDONLY | O_NONBLOCK)
+            XCTAssertGreaterThanOrEqual(reader, 0)
+            defer { Darwin.close(reader) }
+            var currentTime = Date(timeIntervalSince1970: 100)
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { _ in },
+                isRunning: { true },
+                now: { currentTime },
+                providerSessionID: "provider-session",
+                appSessionID: "app-session",
+                recoveryGeneration: "4",
+                foregroundGateHandle: "gate"
+            )
+
+            XCTAssertTrue(delivery.recordProviderOutputProgress(), provider)
+            XCTAssertFalse(delivery.recordProviderOutputProgress(), provider)
+            currentTime = Date(timeIntervalSince1970: 106)
+            XCTAssertTrue(delivery.recordProviderOutputProgress(), provider)
+
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            let count = Darwin.read(reader, &buffer, buffer.count)
+            XCTAssertGreaterThan(count, 0)
+            let control = String(decoding: buffer.prefix(max(0, count)), as: UTF8.self)
+            XCTAssertEqual(
+                control.components(separatedBy: "__PROVIDER_TURN_EVENT__:").count - 1,
+                2,
+                provider
+            )
+            XCTAssertTrue(control.contains(#""event":"provider_progress""#), provider)
+            XCTAssertTrue(control.contains(#""provider":"\#(provider)""#), provider)
+            XCTAssertTrue(control.contains(#""relay_command_id":"private-command-id""#), provider)
+            XCTAssertFalse(control.contains("private-native-session"), provider)
+            XCTAssertFalse(control.contains("private-native-turn"), provider)
+        }
+    }
+
     func testInterruptBypassesActiveProviderTurnDeferral() throws {
         let fixture = try makeFixture()
         let metadata = #"{"relay_command_id":"cmd-3","relay_command_seq":3}"#

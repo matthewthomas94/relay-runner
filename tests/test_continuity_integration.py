@@ -316,6 +316,64 @@ class ContinuityIntegrationTests(unittest.TestCase):
                 self.assertEqual([item["component"] for item in emitted], ["foreground_provider"])
                 self.assertEqual(emitted[0]["provider"], provider)
 
+    def test_codex_and_claude_output_progress_keeps_long_production_turns_healthy(self):
+        signals = {
+            "codex": ("turn_started", "turn_progress", "turn_completed"),
+            "claude": ("stream_started", "stream_progress", "result_success"),
+        }
+        for provider, expected_signals in signals.items():
+            with self.subTest(provider=provider):
+                emitted = []
+                posted = []
+                adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+
+                def post_control(event, observed_at):
+                    with patch.object(
+                        voice_bridge,
+                        "_post_continuity_event",
+                        side_effect=lambda source, signal, metadata, **_kwargs: posted.append({
+                            **metadata,
+                            "source": source,
+                            "event": signal,
+                            "session_id": "project:canonical",
+                            "observed_at": observed_at,
+                        }) or adapter.observe(posted[-1]),
+                    ):
+                        self.assertTrue(voice_bridge._handle_provider_turn_event_control(
+                            json.dumps({
+                                "event": event,
+                                "provider": provider,
+                                "relay_command_id": f"{provider}-long-command",
+                                "recovery_generation": 4,
+                                "observed_at": observed_at,
+                            }),
+                            provider_turn_broker=None,
+                        ))
+
+                post_control("provider_started", 100)
+                adapter.sample(observed_at=124)
+                post_control("provider_progress", 125)
+                adapter.sample(observed_at=149)
+                post_control("provider_progress", 150)
+                adapter.sample(observed_at=174)
+                adapter.observe({
+                    "source": "provider",
+                    "event": expected_signals[2],
+                    "session_id": "project:canonical",
+                    "relay_command_id": f"{provider}-long-command",
+                    "provider": provider,
+                    "recovery_generation": 4,
+                    "observed_at": 175,
+                })
+                adapter.sample(observed_at=250)
+                adapter.sample(observed_at=251)
+
+                self.assertEqual(
+                    [event["event"] for event in posted],
+                    list(expected_signals[:2]) + [expected_signals[1]],
+                )
+                self.assertEqual(emitted, [])
+
     def test_bridge_uses_canonical_session_identity_for_stop_update_and_reset(self):
         posted = []
         with patch.object(voice_bridge, "_CONTINUITY_SESSION_NATIVE_ID", "project:canonical"):

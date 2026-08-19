@@ -381,7 +381,12 @@ class ContinuityLifecycleAdapter:
                     self._watches.pop(key, None)
             else:
                 deadline_component = _CONTINUITY_DEADLINE_STARTS.get((source, name))
-                if source == "provider" and name in {"turn_started", "stream_started"}:
+                if source == "provider" and name in {
+                    "turn_started",
+                    "stream_started",
+                    "turn_progress",
+                    "stream_progress",
+                }:
                     deadline_component = ("foreground_provider", "provider_turn")
                 if deadline_component is not None:
                     component, phase = deadline_component

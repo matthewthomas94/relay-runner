@@ -3364,10 +3364,14 @@ def _handle_provider_turn_event_control(
         or os.environ.get("RELAY_RUNNER_PROVIDER")
         or "codex"
     ).strip().lower()
-    if event == "provider_started":
+    if event in {"provider_started", "provider_progress"}:
+        if event == "provider_progress":
+            signal = "stream_progress" if "claude" in provider else "turn_progress"
+        else:
+            signal = "stream_started" if "claude" in provider else "turn_started"
         _post_continuity_event(
             "provider",
-            "stream_started" if "claude" in provider else "turn_started",
+            signal,
             {**payload, "provider": provider},
             observed_at=payload.get("observed_at"),
         )

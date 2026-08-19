@@ -721,6 +721,7 @@ final class RelayVoiceCommandDelivery {
     private var manualBoundary: ManualBoundary?
     private var bufferedManualInput: BufferedManualInput?
     private var deliveryOrder = 0
+    private var lastProviderProgressAt: Date?
 
     init(
         paths: Paths = Paths(),
@@ -791,6 +792,46 @@ final class RelayVoiceCommandDelivery {
             }
             releaseActiveProviderTurns(reason: releaseReason)
         }
+    }
+
+    @discardableResult
+    func recordProviderOutputProgress() -> Bool {
+        var published = false
+        performOnDeliveryQueue {
+            let observedAt = now()
+            // PTY spinner frames can arrive many times per second. Five-second
+            // evidence stays well inside the detector's 30-second grace.
+            if let lastProviderProgressAt,
+               observedAt.timeIntervalSince(lastProviderProgressAt) < 5 {
+                return
+            }
+            lastProviderProgressAt = observedAt
+            let activeRecords = providerTurnRecords().filter {
+                ($0["state"] as? String) == "active"
+                    && ($0["relay_command_id"] as? String)?.isEmpty == false
+            }
+            guard let record = activeRecords.max(by: { lhs, rhs in
+                let lhsUpdated = (lhs["updated_at"] as? NSNumber)?.doubleValue ?? 0
+                let rhsUpdated = (rhs["updated_at"] as? NSNumber)?.doubleValue ?? 0
+                return lhsUpdated < rhsUpdated
+            }),
+                  let provider = record["provider"] as? String,
+                  provider == "codex" || provider == "claude",
+                  let relayCommandID = record["relay_command_id"] as? String else { return }
+            var payload: [String: Any] = [
+                "event": "provider_progress",
+                "provider": provider,
+                "relay_command_id": relayCommandID,
+            ]
+            if let appSessionID { payload["app_session_id"] = appSessionID }
+            if let recoveryGeneration { payload["recovery_generation"] = recoveryGeneration }
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: payload,
+                options: [.sortedKeys]
+            ), let json = String(data: data, encoding: .utf8) else { return }
+            published = writeBridgeControlLine("__PROVIDER_TURN_EVENT__:\(json)")
+        }
+        return published
     }
 
     @discardableResult
@@ -2415,6 +2456,9 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 
     func dataReceived(slice: ArraySlice<UInt8>) {
+        if !slice.isEmpty {
+            voiceDelivery?.recordProviderOutputProgress()
+        }
         terminalView.feed(byteArray: slice)
         considerInteractiveReadiness(after: slice)
     }
