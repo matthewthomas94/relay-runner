@@ -139,6 +139,13 @@ def load_config(config_path: str | None = None) -> dict:
             "default_workflow_path": "",
             "worker_health_check_seconds": 600,
         },
+        "continuity": {
+            "enabled": True,
+            "max_attempts": 4,
+            "wall_clock_seconds": 120,
+            "stable_health_seconds": 60,
+            "cooldown_seconds": 900,
+        },
     }
 
     for section, values in defaults.items():

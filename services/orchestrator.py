@@ -89,6 +89,13 @@ from continuity_incidents import (
     opaque_identifier,
     provider_observation,
 )
+from continuity_agent import (
+    ContinuityAgentConfig,
+    ContinuityAgentLane,
+    UnavailableRecoveryBroker,
+    append_audit_record,
+    create_provider_session_factory,
+)
 from codex_model_catalog import (
     CODEX_FAMILIES,
     CODEX_WORKER_TIER_FAMILIES,
@@ -4432,6 +4439,7 @@ class Daemon:
         self.messenger_outcomes = MessengerOutcomeStore(data / "messenger_outcomes.db")
         self.followup_proposals = FollowupProposalStore(data / "followup_proposals.db")
         self.continuity_incident_path = data / "continuity_incidents.jsonl"
+        self.continuity_agent_audit_path = data / "continuity_agent_events.jsonl"
         self.continuity = ContinuityLifecycleAdapter(emit=self._emit_continuity_incident)
         self.graphify_path = data / "graphify.db"
         self.program_registry_path = _program_registry_path()
@@ -4485,6 +4493,64 @@ class Daemon:
             self.agent_kind,
             str(orch_cfg.get("command") or ""),
         )
+        continuity_cfg = cfg.get("continuity", {})
+        if not isinstance(continuity_cfg, dict):
+            continuity_cfg = {}
+        continuity_enabled = continuity_cfg.get("enabled", True)
+        if not isinstance(continuity_enabled, bool):
+            continuity_enabled = str(continuity_enabled).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        self.continuity_agents = None
+        if continuity_enabled:
+            runtime_root = data / "continuity-agent-runtime"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            os.chmod(runtime_root, 0o700)
+            provider_factory = None
+            provider_factory_lock = threading.Lock()
+
+            def create_continuity_session(
+                process_identity: str,
+                incident_id: str,
+                recovery_generation: int,
+            ):
+                nonlocal provider_factory
+                with provider_factory_lock:
+                    if provider_factory is None:
+                        provider_factory = create_provider_session_factory(
+                            cfg,
+                            cwd=runtime_root,
+                        )
+                return provider_factory(
+                    process_identity,
+                    incident_id,
+                    recovery_generation,
+                )
+
+            lane_config = ContinuityAgentConfig(
+                max_attempts=max(1, int(continuity_cfg.get("max_attempts", 4))),
+                wall_clock_seconds=max(
+                    1.0,
+                    float(continuity_cfg.get("wall_clock_seconds", 120)),
+                ),
+                stable_health_seconds=max(
+                    0.0,
+                    float(continuity_cfg.get("stable_health_seconds", 60)),
+                ),
+                cooldown_seconds=max(
+                    0.0,
+                    float(continuity_cfg.get("cooldown_seconds", 900)),
+                ),
+            )
+            self.continuity_agents = ContinuityAgentLane(
+                create_continuity_session,
+                UnavailableRecoveryBroker(),
+                on_audit=lambda record: append_audit_record(
+                    self.continuity_agent_audit_path,
+                    record,
+                ),
+                config=lane_config,
+            )
         try:
             self.reconcile_queue_drains(trigger="daemon-startup")
         except Exception as e:  # noqa: BLE001 - daemon startup must still finish.
@@ -4499,6 +4565,15 @@ class Daemon:
             os.chmod(self.continuity_incident_path, 0o600)
         except OSError as error:
             print(f"[orchestrator] could not record continuity incident: {error}", file=sys.stderr)
+        lane = getattr(self, "continuity_agents", None)
+        if lane is not None:
+            try:
+                lane.submit(envelope)
+            except ValueError as error:
+                print(
+                    f"[orchestrator] rejected invalid continuity agent incident: {error}",
+                    file=sys.stderr,
+                )
 
     def observe_continuity_event(self, event: dict[str, Any]) -> dict[str, Any]:
         continuity = getattr(self, "continuity", None)
@@ -9188,6 +9263,9 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         return result
 
     def shutdown(self) -> None:
+        continuity_agents = getattr(self, "continuity_agents", None)
+        if continuity_agents is not None:
+            continuity_agents.shutdown()
         with self._workers_lock:
             workers = list(self._workers.values())
         for w in workers:
