@@ -88,6 +88,7 @@ class ArtifactRetentionTests(unittest.TestCase):
             service="github",
             remote_name="origin",
             remote_url_sha256=hashlib.sha256(str(self.remote).encode()).hexdigest(),
+            push_url_sha256=hashlib.sha256(str(self.remote).encode()).hexdigest(),
             exposure_confirmed=True,
         )
         self.now = datetime(2026, 8, 4, 1, 2, 3, 456789, tzinfo=UTC)
@@ -622,6 +623,95 @@ class ArtifactRetentionTests(unittest.TestCase):
                 manager.preview(), event_id="unconfirmed", device_id="device-a"
             )
         self.assertIn(".orchestrator/RR-held.md", self.store.snapshot().files)
+
+    def test_unconfirmed_non_github_pushurl_never_publishes(self):
+        self.git("remote", "add", "github", "git@github.com:relay/example.git")
+        confirmation = confirm_github_remote(
+            self.store, "github", exposure_confirmed=True
+        )
+        unconfirmed = self.root / "unconfirmed-push.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--quiet", str(unconfirmed)],
+            check=True,
+        )
+        self.git("remote", "set-url", "--push", "github", str(unconfirmed))
+        synchronizer = ArtifactSyncEngine(
+            self.store,
+            mode=ArtifactSyncMode.ENABLED,
+            remote_name="github",
+            max_attempts=1,
+            base_retry_seconds=0,
+        )
+        manager = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=confirmation,
+            synchronizer=synchronizer,
+            now=lambda: self.now,
+        )
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-pushurl",
+            "Keep local",
+            activity_at=self.now - timedelta(days=365),
+            extra={"status": "done"},
+        )
+
+        with self.assertRaisesRegex(Exception, "push destination changed"):
+            manager.archive(
+                manager.preview(), event_id="unconfirmed-pushurl", device_id="device-a"
+            )
+
+        self.assertEqual(self.git("ls-remote", str(unconfirmed), self.store.artifact_ref), "")
+        self.assertIn(".orchestrator/RR-pushurl.md", self.store.snapshot().files)
+
+    def test_push_destination_is_revalidated_immediately_before_publication(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-late-pushurl",
+            "Keep after late redirect",
+            activity_at=self.now - timedelta(days=365),
+            extra={"status": "done"},
+        )
+        base = self.store._head()
+        unconfirmed = self.root / "late-push.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--quiet", str(unconfirmed)],
+            check=True,
+        )
+
+        def redirect_push(stage):
+            if stage == "before_prepared_push":
+                self.git("remote", "set-url", "--push", "origin", str(unconfirmed))
+
+        synchronizer = ArtifactSyncEngine(
+            self.store,
+            mode=ArtifactSyncMode.ENABLED,
+            remote_name="origin",
+            max_attempts=1,
+            base_retry_seconds=0,
+            sleep=lambda _: None,
+            jitter=lambda: 0,
+            failure_injector=redirect_push,
+        )
+        manager = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=self.confirmation,
+            synchronizer=synchronizer,
+            now=lambda: self.now,
+        )
+
+        with self.assertRaisesRegex(Exception, "push destination changed"):
+            manager.archive(
+                manager.preview(), event_id="late-pushurl", device_id="device-a"
+            )
+
+        self.assertEqual(self.store._head(), base)
+        self.assertEqual(self.git("ls-remote", str(unconfirmed), self.store.artifact_ref), "")
+        self.assertIn(".orchestrator/RR-late-pushurl.md", self.store.snapshot().files)
 
     def test_remote_race_discards_only_unpublished_candidate_for_safe_replan(self):
         self.seed_retained_terminal()

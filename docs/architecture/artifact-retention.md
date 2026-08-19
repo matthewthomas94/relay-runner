@@ -14,7 +14,7 @@ An older terminal ticket may remain temporarily materialized only for an active 
 
 ## Archive transaction
 
-The deterministic preview is re-evaluated under the project writer and lease locks. Cleanup is disabled until the user selects an existing `github.com` remote and explicitly confirms exposing Relay ticket content; the confirmation is bound to that remote name and URL digest. Relay never creates, guesses, renames, or rewrites the remote. Local-only and paused projects remain visible temporary overage.
+The deterministic preview is re-evaluated under the project writer and lease locks. Cleanup is disabled until the user selects an existing `github.com` remote and explicitly confirms exposing Relay ticket content; the confirmation is bound to that remote name plus its fetch and sole effective push URL digests. Relay revalidates the push destination immediately before publication and pushes to that exact confirmed URL. Relay never creates, guesses, renames, or rewrites the remote. Local-only and paused projects remain visible temporary overage.
 
 Every ticket and attachment blob is validated before mutation. Relay prepares one ordinary descendant commit on a private scratch ref; it writes the sorted JSONL catalog and deletes only terminal candidates outside the retained 25. Catalog entries retain immutable artifact/display identity, title/status/activity/dependencies, exact source commit, ticket blob, and attachment paths/blob IDs/MIME/sizes. Preparing the commit does not advance `refs/heads/relay/artifacts` or rebuild `.orchestrator`.
 
@@ -22,7 +22,7 @@ The synchronizer first reconciles the selected remote to the preview base. It th
 
 Only after remote proof succeeds does a compare-and-swap advance the local artifact authority and atomically rebuild `.orchestrator`. A durable owner-only journal records `prepared`, `published`, `local_ref_advanced`, and `materialized`; every phase is idempotently resumable. Before local adoption, candidates remain materialized. After adoption, the artifact store's own materialization journal reconstructs the verified canonical head after a crash. Completing the transaction removes its scratch ref and journal.
 
-Fresh-install and second-device recovery use the same confirmed remote. A disposable quarantine fetches only `refs/heads/relay/artifacts`, validates project identity, linear orphan history, allowlisted content, selected sync configuration, and the terminal-count layout, then compare-and-swap imports the ref and materializes it. Recovery refuses an existing unowned `.orchestrator` tree, divergence, candidates still outside the newest 25, or required archived cards that are not materialized.
+Fresh-install and second-device recovery use the same confirmed remote. A disposable quarantine fetches only `refs/heads/relay/artifacts`, validates project identity, linear orphan history, allowlisted content, selected sync configuration, and the terminal-count layout, then compare-and-swap imports the ref and materializes it. Recovery refuses an existing unowned `.orchestrator` tree, local materialization edits, divergence, candidates still outside the newest 25, or required archived cards that are not materialized.
 
 ## History, restore, dependencies, and delete
 

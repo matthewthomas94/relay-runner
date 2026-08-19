@@ -92,12 +92,15 @@ SOURCE_MATRIX: Mapping[str, tuple[str, ...]] = {
         "test_crash_after_push_is_resolved_by_refetch_without_local_loss",
         "test_remote_archive_failure_never_advances_local_authority",
         "test_remote_race_discards_only_unpublished_candidate_for_safe_replan",
+        "test_unconfirmed_non_github_pushurl_never_publishes",
+        "test_push_destination_is_revalidated_immediately_before_publication",
         "test_fresh_recovery_materializes_nonterminal_and_newest_25_only",
     ),
     "prepared_publication_and_exact_ref_recovery": (
         "tests/test_artifact_sync.py",
         "test_prepared_publication_refetches_proofs_before_local_ref_moves",
         "test_fresh_device_recovers_only_exact_remote_artifact_ref",
+        "test_second_device_recovery_preserves_manual_materialization_edits",
     ),
     "sync_conflicts_and_source_isolation": (
         "tests/test_artifact_sync.py",

@@ -196,6 +196,32 @@ class ArtifactSyncTests(unittest.TestCase):
             ["refs/heads/main", ARTIFACT_REF],
         )
 
+    def test_second_device_recovery_preserves_manual_materialization_edits(self):
+        self.write_ticket(
+            self.device_a, "manual-base", "RR-manual", "Shared before edit"
+        )
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        self.assertEqual(self.engine(self.device_b).sync().state, ArtifactSyncState.CLEAN)
+        local_head = self.device_b.store._head()
+        ticket_path = self.device_b.repo / ".orchestrator/RR-manual.md"
+        manual_content = ticket_path.read_bytes().replace(
+            b"Shared before edit", b"Manual materialization edit"
+        )
+        ticket_path.write_bytes(manual_content)
+
+        remote_head = self.write_ticket(
+            self.device_a, "remote-ahead", "RR-remote", "Remote ahead"
+        )
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+
+        result = self.engine(self.device_b).recover_exact_ref()
+
+        self.assertEqual(result.state, ArtifactSyncState.FAILED)
+        self.assertIn("edited manually", result.recovery)
+        self.assertEqual(self.device_b.store._head(), local_head)
+        self.assertEqual(ticket_path.read_bytes(), manual_content)
+        self.assertEqual(self.run_git(self.remote, "rev-parse", ARTIFACT_REF), remote_head)
+
     def test_two_devices_rebase_unrelated_offline_events_and_preserve_source_state(self):
         shared = self.write_ticket(self.device_a, "base-ticket", "RR-1", "Base")
         self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)

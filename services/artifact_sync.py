@@ -246,6 +246,7 @@ class ArtifactSyncEngine:
         *,
         expected_remote_head: str,
         proofs: Sequence[ArtifactRemoteProof],
+        expected_push_url_sha256: str | None = None,
     ) -> ArtifactSyncResult:
         """Normally publish a prepared descendant, then independently refetch it.
 
@@ -306,7 +307,12 @@ class ArtifactSyncEngine:
                     )
 
             self._inject("before_prepared_push")
-            push_error = self._push(candidate_head)
+            push_destination = None
+            if expected_push_url_sha256 is not None:
+                push_destination = self._validated_push_destination(
+                    expected_push_url_sha256
+                )
+            push_error = self._push(candidate_head, destination=push_destination)
             self._inject("after_prepared_push")
 
             # This is intentionally a new quarantine, not the snapshot used for
@@ -361,6 +367,18 @@ class ArtifactSyncEngine:
             current = self.store._head()
             if current:
                 self._validate_configuration(current)
+                try:
+                    self.store._ensure_materialization_consistent(current)
+                except ArtifactMaterializationConflict as error:
+                    return self._finish(
+                        ArtifactSyncState.FAILED,
+                        ArtifactSyncState.FAILED,
+                        0,
+                        current,
+                        None,
+                        recovery=f"Local artifact materialization must be preserved: {error}",
+                        transitions=(ArtifactSyncState.FAILED,),
+                    )
             elif self.store.materialized_path.exists() or self.store.materialized_path.is_symlink():
                 return self._finish(
                     ArtifactSyncState.FAILED,
@@ -425,7 +443,21 @@ class ArtifactSyncEngine:
                             transitions=(ArtifactSyncState.AHEAD,),
                         )
                 self._inject("after_recovery_ref_update")
-                self.store._materialize(remote.head, force=True)
+                try:
+                    if current:
+                        self.store._ensure_materialization_consistent(remote.head)
+                    else:
+                        self.store._materialize(remote.head, force=True)
+                except ArtifactMaterializationConflict as error:
+                    return self._finish(
+                        ArtifactSyncState.FAILED,
+                        ArtifactSyncState.FAILED,
+                        1,
+                        self.store._head(),
+                        remote.head,
+                        recovery=f"Local artifact materialization must be preserved: {error}",
+                        transitions=(ArtifactSyncState.SYNCING, ArtifactSyncState.FAILED),
+                    )
                 return self._finish(
                     ArtifactSyncState.CLEAN,
                     ArtifactSyncState.CLEAN,
@@ -1230,12 +1262,37 @@ class ArtifactSyncEngine:
         )
         return process.returncode == 0
 
-    def _push(self, local_head: str) -> tuple[ArtifactSyncState, str] | None:
+    def _validated_push_destination(self, expected_sha256: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ArtifactValidationError("confirmed push destination digest is invalid")
+        assert self.remote_name is not None
+        result = self.store._git(
+            "remote", "get-url", "--push", "--all", self.remote_name,
+            allowed_statuses={0, 2, 128},
+        )
+        destinations = result.stdout.splitlines()
+        if result.returncode != 0 or len(destinations) != 1 or not destinations[0]:
+            raise ArtifactValidationError(
+                "exactly one confirmed push destination must remain configured"
+            )
+        destination = destinations[0]
+        if hashlib.sha256(destination.encode("utf-8")).hexdigest() != expected_sha256:
+            raise ArtifactValidationError(
+                "the push destination changed after exposure confirmation"
+            )
+        return destination
+
+    def _push(
+        self,
+        local_head: str,
+        *,
+        destination: str | None = None,
+    ) -> tuple[ArtifactSyncState, str] | None:
         assert self.remote_name is not None
         push = self.store._git(
             "push",
             "--porcelain",
-            self.remote_name,
+            destination or self.remote_name,
             f"{local_head}:{self.store.artifact_ref}",
             allowed_statuses={0, 1, 128},
         )

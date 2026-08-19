@@ -222,7 +222,28 @@ class ArchiveRemoteConfirmation:
     service: str
     remote_name: str
     remote_url_sha256: str
+    push_url_sha256: str
     exposure_confirmed: bool
+
+
+def _configured_remote_urls(store: ArtifactStore, remote_name: str) -> tuple[str, str]:
+    fetch = store._git(
+        "remote", "get-url", remote_name, allowed_statuses={0, 2, 128}
+    )
+    push = store._git(
+        "remote", "get-url", "--push", "--all", remote_name,
+        allowed_statuses={0, 2, 128},
+    )
+    push_urls = push.stdout.splitlines()
+    if fetch.returncode != 0 or not fetch.stdout.strip() or push.returncode != 0:
+        raise ArtifactValidationError(
+            f"selected existing remote {remote_name!r} is unavailable; Relay will not create it"
+        )
+    if len(push_urls) != 1 or not push_urls[0]:
+        raise ArtifactValidationError(
+            "terminal cleanup requires exactly one explicitly confirmed push destination"
+        )
+    return fetch.stdout.strip(), push_urls[0]
 
 
 def confirm_github_remote(
@@ -238,20 +259,16 @@ def confirm_github_remote(
         )
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", remote_name):
         raise ArtifactValidationError(f"invalid configured remote name: {remote_name!r}")
-    result = store._git("remote", "get-url", remote_name, allowed_statuses={0, 2, 128})
-    if result.returncode != 0 or not result.stdout.strip():
+    remote_url, push_url = _configured_remote_urls(store, remote_name)
+    if not _is_github_url(remote_url) or not _is_github_url(push_url):
         raise ArtifactValidationError(
-            f"selected existing remote {remote_name!r} is unavailable; Relay will not create it"
-        )
-    remote_url = result.stdout.strip()
-    if not _is_github_url(remote_url):
-        raise ArtifactValidationError(
-            "terminal cleanup currently requires an explicitly selected github.com remote"
+            "terminal cleanup requires an explicitly confirmed github.com remote for both fetch and push"
         )
     return ArchiveRemoteConfirmation(
         service="github",
         remote_name=remote_name,
         remote_url_sha256=hashlib.sha256(remote_url.encode("utf-8")).hexdigest(),
+        push_url_sha256=hashlib.sha256(push_url.encode("utf-8")).hexdigest(),
         exposure_confirmed=True,
     )
 
@@ -1225,10 +1242,16 @@ class ArtifactRetentionManager:
                 raise ArtifactConcurrentUpdate(
                     "artifact authority changed before remote archive verification"
                 )
+            confirmation = self._transaction_confirmation(transaction)
+            self._validate_remote_transaction(
+                synchronizer,
+                confirmation=confirmation,
+            )
             result = synchronizer.publish_prepared(
                 candidate_head,
                 expected_remote_head=base_head,
                 proofs=proofs,
+                expected_push_url_sha256=confirmation.push_url_sha256,
             )
             state_value = getattr(getattr(result, "state", None), "value", None)
             if state_value != "clean":
@@ -1401,17 +1424,16 @@ class ArtifactRetentionManager:
             )
         if confirmation.remote_name != getattr(synchronizer, "remote_name", None):
             raise ArtifactValidationError("confirmed GitHub remote does not match the synchronizer")
-        result = self.store._git(
-            "remote", "get-url", confirmation.remote_name, allowed_statuses={0, 2, 128}
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            raise ArtifactValidationError(
-                "the confirmed existing GitHub remote is no longer configured"
-            )
-        digest = hashlib.sha256(result.stdout.strip().encode("utf-8")).hexdigest()
-        if digest != confirmation.remote_url_sha256:
+        remote_url, push_url = _configured_remote_urls(self.store, confirmation.remote_name)
+        remote_digest = hashlib.sha256(remote_url.encode("utf-8")).hexdigest()
+        if remote_digest != confirmation.remote_url_sha256:
             raise ArtifactValidationError(
                 "the selected GitHub remote URL changed after exposure confirmation"
+            )
+        push_digest = hashlib.sha256(push_url.encode("utf-8")).hexdigest()
+        if push_digest != confirmation.push_url_sha256:
+            raise ArtifactValidationError(
+                "the selected GitHub push destination changed after exposure confirmation"
             )
 
     def _scratch_ref(self, event_id: str) -> str:
@@ -1429,6 +1451,7 @@ class ArtifactRetentionManager:
             service=str(value.get("service", "")),
             remote_name=str(value.get("remote_name", "")),
             remote_url_sha256=str(value.get("remote_url_sha256", "")),
+            push_url_sha256=str(value.get("push_url_sha256", "")),
             exposure_confirmed=value.get("exposure_confirmed") is True,
         )
 
@@ -1542,6 +1565,7 @@ class ArtifactRetentionManager:
             or not confirmation.exposure_confirmed
             or not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", confirmation.remote_name)
             or not re.fullmatch(r"[0-9a-f]{64}", confirmation.remote_url_sha256)
+            or not re.fullmatch(r"[0-9a-f]{64}", confirmation.push_url_sha256)
         ):
             raise ArtifactValidationError("retention transaction remote confirmation is invalid")
 
