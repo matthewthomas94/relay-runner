@@ -48,6 +48,7 @@ except ValueError:
 TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
 
 RELAY_COMPLETION_PREFIX = "__RELAY_COMPLETION__:"
+PROVIDER_TURN_EVENT_PREFIX = "__PROVIDER_TURN_EVENT__:"
 FOREGROUND_ACTOR_ROLES = frozenset({"foreground_pm", "foreground_manual"})
 FOREGROUND_OWNERSHIP_FIELDS = (
     "app_session_id",
@@ -781,6 +782,35 @@ def _write_bridge_control(payload: dict, *, fifo_path: str = VOICE_FIFO) -> bool
     return True
 
 
+def _write_provider_turn_event(payload: dict, *, fifo_path: str = VOICE_FIFO) -> bool:
+    line = PROVIDER_TURN_EVENT_PREFIX + json.dumps(payload, sort_keys=True)
+    try:
+        fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENXIO):
+            return False
+        raise
+    with os.fdopen(fd, "w") as fifo:
+        print(line, file=fifo)
+    return True
+
+
+def _publish_provider_started(
+    record: dict,
+    *,
+    write_provider_event: Callable[[dict], bool],
+    observed_at: float,
+) -> None:
+    event = {
+        "event": "provider_started",
+        "provider": record.get("provider"),
+        "relay_command_id": record.get("relay_command_id"),
+        "recovery_generation": record.get("recovery_generation"),
+        "observed_at": observed_at,
+    }
+    write_provider_event({key: value for key, value in event.items() if value is not None})
+
+
 def _bind_prompt_submit(
     payload: dict,
     *,
@@ -788,6 +818,7 @@ def _bind_prompt_submit(
     state_path: str,
     turns_path: str,
     broker: ProviderTurnBroker | None,
+    write_provider_event: Callable[[dict], bool],
     now: float,
 ) -> bool:
     ownership = _foreground_ownership()
@@ -846,6 +877,11 @@ def _bind_prompt_submit(
             record,
             now=now,
             release_reason="provider_identity_rebound",
+        )
+        _publish_provider_started(
+            record,
+            write_provider_event=write_provider_event,
+            observed_at=now,
         )
         return False
     # Matching text is not a provider-turn identity. Once the Relay command has
@@ -908,6 +944,11 @@ def _bind_prompt_submit(
         record["action"] = action
     _activate_broker_turn(broker, record, now=now)
     _activate_turn_record(turns_path, record, now=now)
+    _publish_provider_started(
+        record,
+        write_provider_event=write_provider_event,
+        observed_at=now,
+    )
     return True
 
 
@@ -1084,6 +1125,7 @@ def handle_hook_payload(
     state_path: str = VOICE_COMMAND_STATE_FILE,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
     write_control: Callable[[dict], bool] = _write_bridge_control,
+    write_provider_event: Callable[[dict], bool] = _write_provider_turn_event,
     now: float | None = None,
     stderr: TextIO = sys.stderr,
 ) -> bool:
@@ -1105,6 +1147,7 @@ def handle_hook_payload(
                 state_path=state_path,
                 turns_path=turns_path,
                 broker=broker,
+                write_provider_event=write_provider_event,
                 now=now,
             )
         if event in {"Stop", "StopFailure"}:

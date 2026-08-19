@@ -200,6 +200,16 @@ _CONTINUITY_LIFECYCLE_EVENTS = {
     ("session", "reset"): ("session", "session_liveness", "unavailable", False),
 }
 
+_CONTINUITY_DEADLINE_STARTS = {
+    ("stt", "capture_started"): ("speech_capture", "capture"),
+    ("stt", "transcription_started"): ("transcription", "transcription"),
+}
+
+_CONTINUITY_PROGRESS_RESOLVES = {
+    ("stt", "transcription_started"): frozenset({"speech_capture"}),
+    ("bridge", "command_received"): frozenset({"speech_capture", "transcription"}),
+}
+
 
 class ContinuityLifecycleAdapter:
     """Translate allowlisted live Relay events into the incident detector."""
@@ -258,6 +268,21 @@ class ContinuityLifecycleAdapter:
             ):
                 self._watches.pop(key, None)
         self.detector.resolve_related(observation)
+
+    def _clear_component_watches(
+        self,
+        observation: Observation,
+        components: frozenset[str],
+    ) -> None:
+        for key, watched in tuple(self._watches.items()):
+            if (
+                watched.session_id == observation.session_id
+                and watched.component in components
+                and watched.recovery_generation == observation.recovery_generation
+                and (watched.command_id is None or watched.command_id == observation.command_id)
+            ):
+                self._watches.pop(key, None)
+                self.detector.resolve_related(watched)
 
     def _watch_transient(self, observation: Observation) -> None:
         result = self.detector.observe(observation)
@@ -343,6 +368,9 @@ class ContinuityLifecycleAdapter:
 
             if observation.health in {"healthy", "completed"}:
                 self._clear_recovered_watches(observation)
+            resolved_components = _CONTINUITY_PROGRESS_RESOLVES.get((source, name))
+            if resolved_components:
+                self._clear_component_watches(observation, resolved_components)
             result = self.detector.observe(observation)
 
             if observation.health in {"unavailable", "recovery_failed"}:
@@ -351,18 +379,35 @@ class ContinuityLifecycleAdapter:
                     self._watches[key] = observation
                 else:
                     self._watches.pop(key, None)
-            elif source == "command" and name in {"accepted", "planning"}:
-                inactivity = Observation(
-                    session_id=session_id,
-                    command_id=command_id,
-                    component="command",
-                    provider=provider,
-                    recovery_generation=generation,
-                    phase="command_processing",
-                    health="unavailable",
-                    observed_at=observed_at,
-                )
-                self._watch_transient(inactivity)
+            else:
+                deadline_component = _CONTINUITY_DEADLINE_STARTS.get((source, name))
+                if source == "provider" and name in {"turn_started", "stream_started"}:
+                    deadline_component = ("foreground_provider", "provider_turn")
+                if deadline_component is not None:
+                    component, phase = deadline_component
+                    deadline = Observation(
+                        session_id=session_id,
+                        command_id=command_id,
+                        component=component,
+                        provider=provider if component == "foreground_provider" else "none",
+                        recovery_generation=generation,
+                        phase=phase,
+                        health="unavailable",
+                        observed_at=observed_at,
+                    )
+                    self._watch_transient(deadline)
+                elif source == "command" and name in {"accepted", "planning"}:
+                    inactivity = Observation(
+                        session_id=session_id,
+                        command_id=command_id,
+                        component="command",
+                        provider=provider,
+                        recovery_generation=generation,
+                        phase="command_processing",
+                        health="unavailable",
+                        observed_at=observed_at,
+                    )
+                    self._watch_transient(inactivity)
             return result
 
     def sample(self, *, observed_at: float | None = None) -> list[Any]:
@@ -4477,7 +4522,16 @@ class Daemon:
         ]
 
     def _observe_command_continuity(self, command: dict[str, Any], event: str) -> None:
-        session_id = command.get("session_id") or OrchestratorSessionStore.session_key(
+        session_id = None
+        try:
+            native_session_id = int(command.get("session_id"))
+        except (TypeError, ValueError):
+            native_session_id = None
+        if native_session_id is not None:
+            session = self.orchestrator_sessions.get(native_session_id)
+            if session is not None:
+                session_id = session.get("session_key")
+        session_id = session_id or OrchestratorSessionStore.session_key(
             str(command.get("repo_path") or self.workspace_root)
         )
         try:
@@ -7708,6 +7762,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 )
                 if updated:
                     reconciled.append(updated)
+                    self._observe_command_continuity(updated, "completed")
                 continue
 
             existing_status = str(existing.get("status") or "")
@@ -7744,6 +7799,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             )
             if updated:
                 reconciled.append(updated)
+                if state in ORCHESTRATOR_COMMAND_TERMINAL_STATUSES:
+                    self._observe_command_continuity(updated, "completed")
         return {"reconciled": reconciled, "ignored": ignored}
 
     def ensure_orchestrator_session(
@@ -7774,14 +7831,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             pid=pid,
             state=state,
         )
-        for continuity_session_id in (result["session_key"], result["id"]):
-            self.observe_continuity_event({
-                "source": "session",
-                "event": "started",
-                "session_id": continuity_session_id,
-                "provider": result["provider_key"],
-                "observed_at": result["updated_at"],
-            })
+        self.observe_continuity_event({
+            "source": "session",
+            "event": "started",
+            "session_id": result["session_key"],
+            "provider": result["provider_key"],
+            "observed_at": result["updated_at"],
+        })
         reconciliation = self.reconcile_orchestrator_command_states(
             repo_path=str(repo),
             command_states=command_action_states,
@@ -7838,14 +7894,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         )
         if result is None:
             raise ValueError("orchestrator session not found")
-        for continuity_session_id in (result["session_key"], result["id"]):
-            self.observe_continuity_event({
-                "source": "session",
-                "event": "explicit_stop",
-                "session_id": continuity_session_id,
-                "provider": result["provider_key"],
-                "observed_at": result["updated_at"],
-            })
+        self.observe_continuity_event({
+            "source": "session",
+            "event": "explicit_stop",
+            "session_id": result["session_key"],
+            "provider": result["provider_key"],
+            "observed_at": result["updated_at"],
+        })
         return {"orchestrator_session": result}
 
     def record_orchestrator_command(
@@ -7937,6 +7992,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 outcome=outcome,
                 status_message=status_message,
             ) or result
+        if str(result.get("status") or "") in ORCHESTRATOR_COMMAND_TERMINAL_STATUSES:
+            self._observe_command_continuity(result, "completed")
         if defer_processing:
             return {
                 "orchestrator_command": result,
@@ -7994,6 +8051,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 outcome="stale-command",
                 status_message=message,
             )
+            self._observe_command_continuity(updated or command, "completed")
             return updated or {"relay_command_id": command_id, "status": "stale"}
 
         self.orchestrator_commands.update_status(
@@ -8110,6 +8168,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 self._heartbeat_command_session(command, state="blocked")
                 self._notify_command_outcome(command, message=message)
                 self._observe_command_continuity(command, "failed")
+            self._observe_command_continuity(updated or command, "completed")
             return updated or {"relay_command_id": command_id, "status": status, "error": str(e)}
         except Exception as e:  # noqa: BLE001 - keep the daemon loop alive.
             message = "Failed while authoring a ticket."
@@ -8124,6 +8183,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             self._heartbeat_command_session(command, state="failed")
             self._notify_command_outcome(command, message=message)
             self._observe_command_continuity(command, "failed")
+            self._observe_command_continuity(updated or command, "completed")
             print(f"[orchestrator] command {command_id} failed: {e}", file=sys.stderr)
             return updated or {"relay_command_id": command_id, "status": "failed", "error": str(e)}
 

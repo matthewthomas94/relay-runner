@@ -10,6 +10,7 @@ mode retained for manual debugging; Start Session and relay-bridge do not use it
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -78,7 +79,7 @@ MESSENGER_OUTCOME_POLL_SECONDS = float(os.environ.get("MESSENGER_OUTCOME_POLL_SE
 MESSENGER_OUTCOME_FETCH_LIMIT = 50
 FOREGROUND_REPLY_FALLBACK_SECONDS = float(os.environ.get("FOREGROUND_REPLY_FALLBACK_SECONDS", "120"))
 PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS = float(os.environ.get("PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS", "5"))
-_CONTINUITY_SESSION_NATIVE_ID = f"bridge:{os.getpid()}:{time.time_ns()}"
+_CONTINUITY_SESSION_NATIVE_ID: str | None = None
 
 _FOREGROUND_REPLY_LOCK = threading.Lock()
 _FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
@@ -590,14 +591,16 @@ def _post_continuity_event(
 ) -> dict:
     """Send only allowlisted lifecycle identity, never native event contents."""
     source_data = metadata if isinstance(metadata, dict) else {}
+    session_id = (
+        _CONTINUITY_SESSION_NATIVE_ID
+        or source_data.get("session_id")
+    )
+    if not session_id:
+        return {}
     payload = {
         "source": source,
         "event": event,
-        "session_id": (
-            source_data.get("app_session_id")
-            or source_data.get("session_id")
-            or _CONTINUITY_SESSION_NATIVE_ID
-        ),
+        "session_id": session_id,
         "relay_command_id": source_data.get("relay_command_id"),
         "provider": (
             source_data.get("provider")
@@ -684,6 +687,11 @@ def start_persistent_orchestrator_lifecycle(
         return None
 
     session_id = int(session["id"])
+    session_key = str(session.get("session_key") or "").strip()
+    if not session_key:
+        session_key = "project:" + hashlib.sha1(repo_path.encode("utf-8")).hexdigest()[:16]
+    global _CONTINUITY_SESSION_NATIVE_ID
+    _CONTINUITY_SESSION_NATIVE_ID = session_key
     recoverable_commands = response.get("recoverable_commands")
     if isinstance(recoverable_commands, list):
         session["recoverable_commands"] = [
@@ -726,6 +734,7 @@ def start_persistent_orchestrator_lifecycle(
     )
     return {
         "session_id": session_id,
+        "session_key": session_key,
         "repo_path": repo_path,
         "provider": provider,
         "thread": thread,
@@ -761,6 +770,10 @@ def stop_persistent_orchestrator_lifecycle(
         request_json("/v1/orchestrator-session/stop", payload)
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
         print(f"[voice_bridge] Persistent orchestrator stop failed: {e}", file=sys.stderr)
+    finally:
+        global _CONTINUITY_SESSION_NATIVE_ID
+        if _CONTINUITY_SESSION_NATIVE_ID == session.get("session_key"):
+            _CONTINUITY_SESSION_NATIVE_ID = None
 
 
 def _surface_recoverable_command_status(
@@ -3143,6 +3156,23 @@ def _handle_provider_completion_control(
     key = _relay_command_key(command)
     if key is None:
         return False
+    provider = str(
+        data.get("provider")
+        or command.get("provider")
+        or os.environ.get("RELAY_RUNNER_PROVIDER")
+        or "codex"
+    ).strip().lower()
+    failed = str(data.get("event") or "") == "StopFailure"
+    terminal_signal = (
+        "result_error" if failed else "result_success"
+    ) if "claude" in provider else (
+        "turn_failed" if failed else "turn_completed"
+    )
+    _post_continuity_event(
+        "provider",
+        terminal_signal,
+        {**data, **command, "provider": provider},
+    )
     if _foreground_reply_delivered(command):
         return True
     if not _relay_command_current(key[0], key[1], state_path=state_path):
@@ -3322,14 +3352,30 @@ def _handle_provider_turn_event_control(
     *,
     provider_turn_broker: ProviderTurnBroker | None,
 ) -> bool:
-    if provider_turn_broker is None:
-        return PROVIDER_TURN_BROKER_MODE == "legacy"
     try:
         payload = json.loads(raw.strip())
     except (json.JSONDecodeError, TypeError):
         return False
-    if not isinstance(payload, dict) or payload.get("event") != "provider_terminated":
+    if not isinstance(payload, dict):
         return False
+    event = str(payload.get("event") or "")
+    provider = str(
+        payload.get("provider")
+        or os.environ.get("RELAY_RUNNER_PROVIDER")
+        or "codex"
+    ).strip().lower()
+    if event == "provider_started":
+        _post_continuity_event(
+            "provider",
+            "stream_started" if "claude" in provider else "turn_started",
+            {**payload, "provider": provider},
+            observed_at=payload.get("observed_at"),
+        )
+        return True
+    if event != "provider_terminated":
+        return False
+    if provider_turn_broker is None:
+        return PROVIDER_TURN_BROKER_MODE == "legacy"
     release_reason = str(payload.get("release_reason") or "")
     if release_reason not in {
         "app_teardown",
@@ -3351,7 +3397,7 @@ def _handle_provider_turn_event_control(
         {
             "app_session_id": payload.get("app_session_id"),
             "recovery_generation": payload.get("recovery_generation"),
-            "provider": os.environ.get("RELAY_RUNNER_PROVIDER") or "codex",
+            "provider": provider,
         },
     )
     return True
