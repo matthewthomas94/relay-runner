@@ -861,6 +861,7 @@ class MessengerRuntime:
         response_timeout: float = 60.0,
         coverage_provider: Callable[[int, str], object] | None = None,
         realization_observer: Callable[..., object] | None = None,
+        continuity_observer: Callable[[dict], object] | None = None,
     ):
         self.backend = backend
         self._speak = speak
@@ -872,6 +873,7 @@ class MessengerRuntime:
         self._response_timeout = response_timeout
         self._coverage_provider = coverage_provider
         self._realization_observer = realization_observer
+        self._continuity_observer = continuity_observer
         self._coverage_error_events: set[tuple[int, int, str]] = set()
         self._lock = threading.Lock()
         self._generation = 0
@@ -1105,8 +1107,10 @@ class MessengerRuntime:
             if self._shutdown.is_set():
                 self.backend.shutdown()
                 return
+            self._observe_continuity("progress")
             print("[messenger] persistent model process is warm", file=sys.stderr)
         except Exception as exc:
+            self._observe_continuity("failed")
             print(f"[messenger] warmup deferred after startup failure: {exc}", file=sys.stderr)
 
     def _run(self) -> None:
@@ -1120,8 +1124,10 @@ class MessengerRuntime:
             with self._lock:
                 self._active_event = event
             try:
+                self._observe_continuity("progress", event)
                 response = self.backend.ask(prompt, timeout=self._response_timeout).strip()
             except Exception as exc:
+                self._observe_continuity("failed", event)
                 print(f"[messenger] response failed: {exc}", file=sys.stderr)
                 if self._must_fail_open(event) and self._event_is_current(event):
                     realization = self._fallback_realization(event, "arbitration_error")
@@ -1142,6 +1148,7 @@ class MessengerRuntime:
                 with self._lock:
                     if self._active_event is event:
                         self._active_event = None
+            self._observe_continuity("progress", event)
             if not self._event_is_current(event):
                 continue
             if not response or response == SILENT_RESPONSE:
@@ -1190,6 +1197,25 @@ class MessengerRuntime:
                     spoken_text=response,
                 ),
             )
+
+    def _observe_continuity(
+        self,
+        lifecycle_event: str,
+        event: _MessengerEvent | None = None,
+    ) -> None:
+        observer = self._continuity_observer
+        if observer is None:
+            return
+        config = getattr(self.backend, "config", None)
+        try:
+            observer({
+                "event": lifecycle_event,
+                "relay_command_id": event.command_id if event is not None else None,
+                "provider": getattr(config, "provider", "codex"),
+                "recovery_generation": event.generation if event is not None else 0,
+            })
+        except Exception:
+            pass
 
     def _event_is_current(self, event: _MessengerEvent) -> bool:
         if event.work_lifecycle:
@@ -1683,6 +1709,7 @@ def create_messenger_runtime(
     cwd: str | os.PathLike[str] | None = None,
     coverage_provider: Callable[[int, str], object] | None = None,
     realization_observer: Callable[..., object] | None = None,
+    continuity_observer: Callable[[dict], object] | None = None,
 ) -> MessengerRuntime | None:
     config = MessengerConfig.from_app_config(app_config, cwd=cwd)
     if not config.enabled:
@@ -1710,4 +1737,5 @@ def create_messenger_runtime(
         is_current=is_current,
         coverage_provider=coverage_provider,
         realization_observer=realization_observer,
+        continuity_observer=continuity_observer,
     )
