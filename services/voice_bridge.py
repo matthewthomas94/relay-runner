@@ -10,6 +10,7 @@ mode retained for manual debugging; Start Session and relay-bridge do not use it
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -78,6 +79,7 @@ MESSENGER_OUTCOME_POLL_SECONDS = float(os.environ.get("MESSENGER_OUTCOME_POLL_SE
 MESSENGER_OUTCOME_FETCH_LIMIT = 50
 FOREGROUND_REPLY_FALLBACK_SECONDS = float(os.environ.get("FOREGROUND_REPLY_FALLBACK_SECONDS", "120"))
 PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS = float(os.environ.get("PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS", "5"))
+_CONTINUITY_SESSION_NATIVE_ID: str | None = None
 
 _FOREGROUND_REPLY_LOCK = threading.Lock()
 _FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
@@ -579,6 +581,58 @@ def _get_orchestrator_json(path: str, params: dict[str, object] | None = None, *
     return data if isinstance(data, dict) else {}
 
 
+def _post_continuity_event(
+    source: str,
+    event: str,
+    metadata: dict | None = None,
+    *,
+    observed_at: float | None = None,
+    request_json=_post_orchestrator_json,
+) -> dict:
+    """Send only allowlisted lifecycle identity, never native event contents."""
+    source_data = metadata if isinstance(metadata, dict) else {}
+    session_id = (
+        _CONTINUITY_SESSION_NATIVE_ID
+        or source_data.get("session_id")
+    )
+    if not session_id:
+        return {}
+    payload = {
+        "source": source,
+        "event": event,
+        "session_id": session_id,
+        "relay_command_id": source_data.get("relay_command_id"),
+        "provider": (
+            source_data.get("provider")
+            or os.environ.get("RELAY_RUNNER_PROVIDER")
+            or "codex"
+        ),
+        "recovery_generation": source_data.get("recovery_generation") or 0,
+        "observed_at": observed_at if observed_at is not None else time.time(),
+    }
+    try:
+        return request_json("/v1/continuity/observation", payload)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+        return {}
+
+
+def _observe_stt_status(status: str) -> None:
+    normalized = str(status or "").strip().lower()
+    if normalized.startswith("(refining)") or normalized.startswith("refining"):
+        _post_continuity_event("stt", "transcription_started")
+
+
+def _observe_stt_continuity_signal(signal: str) -> None:
+    normalized = str(signal or "").strip().lower()
+    event = {
+        "capture_failed": "capture_failed",
+        "transcription_started": "transcription_started",
+        "transcription_failed": "transcription_failed",
+    }.get(normalized)
+    if event is not None:
+        _post_continuity_event("stt", event)
+
+
 def _bridge_provider(cfg: dict) -> str:
     env_provider = os.environ.get("RELAY_RUNNER_PROVIDER", "").strip().lower()
     if env_provider:
@@ -640,6 +694,11 @@ def start_persistent_orchestrator_lifecycle(
         return None
 
     session_id = int(session["id"])
+    session_key = str(session.get("session_key") or "").strip()
+    if not session_key:
+        session_key = "project:" + hashlib.sha1(repo_path.encode("utf-8")).hexdigest()[:16]
+    global _CONTINUITY_SESSION_NATIVE_ID
+    _CONTINUITY_SESSION_NATIVE_ID = session_key
     recoverable_commands = response.get("recoverable_commands")
     if isinstance(recoverable_commands, list):
         session["recoverable_commands"] = [
@@ -682,6 +741,7 @@ def start_persistent_orchestrator_lifecycle(
     )
     return {
         "session_id": session_id,
+        "session_key": session_key,
         "repo_path": repo_path,
         "provider": provider,
         "thread": thread,
@@ -717,6 +777,10 @@ def stop_persistent_orchestrator_lifecycle(
         request_json("/v1/orchestrator-session/stop", payload)
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
         print(f"[voice_bridge] Persistent orchestrator stop failed: {e}", file=sys.stderr)
+    finally:
+        global _CONTINUITY_SESSION_NATIVE_ID
+        if _CONTINUITY_SESSION_NATIVE_ID == session.get("session_key"):
+            _CONTINUITY_SESSION_NATIVE_ID = None
 
 
 def _surface_recoverable_command_status(
@@ -1280,6 +1344,7 @@ def _begin_relay_command(
             metadata["provider"] = provider
         _atomic_write_json(state_path, metadata)
     _record_private_command_capture(metadata, event_log_path=event_log_path)
+    _post_continuity_event("bridge", "command_received", metadata)
     return metadata
 
 
@@ -1568,8 +1633,18 @@ def _deliver_raw_instruction_to_orchestrator(
             "delivery_failed",
             event_log_path=event_log_path,
         )
+        _post_continuity_event(
+            "bridge",
+            "delivery_failed",
+            {**relay_command, "session_id": (orchestrator_session or {}).get("session_id")},
+        )
         print(f"[voice_bridge] Could not fan out raw command to orchestrator: {e}", file=sys.stderr)
         return False
+    _post_continuity_event(
+        "bridge",
+        "command_delivered",
+        {**relay_command, "session_id": (orchestrator_session or {}).get("session_id")},
+    )
     return True
 
 
@@ -2788,6 +2863,11 @@ def _handle_relay_control_message(
         return True
 
     if text.startswith("__STATUS__:"):
+        _observe_stt_status(text[len("__STATUS__:"):])
+        return True
+
+    if text.startswith("__CONTINUITY__:"):
+        _observe_stt_continuity_signal(text[len("__CONTINUITY__:"):])
         return True
 
     if _quarantine_raw_relay_control_object(text):
@@ -3087,6 +3167,23 @@ def _handle_provider_completion_control(
     key = _relay_command_key(command)
     if key is None:
         return False
+    provider = str(
+        data.get("provider")
+        or command.get("provider")
+        or os.environ.get("RELAY_RUNNER_PROVIDER")
+        or "codex"
+    ).strip().lower()
+    failed = str(data.get("event") or "") == "StopFailure"
+    terminal_signal = (
+        "result_error" if failed else "result_success"
+    ) if "claude" in provider else (
+        "turn_failed" if failed else "turn_completed"
+    )
+    _post_continuity_event(
+        "provider",
+        terminal_signal,
+        {**data, **command, "provider": provider},
+    )
     if _foreground_reply_delivered(command):
         return True
     if not _relay_command_current(key[0], key[1], state_path=state_path):
@@ -3266,14 +3363,34 @@ def _handle_provider_turn_event_control(
     *,
     provider_turn_broker: ProviderTurnBroker | None,
 ) -> bool:
-    if provider_turn_broker is None:
-        return PROVIDER_TURN_BROKER_MODE == "legacy"
     try:
         payload = json.loads(raw.strip())
     except (json.JSONDecodeError, TypeError):
         return False
-    if not isinstance(payload, dict) or payload.get("event") != "provider_terminated":
+    if not isinstance(payload, dict):
         return False
+    event = str(payload.get("event") or "")
+    provider = str(
+        payload.get("provider")
+        or os.environ.get("RELAY_RUNNER_PROVIDER")
+        or "codex"
+    ).strip().lower()
+    if event in {"provider_started", "provider_progress"}:
+        if event == "provider_progress":
+            signal = "stream_progress" if "claude" in provider else "turn_progress"
+        else:
+            signal = "stream_started" if "claude" in provider else "turn_started"
+        _post_continuity_event(
+            "provider",
+            signal,
+            {**payload, "provider": provider},
+            observed_at=payload.get("observed_at"),
+        )
+        return True
+    if event != "provider_terminated":
+        return False
+    if provider_turn_broker is None:
+        return PROVIDER_TURN_BROKER_MODE == "legacy"
     release_reason = str(payload.get("release_reason") or "")
     if release_reason not in {
         "app_teardown",
@@ -3288,6 +3405,15 @@ def _handle_provider_turn_event_control(
         provider_session_id=provider_session_id,
         release_reason=release_reason,
         event_id=event_id,
+    )
+    _post_continuity_event(
+        "provider",
+        "process_exit",
+        {
+            "app_session_id": payload.get("app_session_id"),
+            "recovery_generation": payload.get("recovery_generation"),
+            "provider": provider,
+        },
     )
     return True
 
@@ -3709,6 +3835,11 @@ def main():
             ),
             coverage_provider=tts_worker.played_coverage,
             realization_observer=tts_worker.record_realization,
+            continuity_observer=lambda event: _post_continuity_event(
+                "messenger",
+                str(event.get("event") or ""),
+                event,
+            ),
         )
         if messenger is not None:
             messenger.start()
@@ -3874,8 +4005,13 @@ def main():
 
                 if text.startswith("__STATUS__:"):
                     status_msg = text[len("__STATUS__:"):]
+                    _observe_stt_status(status_msg)
                     print(f"\033[2m  [{status_msg}]\033[0m")
                     sys.stdout.flush()
+                    continue
+
+                if text.startswith("__CONTINUITY__:"):
+                    _observe_stt_continuity_signal(text[len("__CONTINUITY__:"):])
                     continue
 
                 # Convert "slash <command>" to "/<command>"

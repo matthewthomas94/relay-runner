@@ -83,6 +83,12 @@ except ModuleNotFoundError:  # Installed direct-script layout.
         _ticket_front_matter_value,
     )
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
+from continuity_incidents import (
+    ContinuityIncidentDetector,
+    Observation,
+    opaque_identifier,
+    provider_observation,
+)
 from codex_model_catalog import (
     CODEX_FAMILIES,
     CODEX_WORKER_TIER_FAMILIES,
@@ -134,6 +140,10 @@ ORCHESTRATOR_SESSION_STATES = frozenset({
     "stale",
 })
 ORCHESTRATOR_SESSION_STALE_AFTER_SECONDS = 30.0
+CONTINUITY_SAMPLE_INTERVAL_SECONDS = max(
+    0.1,
+    float(os.environ.get("CONTINUITY_SAMPLE_INTERVAL_SECONDS", "1")),
+)
 ORCHESTRATOR_COMMAND_STATUSES = frozenset({
     "received",
     "classified",
@@ -168,6 +178,259 @@ ORCHESTRATOR_COMMAND_TERMINAL_STATUSES = frozenset({
     "stale",
     "failed",
 })
+
+_CONTINUITY_LIFECYCLE_EVENTS = {
+    ("stt", "capture_started"): ("speech_capture", "capture", "healthy", False),
+    ("stt", "capture_failed"): ("speech_capture", "capture", "unavailable", False),
+    ("stt", "transcription_started"): ("transcription", "transcription", "healthy", False),
+    ("stt", "transcription_failed"): ("transcription", "transcription", "unavailable", False),
+    ("bridge", "command_received"): ("command", "command_processing", "healthy", False),
+    ("bridge", "command_delivered"): ("bridge", "delivery", "healthy", False),
+    ("bridge", "delivery_failed"): ("bridge", "delivery", "unavailable", False),
+    ("messenger", "progress"): ("messenger", "component_liveness", "healthy", False),
+    ("messenger", "failed"): ("messenger", "component_liveness", "recovery_failed", True),
+    ("daemon", "heartbeat"): ("daemon", "component_liveness", "healthy", False),
+    ("daemon", "heartbeat_missed"): ("daemon", "component_liveness", "unavailable", False),
+    ("command", "accepted"): ("command", "command_processing", "healthy", False),
+    ("command", "planning"): ("command", "command_processing", "healthy", False),
+    ("command", "completed"): ("command", "command_processing", "completed", False),
+    ("command", "failed"): ("command", "command_processing", "recovery_failed", True),
+    ("session", "started"): ("session", "session_liveness", "healthy", False),
+    ("session", "explicit_stop"): ("session", "session_liveness", "unavailable", False),
+    ("session", "update"): ("session", "session_liveness", "unavailable", False),
+    ("session", "reset"): ("session", "session_liveness", "unavailable", False),
+}
+
+_CONTINUITY_DEADLINE_STARTS = {
+    ("stt", "capture_started"): ("speech_capture", "capture"),
+    ("stt", "transcription_started"): ("transcription", "transcription"),
+}
+
+_CONTINUITY_PROGRESS_RESOLVES = {
+    ("stt", "transcription_started"): frozenset({"speech_capture"}),
+    ("bridge", "command_received"): frozenset({"speech_capture", "transcription"}),
+}
+
+
+class ContinuityLifecycleAdapter:
+    """Translate allowlisted live Relay events into the incident detector."""
+
+    def __init__(
+        self,
+        *,
+        emit: Callable[[dict[str, object]], None],
+        detector: ContinuityIncidentDetector | None = None,
+    ) -> None:
+        self.detector = detector or ContinuityIncidentDetector(emit=emit)
+        self._lock = threading.RLock()
+        self._watches: dict[
+            tuple[str, str | None, str, str, int, str], Observation
+        ] = {}
+        self._suppressed_sessions: dict[str, str] = {}
+
+    @staticmethod
+    def _watch_key(
+        observation: Observation,
+    ) -> tuple[str, str | None, str, str, int, str]:
+        return (
+            observation.session_id,
+            observation.command_id,
+            observation.component,
+            observation.provider,
+            observation.recovery_generation,
+            observation.phase,
+        )
+
+    @staticmethod
+    def _at(observation: Observation, observed_at: float) -> Observation:
+        return Observation(
+            session_id=observation.session_id,
+            command_id=observation.command_id,
+            component=observation.component,
+            provider=observation.provider,
+            recovery_generation=observation.recovery_generation,
+            phase=observation.phase,
+            health=observation.health,
+            observed_at=observed_at,
+            native_recovery_failed=observation.native_recovery_failed,
+        )
+
+    def _clear_recovered_watches(self, observation: Observation) -> None:
+        for key, watched in tuple(self._watches.items()):
+            if (
+                watched.session_id == observation.session_id
+                and watched.component == observation.component
+                and watched.provider == observation.provider
+                and watched.recovery_generation == observation.recovery_generation
+                and (
+                    watched.command_id == observation.command_id
+                    or watched.command_id is None
+                )
+            ):
+                self._watches.pop(key, None)
+        self.detector.resolve_related(observation)
+
+    def _clear_component_watches(
+        self,
+        observation: Observation,
+        components: frozenset[str],
+    ) -> None:
+        for key, watched in tuple(self._watches.items()):
+            if (
+                watched.session_id == observation.session_id
+                and watched.component in components
+                and watched.recovery_generation == observation.recovery_generation
+                and (watched.command_id is None or watched.command_id == observation.command_id)
+            ):
+                self._watches.pop(key, None)
+                self.detector.resolve_related(watched)
+
+    def _watch_transient(self, observation: Observation) -> None:
+        result = self.detector.observe(observation)
+        key = self._watch_key(observation)
+        if result.state == "transient":
+            self._watches[key] = observation
+        else:
+            self._watches.pop(key, None)
+
+    def observe(self, event: dict[str, Any]):
+        source = str(event.get("source") or "").strip().lower()
+        name = str(event.get("event") or "").strip().lower()
+        native_session_id = str(
+            event.get("app_session_id") or event.get("session_id") or ""
+        ).strip()
+        if not native_session_id:
+            raise ValueError("continuity event requires session_id")
+        native_command_id = str(
+            event.get("relay_command_id") or event.get("command_id") or ""
+        ).strip()
+        try:
+            generation = max(0, int(event.get("recovery_generation") or 0))
+            observed_at = float(event.get("observed_at") or time.time())
+        except (TypeError, ValueError) as error:
+            raise ValueError("invalid continuity timing or generation") from error
+        provider = OrchestratorSessionStore._normalize_provider(
+            str(event.get("provider") or "codex")
+        )
+        session_id = opaque_identifier("session", native_session_id)
+        command_id = (
+            opaque_identifier("command", native_command_id)
+            if native_command_id
+            else None
+        )
+
+        if source == "provider":
+            observation = provider_observation(
+                provider,
+                name,
+                session_id=session_id,
+                command_id=command_id,
+                recovery_generation=generation,
+                observed_at=observed_at,
+            )
+        else:
+            try:
+                component, phase, health, failed_recovery = _CONTINUITY_LIFECYCLE_EVENTS[
+                    (source, name)
+                ]
+            except KeyError as error:
+                raise ValueError("unsupported continuity lifecycle event") from error
+            observation = Observation(
+                session_id=session_id,
+                command_id=command_id,
+                component=component,
+                provider=provider if component in {"messenger", "command"} else "none",
+                recovery_generation=generation,
+                phase=phase,
+                health=health,
+                observed_at=observed_at,
+                native_recovery_failed=failed_recovery,
+            )
+
+        suppression = (
+            name
+            if source == "session" and name in {"explicit_stop", "update", "reset"}
+            else None
+        )
+        with self._lock:
+            if suppression is not None:
+                self._suppressed_sessions[session_id] = suppression
+                self.detector.suppress_session(session_id)
+                for key, watched in tuple(self._watches.items()):
+                    if watched.session_id == session_id:
+                        self._watches.pop(key, None)
+                return self.detector.observe(observation, suppression=suppression)
+
+            suppressed = self._suppressed_sessions.get(session_id)
+            if suppressed is not None:
+                if source != "session" or name != "started":
+                    return self.detector.observe(observation, suppression=suppressed)
+                self._suppressed_sessions.pop(session_id, None)
+
+            if observation.health in {"healthy", "completed"}:
+                self._clear_recovered_watches(observation)
+            resolved_components = _CONTINUITY_PROGRESS_RESOLVES.get((source, name))
+            if resolved_components:
+                self._clear_component_watches(observation, resolved_components)
+            result = self.detector.observe(observation)
+
+            if observation.health in {"unavailable", "recovery_failed"}:
+                key = self._watch_key(observation)
+                if result.state == "transient":
+                    self._watches[key] = observation
+                else:
+                    self._watches.pop(key, None)
+            else:
+                deadline_component = _CONTINUITY_DEADLINE_STARTS.get((source, name))
+                if source == "provider" and name in {
+                    "turn_started",
+                    "stream_started",
+                    "turn_progress",
+                    "stream_progress",
+                }:
+                    deadline_component = ("foreground_provider", "provider_turn")
+                if deadline_component is not None:
+                    component, phase = deadline_component
+                    deadline = Observation(
+                        session_id=session_id,
+                        command_id=command_id,
+                        component=component,
+                        provider=provider if component == "foreground_provider" else "none",
+                        recovery_generation=generation,
+                        phase=phase,
+                        health="unavailable",
+                        observed_at=observed_at,
+                    )
+                    self._watch_transient(deadline)
+                elif source == "command" and name in {"accepted", "planning"}:
+                    inactivity = Observation(
+                        session_id=session_id,
+                        command_id=command_id,
+                        component="command",
+                        provider=provider,
+                        recovery_generation=generation,
+                        phase="command_processing",
+                        health="unavailable",
+                        observed_at=observed_at,
+                    )
+                    self._watch_transient(inactivity)
+            return result
+
+    def sample(self, *, observed_at: float | None = None) -> list[Any]:
+        """Re-observe unresolved failures so one-shot native events can qualify."""
+        now = time.time() if observed_at is None else float(observed_at)
+        results = []
+        with self._lock:
+            for key, watched in tuple(self._watches.items()):
+                if watched.session_id in self._suppressed_sessions:
+                    self._watches.pop(key, None)
+                    continue
+                sample = self._at(watched, now)
+                result = self.detector.observe(sample)
+                results.append(result)
+                if result.state not in {"transient"}:
+                    self._watches.pop(key, None)
+        return results
 
 WORKER_SIZING_FIELDS = (
     "worker_model",
@@ -4168,6 +4431,8 @@ class Daemon:
         self.orchestrator_commands = OrchestratorCommandStore(data / "orchestrator_commands.db")
         self.messenger_outcomes = MessengerOutcomeStore(data / "messenger_outcomes.db")
         self.followup_proposals = FollowupProposalStore(data / "followup_proposals.db")
+        self.continuity_incident_path = data / "continuity_incidents.jsonl"
+        self.continuity = ContinuityLifecycleAdapter(emit=self._emit_continuity_incident)
         self.graphify_path = data / "graphify.db"
         self.program_registry_path = _program_registry_path()
         # Registry/artifact ownership is rooted directly at Application
@@ -4224,6 +4489,68 @@ class Daemon:
             self.reconcile_queue_drains(trigger="daemon-startup")
         except Exception as e:  # noqa: BLE001 - daemon startup must still finish.
             print(f"[orchestrator] queue-drain startup reconcile failed: {e}", file=sys.stderr)
+
+    def _emit_continuity_incident(self, envelope: dict[str, object]) -> None:
+        """Persist only the detector's fixed, privacy-safe recovery envelope."""
+        try:
+            self.continuity_incident_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.continuity_incident_path.open("a") as handle:
+                handle.write(json.dumps(envelope, sort_keys=True, separators=(",", ":")) + "\n")
+            os.chmod(self.continuity_incident_path, 0o600)
+        except OSError as error:
+            print(f"[orchestrator] could not record continuity incident: {error}", file=sys.stderr)
+
+    def observe_continuity_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        continuity = getattr(self, "continuity", None)
+        if continuity is None:
+            continuity = ContinuityLifecycleAdapter(emit=lambda _envelope: None)
+            self.continuity = continuity
+        result = continuity.observe(event)
+        return {
+            "state": result.state,
+            "fingerprint": result.fingerprint,
+            "suppression_reason": result.suppression_reason,
+            "incident": result.envelope.as_dict() if result.envelope is not None else None,
+        }
+
+    def sample_continuity(self, *, observed_at: float | None = None) -> list[dict[str, Any]]:
+        continuity = getattr(self, "continuity", None)
+        if continuity is None:
+            return []
+        return [
+            {
+                "state": result.state,
+                "fingerprint": result.fingerprint,
+                "suppression_reason": result.suppression_reason,
+                "incident": result.envelope.as_dict() if result.envelope is not None else None,
+            }
+            for result in continuity.sample(observed_at=observed_at)
+        ]
+
+    def _observe_command_continuity(self, command: dict[str, Any], event: str) -> None:
+        session_id = None
+        try:
+            native_session_id = int(command.get("session_id"))
+        except (TypeError, ValueError):
+            native_session_id = None
+        if native_session_id is not None:
+            session = self.orchestrator_sessions.get(native_session_id)
+            if session is not None:
+                session_id = session.get("session_key")
+        session_id = session_id or OrchestratorSessionStore.session_key(
+            str(command.get("repo_path") or self.workspace_root)
+        )
+        try:
+            self.observe_continuity_event({
+                "source": "command",
+                "event": event,
+                "session_id": session_id,
+                "relay_command_id": command.get("relay_command_id"),
+                "provider": command.get("provider_key") or self.agent_kind,
+                "observed_at": time.time(),
+            })
+        except ValueError as error:
+            print(f"[orchestrator] ignored invalid continuity event: {error}", file=sys.stderr)
 
     def _registered_projects_path(self) -> Path:
         registry_v2 = getattr(self, "project_registry_v2_path", None)
@@ -7441,6 +7768,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 )
                 if updated:
                     reconciled.append(updated)
+                    self._observe_command_continuity(updated, "completed")
                 continue
 
             existing_status = str(existing.get("status") or "")
@@ -7477,6 +7805,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             )
             if updated:
                 reconciled.append(updated)
+                if state in ORCHESTRATOR_COMMAND_TERMINAL_STATUSES:
+                    self._observe_command_continuity(updated, "completed")
         return {"reconciled": reconciled, "ignored": ignored}
 
     def ensure_orchestrator_session(
@@ -7507,6 +7837,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             pid=pid,
             state=state,
         )
+        self.observe_continuity_event({
+            "source": "session",
+            "event": "started",
+            "session_id": result["session_key"],
+            "provider": result["provider_key"],
+            "observed_at": result["updated_at"],
+        })
         reconciliation = self.reconcile_orchestrator_command_states(
             repo_path=str(repo),
             command_states=command_action_states,
@@ -7540,6 +7877,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         )
         if result is None:
             raise ValueError("orchestrator session not found")
+        self.observe_continuity_event({
+            "source": "daemon",
+            "event": "heartbeat",
+            "session_id": result["session_key"],
+            "provider": result["provider_key"],
+            "observed_at": result["heartbeat_at"],
+        })
         return {"orchestrator_session": result}
 
     def stop_orchestrator_session(
@@ -7556,6 +7900,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         )
         if result is None:
             raise ValueError("orchestrator session not found")
+        self.observe_continuity_event({
+            "source": "session",
+            "event": "explicit_stop",
+            "session_id": result["session_key"],
+            "provider": result["provider_key"],
+            "observed_at": result["updated_at"],
+        })
         return {"orchestrator_session": result}
 
     def record_orchestrator_command(
@@ -7638,6 +7989,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             received_at=received_at,
             status=requested_status,
         )
+        self._observe_command_continuity(result, "accepted")
         if status_message:
             result = self.orchestrator_commands.update_status(
                 str(relay_command_id),
@@ -7646,6 +7998,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 outcome=outcome,
                 status_message=status_message,
             ) or result
+        if str(result.get("status") or "") in ORCHESTRATOR_COMMAND_TERMINAL_STATUSES:
+            self._observe_command_continuity(result, "completed")
         if defer_processing:
             return {
                 "orchestrator_command": result,
@@ -7703,6 +8057,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 outcome="stale-command",
                 status_message=message,
             )
+            self._observe_command_continuity(updated or command, "completed")
             return updated or {"relay_command_id": command_id, "status": "stale"}
 
         self.orchestrator_commands.update_status(
@@ -7710,6 +8065,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             intent_id=intent_id,
             status="planning",
         )
+        self._observe_command_continuity(command, "planning")
         self._heartbeat_command_session(command, state="planning")
 
         try:
@@ -7720,6 +8076,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             )
             if action.kind == "create_ticket":
                 result = self._author_ticket_for_command(command, relay_metadata)
+                self._observe_command_continuity(command, "completed")
                 self._heartbeat_command_session(command, state="idle")
                 return result
             if action.kind == "dispatch_ticket" and action.ticket_id:
@@ -7753,6 +8110,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     ticket_id=action.ticket_id,
                     run_id=run.get("id"),
                 )
+                self._observe_command_continuity(command, "completed")
                 return updated or {"relay_command_id": command_id, "status": "authored"}
             if action.kind in {"update_ticket", "inspect_ticket"} and action.ticket_id:
                 message = (
@@ -7770,6 +8128,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 )
                 self._heartbeat_command_session(command, state="blocked")
                 self._notify_command_outcome(command, message=message, ticket_id=action.ticket_id)
+                self._observe_command_continuity(command, "completed")
                 return updated or {"relay_command_id": command_id, "status": "blocked"}
 
             if action.kind in {"conversation", "control", "inline_work", "direct_action"}:
@@ -7783,6 +8142,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     status_message=message,
                 )
                 self._heartbeat_command_session(command, state="idle")
+                self._observe_command_continuity(command, "completed")
                 return updated or {"relay_command_id": command_id, "status": "handled"}
 
             message = "Clarification needed before creating or dispatching a ticket."
@@ -7796,6 +8156,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             )
             self._heartbeat_command_session(command, state="blocked")
             self._notify_command_outcome(command, message=message)
+            self._observe_command_continuity(command, "completed")
             return updated or {"relay_command_id": command_id, "status": "blocked"}
         except ValueError as e:
             status = "stale" if "stale Relay command" in str(e) else "blocked"
@@ -7812,6 +8173,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             if status != "stale":
                 self._heartbeat_command_session(command, state="blocked")
                 self._notify_command_outcome(command, message=message)
+                self._observe_command_continuity(command, "failed")
+            self._observe_command_continuity(updated or command, "completed")
             return updated or {"relay_command_id": command_id, "status": status, "error": str(e)}
         except Exception as e:  # noqa: BLE001 - keep the daemon loop alive.
             message = "Failed while authoring a ticket."
@@ -7825,6 +8188,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             )
             self._heartbeat_command_session(command, state="failed")
             self._notify_command_outcome(command, message=message)
+            self._observe_command_continuity(command, "failed")
+            self._observe_command_continuity(updated or command, "completed")
             print(f"[orchestrator] command {command_id} failed: {e}", file=sys.stderr)
             return updated or {"relay_command_id": command_id, "status": "failed", "error": str(e)}
 
@@ -8978,6 +9343,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return 200, result
 
+            if method == "POST" and segments == ["v1", "continuity", "observation"]:
+                body = _read_body(self)
+                return 202, self.daemon.observe_continuity_event(body)
+
             if method == "POST" and segments == ["v1", "orchestrator-session", "stop"]:
                 body = _read_body(self)
                 result = self.daemon.stop_orchestrator_session(
@@ -9319,6 +9688,19 @@ def serve(daemon: Daemon) -> None:
                 print(f"[orchestrator] command processing loop failed: {e}", file=sys.stderr)
 
     threading.Thread(target=_command_loop, name="orchestrator-command-loop", daemon=True).start()
+
+    def _continuity_loop():
+        while not stop.wait(CONTINUITY_SAMPLE_INTERVAL_SECONDS):
+            try:
+                daemon.sample_continuity()
+            except Exception as e:  # noqa: BLE001 - keep the HTTP daemon alive.
+                print(f"[orchestrator] continuity sampler failed: {e}", file=sys.stderr)
+
+    threading.Thread(
+        target=_continuity_loop,
+        name="continuity-incident-sampler",
+        daemon=True,
+    ).start()
 
     def _queue_drain_loop():
         while not stop.wait(QUEUE_DRAIN_MONITOR_INTERVAL_SECONDS):
