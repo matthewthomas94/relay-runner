@@ -17,7 +17,7 @@ import os
 import re
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Mapping, Sequence
 
@@ -52,7 +52,9 @@ except ModuleNotFoundError:  # Direct services/*.py execution.
 
 
 UTC = timezone.utc
-RETENTION_AGE = timedelta(days=30)
+RETENTION_POLICY = "terminal-count-v1"
+RETENTION_PLAN_SCHEMA_VERSION = 1
+TERMINAL_RETENTION_LIMIT = 25
 CATALOG_SCHEMA_VERSION = 1
 LEASE_SCHEMA_VERSION = 1
 
@@ -71,15 +73,8 @@ ACTIVITY_FIELDS = (
     "reopened_at",
 )
 
-ACTIVE_STATUSES = {
-    "ready",
-    "in_progress",
-    "verification_blocked",
-    "awaiting_review",
-    "merge_conflict",
-}
 ACTIVE_RUN_STATES = {"claimed", "running", "awaiting_review", "reviewing", "merge_conflict"}
-ARCHIVEABLE_STATUSES = {"backlog", "done", "canceled", "cancelled"}
+TERMINAL_STATUSES = {"done", "canceled", "cancelled"}
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 _lease_locks_guard = threading.Lock()
@@ -137,21 +132,43 @@ class RetentionTicket:
     dependencies: tuple[str, ...]
     attachment_paths: tuple[str, ...]
     exemptions: tuple[str, ...]
+    materialized: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
 class RetentionPlan:
+    schema_version: int
+    policy: str
+    limit: int
     project_id: str
     artifact_head: str
     evaluated_at: datetime
-    cutoff: datetime
     candidates: tuple[RetentionTicket, ...]
-    recent: tuple[RetentionTicket, ...]
+    retained_terminal: tuple[RetentionTicket, ...]
+    nonterminal: tuple[RetentionTicket, ...]
+    materialize: tuple[RetentionTicket, ...]
     exempt: tuple[RetentionTicket, ...]
+    ranked_terminal: tuple[RetentionTicket, ...]
 
     @property
     def candidate_ids(self) -> tuple[str, ...]:
         return tuple(ticket.ticket_id for ticket in self.candidates)
+
+    @property
+    def retained_terminal_ids(self) -> tuple[str, ...]:
+        return tuple(ticket.ticket_id for ticket in self.retained_terminal)
+
+    @property
+    def nonterminal_ids(self) -> tuple[str, ...]:
+        return tuple(ticket.ticket_id for ticket in self.nonterminal)
+
+    @property
+    def materialize_ids(self) -> tuple[str, ...]:
+        return tuple(ticket.ticket_id for ticket in self.materialize)
+
+    @property
+    def temporary_overage(self) -> Mapping[str, tuple[str, ...]]:
+        return {ticket.ticket_id: ticket.exemptions for ticket in self.exempt}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -422,10 +439,7 @@ class ArtifactRetentionManager:
         snapshot = self.store.snapshot()
         entries = self.store._tree_entries(snapshot.commit_id)
         leased = self.lease_store.active_ticket_ids()
-        active_statuses = self._ticket_status_map(snapshot.files)
-        recent: list[RetentionTicket] = []
-        exempt: list[RetentionTicket] = []
-        candidates: list[RetentionTicket] = []
+        canonical: dict[str, RetentionTicket] = {}
         for path in sorted(snapshot.files):
             if not _is_ticket_path(path):
                 continue
@@ -438,26 +452,58 @@ class ArtifactRetentionManager:
                 content,
                 entries[path].oid,
                 snapshot.files,
-                active_statuses,
                 leased,
             )
-            if ticket.exemptions:
-                exempt.append(ticket)
-            elif ticket.activity_at >= instant - RETENTION_AGE:
-                recent.append(ticket)
-            elif ticket.status in ARCHIVEABLE_STATUSES:
-                candidates.append(ticket)
-            else:
-                exempt.append(dataclasses.replace(ticket, exemptions=("nonterminal_status",)))
-        key = lambda ticket: (ticket.activity_at, ticket.artifact_id, ticket.ticket_id)
+            if ticket.artifact_id in canonical:
+                raise ArtifactValidationError(
+                    f"duplicate immutable artifact_id in materialized tickets: {ticket.artifact_id}"
+                )
+            canonical[ticket.artifact_id] = ticket
+
+        for artifact_id, entry in self._catalog_from_files(snapshot.files).items():
+            if artifact_id in canonical or entry.get("state") == RetentionState.DELETED_TOMBSTONE.value:
+                continue
+            ticket = self._catalog_ticket(entry)
+            if any(existing.ticket_id == ticket.ticket_id for existing in canonical.values()):
+                raise ArtifactValidationError(
+                    f"ticket {ticket.ticket_id} has conflicting materialized and catalog identities"
+                )
+            canonical[artifact_id] = ticket
+
+        nonterminal = [ticket for ticket in canonical.values() if not _is_terminal(ticket.status)]
+        terminal = [ticket for ticket in canonical.values() if _is_terminal(ticket.status)]
+        # Python's sort is stable: sorting the immutable identity first and
+        # canonical activity second gives descending activity with ascending
+        # artifact_id ties, independent of display ID or provider.
+        terminal.sort(key=lambda ticket: ticket.artifact_id)
+        terminal.sort(key=lambda ticket: ticket.activity_at, reverse=True)
+        retained_terminal = terminal[:TERMINAL_RETENTION_LIMIT]
+        retained_ids = {ticket.artifact_id for ticket in retained_terminal}
+        older_materialized = [
+            ticket
+            for ticket in terminal
+            if ticket.materialized and ticket.artifact_id not in retained_ids
+        ]
+        exempt = [ticket for ticket in older_materialized if ticket.exemptions]
+        candidates = [ticket for ticket in older_materialized if not ticket.exemptions]
+        materialize = [
+            ticket
+            for ticket in (*nonterminal, *retained_terminal)
+            if not ticket.materialized
+        ]
         return RetentionPlan(
+            schema_version=RETENTION_PLAN_SCHEMA_VERSION,
+            policy=RETENTION_POLICY,
+            limit=TERMINAL_RETENTION_LIMIT,
             project_id=self.store.project_id,
             artifact_head=snapshot.commit_id,
             evaluated_at=instant,
-            cutoff=instant - RETENTION_AGE,
-            candidates=tuple(sorted(candidates, key=key)),
-            recent=tuple(sorted(recent, key=key)),
-            exempt=tuple(sorted(exempt, key=key)),
+            candidates=tuple(candidates),
+            retained_terminal=tuple(retained_terminal),
+            nonterminal=tuple(sorted(nonterminal, key=lambda ticket: ticket.ticket_id)),
+            materialize=tuple(sorted(materialize, key=lambda ticket: ticket.ticket_id)),
+            exempt=tuple(exempt),
+            ranked_terminal=tuple(terminal),
         )
 
     def archive(
@@ -480,7 +526,7 @@ class ArtifactRetentionManager:
             if current != plan.artifact_head:
                 raise ArtifactConcurrentUpdate("artifact head changed since retention preview")
             refreshed = self.preview(evaluated_at=plan.evaluated_at)
-            if refreshed.candidate_ids != plan.candidate_ids:
+            if _plan_identity(refreshed) != _plan_identity(plan):
                 raise ArtifactConcurrentUpdate("retention eligibility changed since preview")
             entries = self.store._tree_entries(current)
             catalog = self._catalog(current)
@@ -696,7 +742,6 @@ class ArtifactRetentionManager:
         if path not in snapshot.files:
             raise ArtifactValidationError(f"ticket {ticket_id!r} is not materialized")
         entries = self.store._tree_entries(head)
-        statuses = self._ticket_status_map(snapshot.files)
         ticket = self._retention_ticket(
             head,
             ticket_id,
@@ -704,7 +749,6 @@ class ArtifactRetentionManager:
             snapshot.files[path],
             entries[path].oid,
             snapshot.files,
-            statuses,
             self.lease_store.active_ticket_ids(),
         )
         if ticket.exemptions:
@@ -740,7 +784,7 @@ class ArtifactRetentionManager:
         snapshot = self.store.snapshot()
         path = f".orchestrator/{dependency_id}.md"
         if path in snapshot.files:
-            return _front_matter(snapshot.files[path]).get("status", "") == "done"
+            return _canonical_status(_front_matter(snapshot.files[path])) == "done"
         for entry in self._catalog(snapshot.commit_id).values():
             if entry.get("ticket_id") == dependency_id:
                 return entry.get("status") == "done"
@@ -790,7 +834,6 @@ class ArtifactRetentionManager:
         content: bytes,
         blob_id: str,
         files: Mapping[str, bytes],
-        statuses: Mapping[str, str],
         leased: frozenset[str],
     ) -> RetentionTicket:
         front = _front_matter(content)
@@ -806,27 +849,23 @@ class ArtifactRetentionManager:
                 f"ticket {ticket_id} has no durable activity timestamp; migration must anchor activity_at"
             )
         activity_at = max(activity_values)
-        status = front.get("status", "backlog")
+        status = _canonical_status(front)
         dependencies = tuple(sorted(_parse_list(front.get("depends_on", "[]"))))
         exemptions: list[str] = []
-        if status in ACTIVE_STATUSES:
-            exemptions.append(status)
         run_state = front.get("run_state", "")
         if run_state in ACTIVE_RUN_STATES:
-            exemptions.append(run_state)
-        if _parse_bool(front.get("blocked", "false")):
-            exemptions.append("blocked")
-        if _parse_bool(front.get("pinned", "false")):
-            exemptions.append("pinned")
-        if _parse_bool(front.get("pending_sync", "false")):
-            exemptions.append("pending_sync")
-        if _parse_bool(front.get("unpublished_conflict", "false")):
-            exemptions.append("unpublished_conflict")
-        unresolved = [dependency for dependency in dependencies if statuses.get(dependency) != "done"]
-        if unresolved:
-            exemptions.append("unresolved_dependency:" + ",".join(unresolved))
+            exemptions.append(f"live_lease:{run_state}")
+        if (
+            _parse_bool(front.get("pending_sync", "false"))
+            or _parse_bool(front.get("unpublished_conflict", "false"))
+        ):
+            exemptions.append("unpublished_content")
+        if front.get("retention_transaction", "").strip() not in {"", "none", "complete"}:
+            exemptions.append("in_flight_transaction")
+        if _parse_bool(front.get("retryable_verification_failure", "false")):
+            exemptions.append("retryable_verification_failure")
         if ticket_id in leased:
-            exemptions.append("snapshot_lease")
+            exemptions.append("live_lease:snapshot")
         attachment_prefix = f".orchestrator/attachments/{ticket_id}/"
         attachment_paths = tuple(sorted(path for path in files if path.startswith(attachment_prefix)))
         return RetentionTicket(
@@ -843,15 +882,61 @@ class ArtifactRetentionManager:
             exemptions=tuple(sorted(set(exemptions))),
         )
 
-    def _ticket_status_map(self, files: Mapping[str, bytes]) -> dict[str, str]:
-        statuses = {
-            PurePosixPath(path).stem: _front_matter(content).get("status", "backlog")
-            for path, content in files.items()
-            if _is_ticket_path(path)
-        }
-        for entry in self._catalog_from_files(files).values():
-            statuses.setdefault(str(entry.get("ticket_id")), str(entry.get("status", "")))
-        return statuses
+    def _catalog_ticket(self, entry: Mapping[str, object]) -> RetentionTicket:
+        required = (
+            "artifact_id",
+            "ticket_id",
+            "status",
+            "activity_at",
+            "ticket_path",
+            "ticket_blob",
+            "source_commit",
+        )
+        missing = [key for key in required if not str(entry.get(key, "")).strip()]
+        if missing:
+            raise ArtifactValidationError(
+                "archive catalog retention metadata is incomplete: " + ", ".join(missing)
+            )
+        attachments = entry.get("attachments", [])
+        if not isinstance(attachments, list) or any(
+            not isinstance(item, Mapping) for item in attachments
+        ):
+            raise ArtifactValidationError("archive catalog attachments must be a list")
+        dependencies = entry.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            raise ArtifactValidationError("archive catalog dependencies must be a list")
+        status = str(entry["status"])
+        if not _is_terminal(status):
+            # Age-policy catalogs could record a canceled card's lane status
+            # (for example, backlog) without its separate canceled flag. Read
+            # the verified historical blob to migrate that ambiguity without
+            # restoring the Markdown projection.
+            try:
+                historical = self._verified_historical_blob(
+                    str(entry["source_commit"]),
+                    str(entry["ticket_path"]),
+                    str(entry["ticket_blob"]),
+                )
+            except _MissingHistoricalObject as error:
+                raise ArtifactValidationError(
+                    f"archive catalog status for {entry['ticket_id']} is ambiguous and its "
+                    "historical object is unavailable"
+                ) from error
+            status = _canonical_status(_front_matter(historical))
+        return RetentionTicket(
+            ticket_id=str(entry["ticket_id"]),
+            artifact_id=str(entry["artifact_id"]),
+            title=str(entry.get("title") or entry["ticket_id"]),
+            status=status,
+            activity_at=_parse_instant(str(entry["activity_at"])),
+            path=str(entry["ticket_path"]),
+            blob_id=str(entry["ticket_blob"]),
+            source_commit=str(entry["source_commit"]),
+            dependencies=tuple(sorted(str(value) for value in dependencies)),
+            attachment_paths=tuple(sorted(str(item.get("path")) for item in attachments)),
+            exemptions=(),
+            materialized=False,
+        )
 
     def _catalog_entry(
         self,
@@ -881,6 +966,7 @@ class ArtifactRetentionManager:
             "title": ticket.title,
             "status": ticket.status,
             "activity_at": _format_instant(ticket.activity_at),
+            "dependencies": list(ticket.dependencies),
             "state": RetentionState.ARCHIVED.value,
             "ticket_path": ticket.path,
             "ticket_blob": ticket.blob_id,
@@ -1065,6 +1151,29 @@ def _parse_list(value: str) -> tuple[str, ...]:
 
 def _parse_bool(value: str) -> bool:
     return value.strip().lower() in {"true", "yes", "1"}
+
+
+def _canonical_status(front: Mapping[str, str]) -> str:
+    if _parse_bool(front.get("canceled", "false")):
+        return "canceled"
+    return front.get("status", "backlog")
+
+
+def _is_terminal(status: str) -> bool:
+    return status.strip().lower() in TERMINAL_STATUSES
+
+
+def _plan_identity(plan: RetentionPlan) -> tuple[object, ...]:
+    return (
+        plan.schema_version,
+        plan.policy,
+        plan.limit,
+        plan.candidate_ids,
+        plan.retained_terminal_ids,
+        plan.nonterminal_ids,
+        plan.materialize_ids,
+        tuple((ticket.ticket_id, ticket.exemptions) for ticket in plan.exempt),
+    )
 
 
 def _parse_instant(value: str) -> datetime:

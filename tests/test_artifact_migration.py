@@ -102,6 +102,18 @@ class ArtifactMigrationTests(unittest.TestCase):
         self.assertEqual(journal["manifest_digest"], result.manifest_digest)
         self.assertTrue(Path(journal["registry_backup"]).exists())
         self.assertFalse(journal["retention_preview"]["committed"])
+        self.assertEqual(journal["retention_preview"]["policy"], "terminal-count-v1")
+        self.assertEqual(journal["retention_preview"]["limit"], 25)
+        self.assertEqual(journal["retention_preview"]["retained_terminal_ids"], ["RR-1"])
+        self.assertEqual(journal["retention_preview"]["nonterminal_ids"], ["RR-2"])
+        self.assertEqual(journal["retention_preview"]["candidate_ids"], [])
+        self.assertEqual(journal["retention_preview"]["transaction_state"], "preview")
+        self.assertNotIn("cutoff", journal["retention_preview"])
+        self.assertNotIn("recent_ids", journal["retention_preview"])
+        self.assertEqual(
+            journal["retention_preview"]["rollback"]["materialized_ticket_ids"],
+            ["RR-1", "RR-2"],
+        )
         self.assertTrue(journal["rollback"]["artifact_ref_retained"])
         self.assertNotEqual(self.registry.read_bytes(), registry_before)
         second = self.coordinator().migrate(confirm_source_cleanup=True)
@@ -311,6 +323,7 @@ class ArtifactMigrationTests(unittest.TestCase):
 
     def test_codex_and_claude_produce_equivalent_artifact_snapshots(self):
         snapshots = []
+        retention_plans = []
         for provider in ("codex", "claude"):
             repo = self.root / provider
             state = self.root / f"{provider}-state"
@@ -326,7 +339,16 @@ class ArtifactMigrationTests(unittest.TestCase):
             ).migrate(confirm_source_cleanup=True)
             files = self._artifact_files(repo, result.artifact_commit)
             snapshots.append({path: _sha(content) for path, content in files.items()})
+            retention_plans.append({
+                key: result.retention_preview[key]
+                for key in (
+                    "schema_version", "policy", "limit", "candidate_ids",
+                    "ranked_terminal_ids", "retained_terminal_ids", "nonterminal_ids",
+                    "materialize_ids", "temporary_overage", "transaction_state",
+                )
+            })
         self.assertEqual(snapshots[0], snapshots[1])
+        self.assertEqual(retention_plans[0], retention_plans[1])
 
     # ------------------------------------------------------------------
     # Fixtures

@@ -13,6 +13,7 @@ from services.artifact_retention import (
 )
 from services.artifact_store import (
     ArchiveIndexWrite,
+    ArtifactConcurrentUpdate,
     ArtifactInjectedFailure,
     ArtifactMutation,
     ArtifactStore,
@@ -58,83 +59,201 @@ class ArtifactRetentionTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def test_activity_uses_durable_max_and_exact_utc_boundary(self):
-        boundary = self.now - timedelta(days=30)
-        self.write_ticket(
-            "RR-1",
-            "Boundary",
-            activity_at=boundary - timedelta(days=1),
-            extra={"status_updated_at": format_instant(boundary)},
+    def test_mixed_terminal_pool_uses_one_25_ticket_limit(self):
+        old = self.now - timedelta(days=365)
+        nonterminal_statuses = (
+            "backlog", "ready", "queued", "in_progress", "verification_blocked",
+            "awaiting_review", "merge_conflict",
         )
+        fixtures = [
+            (
+                f"RR-N{index}",
+                status,
+                old,
+                {"status": status, "depends_on": "[RR-missing]"},
+            )
+            for index, status in enumerate(nonterminal_statuses, 1)
+        ]
+
+        for index in range(1, 25):
+            extra = {"status": "done"} if index % 2 else {"status": "backlog", "canceled": "true"}
+            fixtures.append((
+                f"RR-T{index:02d}",
+                f"terminal {index}",
+                self.now + timedelta(seconds=index),
+                extra,
+            ))
+        self.write_ticket_batch(fixtures, event_id="mixed-24")
+        plan_24 = self.manager.preview()
+        self.assertEqual(len(plan_24.retained_terminal), 24)
+        self.assertEqual(plan_24.candidate_ids, ())
+
         self.write_ticket(
-            "RR-2",
-            "Older",
-            activity_at=boundary - timedelta(microseconds=1),
+            "RR-T25", "terminal 25", activity_at=self.now + timedelta(seconds=25),
+            extra={"status": "done"},
         )
-        offset_boundary = boundary.astimezone(timezone(timedelta(hours=10)))
+        plan_25 = self.manager.preview()
+        self.assertEqual(len(plan_25.retained_terminal), 25)
+        self.assertEqual(plan_25.candidate_ids, ())
+
         self.write_ticket(
-            "RR-3",
-            "Offset boundary",
-            activity_at=offset_boundary,
+            "RR-T26", "terminal 26", activity_at=self.now + timedelta(seconds=26),
+            extra={"status": "backlog", "canceled": "true"},
         )
+        plan_26 = self.manager.preview()
+        self.assertEqual(plan_26.policy, "terminal-count-v1")
+        self.assertEqual(plan_26.limit, 25)
+        self.assertEqual(plan_26.candidate_ids, ("RR-T01",))
+        self.assertEqual(set(plan_26.nonterminal_ids), {f"RR-N{i}" for i in range(1, 8)})
+        self.assertFalse(set(plan_26.nonterminal_ids) & set(plan_26.retained_terminal_ids))
+
+    def test_equal_activity_uses_immutable_artifact_id_tie_breaker(self):
+        self.write_ticket_batch([
+            (
+                f"RR-{index:02d}",
+                f"terminal {index}",
+                self.now,
+                {"status": "done", "artifact_id": f"artifact-{index:02d}"},
+            )
+            for index in range(26)
+        ], event_id="equal-activity")
 
         plan = self.manager.preview()
 
-        self.assertEqual(plan.candidate_ids, ("RR-2",))
-        self.assertEqual({ticket.ticket_id for ticket in plan.recent}, {"RR-1", "RR-3"})
+        self.assertEqual(plan.candidate_ids, ("RR-25",))
         self.assertEqual(
-            next(ticket for ticket in plan.recent if ticket.ticket_id == "RR-1").activity_at,
-            boundary,
+            [ticket.artifact_id for ticket in plan.retained_terminal],
+            [f"artifact-{index:02d}" for index in range(25)],
         )
 
-    def test_every_active_dependency_sync_pin_and_lease_exemption_is_fail_safe(self):
-        old = self.now - timedelta(days=31)
-        fixtures = (
-            ("RR-1", {"status": "ready"}),
-            ("RR-2", {"status": "in_progress"}),
-            ("RR-3", {"status": "verification_blocked"}),
-            ("RR-4", {"status": "awaiting_review"}),
-            ("RR-5", {"status": "merge_conflict"}),
-            ("RR-6", {"blocked": "true"}),
-            ("RR-7", {"pending_sync": "true"}),
-            ("RR-8", {"unpublished_conflict": "true"}),
-            ("RR-9", {"pinned": "true"}),
-            ("RR-10", {"run_state": "reviewing"}),
-            ("RR-11", {"depends_on": "[RR-99]"}),
-            ("RR-12", {}),
-        )
-        for ticket_id, extra in fixtures:
-            self.write_ticket(ticket_id, ticket_id, activity_at=old, extra=extra)
+    def test_terminal_overage_has_only_bounded_exact_reasons(self):
+        self.seed_retained_terminal()
+        old = self.now - timedelta(days=365)
+        fixtures = {
+            "RR-lease-codex": {},
+            "RR-lease-claude": {},
+            "RR-unpublished": {"pending_sync": "true"},
+            "RR-transaction": {"retention_transaction": "verifying"},
+            "RR-retry": {"retryable_verification_failure": "true"},
+            "RR-worker": {"run_state": "reviewing"},
+            "RR-evict": {},
+        }
+        self.write_ticket_batch([
+            (ticket_id, ticket_id, old, {"status": "done", **extra})
+            for ticket_id, extra in fixtures.items()
+        ], event_id="terminal-overage")
         head = self.store._head()
-        lease = self.leases.acquire(
-            lease_id="lease-12",
-            ticket_id="RR-12",
-            artifact_id="artifact-RR-12",
-            artifact_head=head,
-            run_id="run-12",
-            role="worker",
-            provider="codex",
-            now=old,
-        )
+        for provider in ("codex", "claude"):
+            ticket_id = f"RR-lease-{provider}"
+            self.leases.acquire(
+                lease_id=f"lease-{provider}", ticket_id=ticket_id,
+                artifact_id=f"artifact-{ticket_id}", artifact_head=head,
+                run_id=f"run-{provider}", role="worker", provider=provider, now=old,
+            )
 
         plan = self.manager.preview()
 
-        self.assertEqual(plan.candidates, ())
-        exemptions = {
-            ticket.ticket_id: ticket.exemptions
-            for ticket in plan.exempt
-        }
-        self.assertIn("snapshot_lease", exemptions["RR-12"])
-        self.assertIn("unresolved_dependency:RR-99", exemptions["RR-11"])
-        self.assertEqual(self.leases.active_ticket_ids(), frozenset({"RR-12"}))
-        reloaded = SnapshotLeaseStore(self.store).active()[0]
-        self.assertEqual(reloaded.lease_id, lease.lease_id)
-        self.assertEqual(reloaded.heartbeat_at, old)
+        self.assertEqual(plan.candidate_ids, ("RR-evict",))
+        self.assertEqual(plan.temporary_overage, {
+            "RR-lease-claude": ("live_lease:snapshot",),
+            "RR-lease-codex": ("live_lease:snapshot",),
+            "RR-retry": ("retryable_verification_failure",),
+            "RR-transaction": ("in_flight_transaction",),
+            "RR-unpublished": ("unpublished_content",),
+            "RR-worker": ("live_lease:reviewing",),
+        })
+        self.assertEqual(
+            SnapshotLeaseStore(self.store).active_ticket_ids(),
+            frozenset({"RR-lease-codex", "RR-lease-claude"}),
+        )
+
+    def test_reopen_leaves_terminal_pool_and_reterminalize_reranks(self):
+        self.seed_retained_terminal()
+        old = self.now - timedelta(days=365)
+        self.write_ticket("RR-reopen", "Reopen", activity_at=old, extra={"status": "done"})
+        self.assertEqual(self.manager.preview().candidate_ids, ("RR-reopen",))
+
+        self.rewrite_ticket(
+            "RR-reopen", "Reopen", event_id="reopen-ticket",
+            activity_at=self.now + timedelta(minutes=1), extra={"status": "backlog"},
+        )
+        reopened = self.manager.preview()
+        self.assertIn("RR-reopen", reopened.nonterminal_ids)
+        self.assertNotIn("RR-reopen", [ticket.ticket_id for ticket in reopened.ranked_terminal])
+
+        self.rewrite_ticket(
+            "RR-reopen", "Reopen", event_id="reterminalize-ticket",
+            activity_at=self.now + timedelta(minutes=2), extra={"status": "done"},
+        )
+        reterminalized = self.manager.preview()
+        self.assertEqual(reterminalized.retained_terminal_ids[0], "RR-reopen")
+        self.assertEqual(reterminalized.candidate_ids, ("RR-retained-00",))
+
+    def test_missing_materialized_or_catalog_activity_fails_closed(self):
+        ticket_id = "RR-missing"
+        markdown = (
+            "---\nid: RR-missing\nartifact_id: artifact-RR-missing\n"
+            "title: Missing\nstatus: done\n---\n"
+        ).encode()
+        self.store.mutate(ArtifactMutation(
+            event_id="write-missing", actor_type="pm", device_id="device-a",
+            expected_base=self.store._head(),
+            operations=(TicketWrite(ticket_id, "artifact-RR-missing", markdown),),
+        ))
+        with self.assertRaisesRegex(Exception, "no durable activity timestamp"):
+            self.manager.preview()
+
+        self.store.mutate(ArtifactMutation(
+            event_id="remove-missing", actor_type="system", device_id="device-a",
+            expected_base=self.store._head(), operations=(
+                ArchiveIndexWrite((json.dumps({
+                    "schema_version": 1,
+                    "artifact_id": "artifact-catalog-missing",
+                    "ticket_id": "RR-catalog-missing",
+                    "title": "Missing catalog activity",
+                    "status": "done",
+                    "state": "archived",
+                    "ticket_path": ".orchestrator/RR-catalog-missing.md",
+                    "ticket_blob": "1" * 40,
+                    "source_commit": "2" * 40,
+                    "attachments": [],
+                }, sort_keys=True) + "\n").encode()),
+            ),
+        ))
+        # The malformed materialized record remains the first fail-closed
+        # condition; catalog validation is independently exercised below.
+        snapshot = self.store.snapshot()
+        self.store.mutate(ArtifactMutation(
+            event_id="fix-materialized-activity", actor_type="pm", device_id="device-a",
+            expected_base=snapshot.commit_id,
+            operations=(TicketWrite(
+                ticket_id, "artifact-RR-missing",
+                self.ticket_markdown(ticket_id, "Missing", activity_at=self.now, extra={"status": "done"}),
+            ),),
+        ))
+        with self.assertRaisesRegex(Exception, "retention metadata is incomplete: activity_at"):
+            self.manager.preview()
+
+    def test_concurrent_terminal_mutation_invalidates_preview(self):
+        self.seed_retained_terminal()
+        old = self.now - timedelta(days=365)
+        self.write_ticket("RR-old", "Old", activity_at=old, extra={"status": "done"})
+        plan = self.manager.preview()
+        self.write_ticket(
+            "RR-new", "New", activity_at=self.now + timedelta(days=1), extra={"status": "done"}
+        )
+
+        with self.assertRaisesRegex(ArtifactConcurrentUpdate, "head changed"):
+            self.manager.archive(plan, event_id="stale-plan", device_id="device-a")
 
     def test_archive_is_deterministic_atomic_reachable_and_source_isolated(self):
+        self.seed_retained_terminal()
         old = self.now - timedelta(days=31)
-        self.write_ticket("RR-2", "Second", activity_at=old)
-        self.write_ticket("RR-1", "First", activity_at=old)
+        self.write_ticket(
+            "RR-2", "Second", activity_at=old,
+            extra={"status": "backlog", "canceled": "true"},
+        )
+        self.write_ticket("RR-1", "First", activity_at=old, extra={"status": "done"})
         self.write_attachment("RR-1", "proof.png", PNG)
         plan_a = self.manager.preview()
         plan_b = self.manager.preview()
@@ -158,13 +277,15 @@ class ArtifactRetentionTests(unittest.TestCase):
             [json.loads(line)["artifact_id"] for line in catalog_lines],
             ["artifact-RR-1", "artifact-RR-2"],
         )
+        self.assertEqual(json.loads(catalog_lines[1])["status"], "canceled")
         source_commit = json.loads(catalog_lines[0])["source_commit"]
         self.assertTrue(self.is_ancestor(source_commit, result.write.commit_id))
 
     def test_historical_search_detail_restore_and_dependency_resolution(self):
+        self.seed_retained_terminal()
         old = self.now - timedelta(days=31)
         self.write_ticket("RR-1", "Done predecessor", activity_at=old, extra={"status": "done"})
-        self.write_ticket("RR-2", "Open predecessor", activity_at=old)
+        self.write_ticket("RR-2", "Open predecessor", activity_at=old, extra={"status": "backlog"})
         self.write_attachment("RR-1", "proof.png", PNG)
         archived = self.manager.archive(
             self.manager.preview(),
@@ -176,14 +297,18 @@ class ArtifactRetentionTests(unittest.TestCase):
         cards = self.manager.historical_search("predecessor")
         detail = self.manager.historical_detail("artifact-RR-1")
 
-        self.assertEqual({card.ticket_id for card in cards}, {"RR-1", "RR-2"})
+        self.assertEqual({card.ticket_id for card in cards}, {"RR-1"})
         self.assertEqual(detail.availability, HistoryAvailability.AVAILABLE)
         self.assertIn(b"Done predecessor", detail.ticket_bytes)
         self.assertEqual(detail.attachments[0]["path"], ".orchestrator/attachments/RR-1/proof.png")
         self.assertEqual(self.store._head(), head_before_detail)
         self.assertNotIn(".orchestrator/RR-1.md", self.store.snapshot().files)
+        self.assertIn(".orchestrator/RR-2.md", self.store.snapshot().files)
         self.assertTrue(self.manager.dependency_satisfied("RR-1"))
         self.assertFalse(self.manager.dependency_satisfied("RR-2"))
+        archived_plan = self.manager.preview()
+        self.assertIn("RR-1", [ticket.ticket_id for ticket in archived_plan.ranked_terminal])
+        self.assertNotIn("RR-1", archived_plan.materialize_ids)
 
         restored = self.manager.restore(
             "artifact-RR-1",
@@ -204,10 +329,12 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertIn("artifact_id: artifact-RR-1", files[".orchestrator/RR-1.md"].decode())
         self.assertIn(f"activity_at: {format_instant(self.now)}", files[".orchestrator/RR-1.md"].decode())
         self.assertEqual(files[".orchestrator/attachments/RR-1/proof.png"], PNG)
+        self.assertIn("RR-1", self.manager.preview().retained_terminal_ids)
 
     def test_archive_failures_preserve_or_recover_projection_from_canonical_ref(self):
+        self.seed_retained_terminal()
         old = self.now - timedelta(days=31)
-        self.write_ticket("RR-1", "Failure", activity_at=old)
+        self.write_ticket("RR-1", "Failure", activity_at=old, extra={"status": "done"})
         base = self.store._head()
         before_files = self.store.snapshot().files
 
@@ -240,8 +367,9 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertNotIn(".orchestrator/RR-1.md", self.store.snapshot().files)
 
     def test_remote_archive_failure_rewinds_only_unpublished_archive(self):
+        self.seed_retained_terminal()
         old = self.now - timedelta(days=31)
-        self.write_ticket("RR-1", "Pending", activity_at=old)
+        self.write_ticket("RR-1", "Pending", activity_at=old, extra={"status": "done"})
         base = self.store._head()
         before = self.store.snapshot().files
         manager = ArtifactRetentionManager(
@@ -270,8 +398,9 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertEqual(self.store.snapshot().files, before)
 
     def test_tampered_and_missing_history_fail_closed_without_materialization(self):
+        self.seed_retained_terminal()
         old = self.now - timedelta(days=31)
-        self.write_ticket("RR-1", "Tamper", activity_at=old)
+        self.write_ticket("RR-1", "Tamper", activity_at=old, extra={"status": "done"})
         self.manager.archive(
             self.manager.preview(), event_id="archive-tamper", device_id="device-a"
         )
@@ -373,7 +502,79 @@ class ArtifactRetentionTests(unittest.TestCase):
 
     # Helpers
 
+    def seed_retained_terminal(self):
+        operations = []
+        for index in range(25):
+            ticket_id = f"RR-retained-{index:02d}"
+            artifact_id = f"artifact-{ticket_id}"
+            operations.append(TicketWrite(
+                ticket_id,
+                artifact_id,
+                self.ticket_markdown(
+                    ticket_id,
+                    ticket_id,
+                    activity_at=self.now + timedelta(seconds=index),
+                    extra={"status": "done", "artifact_id": artifact_id},
+                ),
+            ))
+        return self.store.mutate(ArtifactMutation(
+            event_id="seed-retained-terminal",
+            actor_type="pm",
+            device_id="device-a",
+            expected_base=self.store._head(),
+            operations=tuple(operations),
+        ))
+
     def write_ticket(self, ticket_id, title, *, activity_at, extra=None):
+        extra = dict(extra or {})
+        artifact_id = str(extra.get("artifact_id") or f"artifact-{ticket_id}")
+        markdown = self.ticket_markdown(
+            ticket_id, title, activity_at=activity_at, extra=extra
+        )
+        return self.store.mutate(
+            ArtifactMutation(
+                event_id=f"write-{ticket_id}",
+                actor_type="pm",
+                device_id="device-a",
+                expected_base=self.store._head(),
+                operations=(TicketWrite(ticket_id, artifact_id, markdown),),
+            )
+        )
+
+    def write_ticket_batch(self, fixtures, *, event_id):
+        operations = []
+        for ticket_id, title, activity_at, extra in fixtures:
+            extra = dict(extra or {})
+            artifact_id = str(extra.get("artifact_id") or f"artifact-{ticket_id}")
+            operations.append(TicketWrite(
+                ticket_id,
+                artifact_id,
+                self.ticket_markdown(ticket_id, title, activity_at=activity_at, extra=extra),
+            ))
+        return self.store.mutate(ArtifactMutation(
+            event_id=event_id,
+            actor_type="pm",
+            device_id="device-a",
+            expected_base=self.store._head(),
+            operations=tuple(operations),
+        ))
+
+    def rewrite_ticket(self, ticket_id, title, *, event_id, activity_at, extra=None):
+        extra = dict(extra or {})
+        artifact_id = str(extra.get("artifact_id") or f"artifact-{ticket_id}")
+        return self.store.mutate(ArtifactMutation(
+            event_id=event_id,
+            actor_type="pm",
+            device_id="device-a",
+            expected_base=self.store._head(),
+            operations=(TicketWrite(
+                ticket_id,
+                artifact_id,
+                self.ticket_markdown(ticket_id, title, activity_at=activity_at, extra=extra),
+            ),),
+        ))
+
+    def ticket_markdown(self, ticket_id, title, *, activity_at, extra=None):
         extra = dict(extra or {})
         status = extra.pop("status", "backlog")
         fields = {
@@ -385,16 +586,7 @@ class ArtifactRetentionTests(unittest.TestCase):
             **extra,
         }
         front = "\n".join(f"{key}: {value}" for key, value in fields.items())
-        markdown = f"---\n{front}\n---\n\n## Description\n\n{title}\n".encode()
-        return self.store.mutate(
-            ArtifactMutation(
-                event_id=f"write-{ticket_id}",
-                actor_type="pm",
-                device_id="device-a",
-                expected_base=self.store._head(),
-                operations=(TicketWrite(ticket_id, f"artifact-{ticket_id}", markdown),),
-            )
-        )
+        return f"---\n{front}\n---\n\n## Description\n\n{title}\n".encode()
 
     def write_attachment(self, ticket_id, filename, content):
         return self.store.mutate(

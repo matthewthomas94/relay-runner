@@ -1078,17 +1078,32 @@ class ArtifactMigrationCoordinator:
     def _retention_preview(self) -> dict[str, Any]:
         plan = ArtifactRetentionManager(self.store, enabled=False).preview()
         return {
+            "schema_version": plan.schema_version,
+            "policy": plan.policy,
+            "limit": plan.limit,
             "artifact_head": plan.artifact_head,
             "evaluated_at": plan.evaluated_at.isoformat(),
-            "cutoff": plan.cutoff.isoformat(),
             "candidate_ids": list(plan.candidate_ids),
-            "recent_ids": [ticket.ticket_id for ticket in plan.recent],
-            "exempt": {
+            "ranked_terminal_ids": [ticket.ticket_id for ticket in plan.ranked_terminal],
+            "retained_terminal_ids": list(plan.retained_terminal_ids),
+            "nonterminal_ids": list(plan.nonterminal_ids),
+            "materialize_ids": list(plan.materialize_ids),
+            "temporary_overage": {
                 ticket.ticket_id: list(ticket.exemptions) for ticket in plan.exempt
             },
             "candidate_count": len(plan.candidates),
-            "recent_count": len(plan.recent),
-            "exempt_count": len(plan.exempt),
+            "retained_terminal_count": len(plan.retained_terminal),
+            "nonterminal_count": len(plan.nonterminal),
+            "temporary_overage_count": len(plan.exempt),
+            "transaction_state": "preview",
+            "rollback": {
+                "artifact_head": plan.artifact_head,
+                "materialized_ticket_ids": sorted(
+                    ticket.ticket_id
+                    for ticket in (*plan.nonterminal, *plan.ranked_terminal)
+                    if ticket.materialized
+                ),
+            },
             "committed": False,
         }
 

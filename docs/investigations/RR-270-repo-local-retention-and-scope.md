@@ -10,7 +10,7 @@ The spike was time-boxed to one `strong`/`high` worker pass. Its exit condition 
 
 ## Executive decision
 
-Keep every project's durable Relay artifacts in that project's own Git object database and user-controlled remote, on one Relay-owned branch named `relay/artifacts`. The branch head contains the current `.orchestrator/` tree: project configuration, a compact archive catalog, tickets with relevant activity in the last 30 days, their eligible attachments, and project-scoped Program records. Older tickets are removed from the branch head by ordinary commits but remain reachable in the branch history and are restored by a new ordinary commit.
+Keep every project's durable Relay artifacts in that project's own Git object database and user-controlled remote, on one Relay-owned branch named `relay/artifacts`. RR-337 supersedes this spike's original age rule: the branch head contains every nonterminal ticket plus the newest 25 Done-or-Canceled tickets, their eligible attachments, project configuration, a compact archive catalog, and project-scoped Program records. Older terminal tickets are removed from materialization by ordinary commits but remain reachable in branch history and are restored by a new ordinary commit.
 
 Relay materializes the branch head's active `.orchestrator/` paths into the registered repository root as a write-through working set. The materialization is excluded from the source branch through `.git/info/exclude`; it is neither a second canonical store nor a bidirectional mirror. All mutations go through one project artifact writer, which commits to `relay/artifacts` using a private Git index and then refreshes the materialization. Agents never infer ownership from a terminal working directory.
 
@@ -92,7 +92,7 @@ flowchart LR
     Scope --> Writer[Per-project artifact writer]
     Writer --> Ref[(project .git\nrelay/artifacts)]
     Ref --> Remote[(user-controlled Git remote\nrelay/artifacts)]
-    Ref --> Materialized[repo-root .orchestrator\n30-day working set]
+    Ref --> Materialized[repo-root .orchestrator\nall nonterminal plus terminal 25]
     Materialized --> Board[Board and cold worker input]
     Ref --> Indexer[Graphify and search indexer]
     Indexer --> Global[(Application Support\nderived indexes and runtime DBs)]
@@ -258,28 +258,27 @@ UI and voice are provider-neutral. Workspace has a persistent project switcher a
 
 ## Retention and materialization policy
 
-Retention states are `materialized_recent`, `materialized_exempt`, `archive_eligible`, `archive_pending_sync`, `archived`, `restore_pending_fetch`, `restore_pending_sync`, `conflict`, and `deleted_tombstone`. The planner runs after project registration, successful sync, and terminal lifecycle events, plus at most once per 24 hours while the project is available. Planning is read-only; the writer rechecks every predicate immediately before a transition.
+Retention states are `materialized_recent`, `materialized_exempt`, `archive_eligible`, `archive_pending_sync`, `archived`, `restore_pending_fetch`, `restore_pending_sync`, `conflict`, and `deleted_tombstone`. The planner runs after project registration, successful sync, and canonical lifecycle events. Planning is read-only; the writer rechecks every predicate immediately before a transition.
 
-### Precise age rule
+### Precise terminal-count rule
 
 Every ticket gains an `activity_at` RFC 3339 UTC instant. The artifact writer updates it for user/PM edits, dependency changes, status/cancellation changes, dispatch claim, run outcome, review/merge outcome, attachment changes, archive restore, and explicit reopen. Read, sync, index, and materialization events do not update it.
 
-At evaluation instant `T`, the rolling cutoff is exactly `T - 30 * 24 hours`. A ticket is recent when `activity_at >= cutoff`; the boundary is inclusive and independent of local time zone or daylight-saving changes. Legacy tickets receive an anchor from the newest artifact-affecting Git committer timestamp during migration, recorded explicitly in the bootstrap commit. File mtime is never authoritative.
+Every nonterminal ticket remains materialized and consumes no terminal slot. Done and Canceled tickets form one pool ordered by descending canonical `activity_at`, then ascending immutable `artifact_id`; its newest 25 remain materialized. Legacy tickets require an explicit canonical activity anchor before count-policy migration can proceed. File mtime is never authoritative.
 
-A ticket remains materialized regardless of age when any of these is true:
+A ticket remains materialized outside the terminal 25 when any of these is true:
 
 - status is `ready` or `in_progress`;
 - it has a claimed/running/awaiting-review/merge-conflict run;
-- it is blocked by an unresolved dependency or explicitly marked blocked;
 - it has a pending local mutation or unresolved sync conflict; or
 - a worker/reviewer snapshot lease references it.
 
-Old `backlog`, `done`, or canceled tickets with no exemption are archive candidates. For a remote-enabled project, offline candidates stay `archive_pending_sync` and remain materialized. Local-only projects may archive locally with a visible warning that no remote recovery exists.
+Only Done or Canceled tickets outside the retained 25 are archive candidates. Backlog and every other nonterminal status remain materialized. For a remote-enabled project, offline candidates stay `archive_pending_sync` and remain materialized with an exact retryable reason.
 
 ### Archive transition
 
 1. Acquire the project writer lock and refresh the artifact ref.
-2. Re-evaluate age and exemptions against one captured UTC instant.
+2. Re-evaluate terminal ordering and temporary blockers against one canonical snapshot.
 3. Record an `archive-index.jsonl` entry containing immutable artifact ID, display ID, title, terminal/current status, `activity_at`, ticket path, attachment paths/sizes, and the pre-archive source commit and blob IDs.
 4. Commit deletion of the ticket and its attachments plus the deterministic index update in one commit.
 5. Verify every deleted blob is reachable from the artifact ref history and the catalog resolves it.
@@ -357,7 +356,7 @@ Provider parity is exact at this layer. Codex and Claude get identical artifact 
 
 Measured in this repository on 2026-08-03:
 
-| Surface | Current sample | What the 30-day policy changes |
+| Surface | Current sample | What the terminal-count policy changes |
 |---|---:|---|
 | Working-tree ticket Markdown | 259 files, 1,135,224 bytes | Bounds ticket files at branch head/materialization. |
 | Working-tree attachments | 5 files, 2,335,596 bytes | Bounds active attachment files, subject to exemptions. |
@@ -399,7 +398,7 @@ Migration is opt-in, per project, journaled, and resumable:
 5. **Cutover:** after verified bootstrap, make the artifact writer authoritative, remove tracked `.orchestrator` files from the source branch in an explicit reviewed migration commit, add the local info-exclude entry, and rematerialize from the artifact ref. Do not combine this with unrelated source changes.
 6. **Runs:** retain `runs.db` as local operational history keyed to `project_id`; ensure every historical ticket's existing `## Run log` survives. Preserve available raw logs locally under their independent retention policy. Do not synthesize durable claims from missing logs.
 7. **Program/Graphify:** rebuild derived project/ticket/run nodes. Export project-scoped capture-only nodes to deterministic `.orchestrator/program/events/` records before deleting/rebuilding their Graphify copies. Leave explicitly cross-project app-global preferences/data in application support and document that ownership.
-8. **Retention:** keep all migrated tickets materialized for one verification cycle, then run the 30-day planner in preview. The user sees counts/bytes and exemptions before the first archive commit.
+8. **Retention:** keep all migrated tickets materialized for one verification cycle, then run the versioned terminal-count planner in preview. The user sees every nonterminal, the retained terminal 25, exact eviction candidates, temporary blockers, and rollback data before the first archive transaction.
 9. **Complete:** write the migration journal's verified artifact/source commit IDs, manifest digest, registry backup, remote result, and rollback instructions.
 
 Rollback before source cutover simply deletes the unpushed bootstrap ref and restores registry backup. After cutover, stop the artifact writer, verify no unpublished artifact commits, restore `.orchestrator` from the recorded bootstrap tree into a new explicit source commit, remove the info-exclude entry, and switch the old direct-file writer back on. Never delete the artifact ref/remote branch automatically; retaining it makes rollback recoverable and auditable. If both models received writes, stop and require reconciliation by immutable event IDs rather than choosing a winner.
@@ -408,8 +407,8 @@ Rollback before source cutover simply deletes the unpushed bootstrap ref and res
 
 ### Automated fixtures
 
-- Age boundary: exactly 30 days is retained; one microsecond older archives; DST and time-zone changes do not affect UTC duration.
-- Exemptions: ready, in-progress, blocked, awaiting review, merge conflict, pending sync, and leased snapshots remain materialized past 30 days.
+- Count boundary: mixed Done and Canceled pools at 24, 25, and 26-plus; equal activity uses immutable artifact identity.
+- Materialization: every nonterminal remains uncapped; only live lifecycle/leases, unpublished content, in-flight transactions, and retryable verification failures temporarily retain an older terminal ticket.
 - Archive atomicity: injected failure before commit leaves files; failure after ref update rematerializes from ref; missing/unreachable source blobs refuse deletion.
 - Restore: local full history, shallow history needing deepen, offline object present, offline object absent, attachment missing, and tampered catalog hash.
 - Dependencies: active ticket depending on archived-done succeeds; archived-nondone blocks; restore preserves graph identity.
@@ -461,7 +460,7 @@ Build a project-scoped artifact store using private-index Git plumbing, typed op
 
 Add explicit existing-remote selection, local-only mode, exact-ref fetch, unpublished Relay-only rebase, normal push, bounded retry, auth/offline/protected/missing-remote states, same-ticket three-way resolution, and two-device fixtures. Prohibit every force-push path. Depends on Phase 3.
 
-### Phase 5 — 30-day archive catalog and restoration
+### Phase 5 — terminal-count archive catalog and restoration
 
 **Bounded materialization, historical search, and restore**
 
