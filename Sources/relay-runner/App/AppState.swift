@@ -997,9 +997,17 @@ final class AppState {
         destination: SessionLaunchDestination = .embedded,
         allowDuringFirstRun: Bool = false,
         showsWorkspaceOnLaunch: Bool = true,
-        suppressesStartupGreeting: Bool = false
+        suppressesStartupGreeting: Bool = false,
+        recoveryGeneration: String? = nil,
+        preservesVoiceBridge: Bool = false
     ) -> Bool {
         guard allowsAppShellAccess || allowDuringFirstRun else { return false }
+        if preservesVoiceBridge {
+            guard destination == .embedded,
+                  recoveryGeneration != nil,
+                  !processManager.bridgeStopRequested()
+            else { return false }
+        }
         guard permissions.microphone == .granted else {
             onboarding.showAlways()
             return false
@@ -1039,9 +1047,12 @@ final class AppState {
         // initiated a session, and the kill-bridge step below cleans
         // up so they can retry without onboarding nagging them again.
         onboarding.markSessionRun()
-        // Kill any existing voice bridge so only one session is active
-        processManager.clearBridgeStopRequested()
-        processManager.killBridge()
+        // A confirmed-dead provider can be replaced without interrupting the
+        // detached bridge that still owns the active voice session.
+        if !preservesVoiceBridge {
+            processManager.clearBridgeStopRequested()
+            processManager.killBridge()
+        }
         if embeddedTerminal.phase.isActive || embeddedTerminal.isEmbeddedProcessRunning {
             embeddedTerminal.end()
         }
@@ -1077,7 +1088,9 @@ final class AppState {
                 voiceDelivery: voiceDelivery,
                 suppressStartupGreeting: suppressesStartupGreeting,
                 sessionEventPath: embeddedTerminal.diagnosticEventPath,
-                projectScopeToken: projectScopeToken
+                projectScopeToken: projectScopeToken,
+                recoveryGeneration: recoveryGeneration,
+                startsVoiceBridge: !preservesVoiceBridge
             )
             if let generation = prepared.recoveryGeneration {
                 let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
@@ -1098,23 +1111,31 @@ final class AppState {
                 )
             }
         } catch {
-            continuityRecoveryGenerationBySession.removeValue(
-                forKey: ContinuityRecoveryRequest.projectSessionIdentifier(
-                    repositoryPath: launchConfig.general.working_directory
+            if !preservesVoiceBridge {
+                continuityRecoveryGenerationBySession.removeValue(
+                    forKey: ContinuityRecoveryRequest.projectSessionIdentifier(
+                        repositoryPath: launchConfig.general.working_directory
+                    )
                 )
-            )
+            }
             embeddedTerminal.markFailed(error)
-            processManager.killBridge(stopRequested: true)
-            menuSessionActive = false
-            activeSessionLaunchConfig = nil
-            activeSessionProjectScopeToken = nil
-            projectScopeCoordinator.cancel()
-            bridgeAliveCache = false
-            sessionBridgeSeen = false
-            sessionReadyShownForCurrentBridgeSession = false
-            activeSessionSuppressesStartupGreeting = false
-            sessionStartTime = .distantPast
-            statusText = "Ready"
+            if preservesVoiceBridge {
+                bridgeAliveCache = processManager.bridgeAlive()
+                menuSessionActive = bridgeAliveCache
+                statusText = bridgeAliveCache ? "Session reconnecting" : "Ready"
+            } else {
+                processManager.killBridge(stopRequested: true)
+                menuSessionActive = false
+                activeSessionLaunchConfig = nil
+                activeSessionProjectScopeToken = nil
+                projectScopeCoordinator.cancel()
+                bridgeAliveCache = false
+                sessionBridgeSeen = false
+                sessionReadyShownForCurrentBridgeSession = false
+                activeSessionSuppressesStartupGreeting = false
+                sessionStartTime = .distantPast
+                statusText = "Ready"
+            }
             NSLog("[AppState] Failed to start session: \(error)")
             return false
         }
@@ -2353,6 +2374,11 @@ final class AppState {
                 .launchForegroundProvider, ["provider_turn"], ["in_flight"],
                 ["confirmed_dead"], "provider_process_alive", 1, true
             )
+        case ("launch_foreground_provider", "session"):
+            (
+                .launchForegroundProvider, ["session_liveness"], ["none"],
+                ["confirmed_dead"], "provider_process_alive", 1, true
+            )
         default:
             nil
         }
@@ -2407,7 +2433,7 @@ final class AppState {
             return .reject("live_provider_must_not_be_killed")
         }
         if contract.action == .launchForegroundProvider,
-           (boundary.providerProcessRunning || boundary.bridgeAlive) {
+           boundary.providerProcessRunning {
             return .reject("live_session_must_not_be_replaced")
         }
         return .apply(contract.action)
@@ -2440,7 +2466,8 @@ final class AppState {
             provider: activeSessionLaunchConfig?.general.provider.rawValue
                 ?? config.general.provider.rawValue,
             liveWorkActive: liveWorkActive,
-            providerProcessRunning: embeddedTerminal.phase.isActive,
+            providerProcessRunning: embeddedTerminal.phase.isActive
+                || embeddedTerminal.isEmbeddedProcessRunning,
             bridgeAlive: processManager.bridgeAlive(),
             idempotencyAlreadyApplied: appliedContinuityRecoveryKeys.contains(
                 request.idempotencyKey
@@ -2485,14 +2512,21 @@ final class AppState {
             embeddedTerminal.end()
             applied = true
         case .launchForegroundProvider:
+            let delivery = processManager.pendingVoiceCommandDeliveryState()
             guard let launch = activeSessionLaunchConfig,
                   !embeddedTerminal.phase.isActive,
-                  !processManager.bridgeAlive(),
+                  !embeddedTerminal.isEmbeddedProcessRunning,
                   !ProcessManager.foregroundProviderTurnActive()
             else { return .failed("live_session_must_not_be_replaced") }
+            guard delivery != .waiting, delivery != .claimed else {
+                return .failed("live_work_active")
+            }
+            let preservesVoiceBridge = processManager.bridgeAlive()
             applied = newSession(
                 workingDirectory: launch.general.working_directory,
-                suppressesStartupGreeting: true
+                suppressesStartupGreeting: true,
+                recoveryGeneration: request.recoveryGeneration,
+                preservesVoiceBridge: preservesVoiceBridge
             )
         }
         guard applied else { return .failed("component_action_unavailable") }

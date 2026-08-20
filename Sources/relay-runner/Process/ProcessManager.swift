@@ -854,6 +854,7 @@ final class ProcessManager {
         case codexModelResolution(String)
         case projectScopeRequired
         case invalidProjectScope(String)
+        case invalidRecoveryLaunch
 
         var errorDescription: String? {
             switch self {
@@ -869,6 +870,8 @@ final class ProcessManager {
                 return "Select an available registered project before starting a session."
             case .invalidProjectScope(let message):
                 return "The selected project scope is no longer valid: \(message)"
+            case .invalidRecoveryLaunch:
+                return "Provider recovery requires the active app-owned bridge generation."
             }
         }
     }
@@ -887,9 +890,17 @@ final class ProcessManager {
         voiceDelivery: SessionVoiceDelivery = .agentSkill,
         suppressStartupGreeting: Bool = false,
         sessionEventPath: String? = nil,
-        projectScopeToken: ConfirmedProjectScopeToken? = nil
+        projectScopeToken: ConfirmedProjectScopeToken? = nil,
+        recoveryGeneration: String? = nil,
+        startsVoiceBridge: Bool = true
     ) throws -> PreparedSessionLaunch {
-        Self.clearBridgeStopRequested()
+        if !startsVoiceBridge,
+           (voiceDelivery != .appOwned || recoveryGeneration == nil) {
+            throw SessionLaunchPreparationError.invalidRecoveryLaunch
+        }
+        if startsVoiceBridge {
+            Self.clearBridgeStopRequested()
+        }
 
         let workingDirectory = WorkspaceFolder.url(from: config.general.working_directory).path
         var isDirectory: ObjCBool = false
@@ -962,8 +973,8 @@ final class ProcessManager {
         let appSessionID = voiceDelivery == .appOwned
             ? RelayDiagnostics.shared.appSessionID
             : nil
-        let recoveryGeneration = voiceDelivery == .appOwned
-            ? UUID().uuidString.lowercased()
+        let effectiveRecoveryGeneration = voiceDelivery == .appOwned
+            ? (recoveryGeneration ?? UUID().uuidString.lowercased())
             : nil
         let foregroundGateHandle = voiceDelivery == .appOwned
             ? UUID().uuidString.lowercased()
@@ -978,11 +989,12 @@ final class ProcessManager {
             sessionEventPath: sessionEventPath,
             providerSessionID: providerSessionID,
             appSessionID: appSessionID,
-            recoveryGeneration: recoveryGeneration,
+            recoveryGeneration: effectiveRecoveryGeneration,
             foregroundGateHandle: foregroundGateHandle,
             resolvedCodexModel: codexSelection?.resolvedModel,
             resolvedCodexEffort: codexSelection?.resolvedEffort,
-            projectScopeToken: projectScopeToken
+            projectScopeToken: projectScopeToken,
+            startsVoiceBridge: startsVoiceBridge
         )
         try script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
@@ -1010,7 +1022,7 @@ final class ProcessManager {
             sessionEventPath: sessionEventPath,
             providerSessionID: providerSessionID,
             appSessionID: appSessionID,
-            recoveryGeneration: recoveryGeneration,
+            recoveryGeneration: effectiveRecoveryGeneration,
             foregroundGateHandle: foregroundGateHandle
         )
     }
@@ -1060,7 +1072,8 @@ final class ProcessManager {
         foregroundGateHandle: String? = nil,
         resolvedCodexModel: String? = nil,
         resolvedCodexEffort: String? = nil,
-        projectScopeToken: ConfirmedProjectScopeToken? = nil
+        projectScopeToken: ConfirmedProjectScopeToken? = nil,
+        startsVoiceBridge: Bool = true
     ) -> String {
         let effectiveProviderSessionID = voiceDelivery == .appOwned
             ? (providerSessionID ?? UUID().uuidString.lowercased())
@@ -1086,7 +1099,8 @@ final class ProcessManager {
         let bridgeStartLine = Self.bridgeStartLine(
             relayBridge: relayBridge,
             voiceDelivery: voiceDelivery,
-            suppressStartupGreeting: suppressStartupGreeting
+            suppressStartupGreeting: suppressStartupGreeting,
+            startsVoiceBridge: startsVoiceBridge
         )
         let launchLine = Self.agentLaunchLine(
             binary: agentBinary,
@@ -1602,10 +1616,14 @@ final class ProcessManager {
     private static func bridgeStartLine(
         relayBridge: String,
         voiceDelivery: SessionVoiceDelivery,
-        suppressStartupGreeting: Bool
+        suppressStartupGreeting: Bool,
+        startsVoiceBridge: Bool
     ) -> String {
         switch voiceDelivery {
         case .appOwned:
+            guard startsVoiceBridge else {
+                return ": # Preserve the active Relay voice bridge during provider recovery."
+            }
             let greetingFlag = suppressStartupGreeting
                 ? " --suppress-startup-greeting"
                 : ""

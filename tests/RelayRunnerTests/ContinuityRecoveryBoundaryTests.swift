@@ -118,6 +118,118 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
         )
     }
 
+    func testConfirmedDeadProviderAndSessionLaunchPreserveLiveBridgeForBothProviders() throws {
+        let generation = "12345678-1234-4abc-8def-1234567890ab"
+        for target in [ProcessManager.AgentTarget.codex, .claude] {
+            let provider = target.providerMetadataValue
+            for component in ["foreground_provider", "session"] {
+                let request = try makeRequest(
+                    capability: "launch_foreground_provider",
+                    component: component,
+                    provider: provider,
+                    incidentPhase: component == "session" ? "session_liveness" : "provider_turn",
+                    commandPhase: component == "session" ? "none" : "in_flight",
+                    liveness: "confirmed_dead",
+                    postcondition: "provider_process_alive",
+                    generation: generation
+                )
+                XCTAssertEqual(
+                    AppState.continuityRecoveryDecision(
+                        for: request,
+                        boundary: boundary(
+                            generation: generation,
+                            provider: provider,
+                            bridgeAlive: true
+                        ),
+                        nowMonotonic: 150,
+                        nowEpoch: 1_050
+                    ),
+                    .apply(.launchForegroundProvider),
+                    "\(provider):\(component)"
+                )
+            }
+
+            var config = AppConfig()
+            config.general.provider = target == .codex ? .codex : .claude
+            let launcher = ProcessManager.launchScript(
+                relayBridge: "/Relay Runner/scripts/relay-bridge",
+                target: target,
+                agentBinary: "/usr/local/bin/agent",
+                config: config,
+                voiceDelivery: .appOwned,
+                appSessionID: "app-session",
+                recoveryGeneration: generation,
+                foregroundGateHandle: "foreground-gate",
+                startsVoiceBridge: false
+            )
+            XCTAssertTrue(
+                launcher.contains("export RELAY_RECOVERY_GENERATION='\(generation)'")
+            )
+            XCTAssertFalse(launcher.contains("--start-daemon"), provider)
+            XCTAssertTrue(launcher.contains("Preserve the active Relay voice bridge"), provider)
+        }
+    }
+
+    func testProviderAndSessionLaunchRejectStaleUnrelatedLiveAndRunningTargets() throws {
+        for provider in ["codex", "claude"] {
+            for component in ["foreground_provider", "session"] {
+                let request = try makeRequest(
+                    capability: "launch_foreground_provider",
+                    component: component,
+                    provider: provider,
+                    incidentPhase: component == "session" ? "session_liveness" : "provider_turn",
+                    commandPhase: component == "session" ? "none" : "in_flight",
+                    liveness: "confirmed_dead",
+                    postcondition: "provider_process_alive"
+                )
+                let label = "\(provider):\(component)"
+                XCTAssertEqual(
+                    AppState.continuityRecoveryDecision(
+                        for: request,
+                        boundary: boundary(generation: "generation-5", provider: provider),
+                        nowMonotonic: 150,
+                        nowEpoch: 1_050
+                    ),
+                    .reject("stale_recovery_generation"),
+                    label
+                )
+                XCTAssertEqual(
+                    AppState.continuityRecoveryDecision(
+                        for: request,
+                        boundary: boundary(
+                            currentCommandID: "command-abcdefabcdefabcdefabcdef",
+                            provider: provider
+                        ),
+                        nowMonotonic: 150,
+                        nowEpoch: 1_050
+                    ),
+                    .reject("unrelated_command_target"),
+                    label
+                )
+                XCTAssertEqual(
+                    AppState.continuityRecoveryDecision(
+                        for: request,
+                        boundary: boundary(liveWorkActive: true, provider: provider),
+                        nowMonotonic: 150,
+                        nowEpoch: 1_050
+                    ),
+                    .reject("live_work_active"),
+                    label
+                )
+                XCTAssertEqual(
+                    AppState.continuityRecoveryDecision(
+                        for: request,
+                        boundary: boundary(provider: provider, providerProcessRunning: true),
+                        nowMonotonic: 150,
+                        nowEpoch: 1_050
+                    ),
+                    .reject("live_session_must_not_be_replaced"),
+                    label
+                )
+            }
+        }
+    }
+
     func testStaleGenerationIsRejectedAtComponentBoundary() throws {
         let request = try makeRequest(generation: "generation-4")
 
@@ -378,15 +490,17 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
         generation: String = "generation-4",
         currentCommandID: String? = nil,
         liveWorkActive: Bool = false,
+        provider: String = "codex",
+        providerProcessRunning: Bool = false,
         bridgeAlive: Bool = false
     ) -> AppState.ContinuityRecoveryBoundary {
         AppState.ContinuityRecoveryBoundary(
             currentSessionID: sessionID,
             currentRecoveryGeneration: generation,
             currentCommandID: currentCommandID ?? commandID,
-            provider: "codex",
+            provider: provider,
             liveWorkActive: liveWorkActive,
-            providerProcessRunning: false,
+            providerProcessRunning: providerProcessRunning,
             bridgeAlive: bridgeAlive,
             idempotencyAlreadyApplied: false,
             cooldownActive: false

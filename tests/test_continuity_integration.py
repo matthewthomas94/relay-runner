@@ -27,9 +27,13 @@ from messenger import MessengerRuntime  # noqa: E402
 from orchestrator import ContinuityLifecycleAdapter, Daemon  # noqa: E402
 from continuity_incidents import opaque_identifier  # noqa: E402
 from continuity_recovery import (  # noqa: E402
+    CAPABILITY_POLICIES,
+    ComponentOwnedRecoveryBroker,
+    ProductionRecoveryCapability,
     RecoveryActionRequest,
     RecoveryActionValidation,
     RecoveryExecutionContext,
+    production_recovery_owners,
 )
 from voice_bridge import _post_continuity_event  # noqa: E402
 
@@ -327,6 +331,112 @@ class ContinuityIntegrationTests(unittest.TestCase):
         self.assertFalse(missing_owner.exact_target_owned)
         self.assertFalse(missing_owner.incident_active)
         self.assertEqual(missing_owner.liveness, "unknown")
+
+    def test_production_provider_and_session_relaunch_resolve_same_generation_for_both_providers(self):
+        generation = "12345678-1234-4abc-8def-1234567890ab"
+        for provider in ("codex", "claude"):
+            for component in ("foreground_provider", "session"):
+                with self.subTest(provider=provider, component=component):
+                    emitted = []
+                    adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+                    native_session = f"{provider}-{component}-session"
+                    native_command = (
+                        f"{provider}-provider-command"
+                        if component == "foreground_provider"
+                        else None
+                    )
+                    adapter.observe({
+                        "source": "provider" if component == "foreground_provider" else "session",
+                        "event": "process_exit",
+                        "session_id": native_session,
+                        "relay_command_id": native_command,
+                        "provider": provider,
+                        "recovery_generation": generation,
+                        "observed_at": 100,
+                    })
+                    adapter.sample(observed_at=130)
+                    adapter.sample(observed_at=131)
+                    self.assertEqual(len(emitted), 1)
+                    incident = emitted[0]
+                    self.assertEqual(incident["component"], component)
+                    self.assertEqual(incident["provider"], provider)
+                    self.assertEqual(incident["recovery_generation"], generation)
+
+                    daemon = Daemon.__new__(Daemon)
+                    daemon.continuity = adapter
+                    capabilities = {
+                        capability: ProductionRecoveryCapability(
+                            adapter.recovery_validation,
+                            daemon._execute_continuity_recovery_action,
+                        )
+                        for capability in CAPABILITY_POLICIES
+                        if capability != "check_processing_health"
+                    }
+                    broker = ComponentOwnedRecoveryBroker(production_recovery_owners(
+                        adapter.recovery_health,
+                        capabilities=capabilities,
+                    ))
+                    dispatched = []
+
+                    def acknowledge(state, **payload):
+                        dispatched.append((state, payload))
+                        common = {
+                            "session_id": native_session,
+                            "provider": provider,
+                            "recovery_generation": generation,
+                        }
+                        if component == "foreground_provider":
+                            events = (
+                                ("turn_started", "turn_progress")
+                                if provider == "codex"
+                                else ("stream_started", "stream_progress")
+                            )
+                            for event, observed_at in zip(
+                                events,
+                                (132, 133),
+                            ):
+                                adapter.observe({
+                                    **common,
+                                    "source": "provider",
+                                    "event": event,
+                                    "relay_command_id": native_command,
+                                    "observed_at": observed_at,
+                                })
+                        else:
+                            adapter.observe({
+                                **common,
+                                "source": "session",
+                                "event": "started",
+                                "observed_at": 132,
+                            })
+                        Path(payload["reply_path"]).write_text(json.dumps({
+                            "status": "applied",
+                            "outcome_code": "component_action_requested",
+                        }))
+                        return True
+
+                    with patch("orchestrator._notify_state", side_effect=acknowledge):
+                        outcome = broker.perform(
+                            "launch_foreground_provider",
+                            incident=incident,
+                            process_identity="continuity-1234567890abcdef1234567890abcdef",
+                            recovery_generation=generation,
+                            attempt=1,
+                            deadline=time.monotonic() + 2,
+                            cancel_event=threading.Event(),
+                        )
+
+                    self.assertEqual(
+                        (outcome.status, outcome.outcome_code),
+                        ("applied", "component_action_requested"),
+                    )
+                    self.assertTrue(outcome.health.objective_restored)
+                    self.assertEqual(dispatched[0][0], "request")
+                    self.assertEqual(dispatched[0][1]["component"], component)
+                    self.assertEqual(
+                        dispatched[0][1]["recovery_generation"],
+                        generation,
+                    )
 
     def test_bridge_owner_executes_every_supported_non_app_component(self):
         class Messenger:

@@ -215,6 +215,7 @@ _CONTINUITY_LIFECYCLE_EVENTS = {
     ("command", "completed"): ("command", "command_processing", "completed", False),
     ("command", "failed"): ("command", "command_processing", "recovery_failed", True),
     ("session", "started"): ("session", "session_liveness", "healthy", False),
+    ("session", "process_exit"): ("session", "session_liveness", "unavailable", False),
     ("session", "explicit_stop"): ("session", "session_liveness", "unavailable", False),
     ("session", "update"): ("session", "session_liveness", "unavailable", False),
     ("session", "reset"): ("session", "session_liveness", "unavailable", False),
@@ -423,7 +424,11 @@ class ContinuityLifecycleAdapter:
                 session_id=session_id,
                 command_id=command_id,
                 component=component,
-                provider=provider if component in {"messenger", "command"} else "none",
+                provider=(
+                    provider
+                    if component in {"messenger", "session", "command"}
+                    else "none"
+                ),
                 recovery_generation=generation,
                 phase=phase,
                 health=health,
@@ -437,7 +442,7 @@ class ContinuityLifecycleAdapter:
             else None
         )
         with self._lock:
-            if source == "provider" and name == "process_exit":
+            if source in {"provider", "session"} and name == "process_exit":
                 self._confirmed_dead.add(self._watch_key(observation))
             evidence_codes = _CONTINUITY_OBJECTIVE_EVIDENCE.get((source, name), ())
             if evidence_codes:
