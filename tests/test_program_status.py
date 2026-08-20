@@ -271,6 +271,40 @@ class ProgramStatusTests(unittest.TestCase):
             {"/tmp/client-dashboard", "/tmp/tools"},
         )
 
+    def test_dashboard_keeps_unlimited_nonterminal_tickets(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        for index in range(1, 61):
+            _ticket(store, project, f"RR-{index}", "Unfinished work", "backlog")
+
+        dashboard = build_program_dashboard(store, limit=0, now=2000.0)
+
+        self.assertEqual(len(dashboard["backlog"]["items"]), 60)
+        self.assertEqual(dashboard["summary"]["items"][0]["backlog_tickets"], 60)
+
+    def test_dashboard_shows_materialized_done_and_canceled_pool_only(self):
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        for index in range(1, 31):
+            state = "canceled" if index % 2 == 0 else "done"
+            _ticket(
+                store,
+                project,
+                f"RR-{index}",
+                "Terminal work",
+                state,
+                materialized=index > 5,
+            )
+
+        dashboard = build_program_dashboard(store, limit=0, now=2000.0)
+        done_ids = [item["ticket_id"] for item in dashboard["done"]["items"]]
+
+        self.assertEqual(len(done_ids), 25)
+        self.assertFalse({f"RR-{index}" for index in range(1, 6)} & set(done_ids))
+        self.assertEqual(dashboard["backlog"]["items"], [])
+        self.assertEqual(dashboard["summary"]["items"][0]["done_tickets"], 25)
+        self.assertIn("canceled", {item["ticket_state"] for item in dashboard["done"]["items"]})
+
     def test_no_projects_has_clear_indexing_message(self):
         store = self.make_store()
 
@@ -457,6 +491,7 @@ def _ticket(
     depends_on: list[str] | None = None,
     source_path: str | None = None,
     run_id: int | None = None,
+    materialized: bool = True,
 ) -> dict:
     return store.upsert_node(
         kind=NODE_TICKET,
@@ -470,6 +505,7 @@ def _ticket(
             "depends_on": depends_on or [],
             "source_path": source_path,
             "run_id": run_id,
+            "materialized": materialized,
         },
     )
 

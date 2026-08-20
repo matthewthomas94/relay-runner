@@ -337,6 +337,7 @@ def _board_lane_tickets(ctx: dict[str, Any], provider: str | None, lane: str) ->
         ticket
         for ticket in sorted(ctx["tickets"], key=_ticket_sort_key)
         if _project_board_state(ctx, ticket) == lane
+        and ticket.get("body", {}).get("materialized") is not False
         and _ticket_matches_provider(ctx, ticket, provider)
     ]
 
@@ -501,6 +502,8 @@ def _project_board_counts(ctx: dict[str, Any], tickets: list[dict[str, Any]]) ->
         "done_tickets": 0,
     }
     for ticket in tickets:
+        if ticket.get("body", {}).get("materialized") is False:
+            continue
         state = _project_board_state(ctx, ticket)
         if state == "backlog":
             counts["backlog_tickets"] += 1
@@ -515,7 +518,7 @@ def _project_board_counts(ctx: dict[str, Any], tickets: list[dict[str, Any]]) ->
 
 def _project_board_state(ctx: dict[str, Any], ticket: dict[str, Any]) -> str:
     ticket_state = _key(_ticket_state(ticket))
-    if ticket_state in {"done", "closed", "completed"}:
+    if ticket_state in {"done", "closed", "completed", "canceled", "cancelled"}:
         return "done"
     latest_run = next(iter(ctx["runs_by_ticket"].get(ticket["id"], [])), None)
     run_state = _run_state(latest_run)

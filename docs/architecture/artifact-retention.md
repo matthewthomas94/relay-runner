@@ -34,6 +34,12 @@ Graphify ingests archived and tombstoned catalog entries as metadata-only ticket
 
 Restore verifies all objects, then creates one normal idempotent writer commit that re-adds the original immutable ticket and attachments, updates `activity_at`, and marks the catalog entry materialized. Reopen performs the same verification but clears terminal/run ownership and moves the ticket to Backlog, making it uncapped immediately. Archived Done dependencies satisfy active dependents through verified catalog history without restoring the predecessor; missing or tampered history is surfaced as an explicit dependency blocker.
 
+The Workspace exposes this contract from the selected project's **History** control. The live board contains every materialized nonterminal ticket plus the materialized Done-or-Canceled pool; metadata-only terminal records appear in History instead of a live lane. Search and detail do not restore files. Detail shows dependency and attachment availability, while **Restore detail** explicitly rematerializes a terminal record and **Reopen in Backlog** moves it into the uncapped nonterminal set.
+
+User-facing state badges are intentionally specific: **Materialized**, **Temporary Safety Overage**, **GitHub-backed • Locally Reachable Through Git**, **Needs Network**, **Local Archive Only**, **Missing**, and **Tampered**. “GitHub-backed” never means “remote only”: a verified historical object may still be reachable in local Git even when its Markdown is absent from `.orchestrator/`.
+
+The Workspace Storage preview lists the exact uncapped nonterminal set, retained terminal set, deletion candidates, temporary-overage reasons, selected remote, and estimated materialized file reduction before apply. GitHub exposure requires an explicit confirmation. Offline, authentication, divergence, interruption, or integrity failures keep candidate files materialized and expose a journaled retry action.
+
 Routine Delete is an ordinary recoverable tombstone commit and warns that Git history remains. Sensitive-data purge is not a retention operation: rotate exposed credentials and use a separately reviewed, coordinated history-rewrite and remote-cleanup procedure.
 
 ## Honest storage accounting

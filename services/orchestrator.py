@@ -5544,6 +5544,11 @@ class Daemon:
             )
         return {
             "state": "blocked" if blocked_reasons else "ready",
+            "remote_mode": manager.remote_mode,
+            "remote_name": getattr(synchronizer, "remote_name", None),
+            "exposure_confirmation_required": bool(
+                plan["eviction_candidate_ids"] and manager.remote_mode == "enabled"
+            ),
             "plan": plan,
             "transaction": transaction,
             "remote": remote_status,

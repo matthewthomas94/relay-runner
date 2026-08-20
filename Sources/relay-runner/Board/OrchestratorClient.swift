@@ -251,6 +251,139 @@ enum OrchestratorClient {
         return postRequest(path: path, payload: payload, port: port)
     }
 
+    static func artifactGetRequest(
+        path: String,
+        repoPath: String,
+        projectScopeToken: String?,
+        values: [URLQueryItem] = [],
+        port: Int
+    ) -> URLRequest? {
+        var query = [URLQueryItem(name: "repo_path", value: repoPath)]
+        if let projectScopeToken, !projectScopeToken.isEmpty {
+            query.append(URLQueryItem(name: "project_scope_token", value: projectScopeToken))
+        }
+        query.append(contentsOf: values)
+        return getRequest(path: path, query: query, port: port)
+    }
+
+    static func fetchArtifactHistory(
+        repoPath: String,
+        query: String,
+        projectScopeToken: String?
+    ) async throws -> ArtifactHistorySearchResponse {
+        try await artifactGet(
+            ArtifactHistorySearchResponse.self,
+            path: "/v1/artifacts/history/search",
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken,
+            values: [URLQueryItem(name: "query", value: query)]
+        )
+    }
+
+    static func fetchArtifactHistoryDetail(
+        repoPath: String,
+        artifactID: String,
+        online: Bool,
+        confirmGitHubExposure: Bool,
+        projectScopeToken: String?
+    ) async throws -> ArtifactHistoryDetailResponse {
+        try await artifactGet(
+            ArtifactHistoryDetailResponse.self,
+            path: "/v1/artifacts/history/\(pathComponent(artifactID))",
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken,
+            values: [
+                URLQueryItem(name: "online", value: online ? "true" : "false"),
+                URLQueryItem(
+                    name: "confirm_github_exposure",
+                    value: confirmGitHubExposure ? "true" : "false"
+                ),
+            ]
+        )
+    }
+
+    static func fetchArtifactDependencySummary(
+        repoPath: String,
+        ticketID: String,
+        projectScopeToken: String?
+    ) async throws -> ArtifactDependencySummary {
+        try await artifactGet(
+            ArtifactDependencySummary.self,
+            path: "/v1/artifacts/dependencies/\(pathComponent(ticketID))",
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+    }
+
+    static func fetchArtifactRetentionStatus(
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> ArtifactRetentionStatus {
+        try await artifactGet(
+            ArtifactRetentionStatus.self,
+            path: "/v1/artifacts/retention/status",
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+    }
+
+    static func fetchArtifactStorageMetrics(
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> ArtifactStorageMetrics {
+        try await artifactGet(
+            ArtifactStorageMetrics.self,
+            path: "/v1/artifacts/storage",
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+    }
+
+    static func restoreArtifactHistory(
+        repoPath: String,
+        artifactID: String,
+        reopen: Bool,
+        online: Bool,
+        confirmGitHubExposure: Bool,
+        projectScopeToken: String?
+    ) async throws -> ArtifactOperationResponse {
+        var values: [String: Any] = [
+            "artifact_id": artifactID,
+            "request_id": UUID().uuidString,
+            "online": online,
+            "confirm_github_exposure": confirmGitHubExposure,
+        ]
+        if let projectScopeToken, !projectScopeToken.isEmpty {
+            values["project_scope_token"] = projectScopeToken
+        }
+        values["repo_path"] = repoPath
+        return try await artifactPost(
+            ArtifactOperationResponse.self,
+            path: "/v1/artifacts/history/\(pathComponent(artifactID))/\(reopen ? "reopen" : "restore")",
+            payload: values
+        )
+    }
+
+    static func applyArtifactRetention(
+        repoPath: String,
+        retry: Bool,
+        confirmGitHubExposure: Bool,
+        projectScopeToken: String?
+    ) async throws -> ArtifactOperationResponse {
+        var payload = artifactPayload(
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+        payload["confirm_github_exposure"] = confirmGitHubExposure
+        return try await artifactPost(
+            ArtifactOperationResponse.self,
+            path: retry
+                ? "/v1/artifacts/retention/retry"
+                : "/v1/artifacts/retention/apply",
+            payload: payload
+        )
+    }
+
     /// Ask the daemon to scan the active repo and dispatch eligible queued tickets.
     /// This is intentionally repo-scoped and provider-neutral: the daemon still
     /// creates workers through the same dispatch path as board drag/save.
@@ -711,6 +844,53 @@ enum OrchestratorClient {
         } catch {
             throw OrchestratorClientError.decodeFailed(error.localizedDescription)
         }
+    }
+
+    private static func artifactGet<Value: Decodable>(
+        _ type: Value.Type,
+        path: String,
+        repoPath: String,
+        projectScopeToken: String?,
+        values: [URLQueryItem] = []
+    ) async throws -> Value {
+        guard let request = artifactGetRequest(
+            path: path,
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken,
+            values: values,
+            port: readPort()
+        ) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        return try await response(type, for: request)
+    }
+
+    private static func artifactPost<Value: Decodable>(
+        _ type: Value.Type,
+        path: String,
+        payload: [String: Any]
+    ) async throws -> Value {
+        guard let request = postRequest(path: path, payload: payload, port: readPort()) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        return try await response(type, for: request)
+    }
+
+    private static func response<Value: Decodable>(
+        _ type: Value.Type,
+        for request: URLRequest
+    ) async throws -> Value {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw OrchestratorClientError.badStatus(status, body)
+        }
+        return try decode(type, from: data)
+    }
+
+    private static func pathComponent(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
     }
 
     private static func postRequest(path: String, payload: [String: Any], port: Int) -> URLRequest? {
