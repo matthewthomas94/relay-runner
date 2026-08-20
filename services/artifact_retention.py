@@ -593,13 +593,14 @@ class ArtifactRetentionManager:
                 )
             canonical[ticket.artifact_id] = ticket
 
-        for artifact_id, entry in self._catalog_from_files(files).items():
+        catalog = self._catalog_from_files(files)
+        for artifact_id, entry in catalog.items():
             if artifact_id in canonical or entry.get("state") == RetentionState.DELETED_TOMBSTONE.value:
                 continue
-            ticket = self._catalog_ticket(entry)
             ticket_id = str(entry.get("ticket_id") or artifact_id)
             try:
-                self._verified_catalog_markdown(head, entry)
+                ticket = self._catalog_ticket(entry)
+                self._verified_catalog_entry(head, catalog, entry)
             except _MissingHistoricalObject as error:
                 raise ArtifactValidationError(
                     f"archive catalog integrity blocker for {ticket_id}: "
@@ -843,7 +844,15 @@ class ArtifactRetentionManager:
         entry = catalog.get(artifact_id)
         if not entry:
             return HistoricalDetail(HistoryAvailability.NOT_FOUND, None)
-        card = _card(entry)
+        try:
+            attachments = self._catalog_attachment_metadata(catalog, entry)
+            card = _card(entry)
+        except (ArtifactValidationError, CatalogSemanticError) as error:
+            return HistoricalDetail(
+                HistoryAvailability.TAMPERED,
+                None,
+                recovery=str(error),
+            )
         source_commit = str(entry.get("source_commit", ""))
         if not self._object_exists(source_commit):
             if not online or deepen is None:
@@ -854,13 +863,12 @@ class ArtifactRetentionManager:
                 )
             deepen(source_commit)
         try:
-            ticket_bytes = self._verified_catalog_markdown(artifact_head, entry)
-            for attachment in entry.get("attachments", []):
-                self._verified_historical_blob(
-                    source_commit,
-                    str(attachment["path"]),
-                    str(attachment["blob"]),
-                )
+            ticket_bytes = self._verified_catalog_entry(
+                artifact_head,
+                catalog,
+                entry,
+                attachments=attachments,
+            )
         except _MissingHistoricalObject:
             return HistoricalDetail(
                 HistoryAvailability.NEEDS_NETWORK,
@@ -877,7 +885,7 @@ class ArtifactRetentionManager:
             HistoryAvailability.AVAILABLE,
             card,
             ticket_bytes=ticket_bytes,
-            attachments=tuple(dict(item) for item in entry.get("attachments", [])),
+            attachments=attachments,
         )
 
     def historical_attachment(
@@ -895,9 +903,14 @@ class ArtifactRetentionManager:
         # Reuse the store's ownership/type policy instead of accepting an
         # archive-catalog MIME declaration on trust.
         mime_type = _attachment_mime_for_filename(filename)
+        artifact_head = self._head_required()
         detail = self.historical_detail(artifact_id, online=online, deepen=deepen)
         if detail.availability != HistoryAvailability.AVAILABLE or detail.card is None:
             raise ArtifactValidationError(detail.recovery or "historical ticket is unavailable")
+        if self.store._head() != artifact_head:
+            raise ArtifactConcurrentUpdate(
+                "artifact head changed while verifying historical attachment"
+            )
         expected_path = f".orchestrator/attachments/{detail.card.ticket_id}/{filename}"
         matches = [item for item in detail.attachments if item.get("path") == expected_path]
         if len(matches) != 1:
@@ -905,8 +918,9 @@ class ArtifactRetentionManager:
         item = matches[0]
         if item.get("mime_type") != mime_type:
             raise ArtifactValidationError("historical attachment MIME metadata is inconsistent")
+        catalog = self._catalog(artifact_head)
         content = self._verified_historical_blob(
-            str(self._catalog(self._head_required())[artifact_id]["source_commit"]),
+            str(catalog[artifact_id]["source_commit"]),
             expected_path,
             str(item.get("blob", "")),
         )
@@ -956,12 +970,14 @@ class ArtifactRetentionManager:
         detail = self.historical_detail(artifact_id, online=online, deepen=deepen)
         if detail.availability != HistoryAvailability.AVAILABLE or detail.ticket_bytes is None:
             raise ArtifactValidationError(detail.recovery or "historical ticket is unavailable")
+        if self.store._head() != head:
+            raise ArtifactConcurrentUpdate("artifact head changed while verifying historical restore")
         instant = _utc(restored_at or self.now())
         ticket_id = str(entry["ticket_id"])
         markdown = _set_front_matter_value(detail.ticket_bytes, "activity_at", _format_instant(instant))
         operations: list[object] = [TicketWrite(ticket_id, artifact_id, markdown)]
         source_commit = str(entry["source_commit"])
-        for attachment in entry.get("attachments", []):
+        for attachment in detail.attachments:
             path = str(attachment["path"])
             content = self._verified_historical_blob(
                 source_commit,
@@ -1035,6 +1051,8 @@ class ArtifactRetentionManager:
         detail = self.historical_detail(artifact_id, online=online, deepen=deepen)
         if detail.availability != HistoryAvailability.AVAILABLE or detail.ticket_bytes is None:
             raise ArtifactValidationError(detail.recovery or "historical ticket is unavailable")
+        if self.store._head() != head:
+            raise ArtifactConcurrentUpdate("artifact head changed while verifying historical reopen")
         instant = _utc(reopened_at or self.now())
         ticket_id = str(entry["ticket_id"])
         markdown = detail.ticket_bytes
@@ -1049,7 +1067,7 @@ class ArtifactRetentionManager:
             markdown = _set_front_matter_value(markdown, key, value)
         operations: list[object] = [TicketWrite(ticket_id, artifact_id, markdown)]
         source_commit = str(entry["source_commit"])
-        for attachment in entry.get("attachments", []):
+        for attachment in detail.attachments:
             path = str(attachment["path"])
             operations.append(AttachmentWrite(
                 ticket_id,
@@ -1475,6 +1493,117 @@ class ArtifactRetentionManager:
             content,
             activity_fields=ACTIVITY_FIELDS,
         )
+        return content
+
+    def _catalog_attachment_metadata(
+        self,
+        catalog: Mapping[str, Mapping[str, object]],
+        entry: Mapping[str, object],
+    ) -> tuple[Mapping[str, object], ...]:
+        ownership: dict[str, tuple[str, str]] = {}
+        catalog_attachments: list[tuple[str, str, Mapping[str, object]]] = []
+        for owner_artifact_id, owner_entry in catalog.items():
+            owner_ticket_id = str(owner_entry.get("ticket_id") or "")
+            owner_attachments = owner_entry.get("attachments", [])
+            if not isinstance(owner_attachments, list) or any(
+                not isinstance(item, Mapping) for item in owner_attachments
+            ):
+                raise ArtifactValidationError("archive catalog attachments must be a list")
+            for attachment in owner_attachments:
+                path = attachment.get("path")
+                if not isinstance(path, str) or not path:
+                    raise ArtifactValidationError(
+                        "archive catalog attachment path for "
+                        f"{owner_ticket_id or owner_artifact_id} is invalid"
+                    )
+                catalog_attachments.append((owner_artifact_id, owner_ticket_id, attachment))
+                prior = ownership.get(path)
+                if prior is not None:
+                    raise ArtifactValidationError(
+                        "archive catalog attachment path is not uniquely owned: "
+                        f"{path} is listed by {prior[1] or prior[0]} and "
+                        f"{owner_ticket_id or owner_artifact_id}; repair the catalog from the "
+                        "verified artifact source"
+                    )
+                ownership[path] = (owner_artifact_id, owner_ticket_id)
+
+        for owner_artifact_id, owner_ticket_id, attachment in catalog_attachments:
+            path = str(attachment["path"])
+            filename = PurePosixPath(path).name
+            expected_path = f".orchestrator/attachments/{owner_ticket_id}/{filename}"
+            if not owner_ticket_id or path != expected_path:
+                raise ArtifactValidationError(
+                    f"archive catalog attachment path {path!r} is not owned by "
+                    f"{owner_ticket_id or owner_artifact_id}; repair the catalog from the "
+                    "verified artifact source"
+                )
+
+        attachments = entry.get("attachments", [])
+        if not isinstance(attachments, list):
+            raise ArtifactValidationError("archive catalog attachments must be a list")
+        validated = []
+        for attachment in attachments:
+            if not isinstance(attachment, Mapping):
+                raise ArtifactValidationError("archive catalog attachments must be a list")
+            path = str(attachment["path"])
+            filename = PurePosixPath(path).name
+            try:
+                canonical_mime = _attachment_mime_for_filename(filename)
+            except ArtifactValidationError as error:
+                raise ArtifactValidationError(
+                    f"archive catalog attachment type metadata is invalid for {path}: {error}; "
+                    "repair the catalog from the verified artifact source"
+                ) from error
+            if attachment.get("mime_type") != canonical_mime:
+                raise ArtifactValidationError(
+                    f"archive catalog attachment MIME metadata is inconsistent for {path}; "
+                    "repair the catalog from the verified artifact source"
+                )
+            size = attachment.get("size")
+            if type(size) is not int or size < 0:
+                raise ArtifactValidationError(
+                    f"archive catalog attachment size metadata is invalid for {path}; "
+                    "repair the catalog from the verified artifact source"
+                )
+            blob = attachment.get("blob")
+            if not isinstance(blob, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", blob):
+                raise ArtifactValidationError(
+                    f"archive catalog attachment blob metadata is invalid for {path}; "
+                    "repair the catalog from the verified artifact source"
+                )
+            validated.append(dict(attachment))
+        return tuple(validated)
+
+    def _verified_catalog_entry(
+        self,
+        artifact_head: str,
+        catalog: Mapping[str, Mapping[str, object]],
+        entry: Mapping[str, object],
+        *,
+        attachments: tuple[Mapping[str, object], ...] | None = None,
+    ) -> bytes:
+        if attachments is None:
+            attachments = self._catalog_attachment_metadata(catalog, entry)
+        content = self._verified_catalog_markdown(artifact_head, entry)
+        source_commit = str(entry.get("source_commit") or "")
+        for attachment in attachments:
+            path = str(attachment["path"])
+            try:
+                historical = self._verified_historical_blob(
+                    source_commit,
+                    path,
+                    str(attachment["blob"]),
+                )
+                self.store._validate_content_for_path(path, historical)
+            except ArtifactValidationError as error:
+                raise ArtifactValidationError(
+                    f"{error}; repair the catalog from the verified artifact source"
+                ) from error
+            if attachment["size"] != len(historical):
+                raise ArtifactValidationError(
+                    f"archive catalog attachment size metadata is inconsistent for {path}; "
+                    "repair the catalog from the verified artifact source"
+                )
         return content
 
     def _verified_historical_blob(self, commit_id: str, path: str, expected_blob: str) -> bytes:

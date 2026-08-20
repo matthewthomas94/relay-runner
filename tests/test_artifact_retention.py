@@ -407,6 +407,139 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertEqual(files[".orchestrator/attachments/RR-1/proof.png"], PNG)
         self.assertIn("RR-1", self.manager.preview().retained_terminal_ids)
 
+    def test_cross_ticket_attachment_catalog_reuse_is_rejected_everywhere(self):
+        self.seed_retained_terminal()
+        old = self.now - timedelta(days=31)
+        self.write_ticket("RR-A", "Owner A", activity_at=old, extra={"status": "done"})
+        self.write_ticket("RR-B", "Owner B", activity_at=old, extra={"status": "done"})
+        self.write_attachment("RR-A", "proof.png", PNG + b"-A")
+        self.write_attachment("RR-B", "proof.png", PNG + b"-B")
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-cross-owner", device_id="device-a"
+        )
+        catalog = self.catalog_entries()
+        catalog["artifact-RR-A"]["attachments"] = [
+            dict(catalog["artifact-RR-B"]["attachments"][0])
+        ]
+        self.replace_catalog_entries(catalog, "tamper-cross-owner")
+        tampered_head = self.store._head()
+
+        detail = self.manager.historical_detail("artifact-RR-A")
+
+        self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+        self.assertIn("not uniquely owned", detail.recovery)
+        with self.assertRaisesRegex(Exception, "not uniquely owned"):
+            self.manager.historical_attachment("artifact-RR-A", "proof.png")
+        with self.assertRaisesRegex(Exception, "not uniquely owned"):
+            self.manager.restore(
+                "artifact-RR-A", event_id="restore-cross-owner", device_id="device-a"
+            )
+        with self.assertRaisesRegex(Exception, "not uniquely owned"):
+            self.manager.reopen(
+                "artifact-RR-A", event_id="reopen-cross-owner", device_id="device-a"
+            )
+        with self.assertRaisesRegex(Exception, "integrity blocker.*not uniquely owned"):
+            self.manager.preview()
+        self.assertEqual(self.store._head(), tampered_head)
+        files = self.store.snapshot().files
+        self.assertNotIn(".orchestrator/RR-A.md", files)
+        self.assertNotIn(".orchestrator/attachments/RR-A/proof.png", files)
+
+    def test_attachment_mime_size_and_blob_catalog_tampering_is_rejected(self):
+        self.seed_retained_terminal()
+        old = self.now - timedelta(days=31)
+        self.write_ticket("RR-A", "Owner A", activity_at=old, extra={"status": "done"})
+        self.write_ticket("RR-B", "Owner B", activity_at=old, extra={"status": "done"})
+        self.write_attachment("RR-A", "proof.png", PNG + b"-A")
+        self.write_attachment("RR-B", "proof.png", PNG + b"-B")
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-metadata", device_id="device-a"
+        )
+        catalog = self.catalog_entries()
+        other_blob = catalog["artifact-RR-B"]["attachments"][0]["blob"]
+        cases = (
+            ("mime", "MIME metadata", lambda item: item.__setitem__("mime_type", "image/jpeg")),
+            ("size", "size metadata", lambda item: item.__setitem__("size", item["size"] + 1)),
+            ("blob", "blob mismatch", lambda item: item.__setitem__("blob", other_blob)),
+        )
+
+        for name, recovery, tamper in cases:
+            with self.subTest(name=name):
+                tampered = json.loads(json.dumps(catalog))
+                tamper(tampered["artifact-RR-A"]["attachments"][0])
+                self.replace_catalog_entries(tampered, f"tamper-attachment-{name}")
+
+                detail = self.manager.historical_detail("artifact-RR-A")
+
+                self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+                self.assertIn(recovery, detail.recovery)
+                self.assertIn("repair the catalog", detail.recovery)
+                with self.assertRaisesRegex(Exception, "integrity blocker"):
+                    self.manager.preview()
+
+    def test_history_attachment_restore_and_reopen_bind_verified_catalog_head(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-A",
+            "Owner A",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "done"},
+        )
+        self.write_attachment("RR-A", "proof.png", PNG + b"-A")
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-head-race", device_id="device-a"
+        )
+        historical_detail = self.manager.historical_detail
+        race_count = 0
+
+        def racing_detail(*args, **kwargs):
+            nonlocal race_count
+            detail = historical_detail(*args, **kwargs)
+            race_count += 1
+            self.replace_catalog_entries(
+                self.catalog_entries(), f"race-history-head-{race_count}"
+            )
+            return detail
+
+        self.manager.historical_detail = racing_detail
+
+        with self.assertRaisesRegex(ArtifactConcurrentUpdate, "head changed"):
+            self.manager.historical_attachment("artifact-RR-A", "proof.png")
+        with self.assertRaisesRegex(ArtifactConcurrentUpdate, "head changed"):
+            self.manager.restore(
+                "artifact-RR-A", event_id="restore-head-race", device_id="device-a"
+            )
+        with self.assertRaisesRegex(ArtifactConcurrentUpdate, "head changed"):
+            self.manager.reopen(
+                "artifact-RR-A", event_id="reopen-head-race", device_id="device-a"
+            )
+        self.assertNotIn(".orchestrator/RR-A.md", self.store.snapshot().files)
+
+    def test_owned_rr_a_attachment_remains_restorable(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-A",
+            "Owner A",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "done"},
+        )
+        self.write_attachment("RR-A", "proof.png", PNG + b"-A")
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-owned-a", device_id="device-a"
+        )
+
+        detail = self.manager.historical_detail("artifact-RR-A")
+        restored = self.manager.restore(
+            "artifact-RR-A", event_id="restore-owned-a", device_id="device-a"
+        )
+
+        self.assertEqual(detail.availability, HistoryAvailability.AVAILABLE)
+        self.assertEqual(restored.state, RetentionState.RESTORE_PENDING_SYNC)
+        self.assertEqual(
+            self.store.snapshot().files[".orchestrator/attachments/RR-A/proof.png"],
+            PNG + b"-A",
+        )
+
     def test_orphan_source_commit_with_matching_tree_is_not_trusted(self):
         self.seed_retained_terminal()
         self.write_ticket(
@@ -1640,7 +1773,22 @@ class ArtifactRetentionTests(unittest.TestCase):
         )
 
     def replace_catalog(self, entry, event_id):
-        content = (json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        return self.replace_catalog_entries({entry["artifact_id"]: entry}, event_id)
+
+    def catalog_entries(self):
+        content = self.store.snapshot().files[".orchestrator/archive-index.jsonl"]
+        return {
+            entry["artifact_id"]: entry
+            for entry in (json.loads(line) for line in content.decode().splitlines())
+        }
+
+    def replace_catalog_entries(self, entries, event_id):
+        content = (
+            "".join(
+                json.dumps(entries[key], sort_keys=True, separators=(",", ":")) + "\n"
+                for key in sorted(entries)
+            )
+        ).encode()
         return self.store.mutate(
             ArtifactMutation(
                 event_id=event_id,
