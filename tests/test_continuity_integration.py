@@ -35,6 +35,7 @@ from continuity_recovery import (  # noqa: E402
     RecoveryExecutionContext,
     production_recovery_owners,
 )
+from intent_inbox import IntentInbox  # noqa: E402
 from voice_bridge import _post_continuity_event  # noqa: E402
 
 
@@ -718,6 +719,111 @@ class ContinuityIntegrationTests(unittest.TestCase):
                 **common,
             )
             self.assertEqual(response["outcome_code"], "live_work_active")
+
+    def test_capture_loss_handoff_without_command_state_reaches_canonical_tts_once(self):
+        session_key = "project:0123456789abcdef"
+        generation = "generation-7"
+        incident = {
+            "incident_id": "inc-123456789abc",
+            "session_id": opaque_identifier("session", session_key),
+            "command_id": None,
+            "component": "speech_capture",
+            "phase": "capture",
+            "provider": "none",
+            "recovery_generation": generation,
+            "timing": {"last_observed_at": 100},
+            "recovery_objective": {
+                "unavailable_capability": (
+                    "Relay Runner cannot capture speech for the active voice session."
+                ),
+                "restored_when": [
+                    "capture_progress_observed",
+                    "transcription_started",
+                ],
+            },
+        }
+        sent = []
+
+        class Socket:
+            def sendto(self, data, path):
+                sent.append((json.loads(data), path))
+
+            def close(self):
+                return None
+
+        daemon = Daemon.__new__(Daemon)
+        with patch.object(orchestrator.socket, "socket", return_value=Socket()):
+            daemon._publish_continuity_resume(incident, "restored")
+
+        with tempfile.TemporaryDirectory() as root:
+            inbox = IntentInbox(Path(root) / "inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            state_path = Path(root) / "state.json"
+            applied_keys = set()
+            common = {
+                "inbox": inbox,
+                "tts_worker": SimpleNamespace(input_queue=object()),
+                "orchestrator_session": {
+                    "session_key": session_key,
+                    "provider": "codex",
+                },
+                "applied_keys": applied_keys,
+                "bridge_generation": generation,
+                "state_path": str(state_path),
+                "turns_path": str(Path(root) / "turns.json"),
+            }
+            with (
+                patch.dict(os.environ, {"RELAY_RECOVERY_GENERATION": generation}),
+                patch.object(voice_bridge, "_queue_tts_text", return_value=True) as queue_text,
+                patch.object(voice_bridge, "_notify_state"),
+            ):
+                first = voice_bridge._bridge_continuity_resume_response(
+                    sent[0][0],
+                    **common,
+                )
+                duplicate = voice_bridge._bridge_continuity_resume_response(
+                    sent[0][0],
+                    **common,
+                )
+
+            self.assertFalse(state_path.exists())
+            self.assertEqual(first["action"], "ask_repeat")
+            self.assertEqual(
+                duplicate,
+                {"action": "noop", "reason": "handoff_already_applied"},
+            )
+            queue_text.assert_called_once()
+
+            state_path.write_text(json.dumps({
+                "relay_command_id": "newer-command",
+                "recovery_generation": "generation-8",
+            }))
+            newer_incident = {**sent[0][0], "incident_id": "inc-newer-123456"}
+            with patch.object(voice_bridge, "_queue_tts_text") as queue_text:
+                newer = voice_bridge._bridge_continuity_resume_response(
+                    newer_incident,
+                    **common,
+                )
+            self.assertEqual(newer["reason"], "stale_recovery_generation")
+            queue_text.assert_not_called()
+
+            state_path.unlink()
+            unrelated = {
+                **sent[0][0],
+                "incident_id": "inc-other-123456",
+                "component": "bridge",
+                "phase": "delivery",
+            }
+            with (
+                patch.dict(os.environ, {"RELAY_RECOVERY_GENERATION": generation}),
+                patch.object(voice_bridge, "_queue_tts_text") as queue_text,
+            ):
+                liveness = voice_bridge._bridge_continuity_resume_response(
+                    unrelated,
+                    **common,
+                )
+            self.assertEqual(liveness["action"], "noop")
+            queue_text.assert_not_called()
 
     def test_daemon_owner_executes_orchestrator_and_command_recovery(self):
         with tempfile.TemporaryDirectory() as root:

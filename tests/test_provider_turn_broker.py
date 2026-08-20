@@ -173,7 +173,7 @@ class ProviderTurnBrokerTests(unittest.TestCase):
 
             recovered = IntentInbox(database, provider_turn_projection_path=projection)
             try:
-                self.assertEqual(recovered.records()[0]["state"], "pending")
+                self.assertEqual(recovered.records()[0]["state"], "review_required")
                 event_types = {
                     row["event_type"]
                     for row in broker.table_records("provider_turn_transitions")

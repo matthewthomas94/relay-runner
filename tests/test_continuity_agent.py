@@ -243,10 +243,14 @@ class ContinuityAgentTests(unittest.TestCase):
 
         broker = IterativeBroker()
         audit = []
+        results = []
         lane = ContinuityAgentLane(
             factory,
             broker,
             on_audit=audit.append,
+            on_result=lambda recovered_incident, result: results.append((
+                recovered_incident["incident_id"], result, session.shutdown_called,
+            )),
             config=ContinuityAgentConfig(
                 max_attempts=1,
                 wall_clock_seconds=10,
@@ -267,6 +271,7 @@ class ContinuityAgentTests(unittest.TestCase):
         ])
         self.assertEqual(audit[-1]["final_result"], "restored")
         self.assertTrue(session.shutdown_called)
+        self.assertEqual(results, [("inc-123456789abc", "restored", True)])
         for prompt in session.prompts:
             self.assertNotIn("private transcript", prompt)
             self.assertNotIn("/private/repository", prompt)

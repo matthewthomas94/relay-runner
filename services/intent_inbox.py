@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any
 
+from continuity_incidents import normalize_recovery_generation
 from provider_turn_broker import (
     ProviderTurnBroker,
     ensure_broker_schema,
@@ -17,7 +18,7 @@ from provider_turn_broker import (
 )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _key(payload: dict[str, Any] | None) -> tuple[int, str] | None:
@@ -39,6 +40,7 @@ class IntentInbox:
         path: str | os.PathLike[str],
         *,
         provider_turn_projection_path: str | os.PathLike[str] | None = None,
+        hold_recovered_delivery: bool = False,
     ):
         self.path = str(path)
         self.provider_turn_projection_path = (
@@ -78,7 +80,9 @@ class IntentInbox:
                     cancelled_at REAL,
                     transport TEXT,
                     lease_attempts INTEGER NOT NULL DEFAULT 0,
-                    recovered_at REAL
+                    recovered_at REAL,
+                    recovery_generation TEXT NOT NULL DEFAULT '0',
+                    recovery_decision TEXT
                 );
                 """
             )
@@ -98,6 +102,30 @@ class IntentInbox:
                 self._connection.execute(
                     "ALTER TABLE intents ADD COLUMN within_turn_order INTEGER NOT NULL DEFAULT 1"
                 )
+            if "recovery_generation" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE intents ADD COLUMN recovery_generation TEXT NOT NULL DEFAULT '0'"
+                )
+                for row in self._connection.execute(
+                    "SELECT intent_id, metadata_json FROM intents"
+                ).fetchall():
+                    try:
+                        metadata = json.loads(row["metadata_json"])
+                        if not isinstance(metadata, dict):
+                            continue
+                        generation = normalize_recovery_generation(
+                            metadata.get("recovery_generation")
+                        )
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        continue
+                    self._connection.execute(
+                        "UPDATE intents SET recovery_generation=? WHERE intent_id=?",
+                        (generation, str(row["intent_id"])),
+                    )
+            if "recovery_decision" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE intents ADD COLUMN recovery_decision TEXT"
+                )
             self._connection.execute("DROP INDEX IF EXISTS intents_command_key")
             self._connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS intents_command_item_key "
@@ -109,7 +137,10 @@ class IntentInbox:
             )
             recovered = (
                 self._connection.execute(
-                    "SELECT intent_id FROM intents WHERE state IN ('delivered', 'claimed')"
+                    "SELECT intent_id FROM intents "
+                    "WHERE state IN ('delivered', 'claimed') "
+                    "OR (? = 1 AND state='pending')",
+                    (int(hold_recovered_delivery),),
                 ).fetchall()
                 if self.provider_turn_events_enabled
                 else []
@@ -119,10 +150,23 @@ class IntentInbox:
             self._connection.execute(
                 """
                 UPDATE intents
-                   SET state='pending', recovered_at=?
+                   SET state=CASE
+                       WHEN state IN ('pending', 'delivered') THEN ?
+                       ELSE 'review_required'
+                   END,
+                       recovered_at=?,
+                       recovery_decision=CASE
+                           WHEN state IN ('pending', 'delivered') THEN 'resume_exact'
+                           ELSE 'foreground_review'
+                       END
                  WHERE state IN ('delivered', 'claimed')
+                    OR (? = 1 AND state='pending')
                 """,
-                (time.time(),),
+                (
+                    "recovery_pending" if hold_recovered_delivery else "pending",
+                    time.time(),
+                    int(hold_recovered_delivery),
+                ),
             )
             if self.provider_turn_events_enabled:
                 record_intent_events(
@@ -164,6 +208,9 @@ class IntentInbox:
         stored["intent_claim_id"] = claim_id
         stored["intent_ack_id"] = ack_id
         stored["intent_inbox_version"] = SCHEMA_VERSION
+        recovery_generation = normalize_recovery_generation(
+            stored.get("recovery_generation") or "0"
+        )
         work_item = stored.get("voice_work_item")
         if not isinstance(work_item, dict):
             work_item = {}
@@ -185,8 +232,9 @@ class IntentInbox:
                 """
                 INSERT OR IGNORE INTO intents(
                     intent_id, command_seq, command_id, within_turn_order, prompt, metadata_json,
-                    route, state, delivery_id, claim_id, ack_id, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    route, state, delivery_id, claim_id, ack_id, created_at,
+                    recovery_generation
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     intent_id,
@@ -201,9 +249,42 @@ class IntentInbox:
                     claim_id,
                     ack_id,
                     now,
+                    recovery_generation,
                 ),
             )
         return stored
+
+    def resume_after_recovery(
+        self,
+        *,
+        intent_id: str,
+        recovery_generation: str,
+        now: float | None = None,
+    ) -> bool:
+        """Release only an exact unclaimed intent once for its original generation."""
+        try:
+            generation = normalize_recovery_generation(recovery_generation)
+        except ValueError:
+            return False
+        now = time.time() if now is None else now
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT state, recovery_generation, recovery_decision "
+                "FROM intents WHERE intent_id=?",
+                (intent_id,),
+            ).fetchone()
+            if row is None or str(row["recovery_generation"]) != generation:
+                return False
+            if str(row["recovery_decision"] or "") == f"resumed:{generation}":
+                return False
+            if str(row["state"]) not in {"pending", "delivered", "recovery_pending"}:
+                return False
+            self._connection.execute(
+                "UPDATE intents SET state='pending', recovered_at=?, recovery_decision=? "
+                "WHERE intent_id=? AND state IN ('pending', 'delivered', 'recovery_pending')",
+                (now, f"resumed:{generation}", intent_id),
+            )
+        return True
 
     def cancel_pending_before(self, command_seq: int, *, reason: str) -> int:
         del reason  # The route is diagnostic; private transcript text is never logged here.
@@ -214,7 +295,7 @@ class IntentInbox:
                 SELECT intent_id FROM intents
                  WHERE command_seq < ?
                    AND route != 'run_sidecar'
-                   AND state IN ('pending', 'delivered', 'claimed')
+                   AND state IN ('pending', 'delivered', 'claimed', 'review_required', 'recovery_pending')
                 """,
                 (int(command_seq),),
             ).fetchall()
@@ -224,7 +305,7 @@ class IntentInbox:
                    SET state='cancelled', cancelled_at=?
                  WHERE command_seq < ?
                    AND route != 'run_sidecar'
-                   AND state IN ('pending', 'delivered', 'claimed')
+                   AND state IN ('pending', 'delivered', 'claimed', 'review_required', 'recovery_pending')
                 """,
                 (now, int(command_seq)),
             )
@@ -301,7 +382,7 @@ class IntentInbox:
             rows = self._connection.execute(
                 """
                 SELECT * FROM intents
-                 WHERE state IN ('pending', 'delivered', 'claimed', 'acked')
+                 WHERE state IN ('pending', 'delivered', 'claimed', 'review_required', 'recovery_pending', 'acked')
                  ORDER BY command_seq DESC, within_turn_order DESC, ordinal DESC
                 """
             ).fetchall()
@@ -366,7 +447,7 @@ class IntentInbox:
                 SELECT ordinal
                   FROM intents
                  WHERE route != 'run_sidecar'
-                   AND state IN ('delivered', 'claimed')
+                   AND state IN ('delivered', 'claimed', 'review_required')
                  ORDER BY command_seq, within_turn_order, ordinal
                  LIMIT 1
                 """
@@ -430,17 +511,23 @@ class IntentInbox:
         with self._lock, self._connection:
             if intent_id:
                 row = self._connection.execute(
-                    "SELECT state, claim_id, ack_id, intent_id FROM intents WHERE intent_id=?",
+                    "SELECT state, claim_id, ack_id, intent_id, command_seq, command_id, "
+                    "within_turn_order, ordinal, claimed_at, recovery_generation, "
+                    "recovery_decision FROM intents WHERE intent_id=?",
                     (intent_id,),
                 ).fetchone()
             else:
                 row = self._connection.execute(
-                    "SELECT state, claim_id, ack_id, intent_id FROM intents "
+                    "SELECT state, claim_id, ack_id, intent_id, command_seq, command_id, "
+                    "within_turn_order, ordinal, claimed_at, recovery_generation, "
+                    "recovery_decision FROM intents "
                     "WHERE command_seq=? AND command_id=? "
                     "ORDER BY within_turn_order, ordinal LIMIT 1",
                     key,
                 ).fetchone()
             if row is None:
+                return False
+            if (int(row["command_seq"]), str(row["command_id"])) != key:
                 return False
             state = str(row["state"])
             resolved_intent_id = str(row["intent_id"])
@@ -464,7 +551,8 @@ class IntentInbox:
                         occurred_at=now,
                     )) or projection_changed
                 state = "claimed"
-            if provider_turn_seen and state == "claimed":
+            recovered_claim = state == "review_required" and row["claimed_at"] is not None
+            if provider_turn_seen and (state == "claimed" or recovered_claim):
                 self._connection.execute(
                     """
                     UPDATE intents SET state='acked', ack_id=?, acked_at=?
@@ -480,6 +568,42 @@ class IntentInbox:
                         event_scope=ack_id,
                         occurred_at=now,
                     )) or projection_changed
+                generation = str(row["recovery_generation"])
+                if str(row["recovery_decision"] or "") == f"resumed:{generation}":
+                    next_sibling = self._connection.execute(
+                        """
+                        SELECT intent_id, recovery_generation
+                          FROM intents
+                         WHERE command_seq=? AND command_id=?
+                           AND state='recovery_pending'
+                           AND (within_turn_order > ?
+                                OR (within_turn_order=? AND ordinal > ?))
+                         ORDER BY within_turn_order, ordinal
+                         LIMIT 1
+                        """,
+                        (
+                            int(row["command_seq"]),
+                            str(row["command_id"]),
+                            int(row["within_turn_order"]),
+                            int(row["within_turn_order"]),
+                            int(row["ordinal"]),
+                        ),
+                    ).fetchone()
+                    if (
+                        next_sibling is not None
+                        and str(next_sibling["recovery_generation"]) == generation
+                    ):
+                        self._connection.execute(
+                            "UPDATE intents SET state='pending', recovered_at=?, "
+                            "recovery_decision=? WHERE intent_id=? "
+                            "AND state='recovery_pending' AND recovery_generation=?",
+                            (
+                                now,
+                                f"resumed:{generation}",
+                                str(next_sibling["intent_id"]),
+                                generation,
+                            ),
+                        )
             observed = True
         if projection_changed:
             self._project_provider_turns()

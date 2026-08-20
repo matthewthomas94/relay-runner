@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
 
 # Reuse the existing config loader (sibling file).
@@ -4769,6 +4769,7 @@ class Daemon:
                     self.continuity_agent_audit_path,
                     record,
                 ),
+                on_result=self._publish_continuity_resume,
                 config=lane_config,
             )
         try:
@@ -4831,6 +4832,46 @@ class Daemon:
                 cancel_event,
             )
         return RecoveryActionResult("failed", "component_owner_unavailable")
+
+    def _publish_continuity_resume(
+        self,
+        incident: Mapping[str, object],
+        final_result: str,
+    ) -> None:
+        """Return authority to the canonical bridge only after stable recovery."""
+        objective = incident.get("recovery_objective")
+        payload = {
+            "type": "continuity_resume",
+            "final_result": final_result,
+            "incident_id": incident.get("incident_id"),
+            "session_id": incident.get("session_id"),
+            "command_id": incident.get("command_id"),
+            "component": incident.get("component"),
+            "phase": incident.get("phase"),
+            "unavailable_capability": (
+                objective.get("unavailable_capability")
+                if isinstance(objective, Mapping)
+                else None
+            ),
+            "provider": incident.get("provider"),
+            "recovery_generation": incident.get("recovery_generation"),
+            "incident_observed_at": (
+                dict(incident.get("timing") or {}).get("last_observed_at")
+            ),
+        }
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            sock.sendto(
+                json.dumps(payload, separators=(",", ":")).encode(),
+                str(BRIDGE_CONTROL_SOCK),
+            )
+        except OSError:
+            # A missing canonical bridge means no safe command or speech owner.
+            return
+        finally:
+            if sock is not None:
+                sock.close()
 
     def _await_continuity_recovery_reply(
         self,

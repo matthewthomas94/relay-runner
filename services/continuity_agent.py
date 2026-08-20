@@ -512,12 +512,14 @@ class ContinuityAgentLane:
         broker: RecoveryBroker,
         *,
         on_audit: Callable[[dict[str, object]], object],
+        on_result: Callable[[Mapping[str, object], str], object] | None = None,
         config: ContinuityAgentConfig | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ):
         self._session_factory = session_factory
         self._broker = broker
         self._on_audit = on_audit
+        self._on_result = on_result
         self.config = config or ContinuityAgentConfig()
         self._monotonic = monotonic
         self._lock = threading.Lock()
@@ -590,6 +592,7 @@ class ContinuityAgentLane:
                 attempt=0,
                 final_result="provider_failed",
             )
+            self._publish_result(incident, "provider_failed")
             with self._lock:
                 self._cooldowns[fingerprint] = self._monotonic() + self.config.cooldown_seconds
                 self._active_incident = None
@@ -708,11 +711,27 @@ class ContinuityAgentLane:
                 attempt=len(history),
                 final_result=final_result,
             )
+            self._publish_result(incident, final_result)
             with self._lock:
                 self._cooldowns[fingerprint] = self._monotonic() + self.config.cooldown_seconds
                 self._active_incident = None
                 self._active_session = None
                 self._idle.set()
+
+    def _publish_result(
+        self,
+        incident: Mapping[str, object],
+        final_result: str,
+    ) -> None:
+        if self._on_result is None:
+            return
+        try:
+            self._on_result(incident, final_result)
+        except Exception as error:  # noqa: BLE001 - recovery completion must still settle.
+            print(
+                f"[continuity-agent] result callback failed ({type(error).__name__})",
+                file=sys.stderr,
+            )
 
     def _perform_broker_action(
         self,

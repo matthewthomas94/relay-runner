@@ -385,7 +385,7 @@ class _Scenario:
             if record["intent_id"] == self.command["intent_id"]
         )
         recovered_claim = (
-            row["state"] == "pending"
+            row["state"] in {"pending", "review_required"}
             and row["claimed_at"] is not None
             and row["recovered_at"] is not None
         )
