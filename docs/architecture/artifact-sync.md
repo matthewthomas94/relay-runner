@@ -12,13 +12,13 @@ Remote inspection happens in a temporary bare quarantine repository. Relay fetch
 
 ## State machine
 
-The provider-neutral states are Local only, Paused, Clean, Ahead, Behind, Syncing, retryable Offline, retryable Authentication, Missing remote ref, Protected ref, Foreign ref, Local ahead fail-closed, Conflict, and Failed. Results include the observed state, bounded transition history, attempt count, local and remote heads, and a user-safe recovery action. Codex and Claude receive the same result; provider attribution does not affect synchronization policy.
+The provider-neutral states are Local only, Paused, Clean, Ahead, Behind, Syncing, retryable Offline, retryable Authentication, retryable Remote race, Missing remote ref, Protected ref, Foreign ref, Local ahead fail-closed, Conflict, and Failed. Results include the observed state, bounded transition history, attempt count, local and remote heads, and a user-safe recovery action. Codex and Claude receive the same result; provider attribution does not affect synchronization policy.
 
 Offline and authentication failures retain unpublished local artifact commits. Retry uses exponential delay with jitter and a strict attempt cap. A push race re-enters exact fetch/verification/rebase, while immutable event IDs and compare-and-swap local ref updates prevent duplicated logical events.
 
 ## Publication invariants
 
-Relay publishes only an already verified artifact commit with the normal refspec `<commit>:refs/heads/relay/artifacts`. There is no force, force-with-lease, destructive reset, remote deletion, or source refspec. The artifact writer lock spans local relationship checks, unpublished rebase, compare-and-swap updates, publication, and rematerialization. Source HEAD, source refs, branch or detached state, user index, staged/unstaged/untracked files, ordinary local-ahead commits, and configured remotes are outside this state machine.
+Relay publishes only an already verified direct descendant with the normal refspec `<commit>:refs/heads/relay/artifacts`. Prepared retention publication adds an exact `--force-with-lease=refs/heads/relay/artifacts:<preflight-head>` compare-and-swap guard; because the candidate must be a direct descendant of that exact object-format-native head, the lease cannot authorize a non-fast-forward candidate. Remote deletion, rewind, or advancement after preflight fails closed without recreating or overwriting the ref. There is no unconditional force, destructive reset, remote deletion, or source refspec. The artifact writer lock spans local relationship checks, unpublished rebase, compare-and-swap updates, publication, and rematerialization. Source HEAD, source refs, branch or detached state, user index, staged/unstaged/untracked files, ordinary local-ahead commits, and configured remotes are outside this state machine.
 
 When both artifact histories advanced, Relay replays only commits carrying the same project ID plus complete Relay event/digest/device/actor trailers. Already-published event IDs with the same digest are skipped; a mismatched digest stops. Unowned or malformed local-ahead commits fail closed.
 

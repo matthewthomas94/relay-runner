@@ -764,6 +764,146 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertEqual(self.git("ls-remote", str(unconfirmed), self.store.artifact_ref), "")
         self.assertIn(".orchestrator/RR-late-pushurl.md", self.store.snapshot().files)
 
+    def test_prepared_push_lease_blocks_remote_deletion_without_local_cleanup(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-lease-delete",
+            "Keep after remote deletion",
+            activity_at=self.now - timedelta(days=365),
+            extra={"status": "done"},
+        )
+        base = self.store._head()
+        projection = dict(self.store.snapshot().files)
+
+        def delete_remote_ref(stage):
+            if stage == "before_prepared_push":
+                self.git(
+                    "--git-dir", str(self.remote),
+                    "update-ref", "-d", self.store.artifact_ref,
+                )
+
+        synchronizer = ArtifactSyncEngine(
+            self.store,
+            mode=ArtifactSyncMode.ENABLED,
+            remote_name="origin",
+            max_attempts=1,
+            base_retry_seconds=0,
+            sleep=lambda _: None,
+            jitter=lambda: 0,
+            failure_injector=delete_remote_ref,
+        )
+        manager = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=self.confirmation,
+            synchronizer=synchronizer,
+            now=lambda: self.now,
+        )
+
+        blocked = manager.archive(
+            manager.preview(), event_id="lease-delete", device_id="device-a"
+        )
+
+        self.assertEqual(blocked.state, RetentionState.ARCHIVE_PENDING_SYNC)
+        self.assertIn("did not recreate", blocked.recovery)
+        self.assertEqual(self.git("ls-remote", str(self.remote), self.store.artifact_ref), "")
+        self.assertEqual(self.store._head(), base)
+        self.assertEqual(dict(self.store.snapshot().files), projection)
+        transaction = json.loads(manager.transaction_path.read_text(encoding="utf-8"))
+        self.assertEqual(transaction["phase"], "prepared")
+        self.assertEqual(
+            self.git("rev-parse", transaction["scratch_ref"]),
+            transaction["candidate_head"],
+        )
+        self.assertEqual(self.git("cat-file", "-t", transaction["candidate_head"]), "commit")
+
+        self.git(
+            "--git-dir", str(self.remote),
+            "update-ref", self.store.artifact_ref, base,
+        )
+        recovered = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            synchronizer=self.synchronizer,
+            now=lambda: self.now,
+        ).recover_archive()
+        self.assertEqual(recovered.state, RetentionState.ARCHIVED)
+        self.assertNotIn(".orchestrator/RR-lease-delete.md", self.store.snapshot().files)
+
+    def test_prepared_push_lease_blocks_remote_rewind_without_local_cleanup(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-lease-rewind",
+            "Keep after remote rewind",
+            activity_at=self.now - timedelta(days=365),
+            extra={"status": "done"},
+        )
+        base = self.store._head()
+        projection = dict(self.store.snapshot().files)
+        rewound = self.git("rev-parse", f"{base}^")
+
+        def rewind_remote_ref(stage):
+            if stage == "before_prepared_push":
+                self.git(
+                    "--git-dir", str(self.remote),
+                    "update-ref", self.store.artifact_ref, rewound,
+                )
+
+        synchronizer = ArtifactSyncEngine(
+            self.store,
+            mode=ArtifactSyncMode.ENABLED,
+            remote_name="origin",
+            max_attempts=1,
+            base_retry_seconds=0,
+            sleep=lambda _: None,
+            jitter=lambda: 0,
+            failure_injector=rewind_remote_ref,
+        )
+        manager = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=self.confirmation,
+            synchronizer=synchronizer,
+            now=lambda: self.now,
+        )
+
+        blocked = manager.archive(
+            manager.preview(), event_id="lease-rewind", device_id="device-a"
+        )
+
+        self.assertEqual(blocked.state, RetentionState.ARCHIVE_PENDING_SYNC)
+        self.assertIn("did not overwrite", blocked.recovery)
+        self.assertEqual(
+            self.git("--git-dir", str(self.remote), "rev-parse", self.store.artifact_ref),
+            rewound,
+        )
+        self.assertEqual(self.store._head(), base)
+        self.assertEqual(dict(self.store.snapshot().files), projection)
+        transaction = json.loads(manager.transaction_path.read_text(encoding="utf-8"))
+        self.assertEqual(transaction["phase"], "prepared")
+        self.assertEqual(
+            self.git("rev-parse", transaction["scratch_ref"]),
+            transaction["candidate_head"],
+        )
+        self.assertEqual(self.git("cat-file", "-t", transaction["candidate_head"]), "commit")
+
+        self.git(
+            "--git-dir", str(self.remote),
+            "update-ref", self.store.artifact_ref, base, rewound,
+        )
+        recovered = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            synchronizer=self.synchronizer,
+            now=lambda: self.now,
+        ).recover_archive()
+        self.assertEqual(recovered.state, RetentionState.ARCHIVED)
+        self.assertNotIn(".orchestrator/RR-lease-rewind.md", self.store.snapshot().files)
+
     def test_post_push_verification_stays_bound_to_confirmed_fetch_destination(self):
         self.seed_retained_terminal()
         self.write_ticket(

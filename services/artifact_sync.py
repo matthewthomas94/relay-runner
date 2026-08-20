@@ -68,6 +68,7 @@ class ArtifactSyncState(str, enum.Enum):
     SYNCING = "syncing"
     RETRYABLE_OFFLINE = "retryable_offline"
     RETRYABLE_AUTH = "retryable_auth"
+    RETRYABLE_REMOTE_RACE = "retryable_remote_race"
     MISSING_REMOTE_REF = "missing_remote_ref"
     PROTECTED_REF = "protected_ref"
     FOREIGN_REF = "foreign_ref"
@@ -330,7 +331,11 @@ class ArtifactSyncEngine:
                 push_destination = self._validated_push_destination(
                     expected_push_url_sha256
                 )
-            push_error = self._push(candidate_head, destination=push_destination)
+            push_error = self._push(
+                candidate_head,
+                destination=push_destination,
+                expected_remote_head=expected_remote_head,
+            )
             self._inject("after_prepared_push")
 
             # This is intentionally a new quarantine, not the snapshot used for
@@ -339,6 +344,23 @@ class ArtifactSyncEngine:
                 expected_url_sha256=expected_remote_url_sha256
             ) as after:
                 if after.error_state:
+                    if after.error_state == ArtifactSyncState.MISSING_REMOTE_REF:
+                        return self._finish(
+                            ArtifactSyncState.RETRYABLE_REMOTE_RACE,
+                            ArtifactSyncState.MISSING_REMOTE_REF,
+                            1,
+                            candidate_head,
+                            None,
+                            recovery=(
+                                "The remote artifact ref was deleted after archival preflight; "
+                                "restore the exact verified base and retry. Relay did not recreate it."
+                            ),
+                            transitions=(
+                                ArtifactSyncState.AHEAD,
+                                ArtifactSyncState.SYNCING,
+                                ArtifactSyncState.RETRYABLE_REMOTE_RACE,
+                            ),
+                        )
                     return self._remote_error_result(after, candidate_head, attempts=1)
                 assert after.head is not None and after.quarantine is not None
                 if self._quarantine_is_ancestor(
@@ -346,6 +368,23 @@ class ArtifactSyncEngine:
                 ):
                     return self._verified_prepared_result(
                         after, candidate_head, proofs, attempts=1
+                    )
+                if after.head != expected_remote_head:
+                    return self._finish(
+                        ArtifactSyncState.RETRYABLE_REMOTE_RACE,
+                        self._relationship(expected_remote_head, after.head),
+                        1,
+                        candidate_head,
+                        after.head,
+                        recovery=(
+                            "The remote artifact ref changed after archival preflight; restore or "
+                            "reconcile the exact verified base and retry. Relay did not overwrite it."
+                        ),
+                        transitions=(
+                            ArtifactSyncState.AHEAD,
+                            ArtifactSyncState.SYNCING,
+                            ArtifactSyncState.RETRYABLE_REMOTE_RACE,
+                        ),
                     )
                 if push_error is not None:
                     state, recovery = push_error
@@ -1357,11 +1396,18 @@ class ArtifactSyncEngine:
         local_head: str,
         *,
         destination: str | None = None,
+        expected_remote_head: str | None = None,
     ) -> tuple[ArtifactSyncState, str] | None:
         assert self.remote_name is not None
+        lease = (
+            (f"--force-with-lease={self.store.artifact_ref}:{expected_remote_head}",)
+            if expected_remote_head is not None
+            else ()
+        )
         push = self.store._git(
             "push",
             "--porcelain",
+            *lease,
             destination or self.remote_name,
             f"{local_head}:{self.store.artifact_ref}",
             allowed_statuses={0, 1, 128},
