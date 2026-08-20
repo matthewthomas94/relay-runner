@@ -522,6 +522,24 @@ final class BridgeRecoveryTests: XCTestCase {
         ))
     }
 
+    func testContinuityRecoveryDefersPendingCommandUntilStableHandoff() {
+        let script = ProcessManager.bridgeRecoveryScript(
+            relayBridge: "/usr/local/bin/relay-bridge",
+            context: .init(
+                workingDirectory: "/Users/example/dev",
+                provider: "codex",
+                recoveryGeneration: "generation-7",
+                continuityRecoveryPending: true
+            )
+        )
+
+        XCTAssertTrue(script.contains("RELAY_CONTINUITY_RECOVERY_PENDING='1'"))
+        XCTAssertTrue(script.contains(
+            "[ \"$RELAY_CONTINUITY_RECOVERY_PENDING\" = \"1\" ] && return 0"
+        ))
+        XCTAssertTrue(script.contains("export RELAY_CONTINUITY_RECOVERY_PENDING=1"))
+    }
+
     func testRecoveryScriptPreservesTutorialGreetingSuppression() {
         let script = ProcessManager.bridgeRecoveryScript(
             relayBridge: "/usr/local/bin/relay-bridge",

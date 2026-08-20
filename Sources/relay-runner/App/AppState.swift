@@ -1857,7 +1857,8 @@ final class AppState {
         let context = ProcessManager.BridgeRecoveryContext(
             workingDirectory: baseContext.workingDirectory,
             provider: baseContext.provider,
-            recoveryGeneration: continuityRecoveryGenerationBySession[sessionID]
+            recoveryGeneration: continuityRecoveryGenerationBySession[sessionID],
+            continuityRecoveryPending: reason.hasPrefix("continuity-")
         )
         let now = Date()
         if now.timeIntervalSince(lastBridgeRecoveryAt) < Self.bridgeRecoveryCooldown {

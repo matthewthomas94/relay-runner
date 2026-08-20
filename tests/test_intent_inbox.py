@@ -177,7 +177,7 @@ class IntentInboxTests(unittest.TestCase):
             )
             self.assertEqual(advanced["relay_command_id"], "two")
 
-    def test_restart_recovers_claim_without_provider_ack(self):
+    def test_restart_holds_claim_without_provider_ack_for_review(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "inbox.sqlite3"
             command = str(Path(directory) / "ready")
@@ -202,10 +202,10 @@ class IntentInboxTests(unittest.TestCase):
                 transport="manual-bridge",
             )
 
-            self.assertEqual(recovered["relay_command_id"], "one")
+            self.assertIsNone(recovered)
             self.assertEqual(
                 [record["state"] for record in restarted.records()],
-                ["delivered", "pending"],
+                ["review_required", "pending"],
             )
 
     def test_claim_and_ack_identity_are_idempotent(self):

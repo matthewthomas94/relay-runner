@@ -61,6 +61,7 @@ from continuity_recovery import (
     RecoveryExecutionContext,
     recovery_owner_for,
 )
+from continuity_resume import PLEASE_REPEAT_TEXT, plan_continuity_resume
 from messenger import MessengerRuntime, create_messenger_runtime
 from sidecar_lane import (
     SidecarLane,
@@ -2499,6 +2500,128 @@ def _bridge_continuity_recovery_response(
         return {"status": "applied", "outcome_code": outcome_code}
 
 
+def _bridge_continuity_resume_response(
+    payload: dict,
+    *,
+    inbox: IntentInbox | None,
+    tts_worker: object,
+    orchestrator_session: dict | None,
+    applied_keys: set[str] | None = None,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+) -> dict[str, str | None]:
+    """Resume only provably safe work after the stable-health handoff."""
+    if inbox is None:
+        return {"action": "foreground_review", "reason": "intent_inbox_unavailable"}
+    try:
+        generation = normalize_recovery_generation(payload.get("recovery_generation"))
+    except ValueError:
+        return {"action": "foreground_review", "reason": "invalid_recovery_generation"}
+    state = _read_json_file(state_path) or {}
+    if str(state.get("recovery_generation") or "") != generation:
+        return {"action": "foreground_review", "reason": "stale_recovery_generation"}
+    session_key = str((orchestrator_session or {}).get("session_key") or "")
+    if not session_key or opaque_identifier("session", session_key) != payload.get("session_id"):
+        return {"action": "foreground_review", "reason": "unrelated_session_target"}
+    provider = str((orchestrator_session or {}).get("provider") or "none")
+    if payload.get("provider") not in {"none", provider}:
+        return {"action": "foreground_review", "reason": "provider_target_mismatch"}
+    resume_key = "|".join((
+        str(payload.get("incident_id") or ""),
+        generation,
+        str(payload.get("command_id") or "no-command"),
+    ))
+    if applied_keys is not None and resume_key in applied_keys:
+        return {"action": "noop", "reason": "handoff_already_applied"}
+
+    records = inbox.records()
+    command_id = payload.get("command_id")
+    if command_id is None:
+        try:
+            incident_at = float(payload.get("incident_observed_at"))
+        except (TypeError, ValueError):
+            incident_at = 0.0
+        if any(
+            str(record.get("recovery_generation") or "") == generation
+            and float(record.get("created_at") or 0) >= incident_at
+            for record in records
+        ):
+            return {"action": "noop", "reason": "captured_command_now_exists"}
+
+    incident = {
+        "command_id": command_id,
+        "component": payload.get("component"),
+        "phase": payload.get("phase"),
+        "recovery_generation": generation,
+    }
+    decision = plan_continuity_resume(
+        incident,
+        records,
+        final_result=str(payload.get("final_result") or ""),
+    )
+    if decision.phase == "in_flight_or_completed" and decision.intent_id:
+        record = next(
+            (item for item in records if item.get("intent_id") == decision.intent_id),
+            None,
+        )
+        if record is not None:
+            try:
+                metadata = json.loads(str(record.get("metadata_json") or "{}"))
+            except json.JSONDecodeError:
+                metadata = {}
+            provider_state = _provider_turn_state(
+                metadata,
+                turns_path=turns_path,
+                provider_session_id=PROVIDER_SESSION_ID,
+            )
+            decision = plan_continuity_resume(
+                incident,
+                records,
+                final_result=str(payload.get("final_result") or ""),
+                provider_turn_state=(provider_state or {}).get("state"),
+            )
+
+    if decision.action == "ask_repeat":
+        queued = _queue_tts_text(
+            PLEASE_REPEAT_TEXT,
+            tts_worker.input_queue,
+            allow_pending_command=True,
+        )
+        if queued:
+            _notify_state("continuity_repeat", text=PLEASE_REPEAT_TEXT)
+        else:
+            return {"action": "foreground_review", "reason": "repeat_delivery_unavailable"}
+    elif decision.action == "resume_exact" and decision.intent_id:
+        record = next(
+            (item for item in records if item.get("intent_id") == decision.intent_id),
+            None,
+        )
+        if record is not None and str(record.get("state")) in {"pending", "recovery_pending"}:
+            resumed = inbox.resume_after_recovery(
+                intent_id=decision.intent_id,
+                recovery_generation=generation,
+            )
+            if not resumed:
+                return {"action": "noop", "reason": "resume_already_applied"}
+        _notify_state(
+            "working",
+            text="Relay Runner recovered the original command and resumed it.",
+        )
+    elif decision.action == "foreground_review":
+        _notify_state(
+            "working",
+            text="Recovery needs foreground review; Relay did not replay the command.",
+        )
+    elif decision.action == "reattach":
+        _notify_state(
+            "working",
+            text="Relay Runner reattached to the original command without replaying it.",
+        )
+    if applied_keys is not None:
+        applied_keys.add(resume_key)
+    return decision.as_dict()
+
+
 def _start_control_socket(
     tts_worker: TTSWorker,
     shutdown_event: threading.Event,
@@ -2528,6 +2651,16 @@ def _start_control_socket(
                         candidate = None
                     if isinstance(candidate, dict) and candidate.get("type") == "continuity_recovery":
                         recovery_payload = candidate
+                    elif isinstance(candidate, dict) and candidate.get("type") == "continuity_resume":
+                        context = recovery_context or {}
+                        _bridge_continuity_resume_response(
+                            candidate,
+                            inbox=context.get("inbox"),
+                            tts_worker=tts_worker,
+                            orchestrator_session=context.get("orchestrator_session"),
+                            applied_keys=context.setdefault("resume_keys", set()),
+                        )
+                        continue
                 if recovery_payload is not None:
                     context = recovery_context or {}
                     response = _bridge_continuity_recovery_response(
@@ -3953,6 +4086,9 @@ def main():
         intent_inbox = IntentInbox(
             VOICE_INTENT_INBOX,
             provider_turn_projection_path=projection_path,
+            hold_recovered_delivery=(
+                os.environ.get("RELAY_CONTINUITY_RECOVERY_PENDING") == "1"
+            ),
         )
         if projection_path is not None:
             provider_turn_broker = ProviderTurnBroker(
@@ -4017,6 +4153,7 @@ def main():
         recovery_context.update({
             "messenger": messenger,
             "orchestrator_session": orchestrator_session,
+            "inbox": intent_inbox,
         })
         _surface_recoverable_command_status(
             orchestrator_session,
