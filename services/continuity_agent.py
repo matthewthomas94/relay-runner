@@ -285,6 +285,8 @@ class RecoveryBroker(Protocol):
         process_identity: str,
         recovery_generation: int,
         attempt: int,
+        deadline: float,
+        cancel_event: threading.Event,
     ) -> RecoveryBrokerOutcome: ...
 
 
@@ -303,8 +305,10 @@ class UnavailableRecoveryBroker:
         process_identity: str,
         recovery_generation: int,
         attempt: int,
+        deadline: float,
+        cancel_event: threading.Event,
     ) -> RecoveryBrokerOutcome:
-        del incident, process_identity, recovery_generation, attempt
+        del incident, process_identity, recovery_generation, attempt, deadline, cancel_event
         if capability != "inspect_recovery_availability":
             return RecoveryBrokerOutcome(capability, "rejected", "capability_not_allowed")
         return RecoveryBrokerOutcome(capability, "circuit_open", "recovery_broker_unavailable")
@@ -518,6 +522,7 @@ class ContinuityAgentLane:
         self._lock = threading.Lock()
         self._active_incident: str | None = None
         self._active_session: ContinuityProviderSession | None = None
+        self._active_broker_cancel: threading.Event | None = None
         self._cooldowns: dict[str, float] = {}
         self._shutdown = threading.Event()
         self._idle = threading.Event()
@@ -552,6 +557,9 @@ class ContinuityAgentLane:
         self._shutdown.set()
         with self._lock:
             session = self._active_session
+            broker_cancel = self._active_broker_cancel
+        if broker_cancel is not None:
+            broker_cancel.set()
         if session is not None:
             try:
                 session.interrupt()
@@ -706,7 +714,7 @@ class ContinuityAgentLane:
                 "circuit_open",
                 "broker_call_timed_out",
             )
-        completed = threading.Event()
+        cancel_event = threading.Event()
         outcomes: list[RecoveryBrokerOutcome] = []
         errors: list[Exception] = []
 
@@ -718,22 +726,37 @@ class ContinuityAgentLane:
                     process_identity=process_identity,
                     recovery_generation=recovery_generation,
                     attempt=attempt,
+                    deadline=deadline,
+                    cancel_event=cancel_event,
                 )
                 if not isinstance(outcome, RecoveryBrokerOutcome):
                     raise ValueError("broker returned an invalid outcome")
                 outcomes.append(outcome)
             except Exception as error:  # noqa: BLE001 - re-raised on the lane thread.
                 errors.append(error)
-            finally:
-                completed.set()
-
-        threading.Thread(
+        broker_thread = threading.Thread(
             target=perform,
             name=f"relay-continuity-broker-{capability}",
             daemon=True,
-        ).start()
-        remaining = deadline - self._monotonic()
-        if remaining <= 0 or not completed.wait(timeout=remaining):
+        )
+        with self._lock:
+            self._active_broker_cancel = cancel_event
+            if self._shutdown.is_set():
+                cancel_event.set()
+        timed_out = False
+        try:
+            broker_thread.start()
+            remaining = max(0.0, deadline - self._monotonic())
+            broker_thread.join(timeout=remaining)
+            timed_out = broker_thread.is_alive()
+            if timed_out:
+                cancel_event.set()
+                broker_thread.join()
+        finally:
+            with self._lock:
+                if self._active_broker_cancel is cancel_event:
+                    self._active_broker_cancel = None
+        if timed_out:
             return RecoveryBrokerOutcome(
                 capability,
                 "circuit_open",

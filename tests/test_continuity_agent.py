@@ -5,7 +5,6 @@ import os
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -323,24 +322,43 @@ class ContinuityAgentTests(unittest.TestCase):
         broker_records = [record for record in audit if record["phase"] == "broker_outcome"]
         self.assertEqual(len(broker_records), 1)
 
-    def test_blocking_broker_cannot_overrun_wall_clock_budget(self):
+    def test_timed_out_broker_stops_before_single_flight_is_released(self):
         broker_started = threading.Event()
-        release_broker = threading.Event()
+        cancellation_seen = threading.Event()
+        allow_stop = threading.Event()
 
         class BlockingBroker(IterativeBroker):
+            def __init__(self):
+                super().__init__()
+                self.active = 0
+                self.max_active = 0
+                self.lock = threading.Lock()
+
             def perform(self, capability, **context):
                 self.calls.append((capability, context))
-                broker_started.set()
-                release_broker.wait()
-                return RecoveryBrokerOutcome(capability, "noop", "broker_released")
+                with self.lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    if len(self.calls) == 1:
+                        broker_started.set()
+                        context["cancel_event"].wait()
+                        cancellation_seen.set()
+                        allow_stop.wait()
+                    return RecoveryBrokerOutcome(capability, "noop", "broker_stopped")
+                finally:
+                    with self.lock:
+                        self.active -= 1
 
-        session = FakeSession([
-            '{"kind":"broker_call","capability":"restart_bridge"}',
-        ])
+        sessions = [
+            FakeSession(['{"kind":"broker_call","capability":"restart_bridge"}']),
+            FakeSession(['{"kind":"broker_call","capability":"restart_bridge"}']),
+        ]
         audit = []
+        broker = BlockingBroker()
         lane = ContinuityAgentLane(
-            lambda *_args: session,
-            BlockingBroker(),
+            lambda *_args: sessions.pop(0),
+            broker,
             on_audit=audit.append,
             config=ContinuityAgentConfig(
                 max_attempts=1,
@@ -348,22 +366,40 @@ class ContinuityAgentTests(unittest.TestCase):
                 cooldown_seconds=0,
             ),
         )
+        other = incident("inc-abcdef123456", fingerprint="fp-abcdef123456789012345678")
 
         try:
-            started_at = time.monotonic()
             self.assertEqual(lane.submit(incident()), "launched")
             self.assertTrue(broker_started.wait(1))
+            self.assertTrue(cancellation_seen.wait(1))
+            self.assertFalse(lane.wait_until_idle(0.01))
+            self.assertEqual(lane.submit(other), "single_flight")
+            self.assertEqual(broker.active, 1)
+            self.assertEqual(broker.max_active, 1)
+            allow_stop.set()
             self.assertTrue(lane.wait_until_idle(1))
-            self.assertLess(time.monotonic() - started_at, 0.5)
+            self.assertEqual(broker.active, 0)
+            self.assertFalse(any(
+                thread.is_alive()
+                and thread.name == "relay-continuity-broker-restart_bridge"
+                for thread in threading.enumerate()
+            ))
             self.assertEqual(audit[-2]["broker_outcome"]["status"], "circuit_open")
             self.assertEqual(
                 audit[-2]["broker_outcome"]["outcome_code"],
                 "broker_call_timed_out",
             )
             self.assertEqual(audit[-1]["final_result"], "circuit_open")
-            self.assertTrue(session.shutdown_called)
+            self.assertEqual(lane.submit(other), "launched")
+            self.assertTrue(lane.wait_until_idle(1))
+            self.assertEqual(len(broker.calls), 2)
+            self.assertEqual(broker.max_active, 1)
+            self.assertEqual(broker.active, 0)
+            for _capability, context in broker.calls:
+                self.assertIn("deadline", context)
+                self.assertIn("cancel_event", context)
         finally:
-            release_broker.set()
+            allow_stop.set()
 
     def test_configured_provider_never_silently_falls_back(self):
         app_config = {
