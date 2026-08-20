@@ -458,6 +458,11 @@ final class ProcessManager {
         )
     }
 
+    static func currentRelayCommandID() -> String? {
+        readJSONDictionary(from: URL(fileURLWithPath: voiceCommandStatePath))
+            .flatMap { relayCommandId($0["relay_command_id"]) }
+    }
+
     private static func currentProviderSessionID() -> String? {
         (try? String(
             contentsOfFile: voiceProviderSessionPath,

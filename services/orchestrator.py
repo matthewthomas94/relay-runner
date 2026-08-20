@@ -4744,6 +4744,7 @@ class Daemon:
     def _execute_continuity_recovery_action(
         self,
         request: Any,
+        validation: RecoveryActionValidation,
         cancel_event: threading.Event,
     ) -> RecoveryActionResult:
         """Dispatch only a fixed, validated action to the owning Relay process."""
@@ -4774,7 +4775,23 @@ class Daemon:
             component=request.component,
             provider=request.provider,
             recovery_generation=request.recovery_generation,
+            incident_phase=request.incident_phase,
+            process_identity=request.process_identity,
+            attempt=request.attempt,
+            idempotency_key=request.idempotency_key,
             expected_postcondition=request.expected_postcondition,
+            incident_observed_at=request.incident_observed_at,
+            deadline=request.deadline,
+            validation_token=validation.validation_token,
+            exact_target_owned=validation.exact_target_owned,
+            liveness=validation.liveness,
+            incident_active=validation.incident_active,
+            generation_matches=validation.generation_matches,
+            command_phase=validation.command_phase,
+            command_phase_matches=validation.command_phase_matches,
+            idempotency_state=validation.idempotency_state,
+            compensation_available=validation.compensation_available,
+            cooldown_remaining=validation.cooldown_remaining,
             reply_path=str(reply_path),
         ):
             reply_deadline = min(request.deadline, time.monotonic() + 2.0)

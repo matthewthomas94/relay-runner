@@ -1,4 +1,186 @@
+import CryptoKit
+import Darwin
 import Foundation
+
+struct ContinuityRecoveryRequest: Equatable {
+    let capability: String
+    let incidentID: String
+    let sessionID: String
+    let commandID: String?
+    let component: String
+    let provider: String
+    let recoveryGeneration: Int
+    let incidentPhase: String
+    let processIdentity: String
+    let attempt: Int
+    let idempotencyKey: String
+    let expectedPostcondition: String
+    let incidentObservedAt: Double
+    let deadline: Double
+    let validationToken: String
+    let exactTargetOwned: Bool
+    let liveness: String
+    let incidentActive: Bool
+    let generationMatches: Bool
+    let commandPhase: String
+    let commandPhaseMatches: Bool
+    let idempotencyState: String
+    let compensationAvailable: Bool
+    let cooldownRemaining: Double
+
+    init?(_ json: [String: Any]) {
+        guard
+            let capability = Self.code(json["capability"]),
+            let incidentID = Self.identifier(json["incident_id"], pattern: #"^inc-[0-9a-f]{12}$"#),
+            let sessionID = Self.identifier(
+                json["session_id"], pattern: #"^session-[0-9a-f]{24}$"#
+            ),
+            let component = Self.code(json["component"]),
+            let provider = json["provider"] as? String,
+            ["none", "codex", "claude"].contains(provider),
+            let recoveryGeneration = json["recovery_generation"] as? Int,
+            recoveryGeneration >= 0,
+            let incidentPhase = Self.code(json["incident_phase"]),
+            let processIdentity = Self.identifier(
+                json["process_identity"], pattern: #"^continuity-[0-9a-f]{32}$"#
+            ),
+            let attempt = json["attempt"] as? Int,
+            attempt >= 1,
+            let idempotencyKey = Self.identifier(
+                json["idempotency_key"], pattern: #"^recovery_[0-9a-f]{24}$"#
+            ),
+            let expectedPostcondition = Self.code(json["expected_postcondition"]),
+            let incidentObservedAt = Self.number(json["incident_observed_at"]),
+            incidentObservedAt.isFinite,
+            let deadline = Self.number(json["deadline"]),
+            deadline.isFinite,
+            let validationToken = Self.code(json["validation_token"]),
+            let exactTargetOwned = json["exact_target_owned"] as? Bool,
+            let liveness = Self.code(json["liveness"]),
+            let incidentActive = json["incident_active"] as? Bool,
+            let generationMatches = json["generation_matches"] as? Bool,
+            let commandPhase = Self.code(json["command_phase"]),
+            let commandPhaseMatches = json["command_phase_matches"] as? Bool,
+            let idempotencyState = Self.code(json["idempotency_state"]),
+            let compensationAvailable = json["compensation_available"] as? Bool,
+            let cooldownRemaining = Self.number(json["cooldown_remaining"]),
+            cooldownRemaining.isFinite,
+            cooldownRemaining >= 0
+        else { return nil }
+
+        let commandID: String?
+        if json["command_id"] is NSNull || json["command_id"] == nil {
+            commandID = nil
+        } else {
+            guard let parsed = Self.identifier(
+                json["command_id"], pattern: #"^command-[0-9a-f]{24}$"#
+            ) else {
+                return nil
+            }
+            commandID = parsed
+        }
+
+        self.capability = capability
+        self.incidentID = incidentID
+        self.sessionID = sessionID
+        self.commandID = commandID
+        self.component = component
+        self.provider = provider
+        self.recoveryGeneration = recoveryGeneration
+        self.incidentPhase = incidentPhase
+        self.processIdentity = processIdentity
+        self.attempt = attempt
+        self.idempotencyKey = idempotencyKey
+        self.expectedPostcondition = expectedPostcondition
+        self.incidentObservedAt = incidentObservedAt
+        self.deadline = deadline
+        self.validationToken = validationToken
+        self.exactTargetOwned = exactTargetOwned
+        self.liveness = liveness
+        self.incidentActive = incidentActive
+        self.generationMatches = generationMatches
+        self.commandPhase = commandPhase
+        self.commandPhaseMatches = commandPhaseMatches
+        self.idempotencyState = idempotencyState
+        self.compensationAvailable = compensationAvailable
+        self.cooldownRemaining = cooldownRemaining
+    }
+
+    static func opaqueIdentifier(kind: String, nativeValue: String) -> String {
+        let digest = SHA256.hash(data: Data("continuity-v1:\(kind):\(nativeValue)".utf8))
+        return "\(kind)-" + digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func projectSessionIdentifier(repositoryPath: String) -> String {
+        let expandedPath = (repositoryPath as NSString).expandingTildeInPath
+        let resolvedPath: String
+        if let resolved = realpath(expandedPath, nil) {
+            resolvedPath = String(cString: resolved)
+            free(resolved)
+        } else {
+            resolvedPath = URL(fileURLWithPath: expandedPath).standardizedFileURL.path
+        }
+        let digest = Insecure.SHA1.hash(data: Data(resolvedPath.utf8))
+        let sessionKey = "project:" + digest.prefix(8).map {
+            String(format: "%02x", $0)
+        }.joined()
+        return opaqueIdentifier(kind: "session", nativeValue: sessionKey)
+    }
+
+    static func idempotencyKey(
+        incidentID: String,
+        recoveryGeneration: Int,
+        capability: String,
+        component: String,
+        sessionID: String,
+        commandID: String?
+    ) -> String {
+        let identity = [
+            incidentID,
+            String(recoveryGeneration),
+            capability,
+            component,
+            sessionID,
+            commandID ?? "none",
+        ].joined(separator: "|")
+        let digest = SHA256.hash(data: Data(identity.utf8))
+        return "recovery_" + digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func code(_ value: Any?) -> String? {
+        guard let value = value as? String,
+              value.range(of: #"^[a-z][a-z0-9_]{0,63}$"#, options: .regularExpression) != nil
+        else { return nil }
+        return value
+    }
+
+    private static func identifier(_ value: Any?, pattern: String) -> String? {
+        guard let value = value as? String,
+              value.range(of: pattern, options: .regularExpression) != nil
+        else { return nil }
+        return value
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID()
+        else { return nil }
+        return number.doubleValue
+    }
+}
+
+struct ContinuityRecoveryResponse: Equatable {
+    let status: String
+    let outcomeCode: String
+
+    static func applied(_ code: String = "component_action_requested") -> Self {
+        Self(status: "applied", outcomeCode: code)
+    }
+
+    static func failed(_ code: String) -> Self {
+        Self(status: "failed", outcomeCode: code)
+    }
+}
 
 /// Listens on /tmp/voice_state.sock for JSON state updates from Python services.
 /// Dispatches parsed events to the StateMachine on the main actor.
@@ -20,11 +202,8 @@ actor StateEventBus {
         _ tutorial: Bool
     ) -> Void
     private let onRecoveryAction: @MainActor (
-        _ capability: String,
-        _ component: String,
-        _ provider: String,
-        _ expectedPostcondition: String
-    ) -> Bool
+        _ request: ContinuityRecoveryRequest
+    ) -> ContinuityRecoveryResponse
 
     init(
         stateMachine: StateMachine,
@@ -39,11 +218,10 @@ actor StateEventBus {
             _ tutorial: Bool
         ) -> Void = { _, _, _, _ in },
         onRecoveryAction: @escaping @MainActor (
-            _ capability: String,
-            _ component: String,
-            _ provider: String,
-            _ expectedPostcondition: String
-        ) -> Bool = { _, _, _, _ in false }
+            _ request: ContinuityRecoveryRequest
+        ) -> ContinuityRecoveryResponse = { _ in
+            .failed("component_action_unavailable")
+        }
     ) {
         self.stateMachine = stateMachine
         self.shouldHandleServiceEvent = shouldHandleServiceEvent
@@ -118,14 +296,13 @@ actor StateEventBus {
                 let autoDismiss = json["auto_dismiss_seconds"] as? Double
                 let presentation = SpeechPresentation(json)
 
-                if source == "continuity_recovery", state == "request",
-                   let capability = json["capability"] as? String,
-                   let component = json["component"] as? String,
-                   let provider = json["provider"] as? String,
-                   let postcondition = json["expected_postcondition"] as? String {
+                if source == "continuity_recovery", state == "request" {
                     let onRecoveryAction = await self.onRecoveryAction
-                    let applied = await MainActor.run {
-                        onRecoveryAction(capability, component, provider, postcondition)
+                    let response = await MainActor.run {
+                        guard let request = ContinuityRecoveryRequest(json) else {
+                            return ContinuityRecoveryResponse.failed("invalid_recovery_context")
+                        }
+                        return onRecoveryAction(request)
                     }
                     if let replyPath = json["reply_path"] as? String,
                        replyPath.range(
@@ -133,10 +310,8 @@ actor StateEventBus {
                            options: .regularExpression
                        ) != nil {
                         let reply: [String: String] = [
-                            "status": applied ? "applied" : "failed",
-                            "outcome_code": applied
-                                ? "component_action_requested"
-                                : "component_action_unavailable"
+                            "status": response.status,
+                            "outcome_code": response.outcomeCode,
                         ]
                         if let replyData = try? JSONSerialization.data(withJSONObject: reply) {
                             try? replyData.write(

@@ -171,7 +171,7 @@ def production_capabilities(*, owned=True, generation_matches=True):
             expected_postcondition=request.expected_postcondition,
         )
 
-    def execute(request, _cancel_event):
+    def execute(request, _validation, _cancel_event):
         return RecoveryActionResult(
             "applied",
             "component_action_applied",
@@ -427,9 +427,9 @@ class ComponentOwnedRecoveryBrokerTests(unittest.TestCase):
         original = capabilities["restore_session_registration"]
         capabilities["restore_session_registration"] = ProductionRecoveryCapability(
             original.inspect,
-            lambda request, cancel_event: (
-                executed.append((request, cancel_event))
-                or original.execute(request, cancel_event)
+            lambda request, validation, cancel_event: (
+                executed.append((request, validation, cancel_event))
+                or original.execute(request, validation, cancel_event)
             ),
         )
         owners = production_recovery_owners(

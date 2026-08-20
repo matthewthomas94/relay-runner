@@ -25,7 +25,10 @@ import voice_bridge  # noqa: E402
 from messenger import MessengerRuntime  # noqa: E402
 from orchestrator import ContinuityLifecycleAdapter, Daemon  # noqa: E402
 from continuity_incidents import opaque_identifier  # noqa: E402
-from continuity_recovery import RecoveryActionRequest  # noqa: E402
+from continuity_recovery import (  # noqa: E402
+    RecoveryActionRequest,
+    RecoveryActionValidation,
+)
 from voice_bridge import _post_continuity_event  # noqa: E402
 
 
@@ -58,6 +61,22 @@ class _FailingMessengerBackend:
 
 
 class ContinuityIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def _live_validation(request):
+        return RecoveryActionValidation(
+            validation_token="live_continuity_watch",
+            exact_target_owned=True,
+            liveness="unhealthy",
+            incident_active=True,
+            generation_matches=True,
+            command_phase="undelivered",
+            command_phase_matches=True,
+            idempotency_state="new",
+            compensation_available=False,
+            cooldown_remaining=0,
+            expected_postcondition=request.expected_postcondition,
+        )
+
     def test_production_executor_requires_component_acknowledgement(self):
         daemon = Daemon.__new__(Daemon)
         daemon.continuity = SimpleNamespace(
@@ -92,6 +111,7 @@ class ContinuityIntegrationTests(unittest.TestCase):
         with patch("orchestrator._notify_state", side_effect=acknowledge):
             outcome = daemon._execute_continuity_recovery_action(
                 request,
+                self._live_validation(request),
                 threading.Event(),
             )
 
@@ -105,6 +125,14 @@ class ContinuityIntegrationTests(unittest.TestCase):
             dispatched[0][1]["expected_postcondition"],
             "bridge_process_alive",
         )
+        self.assertEqual(dispatched[0][1]["incident_phase"], "delivery")
+        self.assertEqual(dispatched[0][1]["attempt"], 1)
+        self.assertEqual(
+            dispatched[0][1]["idempotency_key"],
+            "recovery_123456789012345678901234",
+        )
+        self.assertEqual(dispatched[0][1]["command_phase"], "undelivered")
+        self.assertEqual(dispatched[0][1]["cooldown_remaining"], 0)
 
     def test_production_executor_preserves_background_ack_during_poll_sleep(self):
         daemon = Daemon.__new__(Daemon)
@@ -172,6 +200,7 @@ class ContinuityIntegrationTests(unittest.TestCase):
         ):
             outcome = daemon._execute_continuity_recovery_action(
                 request,
+                self._live_validation(request),
                 cancel_event,
             )
 

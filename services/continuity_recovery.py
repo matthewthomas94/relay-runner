@@ -236,7 +236,8 @@ class ProductionRecoveryCapability:
 
     inspect: Callable[[RecoveryActionRequest], RecoveryActionValidation]
     execute: Callable[
-        [RecoveryActionRequest, threading.Event], RecoveryActionResult
+        [RecoveryActionRequest, RecoveryActionValidation, threading.Event],
+        RecoveryActionResult,
     ]
     cleanup: Callable[[RecoveryActionRequest], bool] | None = None
 
@@ -303,10 +304,9 @@ class ObjectiveEvidenceRecoveryOwner:
         validation: RecoveryActionValidation,
         cancel_event: threading.Event,
     ) -> RecoveryActionResult:
-        del validation
         capability = self._capabilities.get(request.capability)
         if capability is not None:
-            return capability.execute(request, cancel_event)
+            return capability.execute(request, validation, cancel_event)
         if cancel_event.is_set() or request.capability != "check_processing_health":
             return RecoveryActionResult("failed", "owner_capability_unavailable")
         return RecoveryActionResult(
