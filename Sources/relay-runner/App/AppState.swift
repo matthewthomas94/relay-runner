@@ -2420,10 +2420,10 @@ final class AppState {
               request.incidentObservedAt <= nowEpoch + 5,
               nowEpoch - request.incidentObservedAt <= 300
         else { return .reject("stale_recovery_deadline") }
-        if let commandID = request.commandID,
-           let currentCommandID = boundary.currentCommandID,
-           commandID != currentCommandID {
-            return .reject("unrelated_command_target")
+        if let commandID = request.commandID {
+            guard boundary.currentCommandID == commandID else {
+                return .reject("unrelated_command_target")
+            }
         }
         if contract.disruptive && boundary.liveWorkActive {
             return .reject("live_work_active")

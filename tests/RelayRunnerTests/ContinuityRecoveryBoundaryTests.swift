@@ -272,6 +272,31 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
         )
     }
 
+    func testCommandScopedRequestIsRejectedWhenCurrentCommandIsMissing() throws {
+        let request = try makeRequest()
+        let missingCurrentCommand = AppState.ContinuityRecoveryBoundary(
+            currentSessionID: sessionID,
+            currentRecoveryGeneration: "generation-4",
+            currentCommandID: nil,
+            provider: "codex",
+            liveWorkActive: false,
+            providerProcessRunning: false,
+            bridgeAlive: false,
+            idempotencyAlreadyApplied: false,
+            cooldownActive: false
+        )
+
+        XCTAssertEqual(
+            AppState.continuityRecoveryDecision(
+                for: request,
+                boundary: missingCurrentCommand,
+                nowMonotonic: 150,
+                nowEpoch: 1_050
+            ),
+            .reject("unrelated_command_target")
+        )
+    }
+
     func testDisruptiveRecoveryCannotCancelLiveWork() throws {
         let request = try makeRequest()
 
