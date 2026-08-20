@@ -632,7 +632,7 @@ class ArtifactRetentionManager:
             )
         if not plan.candidates:
             return ArchiveResult(RetentionState.ARCHIVED, None, ())
-        self._validate_remote_transaction(synchronizer)
+        confirmation = self._validate_remote_transaction(synchronizer)
         with self.lease_store._locked(), self.store._writer_lock():
             current = self.store._head()
             if current != plan.artifact_head:
@@ -640,7 +640,10 @@ class ArtifactRetentionManager:
             refreshed = self.preview(evaluated_at=plan.evaluated_at)
             if _plan_identity(refreshed) != _plan_identity(plan):
                 raise ArtifactConcurrentUpdate("retention eligibility changed since preview")
-            preflight = synchronizer.sync()
+            preflight = synchronizer.sync_confirmed(
+                expected_remote_url_sha256=confirmation.remote_url_sha256,
+                expected_push_url_sha256=confirmation.push_url_sha256,
+            )
             if getattr(getattr(preflight, "state", None), "value", None) != "clean":
                 return ArchiveResult(
                     RetentionState.ARCHIVE_PENDING_SYNC,
@@ -706,11 +709,12 @@ class ArtifactRetentionManager:
                 "scratch_ref": scratch_ref,
                 "ticket_ids": list(refreshed.candidate_ids),
                 "proofs": [dataclasses.asdict(proof) for proof in proofs],
-                "remote_confirmation": dataclasses.asdict(self.remote_confirmation),
+                "remote_confirmation": dataclasses.asdict(confirmation),
                 "last_error": None,
             }
+            self._publish_transaction_scratch(transaction)
+            self._inject("after_archive_scratch")
             self._write_transaction(transaction)
-            self._ensure_transaction_scratch(transaction)
             self._inject("after_archive_prepare")
             return self._resume_archive(transaction, synchronizer)
 
@@ -732,7 +736,7 @@ class ArtifactRetentionManager:
         """Restore a compliant projection from only the confirmed artifact ref."""
         self._require_enabled()
         synchronizer = synchronizer or self.synchronizer
-        self._validate_remote_transaction(synchronizer)
+        confirmation = self._validate_remote_transaction(synchronizer)
 
         def validate(head: str) -> None:
             self.store._validate_artifact_head(head)
@@ -754,7 +758,10 @@ class ArtifactRetentionManager:
                     "remote artifact ref does not materialize every nonterminal ticket and the newest 25 terminal tickets"
                 )
 
-        return synchronizer.recover_exact_ref(validate_head=validate)
+        return synchronizer.recover_exact_ref(
+            expected_remote_url_sha256=confirmation.remote_url_sha256,
+            validate_head=validate,
+        )
 
     def historical_search(self, query: str = "") -> tuple[HistoricalCard, ...]:
         catalog = self._catalog(self._head_required())
@@ -1403,14 +1410,19 @@ class ArtifactRetentionManager:
         synchronizer: object | None,
         *,
         confirmation: ArchiveRemoteConfirmation | None = None,
-    ) -> None:
+    ) -> ArchiveRemoteConfirmation:
         if self.remote_mode != "enabled":
             raise ArtifactValidationError(
                 "terminal cleanup remains preview-only until a GitHub remote is selected and confirmed"
             )
         if synchronizer is None or not all(
             hasattr(synchronizer, name)
-            for name in ("sync", "publish_prepared", "recover_exact_ref", "remote_name")
+            for name in (
+                "sync_confirmed",
+                "publish_prepared",
+                "recover_exact_ref",
+                "remote_name",
+            )
         ):
             raise ArtifactValidationError(
                 "remote-enabled retention requires the exact-ref verified synchronizer"
@@ -1437,6 +1449,7 @@ class ArtifactRetentionManager:
             raise ArtifactValidationError(
                 "the selected GitHub push destination changed after exposure confirmation"
             )
+        return confirmation
 
     def _scratch_ref(self, event_id: str) -> str:
         digest = hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:32]
@@ -1478,6 +1491,34 @@ class ArtifactRetentionManager:
         )
         if update.returncode != 0:
             raise ArtifactConcurrentUpdate("retention scratch ref changed during recovery")
+
+    def _publish_transaction_scratch(self, transaction: Mapping[str, object]) -> None:
+        """Pin a prepared candidate before making its journal durable."""
+        if self.transaction_path.exists():
+            raise ArtifactConcurrentUpdate(
+                "another retention transaction appeared before candidate preparation"
+            )
+        scratch_ref = str(transaction["scratch_ref"])
+        candidate_head = str(transaction["candidate_head"])
+        found = self.store._git(
+            "rev-parse", "--verify", scratch_ref, allowed_statuses={0, 128}
+        )
+        previous = (
+            found.stdout.strip() if found.returncode == 0 else self.store._zero_oid()
+        )
+        if previous == candidate_head:
+            return
+        update = self.store._git(
+            "update-ref",
+            scratch_ref,
+            candidate_head,
+            previous,
+            allowed_statuses={0, 128},
+        )
+        if update.returncode != 0:
+            raise ArtifactConcurrentUpdate(
+                "retention scratch ref changed before journal publication"
+            )
 
     def _discard_prepared_transaction(self, transaction: Mapping[str, object]) -> None:
         if transaction.get("phase") != "prepared" or self.store._head() != transaction.get(

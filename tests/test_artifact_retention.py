@@ -489,8 +489,8 @@ class ArtifactRetentionTests(unittest.TestCase):
         class OfflineSync:
             remote_name = "origin"
 
-            def sync(self):
-                return actual_sync.sync()
+            def sync_confirmed(self, **kwargs):
+                return actual_sync.sync_confirmed(**kwargs)
 
             def publish_prepared(self, *args, **kwargs):
                 return dataclasses.make_dataclass("Result", [("state", object), ("recovery", str)])(
@@ -834,6 +834,120 @@ class ArtifactRetentionTests(unittest.TestCase):
             "prepared",
         )
 
+    def test_preflight_push_stays_bound_to_confirmed_destination(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-preflight-pushurl",
+            "Keep after preflight redirect",
+            activity_at=self.now - timedelta(days=365),
+            extra={"status": "done"},
+        )
+        base = self.store._head()
+        projection = dict(self.store.snapshot().files)
+        confirmed_remote_head = self.git(
+            "--git-dir", str(self.remote), "rev-parse", self.store.artifact_ref
+        )
+        unconfirmed = self.root / "preflight-push.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--quiet", str(unconfirmed)],
+            check=True,
+        )
+
+        def redirect_preflight_push(stage):
+            if stage == "before_push":
+                self.git("remote", "set-url", "--push", "origin", str(unconfirmed))
+
+        synchronizer = ArtifactSyncEngine(
+            self.store,
+            mode=ArtifactSyncMode.ENABLED,
+            remote_name="origin",
+            max_attempts=1,
+            base_retry_seconds=0,
+            sleep=lambda _: None,
+            jitter=lambda: 0,
+            failure_injector=redirect_preflight_push,
+        )
+        manager = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=self.confirmation,
+            synchronizer=synchronizer,
+            now=lambda: self.now,
+        )
+
+        with self.assertRaisesRegex(Exception, "push destination changed"):
+            manager.archive(
+                manager.preview(),
+                event_id="preflight-pushurl",
+                device_id="device-a",
+            )
+
+        self.assertEqual(self.git("ls-remote", str(unconfirmed), self.store.artifact_ref), "")
+        self.assertEqual(
+            self.git("--git-dir", str(self.remote), "rev-parse", self.store.artifact_ref),
+            confirmed_remote_head,
+        )
+        self.assertEqual(self.store._head(), base)
+        self.assertEqual(dict(self.store.snapshot().files), projection)
+        self.assertFalse(manager.transaction_path.exists())
+
+    def test_prepared_candidate_is_pinned_before_journal_publication(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-prejournal",
+            "Survive pre-journal pruning",
+            activity_at=self.now - timedelta(days=365),
+            extra={"status": "done"},
+        )
+        plan = self.manager.preview()
+        base = self.store._head()
+        manager = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=self.confirmation,
+            synchronizer=self.synchronizer,
+            now=lambda: self.now,
+            failure_injector=lambda stage: (
+                (_ for _ in ()).throw(ArtifactInjectedFailure(stage))
+                if stage == "after_archive_scratch" else None
+            ),
+        )
+
+        with self.assertRaisesRegex(ArtifactInjectedFailure, "after_archive_scratch"):
+            manager.archive(
+                plan,
+                event_id="archive-prejournal",
+                device_id="device-a",
+            )
+
+        scratch_ref = manager._scratch_ref("archive-prejournal")
+        candidate_head = self.git("rev-parse", scratch_ref)
+        self.assertFalse(manager.transaction_path.exists())
+        self.assertEqual(self.store._head(), base)
+        self.assertIn(".orchestrator/RR-prejournal.md", self.store.snapshot().files)
+        self.git("prune", "--expire=now")
+        self.assertEqual(self.git("cat-file", "-t", candidate_head), "commit")
+
+        restarted = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=self.confirmation,
+            synchronizer=self.synchronizer,
+            now=lambda: self.now,
+        )
+        recovered = restarted.archive(
+            plan,
+            event_id="archive-prejournal",
+            device_id="device-a",
+        )
+
+        self.assertEqual(recovered.state, RetentionState.ARCHIVED)
+        self.assertNotIn(".orchestrator/RR-prejournal.md", self.store.snapshot().files)
+        self.assertNotIn(scratch_ref, self.git("show-ref"))
+
     def test_remote_race_discards_only_unpublished_candidate_for_safe_replan(self):
         self.seed_retained_terminal()
         self.write_ticket(
@@ -847,7 +961,7 @@ class ArtifactRetentionTests(unittest.TestCase):
         class RaceSync:
             remote_name = "origin"
 
-            def sync(self):
+            def sync_confirmed(self, **kwargs):
                 return dataclasses.make_dataclass(
                     "Result", [("state", object), ("local_head", str), ("remote_head", str)]
                 )(
@@ -956,6 +1070,95 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertIn(".orchestrator/RR-open.md", files)
         self.assertNotIn(".orchestrator/RR-archived.md", files)
         self.assertEqual(fresh_manager.preview().candidate_ids, ())
+
+    def test_recovery_retarget_cannot_adopt_unconfirmed_descendant(self):
+        confirmed_head = self.store._head()
+        descendant = self.write_ticket(
+            "RR-unconfirmed-descendant",
+            "Unconfirmed descendant",
+            activity_at=self.now,
+        ).commit_id
+        self.assertNotEqual(descendant, confirmed_head)
+        unconfirmed = self.root / "recovery-retarget.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--quiet", str(unconfirmed)],
+            check=True,
+        )
+        self.git(
+            "push",
+            str(unconfirmed),
+            f"{descendant}:{self.store.artifact_ref}",
+        )
+
+        fresh_repo = self.root / "retargeted-recovery"
+        fresh_repo.mkdir()
+        subprocess.run(
+            ["git", "-C", str(fresh_repo), "init", "--initial-branch=main", "--quiet"],
+            check=True,
+        )
+        (fresh_repo / "source.txt").write_text("fresh\n")
+        subprocess.run(["git", "-C", str(fresh_repo), "add", "source.txt"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(fresh_repo),
+                "-c", "user.name=Retention Tests",
+                "-c", "user.email=retention@example.invalid",
+                "commit", "-q", "-m", "fresh source",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(fresh_repo), "remote", "add", "origin", str(self.remote)],
+            check=True,
+        )
+        fresh_store = ArtifactStore(
+            fresh_repo,
+            "retention-project",
+            self.root / "retargeted-recovery-state",
+            enabled=True,
+        )
+
+        def retarget_recovery(stage):
+            if stage == "before_recovery_fetch":
+                subprocess.run(
+                    [
+                        "git", "-C", str(fresh_repo),
+                        "remote", "set-url", "origin", str(unconfirmed),
+                    ],
+                    check=True,
+                )
+
+        fresh_sync = ArtifactSyncEngine(
+            fresh_store,
+            mode=ArtifactSyncMode.ENABLED,
+            remote_name="origin",
+            max_attempts=1,
+            base_retry_seconds=0,
+            failure_injector=retarget_recovery,
+        )
+        fresh_manager = ArtifactRetentionManager(
+            fresh_store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=self.confirmation,
+            synchronizer=fresh_sync,
+            now=lambda: self.now,
+        )
+
+        with self.assertRaisesRegex(Exception, "fetch destination changed"):
+            fresh_manager.recover_from_remote()
+
+        self.assertIsNone(fresh_store._head())
+        self.assertFalse(fresh_store.materialized_path.exists())
+        self.assertNotEqual(
+            subprocess.run(
+                ["git", "-C", str(fresh_repo), "cat-file", "-e", descendant],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            ).returncode,
+            0,
+        )
 
     def test_tampered_and_missing_history_fail_closed_without_materialization(self):
         self.seed_retained_terminal()

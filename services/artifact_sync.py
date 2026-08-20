@@ -185,6 +185,21 @@ class ArtifactSyncEngine:
             return self.status()
         return self._synchronize(publish=True)
 
+    def sync_confirmed(
+        self,
+        *,
+        expected_remote_url_sha256: str,
+        expected_push_url_sha256: str,
+    ) -> ArtifactSyncResult:
+        """Synchronize through only the exposure-confirmed destinations."""
+        if self.mode != ArtifactSyncMode.ENABLED:
+            raise ArtifactValidationError("confirmed sync requires enabled remote sync")
+        return self._synchronize(
+            publish=True,
+            expected_remote_url_sha256=expected_remote_url_sha256,
+            expected_push_url_sha256=expected_push_url_sha256,
+        )
+
     def publish_initial(self, *, confirmed: bool) -> ArtifactSyncResult:
         """Create a missing remote artifact ref only after explicit confirmation."""
         if self.mode != ArtifactSyncMode.ENABLED:
@@ -363,9 +378,10 @@ class ArtifactSyncEngine:
     def recover_exact_ref(
         self,
         *,
+        expected_remote_url_sha256: str,
         validate_head: Callable[[str], None] | None = None,
     ) -> ArtifactSyncResult:
-        """Import only the configured artifact ref for a fresh or second device."""
+        """Import the artifact ref only from the exposure-confirmed fetch URL."""
         if self.mode != ArtifactSyncMode.ENABLED:
             raise ArtifactValidationError("remote recovery requires enabled remote sync")
         with self.store._writer_lock():
@@ -398,7 +414,10 @@ class ArtifactSyncEngine:
                     transitions=(ArtifactSyncState.FAILED,),
                 )
 
-            with self._remote_snapshot() as remote:
+            self._inject("before_recovery_fetch")
+            with self._remote_snapshot(
+                expected_url_sha256=expected_remote_url_sha256
+            ) as remote:
                 if remote.error_state:
                     return self._remote_error_result(remote, current, attempts=1)
                 assert remote.head is not None
@@ -569,7 +588,13 @@ class ArtifactSyncEngine:
                 ),
             )
 
-    def _synchronize(self, *, publish: bool) -> ArtifactSyncResult:
+    def _synchronize(
+        self,
+        *,
+        publish: bool,
+        expected_remote_url_sha256: str | None = None,
+        expected_push_url_sha256: str | None = None,
+    ) -> ArtifactSyncResult:
         local_head = self.store._head()
         if not local_head:
             raise ArtifactValidationError("artifact store is not initialized")
@@ -581,6 +606,8 @@ class ArtifactSyncEngine:
                     local_head=self.store._head() or local_head,
                     publish=publish,
                     attempt=attempt,
+                    expected_remote_url_sha256=expected_remote_url_sha256,
+                    expected_push_url_sha256=expected_push_url_sha256,
                 )
             last_result = result
             if result.state not in {
@@ -597,8 +624,18 @@ class ArtifactSyncEngine:
         assert last_result is not None
         return last_result
 
-    def _sync_once(self, *, local_head: str, publish: bool, attempt: int) -> ArtifactSyncResult:
-        with self._remote_snapshot() as remote:
+    def _sync_once(
+        self,
+        *,
+        local_head: str,
+        publish: bool,
+        attempt: int,
+        expected_remote_url_sha256: str | None = None,
+        expected_push_url_sha256: str | None = None,
+    ) -> ArtifactSyncResult:
+        with self._remote_snapshot(
+            expected_url_sha256=expected_remote_url_sha256
+        ) as remote:
             if remote.error_state:
                 return self._remote_error_result(remote, local_head, attempts=attempt)
             assert remote.head is not None
@@ -678,7 +715,12 @@ class ArtifactSyncEngine:
                 candidate = replay
 
             self._inject("before_push")
-            push = self._push(candidate)
+            push_destination = None
+            if expected_push_url_sha256 is not None:
+                push_destination = self._validated_push_destination(
+                    expected_push_url_sha256
+                )
+            push = self._push(candidate, destination=push_destination)
             if push is not None:
                 state, recovery = push
                 retry_state = ArtifactSyncState.AHEAD if state == ArtifactSyncState.AHEAD else state

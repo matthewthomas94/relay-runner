@@ -183,6 +183,7 @@ class ArtifactSyncTests(unittest.TestCase):
         validated = []
 
         result = self.engine(fresh).recover_exact_ref(
+            expected_remote_url_sha256=self.confirmed_fetch_digest(fresh),
             validate_head=lambda head: validated.append(head)
         )
 
@@ -223,7 +224,9 @@ class ArtifactSyncTests(unittest.TestCase):
             self.engine(
                 fresh,
                 failure_injector=crash_after_ref_update,
-            ).recover_exact_ref()
+            ).recover_exact_ref(
+                expected_remote_url_sha256=self.confirmed_fetch_digest(fresh)
+            )
 
         self.assertEqual(fresh.store._head(), remote_head)
         self.assertFalse(fresh.store.materialized_path.exists())
@@ -236,7 +239,9 @@ class ArtifactSyncTests(unittest.TestCase):
             fresh_state,
             ArtifactStore(fresh_repo, "project-sync", fresh_state, enabled=True),
         )
-        result = self.engine(restarted).recover_exact_ref()
+        result = self.engine(restarted).recover_exact_ref(
+            expected_remote_url_sha256=self.confirmed_fetch_digest(restarted)
+        )
 
         self.assertEqual(result.state, ArtifactSyncState.CLEAN)
         self.assertEqual(result.local_head, remote_head)
@@ -265,7 +270,9 @@ class ArtifactSyncTests(unittest.TestCase):
         )
         self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
 
-        result = self.engine(self.device_b).recover_exact_ref()
+        result = self.engine(self.device_b).recover_exact_ref(
+            expected_remote_url_sha256=self.confirmed_fetch_digest(self.device_b)
+        )
 
         self.assertEqual(result.state, ArtifactSyncState.FAILED)
         self.assertIn("edited manually", result.recovery)
@@ -609,6 +616,10 @@ class ArtifactSyncTests(unittest.TestCase):
             jitter=lambda: 0,
             **kwargs,
         )
+
+    def confirmed_fetch_digest(self, device):
+        destination = self.run_git(device.repo, "remote", "get-url", "origin")
+        return hashlib.sha256(destination.encode()).hexdigest()
 
     def write_ticket(self, device, event_id, ticket_id, title):
         mutation = self.ticket_mutation(device, event_id, ticket_id, title)
