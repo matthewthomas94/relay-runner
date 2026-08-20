@@ -406,6 +406,35 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertEqual(files[".orchestrator/attachments/RR-1/proof.png"], PNG)
         self.assertIn("RR-1", self.manager.preview().retained_terminal_ids)
 
+    def test_orphan_source_commit_with_matching_tree_is_not_trusted(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-1",
+            "Done predecessor",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "done"},
+        )
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-orphan", device_id="device-a"
+        )
+        snapshot = self.store.snapshot()
+        catalog = json.loads(snapshot.files[".orchestrator/archive-index.jsonl"])
+        source_commit = catalog["source_commit"]
+        source_tree = self.git("rev-parse", f"{source_commit}^{{tree}}")
+        orphan = self.git(
+            "-c", "user.name=Retention Tests",
+            "-c", "user.email=retention@example.invalid",
+            "commit-tree", source_tree, "-m", "unrelated matching tree",
+        )
+        catalog["source_commit"] = orphan
+        self.replace_catalog(catalog, "orphan-catalog-source")
+
+        detail = self.manager.historical_detail("artifact-RR-1")
+
+        self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+        self.assertIn("not reachable", detail.recovery)
+        self.assertFalse(self.manager.dependency_satisfied("RR-1"))
+
     def test_verified_attachment_read_and_reopen_do_not_leave_terminal_work_capped(self):
         self.seed_retained_terminal()
         old = self.now - timedelta(days=31)

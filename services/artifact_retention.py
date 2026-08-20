@@ -806,7 +806,8 @@ class ArtifactRetentionManager:
         online: bool = False,
         deepen: Callable[[str], None] | None = None,
     ) -> HistoricalDetail:
-        catalog = self._catalog(self._head_required())
+        artifact_head = self._head_required()
+        catalog = self._catalog(artifact_head)
         entry = catalog.get(artifact_id)
         if not entry:
             return HistoricalDetail(HistoryAvailability.NOT_FOUND, None)
@@ -820,6 +821,15 @@ class ArtifactRetentionManager:
                     recovery="Connect and explicitly deepen the configured artifact ref.",
                 )
             deepen(source_commit)
+        if self._object_exists(source_commit) and self.store._git(
+            "merge-base", "--is-ancestor", source_commit, artifact_head,
+            allowed_statuses={0, 1, 128},
+        ).returncode != 0:
+            return HistoricalDetail(
+                HistoryAvailability.TAMPERED,
+                card,
+                recovery="Archive catalog source commit is not reachable from the current artifact head.",
+            )
         try:
             ticket_bytes = self._verified_historical_blob(
                 source_commit,
@@ -1120,12 +1130,7 @@ class ArtifactRetentionManager:
                 if entry.get("status") != "done":
                     return False
                 detail = self.historical_detail(str(entry.get("artifact_id", "")))
-                if detail.availability != HistoryAvailability.AVAILABLE:
-                    raise ArtifactValidationError(
-                        detail.recovery
-                        or f"archived dependency {dependency_id} is unavailable"
-                    )
-                return True
+                return detail.availability == HistoryAvailability.AVAILABLE
         return False
 
     def dependency_execution_mode(self, dependency_id: str) -> str | None:

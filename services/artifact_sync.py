@@ -551,6 +551,13 @@ class ArtifactSyncEngine:
                 raise ArtifactValidationError(
                     "the confirmed artifact ref does not contain the requested historical commit"
                 )
+            assert remote.head is not None and remote.quarantine is not None
+            if not self._quarantine_is_ancestor(
+                remote.quarantine, commit_id, remote.head
+            ):
+                raise ArtifactValidationError(
+                    "the requested historical commit is not reachable from the confirmed artifact ref"
+                )
 
     def resolve_conflict(
         self,

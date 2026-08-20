@@ -158,6 +158,31 @@ class ArtifactSyncTests(unittest.TestCase):
         self.assertEqual(verified.remote_head, prepared.commit_id)
         self.assertEqual(self.device_a.store._head(), base)
 
+    def test_historical_fetch_rejects_unrelated_remote_commit_with_matching_tree(self):
+        remote_head = self.write_ticket(
+            self.device_a, "history-ticket", "RR-history", "Historical"
+        )
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        tree = self.run_git(
+            self.device_a.repo, "rev-parse", f"{remote_head}^{{tree}}"
+        )
+        orphan = self.run_git(
+            self.device_a.repo,
+            "-c", "user.name=Relay Sync Tests",
+            "-c", "user.email=relay-sync@example.invalid",
+            "commit-tree", tree, "-m", "unrelated matching tree",
+        )
+        self.run_git(
+            self.device_a.repo,
+            "push", "-q", "origin", f"{orphan}:refs/heads/unrelated-history",
+        )
+
+        with self.assertRaisesRegex(Exception, "not reachable"):
+            self.engine(self.device_a).fetch_historical_object(
+                orphan,
+                expected_remote_url_sha256=self.confirmed_fetch_digest(self.device_a),
+            )
+
     def test_fresh_device_recovers_only_exact_remote_artifact_ref(self):
         remote_head = self.write_ticket(
             self.device_a, "recovery-ticket", "RR-recovery", "Recovered"
