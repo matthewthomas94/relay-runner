@@ -7991,7 +7991,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         artifact_lifecycle: ArtifactLifecycleCoordinator | None = None,
     ) -> dict:
         promoted = (
-            []
+            list(artifact_lifecycle.promote_unblocked_dependents())
             if artifact_lifecycle is not None
             else self._promote_unblocked_dependents(repo_path=str(repo))
         )

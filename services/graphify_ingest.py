@@ -6,6 +6,8 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote
@@ -26,6 +28,9 @@ from graphify_core import (
 )
 from program_artifacts import ingest_project_program_events
 from tickets import scan_repo
+
+
+ARTIFACT_REF = "refs/heads/relay/artifacts"
 
 
 def ingest_registered_projects(
@@ -124,7 +129,10 @@ def ingest_registered_projects(
         materialized_ids = {ticket["id"] for ticket in tickets}
         archived_tickets = [
             ticket
-            for ticket in _archive_catalog_tickets(Path(repo_path))
+            for ticket in _archive_catalog_tickets(
+                Path(repo_path),
+                artifact_ref=_artifact_ref(record),
+            )
             if ticket["id"] not in materialized_ids
         ]
         tickets.extend(archived_tickets)
@@ -603,17 +611,44 @@ def _delete_missing_ticket_nodes(
     return deleted
 
 
-def _archive_catalog_tickets(repo_path: Path) -> list[dict[str, Any]]:
-    """Read metadata-only terminal cards without restoring their Markdown."""
+def _artifact_ref(record: dict[str, Any]) -> str:
+    remote = record.get("remote")
+    if isinstance(remote, dict):
+        configured = str(remote.get("artifactRef") or remote.get("artifact_ref") or "").strip()
+        if configured:
+            return configured
+    return ARTIFACT_REF
+
+
+def _archive_catalog_tickets(
+    repo_path: Path,
+    *,
+    artifact_ref: str,
+) -> list[dict[str, Any]]:
+    """Read and verify metadata-only terminal cards from the confirmed ref."""
     path = repo_path / ".orchestrator" / "archive-index.jsonl"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
+    if not (repo_path / ".git").exists():
+        if path.exists():
+            raise ValueError("archive catalog confirmed ref is unavailable")
         return []
-    except (OSError, UnicodeDecodeError) as error:
+    confirmed = _git(repo_path, "rev-parse", "--verify", f"{artifact_ref}^{{commit}}")
+    if confirmed.returncode != 0:
+        if path.exists():
+            raise ValueError("archive catalog confirmed ref is unavailable")
+        return []
+    confirmed_head = confirmed.stdout.strip()
+    catalog = _git(repo_path, "show", f"{confirmed_head}:.orchestrator/archive-index.jsonl")
+    if catalog.returncode != 0:
+        if path.exists():
+            raise ValueError("confirmed artifact ref has no archive catalog")
+        return []
+    try:
+        lines = catalog.stdout.encode("utf-8", "surrogateescape").decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
         raise ValueError(f"archive catalog is unavailable: {error}") from error
     tickets: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    source_trees: dict[str, dict[str, tuple[str, str]]] = {}
     for line_number, line in enumerate(lines, 1):
         if not line.strip():
             continue
@@ -632,6 +667,20 @@ def _archive_catalog_tickets(repo_path: Path) -> list[dict[str, Any]]:
         if entry["state"] not in {"archived", "deleted_tombstone"}:
             continue
         ticket_id = str(entry["ticket_id"])
+        activity_at = str(entry["activity_at"])
+        if not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z",
+            activity_at,
+        ):
+            raise ValueError(
+                f"archive catalog line {line_number} has invalid activity_at"
+            )
+        try:
+            datetime.fromisoformat(activity_at[:-1] + "+00:00")
+        except ValueError as error:
+            raise ValueError(
+                f"archive catalog line {line_number} has invalid activity_at"
+            ) from error
         oid = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
         if (
             entry.get("ticket_path") != f".orchestrator/{ticket_id}.md"
@@ -640,6 +689,43 @@ def _archive_catalog_tickets(repo_path: Path) -> list[dict[str, Any]]:
         ):
             raise ValueError(
                 f"archive catalog line {line_number} has invalid historical identity"
+            )
+        source_commit = str(entry["source_commit"])
+        ticket_blob = str(entry["ticket_blob"])
+        source_tree = source_trees.get(source_commit)
+        if source_tree is None:
+            if (
+                _git(repo_path, "cat-file", "-e", f"{source_commit}^{{commit}}").returncode
+                != 0
+                or _git(
+                    repo_path,
+                    "merge-base",
+                    "--is-ancestor",
+                    source_commit,
+                    confirmed_head,
+                ).returncode
+                != 0
+            ):
+                raise ValueError(
+                    f"archive catalog line {line_number} has unreachable historical identity"
+                )
+            tree = _git(repo_path, "ls-tree", "-r", source_commit, "--", ".orchestrator")
+            if tree.returncode != 0:
+                raise ValueError(
+                    f"archive catalog line {line_number} has unreachable historical identity"
+                )
+            source_tree = {}
+            for tree_line in tree.stdout.splitlines():
+                metadata, separator, tree_path = tree_line.partition("\t")
+                parts = metadata.split()
+                if not separator or len(parts) != 3:
+                    continue
+                _, object_type, object_id = parts
+                source_tree[tree_path] = (object_type, object_id)
+            source_trees[source_commit] = source_tree
+        if source_tree.get(str(entry["ticket_path"])) != ("blob", ticket_blob):
+            raise ValueError(
+                f"archive catalog line {line_number} has mismatched historical identity"
             )
         if str(entry["status"]).lower() not in {"done", "canceled", "cancelled"}:
             raise ValueError(
@@ -671,6 +757,16 @@ def _archive_catalog_tickets(repo_path: Path) -> list[dict[str, Any]]:
             "_raw_fields": {},
         })
     return tickets
+
+
+def _git(repo_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo_path), *arguments],
+        capture_output=True,
+        text=True,
+        errors="surrogateescape",
+        check=False,
+    )
 
 
 def _delete_missing_run_nodes(

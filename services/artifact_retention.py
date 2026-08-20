@@ -1128,6 +1128,24 @@ class ArtifactRetentionManager:
                 return True
         return False
 
+    def dependency_execution_mode(self, dependency_id: str) -> str | None:
+        """Return a dependency's verified execution mode without restoring it."""
+        snapshot = self.store.snapshot()
+        path = f".orchestrator/{dependency_id}.md"
+        if path in snapshot.files:
+            return _front_matter(snapshot.files[path]).get("execution_mode", "implementation")
+        for entry in self._catalog(snapshot.commit_id).values():
+            if entry.get("ticket_id") != dependency_id:
+                continue
+            detail = self.historical_detail(str(entry.get("artifact_id", "")))
+            if detail.availability != HistoryAvailability.AVAILABLE or detail.ticket_bytes is None:
+                raise ArtifactValidationError(
+                    detail.recovery
+                    or f"archived dependency {dependency_id} is unavailable"
+                )
+            return _front_matter(detail.ticket_bytes).get("execution_mode", "implementation")
+        return None
+
     def transaction_status(self) -> Mapping[str, object]:
         transaction = self._read_transaction()
         if not transaction:

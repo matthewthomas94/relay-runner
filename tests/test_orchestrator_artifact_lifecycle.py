@@ -21,6 +21,7 @@ from services.artifact_rollout import (  # noqa: E402
     PROJECT_OPT_IN,
     ArtifactRolloutBlocked,
 )
+from services.artifact_retention import ArtifactRetentionManager  # noqa: E402
 from services.artifact_store import (  # noqa: E402
     ArtifactMutation,
     ArtifactStore,
@@ -429,6 +430,60 @@ Saved through the daemon-owned typed writer.
         self.assertEqual(unscoped_code, 422)
         self.assertIn("scope token", unscoped["error"])
 
+    def test_ready_sweep_promotes_verified_archived_dependencies_through_artifact_writer(self):
+        self.write_ticket("RR-archived", status="done")
+        self.write_ticket(
+            "RR-dependent",
+            status="backlog",
+            depends_on=("RR-archived",),
+        )
+        self.write_ticket("RR-spike", status="done", execution_mode="spike")
+        self.write_ticket(
+            "RR-spike-dependent",
+            status="backlog",
+            depends_on=("RR-spike",),
+        )
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        self.assertIsNotNone(lifecycle)
+        manager = ArtifactRetentionManager(
+            self.store,
+            lease_store=lifecycle.leases,
+            enabled=True,
+        )
+        manager.delete(
+            "RR-archived",
+            event_id="archive-done-dependency",
+            device_id="test-device",
+        )
+        manager.delete(
+            "RR-spike",
+            event_id="archive-spike-dependency",
+            device_id="test-device",
+        )
+        before = self.store._head()
+
+        with patch.object(
+            self.daemon,
+            "_capacity_wait_reason",
+            return_value=("test capacity", None),
+        ):
+            result = self.daemon.sweep_ready_tickets(
+                repo_path=str(self.repo),
+                trigger="archived-dependency-test",
+                project_scope_token=self.scope_token(),
+            )
+
+        self.assertEqual(result["promoted"], ["RR-dependent"])
+        files = self.store.snapshot().files
+        self.assertIn("status: ready", files[".orchestrator/RR-dependent.md"].decode())
+        self.assertIn(
+            "status: backlog",
+            files[".orchestrator/RR-spike-dependent.md"].decode(),
+        )
+        self.assertIsNotNone(
+            self.store._find_event(f"lifecycle:dependency-sweep:{before}")
+        )
+
     def scope_token(self) -> str:
         payload = {
             "version": 1,
@@ -445,16 +500,24 @@ Saved through the daemon-owned typed writer.
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).decode("ascii")
 
-    def write_ticket(self, ticket_id: str) -> None:
+    def write_ticket(
+        self,
+        ticket_id: str,
+        *,
+        status: str = "ready",
+        depends_on: tuple[str, ...] = (),
+        execution_mode: str = "implementation",
+    ) -> None:
+        dependencies = "[" + ", ".join(depends_on) + "]"
         markdown = f"""---
 id: {ticket_id}
 artifact_id: artifact-{ticket_id}
 title: Daemon lifecycle
-status: ready
+status: {status}
 priority: high
-execution_mode: implementation
+execution_mode: {execution_mode}
 activity_at: 2026-08-04T00:00:00.000000Z
-depends_on: []
+depends_on: {dependencies}
 run_id: null
 canceled: false
 worker_model: strong
