@@ -137,7 +137,10 @@ class IntentInbox:
             )
             recovered = (
                 self._connection.execute(
-                    "SELECT intent_id FROM intents WHERE state IN ('delivered', 'claimed')"
+                    "SELECT intent_id FROM intents "
+                    "WHERE state IN ('delivered', 'claimed') "
+                    "OR (? = 1 AND state='pending')",
+                    (int(hold_recovered_delivery),),
                 ).fetchall()
                 if self.provider_turn_events_enabled
                 else []
@@ -148,17 +151,22 @@ class IntentInbox:
                 """
                 UPDATE intents
                    SET state=CASE
-                       WHEN state='delivered' THEN ?
+                       WHEN state IN ('pending', 'delivered') THEN ?
                        ELSE 'review_required'
                    END,
                        recovered_at=?,
                        recovery_decision=CASE
-                           WHEN state='delivered' THEN 'resume_exact'
+                           WHEN state IN ('pending', 'delivered') THEN 'resume_exact'
                            ELSE 'foreground_review'
                        END
                  WHERE state IN ('delivered', 'claimed')
+                    OR (? = 1 AND state='pending')
                 """,
-                ("recovery_pending" if hold_recovered_delivery else "pending", time.time()),
+                (
+                    "recovery_pending" if hold_recovered_delivery else "pending",
+                    time.time(),
+                    int(hold_recovered_delivery),
+                ),
             )
             if self.provider_turn_events_enabled:
                 record_intent_events(
@@ -439,7 +447,7 @@ class IntentInbox:
                 SELECT ordinal
                   FROM intents
                  WHERE route != 'run_sidecar'
-                   AND state IN ('delivered', 'claimed', 'review_required', 'recovery_pending')
+                   AND state IN ('delivered', 'claimed', 'review_required')
                  ORDER BY command_seq, within_turn_order, ordinal
                  LIMIT 1
                 """

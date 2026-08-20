@@ -343,6 +343,55 @@ class ContinuityResumeInboxTests(unittest.TestCase):
             )
             self.assertEqual(resumed["intent_id"], "intent-1")
 
+    def test_continuity_restart_holds_captured_pending_until_exact_generation_handoff(self):
+        for transport in ("codex", "claude"):
+            with self.subTest(transport=transport), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "inbox.sqlite3"
+                command_path = str(Path(directory) / "ready")
+                metadata_path = command_path + ".meta"
+                inbox = IntentInbox(path)
+                inbox.enqueue("first", self.metadata(1, "command-one"), "continue_current")
+                inbox.close()
+
+                restarted = IntentInbox(path, hold_recovered_delivery=True)
+                self.assertEqual(restarted.records()[0]["state"], "recovery_pending")
+                self.assertIsNone(restarted.materialize_next(
+                    command_path=command_path,
+                    metadata_path=metadata_path,
+                    transport=transport,
+                ))
+
+                post_start = restarted.enqueue(
+                    "second",
+                    self.metadata(2, "command-two", generation="generation-8"),
+                    "continue_current",
+                )
+                delivered = restarted.materialize_next(
+                    command_path=command_path,
+                    metadata_path=metadata_path,
+                    transport=transport,
+                )
+                self.assertEqual(delivered["intent_id"], post_start["intent_id"])
+                restarted.observe_claim(delivered, provider_turn_seen=True)
+                os.unlink(command_path)
+                os.unlink(metadata_path)
+
+                self.assertFalse(restarted.resume_after_recovery(
+                    intent_id="intent-1",
+                    recovery_generation="generation-8",
+                ))
+                self.assertTrue(restarted.resume_after_recovery(
+                    intent_id="intent-1",
+                    recovery_generation="generation-7",
+                ))
+                resumed = restarted.materialize_next(
+                    command_path=command_path,
+                    metadata_path=metadata_path,
+                    transport=transport,
+                )
+                self.assertEqual(resumed["intent_id"], "intent-1")
+                restarted.close()
+
 
 if __name__ == "__main__":
     unittest.main()
