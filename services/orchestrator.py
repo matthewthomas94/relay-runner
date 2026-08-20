@@ -92,10 +92,15 @@ from continuity_incidents import (
 from continuity_agent import (
     ContinuityAgentConfig,
     ContinuityAgentLane,
+    RecoveryHealthEvidence,
     append_audit_record,
     create_provider_session_factory,
 )
-from continuity_recovery import ComponentOwnedRecoveryBroker
+from continuity_recovery import (
+    ComponentOwnedRecoveryBroker,
+    RecoveryActionResult,
+    production_recovery_owners,
+)
 from codex_model_catalog import (
     CODEX_FAMILIES,
     CODEX_WORKER_TIER_FAMILIES,
@@ -218,6 +223,53 @@ _CONTINUITY_PROGRESS_RESOLVES = {
     ("bridge", "command_received"): frozenset({"speech_capture", "transcription"}),
 }
 
+_CONTINUITY_OBJECTIVE_EVIDENCE = {
+    ("stt", "capture_started"): ("capture_progress_observed",),
+    ("stt", "transcription_started"): (
+        "capture_progress_observed",
+        "transcription_started",
+    ),
+    ("bridge", "command_received"): (
+        "transcription_completed",
+        "command_created",
+        "bridge_process_alive",
+    ),
+    ("bridge", "command_delivered"): (
+        "bridge_process_alive",
+        "bridge_heartbeat_fresh",
+        "command_delivered",
+    ),
+    ("messenger", "progress"): (
+        "messenger_process_alive",
+        "messenger_progress_observed",
+    ),
+    ("daemon", "heartbeat"): (
+        "daemon_process_alive",
+        "daemon_heartbeat_fresh",
+        "orchestrator_heartbeat_fresh",
+    ),
+    ("command", "accepted"): ("command_progress_observed",),
+    ("command", "planning"): ("command_progress_observed",),
+    ("command", "completed"): (
+        "command_progress_observed",
+        "command_completed",
+    ),
+    ("session", "started"): (
+        "session_owner_alive",
+        "session_heartbeat_fresh",
+    ),
+    ("provider", "turn_started"): ("provider_process_alive",),
+    ("provider", "stream_started"): ("provider_process_alive",),
+    ("provider", "turn_progress"): (
+        "provider_process_alive",
+        "provider_progress_observed",
+    ),
+    ("provider", "stream_progress"): (
+        "provider_process_alive",
+        "provider_progress_observed",
+    ),
+}
+
 
 class ContinuityLifecycleAdapter:
     """Translate allowlisted live Relay events into the incident detector."""
@@ -234,6 +286,9 @@ class ContinuityLifecycleAdapter:
             tuple[str, str | None, str, str, int, str], Observation
         ] = {}
         self._suppressed_sessions: dict[str, str] = {}
+        self._objective_evidence: dict[
+            tuple[str, str | None, int], dict[str, float]
+        ] = {}
 
     @staticmethod
     def _watch_key(
@@ -360,6 +415,17 @@ class ContinuityLifecycleAdapter:
             else None
         )
         with self._lock:
+            evidence_codes = _CONTINUITY_OBJECTIVE_EVIDENCE.get((source, name), ())
+            if evidence_codes:
+                evidence_key = (session_id, command_id, generation)
+                evidence = self._objective_evidence.setdefault(evidence_key, {})
+                evidence.update({code: observed_at for code in evidence_codes})
+                if len(self._objective_evidence) > 512:
+                    oldest = min(
+                        self._objective_evidence,
+                        key=lambda key: max(self._objective_evidence[key].values()),
+                    )
+                    self._objective_evidence.pop(oldest, None)
             if suppression is not None:
                 self._suppressed_sessions[session_id] = suppression
                 self.detector.suppress_session(session_id)
@@ -422,6 +488,27 @@ class ContinuityLifecycleAdapter:
                     )
                     self._watch_transient(inactivity)
             return result
+
+    def recovery_health(self, request: Any) -> RecoveryHealthEvidence:
+        """Return only fresh, objective lifecycle evidence for one request."""
+        evidence: dict[str, float] = {}
+        with self._lock:
+            for (session_id, command_id, generation), observed in self._objective_evidence.items():
+                if (
+                    session_id == request.session_id
+                    and generation == request.recovery_generation
+                    and (command_id is None or command_id == request.command_id)
+                ):
+                    for code, observed_at in observed.items():
+                        if observed_at >= request.incident_observed_at:
+                            evidence[code] = max(evidence.get(code, 0), observed_at)
+        if not evidence:
+            return RecoveryHealthEvidence()
+        return RecoveryHealthEvidence(
+            objective_restored=True,
+            stable_for_seconds=max(0.0, time.time() - max(evidence.values())),
+            evidence_codes=tuple(sorted(evidence)),
+        )
 
     def sample(self, *, observed_at: float | None = None) -> list[Any]:
         """Re-observe unresolved failures so one-shot native events can qualify."""
@@ -4542,9 +4629,16 @@ class Daemon:
                     float(continuity_cfg.get("cooldown_seconds", 900)),
                 ),
             )
+            recovery_owners = continuity_recovery_owners
+            if recovery_owners is None:
+                recovery_owners = production_recovery_owners(
+                    self.continuity.recovery_health,
+                    restore_session=self._restore_continuity_session_registration,
+                    inspect_session=self._inspect_continuity_session_registration,
+                )
             self.continuity_agents = ContinuityAgentLane(
                 create_continuity_session,
-                ComponentOwnedRecoveryBroker(continuity_recovery_owners),
+                ComponentOwnedRecoveryBroker(recovery_owners),
                 on_audit=lambda record: append_audit_record(
                     self.continuity_agent_audit_path,
                     record,
@@ -4555,6 +4649,53 @@ class Daemon:
             self.reconcile_queue_drains(trigger="daemon-startup")
         except Exception as e:  # noqa: BLE001 - daemon startup must still finish.
             print(f"[orchestrator] queue-drain startup reconcile failed: {e}", file=sys.stderr)
+
+    def _continuity_session_row(self, request: Any) -> dict[str, Any] | None:
+        for row in self.orchestrator_sessions.list(limit=1000):
+            if opaque_identifier("session", row["session_key"]) == request.session_id:
+                return row
+        return None
+
+    def _inspect_continuity_session_registration(
+        self,
+        request: Any,
+    ) -> tuple[bool, str]:
+        row = self._continuity_session_row(request)
+        if row is None:
+            return False, "unknown"
+        liveness = "unhealthy" if row["state"] in {"stale", "failed"} else "healthy"
+        return True, liveness
+
+    def _restore_continuity_session_registration(
+        self,
+        request: Any,
+        cancel_event: threading.Event,
+    ) -> RecoveryActionResult:
+        if cancel_event.is_set():
+            return RecoveryActionResult("failed", "recovery_canceled")
+        row = self._continuity_session_row(request)
+        if row is None or row["state"] not in {"stale", "failed"}:
+            return RecoveryActionResult("failed", "session_registration_not_stale")
+        restored = self.orchestrator_sessions.heartbeat(
+            session_id=int(row["id"]),
+            provider_key=str(row["provider_key"]),
+            state="idle",
+        )
+        if restored is None:
+            return RecoveryActionResult("failed", "session_registration_restore_failed")
+        self.observe_continuity_event({
+            "source": "session",
+            "event": "started",
+            "session_id": restored["session_key"],
+            "provider": restored["provider_key"],
+            "recovery_generation": request.recovery_generation,
+            "observed_at": restored["heartbeat_at"],
+        })
+        return RecoveryActionResult(
+            "applied",
+            "session_registration_restored",
+            self.continuity.recovery_health(request),
+        )
 
     def _emit_continuity_incident(self, envelope: dict[str, object]) -> None:
         """Persist only the detector's fixed, privacy-safe recovery envelope."""

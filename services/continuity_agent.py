@@ -316,6 +316,8 @@ class UnavailableRecoveryBroker:
 
 @dataclass(frozen=True)
 class ContinuityAgentConfig:
+    # Attempt allowance for each distinct broker capability. A recovery may
+    # need several different steps, all still bounded by the wall clock.
     max_attempts: int = 4
     wall_clock_seconds: float = 120.0
     stable_health_seconds: float = 60.0
@@ -605,16 +607,24 @@ class ContinuityAgentLane:
         )
         final_result = "circuit_open"
         history: list[dict[str, object]] = []
+        capability_attempts: dict[str, int] = {}
         try:
             capabilities = self._validated_capabilities(self._broker.capabilities(incident))
-            for attempt in range(1, self.config.max_attempts + 1):
+            max_sequence_steps = self.config.max_attempts * len(capabilities)
+            for sequence in range(1, max_sequence_steps + 1):
                 if self._shutdown.is_set():
                     final_result = "canceled"
                     break
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     break
-                prompt = self._prompt(incident, capabilities, history, attempt)
+                prompt = self._prompt(
+                    incident,
+                    capabilities,
+                    history,
+                    sequence,
+                    capability_attempts,
+                )
                 try:
                     decision = self._parse_decision(session.decide(prompt, remaining))
                 except Exception as error:  # noqa: BLE001 - raw provider failure stays private.
@@ -627,6 +637,8 @@ class ContinuityAgentLane:
                 if decision["kind"] == "finish":
                     break
                 capability = str(decision["capability"])
+                capability_attempt = capability_attempts.get(capability, 0) + 1
+                capability_attempts[capability] = capability_attempt
                 if capability not in capabilities:
                     outcome = RecoveryBrokerOutcome(
                         capability,
@@ -640,7 +652,7 @@ class ContinuityAgentLane:
                             incident=incident,
                             process_identity=process_identity,
                             recovery_generation=generation,
-                            attempt=attempt,
+                            attempt=capability_attempt,
                             deadline=deadline,
                         )
                     except Exception as error:  # noqa: BLE001 - broker internals stay private.
@@ -659,7 +671,7 @@ class ContinuityAgentLane:
                     process_identity,
                     session.provider,
                     phase="broker_outcome",
-                    attempt=attempt,
+                    attempt=sequence,
                     outcome=outcome,
                 )
                 if (
@@ -671,7 +683,13 @@ class ContinuityAgentLane:
                 if outcome.status == "authorization_required":
                     final_result = "authorization_required"
                     break
-                if outcome.status == "circuit_open":
+                if outcome.status == "circuit_open" and outcome.outcome_code in {
+                    "recovery_budget_exhausted",
+                    "broker_call_timed_out",
+                    "recovery_health_worsened",
+                    "ephemeral_cleanup_unavailable",
+                    "ephemeral_cleanup_failed",
+                }:
                     break
         except Exception as error:  # noqa: BLE001 - parent lane failure becomes sanitized state.
             print(
@@ -794,7 +812,8 @@ class ContinuityAgentLane:
         incident: Mapping[str, object],
         capabilities: tuple[str, ...],
         history: list[dict[str, object]],
-        attempt: int,
+        sequence: int,
+        capability_attempts: Mapping[str, int],
     ) -> str:
         payload = {
             "incident": incident,
@@ -804,7 +823,8 @@ class ContinuityAgentLane:
             },
             "broker_capabilities": list(capabilities),
             "sanitized_outcomes": history,
-            "attempt": attempt,
+            "sequence": sequence,
+            "capability_attempts": dict(capability_attempts),
         }
         return CONTINUITY_SYSTEM_PROMPT + "\n\nRecovery state:\n" + json.dumps(
             payload,

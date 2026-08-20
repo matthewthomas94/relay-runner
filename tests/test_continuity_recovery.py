@@ -17,6 +17,7 @@ from continuity_recovery import (  # noqa: E402
     ComponentOwnedRecoveryBroker,
     RecoveryActionResult,
     RecoveryActionValidation,
+    production_recovery_owners,
 )
 
 
@@ -58,7 +59,7 @@ def incident(component="bridge", *, provider="none", generation=3):
         "recovery_generation": generation,
         "phase": COMPONENT_PHASE[component],
         "health": "unavailable",
-        "timing": {},
+        "timing": {"last_observed_at": 30.0},
         "recovery_objective": {
             "unavailable_capability": "sanitized objective",
             "restored_when": list(OBJECTIVE_EVIDENCE[component]),
@@ -82,6 +83,7 @@ class RecordingOwner:
         self.compensation_available = True
         self.cooldown_remaining = 0.0
         self.postcondition_override = None
+        self.validation_health = RecoveryHealthEvidence()
         self.result = None
         self.cleanup_result = True
 
@@ -105,6 +107,7 @@ class RecordingOwner:
             expected_postcondition=(
                 self.postcondition_override or request.expected_postcondition
             ),
+            health=self.validation_health,
         )
 
     def execute(self, request, validation, cancel_event):
@@ -319,6 +322,83 @@ class ComponentOwnedRecoveryBrokerTests(unittest.TestCase):
 
         self.assertFalse(outcome.health.objective_restored)
         self.assertEqual(outcome.health.stable_for_seconds, 60)
+
+    def test_noop_and_rejection_health_require_full_objective_evidence(self):
+        for status in ("noop", "rejected"):
+            with self.subTest(status=status):
+                broker, owners = broker_and_owners()
+                owners["app"].validation_health = RecoveryHealthEvidence(
+                    True,
+                    60,
+                    ("bridge_process_alive",),
+                )
+                if status == "noop":
+                    owners["app"].idempotency_state = "applied"
+                else:
+                    owners["app"].exact_target_owned = False
+
+                outcome = perform(broker, "restart_bridge", incident())
+
+                expected_status = (
+                    status if status == "noop" else "authorization_required"
+                )
+                self.assertEqual(outcome.status, expected_status)
+                self.assertFalse(outcome.health.objective_restored)
+                self.assertEqual(outcome.health.evidence_codes, ("bridge_process_alive",))
+
+    def test_production_registry_wires_validated_app_bridge_and_daemon_health_adapters(self):
+        observed = []
+
+        def probe(request):
+            observed.append((request.component, request.recovery_generation))
+            return RecoveryHealthEvidence()
+
+        owners = production_recovery_owners(probe)
+        broker = ComponentOwnedRecoveryBroker(owners, monotonic=lambda: 100.0)
+
+        self.assertEqual(set(owners), {"app", "bridge", "daemon"})
+        for component in COMPONENT_PHASE:
+            with self.subTest(component=component):
+                self.assertEqual(
+                    broker.capabilities(incident(component)),
+                    ("check_processing_health",),
+                )
+                outcome = perform(broker, "check_processing_health", incident(component))
+                self.assertEqual(
+                    (outcome.status, outcome.outcome_code),
+                    ("noop", "processing_health_checked"),
+                )
+        self.assertEqual(len(observed), len(COMPONENT_PHASE) * 2)
+
+    def test_production_bridge_adapter_executes_only_fixed_session_restore(self):
+        restored = []
+
+        def restore(request, _cancel_event):
+            restored.append(request.session_id)
+            return RecoveryActionResult("applied", "session_registration_restored")
+
+        owners = production_recovery_owners(
+            lambda _request: RecoveryHealthEvidence(),
+            inspect_session=lambda _request: (True, "unhealthy"),
+            restore_session=restore,
+        )
+        broker = ComponentOwnedRecoveryBroker(owners, monotonic=lambda: 100.0)
+
+        self.assertIn(
+            "restore_session_registration",
+            broker.capabilities(incident("session")),
+        )
+        outcome = perform(
+            broker,
+            "restore_session_registration",
+            incident("session"),
+        )
+
+        self.assertEqual(
+            (outcome.status, outcome.outcome_code),
+            ("applied", "session_registration_restored"),
+        )
+        self.assertEqual(restored, [incident("session")["session_id"]])
 
     def test_codex_and_claude_receive_identical_provider_recovery_capabilities(self):
         broker, _owners = broker_and_owners()
