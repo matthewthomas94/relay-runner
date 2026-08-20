@@ -260,7 +260,7 @@ class ContinuityAgentTests(unittest.TestCase):
 
         self.assertEqual([call[0] for call in broker.calls], ["restart_bridge", "check_health"])
         self.assertEqual([call[1]["attempt"] for call in broker.calls], [1, 1])
-        self.assertEqual(identities[0][1:], ("inc-123456789abc", 3))
+        self.assertEqual(identities[0][1:], ("inc-123456789abc", "3"))
         self.assertTrue(identities[0][0].startswith("continuity-"))
         self.assertEqual([record["phase"] for record in audit], [
             "launched", "broker_outcome", "broker_outcome", "completed",
@@ -457,7 +457,7 @@ class ContinuityAgentTests(unittest.TestCase):
         request = SimpleNamespace(
             session_id=opaque_identifier("session", "native-session"),
             command_id=opaque_identifier("command", "native-command"),
-            recovery_generation=3,
+            recovery_generation="3",
             incident_observed_at=observed_at - 1,
         )
 

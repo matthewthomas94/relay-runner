@@ -9,7 +9,7 @@ struct ContinuityRecoveryRequest: Equatable {
     let commandID: String?
     let component: String
     let provider: String
-    let recoveryGeneration: Int
+    let recoveryGeneration: String
     let incidentPhase: String
     let processIdentity: String
     let attempt: Int
@@ -38,8 +38,7 @@ struct ContinuityRecoveryRequest: Equatable {
             let component = Self.code(json["component"]),
             let provider = json["provider"] as? String,
             ["none", "codex", "claude"].contains(provider),
-            let recoveryGeneration = json["recovery_generation"] as? Int,
-            recoveryGeneration >= 0,
+            let recoveryGeneration = Self.generation(json["recovery_generation"]),
             let incidentPhase = Self.code(json["incident_phase"]),
             let processIdentity = Self.identifier(
                 json["process_identity"], pattern: #"^continuity-[0-9a-f]{32}$"#
@@ -129,7 +128,7 @@ struct ContinuityRecoveryRequest: Equatable {
 
     static func idempotencyKey(
         incidentID: String,
-        recoveryGeneration: Int,
+        recoveryGeneration: String,
         capability: String,
         component: String,
         sessionID: String,
@@ -137,7 +136,7 @@ struct ContinuityRecoveryRequest: Equatable {
     ) -> String {
         let identity = [
             incidentID,
-            String(recoveryGeneration),
+            recoveryGeneration,
             capability,
             component,
             sessionID,
@@ -150,6 +149,16 @@ struct ContinuityRecoveryRequest: Equatable {
     private static func code(_ value: Any?) -> String? {
         guard let value = value as? String,
               value.range(of: #"^[a-z][a-z0-9_]{0,63}$"#, options: .regularExpression) != nil
+        else { return nil }
+        return value
+    }
+
+    private static func generation(_ value: Any?) -> String? {
+        guard let value = value as? String,
+              value.range(
+                  of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"#,
+                  options: .regularExpression
+              ) != nil
         else { return nil }
         return value
     }

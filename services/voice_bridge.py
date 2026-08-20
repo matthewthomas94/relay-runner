@@ -55,7 +55,7 @@ from pm_frontstage import (
     build_pm_update_snapshot,
 )
 from config import load_config
-from continuity_incidents import opaque_identifier
+from continuity_incidents import normalize_recovery_generation, opaque_identifier
 from continuity_recovery import (
     CAPABILITY_POLICIES,
     RecoveryExecutionContext,
@@ -603,6 +603,13 @@ def _post_continuity_event(
     )
     if not session_id:
         return {}
+    raw_generation = source_data.get("recovery_generation")
+    if raw_generation is None or raw_generation == "":
+        raw_generation = os.environ.get("RELAY_RECOVERY_GENERATION") or "0"
+    try:
+        recovery_generation = normalize_recovery_generation(raw_generation)
+    except ValueError:
+        return {}
     payload = {
         "source": source,
         "event": event,
@@ -613,7 +620,7 @@ def _post_continuity_event(
             or os.environ.get("RELAY_RUNNER_PROVIDER")
             or "codex"
         ),
-        "recovery_generation": source_data.get("recovery_generation") or 0,
+        "recovery_generation": recovery_generation,
         "observed_at": observed_at if observed_at is not None else time.time(),
     }
     try:
@@ -1344,6 +1351,9 @@ def _begin_relay_command(
             "source_text": source_text,
             "received_at": time.time(),
             "action": "received",
+            "recovery_generation": normalize_recovery_generation(
+                os.environ.get("RELAY_RECOVERY_GENERATION") or str(seq)
+            ),
         }
         provider = os.environ.get("RELAY_RUNNER_PROVIDER", "").strip()
         if provider:
@@ -1573,6 +1583,7 @@ def _raw_instruction_payload(
         "relay_command_seq": metadata.get("relay_command_seq"),
         "relay_command_id": metadata.get("relay_command_id"),
         "provider": metadata.get("provider"),
+        "recovery_generation": metadata.get("recovery_generation"),
         "received_at": metadata.get("received_at"),
         "action": metadata.get("action"),
         "outcome": metadata.get("outcome"),
@@ -2420,7 +2431,12 @@ def _bridge_continuity_recovery_response(
     if request.provider not in {"none", provider}:
         return {"status": "failed", "outcome_code": "provider_target_mismatch"}
     command_state = _read_json_file(state_path)
-    current_generation = int((command_state or {}).get("recovery_generation") or 0)
+    try:
+        current_generation = normalize_recovery_generation(
+            (command_state or {}).get("recovery_generation")
+        )
+    except ValueError:
+        return {"status": "failed", "outcome_code": "stale_recovery_generation"}
     if request.recovery_generation != current_generation:
         return {"status": "failed", "outcome_code": "stale_recovery_generation"}
     if request.command_id is not None:

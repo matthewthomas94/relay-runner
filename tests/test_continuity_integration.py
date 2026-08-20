@@ -85,7 +85,7 @@ class _RestartableMessengerBackend:
 class ContinuityIntegrationTests(unittest.TestCase):
     @staticmethod
     def _recovery_request(capability, component, session, command, **overrides):
-        generation = overrides.pop("recovery_generation", 4)
+        generation = overrides.pop("recovery_generation", "4")
         incident_id = "inc-123456789abc"
         identity = "|".join((
             incident_id,
@@ -434,6 +434,105 @@ class ContinuityIntegrationTests(unittest.TestCase):
         with runtime._lock:
             runtime._active_event = None
         runtime.shutdown()
+
+    def test_uuid_generation_flows_through_real_messenger_state_and_bridge_owner(self):
+        generation = "12345678-1234-4abc-8def-1234567890ab"
+        stale_generation = "abcdefab-1234-4abc-8def-1234567890ab"
+        session_key = "project:0123456789abcdef"
+        observed = []
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ,
+            {"RELAY_RECOVERY_GENERATION": generation},
+        ):
+            state_path = Path(root) / "state.json"
+            command = voice_bridge._begin_relay_command(
+                "private command",
+                state_path=str(state_path),
+                event_log_path=None,
+            )
+            self.assertEqual(
+                json.loads(state_path.read_text())["recovery_generation"],
+                generation,
+            )
+            command_store = orchestrator.OrchestratorCommandStore(
+                Path(root) / "commands.db"
+            )
+            stored = command_store.record(
+                repo_path=root,
+                source_text="private command",
+                relay_command_seq=command["relay_command_seq"],
+                relay_command_id=command["relay_command_id"],
+                recovery_generation=generation,
+            )
+            self.assertEqual(stored["recovery_generation"], generation)
+
+            runtime = MessengerRuntime(
+                _FailingMessengerBackend(),
+                speak=lambda *_args, **_kwargs: None,
+                is_current=lambda *_args: True,
+                continuity_observer=observed.append,
+                recovery_generation=generation,
+            )
+            runtime.start()
+            runtime.submit_user("private command", command)
+            deadline = time.time() + 2
+            while not any(event.get("event") == "failed" for event in observed) \
+                    and time.time() < deadline:
+                time.sleep(0.01)
+            runtime.shutdown()
+            self.assertEqual(
+                {event["recovery_generation"] for event in observed},
+                {generation},
+            )
+
+            request = self._recovery_request(
+                "restart_messenger",
+                "messenger",
+                opaque_identifier("session", session_key),
+                opaque_identifier("command", command["relay_command_id"]),
+                recovery_generation=generation,
+            )
+            validation = RecoveryActionValidation(
+                validation_token="live_continuity_watch",
+                exact_target_owned=True,
+                liveness="unhealthy",
+                incident_active=True,
+                generation_matches=True,
+                command_phase="none",
+                command_phase_matches=True,
+                idempotency_state="new",
+                compensation_available=False,
+                cooldown_remaining=0,
+                expected_postcondition=request.expected_postcondition,
+            )
+            common = {
+                "messenger": SimpleNamespace(recover_backend=lambda: True),
+                "orchestrator_session": {
+                    "session_key": session_key,
+                    "provider": "codex",
+                },
+                "applied_keys": set(),
+                "cooldowns": {},
+                "recovery_lock": threading.Lock(),
+                "state_path": str(state_path),
+                "turns_path": str(Path(root) / "turns.json"),
+                "monotonic": lambda: request.deadline - 1,
+                "epoch": lambda: request.incident_observed_at,
+            }
+            response = voice_bridge._bridge_continuity_recovery_response(
+                RecoveryExecutionContext(request, validation).as_dict(),
+                **common,
+            )
+            self.assertEqual(response["status"], "applied")
+
+            state = json.loads(state_path.read_text())
+            state["recovery_generation"] = stale_generation
+            state_path.write_text(json.dumps(state))
+            response = voice_bridge._bridge_continuity_recovery_response(
+                RecoveryExecutionContext(request, validation).as_dict(),
+                **common,
+            )
+            self.assertEqual(response["outcome_code"], "stale_recovery_generation")
 
     def test_bridge_owner_rejects_stale_unrelated_and_live_work_context(self):
         session_key = "project:0123456789abcdef"

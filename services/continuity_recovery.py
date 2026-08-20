@@ -17,6 +17,7 @@ import time
 from typing import Any, Callable, Mapping, Protocol
 
 from continuity_agent import RecoveryBrokerOutcome, RecoveryHealthEvidence
+from continuity_incidents import normalize_recovery_generation
 
 
 RESTORE_PROCESSING_OBJECTIVE = "restore_processing"
@@ -163,7 +164,7 @@ class RecoveryActionRequest:
     command_id: str | None
     component: str
     provider: str
-    recovery_generation: int
+    recovery_generation: str
     incident_phase: str
     process_identity: str
     attempt: int
@@ -171,6 +172,13 @@ class RecoveryActionRequest:
     expected_postcondition: str
     incident_observed_at: float
     deadline: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "recovery_generation",
+            normalize_recovery_generation(self.recovery_generation),
+        )
 
 
 @dataclass(frozen=True)
@@ -256,6 +264,15 @@ class RecoveryExecutionContext:
                 raise ValueError("invalid_recovery_context")
             return value
 
+        def generation(name: str) -> str:
+            value = payload.get(name)
+            if not isinstance(value, str):
+                raise ValueError("invalid_recovery_context")
+            try:
+                return normalize_recovery_generation(value)
+            except ValueError as error:
+                raise ValueError("invalid_recovery_context") from error
+
         def number(name: str) -> float:
             value = payload.get(name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -282,7 +299,7 @@ class RecoveryExecutionContext:
             ),
             component=string("component"),
             provider=string("provider"),
-            recovery_generation=integer("recovery_generation"),
+            recovery_generation=generation("recovery_generation"),
             incident_phase=string("incident_phase"),
             process_identity=string("process_identity", _PROCESS_ID_RE),
             attempt=integer("attempt", 1),
@@ -421,7 +438,7 @@ class ObjectiveEvidenceRecoveryOwner:
             exact_target_owned=exact_owner,
             liveness="unhealthy",
             incident_active=True,
-            generation_matches=request.recovery_generation >= 0,
+            generation_matches=True,
             command_phase="none",
             command_phase_matches=True,
             idempotency_state="new",
@@ -564,7 +581,7 @@ class ComponentOwnedRecoveryBroker:
         *,
         incident: Mapping[str, object],
         process_identity: str,
-        recovery_generation: int,
+        recovery_generation: str,
         attempt: int,
         deadline: float,
         cancel_event: threading.Event,
@@ -663,7 +680,7 @@ class ComponentOwnedRecoveryBroker:
         policy: RecoveryCapabilityPolicy,
         incident: Mapping[str, object],
         process_identity: str,
-        recovery_generation: int,
+        recovery_generation: str,
         attempt: int,
         deadline: float,
     ) -> RecoveryActionRequest | str:
@@ -671,12 +688,15 @@ class ComponentOwnedRecoveryBroker:
         if any(not isinstance(incident.get(key), str) or not incident.get(key) for key in required):
             return "invalid_incident_identity"
         try:
-            incident_generation = int(incident.get("recovery_generation"))
-        except (TypeError, ValueError):
+            incident_generation = normalize_recovery_generation(
+                incident.get("recovery_generation")
+            )
+            recovery_generation = normalize_recovery_generation(recovery_generation)
+        except ValueError:
             return "invalid_recovery_generation"
         component = str(incident["component"])
         phase = str(incident["phase"])
-        if recovery_generation != incident_generation or recovery_generation < 0:
+        if recovery_generation != incident_generation:
             return "recovery_generation_mismatch"
         if component not in policy.components or phase not in policy.phases:
             return "capability_outside_incident_scope"

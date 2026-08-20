@@ -20,6 +20,7 @@ import time
 from typing import Callable, Mapping, Protocol
 import uuid
 
+from continuity_incidents import normalize_recovery_generation
 from messenger import (
     ClaudeMessengerBackend,
     CodexMessengerBackend,
@@ -132,7 +133,7 @@ Never claim recovery yourself. Only broker health evidence can prove recovery.
 def continuity_agent_environment(
     process_identity: str,
     incident_id: str,
-    recovery_generation: int,
+    recovery_generation: str,
     *,
     parent: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
@@ -147,7 +148,7 @@ def continuity_agent_environment(
         "RELAY_ACTOR_ROLE": ACTOR_ROLE,
         "RELAY_CONTINUITY_PROCESS_ID": process_identity,
         "RELAY_CONTINUITY_INCIDENT_ID": incident_id,
-        "RELAY_RECOVERY_GENERATION": str(recovery_generation),
+        "RELAY_RECOVERY_GENERATION": normalize_recovery_generation(recovery_generation),
     })
     return environment
 
@@ -197,11 +198,9 @@ def sanitize_incident_bundle(envelope: Mapping[str, object]) -> dict[str, object
     ):
         raise ValueError("invalid continuity command identity")
     try:
-        generation = int(bundle["recovery_generation"])
-    except (TypeError, ValueError) as error:
+        generation = normalize_recovery_generation(bundle["recovery_generation"])
+    except ValueError as error:
         raise ValueError("invalid continuity recovery generation") from error
-    if generation < 0:
-        raise ValueError("invalid continuity recovery generation")
     bundle["recovery_generation"] = generation
     timing_bundle = bundle["timing"]
     for key in (
@@ -283,7 +282,7 @@ class RecoveryBroker(Protocol):
         *,
         incident: Mapping[str, object],
         process_identity: str,
-        recovery_generation: int,
+        recovery_generation: str,
         attempt: int,
         deadline: float,
         cancel_event: threading.Event,
@@ -303,7 +302,7 @@ class UnavailableRecoveryBroker:
         *,
         incident: Mapping[str, object],
         process_identity: str,
-        recovery_generation: int,
+        recovery_generation: str,
         attempt: int,
         deadline: float,
         cancel_event: threading.Event,
@@ -352,7 +351,7 @@ class CodexContinuityBackend(CodexMessengerBackend):
         *,
         process_identity: str,
         incident_id: str,
-        recovery_generation: int,
+        recovery_generation: str,
         **kwargs,
     ):
         super().__init__(config, **kwargs)
@@ -388,7 +387,7 @@ class ClaudeContinuityBackend(ClaudeMessengerBackend):
         *,
         process_identity: str,
         incident_id: str,
-        recovery_generation: int,
+        recovery_generation: str,
         **kwargs,
     ):
         super().__init__(config, **kwargs)
@@ -460,7 +459,7 @@ def create_provider_session_factory(
     app_config: Mapping[str, object],
     *,
     cwd: str | os.PathLike[str],
-) -> Callable[[str, str, int], ContinuityProviderSession]:
+) -> Callable[[str, str, str], ContinuityProviderSession]:
     """Resolve only the configured provider; cross-provider fallback is never implicit."""
     raw_config = dict(app_config)
     general = dict(raw_config.get("general") or {})
@@ -475,7 +474,7 @@ def create_provider_session_factory(
     if resolved_command is None:
         reason_code = "configured_provider_unavailable"
 
-        def unavailable(_process_identity: str, _incident_id: str, _generation: int):
+        def unavailable(_process_identity: str, _incident_id: str, _generation: str):
             return UnavailableContinuitySession(config.provider, reason_code)
 
         return unavailable
@@ -483,12 +482,12 @@ def create_provider_session_factory(
     try:
         config = resolve_messenger_catalog_selection(config)
     except Exception:  # noqa: BLE001 - only a sanitized code leaves the resolver.
-        def unresolved(_process_identity: str, _incident_id: str, _generation: int):
+        def unresolved(_process_identity: str, _incident_id: str, _generation: str):
             return UnavailableContinuitySession(config.provider, "configured_model_unavailable")
 
         return unresolved
 
-    def create(process_identity: str, incident_id: str, generation: int):
+    def create(process_identity: str, incident_id: str, generation: str):
         kwargs = {
             "process_identity": process_identity,
             "incident_id": incident_id,
@@ -509,7 +508,7 @@ class ContinuityAgentLane:
 
     def __init__(
         self,
-        session_factory: Callable[[str, str, int], ContinuityProviderSession],
+        session_factory: Callable[[str, str, str], ContinuityProviderSession],
         broker: RecoveryBroker,
         *,
         on_audit: Callable[[dict[str, object]], object],
@@ -572,7 +571,7 @@ class ContinuityAgentLane:
     def _run(self, incident: dict[str, object]) -> None:
         incident_id = str(incident["incident_id"])
         fingerprint = str(incident["fingerprint"])
-        generation = int(incident["recovery_generation"])
+        generation = normalize_recovery_generation(incident["recovery_generation"])
         process_identity = "continuity-" + uuid.uuid4().hex
         started = self._monotonic()
         deadline = started + self.config.wall_clock_seconds
@@ -721,7 +720,7 @@ class ContinuityAgentLane:
         *,
         incident: Mapping[str, object],
         process_identity: str,
-        recovery_generation: int,
+        recovery_generation: str,
         attempt: int,
         deadline: float,
     ) -> RecoveryBrokerOutcome:

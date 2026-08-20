@@ -119,12 +119,12 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
     }
 
     func testStaleGenerationIsRejectedAtComponentBoundary() throws {
-        let request = try makeRequest(generation: 4)
+        let request = try makeRequest(generation: "generation-4")
 
         XCTAssertEqual(
             AppState.continuityRecoveryDecision(
                 for: request,
-                boundary: boundary(generation: 5),
+                boundary: boundary(generation: "generation-5"),
                 nowMonotonic: 150,
                 nowEpoch: 1_050
             ),
@@ -205,7 +205,7 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
         XCTAssertEqual(request.incidentID, "inc-123456789abc")
         XCTAssertEqual(request.sessionID, sessionID)
         XCTAssertEqual(request.commandID, commandID)
-        XCTAssertEqual(request.recoveryGeneration, 4)
+        XCTAssertEqual(request.recoveryGeneration, "generation-4")
         XCTAssertEqual(request.incidentPhase, "delivery")
         XCTAssertEqual(request.attempt, 1)
         XCTAssertEqual(
@@ -222,6 +222,50 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
         XCTAssertEqual(request.cooldownRemaining, 0)
         XCTAssertTrue(request.exactTargetOwned)
         XCTAssertTrue(request.generationMatches)
+    }
+
+    func testPreparedSessionLaunchUUIDGenerationAllowsOnlyCurrentExecution() throws {
+        let current = "12345678-1234-4abc-8def-1234567890ab"
+        let stale = "abcdefab-1234-4abc-8def-1234567890ab"
+        for target in [ProcessManager.AgentTarget.codex, .claude] {
+            let launch = ProcessManager.PreparedSessionLaunch(
+                executable: "/bin/bash",
+                arguments: ["/tmp/voice_bridge_launch.command"],
+                launcherPath: "/tmp/voice_bridge_launch.command",
+                workingDirectory: "/tmp",
+                target: target,
+                voiceDelivery: .appOwned,
+                recoveryGeneration: current
+            )
+            let request = try makeRequest(generation: try XCTUnwrap(launch.recoveryGeneration))
+
+            XCTAssertEqual(
+                AppState.continuityRecoveryDecision(
+                    for: request,
+                    boundary: boundary(generation: current),
+                    nowMonotonic: 150,
+                    nowEpoch: 1_050
+                ),
+                .apply(.recoverBridge),
+                target.providerMetadataValue
+            )
+            XCTAssertEqual(
+                AppState.continuityRecoveryDecision(
+                    for: request,
+                    boundary: boundary(generation: stale),
+                    nowMonotonic: 150,
+                    nowEpoch: 1_050
+                ),
+                .reject("stale_recovery_generation"),
+                target.providerMetadataValue
+            )
+        }
+    }
+
+    func testSocketEnvelopeRejectsLossyNumericGeneration() throws {
+        var payload = requestPayload(generation: "generation-4")
+        payload["recovery_generation"] = 4
+        XCTAssertNil(ContinuityRecoveryRequest(payload))
     }
 
     func testProjectSessionIdentityMatchesDaemonContract() {
@@ -241,7 +285,7 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
         commandPhase: String = "undelivered",
         liveness: String = "unhealthy",
         postcondition: String = "bridge_process_alive",
-        generation: Int = 4,
+        generation: String = "generation-4",
         idempotencyIncidentID: String? = nil
     ) throws -> ContinuityRecoveryRequest {
         let idempotencyKey = ContinuityRecoveryRequest.idempotencyKey(
@@ -252,7 +296,31 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
             sessionID: sessionID,
             commandID: commandID
         )
-        let payload: [String: Any] = [
+        return try XCTUnwrap(ContinuityRecoveryRequest(requestPayload(
+            capability: capability,
+            component: component,
+            provider: provider,
+            incidentPhase: incidentPhase,
+            commandPhase: commandPhase,
+            liveness: liveness,
+            postcondition: postcondition,
+            generation: generation,
+            idempotencyKey: idempotencyKey
+        )))
+    }
+
+    private func requestPayload(
+        capability: String = "restart_bridge",
+        component: String = "bridge",
+        provider: String = "none",
+        incidentPhase: String = "delivery",
+        commandPhase: String = "undelivered",
+        liveness: String = "unhealthy",
+        postcondition: String = "bridge_process_alive",
+        generation: String = "generation-4",
+        idempotencyKey: String? = nil
+    ) -> [String: Any] {
+        [
             "capability": capability,
             "incident_id": "inc-123456789abc",
             "session_id": sessionID,
@@ -263,7 +331,14 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
             "incident_phase": incidentPhase,
             "process_identity": "continuity-1234567890abcdef1234567890abcdef",
             "attempt": 1,
-            "idempotency_key": idempotencyKey,
+            "idempotency_key": idempotencyKey ?? ContinuityRecoveryRequest.idempotencyKey(
+                incidentID: "inc-123456789abc",
+                recoveryGeneration: generation,
+                capability: capability,
+                component: component,
+                sessionID: sessionID,
+                commandID: commandID
+            ),
             "expected_postcondition": postcondition,
             "incident_observed_at": 1_000.0,
             "deadline": 200.0,
@@ -278,11 +353,10 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
             "compensation_available": false,
             "cooldown_remaining": 0.0,
         ]
-        return try XCTUnwrap(ContinuityRecoveryRequest(payload))
     }
 
     private func boundary(
-        generation: Int = 4,
+        generation: String = "generation-4",
         currentCommandID: String? = nil,
         liveWorkActive: Bool = false,
         bridgeAlive: Bool = false

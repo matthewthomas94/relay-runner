@@ -86,6 +86,7 @@ from command_actions import refined_command_summary, refined_ticket_title, resol
 from continuity_incidents import (
     ContinuityIncidentDetector,
     Observation,
+    normalize_recovery_generation,
     opaque_identifier,
     provider_observation,
 )
@@ -289,23 +290,23 @@ class ContinuityLifecycleAdapter:
         self.detector = detector or ContinuityIncidentDetector(emit=emit)
         self._lock = threading.RLock()
         self._watches: dict[
-            tuple[str, str | None, str, str, int, str], Observation
+            tuple[str, str | None, str, str, str, str], Observation
         ] = {}
         self._active_incidents: dict[
-            tuple[str, str | None, str, str, int, str], Observation
+            tuple[str, str | None, str, str, str, str], Observation
         ] = {}
         self._suppressed_sessions: dict[str, str] = {}
         self._objective_evidence: dict[
-            tuple[str, str | None, int], dict[str, float]
+            tuple[str, str | None, str], dict[str, float]
         ] = {}
         self._confirmed_dead: set[
-            tuple[str, str | None, str, str, int, str]
+            tuple[str, str | None, str, str, str, str]
         ] = set()
 
     @staticmethod
     def _watch_key(
         observation: Observation,
-    ) -> tuple[str, str | None, str, str, int, str]:
+    ) -> tuple[str, str | None, str, str, str, str]:
         return (
             observation.session_id,
             observation.command_id,
@@ -386,7 +387,9 @@ class ContinuityLifecycleAdapter:
             event.get("relay_command_id") or event.get("command_id") or ""
         ).strip()
         try:
-            generation = max(0, int(event.get("recovery_generation") or 0))
+            generation = normalize_recovery_generation(
+                event.get("recovery_generation", "0")
+            )
             observed_at = float(event.get("observed_at") or time.time())
         except (TypeError, ValueError) as error:
             raise ValueError("invalid continuity timing or generation") from error
@@ -2834,7 +2837,7 @@ class OrchestratorSessionStore:
 class OrchestratorCommandStore:
     """Private raw-command inbox for the persistent orchestrator."""
 
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
 
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS orchestrator_commands (
@@ -2846,6 +2849,7 @@ class OrchestratorCommandStore:
         session_id INTEGER,
         repo_path TEXT NOT NULL,
         provider_key TEXT,
+        recovery_generation TEXT NOT NULL DEFAULT '0',
         source_text TEXT NOT NULL,
         context TEXT,
         action TEXT,
@@ -2925,6 +2929,14 @@ class OrchestratorCommandStore:
                 c.executescript(self.SCHEMA)
                 c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 return
+            if current == 4:
+                c.execute(
+                    "ALTER TABLE orchestrator_commands "
+                    "ADD COLUMN recovery_generation TEXT NOT NULL DEFAULT '0'"
+                )
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+                c.executescript(self.SCHEMA)
+                return
             if current == self.SCHEMA_VERSION:
                 c.executescript(self.SCHEMA)
                 return
@@ -2951,6 +2963,7 @@ class OrchestratorCommandStore:
         within_turn_order: int | str | None = None,
         session_id: int | None = None,
         provider_key: str | None = None,
+        recovery_generation: str | int = "0",
         context: str | None = None,
         action: str | None = None,
         outcome: str | None = None,
@@ -2982,6 +2995,7 @@ class OrchestratorCommandStore:
         repo = str(Path(repo_path).expanduser().resolve())
         now = time.time()
         provider = OrchestratorSessionStore._normalize_provider(provider_key) if provider_key else None
+        generation = normalize_recovery_generation(recovery_generation)
         refined_context = _clean_optional_multiline_text(context)
         try:
             item_order = max(1, int(within_turn_order or 1))
@@ -2998,16 +3012,17 @@ class OrchestratorCommandStore:
             c.execute(
                 "INSERT INTO orchestrator_commands("
                 "intent_id, relay_command_id, relay_command_seq, within_turn_order, session_id, "
-                "repo_path, provider_key, source_text, context, action, outcome, ticket_id, "
+                "repo_path, provider_key, recovery_generation, source_text, context, action, outcome, ticket_id, "
                 "target, disposition, cancellation_scope, lifecycle_state, status, status_message, "
                 "error, received_at, processed_at, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(intent_id) DO UPDATE SET "
                 "relay_command_seq = excluded.relay_command_seq, "
                 "within_turn_order = excluded.within_turn_order, "
                 "session_id = excluded.session_id, "
                 "repo_path = excluded.repo_path, "
                 "provider_key = excluded.provider_key, "
+                "recovery_generation = excluded.recovery_generation, "
                 "source_text = excluded.source_text, "
                 "context = excluded.context, "
                 "action = excluded.action, "
@@ -3031,6 +3046,7 @@ class OrchestratorCommandStore:
                     session_id,
                     repo,
                     provider,
+                    generation,
                     source_text,
                     refined_context,
                     action,
@@ -4697,7 +4713,7 @@ class Daemon:
             def create_continuity_session(
                 process_identity: str,
                 incident_id: str,
-                recovery_generation: int,
+                recovery_generation: str,
             ):
                 nonlocal provider_factory
                 with provider_factory_lock:
@@ -5032,6 +5048,7 @@ class Daemon:
                 "session_id": session_id,
                 "relay_command_id": command.get("relay_command_id"),
                 "provider": command.get("provider_key") or self.agent_kind,
+                "recovery_generation": command.get("recovery_generation") or "0",
                 "observed_at": time.time(),
             })
         except ValueError as error:
@@ -8405,6 +8422,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         within_turn_order: int | str | None = None,
         session_id: int | None = None,
         provider: str | None = None,
+        recovery_generation: str | int = "0",
         context: str | None = None,
         action: str | None = None,
         outcome: str | None = None,
@@ -8464,6 +8482,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             within_turn_order=within_turn_order,
             session_id=session_id,
             provider_key=provider,
+            recovery_generation=recovery_generation,
             context=context,
             action=action,
             outcome=outcome,
@@ -9855,6 +9874,7 @@ class Handler(BaseHTTPRequestHandler):
                     within_turn_order=body.get("within_turn_order"),
                     session_id=body.get("session_id"),
                     provider=body.get("provider"),
+                    recovery_generation=body.get("recovery_generation") or "0",
                     context=body.get("context"),
                     action=body.get("action"),
                     outcome=body.get("outcome"),

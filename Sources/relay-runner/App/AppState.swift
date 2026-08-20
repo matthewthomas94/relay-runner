@@ -21,7 +21,7 @@ final class AppState {
 
     struct ContinuityRecoveryBoundary: Equatable {
         let currentSessionID: String
-        let currentRecoveryGeneration: Int
+        let currentRecoveryGeneration: String
         let currentCommandID: String?
         let provider: String
         let liveWorkActive: Bool
@@ -215,7 +215,7 @@ final class AppState {
         didSet { syncNotchStatusSurface() }
     }
     @ObservationIgnored private var activeSessionLaunchConfig: AppConfig?
-    @ObservationIgnored private var continuityRecoveryGenerationBySession: [String: Int] = [:]
+    @ObservationIgnored private var continuityRecoveryGenerationBySession: [String: String] = [:]
     @ObservationIgnored private var appliedContinuityRecoveryKeys: Set<String> = []
     @ObservationIgnored private var continuityRecoveryCooldowns: [String: CFTimeInterval] = [:]
     @ObservationIgnored private let projectRegistryV2 = ProjectRegistryV2Service.makeIfEnabled()
@@ -1079,6 +1079,12 @@ final class AppState {
                 sessionEventPath: embeddedTerminal.diagnosticEventPath,
                 projectScopeToken: projectScopeToken
             )
+            if let generation = prepared.recoveryGeneration {
+                let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
+                    repositoryPath: prepared.workingDirectory
+                )
+                continuityRecoveryGenerationBySession[sessionID] = generation
+            }
             switch request.destination {
             case .embedded:
                 try embeddedTerminal.start(prepared)
@@ -1092,6 +1098,11 @@ final class AppState {
                 )
             }
         } catch {
+            continuityRecoveryGenerationBySession.removeValue(
+                forKey: ContinuityRecoveryRequest.projectSessionIdentifier(
+                    repositoryPath: launchConfig.general.working_directory
+                )
+            )
             embeddedTerminal.markFailed(error)
             processManager.killBridge(stopRequested: true)
             menuSessionActive = false
@@ -2403,8 +2414,8 @@ final class AppState {
         let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
             repositoryPath: repositoryPath
         )
-        let currentGeneration = continuityRecoveryGenerationBySession[sessionID]
-            ?? request.recoveryGeneration
+        guard let currentGeneration = continuityRecoveryGenerationBySession[sessionID]
+        else { return .failed("recovery_generation_unavailable") }
         let currentCommandID = ProcessManager.currentRelayCommandID().map {
             ContinuityRecoveryRequest.opaqueIdentifier(kind: "command", nativeValue: $0)
         }
