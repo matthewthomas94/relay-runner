@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
 
 try:
-    from services.artifact_retention import SnapshotLeaseStore
+    from services.artifact_retention import ArtifactRetentionManager, SnapshotLeaseStore
     from services.artifact_store import (
         ArtifactMutation,
         ArtifactStore,
@@ -33,7 +33,10 @@ try:
         _reject_secrets,
     )
 except ModuleNotFoundError:  # Direct services/*.py execution.
-    from artifact_retention import SnapshotLeaseStore  # type: ignore[no-redef]
+    from artifact_retention import (  # type: ignore[no-redef]
+        ArtifactRetentionManager,
+        SnapshotLeaseStore,
+    )
     from artifact_store import (  # type: ignore[no-redef]
         ArtifactMutation,
         ArtifactStore,
@@ -580,6 +583,11 @@ class ArtifactLifecycleCoordinator:
         if status == "done":
             statuses = self._status_map(snapshot.files)
             statuses[ticket_id] = "done"
+            manager = ArtifactRetentionManager(
+                self.store,
+                lease_store=self.leases,
+                enabled=True,
+            )
             for candidate_path in sorted(snapshot.files):
                 if not _is_ticket_path(candidate_path) or candidate_path == path:
                     continue
@@ -588,7 +596,11 @@ class ArtifactLifecycleCoordinator:
                 if candidate_fields.get("status") != "backlog":
                     continue
                 dependencies = _parse_list(candidate_fields.get("depends_on", "[]"))
-                if not dependencies or any(statuses.get(item) != "done" for item in dependencies):
+                if not dependencies or not self._dependencies_allow_automatic_promotion(
+                    dependencies,
+                    statuses=statuses,
+                    manager=manager,
+                ):
                     continue
                 candidate_id = PurePosixPath(candidate_path).stem
                 candidate_artifact_id = candidate_fields.get("artifact_id")
@@ -626,6 +638,80 @@ class ArtifactLifecycleCoordinator:
             promoted_ticket_ids=tuple(promoted),
             idempotent=result.idempotent,
         )
+
+    def promote_unblocked_dependents(self) -> tuple[str, ...]:
+        """Promote artifact-backed backlog tickets through the canonical writer."""
+        snapshot = self.store.snapshot()
+        statuses = self._status_map(snapshot.files)
+        manager = ArtifactRetentionManager(
+            self.store,
+            lease_store=self.leases,
+            enabled=True,
+        )
+        instant = _format_instant(self.now())
+        operations: list[TicketWrite] = []
+        promoted: list[str] = []
+        for candidate_path in sorted(snapshot.files):
+            if not _is_ticket_path(candidate_path):
+                continue
+            content = snapshot.files[candidate_path]
+            fields, _ = _split_ticket(content)
+            if fields.get("status") != "backlog":
+                continue
+            dependencies = _parse_list(fields.get("depends_on", "[]"))
+            if not dependencies or not self._dependencies_allow_automatic_promotion(
+                dependencies,
+                statuses=statuses,
+                manager=manager,
+            ):
+                continue
+            ticket_id = PurePosixPath(candidate_path).stem
+            artifact_id = fields.get("artifact_id")
+            if not artifact_id:
+                raise ArtifactValidationError(
+                    f"dependent ticket {ticket_id} has no immutable artifact_id"
+                )
+            advanced = _rewrite_ticket(
+                content,
+                {
+                    "status": "ready",
+                    "run_state": "dependency_ready",
+                    "dependency_updated_at": instant,
+                    "activity_at": instant,
+                },
+            )
+            operations.append(TicketWrite(ticket_id, artifact_id, advanced))
+            statuses[ticket_id] = "ready"
+            promoted.append(ticket_id)
+        if not operations:
+            return ()
+        self.store.mutate(
+            ArtifactMutation(
+                event_id=f"lifecycle:dependency-sweep:{snapshot.commit_id}",
+                actor_type="pm",
+                device_id=self.device_id,
+                expected_base=snapshot.commit_id,
+                operations=tuple(operations),
+                summary="Promote artifact-backed dependency-ready tickets",
+            )
+        )
+        return tuple(promoted)
+
+    def _dependencies_allow_automatic_promotion(
+        self,
+        dependencies: Sequence[str],
+        *,
+        statuses: Mapping[str, str],
+        manager: ArtifactRetentionManager,
+    ) -> bool:
+        for dependency_id in dependencies:
+            if statuses.get(dependency_id) != "done" and not manager.dependency_satisfied(
+                dependency_id
+            ):
+                return False
+            if manager.dependency_execution_mode(dependency_id) == "spike":
+                return False
+        return True
 
     def resume_verification(
         self,

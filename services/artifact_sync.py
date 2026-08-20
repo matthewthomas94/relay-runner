@@ -528,6 +528,37 @@ class ArtifactSyncEngine:
                     transitions=(ArtifactSyncState.SYNCING, ArtifactSyncState.CLEAN),
                 )
 
+    def fetch_historical_object(
+        self,
+        commit_id: str,
+        *,
+        expected_remote_url_sha256: str,
+    ) -> None:
+        """Import verified artifact-ref history without changing local authority."""
+        if self.mode != ArtifactSyncMode.ENABLED:
+            raise ArtifactValidationError("historical fetch requires enabled remote sync")
+        if not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", commit_id):
+            raise ArtifactValidationError("historical commit identity is invalid")
+        with self._remote_snapshot(expected_url_sha256=expected_remote_url_sha256) as remote:
+            if remote.error_state:
+                raise ArtifactValidationError(
+                    remote.recovery or "historical artifact fetch failed"
+                )
+            found = self.store._git(
+                "cat-file", "-e", f"{commit_id}^{{commit}}", allowed_statuses={0, 128}
+            )
+            if found.returncode != 0:
+                raise ArtifactValidationError(
+                    "the confirmed artifact ref does not contain the requested historical commit"
+                )
+            assert remote.head is not None and remote.quarantine is not None
+            if not self._quarantine_is_ancestor(
+                remote.quarantine, commit_id, remote.head
+            ):
+                raise ArtifactValidationError(
+                    "the requested historical commit is not reachable from the confirmed artifact ref"
+                )
+
     def resolve_conflict(
         self,
         report: ArtifactConflictReport,

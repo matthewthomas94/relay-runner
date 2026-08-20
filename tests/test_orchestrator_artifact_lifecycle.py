@@ -10,6 +10,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = ROOT / "services"
@@ -20,7 +21,9 @@ from services.artifact_rollout import (  # noqa: E402
     PROJECT_OPT_IN,
     ArtifactRolloutBlocked,
 )
+from services.artifact_retention import ArtifactRetentionManager  # noqa: E402
 from services.artifact_store import (  # noqa: E402
+    ArchiveIndexWrite,
     ArtifactMutation,
     ArtifactStore,
     ConfigWrite,
@@ -351,6 +354,260 @@ Saved through the daemon-owned typed writer.
         snapshot = self.store.snapshot()
         self.assertNotIn(".orchestrator/REP-1.md", snapshot.files)
         self.assertNotIn(".orchestrator/attachments/REP-1/proof.png", snapshot.files)
+        history = self.daemon.artifact_history_search(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            query="Board artifact",
+        )
+        artifact_id = history["history"][0]["artifact_id"]
+        detail = self.daemon.artifact_history_detail(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            artifact_id=artifact_id,
+        )
+        self.assertEqual(detail["availability"], "available")
+        self.assertFalse(detail["materialized"])
+        restored = self.daemon.artifact_history_restore(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            artifact_id=artifact_id,
+            request_id="board-restore-test",
+            provider="codex",
+        )
+        retried = self.daemon.artifact_history_restore(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            artifact_id=artifact_id,
+            request_id="board-restore-test",
+            provider="claude",
+        )
+        self.assertEqual(restored["ticket_ids"], ["REP-1"])
+        self.assertTrue(retried["idempotent"])
+        self.assertIn(".orchestrator/REP-1.md", self.store.snapshot().files)
+
+    def test_retention_history_and_storage_client_contracts_are_scoped_and_provider_neutral(self):
+        token = self.scope_token()
+        preview = self.daemon.artifact_retention_preview(
+            repo_path=str(self.repo),
+            project_scope_token=token,
+        )
+        status = self.daemon.artifact_retention_status(
+            repo_path=str(self.repo),
+            project_scope_token=token,
+        )
+        history = self.daemon.artifact_history_search(
+            repo_path=str(self.repo),
+            project_scope_token=token,
+            query="",
+        )
+        storage = self.daemon.artifact_storage_metrics(
+            repo_path=str(self.repo),
+            project_scope_token=token,
+        )
+
+        self.assertEqual(preview["nonterminal_ids"], ["RR-1"])
+        self.assertEqual(preview["retained_terminal_ids"], [])
+        self.assertEqual(preview["eviction_candidate_ids"], [])
+        self.assertEqual(status["transaction"]["state"], "idle")
+        self.assertEqual(history, {"history": []})
+        self.assertEqual(storage["retention"]["nonterminal_count"], 1)
+        self.assertIn("tickets", storage["materialized"])
+        self.assertIn("attachments", storage["materialized"])
+
+        handler = object.__new__(orchestrator.Handler)
+        handler.daemon = self.daemon
+        query = urlencode({
+            "repo_path": str(self.repo),
+            "project_scope_token": token,
+        })
+        code, payload = handler._route(
+            "GET", f"/v1/artifacts/retention/preview?{query}"
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["nonterminal_ids"], ["RR-1"])
+        unscoped_code, unscoped = handler._route(
+            "GET", f"/v1/artifacts/retention/preview?repo_path={self.repo}"
+        )
+        self.assertEqual(unscoped_code, 422)
+        self.assertIn("scope token", unscoped["error"])
+
+    def test_ready_sweep_promotes_verified_archived_dependencies_through_artifact_writer(self):
+        self.write_ticket("RR-archived", status="done")
+        self.write_ticket(
+            "RR-dependent",
+            status="backlog",
+            depends_on=("RR-archived",),
+        )
+        self.write_ticket("RR-spike", status="done", execution_mode="spike")
+        self.write_ticket(
+            "RR-spike-dependent",
+            status="backlog",
+            depends_on=("RR-spike",),
+        )
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        self.assertIsNotNone(lifecycle)
+        manager = ArtifactRetentionManager(
+            self.store,
+            lease_store=lifecycle.leases,
+            enabled=True,
+        )
+        manager.delete(
+            "RR-archived",
+            event_id="archive-done-dependency",
+            device_id="test-device",
+        )
+        manager.delete(
+            "RR-spike",
+            event_id="archive-spike-dependency",
+            device_id="test-device",
+        )
+        summary = self.daemon.artifact_dependency_summary(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            ticket_id="RR-dependent",
+        )
+        self.assertTrue(summary["satisfied"])
+        self.assertEqual(summary["dependencies"], [{
+            "ticket_id": "RR-archived",
+            "satisfied": True,
+            "availability": "available",
+            "recovery": None,
+        }])
+        before = self.store._head()
+
+        with patch.object(
+            self.daemon,
+            "_capacity_wait_reason",
+            return_value=("test capacity", None),
+        ):
+            result = self.daemon.sweep_ready_tickets(
+                repo_path=str(self.repo),
+                trigger="archived-dependency-test",
+                project_scope_token=self.scope_token(),
+            )
+
+        self.assertEqual(result["promoted"], ["RR-dependent"])
+        files = self.store.snapshot().files
+        self.assertIn("status: ready", files[".orchestrator/RR-dependent.md"].decode())
+        self.assertIn(
+            "status: backlog",
+            files[".orchestrator/RR-spike-dependent.md"].decode(),
+        )
+        self.assertIsNotNone(
+            self.store._find_event(f"lifecycle:dependency-sweep:{before}")
+        )
+
+    def test_dependency_summary_keeps_incomplete_predecessor_unsatisfied(self):
+        self.write_ticket("RR-incomplete", status="backlog")
+        self.write_ticket(
+            "RR-dependent",
+            status="ready",
+            depends_on=("RR-incomplete",),
+        )
+
+        summary = self.daemon.artifact_dependency_summary(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            ticket_id="RR-dependent",
+        )
+
+        self.assertFalse(summary["satisfied"])
+        self.assertEqual(summary["dependencies"], [{
+            "ticket_id": "RR-incomplete",
+            "satisfied": False,
+            "availability": "unsatisfied",
+            "recovery": None,
+        }])
+
+    def test_dependency_summary_and_sweep_preserve_tampered_history_detail(self):
+        self.write_ticket("RR-archived", status="done")
+        self.write_ticket(
+            "RR-dependent",
+            status="ready",
+            depends_on=("RR-archived",),
+        )
+        manager = ArtifactRetentionManager(self.store, enabled=True)
+        manager.delete(
+            "RR-archived",
+            event_id="archive-tampered-dependency",
+            device_id="test-device",
+        )
+        snapshot = self.store.snapshot()
+        catalog = json.loads(snapshot.files[".orchestrator/archive-index.jsonl"])
+        catalog["ticket_blob"] = self.store._tree_entries(snapshot.commit_id)[
+            ".orchestrator/config.toml"
+        ].oid
+        self.replace_catalog(catalog, "tamper-archived-dependency")
+
+        summary = self.daemon.artifact_dependency_summary(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            ticket_id="RR-dependent",
+        )
+        with patch.object(
+            self.daemon,
+            "_capacity_wait_reason",
+            return_value=("test capacity", None),
+        ):
+            sweep = self.daemon.sweep_ready_tickets(
+                repo_path=str(self.repo),
+                trigger="tampered-dependency-test",
+                project_scope_token=self.scope_token(),
+            )
+
+        dependency = summary["dependencies"][0]
+        self.assertEqual(dependency["availability"], "tampered")
+        self.assertIn("mismatch", dependency["recovery"])
+        skipped = next(
+            item for item in sweep["skipped"] if item["ticket_id"] == "RR-dependent"
+        )
+        self.assertEqual(skipped["reason"], "dependency_history_unavailable")
+        self.assertEqual(skipped["availability"], "tampered")
+        self.assertEqual(skipped["recovery"], dependency["recovery"])
+
+    def test_dependency_summary_and_sweep_preserve_unavailable_history_detail(self):
+        self.write_ticket("RR-archived", status="done")
+        self.write_ticket(
+            "RR-dependent",
+            status="ready",
+            depends_on=("RR-archived",),
+        )
+        manager = ArtifactRetentionManager(self.store, enabled=True)
+        manager.delete(
+            "RR-archived",
+            event_id="archive-unavailable-dependency",
+            device_id="test-device",
+        )
+        snapshot = self.store.snapshot()
+        catalog = json.loads(snapshot.files[".orchestrator/archive-index.jsonl"])
+        catalog["source_commit"] = "0" * 40
+        self.replace_catalog(catalog, "unavailable-archived-dependency")
+
+        summary = self.daemon.artifact_dependency_summary(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            ticket_id="RR-dependent",
+        )
+        with patch.object(
+            self.daemon,
+            "_capacity_wait_reason",
+            return_value=("test capacity", None),
+        ):
+            sweep = self.daemon.sweep_ready_tickets(
+                repo_path=str(self.repo),
+                trigger="unavailable-dependency-test",
+                project_scope_token=self.scope_token(),
+            )
+
+        dependency = summary["dependencies"][0]
+        self.assertEqual(dependency["availability"], "needs_network")
+        self.assertIn("deepen", dependency["recovery"])
+        skipped = next(
+            item for item in sweep["skipped"] if item["ticket_id"] == "RR-dependent"
+        )
+        self.assertEqual(skipped["reason"], "dependency_history_unavailable")
+        self.assertEqual(skipped["availability"], "needs_network")
+        self.assertEqual(skipped["recovery"], dependency["recovery"])
 
     def scope_token(self) -> str:
         payload = {
@@ -368,16 +625,24 @@ Saved through the daemon-owned typed writer.
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).decode("ascii")
 
-    def write_ticket(self, ticket_id: str) -> None:
+    def write_ticket(
+        self,
+        ticket_id: str,
+        *,
+        status: str = "ready",
+        depends_on: tuple[str, ...] = (),
+        execution_mode: str = "implementation",
+    ) -> None:
+        dependencies = "[" + ", ".join(depends_on) + "]"
         markdown = f"""---
 id: {ticket_id}
 artifact_id: artifact-{ticket_id}
 title: Daemon lifecycle
-status: ready
+status: {status}
 priority: high
-execution_mode: implementation
+execution_mode: {execution_mode}
 activity_at: 2026-08-04T00:00:00.000000Z
-depends_on: []
+depends_on: {dependencies}
 run_id: null
 canceled: false
 worker_model: strong
@@ -396,6 +661,16 @@ Exercise the artifact lifecycle through the daemon.
             device_id="test-device",
             expected_base=self.store._head(),
             operations=(TicketWrite(ticket_id, f"artifact-{ticket_id}", markdown),),
+        ))
+
+    def replace_catalog(self, entry: dict[str, object], event_id: str) -> None:
+        content = (json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        self.store.mutate(ArtifactMutation(
+            event_id=event_id,
+            actor_type="system",
+            device_id="test-device",
+            expected_base=self.store._head(),
+            operations=(ArchiveIndexWrite(content),),
         ))
 
     def git(self, *arguments: str) -> str:

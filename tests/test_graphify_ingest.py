@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -452,7 +453,6 @@ class GraphifyIngestTests(unittest.TestCase):
             [ticket["body"]["ticket_id"] for ticket in store.nodes(kind=NODE_TICKET)],
             ["PB-2"],
         )
-
         backlog = build_program_status(store, query="backlog_lane", limit=0, now=2000.0)
         in_progress = build_program_status(store, query="in_progress_lane", limit=0, now=2000.0)
 
@@ -460,6 +460,153 @@ class GraphifyIngestTests(unittest.TestCase):
         self.assertEqual(in_progress["items"], [])
         self.assertNotIn("PB-1", backlog["message"])
         self.assertNotIn("PB-1", in_progress["message"])
+
+    def test_archived_catalog_keeps_hundreds_of_metadata_only_ticket_nodes(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "archive-history")
+        _write_ticket(
+            repo,
+            "AH-live",
+            "Live dependent",
+            "backlog",
+            depends_on=["AH-000"],
+        )
+        entries = []
+        for index in range(200):
+            ticket_id = f"AH-{index:03d}"
+            entries.append({
+                "schema_version": 1,
+                "artifact_id": f"artifact-{ticket_id}",
+                "ticket_id": ticket_id,
+                "title": f"Archived {index}",
+                "status": "done",
+                "activity_at": f"2026-01-01T00:{index % 60:02d}:00Z",
+                "dependencies": [],
+                "state": "archived",
+                "ticket_path": f".orchestrator/{ticket_id}.md",
+                "attachments": [],
+            })
+        _install_confirmed_archive(repo, entries)
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{
+                "id": str(repo.resolve()),
+                "repoPath": str(repo.resolve()),
+                "displayName": "Archive history",
+            }],
+        }))
+
+        store = self.make_store()
+        counts = ingest_registered_projects(store, registry_path=registry_path)
+        archived = store.find_node(
+            kind=NODE_TICKET,
+            stable_key=f"repo:{repo.resolve()}:AH-000",
+        )
+        live = store.find_node(
+            kind=NODE_TICKET,
+            stable_key=f"repo:{repo.resolve()}:AH-live",
+        )
+
+        self.assertEqual(counts["tickets"], 201)
+        self.assertEqual(counts["archived_tickets"], 200)
+        self.assertFalse(archived["body"]["materialized"])
+        self.assertEqual(archived["body"]["history_state"], "archived")
+        self.assertIsNotNone(
+            store.get_edge(src_id=live["id"], dst_id=archived["id"], kind=EDGE_DEPENDS_ON)
+        )
+        second = ingest_registered_projects(store, registry_path=registry_path)
+        self.assertEqual(second["tickets_deleted"], 0)
+        self.assertIsNotNone(store.find_node(kind=NODE_TICKET, stable_key=archived["stable_key"]))
+
+    def test_archive_catalog_rejects_invalid_activity_timestamp(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "invalid-archive-time")
+        _install_confirmed_archive(repo, [{
+            "schema_version": 1,
+            "artifact_id": "artifact-TIME-1",
+            "ticket_id": "TIME-1",
+            "title": "Invalid activity",
+            "status": "done",
+            "activity_at": "2026-02-30T00:00:00Z",
+            "state": "archived",
+            "ticket_path": ".orchestrator/TIME-1.md",
+            "attachments": [],
+        }])
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{
+                "id": str(repo.resolve()),
+                "repoPath": str(repo.resolve()),
+            }],
+        }))
+
+        with self.assertRaisesRegex(ValueError, "invalid activity_at"):
+            ingest_registered_projects(self.make_store(), registry_path=registry_path)
+
+    def test_archive_catalog_rejects_fabricated_valid_shaped_git_identities(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "tampered-archive-identity")
+        _install_confirmed_archive(repo, [{
+            "schema_version": 1,
+            "artifact_id": "artifact-TAMPER-1",
+            "ticket_id": "TAMPER-1",
+            "title": "Tampered identity",
+            "status": "done",
+            "activity_at": "2026-01-01T00:00:00Z",
+            "state": "archived",
+            "ticket_path": ".orchestrator/TAMPER-1.md",
+            "attachments": [],
+        }])
+        _rewrite_confirmed_archive(repo, {
+            "source_commit": "a" * 40,
+            "ticket_blob": "b" * 40,
+        })
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{
+                "id": str(repo.resolve()),
+                "repoPath": str(repo.resolve()),
+            }],
+        }))
+
+        with self.assertRaisesRegex(ValueError, "unreachable historical identity"):
+            ingest_registered_projects(self.make_store(), registry_path=registry_path)
+
+    def test_archive_catalog_rejects_status_tamper_against_canceled_markdown(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "tampered-archive-status")
+        _install_confirmed_archive(repo, [{
+            "schema_version": 1,
+            "artifact_id": "artifact-TAMPER-2",
+            "ticket_id": "TAMPER-2",
+            "title": "Canceled history",
+            "status": "canceled",
+            "activity_at": "2026-01-01T00:00:00Z",
+            "state": "archived",
+            "ticket_path": ".orchestrator/TAMPER-2.md",
+            "attachments": [],
+            "_source_status": "backlog",
+            "_source_canceled": True,
+        }])
+        _rewrite_confirmed_archive(repo, {"status": "done"})
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{
+                "id": str(repo.resolve()),
+                "repoPath": str(repo.resolve()),
+            }],
+        }))
+
+        with self.assertRaisesRegex(ValueError, "status and canceled semantics"):
+            ingest_registered_projects(self.make_store(), registry_path=registry_path)
 
     def test_prunes_stale_run_nodes_missing_from_run_history(self):
         root = Path(tempfile.mkdtemp())
@@ -605,6 +752,92 @@ def _make_repo(root: Path, name: str) -> Path:
     repo = root / name
     (repo / ".orchestrator").mkdir(parents=True)
     return repo
+
+
+def _install_confirmed_archive(repo: Path, entries: list[dict]) -> None:
+    _git(repo, "init", "--initial-branch=main", "--quiet")
+    _git(repo, "config", "user.name", "Graphify Tests")
+    _git(repo, "config", "user.email", "graphify@example.invalid")
+    (repo / ".orchestrator" / "config.toml").write_text(
+        'project_id = "graphify-test"\nartifact_ref = "refs/heads/relay/artifacts"\n',
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".orchestrator")
+    _git(repo, "commit", "--quiet", "--allow-empty", "-m", "materialized board")
+    _git(repo, "switch", "--quiet", "-c", "relay/artifacts")
+    archived_paths = []
+    for entry in entries:
+        ticket_path = repo / str(entry["ticket_path"])
+        source_status = entry.get("_source_status", entry["status"])
+        source_canceled = str(entry.get("_source_canceled", False)).lower()
+        ticket_path.write_text(
+            f"""---
+id: {entry['ticket_id']}
+artifact_id: {entry['artifact_id']}
+title: {entry['title']}
+status: {source_status}
+activity_at: {entry['activity_at']}
+execution_mode: implementation
+depends_on: []
+run_id: null
+canceled: {source_canceled}
+---
+
+## Description
+
+Archived Graphify fixture.
+""",
+            encoding="utf-8",
+        )
+        archived_paths.append(ticket_path)
+    _git(repo, "add", ".orchestrator")
+    _git(repo, "commit", "--quiet", "-m", "archive source tickets")
+    source_commit = _git(repo, "rev-parse", "HEAD")
+    tree_entries = {}
+    for line in _git(repo, "ls-tree", "-r", source_commit).splitlines():
+        metadata, _, path = line.partition("\t")
+        tree_entries[path] = metadata.split()[2]
+    catalog = []
+    for entry in entries:
+        completed = {key: value for key, value in entry.items() if not key.startswith("_")}
+        completed["source_commit"] = source_commit
+        completed["ticket_blob"] = tree_entries[str(entry["ticket_path"])]
+        catalog.append(completed)
+    for ticket_path in archived_paths:
+        ticket_path.unlink()
+    (repo / ".orchestrator" / "archive-index.jsonl").write_text(
+        "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in catalog),
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A", ".orchestrator")
+    _git(repo, "commit", "--quiet", "-m", "confirm archive catalog")
+    _git(repo, "switch", "--quiet", "main")
+
+
+def _rewrite_confirmed_archive(repo: Path, updates: dict[str, str]) -> None:
+    _git(repo, "switch", "--quiet", "relay/artifacts")
+    path = repo / ".orchestrator" / "archive-index.jsonl"
+    entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    entries[0].update(updates)
+    path.write_text(
+        "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries),
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".orchestrator/archive-index.jsonl")
+    _git(repo, "commit", "--quiet", "-m", "tamper archive catalog")
+    _git(repo, "switch", "--quiet", "main")
+
+
+def _git(repo: Path, *arguments: str) -> str:
+    process = subprocess.run(
+        ["git", "-C", str(repo), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if process.returncode != 0:
+        raise AssertionError(process.stderr or process.stdout)
+    return process.stdout.strip()
 
 
 def _write_ticket(

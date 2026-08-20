@@ -10,6 +10,7 @@ from pathlib import Path
 from services.artifact_retention import (
     ArchiveRemoteConfirmation,
     ArtifactRetentionManager,
+    DependencyHistoryUnavailable,
     HistoryAvailability,
     RetentionState,
     SnapshotLeaseStore,
@@ -405,6 +406,270 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertIn(f"activity_at: {format_instant(self.now)}", files[".orchestrator/RR-1.md"].decode())
         self.assertEqual(files[".orchestrator/attachments/RR-1/proof.png"], PNG)
         self.assertIn("RR-1", self.manager.preview().retained_terminal_ids)
+
+    def test_cross_ticket_attachment_catalog_reuse_is_rejected_everywhere(self):
+        self.seed_retained_terminal()
+        old = self.now - timedelta(days=31)
+        self.write_ticket("RR-A", "Owner A", activity_at=old, extra={"status": "done"})
+        self.write_ticket("RR-B", "Owner B", activity_at=old, extra={"status": "done"})
+        self.write_attachment("RR-A", "proof.png", PNG + b"-A")
+        self.write_attachment("RR-B", "proof.png", PNG + b"-B")
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-cross-owner", device_id="device-a"
+        )
+        catalog = self.catalog_entries()
+        catalog["artifact-RR-A"]["attachments"] = [
+            dict(catalog["artifact-RR-B"]["attachments"][0])
+        ]
+        self.replace_catalog_entries(catalog, "tamper-cross-owner")
+        tampered_head = self.store._head()
+
+        detail = self.manager.historical_detail("artifact-RR-A")
+
+        self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+        self.assertIn("not uniquely owned", detail.recovery)
+        with self.assertRaisesRegex(Exception, "not uniquely owned"):
+            self.manager.historical_attachment("artifact-RR-A", "proof.png")
+        with self.assertRaisesRegex(Exception, "not uniquely owned"):
+            self.manager.restore(
+                "artifact-RR-A", event_id="restore-cross-owner", device_id="device-a"
+            )
+        with self.assertRaisesRegex(Exception, "not uniquely owned"):
+            self.manager.reopen(
+                "artifact-RR-A", event_id="reopen-cross-owner", device_id="device-a"
+            )
+        with self.assertRaisesRegex(Exception, "integrity blocker.*not uniquely owned"):
+            self.manager.preview()
+        self.assertEqual(self.store._head(), tampered_head)
+        files = self.store.snapshot().files
+        self.assertNotIn(".orchestrator/RR-A.md", files)
+        self.assertNotIn(".orchestrator/attachments/RR-A/proof.png", files)
+
+    def test_attachment_mime_size_and_blob_catalog_tampering_is_rejected(self):
+        self.seed_retained_terminal()
+        old = self.now - timedelta(days=31)
+        self.write_ticket("RR-A", "Owner A", activity_at=old, extra={"status": "done"})
+        self.write_ticket("RR-B", "Owner B", activity_at=old, extra={"status": "done"})
+        self.write_attachment("RR-A", "proof.png", PNG + b"-A")
+        self.write_attachment("RR-B", "proof.png", PNG + b"-B")
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-metadata", device_id="device-a"
+        )
+        catalog = self.catalog_entries()
+        other_blob = catalog["artifact-RR-B"]["attachments"][0]["blob"]
+        cases = (
+            ("mime", "MIME metadata", lambda item: item.__setitem__("mime_type", "image/jpeg")),
+            ("size", "size metadata", lambda item: item.__setitem__("size", item["size"] + 1)),
+            ("blob", "blob mismatch", lambda item: item.__setitem__("blob", other_blob)),
+        )
+
+        for name, recovery, tamper in cases:
+            with self.subTest(name=name):
+                tampered = json.loads(json.dumps(catalog))
+                tamper(tampered["artifact-RR-A"]["attachments"][0])
+                self.replace_catalog_entries(tampered, f"tamper-attachment-{name}")
+
+                detail = self.manager.historical_detail("artifact-RR-A")
+
+                self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+                self.assertIn(recovery, detail.recovery)
+                self.assertIn("repair the catalog", detail.recovery)
+                with self.assertRaisesRegex(Exception, "integrity blocker"):
+                    self.manager.preview()
+
+    def test_history_attachment_restore_and_reopen_bind_verified_catalog_head(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-A",
+            "Owner A",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "done"},
+        )
+        self.write_attachment("RR-A", "proof.png", PNG + b"-A")
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-head-race", device_id="device-a"
+        )
+        historical_detail = self.manager.historical_detail
+        race_count = 0
+
+        def racing_detail(*args, **kwargs):
+            nonlocal race_count
+            detail = historical_detail(*args, **kwargs)
+            race_count += 1
+            self.replace_catalog_entries(
+                self.catalog_entries(), f"race-history-head-{race_count}"
+            )
+            return detail
+
+        self.manager.historical_detail = racing_detail
+
+        with self.assertRaisesRegex(ArtifactConcurrentUpdate, "head changed"):
+            self.manager.historical_attachment("artifact-RR-A", "proof.png")
+        with self.assertRaisesRegex(ArtifactConcurrentUpdate, "head changed"):
+            self.manager.restore(
+                "artifact-RR-A", event_id="restore-head-race", device_id="device-a"
+            )
+        with self.assertRaisesRegex(ArtifactConcurrentUpdate, "head changed"):
+            self.manager.reopen(
+                "artifact-RR-A", event_id="reopen-head-race", device_id="device-a"
+            )
+        self.assertNotIn(".orchestrator/RR-A.md", self.store.snapshot().files)
+
+    def test_owned_rr_a_attachment_remains_restorable(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-A",
+            "Owner A",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "done"},
+        )
+        self.write_attachment("RR-A", "proof.png", PNG + b"-A")
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-owned-a", device_id="device-a"
+        )
+
+        detail = self.manager.historical_detail("artifact-RR-A")
+        restored = self.manager.restore(
+            "artifact-RR-A", event_id="restore-owned-a", device_id="device-a"
+        )
+
+        self.assertEqual(detail.availability, HistoryAvailability.AVAILABLE)
+        self.assertEqual(restored.state, RetentionState.RESTORE_PENDING_SYNC)
+        self.assertEqual(
+            self.store.snapshot().files[".orchestrator/attachments/RR-A/proof.png"],
+            PNG + b"-A",
+        )
+
+    def test_orphan_source_commit_with_matching_tree_is_not_trusted(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-1",
+            "Done predecessor",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "done"},
+        )
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-orphan", device_id="device-a"
+        )
+        snapshot = self.store.snapshot()
+        catalog = json.loads(snapshot.files[".orchestrator/archive-index.jsonl"])
+        source_commit = catalog["source_commit"]
+        source_tree = self.git("rev-parse", f"{source_commit}^{{tree}}")
+        orphan = self.git(
+            "-c", "user.name=Retention Tests",
+            "-c", "user.email=retention@example.invalid",
+            "commit-tree", source_tree, "-m", "unrelated matching tree",
+        )
+        catalog["source_commit"] = orphan
+        self.replace_catalog(catalog, "orphan-catalog-source")
+
+        detail = self.manager.historical_detail("artifact-RR-1")
+
+        self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+        self.assertIn("not reachable", detail.recovery)
+        with self.assertRaises(DependencyHistoryUnavailable) as caught:
+            self.manager.dependency_satisfied("RR-1")
+        self.assertEqual(caught.exception.detail, detail)
+
+    def test_catalog_status_tamper_cannot_promote_canceled_history_to_done(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-1",
+            "Canceled predecessor",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "backlog", "canceled": "true"},
+        )
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-canceled", device_id="device-a"
+        )
+        snapshot = self.store.snapshot()
+        catalog = json.loads(snapshot.files[".orchestrator/archive-index.jsonl"])
+        self.assertEqual(catalog["status"], "canceled")
+        catalog["status"] = "done"
+        self.replace_catalog(catalog, "tamper-canceled-status")
+
+        detail = self.manager.historical_detail(
+            "artifact-RR-1", online=True, deepen=lambda _: self.fail("unexpected deepen")
+        )
+
+        self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+        self.assertIn("status and canceled semantics", detail.recovery)
+        with self.assertRaises(DependencyHistoryUnavailable) as caught:
+            self.manager.dependency_satisfied("RR-1")
+        self.assertEqual(caught.exception.detail, detail)
+
+    def test_catalog_activity_tamper_blocks_preview_before_ranking_or_materialization(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-1",
+            "Archived terminal",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "done"},
+        )
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-activity", device_id="device-a"
+        )
+        untampered = self.manager.preview()
+        self.assertEqual(self.manager.preview(), untampered)
+        self.assertNotIn("RR-1", untampered.retained_terminal_ids)
+        self.assertNotIn("RR-1", untampered.materialize_ids)
+
+        snapshot = self.store.snapshot()
+        catalog = json.loads(snapshot.files[".orchestrator/archive-index.jsonl"])
+        catalog["activity_at"] = format_instant(self.now + timedelta(days=1))
+        self.replace_catalog(catalog, "tamper-activity")
+
+        detail = self.manager.historical_detail("artifact-RR-1")
+        self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+        self.assertIn("activity timestamp", detail.recovery)
+        with self.assertRaisesRegex(
+            Exception, "integrity blocker.*activity timestamp"
+        ):
+            self.manager.preview()
+        self.assertNotIn(".orchestrator/RR-1.md", self.store.snapshot().files)
+
+    def test_verified_attachment_read_and_reopen_do_not_leave_terminal_work_capped(self):
+        self.seed_retained_terminal()
+        old = self.now - timedelta(days=31)
+        self.write_ticket("RR-reopen-api", "Reopen API", activity_at=old, extra={"status": "done"})
+        self.write_attachment("RR-reopen-api", "proof.png", PNG)
+        self.manager.archive(
+            self.manager.preview(),
+            event_id="archive-reopen-api",
+            device_id="device-a",
+        )
+        head_before_read = self.store._head()
+
+        attachment = self.manager.historical_attachment(
+            "artifact-RR-reopen-api", "proof.png"
+        )
+
+        self.assertEqual(attachment.content, PNG)
+        self.assertEqual(attachment.mime_type, "image/png")
+        self.assertEqual(self.store._head(), head_before_read)
+        self.assertNotIn(".orchestrator/RR-reopen-api.md", self.store.snapshot().files)
+
+        reopened = self.manager.reopen(
+            "artifact-RR-reopen-api",
+            event_id="reopen-api",
+            device_id="device-a",
+            provider="codex",
+            reopened_at=self.now,
+        )
+        retried = self.manager.reopen(
+            "artifact-RR-reopen-api",
+            event_id="reopen-api",
+            device_id="device-a",
+            provider="claude",
+            reopened_at=self.now,
+        )
+
+        markdown = self.store.snapshot().files[".orchestrator/RR-reopen-api.md"]
+        self.assertEqual(reopened.state, RetentionState.RESTORE_PENDING_SYNC)
+        self.assertTrue(retried.write.idempotent)
+        self.assertIn(b"status: backlog", markdown)
+        self.assertIn(b"canceled: false", markdown)
+        self.assertIn("RR-reopen-api", self.manager.preview().nonterminal_ids)
 
     def test_archive_failures_preserve_or_recover_projection_from_canonical_ref(self):
         self.seed_retained_terminal()
@@ -1333,6 +1598,11 @@ class ArtifactRetentionTests(unittest.TestCase):
         )
         self.assertEqual(missing.availability, HistoryAvailability.NEEDS_NETWORK)
         self.assertEqual(calls, ["0" * 40])
+        unavailable = self.manager.historical_detail("artifact-RR-1")
+        with self.assertRaises(DependencyHistoryUnavailable) as caught:
+            self.manager.dependency_satisfied("RR-1")
+        self.assertEqual(unavailable.availability, HistoryAvailability.NEEDS_NETWORK)
+        self.assertEqual(caught.exception.detail, unavailable)
 
     def test_recoverable_delete_warns_history_remains_and_can_restore(self):
         old = self.now - timedelta(days=31)
@@ -1503,7 +1773,22 @@ class ArtifactRetentionTests(unittest.TestCase):
         )
 
     def replace_catalog(self, entry, event_id):
-        content = (json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        return self.replace_catalog_entries({entry["artifact_id"]: entry}, event_id)
+
+    def catalog_entries(self):
+        content = self.store.snapshot().files[".orchestrator/archive-index.jsonl"]
+        return {
+            entry["artifact_id"]: entry
+            for entry in (json.loads(line) for line in content.decode().splitlines())
+        }
+
+    def replace_catalog_entries(self, entries, event_id):
+        content = (
+            "".join(
+                json.dumps(entries[key], sort_keys=True, separators=(",", ":")) + "\n"
+                for key in sorted(entries)
+            )
+        ).encode()
         return self.store.mutate(
             ArtifactMutation(
                 event_id=event_id,
