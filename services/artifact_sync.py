@@ -246,6 +246,7 @@ class ArtifactSyncEngine:
         *,
         expected_remote_head: str,
         proofs: Sequence[ArtifactRemoteProof],
+        expected_remote_url_sha256: str | None = None,
         expected_push_url_sha256: str | None = None,
     ) -> ArtifactSyncResult:
         """Normally publish a prepared descendant, then independently refetch it.
@@ -281,7 +282,9 @@ class ArtifactSyncEngine:
                     transitions=(ArtifactSyncState.AHEAD, ArtifactSyncState.LOCAL_AHEAD_BLOCKED),
                 )
 
-            with self._remote_snapshot() as before:
+            with self._remote_snapshot(
+                expected_url_sha256=expected_remote_url_sha256
+            ) as before:
                 if before.error_state:
                     return self._remote_error_result(before, candidate_head, attempts=1)
                 assert before.head is not None and before.quarantine is not None
@@ -317,7 +320,9 @@ class ArtifactSyncEngine:
 
             # This is intentionally a new quarantine, not the snapshot used for
             # preflight.  It resolves indeterminate pushes and remote races.
-            with self._remote_snapshot() as after:
+            with self._remote_snapshot(
+                expected_url_sha256=expected_remote_url_sha256
+            ) as after:
                 if after.error_state:
                     return self._remote_error_result(after, candidate_head, attempts=1)
                 assert after.head is not None and after.quarantine is not None
@@ -1028,20 +1033,27 @@ class ArtifactSyncEngine:
                 )
 
     @contextlib.contextmanager
-    def _remote_snapshot(self) -> Iterator[_RemoteSnapshot]:
+    def _remote_snapshot(
+        self,
+        *,
+        expected_url_sha256: str | None = None,
+    ) -> Iterator[_RemoteSnapshot]:
         assert self.remote_name is not None
-        remote_url_result = self.store._git(
-            "remote", "get-url", self.remote_name, allowed_statuses={0, 2, 128}
-        )
-        if remote_url_result.returncode != 0:
-            yield _RemoteSnapshot(
-                None,
-                None,
-                ArtifactSyncState.FAILED,
-                f"Configured remote {self.remote_name!r} no longer exists; select another existing remote or Local only.",
+        if expected_url_sha256 is None:
+            remote_url_result = self.store._git(
+                "remote", "get-url", self.remote_name, allowed_statuses={0, 2, 128}
             )
-            return
-        remote_url = remote_url_result.stdout.strip()
+            if remote_url_result.returncode != 0:
+                yield _RemoteSnapshot(
+                    None,
+                    None,
+                    ArtifactSyncState.FAILED,
+                    f"Configured remote {self.remote_name!r} no longer exists; select another existing remote or Local only.",
+                )
+                return
+            remote_url = remote_url_result.stdout.strip()
+        else:
+            remote_url = self._validated_fetch_destination(expected_url_sha256)
         temporary = Path(tempfile.mkdtemp(prefix="relay-artifact-quarantine-"))
         quarantine = temporary / "remote.git"
         try:
@@ -1277,6 +1289,24 @@ class ArtifactSyncEngine:
         if hashlib.sha256(destination.encode("utf-8")).hexdigest() != expected_sha256:
             raise ArtifactValidationError(
                 "the push destination changed after exposure confirmation"
+            )
+        return destination
+
+    def _validated_fetch_destination(self, expected_sha256: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ArtifactValidationError("confirmed fetch destination digest is invalid")
+        assert self.remote_name is not None
+        result = self.store._git(
+            "remote", "get-url", self.remote_name, allowed_statuses={0, 2, 128}
+        )
+        destination = result.stdout.strip()
+        if result.returncode != 0 or not destination:
+            raise ArtifactValidationError(
+                "the confirmed fetch destination is no longer configured"
+            )
+        if hashlib.sha256(destination.encode("utf-8")).hexdigest() != expected_sha256:
+            raise ArtifactValidationError(
+                "the fetch destination changed after exposure confirmation"
             )
         return destination
 

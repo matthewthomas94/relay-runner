@@ -764,6 +764,76 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertEqual(self.git("ls-remote", str(unconfirmed), self.store.artifact_ref), "")
         self.assertIn(".orchestrator/RR-late-pushurl.md", self.store.snapshot().files)
 
+    def test_post_push_verification_stays_bound_to_confirmed_fetch_destination(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-late-fetchurl",
+            "Keep after late fetch redirect",
+            activity_at=self.now - timedelta(days=365),
+            extra={"status": "done"},
+        )
+        base = self.store._head()
+        projection = dict(self.store.snapshot().files)
+        ticket_path = self.store.materialized_path / "RR-late-fetchurl.md"
+        ticket_content = ticket_path.read_bytes()
+        mirror = self.root / "late-fetch.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--quiet", str(mirror)],
+            check=True,
+        )
+        self.git("remote", "set-url", "--push", "origin", str(self.remote))
+
+        def redirect_fetch(stage):
+            if stage != "after_prepared_push":
+                return
+            self.git(
+                "--git-dir", str(self.remote),
+                "push", str(mirror),
+                f"{self.store.artifact_ref}:{self.store.artifact_ref}",
+            )
+            self.git("remote", "set-url", "origin", str(mirror))
+            self.assertEqual(
+                self.git("remote", "get-url", "--push", "origin"),
+                str(self.remote),
+            )
+            self.git(
+                "--git-dir", str(self.remote),
+                "update-ref", "-d", self.store.artifact_ref,
+            )
+
+        synchronizer = ArtifactSyncEngine(
+            self.store,
+            mode=ArtifactSyncMode.ENABLED,
+            remote_name="origin",
+            max_attempts=1,
+            base_retry_seconds=0,
+            sleep=lambda _: None,
+            jitter=lambda: 0,
+            failure_injector=redirect_fetch,
+        )
+        manager = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=self.confirmation,
+            synchronizer=synchronizer,
+            now=lambda: self.now,
+        )
+
+        with self.assertRaisesRegex(Exception, "fetch destination changed"):
+            manager.archive(
+                manager.preview(), event_id="late-fetchurl", device_id="device-a"
+            )
+
+        self.assertEqual(self.git("ls-remote", str(self.remote), self.store.artifact_ref), "")
+        self.assertEqual(self.store._head(), base)
+        self.assertEqual(dict(self.store.snapshot().files), projection)
+        self.assertEqual(ticket_path.read_bytes(), ticket_content)
+        self.assertEqual(
+            json.loads(manager.transaction_path.read_text(encoding="utf-8"))["phase"],
+            "prepared",
+        )
+
     def test_remote_race_discards_only_unpublished_candidate_for_safe_replan(self):
         self.seed_retained_terminal()
         self.write_ticket(

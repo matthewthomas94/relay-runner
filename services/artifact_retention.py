@@ -1251,6 +1251,7 @@ class ArtifactRetentionManager:
                 candidate_head,
                 expected_remote_head=base_head,
                 proofs=proofs,
+                expected_remote_url_sha256=confirmation.remote_url_sha256,
                 expected_push_url_sha256=confirmation.push_url_sha256,
             )
             state_value = getattr(getattr(result, "state", None), "value", None)
