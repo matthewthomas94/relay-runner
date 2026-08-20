@@ -97,8 +97,11 @@ from continuity_agent import (
     create_provider_session_factory,
 )
 from continuity_recovery import (
+    CAPABILITY_POLICIES,
     ComponentOwnedRecoveryBroker,
+    ProductionRecoveryCapability,
     RecoveryActionResult,
+    RecoveryActionValidation,
     production_recovery_owners,
 )
 from codex_model_catalog import (
@@ -285,10 +288,16 @@ class ContinuityLifecycleAdapter:
         self._watches: dict[
             tuple[str, str | None, str, str, int, str], Observation
         ] = {}
+        self._active_incidents: dict[
+            tuple[str, str | None, str, str, int, str], Observation
+        ] = {}
         self._suppressed_sessions: dict[str, str] = {}
         self._objective_evidence: dict[
             tuple[str, str | None, int], dict[str, float]
         ] = {}
+        self._confirmed_dead: set[
+            tuple[str, str | None, str, str, int, str]
+        ] = set()
 
     @staticmethod
     def _watch_key(
@@ -318,18 +327,19 @@ class ContinuityLifecycleAdapter:
         )
 
     def _clear_recovered_watches(self, observation: Observation) -> None:
-        for key, watched in tuple(self._watches.items()):
-            if (
-                watched.session_id == observation.session_id
-                and watched.component == observation.component
-                and watched.provider == observation.provider
-                and watched.recovery_generation == observation.recovery_generation
-                and (
-                    watched.command_id == observation.command_id
-                    or watched.command_id is None
-                )
-            ):
-                self._watches.pop(key, None)
+        for store in (self._watches, self._active_incidents):
+            for key, watched in tuple(store.items()):
+                if (
+                    watched.session_id == observation.session_id
+                    and watched.component == observation.component
+                    and watched.provider == observation.provider
+                    and watched.recovery_generation == observation.recovery_generation
+                    and (
+                        watched.command_id == observation.command_id
+                        or watched.command_id is None
+                    )
+                ):
+                    store.pop(key, None)
         self.detector.resolve_related(observation)
 
     def _clear_component_watches(
@@ -337,15 +347,19 @@ class ContinuityLifecycleAdapter:
         observation: Observation,
         components: frozenset[str],
     ) -> None:
-        for key, watched in tuple(self._watches.items()):
-            if (
-                watched.session_id == observation.session_id
-                and watched.component in components
-                and watched.recovery_generation == observation.recovery_generation
-                and (watched.command_id is None or watched.command_id == observation.command_id)
-            ):
-                self._watches.pop(key, None)
-                self.detector.resolve_related(watched)
+        for store in (self._watches, self._active_incidents):
+            for key, watched in tuple(store.items()):
+                if (
+                    watched.session_id == observation.session_id
+                    and watched.component in components
+                    and watched.recovery_generation == observation.recovery_generation
+                    and (
+                        watched.command_id is None
+                        or watched.command_id == observation.command_id
+                    )
+                ):
+                    store.pop(key, None)
+                    self.detector.resolve_related(watched)
 
     def _watch_transient(self, observation: Observation) -> None:
         result = self.detector.observe(observation)
@@ -354,6 +368,8 @@ class ContinuityLifecycleAdapter:
             self._watches[key] = observation
         else:
             self._watches.pop(key, None)
+            if result.envelope is not None:
+                self._active_incidents[key] = observation
 
     def observe(self, event: dict[str, Any]):
         source = str(event.get("source") or "").strip().lower()
@@ -415,6 +431,8 @@ class ContinuityLifecycleAdapter:
             else None
         )
         with self._lock:
+            if source == "provider" and name == "process_exit":
+                self._confirmed_dead.add(self._watch_key(observation))
             evidence_codes = _CONTINUITY_OBJECTIVE_EVIDENCE.get((source, name), ())
             if evidence_codes:
                 evidence_key = (session_id, command_id, generation)
@@ -432,6 +450,9 @@ class ContinuityLifecycleAdapter:
                 for key, watched in tuple(self._watches.items()):
                     if watched.session_id == session_id:
                         self._watches.pop(key, None)
+                for key, active in tuple(self._active_incidents.items()):
+                    if active.session_id == session_id:
+                        self._active_incidents.pop(key, None)
                 return self.detector.observe(observation, suppression=suppression)
 
             suppressed = self._suppressed_sessions.get(session_id)
@@ -441,6 +462,7 @@ class ContinuityLifecycleAdapter:
                 self._suppressed_sessions.pop(session_id, None)
 
             if observation.health in {"healthy", "completed"}:
+                self._confirmed_dead.discard(self._watch_key(observation))
                 self._clear_recovered_watches(observation)
             resolved_components = _CONTINUITY_PROGRESS_RESOLVES.get((source, name))
             if resolved_components:
@@ -453,6 +475,8 @@ class ContinuityLifecycleAdapter:
                     self._watches[key] = observation
                 else:
                     self._watches.pop(key, None)
+                    if result.envelope is not None:
+                        self._active_incidents[key] = observation
             else:
                 deadline_component = _CONTINUITY_DEADLINE_STARTS.get((source, name))
                 if source == "provider" and name in {
@@ -510,6 +534,63 @@ class ContinuityLifecycleAdapter:
             evidence_codes=tuple(sorted(evidence)),
         )
 
+    def recovery_validation(self, request: Any) -> RecoveryActionValidation:
+        """Inspect the exact active detector watch; never infer a live owner."""
+        watched = None
+        confirmed_dead = False
+        with self._lock:
+            observations = tuple(self._watches.values()) + tuple(
+                self._active_incidents.values()
+            )
+            for observation in observations:
+                if (
+                    observation.session_id == request.session_id
+                    and observation.command_id == request.command_id
+                    and observation.component == request.component
+                    and observation.provider == request.provider
+                    and observation.phase == request.incident_phase
+                ):
+                    watched = observation
+                    confirmed_dead = (
+                        self._watch_key(observation) in self._confirmed_dead
+                        or observation.native_recovery_failed
+                    )
+                    break
+        command_phase = {
+            "capture": "before_command",
+            "transcription": "captured",
+            "delivery": "undelivered",
+            "component_liveness": "none",
+            "provider_turn": "in_flight",
+            "command_processing": "in_flight",
+            "session_liveness": "none",
+        }.get(request.incident_phase, "ambiguous")
+        generation_matches = (
+            watched is not None
+            and watched.recovery_generation == request.recovery_generation
+        )
+        liveness = "unknown"
+        if watched is not None:
+            liveness = (
+                "confirmed_dead"
+                if confirmed_dead
+                else "unhealthy"
+            )
+        return RecoveryActionValidation(
+            validation_token="live_continuity_watch",
+            exact_target_owned=watched is not None,
+            liveness=liveness,
+            incident_active=watched is not None,
+            generation_matches=generation_matches,
+            command_phase=command_phase,
+            command_phase_matches=command_phase != "ambiguous",
+            idempotency_state="new",
+            compensation_available=False,
+            cooldown_remaining=0,
+            expected_postcondition=request.expected_postcondition,
+            health=self.recovery_health(request),
+        )
+
     def sample(self, *, observed_at: float | None = None) -> list[Any]:
         """Re-observe unresolved failures so one-shot native events can qualify."""
         now = time.time() if observed_at is None else float(observed_at)
@@ -524,6 +605,8 @@ class ContinuityLifecycleAdapter:
                 results.append(result)
                 if result.state not in {"transient"}:
                     self._watches.pop(key, None)
+                    if result.envelope is not None:
+                        self._active_incidents[key] = watched
         return results
 
 WORKER_SIZING_FIELDS = (
@@ -615,14 +698,15 @@ TICKET_CONFIG_PREFIX_RE = re.compile(
 TICKET_CONFIG_NEXT_ID_RE = re.compile(r"^(\s*next_id\s*=\s*)(\d+)(\s*)$", re.MULTILINE)
 
 
-def _notify_state(state: str, **kwargs: Any) -> None:
+def _notify_state(state: str, **kwargs: Any) -> bool:
     msg = {"source": "orchestrator", "state": state, **kwargs}
     s = None
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         s.sendto(json.dumps(msg).encode(), str(VOICE_STATE_SOCK))
+        return True
     except (OSError, ConnectionRefusedError):
-        pass
+        return False
     finally:
         if s is not None:
             s.close()
@@ -4631,10 +4715,17 @@ class Daemon:
             )
             recovery_owners = continuity_recovery_owners
             if recovery_owners is None:
+                action_capabilities = {
+                    capability: ProductionRecoveryCapability(
+                        self.continuity.recovery_validation,
+                        self._execute_continuity_recovery_action,
+                    )
+                    for capability in CAPABILITY_POLICIES
+                    if capability != "check_processing_health"
+                }
                 recovery_owners = production_recovery_owners(
                     self.continuity.recovery_health,
-                    restore_session=self._restore_continuity_session_registration,
-                    inspect_session=self._inspect_continuity_session_registration,
+                    capabilities=action_capabilities,
                 )
             self.continuity_agents = ContinuityAgentLane(
                 create_continuity_session,
@@ -4650,52 +4741,67 @@ class Daemon:
         except Exception as e:  # noqa: BLE001 - daemon startup must still finish.
             print(f"[orchestrator] queue-drain startup reconcile failed: {e}", file=sys.stderr)
 
-    def _continuity_session_row(self, request: Any) -> dict[str, Any] | None:
-        for row in self.orchestrator_sessions.list(limit=1000):
-            if opaque_identifier("session", row["session_key"]) == request.session_id:
-                return row
-        return None
-
-    def _inspect_continuity_session_registration(
-        self,
-        request: Any,
-    ) -> tuple[bool, str]:
-        row = self._continuity_session_row(request)
-        if row is None:
-            return False, "unknown"
-        liveness = "unhealthy" if row["state"] in {"stale", "failed"} else "healthy"
-        return True, liveness
-
-    def _restore_continuity_session_registration(
+    def _execute_continuity_recovery_action(
         self,
         request: Any,
         cancel_event: threading.Event,
     ) -> RecoveryActionResult:
+        """Dispatch only a fixed, validated action to the owning Relay process."""
         if cancel_event.is_set():
             return RecoveryActionResult("failed", "recovery_canceled")
-        row = self._continuity_session_row(request)
-        if row is None or row["state"] not in {"stale", "failed"}:
-            return RecoveryActionResult("failed", "session_registration_not_stale")
-        restored = self.orchestrator_sessions.heartbeat(
-            session_id=int(row["id"]),
-            provider_key=str(row["provider_key"]),
-            state="idle",
-        )
-        if restored is None:
-            return RecoveryActionResult("failed", "session_registration_restore_failed")
-        self.observe_continuity_event({
-            "source": "session",
-            "event": "started",
-            "session_id": restored["session_key"],
-            "provider": restored["provider_key"],
-            "recovery_generation": request.recovery_generation,
-            "observed_at": restored["heartbeat_at"],
-        })
-        return RecoveryActionResult(
-            "applied",
-            "session_registration_restored",
-            self.continuity.recovery_health(request),
-        )
+        reply_path = Path(f"/tmp/relay_recovery_{request.idempotency_key}.json")
+        try:
+            reply_path.unlink(missing_ok=True)
+        except OSError:
+            return RecoveryActionResult("failed", "component_owner_unavailable")
+        if request.capability in {
+            "reinitialize_speech_capture",
+            "reinitialize_transcription_delivery",
+            "restart_bridge",
+            "restart_messenger",
+            "restart_daemon",
+            "reconnect_ipc",
+            "restore_session_registration",
+            "release_dead_ownership",
+            "launch_foreground_provider",
+        } and _notify_state(
+            "request",
+            source="continuity_recovery",
+            capability=request.capability,
+            incident_id=request.incident_id,
+            session_id=request.session_id,
+            command_id=request.command_id,
+            component=request.component,
+            provider=request.provider,
+            recovery_generation=request.recovery_generation,
+            expected_postcondition=request.expected_postcondition,
+            reply_path=str(reply_path),
+        ):
+            reply_deadline = min(request.deadline, time.monotonic() + 2.0)
+            while not cancel_event.is_set() and time.monotonic() < reply_deadline:
+                try:
+                    reply_text = reply_path.read_text()
+                except FileNotFoundError:
+                    time.sleep(0.02)
+                    continue
+                except OSError:
+                    break
+                try:
+                    payload = json.loads(reply_text)
+                except json.JSONDecodeError:
+                    reply_path.unlink(missing_ok=True)
+                    break
+                reply_path.unlink(missing_ok=True)
+                status = str(payload.get("status") or "failed")
+                code = str(payload.get("outcome_code") or "component_owner_unavailable")
+                if status not in {"applied", "noop", "failed"}:
+                    break
+                return RecoveryActionResult(
+                    status,
+                    code,
+                    self.continuity.recovery_health(request),
+                )
+        return RecoveryActionResult("failed", "component_owner_unavailable")
 
     def _emit_continuity_incident(self, envelope: dict[str, object]) -> None:
         """Persist only the detector's fixed, privacy-safe recovery envelope."""

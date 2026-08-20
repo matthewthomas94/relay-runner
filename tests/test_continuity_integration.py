@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -23,6 +24,8 @@ import relay_completion_hook  # noqa: E402
 import voice_bridge  # noqa: E402
 from messenger import MessengerRuntime  # noqa: E402
 from orchestrator import ContinuityLifecycleAdapter, Daemon  # noqa: E402
+from continuity_incidents import opaque_identifier  # noqa: E402
+from continuity_recovery import RecoveryActionRequest  # noqa: E402
 from voice_bridge import _post_continuity_event  # noqa: E402
 
 
@@ -55,6 +58,184 @@ class _FailingMessengerBackend:
 
 
 class ContinuityIntegrationTests(unittest.TestCase):
+    def test_production_executor_requires_component_acknowledgement(self):
+        daemon = Daemon.__new__(Daemon)
+        daemon.continuity = SimpleNamespace(
+            recovery_health=lambda _request: orchestrator.RecoveryHealthEvidence()
+        )
+        request = RecoveryActionRequest(
+            capability="restart_bridge",
+            incident_id="inc-123456789abc",
+            session_id=opaque_identifier("session", "native-session"),
+            command_id=opaque_identifier("command", "native-command"),
+            component="bridge",
+            provider="none",
+            recovery_generation=4,
+            incident_phase="delivery",
+            process_identity="continuity-1234567890abcdef1234567890abcdef",
+            attempt=1,
+            idempotency_key="recovery_123456789012345678901234",
+            expected_postcondition="bridge_process_alive",
+            incident_observed_at=100,
+            deadline=time.monotonic() + 1,
+        )
+        dispatched = []
+
+        def acknowledge(state, **payload):
+            dispatched.append((state, payload))
+            Path(payload["reply_path"]).write_text(json.dumps({
+                "status": "applied",
+                "outcome_code": "component_action_requested",
+            }))
+            return True
+
+        with patch("orchestrator._notify_state", side_effect=acknowledge):
+            outcome = daemon._execute_continuity_recovery_action(
+                request,
+                threading.Event(),
+            )
+
+        self.assertEqual(
+            (outcome.status, outcome.outcome_code),
+            ("applied", "component_action_requested"),
+        )
+        self.assertEqual(dispatched[0][0], "request")
+        self.assertEqual(dispatched[0][1]["component"], "bridge")
+        self.assertEqual(
+            dispatched[0][1]["expected_postcondition"],
+            "bridge_process_alive",
+        )
+
+    def test_production_executor_preserves_background_ack_during_poll_sleep(self):
+        daemon = Daemon.__new__(Daemon)
+        daemon.continuity = SimpleNamespace(
+            recovery_health=lambda _request: orchestrator.RecoveryHealthEvidence()
+        )
+        request = RecoveryActionRequest(
+            capability="restart_bridge",
+            incident_id="inc-123456789abc",
+            session_id=opaque_identifier("session", "native-session"),
+            command_id=opaque_identifier("command", "native-command"),
+            component="bridge",
+            provider="none",
+            recovery_generation=4,
+            incident_phase="delivery",
+            process_identity="continuity-1234567890abcdef1234567890abcdef",
+            attempt=1,
+            idempotency_key="recovery_abcdefghijklmnopqrstuvwx",
+            expected_postcondition="bridge_process_alive",
+            incident_observed_at=100,
+            deadline=time.monotonic() + 1,
+        )
+        poll_sleep_started = threading.Event()
+        reply_written = threading.Event()
+        cancel_event = threading.Event()
+        background_errors = []
+        background_thread = None
+
+        def write_background_ack(reply_path):
+            try:
+                if not poll_sleep_started.wait(1):
+                    raise TimeoutError("poller did not enter missing-reply sleep")
+                Path(reply_path).write_text(json.dumps({
+                    "status": "applied",
+                    "outcome_code": "component_action_requested",
+                }))
+            except Exception as error:  # noqa: BLE001 - surfaced in this test thread.
+                background_errors.append(error)
+            finally:
+                reply_written.set()
+
+        def acknowledge(_state, **payload):
+            nonlocal background_thread
+            background_thread = threading.Thread(
+                target=write_background_ack,
+                args=(payload["reply_path"],),
+            )
+            background_thread.start()
+            return True
+
+        sleep_calls = 0
+
+        def coordinated_sleep(_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 1:
+                poll_sleep_started.set()
+                self.assertTrue(reply_written.wait(1))
+            else:
+                cancel_event.set()
+
+        with (
+            patch("orchestrator._notify_state", side_effect=acknowledge),
+            patch("orchestrator.time.sleep", side_effect=coordinated_sleep),
+        ):
+            outcome = daemon._execute_continuity_recovery_action(
+                request,
+                cancel_event,
+            )
+
+        self.assertIsNotNone(background_thread)
+        background_thread.join(timeout=1)
+        self.assertFalse(background_thread.is_alive())
+        self.assertEqual(background_errors, [])
+        self.assertEqual(sleep_calls, 1)
+        self.assertEqual(
+            (outcome.status, outcome.outcome_code),
+            ("applied", "component_action_requested"),
+        )
+
+    def test_live_recovery_validation_requires_exact_active_owner_and_generation(self):
+        adapter = ContinuityLifecycleAdapter(emit=lambda _event: None)
+        adapter.observe({
+            "source": "provider",
+            "event": "process_exit",
+            "session_id": "native-session",
+            "relay_command_id": "native-command",
+            "provider": "codex",
+            "recovery_generation": 4,
+            "observed_at": 100,
+        })
+        adapter.sample(observed_at=200)
+        adapter.sample(observed_at=201)
+        request = RecoveryActionRequest(
+            capability="launch_foreground_provider",
+            incident_id="inc-123456789abc",
+            session_id=opaque_identifier("session", "native-session"),
+            command_id=opaque_identifier("command", "native-command"),
+            component="foreground_provider",
+            provider="codex",
+            recovery_generation=4,
+            incident_phase="provider_turn",
+            process_identity="continuity-1234567890abcdef1234567890abcdef",
+            attempt=1,
+            idempotency_key="recovery_123456789012345678901234",
+            expected_postcondition="provider_process_alive",
+            incident_observed_at=100,
+            deadline=200,
+        )
+
+        live = adapter.recovery_validation(request)
+        stale = adapter.recovery_validation(
+            RecoveryActionRequest(**{**request.__dict__, "recovery_generation": 5})
+        )
+        missing_owner = adapter.recovery_validation(
+            RecoveryActionRequest(**{
+                **request.__dict__,
+                "session_id": opaque_identifier("session", "stale-session"),
+            })
+        )
+
+        self.assertTrue(live.exact_target_owned)
+        self.assertTrue(live.generation_matches)
+        self.assertEqual(live.liveness, "confirmed_dead")
+        self.assertTrue(stale.exact_target_owned)
+        self.assertFalse(stale.generation_matches)
+        self.assertEqual(stale.liveness, "confirmed_dead")
+        self.assertFalse(missing_owner.exact_target_owned)
+        self.assertFalse(missing_owner.incident_active)
+        self.assertEqual(missing_owner.liveness, "unknown")
+
     def _bridge_payload(self, provider: str, signal: str, observed_at: float) -> dict:
         posted = []
         _post_continuity_event(
