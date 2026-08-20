@@ -25,6 +25,11 @@ def incident(command_id: str | None = "command-one", generation: str = "generati
         "component": "command" if command_id else "speech_capture",
         "phase": "command_processing" if command_id else "capture",
         "recovery_generation": generation,
+        "unavailable_capability": (
+            None
+            if command_id
+            else "Relay Runner cannot capture speech for the active voice session."
+        ),
     }
 
 
@@ -51,6 +56,23 @@ class ContinuityResumeDecisionTests(unittest.TestCase):
             ("speech_not_captured", "ask_repeat", "no_durable_command"),
         )
         self.assertIn("Please repeat your request", PLEASE_REPEAT_TEXT)
+
+    def test_pretranscript_loss_requires_matching_component_capability_evidence(self):
+        handoff = incident(None)
+        handoff["unavailable_capability"] = (
+            "Relay Runner cannot turn captured speech into a command."
+        )
+
+        decision = plan_continuity_resume(handoff, [], final_result="restored")
+
+        self.assertEqual(
+            (decision.phase, decision.action, decision.reason),
+            (
+                "speech_not_captured",
+                "foreground_review",
+                "speech_loss_capability_mismatch",
+            ),
+        )
 
     def test_commandless_liveness_recovery_has_no_speech_outcome(self):
         for component, phase in (

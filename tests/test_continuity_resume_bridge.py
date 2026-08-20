@@ -41,18 +41,22 @@ class ContinuityResumeBridgeTests(unittest.TestCase):
             "command_id": None,
             "component": "speech_capture",
             "phase": "capture",
+            "unavailable_capability": (
+                "Relay Runner cannot capture speech for the active voice session."
+            ),
             "provider": "none",
             "recovery_generation": "generation-7",
             "incident_observed_at": 100,
         }
 
-    def call(self, payload=None):
+    def call(self, payload=None, *, bridge_generation="generation-7"):
         return voice_bridge._bridge_continuity_resume_response(
             payload or self.payload,
             inbox=self.inbox,
             tts_worker=SimpleNamespace(input_queue=object()),
             orchestrator_session=self.session,
             applied_keys=self.applied_keys,
+            bridge_generation=bridge_generation,
             state_path=str(self.state_path),
             turns_path=str(self.root / "turns.json"),
         )
@@ -78,6 +82,9 @@ class ContinuityResumeBridgeTests(unittest.TestCase):
             **self.payload,
             "component": "transcription",
             "phase": "transcription",
+            "unavailable_capability": (
+                "Relay Runner cannot turn captured speech into a command."
+            ),
         }
         with (
             patch("voice_bridge._queue_tts_text", return_value=True) as queue_text,
@@ -91,6 +98,30 @@ class ContinuityResumeBridgeTests(unittest.TestCase):
             "continuity_repeat",
             text=voice_bridge.PLEASE_REPEAT_TEXT,
         )
+
+    def test_pretranscript_loss_without_state_uses_authoritative_bridge_generation(self):
+        self.state_path.unlink()
+        with (
+            patch.dict(os.environ, {"RELAY_RECOVERY_GENERATION": "generation-7"}),
+            patch("voice_bridge._queue_tts_text", return_value=True) as queue_text,
+            patch("voice_bridge._notify_state") as notify,
+        ):
+            result = self.call()
+
+        self.assertEqual(result["action"], "ask_repeat")
+        queue_text.assert_called_once()
+        notify.assert_called_once_with(
+            "continuity_repeat",
+            text=voice_bridge.PLEASE_REPEAT_TEXT,
+        )
+
+    def test_absent_state_commandless_handoff_rejects_stale_bridge_generation(self):
+        self.state_path.unlink()
+        with patch("voice_bridge._queue_tts_text") as queue_text:
+            result = self.call(bridge_generation="generation-8")
+
+        self.assertEqual(result["reason"], "stale_recovery_generation")
+        queue_text.assert_not_called()
 
     def test_commandless_liveness_recovery_never_asks_repeat(self):
         cases = (

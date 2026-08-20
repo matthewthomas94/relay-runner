@@ -12,10 +12,14 @@ PLEASE_REPEAT_TEXT = (
     "Relay Runner is listening again, but your last speech was not captured. "
     "Please repeat your request."
 )
-_PRECOMMAND_SPEECH_LOSS = frozenset({
-    ("speech_capture", "capture"),
-    ("transcription", "transcription"),
-})
+_PRECOMMAND_SPEECH_LOSS = {
+    ("speech_capture", "capture"): (
+        "Relay Runner cannot capture speech for the active voice session."
+    ),
+    ("transcription", "transcription"): (
+        "Relay Runner cannot turn captured speech into a command."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -82,7 +86,14 @@ def plan_continuity_resume(
             str(incident.get("component") or ""),
             str(incident.get("phase") or ""),
         )
-        if incident_phase in _PRECOMMAND_SPEECH_LOSS:
+        unavailable_capability = _PRECOMMAND_SPEECH_LOSS.get(incident_phase)
+        if unavailable_capability is not None:
+            if incident.get("unavailable_capability") != unavailable_capability:
+                return ContinuityResumeDecision(
+                    "speech_not_captured",
+                    "foreground_review",
+                    "speech_loss_capability_mismatch",
+                )
             return ContinuityResumeDecision(
                 "speech_not_captured", "ask_repeat", "no_durable_command"
             )

@@ -4839,6 +4839,7 @@ class Daemon:
         final_result: str,
     ) -> None:
         """Return authority to the canonical bridge only after stable recovery."""
+        objective = incident.get("recovery_objective")
         payload = {
             "type": "continuity_resume",
             "final_result": final_result,
@@ -4847,6 +4848,11 @@ class Daemon:
             "command_id": incident.get("command_id"),
             "component": incident.get("component"),
             "phase": incident.get("phase"),
+            "unavailable_capability": (
+                objective.get("unavailable_capability")
+                if isinstance(objective, Mapping)
+                else None
+            ),
             "provider": incident.get("provider"),
             "recovery_generation": incident.get("recovery_generation"),
             "incident_observed_at": (

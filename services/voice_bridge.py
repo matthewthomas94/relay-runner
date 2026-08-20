@@ -2507,6 +2507,7 @@ def _bridge_continuity_resume_response(
     tts_worker: object,
     orchestrator_session: dict | None,
     applied_keys: set[str] | None = None,
+    bridge_generation: str | None = None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
 ) -> dict[str, str | None]:
@@ -2517,8 +2518,23 @@ def _bridge_continuity_resume_response(
         generation = normalize_recovery_generation(payload.get("recovery_generation"))
     except ValueError:
         return {"action": "foreground_review", "reason": "invalid_recovery_generation"}
+    command_id = payload.get("command_id")
+    state_exists = Path(state_path).exists()
     state = _read_json_file(state_path) or {}
-    if str(state.get("recovery_generation") or "") != generation:
+    if command_id is None:
+        try:
+            current_bridge_generation = normalize_recovery_generation(
+                bridge_generation
+                if bridge_generation is not None
+                else os.environ.get("RELAY_RECOVERY_GENERATION")
+            )
+        except ValueError:
+            return {"action": "foreground_review", "reason": "invalid_bridge_generation"}
+        if current_bridge_generation != generation:
+            return {"action": "foreground_review", "reason": "stale_recovery_generation"}
+        if state_exists and str(state.get("recovery_generation") or "") != generation:
+            return {"action": "foreground_review", "reason": "stale_recovery_generation"}
+    elif str(state.get("recovery_generation") or "") != generation:
         return {"action": "foreground_review", "reason": "stale_recovery_generation"}
     session_key = str((orchestrator_session or {}).get("session_key") or "")
     if not session_key or opaque_identifier("session", session_key) != payload.get("session_id"):
@@ -2535,7 +2551,6 @@ def _bridge_continuity_resume_response(
         return {"action": "noop", "reason": "handoff_already_applied"}
 
     records = inbox.records()
-    command_id = payload.get("command_id")
     if command_id is None:
         try:
             incident_at = float(payload.get("incident_observed_at"))
@@ -2552,6 +2567,7 @@ def _bridge_continuity_resume_response(
         "command_id": command_id,
         "component": payload.get("component"),
         "phase": payload.get("phase"),
+        "unavailable_capability": payload.get("unavailable_capability"),
         "recovery_generation": generation,
     }
     decision = plan_continuity_resume(
@@ -2654,6 +2670,7 @@ def _start_control_socket(
                             tts_worker=tts_worker,
                             orchestrator_session=context.get("orchestrator_session"),
                             applied_keys=context.setdefault("resume_keys", set()),
+                            bridge_generation=context.get("recovery_generation"),
                         )
                         continue
                 if recovery_payload is not None:
@@ -4155,6 +4172,9 @@ def main():
             "messenger": messenger,
             "orchestrator_session": orchestrator_session,
             "inbox": intent_inbox,
+            "recovery_generation": normalize_recovery_generation(
+                os.environ.get("RELAY_RECOVERY_GENERATION") or "0"
+            ),
         })
         _surface_recoverable_command_status(
             orchestrator_session,
