@@ -378,6 +378,9 @@ class CodexMessengerBackend:
             "ephemeral": True,
         }
 
+    def child_environment(self) -> dict[str, str]:
+        return provider_child_environment(self.actor_role)
+
     def start(self) -> None:
         with self._start_lock:
             if self._is_ready():
@@ -392,7 +395,7 @@ class CodexMessengerBackend:
                     text=True,
                     bufsize=1,
                     cwd=self.config.cwd,
-                    env=provider_child_environment(self.actor_role),
+                    env=self.child_environment(),
                 )
             except OSError as exc:
                 raise MessengerError(f"could not start Codex messenger: {exc}") from exc
@@ -702,6 +705,9 @@ class ClaudeMessengerBackend:
             command.extend(["--resume", self._session_id])
         return command
 
+    def child_environment(self) -> dict[str, str]:
+        return provider_child_environment(self.actor_role)
+
     def start(self) -> None:
         with self._start_lock:
             if self._proc and self._proc.poll() is None:
@@ -715,7 +721,7 @@ class ClaudeMessengerBackend:
                     text=True,
                     bufsize=1,
                     cwd=self.config.cwd,
-                    env=provider_child_environment(self.actor_role),
+                    env=self.child_environment(),
                 )
             except OSError as exc:
                 raise MessengerError(f"could not start Claude messenger: {exc}") from exc
